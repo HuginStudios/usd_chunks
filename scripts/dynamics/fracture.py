@@ -156,13 +156,25 @@ def random_rock_points(rng, size: float, detail: int = 28, roughness: float = 0.
     return (pts - centre) * (size / diameter)
 
 
-def _cut(solid, rng, jaggedness: float, min_fraction: float, attempts: int = 10):
+def chunkiness(solid) -> float:
+    """How far from a sliver a piece is: its smallest spread over its largest, 0..1."""
+    v = np.asarray(solid.to_mesh().vert_properties, dtype=np.float64)[:, :3]
+    if len(v) < 4:
+        return 0.0
+    sv = np.linalg.svd(v - v.mean(axis=0), compute_uv=False)
+    return float(sv[-1] / max(sv[0], 1e-12))
+
+
+def _cut(solid, rng, jaggedness: float, min_fraction: float, candidates: int = 1, attempts: int = 10):
     """Split *solid* by a plane into islands. Returns [(solid, volume, centre)], or None.
 
     The plane crosses the longest axis, off-centre by up to an eighth of the length so the
-    halves come out unequal. An island below *min_fraction* of the parent is a sliver --
-    unstable to simulate, and invisible anyway -- so a cut that makes one is retried with
-    another plane, and on the last attempt allowed through.
+    halves come out unequal. With *candidates* > 1 that many valid planes are tried and the
+    one whose worst half is chunkiest wins: cut after cut, a random plane leaves wedges and
+    needles, and those read as shards rather than gravel however they are shaded.
+
+    An island below *min_fraction* of the parent is a sliver -- unstable to simulate, and
+    invisible anyway -- so a cut that makes one does not count, unless nothing else works.
     """
     mesh = solid.to_mesh()
     verts = np.asarray(mesh.vert_properties, dtype=np.float64)[:, :3]
@@ -170,8 +182,11 @@ def _cut(solid, rng, jaggedness: float, min_fraction: float, attempts: int = 10)
     centred = verts - verts.mean(axis=0)
     _, _, vt = np.linalg.svd(centred, full_matrices=False)
     extent = float(np.ptp(centred @ vt[0]))
+    fallback = None
     best = None
-    for attempt in range(attempts):
+    tries = max(attempts, candidates * 3)
+    found = 0
+    for attempt in range(tries):
         wobble = rng.normal(size=3)
         normal = vt[0] + jaggedness * 1.5 * wobble / max(np.linalg.norm(wobble), 1e-9)
         normal /= np.linalg.norm(normal)
@@ -188,15 +203,25 @@ def _cut(solid, rng, jaggedness: float, min_fraction: float, attempts: int = 10)
         if len(islands) < 2:
             continue
         smallest = min(i[1] for i in islands) / max(vol, 1e-12)
-        if smallest >= min_fraction:
+        if smallest < min_fraction:
+            if fallback is None or smallest > fallback[0]:
+                fallback = (smallest, islands)
+            continue
+        if candidates <= 1:
             return islands
-        if best is None or smallest > best[0]:
-            best = (smallest, islands)
-    return best[1] if best is not None else None
+        score = min(chunkiness(i[0]) for i in islands)
+        if best is None or score > best[0]:
+            best = (score, islands)
+        found += 1
+        if found >= candidates:
+            break
+    if best is not None:
+        return best[1]
+    return fallback[1] if fallback is not None else None
 
 
 def fracture(tree_index: int, root, rng, generations: int, jaggedness: float,
-             min_fraction: float = 0.04) -> list[Piece]:
+             min_fraction: float = 0.04, candidates: int = 1) -> list[Piece]:
     """Cut *root* down *generations* levels. Pieces are listed parents-first."""
     vol, centre = _solid_centre(root)
     pieces = [Piece(tree_index, 0, -1, 0, root, centre, vol)]
@@ -205,7 +230,7 @@ def fracture(tree_index: int, root, rng, generations: int, jaggedness: float,
         nxt = []
         for n in frontier:
             parent = pieces[n]
-            islands = _cut(parent.solid, rng, jaggedness, min_fraction)
+            islands = _cut(parent.solid, rng, jaggedness, min_fraction, candidates)
             if islands is None:
                 continue
             for solid, v, c in islands:
@@ -227,15 +252,34 @@ def _box_uv(p: np.ndarray, n: np.ndarray, scale: float) -> np.ndarray:
     return np.stack([p[idx, u_axis], p[idx, v_axis]], axis=1) * scale
 
 
-def piece_surface(tree: Tree, piece: Piece, root_centre: np.ndarray, uv_scale: float):
+def bevelled(solid, bevel: float, detail: int):
+    """*solid* with its edges rounded, for display.
+
+    Edges between near-coplanar facets (under 45 degrees -- the rock's own surface) are
+    smoothed right out; sharper ones -- the breaks, the rock's corners -- get a fillet whose
+    size is *bevel* (0 = none, 1 = fully round). *detail* is how finely the rounded surface
+    is subdivided: every edge is split that many times, so triangles grow by its square.
+    """
+    if bevel <= 0.0:
+        return solid
+    rounded = solid.smooth_out(45.0, float(min(1.0, bevel))).refine(max(2, int(detail)))
+    # Smooth shading to go with it: flat-shading hundreds of small triangles reads as lumps.
+    # Appended after any UV / normal channels the source carries, so those survive.
+    return rounded.calculate_normals(rounded.num_prop(), 60.0)
+
+
+def piece_surface(tree: Tree, piece: Piece, root_centre: np.ndarray, uv_scale: float, solid=None):
     """Mesh arrays for one piece, points about its own centre.
 
     Returns (points, face counts, face indices, faceVarying UVs, faceVarying normals,
     inside face indices). Faces are flat-shaded on the cuts and on procedural rock, and
     keep the source's smooth normals on a model's outside.
     """
-    mesh = piece.solid.to_mesh()
+    shape = solid or piece.solid
+    mesh = shape.to_mesh()
     props = np.asarray(mesh.vert_properties, dtype=np.float64)
+    # A bevelled shape carries its own smooth normals in its last three channels.
+    smooth = solid is not None and solid is not piece.solid and props.shape[1] >= 6
     tris = np.asarray(mesh.tri_verts, dtype=np.int64)
     pos = props[:, :3]
     run_ids = np.asarray(mesh.run_original_id)
@@ -259,6 +303,9 @@ def piece_surface(tree: Tree, piece: Piece, root_centre: np.ndarray, uv_scale: f
             sn = props[corners[outside_corner], 5:8]
             sn /= np.maximum(np.linalg.norm(sn, axis=1, keepdims=True), 1e-12)
             normals[outside_corner] = sn
+    if smooth:
+        sn = props[corners, -3:]
+        normals = sn / np.maximum(np.linalg.norm(sn, axis=1, keepdims=True), 1e-12)
     points = pos - piece.centre
     return (
         points,
@@ -356,7 +403,8 @@ def piece_name(tree: Tree, node: int) -> str:
 
 
 def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, preview_generation: int = 0,
-           explode: float = 0.0, inside_material: str = "", outside_material: str = "") -> int:
+           explode: float = 0.0, inside_material: str = "", outside_material: str = "",
+           bevel: float = 0.0, bevel_detail: int = 3) -> int:
     """Write the fractured instancer at *out_path*. Returns the instance count."""
     inst = UsdGeom.PointInstancer.Define(stage, out_path)
     inst.GetPrim().CreateAttribute(NS + "fractured", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
@@ -370,7 +418,8 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
         root_centre = tree.pieces[0].centre
         for piece in tree.pieces:
             path = protos.AppendChild(piece_name(tree, piece.node))
-            points, counts, indices, uv, normals, inside = piece_surface(tree, piece, root_centre, uv_scale)
+            points, counts, indices, uv, normals, inside = piece_surface(
+                tree, piece, root_centre, uv_scale, bevelled(piece.solid, bevel, bevel_detail))
             mesh = UsdGeom.Mesh.Define(stage, path)
             mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32)))
             mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(counts))
@@ -449,6 +498,7 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
     rng = np.random.default_rng(seed)
     generations = max(0, min(8, node.get_param("generations", is_i).value))
     jaggedness = max(0.0, min(1.0, node.get_param("jaggedness", is_f).value))
+    candidates = 1 + int(round(7 * max(0.0, min(1.0, node.get_param("piece_shape", is_f).value))))
     trees, problems, sources = [], [], []
     if node.get_param("source", is_s).value == SOURCE_ROCKS:
         count = max(1, node.get_param("count", is_i).value)
@@ -470,7 +520,7 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
             at[side[0]] += (r % cols) * spacing
             at[side[1]] += (r // cols) * spacing
             solid = _mf.Manifold.hull_points(pts + at).as_original()
-            pieces = fracture(r, solid, rng, generations, jaggedness)
+            pieces = fracture(r, solid, rng, generations, jaggedness, candidates=candidates)
             trees.append(Tree(r, f"Rock{r:02d}", pieces, solid.original_id(), False,
                               colour=_PALETTE[(r * 5 + seed) % len(_PALETTE)]))
         return trees, problems, sources
@@ -487,7 +537,7 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
                 problems.append(f"{p.GetName()} {problem}")
             solid = solid.as_original()
             index = len(trees)
-            pieces = fracture(index, solid, rng, generations, jaggedness)
+            pieces = fracture(index, solid, rng, generations, jaggedness, candidates=candidates)
             colour = UsdGeom.Mesh(p).GetDisplayColorAttr().Get()
             material = UsdShade.MaterialBindingAPI(p).ComputeBoundMaterial()[0]
             trees.append(Tree(index, Tf.MakeValidIdentifier(p.GetName()), pieces, solid.original_id(), has_uv,
@@ -501,7 +551,8 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
 #: settings are the whole point, and each entry holds a full layer.
 _CACHE: "dict[bytes, tuple]" = {}
 _CACHE_MAX = 6
-_PARAMS = ("source", "source_prims", "output_path", "generations", "jaggedness", "seed", "count", "size",
+_PARAMS = ("source", "source_prims", "output_path", "generations", "jaggedness", "piece_shape", "bevel",
+           "bevel_detail", "seed", "count", "size",
            "size_variation", "roughness", "flatness", "detail", "rock_origin", "uv_scale",
            "outside_material", "inside_material", "preview_generation", "explode")
 
@@ -582,6 +633,8 @@ def execute(node) -> None:
             explode=max(0.0, node.get_param("explode", is_f).value),
             inside_material=node.get_param("inside_material", is_s).value.strip(),
             outside_material=node.get_param("outside_material", is_s).value.strip(),
+            bevel=max(0.0, node.get_param("bevel", is_f).value),
+            bevel_detail=max(2, node.get_param("bevel_detail", is_i).value),
         )
         for p in sources:
             # The instancer stands in for the source from here on.
@@ -659,6 +712,12 @@ def main() -> chunk.Chunk:
         "jaggedness", "Break Angle", min_value=0.0, max_value=1.0, default_value=0.35,
         tooltip="0 = every break is a clean cut across the piece's long axis; 1 = any angle.",
     ))
+    chunk_api.add_param(chunk.Slider(
+        "piece_shape", "Chunky Pieces", min_value=0.0, max_value=1.0, default_value=0.7,
+        tooltip="0 = take the first cut that works, which leaves wedges and needles. Higher tries "
+        "more planes per cut and keeps the one leaving the chunkiest pieces -- gravel rather "
+        "than shards. Costs fracture time, not simulation time.",
+    ))
     chunk_api.add_param(chunk.Spinbox("seed", "Seed", default_value=0, is_int=True))
 
     rocks = chunk.Group("Rocks", "Procedural Rocks", flags=_GF)
@@ -678,6 +737,16 @@ def main() -> chunk.Chunk:
     rocks.set_state(chunk.ChunkFlags.State.HIDDEN)
 
     surf = chunk.Group("Surface", "Surface", flags=_GF)
+    surf.add_param(chunk.Slider(
+        "bevel", "Bevel", min_value=0.0, max_value=1.0, default_value=0.0,
+        tooltip="Round the pieces' edges: 0 = sharp, 1 = pebble-round. For looks only -- a piece "
+        "still collides as its convex hull.",
+    ))
+    surf.add_param(chunk.Spinbox(
+        "bevel_detail", "Bevel Detail", default_value=3, is_int=True,
+        tooltip="How finely a bevelled edge is subdivided. Each step up adds triangles by its "
+        "square: 3 is 9x the faces, 4 is 16x.",
+    ))
     surf.add_param(chunk.Spinbox("uv_scale", "UV Scale", default_value=0.05,
                                  tooltip="UVs per scene unit for the projected faces: the cuts, and all "
                                  "of a procedural rock. 0.05 = one texture repeat per 20 units."))

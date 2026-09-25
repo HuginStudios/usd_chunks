@@ -468,3 +468,29 @@ def test_convex_parts_collide_as_one_hull_and_concave_ones_as_prisms():
     assert not brk.is_convex_solid(parts["Bucket"].verts, parts["Bucket"].tris)  # a cup
     v, t = rig.box((0, 0, 0), (10, 10, 10))
     assert not brk.is_convex_solid(v, t[:10])  # open: two triangles missing
+
+
+@needs_manifold
+def test_bevel_rounds_pieces_and_keeps_inside_and_outside():
+    stage = Usd.Stage.CreateInMemory()
+    trees = _rock_trees(count=1, generations=2)
+    fr.author(stage, Sdf.Path("/Sharp"), trees, uv_scale=0.1)
+    fr.author(stage, Sdf.Path("/Round"), trees, uv_scale=0.1, bevel=0.6, bevel_detail=3)
+    sharp = UsdGeom.Mesh(stage.GetPrimAtPath("/Sharp/Prototypes/Rock00_n3"))
+    round_ = UsdGeom.Mesh(stage.GetPrimAtPath("/Round/Prototypes/Rock00_n3"))
+    n_faces = len(round_.GetFaceVertexCountsAttr().Get())
+    assert n_faces > 4 * len(sharp.GetFaceVertexCountsAttr().Get())
+    inside = set(UsdGeom.Subset(stage.GetPrimAtPath("/Round/Prototypes/Rock00_n3/inside")).GetIndicesAttr().Get())
+    outside = set(UsdGeom.Subset(stage.GetPrimAtPath("/Round/Prototypes/Rock00_n3/outside")).GetIndicesAttr().Get())
+    assert inside and outside and not (inside & outside) and len(inside | outside) == n_faces
+
+
+@needs_manifold
+def test_chunky_cuts_leave_chunkier_pieces():
+    def mean_chunkiness(candidates):
+        rng = np.random.default_rng(3)
+        solid = fr._mf.Manifold.hull_points(fr.random_rock_points(rng, 15.0)).as_original()
+        pieces = fr.fracture(0, solid, rng, 4, 0.35, candidates=candidates)
+        return np.mean([fr.chunkiness(p.solid) for p in pieces if p.generation == 4])
+
+    assert mean_chunkiness(8) > mean_chunkiness(1) + 0.05
