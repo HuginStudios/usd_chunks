@@ -586,10 +586,17 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
         return self.text()
 
     def set_value(self, value):
-        return self.set_label(value)
+        return self.setText("" if value is None else str(value))
 
     def set_label(self, text):
-        return self.setText(text)
+        # A Label is one piece of text doing two jobs: its label is the placeholder, its
+        # value what the chunk reports. Setup writes the value and then the label, so a
+        # value set before the widget existed -- a readout written by a cook during scene
+        # load -- was painted over by the placeholder and stayed that way, since nothing
+        # changed afterwards to repaint it. The value wins whenever there is one.
+        param = self._param()
+        value = getattr(param, "raw_value", None) if param is not None else None
+        return self.setText(str(value) if value not in (None, "") else text)
 
     def set_hidden(self, val: bool):
         self.setHidden(val)
