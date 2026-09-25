@@ -1871,6 +1871,7 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
 
 
 def reset(owner, notice, sender) -> None:
+    owner.get_chunk()._rbd_bake_key = None
     _clear_chunk_bake(owner)
     owner.get_chunk().set_state(chunk.ChunkFlags.State.STALE)
     logger.info("Reset - bake cleared.")
@@ -2804,6 +2805,10 @@ def _run(owner, notice, sender) -> None:
         owner, _chunk, stage, layer, prim_paths[0], collision_path_value, forces
     ):
         return
+    if getattr(_chunk, "_rbd_cache_only", False):
+        # Only looking for a cached breakable bake (opening a scene): anything else waits
+        # for Run, as it always has.
+        return
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
@@ -2983,6 +2988,77 @@ def _report(node, text: str) -> None:
     logger.info("[RBD Solver] %s", text.replace("\n", " | "))
 
 
+def _bake_key(*parts) -> str:
+    """A digest of everything that shapes a bake -- the whole job, arrays and all."""
+    h = hashlib.blake2b(digest_size=16)
+
+    def feed(v):
+        if isinstance(v, dict):
+            for k in sorted(v, key=str):
+                h.update(repr(k).encode())
+                feed(v[k])
+        elif isinstance(v, (list, tuple)):
+            h.update(b"[")
+            for x in v:
+                feed(x)
+            h.update(b"]")
+        elif _np is not None and isinstance(v, _np.ndarray):
+            h.update(str(v.shape).encode())
+            h.update(_np.ascontiguousarray(v).tobytes())
+        else:
+            h.update(repr(v).encode())
+
+    for part in parts:
+        feed(part)
+    return h.hexdigest()
+
+
+def _cache_file(_chunk, stage) -> str:
+    """Where this solver's bake is kept on disk: the Cache File param, or -- when that is
+    empty -- ``cache/<scene>_<chunk>.usdc`` beside the scene. None for an unsaved scene."""
+    explicit = _chunk.get_param("cache_file", chunk.is_param_t(str)).value.strip()
+    if explicit:
+        return explicit
+    root = stage.GetRootLayer().realPath if stage else ""
+    if not root:
+        return ""
+    scene = Path(root)
+    return str(scene.parent / "cache" / f"{scene.stem}_{_chunk.name}.usdc")
+
+
+def _load_cached_bake(_chunk, stage, layer, key: str) -> str:
+    """Load the bake from disk if it was made from exactly this input. The file, or ""."""
+    path = _cache_file(_chunk, stage)
+    if not path or not Path(path).is_file():
+        return ""
+    try:
+        cached = Sdf.Layer.OpenAsAnonymous(path)
+    except Exception:  # noqa: BLE001 - an unreadable cache is a miss, not an error
+        return ""
+    if not cached or cached.customLayerData.get("rbd:bakeKey") != key:
+        return ""
+    layer.TransferContent(cached)
+    return path
+
+
+def _save_bake(_chunk, stage, layer, key: str) -> str:
+    path = _cache_file(_chunk, stage)
+    if not path:
+        return ""
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        out = Sdf.Layer.CreateAnonymous(".usdc")
+        out.TransferContent(layer)
+        data = dict(out.customLayerData)
+        data["rbd:bakeKey"] = key
+        out.customLayerData = data
+        out.Export(path)
+        return path
+    except Exception as e:  # noqa: BLE001 - a failed cache write loses no work
+        logger.warning("RBD Solver: could not write the bake cache %s: %s", path, e)
+        return ""
+
+
 def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_value, forces) -> bool:
     """Bake a fractured PointInstancer with breakage. False when the target is not one.
 
@@ -3112,8 +3188,30 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
                 host.refresh_timeline(start_frame, start_frame + frame_count - 1)
         except Exception:  # noqa: BLE001 - a timeline refresh is a courtesy
             pass
-        _report(_chunk, brk.summary(result) + note)
+        _chunk._rbd_bake_key = key
+        saved = _save_bake(_chunk, stage, layer, key)
+        _report(_chunk, brk.summary(result) + (f" · cached to {Path(saved).name}" if saved else "") + note)
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+
+    # Nothing that shapes the bake changed: keep it. A bake made from exactly this input
+    # before -- this session or an earlier one -- comes back from disk instead of being
+    # simulated again, the way a File Cache node would.
+    key = _bake_key(job, proto_index, str(target_path), start_frame, spins)
+    if key == getattr(_chunk, "_rbd_bake_key", None) and layer.GetPrimAtPath(target_path):
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+        return True
+    if loaded := _load_cached_bake(_chunk, stage, layer, key):
+        _chunk._rbd_bake_key = key
+        _promote_bake_layer(layer)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.SetStartTimeCode(start_frame)
+            stage.SetEndTimeCode(start_frame + frame_count - 1)
+        _report(_chunk, f"loaded from cache: {Path(loaded).name}" + note)
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+        return True
+    if getattr(_chunk, "_rbd_cache_only", False):
+        _chunk.set_state(chunk.ChunkFlags.State.STALE)
+        return True
 
     brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text))
     return True
@@ -3135,6 +3233,7 @@ _STALE_IGNORE_PARAMS = {
     "clear_collision",
     "cancel_sim",
     "readout",
+    "cache_file",
 }
 
 
@@ -3219,14 +3318,27 @@ def _is_headless() -> bool:
 
 
 def execute(node) -> None:
-    """Bake on cook -- headless only.
+    """Bake on cook -- headless; interactively, only fetch a cached bake.
 
-    Interactively a bake is expensive, so it waits for Run or Auto Simulate. Under
-    ``usdchunks run`` or a sweep nobody can press anything, and a network that cooked
-    without baking renders a motionless scene that looks entirely plausible.
+    Interactively a bake is expensive, so it waits for Run or Auto Simulate -- but the first
+    cook of a session (opening the scene) loads a bake from the cache file if one was made
+    from exactly this input, so a saved scene reopens simulated. Later cooks leave the bake
+    alone: gathering the inputs to check costs a second or two, too much for every tweak.
+    Under ``usdchunks run`` or a sweep nobody can press anything, and a network that cooked
+    without baking renders a motionless scene that looks entirely plausible -- so it bakes,
+    or loads the cache.
     """
     if _is_headless():
         _run(node, None, None)
+        return
+    if getattr(node, "_rbd_cache_checked", False):
+        return
+    node._rbd_cache_checked = True
+    node._rbd_cache_only = True
+    try:
+        _run(node, None, None)
+    finally:
+        node._rbd_cache_only = False
 
 
 def _schedule_auto_run(root_chunk) -> None:
@@ -3619,6 +3731,12 @@ def main() -> chunk.Chunk:
                                     "cannot shatter a body to gravel within a single step."))
     brk_grp.add_param(chunk.Spinbox("break_kick", "Break Kick", default_value=10.0,
                                     tooltip="Speed the pieces spring apart with, scene units/s."))
+    brk_grp.add_param(chunk.LineEdit(
+        "cache_file", "Cache File", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Where a breakable bake is kept on disk. Empty = cache/<scene>_<this chunk>.usdc beside "
+        "the saved scene. A bake is tagged with a digest of everything that made it; an identical "
+        "setup -- after a reload, or a change undone -- loads from here instead of simulating.",
+    ))
     chunk_api.add_param(brk_grp)
 
 

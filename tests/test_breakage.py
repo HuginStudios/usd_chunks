@@ -564,3 +564,62 @@ def test_emit_writes_a_stream_onto_the_instancer(scene):
     # The preview: nothing shows before its frame.
     assert len(inst.GetInvisibleIdsAttr().Get(5)) == 11
     assert len(inst.GetInvisibleIdsAttr().Get(frames[-1])) == 0
+
+
+@needs_mujoco
+@needs_manifold
+def test_an_identical_setup_loads_its_bake_from_the_cache_file(qapp, tmp_path, monkeypatch):
+    """Like a File Cache node: the bake is tagged with a digest of everything that made it,
+    and the same setup -- after a reload, or a change undone -- is read back, not re-run."""
+    stage = Usd.Stage.CreateNew(str(tmp_path / "shot.usda"))
+    UsdGeom.SetStageUpAxis(stage, "Y")
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    s = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(s, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, s)
+
+    def mk(key):
+        mod = reg.get_chunk_module(key)
+        made = mod.create() if mod.loaded else mod.load()
+        for c in made:
+            s.add_chunk(c)
+        return made[0]
+
+    _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (300.0, 4.0, 300.0))
+    fr.author(stage, Sdf.Path("/Rocks"), _rock_trees(count=1, generations=1, at=(0.0, 20.0, 0.0)),
+              uv_scale=0.05)
+    solver = mk("rbd_solver")
+    solver.get_param("prim_path").value = "/Rocks"
+    solver.get_param("collision_path").value = "/World"
+    solver.get_param("frame_count").value = 12
+    solver.get_param("substeps").value = 4
+    rbd._run(solver, None, None)
+    cache = tmp_path / "cache" / f"shot_{solver.name}.usdc"
+    assert cache.is_file() and "cached to" in solver.get_param("readout").value
+
+    # Reopened: no bake in the layer, no memory of one -- only the file.
+    solver.get_edit_context().Clear()
+    solver._rbd_bake_key = None
+    mod = rbd._breakage()
+
+    def no_sim(*a, **k):
+        raise AssertionError("simulated although an identical bake was on disk")
+
+    monkeypatch.setattr(mod, "dispatch", no_sim)
+    rbd._run(solver, None, None)
+    assert "loaded from cache" in solver.get_param("readout").value
+    inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Rocks"))
+    assert inst.GetPositionsAttr().GetNumTimeSamples() == 12
+
+    # A real change is a different digest: it simulates.
+    calls = []
+    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: calls.append(1))
+    solver.get_param("strength").value = 11.0
+    rbd._run(solver, None, None)
+    assert calls
