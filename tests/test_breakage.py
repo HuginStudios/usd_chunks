@@ -561,9 +561,12 @@ def test_emit_writes_a_stream_onto_the_instancer(scene):
     ev = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Rig/Emitter")).GetPointsAttr().Get())
     p = np.asarray(inst.GetPositionsAttr().Get())
     assert (p >= ev.min(axis=0) - 1e-3).all() and (p <= ev.max(axis=0) + 1e-3).all()
-    # The preview: nothing shows before its frame.
-    assert len(inst.GetInvisibleIdsAttr().Get(5)) == 11
-    assert len(inst.GetInvisibleIdsAttr().Get(frames[-1])) == 0
+    # The preview: an instance shows from its frame for a quarter second, then goes -- so
+    # emitted instances never pile up at the spawn points looking like a stuck simulation.
+    assert set(inst.GetInvisibleIdsAttr().Get(5)) == set(range(1, 12))
+    assert 11 not in set(inst.GetInvisibleIdsAttr().Get(frames[-1]))
+    assert 0 in set(inst.GetInvisibleIdsAttr().Get(frames[-1]))
+    assert len(inst.GetInvisibleIdsAttr().Get(frames[-1] + 30)) == 12
 
 
 @needs_mujoco

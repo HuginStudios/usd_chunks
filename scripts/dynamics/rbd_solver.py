@@ -3026,22 +3026,46 @@ def _cache_file(_chunk, stage) -> str:
     return str(scene.parent / "cache" / f"{scene.stem}_{_chunk.name}.usdc")
 
 
-def _load_cached_bake(_chunk, stage, layer, key: str) -> str:
-    """Load the bake from disk if it was made from exactly this input. The file, or ""."""
+#: What a bake is made from, in groups -- a cache that does not match says which ones moved.
+_BAKE_PARTS = {
+    "world": ("statics", "belts", "drivers"),
+    "bodies": ("starts",),
+    "pieces": ("pieces",),
+    "settings": ("up_idx", "gravity", "fps", "frames", "substeps", "iterations", "friction", "restitution",
+                 "density", "lin_damping", "ang_damping", "floor_drop", "breakage", "seed"),
+}
+
+
+def _bake_parts(job, proto_index, target_path, start_frame, spins) -> dict:
+    parts = {name: _bake_key(*(job.get(k) for k in keys)) for name, keys in _BAKE_PARTS.items()}
+    parts["target"] = _bake_key(proto_index, target_path, start_frame, spins)
+    return parts
+
+
+def _load_cached_bake(_chunk, stage, layer, key: str, parts: dict | None = None):
+    """Load the bake from disk if it was made from exactly this input.
+
+    Returns (file, why-not): the file on a hit; on a miss, "" and -- when there is a cache
+    that simply is not for this input -- which groups of inputs differ from it, so the
+    readout can say what made it out of date instead of silently ignoring it.
+    """
     path = _cache_file(_chunk, stage)
     if not path or not Path(path).is_file():
-        return ""
+        return "", ""
     try:
         cached = Sdf.Layer.OpenAsAnonymous(path)
     except Exception:  # noqa: BLE001 - an unreadable cache is a miss, not an error
-        return ""
-    if not cached or cached.customLayerData.get("rbd:bakeKey") != key:
-        return ""
+        return "", "the cache file could not be read"
+    data = cached.customLayerData if cached else {}
+    if data.get("rbd:bakeKey") != key:
+        old = data.get("rbd:bakeParts") or {}
+        changed = [name for name, digest in (parts or {}).items() if old.get(name) != digest]
+        return "", f"the cache on disk was made from different {', '.join(changed) or 'input'}"
     layer.TransferContent(cached)
-    return path
+    return path, ""
 
 
-def _save_bake(_chunk, stage, layer, key: str) -> str:
+def _save_bake(_chunk, stage, layer, key: str, parts: dict | None = None) -> str:
     path = _cache_file(_chunk, stage)
     if not path:
         return ""
@@ -3051,6 +3075,7 @@ def _save_bake(_chunk, stage, layer, key: str) -> str:
         out.TransferContent(layer)
         data = dict(out.customLayerData)
         data["rbd:bakeKey"] = key
+        data["rbd:bakeParts"] = dict(parts or {})
         out.customLayerData = data
         out.Export(path)
         return path
@@ -3189,18 +3214,20 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         except Exception:  # noqa: BLE001 - a timeline refresh is a courtesy
             pass
         _chunk._rbd_bake_key = key
-        saved = _save_bake(_chunk, stage, layer, key)
+        saved = _save_bake(_chunk, stage, layer, key, parts)
         _report(_chunk, brk.summary(result) + (f" · cached to {Path(saved).name}" if saved else "") + note)
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
     # Nothing that shapes the bake changed: keep it. A bake made from exactly this input
     # before -- this session or an earlier one -- comes back from disk instead of being
     # simulated again, the way a File Cache node would.
-    key = _bake_key(job, proto_index, str(target_path), start_frame, spins)
+    parts = _bake_parts(job, proto_index, str(target_path), start_frame, spins)
+    key = _bake_key(parts)
     if key == getattr(_chunk, "_rbd_bake_key", None) and layer.GetPrimAtPath(target_path):
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
         return True
-    if loaded := _load_cached_bake(_chunk, stage, layer, key):
+    loaded, why_not = _load_cached_bake(_chunk, stage, layer, key, parts)
+    if loaded:
         _chunk._rbd_bake_key = key
         _promote_bake_layer(layer)
         with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -3211,6 +3238,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         return True
     if getattr(_chunk, "_rbd_cache_only", False):
         _chunk.set_state(chunk.ChunkFlags.State.STALE)
+        _report(_chunk, "not simulated -- press Run Simulation" + (f"\n({why_not})" if why_not else ""))
         return True
 
     brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text))

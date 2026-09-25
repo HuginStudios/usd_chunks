@@ -12,8 +12,8 @@ emitted and the solver just solves:
 * ``velocities`` / ``angularVelocities`` -- how it is thrown (USD's own per-instance
   attributes, units/s and degrees/s -- also what a renderer motion-blurs by);
 * ``primvars:rbd:emitFrame`` -- the frame it enters the simulation;
-* ``invisibleIds`` over time -- so the viewport already shows the stream arriving, before
-  anything is simulated.
+* ``invisibleIds`` over time -- a preview: each instance flashes up for a quarter second where
+  and when it enters, so the stream can be judged before anything is simulated.
 
 Instances that would appear inside one another are spaced apart in the region; any overlap
 left is the solver's to wait out.
@@ -29,6 +29,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 from usd_chunks import chunk, chunk_stage
 
 EMIT_FRAME = "primvars:rbd:emitFrame"
+#: How long each instance shows in the preview, from its emit frame.
+PREVIEW_SECONDS = 0.25
 
 
 def _report(node, text: str) -> None:
@@ -150,11 +152,17 @@ def execute(node) -> None:
         pv = UsdGeom.PrimvarsAPI(out).CreatePrimvar("rbd:emitFrame", Sdf.ValueTypeNames.IntArray,
                                                      UsdGeom.Tokens.vertex)
         pv.Set(Vt.IntArray.FromNumpy(p["frames"].astype(np.int32)))
-        # The stream as a preview: each instance shows from its own frame on.
+        # The stream as a preview: each instance flashes up for a few frames where and when
+        # it enters, then goes. Left showing, instances pile up at their spawn points -- a
+        # clump that reads as a simulation stuck at the emitter rather than as "not
+        # simulated yet".
+        flash = max(1, int(round(fps * PREVIEW_SECONDS)))
         inv = out.CreateInvisibleIdsAttr()
         inv.Set(Vt.Int64Array.FromNumpy(ids))
-        for f in sorted(set(int(v) for v in p["frames"])):
-            inv.Set(Vt.Int64Array.FromNumpy(ids[p["frames"] > f]), Usd.TimeCode(f))
+        frames = p["frames"]
+        for f in sorted(set(int(v) for v in frames) | set(int(v) + flash for v in frames)):
+            showing = (frames <= f) & (f < frames + flash)
+            inv.Set(Vt.Int64Array.FromNumpy(ids[~showing]), Usd.TimeCode(f))
         if (sc := out.GetScalesAttr()) and sc.HasAuthoredValue():
             sc.Block()
     last = int(p["frames"].max()) if count else start_frame
