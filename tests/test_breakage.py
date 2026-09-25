@@ -623,3 +623,37 @@ def test_an_identical_setup_loads_its_bake_from_the_cache_file(qapp, tmp_path, m
     solver.get_param("strength").value = 11.0
     rbd._run(solver, None, None)
     assert calls
+
+
+@needs_manifold
+def test_fracture_reloads_its_pieces_from_the_cache_file(qapp, tmp_path, monkeypatch):
+    stage = Usd.Stage.CreateNew(str(tmp_path / "shot.usda"))
+    UsdGeom.SetStageUpAxis(stage, "Y")
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    s = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(s, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, s)
+    mod = reg.get_chunk_module("fracture")
+    frac = (mod.create() if mod.loaded else mod.load())[0]
+    s.add_chunk(frac)
+    frac.get_param("source").value = fr.SOURCE_ROCKS
+    frac.get_param("count").value = 2
+    frac.get_param("generations").value = 2
+    frac.execute()
+    assert (tmp_path / "cache" / f"shot_{frac.name}.usdc").is_file()
+
+    # Reopened: nothing in memory, nothing in the layer -- only the file.
+    code = frac._module
+    code._CACHE.clear()
+    frac._fracture_key = None
+    frac.get_edit_context().Clear()
+    monkeypatch.setattr(code, "build_trees", lambda *a, **k: pytest.fail("cut again despite the cache"))
+    frac.execute()
+    assert "loaded from cache" in frac.get_param("readout").value
+    assert len(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPrototypesRel().GetTargets()) == 14

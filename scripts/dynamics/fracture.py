@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from pathlib import Path
 
 import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdShade, Vt
@@ -414,54 +415,70 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
     proto_of: dict[tuple[int, int], int] = {}
     inside_mat = Sdf.Path(inside_material) if inside_material else None
     outside_mat = Sdf.Path(outside_material) if outside_material else None
-    for tree in trees:
-        root_centre = tree.pieces[0].centre
-        for piece in tree.pieces:
-            path = protos.AppendChild(piece_name(tree, piece.node))
-            points, counts, indices, uv, normals, inside = piece_surface(
-                tree, piece, root_centre, uv_scale, bevelled(piece.solid, bevel, bevel_detail))
-            mesh = UsdGeom.Mesh.Define(stage, path)
-            mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32)))
-            mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(counts))
-            mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(indices))
-            mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
-            mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(normals))
-            mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
-            lo, hi = points.min(axis=0), points.max(axis=0)
-            mesh.CreateExtentAttr(Vt.Vec3fArray([Gf.Vec3f(*map(float, lo)), Gf.Vec3f(*map(float, hi))]))
-            st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
-                                                          UsdGeom.Tokens.faceVarying)
-            st.Set(Vt.Vec2fArray.FromNumpy(uv))
-            if tree.colour is not None:
-                mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*map(float, tree.colour))]))
-            outside = np.setdiff1d(np.arange(len(counts), dtype=np.int32), inside)
-            sub_api = UsdGeom.Subset
-            s_out = sub_api.CreateGeomSubset(mesh, "outside", UsdGeom.Tokens.face, Vt.IntArray.FromNumpy(outside),
-                                             UsdShade.Tokens.materialBind)
-            s_in = sub_api.CreateGeomSubset(mesh, "inside", UsdGeom.Tokens.face, Vt.IntArray.FromNumpy(inside),
-                                            UsdShade.Tokens.materialBind)
-            UsdGeom.Subset.SetFamilyType(mesh, UsdShade.Tokens.materialBind, UsdGeom.Tokens.partition)
+    # Hundreds of meshes, each with subsets, primvars and a binding: written straight into
+    # the layer with the Sdf API, in one change block, rather than one composed-stage edit --
+    # and one recomposition -- at a time. Measured: 1,270 bevelled pieces, 23 s -> ~2 s.
+    layer = stage.GetEditTarget().GetLayer()
+    names = Sdf.ValueTypeNames
+    varying, uniform = Sdf.VariabilityVarying, Sdf.VariabilityUniform
+
+    def attr(spec, name, type_name, value, variability=varying, custom=False, interpolation=None):
+        a = Sdf.AttributeSpec(spec, name, type_name, variability, custom)
+        a.default = value
+        if interpolation:
+            a.SetInfo("interpolation", interpolation)
+
+    with Sdf.ChangeBlock():
+        for tree in trees:
+            root_centre = tree.pieces[0].centre
             out_m = outside_mat or tree.material
             in_m = inside_mat or out_m
-            for subset, target in ((s_out, out_m), (s_in, in_m)):
-                if target:
-                    # By path: the material need not exist on the stage being written, which
-                    # is a scratch one -- see execute().
-                    sp = subset.GetPrim()
-                    UsdShade.MaterialBindingAPI.Apply(sp)
-                    sp.CreateRelationship(UsdShade.Tokens.materialBinding).SetTargets([target])
-            prim = mesh.GetPrim()
-            for name, typ, value in (
-                ("tree", Sdf.ValueTypeNames.Int, tree.index),
-                ("node", Sdf.ValueTypeNames.Int, piece.node),
-                ("generation", Sdf.ValueTypeNames.Int, piece.generation),
-                ("children", Sdf.ValueTypeNames.IntArray, Vt.IntArray(piece.children)),
-                ("offset", Sdf.ValueTypeNames.Float3, Gf.Vec3f(*map(float, piece.offset))),
-                ("volume", Sdf.ValueTypeNames.Float, float(piece.volume)),
-            ):
-                prim.CreateAttribute(NS + name, typ, custom=True).Set(value)
-            proto_of[(tree.index, piece.node)] = len(targets)
-            targets.append(path)
+            colour = Vt.Vec3fArray([Gf.Vec3f(*map(float, tree.colour))]) if tree.colour is not None else None
+            for piece in tree.pieces:
+                path = protos.AppendChild(piece_name(tree, piece.node))
+                points, counts, indices, uv, normals, inside = piece_surface(
+                    tree, piece, root_centre, uv_scale, bevelled(piece.solid, bevel, bevel_detail))
+                spec = Sdf.CreatePrimInLayer(layer, path)
+                spec.specifier = Sdf.SpecifierDef
+                spec.typeName = "Mesh"
+                attr(spec, "points", names.Point3fArray,
+                     Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32)))
+                attr(spec, "faceVertexCounts", names.IntArray, Vt.IntArray.FromNumpy(counts))
+                attr(spec, "faceVertexIndices", names.IntArray, Vt.IntArray.FromNumpy(indices))
+                attr(spec, "subdivisionScheme", names.Token, UsdGeom.Tokens.none, uniform)
+                attr(spec, "normals", names.Normal3fArray, Vt.Vec3fArray.FromNumpy(normals),
+                     interpolation=UsdGeom.Tokens.faceVarying)
+                lo, hi = points.min(axis=0), points.max(axis=0)
+                attr(spec, "extent", names.Float3Array,
+                     Vt.Vec3fArray([Gf.Vec3f(*map(float, lo)), Gf.Vec3f(*map(float, hi))]))
+                attr(spec, "primvars:st", names.TexCoord2fArray, Vt.Vec2fArray.FromNumpy(uv),
+                     interpolation=UsdGeom.Tokens.faceVarying)
+                if colour is not None:
+                    attr(spec, "primvars:displayColor", names.Color3fArray, colour)
+                attr(spec, "subsetFamily:materialBind:familyType", names.Token, UsdGeom.Tokens.partition, uniform)
+                outside = np.setdiff1d(np.arange(len(counts), dtype=np.int32), inside)
+                for sub_name, faces, target in (("outside", outside, out_m), ("inside", inside, in_m)):
+                    sub = Sdf.PrimSpec(spec, sub_name, Sdf.SpecifierDef, "GeomSubset")
+                    attr(sub, "elementType", names.Token, UsdGeom.Tokens.face, uniform)
+                    attr(sub, "familyName", names.Token, UsdShade.Tokens.materialBind, uniform)
+                    attr(sub, "indices", names.IntArray, Vt.IntArray.FromNumpy(np.asarray(faces, dtype=np.int32)))
+                    if target:
+                        # By path: the material need not exist on the stage being written,
+                        # which is a scratch one -- see execute().
+                        sub.SetInfo("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MaterialBindingAPI"]))
+                        rel = Sdf.RelationshipSpec(sub, UsdShade.Tokens.materialBinding, custom=False)
+                        rel.targetPathList.explicitItems = [Sdf.Path(str(target))]
+                for name, type_name, value in (
+                    ("tree", names.Int, tree.index),
+                    ("node", names.Int, piece.node),
+                    ("generation", names.Int, piece.generation),
+                    ("children", names.IntArray, Vt.IntArray(piece.children)),
+                    ("offset", names.Float3, Gf.Vec3f(*map(float, piece.offset))),
+                    ("volume", names.Float, float(piece.volume)),
+                ):
+                    attr(spec, NS + name, type_name, value, custom=True)
+                proto_of[(tree.index, piece.node)] = len(targets)
+                targets.append(path)
     inst.CreatePrototypesRel().SetTargets(targets)
 
     # Instances: every tree's pieces of the preview generation (0 = whole), pushed out
@@ -614,7 +631,10 @@ def execute(node) -> None:
     key = _cache_key(upstream, node)
     if key == getattr(node, "_fracture_key", None) and layer.GetPrimAtPath(out_path):
         return
-    cached = _CACHE.get(key)
+    digest = key.hex()
+    cached = _CACHE.get(key) or _load_from_disk(node, stage, digest)
+    if cached is not None:
+        _CACHE[key] = cached
     if cached is None:
         trees, problems, sources = build_trees(upstream, node)
         if not trees:
@@ -652,11 +672,57 @@ def execute(node) -> None:
         owned.TransferContent(scratch.GetRootLayer())
         cached = (owned, text)
         _CACHE[key] = cached
+        _save_to_disk(node, stage, owned, text, digest)
         while len(_CACHE) > _CACHE_MAX:
             _CACHE.pop(next(iter(_CACHE)))
     layer.TransferContent(cached[0])
     node._fracture_key = key
     _report(node, cached[1])
+
+
+def _cache_file(node, stage) -> str:
+    """Where this chunk's result is kept on disk: the Cache File param, or -- when empty --
+    ``cache/<scene>_<chunk>.usdc`` beside the saved scene. "" for an unsaved scene."""
+    explicit = node.get_param("cache_file").value.strip() if node.get_param("cache_file") else ""
+    if explicit:
+        return explicit
+    root = stage.GetRootLayer().realPath if stage else ""
+    if not root:
+        return ""
+    scene = Path(root)
+    return str(scene.parent / "cache" / f"{scene.stem}_{node.name}.usdc")
+
+
+def _load_from_disk(node, stage, digest: str):
+    """(layer, readout) of a result made from exactly this input before, or None."""
+    path = _cache_file(node, stage)
+    if not path or not Path(path).is_file():
+        return None
+    try:
+        layer = Sdf.Layer.OpenAsAnonymous(path)
+    except Exception:  # noqa: BLE001 - an unreadable cache is a miss
+        return None
+    data = layer.customLayerData if layer else {}
+    if data.get("fracture:key") != digest:
+        return None
+    return layer, data.get("fracture:readout", "") + "\nloaded from cache"
+
+
+def _save_to_disk(node, stage, layer, readout: str, digest: str) -> None:
+    path = _cache_file(node, stage)
+    if not path:
+        return
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        out = Sdf.Layer.CreateAnonymous(".usdc")
+        out.TransferContent(layer)
+        data = dict(out.customLayerData)
+        data["fracture:key"] = digest
+        data["fracture:readout"] = readout
+        out.customLayerData = data
+        out.Export(path)
+    except Exception as e:  # noqa: BLE001 - a failed cache write loses no work
+        logger.warning("Fracture: could not write the cache %s: %s", path, e)
 
 
 def _sync_visibility(node) -> None:
@@ -755,6 +821,12 @@ def main() -> chunk.Chunk:
     surf.add_param(chunk.LineEdit("inside_material", "Inside Material", flags=labeled,
                                   tooltip="Bound to the fracture surfaces. Empty uses the outside's."))
     chunk_api.add_param(surf)
+    chunk_api.add_param(chunk.LineEdit(
+        "cache_file", "Cache File", flags=labeled,
+        tooltip="Where the result is kept on disk. Empty = cache/<scene>_<this chunk>.usdc beside the "
+        "saved scene. Tagged with a digest of every setting and the source geometry: the same input "
+        "-- after a reload, or a change undone -- loads from here instead of cutting again.",
+    ))
 
     prev = chunk.Group("Preview", "Start State", flags=_GF)
     prev.add_param(chunk.Spinbox("preview_generation", "Start Broken", default_value=0, is_int=True,
