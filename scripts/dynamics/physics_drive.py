@@ -9,15 +9,16 @@ is special to this repo:
   (written beside it as ``<name>_drive``), with an angular ``DriveAPI`` whose
   ``targetVelocity`` is the speed. The RBD Solver turns such a body at exactly that speed,
   with unlimited torque, and bakes the turn onto the prim.
-* **Conveyor** -- PhysX's ``physxSurfaceVelocity:surfaceVelocity``: the surface stays where
-  it is and carries what rests on it at that velocity, the way a belt does.
+* **Conveyor** -- USD ``velocities`` on every point of the part's meshes, while the points
+  stay put: a moving surface, the way Houdini's static collider with point ``v`` is one. It
+  carries what rests on it at that velocity, the way a belt does -- and motion-blurs as one.
 
 A spin is about one of the target's own axes, through its bounds centre or its origin.
 """
 
 from __future__ import annotations
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from usd_chunks import chunk
 
@@ -90,11 +91,18 @@ def apply_drive(stage, prim, mode, *, axis="X", rpm=30.0, pivot="Bounds Centre",
     if mode == MODE_CONVEYOR:
         d = Gf.Vec3d(*direction)
         d = d.GetNormalized() if d.GetLength() > 1e-9 else Gf.Vec3d(0, 0, 1)
-        prim.AddAppliedSchema("PhysxSurfaceVelocityAPI")
-        prim.CreateAttribute("physxSurfaceVelocity:surfaceVelocity", Sdf.ValueTypeNames.Vector3f).Set(
-            Gf.Vec3f(d * float(speed)))
-        prim.CreateAttribute("physxSurfaceVelocity:surfaceVelocityEnabled", Sdf.ValueTypeNames.Bool).Set(True)
-        return f"{prim.GetName()}: conveyor, {speed:g} units/s"
+        # The surface's motion as USD says it: every point of every mesh carries the velocity,
+        # while the points themselves stay put. In the part's own space, like its points.
+        # Direction is in the part's own space; speed is a real speed, so the world velocity
+        # is built first and then carried into each mesh's own (possibly scaled) space.
+        world = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        velocity_world = world.TransformDir(d).GetNormalized() * float(speed)
+        for m in meshes:
+            n = len(UsdGeom.Mesh(m).GetPointsAttr().Get() or [])
+            to_mesh = UsdGeom.Xformable(m).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+            UsdGeom.Mesh(m).CreateVelocitiesAttr().Set([Gf.Vec3f(to_mesh.TransformDir(velocity_world))] * n)
+        plural = "es" if len(meshes) != 1 else ""
+        return f"{prim.GetName()}: moving surface, {speed:g} units/s (velocities on {len(meshes)} mesh{plural})"
     return f"{prim.GetName()}: collider ({len(meshes)} mesh{'es' if len(meshes) != 1 else ''})"
 
 

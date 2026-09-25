@@ -27,6 +27,7 @@ from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 fr = importlib.import_module("scripts.dynamics.fracture")
 rig = importlib.import_module("scripts.dynamics.crusher_rig")
+emit = importlib.import_module("scripts.dynamics.emit")
 rbd = importlib.import_module("scripts.dynamics.rbd_solver")
 brk = rbd._breakage()
 
@@ -140,7 +141,7 @@ def test_rig_is_a_usdphysics_scene_with_the_right_spin_directions():
     rig.author_rig(stage, Sdf.Path("/Rig"), rig.build_parts(), False)
     spins = brk._joint_spins(stage)
     assert len(spins) == 4
-    belt = np.asarray(stage.GetPrimAtPath("/Rig/Belt").GetAttribute(brk.SURFACE_VELOCITY).Get())
+    belt = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Rig/Belt")).GetVelocitiesAttr().Get()[0])
 
     def top_velocity(name):
         _, _pivot, axis, deg_s = spins[Sdf.Path(f"/Rig/{name}")]
@@ -151,8 +152,10 @@ def test_rig_is_a_usdphysics_scene_with_the_right_spin_directions():
     for drum in ("DrumHead", "DrumTail"):
         assert top_velocity(drum) @ belt > 0.0
     for p in stage.Traverse():
-        if p.IsA(UsdGeom.Mesh) and p.GetName() != "Emitter":
+        if p.IsA(UsdGeom.Mesh):
             assert p.HasAPI(UsdPhysics.CollisionAPI), p.GetPath()
+    # The drop zone says it does not collide, the UsdPhysics way.
+    assert UsdPhysics.CollisionAPI(stage.GetPrimAtPath("/Rig/Emitter")).GetCollisionEnabledAttr().Get() is False
 
 
 def _box(stage, path, centre, size):
@@ -190,6 +193,22 @@ def test_a_surface_velocity_carries_what_rests_on_it():
     res = brk.simulate(job)
     x = res["positions"][:, 0, 0]
     assert x[-1] - x[12] > 30.0  # ~60/s for 1.5 s, minus the time to grip
+
+
+@needs_mujoco
+@needs_manifold
+def test_point_velocities_on_a_static_mesh_make_a_moving_surface():
+    """Houdini's static collider with point v, in USD: a mesh that stays put while its points
+    carry velocities."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    belt = _box(stage, "/World/Belt", (0.0, -2.0, 0.0), (400.0, 4.0, 100.0))
+    UsdGeom.Mesh(belt).CreateVelocitiesAttr().Set([Gf.Vec3f(0.0, 0.0, -60.0)] * 8)
+    job, world = _one_rock_job(stage, ["/World"])
+    assert [kind for kind, name, _ in world["found"] if name == "Belt"] == ["moving surface"]
+    res = brk.simulate(job)
+    z = res["positions"][:, 0, 2]
+    assert z[12] - z[-1] > 30.0
 
 
 @needs_mujoco
@@ -250,20 +269,22 @@ def crushed():
     rig.author_rig(stage, Sdf.Path("/Rig"), rig.build_parts(), False)
     fr.author(stage, Sdf.Path("/Fractured"), _rock_trees(), uv_scale=0.05)
     frac = brk.read_fracture(stage, stage.GetPrimAtPath("/Fractured"))
-    world = brk.gather_world(stage, [stage.GetPrimAtPath("/Rig")], 60, 1, 24.0, 0.0, 3.0,
-                             exclude=["/Rig/Emitter"])
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/Rig")], 60, 1, 24.0, 0.0, 3.0)
+    # The emitter box switches its own collision off, so it is not a collider.
     assert not any(name == "Emitter" for _, name, _ in world["found"])
     ev = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Rig/Emitter")).GetPointsAttr().Get())
-    box = (ev.min(axis=0), ev.max(axis=0))
+    roots = [k for k, p in frac["pieces"].items() if p["generation"] == 0]
+    plan = emit.plan(3, 6.0, 1, 24.0, ev.min(axis=0), ev.max(axis=0), {i: 8.0 for i in range(len(roots))},
+                     np.arange(len(roots)), np.random.default_rng(1), (0.0, -150.0, 0.0), 0.0, 1.0)
+    starts = [dict(key=roots[plan["proto"][i]], pos=plan["pos"][i], quat=plan["orient"][i],
+                   lin=plan["vel"][i], ang=plan["ang"][i], time=(plan["frames"][i] - 1) / 24.0)
+              for i in range(3)]
 
     def job(strength):
         return dict(
             up_idx=1, gravity=-981.0, fps=24.0, frames=60, substeps=8, friction=0.6, restitution=0.1,
             density=1.0, statics=world["statics"], belts=world["belts"], drivers=world["drivers"],
-            pieces=frac["pieces"],
-            emitter=dict(lo=box[0], hi=box[1], count=3, rate=6.0,
-                         velocity=np.array([0.0, -150.0, 0.0]), spin=1.0,
-                         roots=[k for k, p in frac["pieces"].items() if p["generation"] == 0]),
+            pieces=frac["pieces"], starts=starts,
             breakage=dict(strength=strength, variation=0.2, cooldown=0.04, kick=10.0), seed=1,
         )
 
@@ -367,24 +388,39 @@ def test_fracture_rig_and_rbd_solver_crush_rock(scene):
     frac.get_param("generations").value = 2
     frac.get_param("rock_origin").value = (300.0, 0.0, 0.0)
     machine = mk("crusher_rig")
+    stream = mk("emit")
     solver = mk("rbd_solver")
+    # Wired as in a graph: a later chunk's opinions on the same prim beat an earlier one's.
+    machine.add_dependency(frac)
+    stream.add_dependency(machine)
+    solver.add_dependency(stream)
     frac.execute()
     machine.execute()
+    stream.get_param("target").value = "/Fractured"
+    stream.get_param("region").value = "/CrusherRig/Emitter"
+    stream.get_param("count").value = 2
+    stream.get_param("rate").value = 8.0
+    stream.execute()
     qapp.processEvents()
+    assert "2 instances" in stream.get_param("readout").value
 
     solver.get_param("prim_path").value = "/Fractured"
     solver.get_param("collision_path").value = "/CrusherRig"
-    solver.get_param("emitter_prim").value = "/CrusherRig/Emitter"
-    solver.get_param("drop_count").value = 2
     solver.get_param("frame_count").value = 30
+    # Cook the chain the way the graph does, which also ranks the layers: the chunk nearest
+    # the end of the chain wins -- Emit's stream over Fracture's laid-out rocks.
+    from usd_chunks import chunk_stage
+
+    chunk_stage.recook_for_view(stage, solver.get_scene(), solver.get_context(), solver, _synthetic_tail=True)
+    qapp.processEvents()
     solver.get_param("substeps").value = 6
     rbd._run(solver, None, None)
     qapp.processEvents()
 
     inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured"))
     assert inst.GetPositionsAttr().GetNumTimeSamples() == 30
-    # Dropped from the emitter (a guide prim), not started where the 3 laid-out rocks are:
-    # 2 drops of a 2-generation tree is 2 x 7 slots.
+    # The Emit chunk's 2 instances, not the 3 rocks Fracture laid out: 2 x a 2-generation tree
+    # of 7 pieces.
     assert len(inst.GetProtoIndicesAttr().Get()) == 14
     assert "bodies" in solver.get_param("readout").value
     # The bake's layer must win over the rig's, or the rollers' spin hides under its order.
@@ -452,7 +488,7 @@ def test_physics_drive_makes_any_prim_spin_or_carry(scene):
     world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 12, 1, 24.0, 0.0, 3.0)
     found = {name: (kind, note) for kind, name, note in world["found"]}
     assert found["Gear"][0] == "spinning" and "20 rpm" in found["Gear"][1]
-    assert found["Belt"] == ("conveyor", "50 units/s")
+    assert found["Belt"] == ("moving surface", "50 units/s, velocities")
     # Spinning about the gear's own bounds centre, not the world origin.
     assert np.allclose(world["drivers"][0]["pos"][0], (10.0, 5.0, 0.0))
     assert "spins 20 rpm" in spin.get_param("readout").value
@@ -494,3 +530,37 @@ def test_chunky_cuts_leave_chunkier_pieces():
         return np.mean([fr.chunkiness(p.solid) for p in pieces if p.generation == 4])
 
     assert mean_chunkiness(8) > mean_chunkiness(1) + 0.05
+
+
+
+def test_emit_writes_a_stream_onto_the_instancer(scene):
+    """What, where, when and how fast -- all instancer data, previewed by invisibleIds."""
+    qapp, stage, mk = scene
+    rig.author_rig(stage, Sdf.Path("/Rig"), rig.build_parts(), False)
+    fr.author(stage, Sdf.Path("/Rocks"), _rock_trees(count=2, generations=1), uv_scale=0.05)
+    stream = mk("emit")
+    stream.get_param("target").value = "/Rocks"
+    stream.get_param("region").value = "/Rig/Emitter"
+    stream.get_param("count").value = 12
+    stream.get_param("rate").value = 6.0
+    stream.get_param("start_frame").value = 5
+    stream.get_param("velocity").value = (0.0, -80.0, 0.0)
+    stream.execute()
+    qapp.processEvents()
+
+    inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Rocks"))
+    assert len(inst.GetProtoIndicesAttr().Get()) == 12
+    # Only whole rocks, never a piece: those are what the instancer instanced.
+    whole = {i for i, t in enumerate(inst.GetPrototypesRel().GetTargets()) if t.name.endswith("_n0")}
+    assert set(inst.GetProtoIndicesAttr().Get()) <= whole
+    frames = list(UsdGeom.PrimvarsAPI(inst).GetPrimvar("rbd:emitFrame").Get())
+    assert frames[0] == 5 and frames == sorted(frames) and frames[-1] == 5 + int(11 * 24 / 6)
+    v = np.asarray(inst.GetVelocitiesAttr().Get())
+    assert np.allclose(v.mean(axis=0), (0.0, -80.0, 0.0), atol=20.0)
+    # Everything inside the region.
+    ev = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Rig/Emitter")).GetPointsAttr().Get())
+    p = np.asarray(inst.GetPositionsAttr().Get())
+    assert (p >= ev.min(axis=0) - 1e-3).all() and (p <= ev.max(axis=0) + 1e-3).all()
+    # The preview: nothing shows before its frame.
+    assert len(inst.GetInvisibleIdsAttr().Get(5)) == 11
+    assert len(inst.GetInvisibleIdsAttr().Get(frames[-1])) == 0

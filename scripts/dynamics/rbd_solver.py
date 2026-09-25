@@ -3003,7 +3003,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         _report(_chunk, "already simulating -- wait, or press Cancel")
         return True
 
-    is_f, is_i, is_s = chunk.is_param_t(float), chunk.is_param_t(int), chunk.is_param_t(str)
+    is_f, is_i = chunk.is_param_t(float), chunk.is_param_t(int)
     frame_count = max(2, _chunk.get_param("frame_count", is_i).value)
     fps = max(1.0, _chunk.get_param("fps", is_f).value)
     start_frame = _chunk.get_param("start_frame", is_i).value
@@ -3014,22 +3014,32 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     radius = min(float(_np.linalg.norm(p["points"], axis=1).max()) for p in pieces.values() if len(p["points"]))
 
     colliders = _parse_collision_prims(collision_path_value, upstream)
-    emitter_path = _chunk.get_param("emitter_prim", is_s).value.strip()
     world = brk.gather_world(upstream, colliders, frame_count, start_frame, fps,
-                             _chunk.get_param("collider_thickness", is_f).value, radius,
-                             exclude=[emitter_path])
+                             _chunk.get_param("collider_thickness", is_f).value, radius)
 
-    # Where the bodies start: the instancer's own instances -- unless there is an emitter to
-    # drop them from, when the instances are only the shapes to pick from.
+    # Every instance is a body, read entirely off the instancer: where it is, how it moves
+    # (USD's own velocities / angularVelocities), and -- if something like the Emit chunk
+    # wrote one -- the frame it enters (primvars:rbd:emitFrame). The Initial State params
+    # stand in for instances that carry no velocities of their own.
     inst = UsdGeom.PointInstancer(target)
     xf = _np.array(UsdGeom.Xformable(target).ComputeLocalToWorldTransform(start_frame), dtype=_np.float64)
     rot = Gf.Matrix4d(xf.tolist()).RemoveScaleShear().ExtractRotationQuat()
-    positions = _np.asarray(inst.GetPositionsAttr().Get(start_frame) or [], dtype=_np.float64).reshape(-1, 3)
+
+    def per_instance(attr, width=3):
+        v = attr.Get(start_frame) if attr else None
+        return _np.asarray(v, dtype=_np.float64).reshape(-1, width) if v is not None and len(v) else None
+
+    positions = per_instance(inst.GetPositionsAttr())
+    positions = positions if positions is not None else _np.zeros((0, 3))
     orients = inst.GetOrientationsAttr().Get(start_frame) or []
     indices = list(inst.GetProtoIndicesAttr().Get(start_frame) or [])
+    velocities = per_instance(inst.GetVelocitiesAttr())
+    spins = per_instance(inst.GetAngularVelocitiesAttr())
+    frames_pv = UsdGeom.PrimvarsAPI(target).GetPrimvar("rbd:emitFrame")
+    emit_frames = _np.asarray(frames_pv.Get(), dtype=_np.float64) if frames_pv and frames_pv.HasValue() else None
     keys = [frac["proto_key"][i] if 0 <= i < len(frac["proto_key"]) else None for i in indices]
-    lin = _np.asarray(_vec3(_chunk, "initial_velocity"), dtype=_np.float64)
-    ang = _np.asarray(_vec3(_chunk, "angular_velocity"), dtype=_np.float64)
+    lin_default = _np.asarray(_vec3(_chunk, "initial_velocity"), dtype=_np.float64)
+    ang_default = _np.asarray(_vec3(_chunk, "angular_velocity"), dtype=_np.float64)
     starts = []
     for i, key in enumerate(keys):
         if key is None or i >= len(positions):
@@ -3037,39 +3047,15 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         q = Gf.Quatd(orients[i]) if i < len(orients) else Gf.Quatd(1.0)
         wq = (rot * q).GetNormalized()
         wi = wq.GetImaginary()
+        lin = velocities[i] @ xf[:3, :3] if velocities is not None and i < len(velocities) else lin_default
+        ang = (_np.radians(spins[i]) @ xf[:3, :3] if spins is not None and i < len(spins) else ang_default)
+        when = 0.0
+        if emit_frames is not None and i < len(emit_frames):
+            when = max(0.0, (emit_frames[i] - start_frame) / fps)
         starts.append(dict(key=key, pos=positions[i] @ xf[:3, :3] + xf[3, :3],
-                           quat=_np.array([wq.GetReal(), wi[0], wi[1], wi[2]]), lin=lin, ang=ang))
+                           quat=_np.array([wq.GetReal(), wi[0], wi[1], wi[2]]), lin=lin, ang=ang, time=when))
     skipped = len(indices) - len(starts)
-
-    emitter = None
-    box = None
-    if emitter_path:
-        ep = upstream.GetPrimAtPath(emitter_path)
-        if ep and ep.IsValid():
-            # Every purpose: a drop zone is typically a guide, which a default-purpose bound
-            # leaves out -- and an empty box silently meant "no emitter".
-            purposes = [UsdGeom.Tokens.default_, UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy,
-                        UsdGeom.Tokens.render]
-            bounds = UsdGeom.BBoxCache(start_frame, purposes).ComputeWorldBound(ep).ComputeAlignedRange()
-            if not bounds.IsEmpty():
-                box = (_np.array(bounds.GetMin()), _np.array(bounds.GetMax()))
-        if box is None:
-            _report(_chunk, f"Emitter Prim {emitter_path} has no geometry to drop from")
-            return True
-    if box is not None and _chunk.get_param("drop_count", is_i).value > 0:
-        pool = sorted({k for k in keys if k is not None}) or sorted(
-            k for k, p in pieces.items() if p["generation"] == 0
-        )
-        emitter = dict(
-            lo=box[0], hi=box[1], roots=pool,
-            count=_chunk.get_param("drop_count", is_i).value,
-            rate=max(1e-3, _chunk.get_param("drop_rate", is_f).value),
-            start=max(0.0, _chunk.get_param("drop_start", is_f).value),
-            velocity=-up * _chunk.get_param("drop_speed", is_f).value + lin,
-            spin=_chunk.get_param("drop_spin", is_f).value,
-        )
-        starts = []
-    if not starts and emitter is None:
+    if not starts:
         _report(_chunk, "nothing to simulate -- the instancer has no fractured instances")
         return True
 
@@ -3086,13 +3072,11 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         lin_damping=_chunk.get_param("lin_damping", is_f).value,
         ang_damping=_chunk.get_param("ang_damping", is_f).value,
         floor_drop=_chunk.get_param("floor_drop", is_f).value,
-        belt_grip_time=max(1e-3, _chunk.get_param("belt_grip", is_f).value),
         statics=world["statics"],
         belts=world["belts"],
         drivers=world["drivers"],
         pieces=pieces,
         starts=starts,
-        emitter=emitter,
         breakage=dict(
             strength=_chunk.get_param("strength", is_f).value,
             variation=_chunk.get_param("strength_variation", is_f).value,
@@ -3107,7 +3091,9 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     proto_index = frac["proto"]
     spins = world["spins"]
     note = f" · {skipped} unfractured instances left out" if skipped else ""
-    note += "\n" + brk.describe_world(world, emitter_path if emitter else "")
+    if emit_frames is not None:
+        note += f"\nemitted over frames {int(emit_frames.min())}-{int(emit_frames.max())} (primvars:rbd:emitFrame)"
+    note += "\n" + brk.describe_world(world)
 
     def finish(result):
         if _chunk.get_edit_context() is None:
@@ -3635,30 +3621,6 @@ def main() -> chunk.Chunk:
                                     tooltip="Speed the pieces spring apart with, scene units/s."))
     chunk_api.add_param(brk_grp)
 
-    # ------------------------------------------------------------------
-    # Emitter -- drop bodies over time instead of starting them where they are.
-    emit_grp = _section("Emitter", "Emitter")
-    emit_grp.add_param(chunk.LineEdit(
-        "emitter_prim", "Emitter Prim", flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="A box to drop bodies from; it never collides, even under Collider Prims. With an "
-        "emitter, the target's instances are the shapes to pick from, not where things start. "
-        "Empty = bodies start where the instances are.\nBreakable (fractured) targets only.",
-    ))
-    emit_grp.add_param(chunk.Spinbox("drop_count", "Count", default_value=30, is_int=True,
-                                     tooltip="How many bodies are dropped. 0 turns the emitter off."))
-    emit_grp.add_param(chunk.Spinbox("drop_rate", "Rate", default_value=4.0, tooltip="Bodies per second."))
-    emit_grp.add_param(chunk.Spinbox("drop_start", "Start", default_value=0.0,
-                                     tooltip="Seconds into the simulation before the first drop."))
-    emit_grp.add_param(chunk.Spinbox("drop_speed", "Drop Speed", default_value=100.0,
-                                     tooltip="Downward speed a body is dropped with, scene units/s."))
-    emit_grp.add_param(chunk.Spinbox("drop_spin", "Tumble", default_value=1.0,
-                                     tooltip="Random spin a body is dropped with, radians/s."))
-    emit_grp.add_param(chunk.Spinbox("belt_grip", "Belt Grip Time", default_value=0.08,
-                                     tooltip="Seconds for a body on a conveyor to come up to belt speed. A conveyor is "
-                                     "any collider with PhysX's physxSurfaceVelocity:surfaceVelocity: it stays "
-                                     "put, is nearly frictionless, and pushes what rests on it towards that "
-                                     "velocity, up to friction x contact force -- the grip a moving belt has."))
-    chunk_api.add_param(emit_grp)
 
     # ------------------------------------------------------------------
     # Simulation -- how the solve itself is run. Last: set once, rarely touched.

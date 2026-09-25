@@ -266,20 +266,16 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     pieces: dict = job["pieces"]
     breakage = job["breakage"]
     max_gen = int(breakage.get("max_generation", 99))
-    emitter = job.get("emitter")
 
-    # ---- groups: each start instance or drop is one body's whole subtree of slots ----
-    groups = []  # (start key, pos, quat, lin, ang_world, drop_time or None)
+    # ---- groups: each start is one body's whole subtree of slots ----
+    # (key, pos, quat, linear velocity, angular velocity -- both world --, start time in
+    # seconds from the simulation's first frame). A start at 0 is placed as given; a later
+    # one is emitted then -- the instancer said when -- unless something is still in the
+    # way, in which case it waits a frame rather than appear inside another body.
+    groups = []
     for st in job.get("starts", ()):
         groups.append((tuple(st["key"]), st["pos"], st["quat"], st.get("lin", np.zeros(3)),
-                       st.get("ang", np.zeros(3)), None))
-    if emitter:
-        roots = [tuple(k) for k in emitter["roots"]]
-        count = max(0, int(emitter["count"]))
-        rate = max(1e-6, float(emitter["rate"]))
-        for e in range(count):
-            key = roots[int(rng.integers(len(roots)))]
-            groups.append((key, None, None, None, None, float(emitter.get("start", 0.0)) + e / rate))
+                       st.get("ang", np.zeros(3)), float(st.get("time", 0.0))))
 
     slot_key, slot_group = [], []
     slot_of: dict[tuple, int] = {}
@@ -427,13 +423,24 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     drv_qadr = [int(model.jnt_qposadr[model.body_jntadr[b]]) for b in drv_body]
     drv_dadr = [int(model.jnt_dofadr[model.body_jntadr[b]]) for b in drv_body]
     geom_belt = np.full(model.ngeom, -1, dtype=np.int64)
-    belt_vel = np.zeros((max(1, len(belt_bodies)), 3))
+    # Per belt: (vertex positions, per-vertex surface velocity). A contact takes the velocity
+    # of the belt's nearest vertex, so a belt whose velocities vary over it -- round a drum,
+    # a turntable -- carries each point the way it moves there.
+    belt_field = []
     for i, name in enumerate(belt_bodies):
         b = _bid(name)
         geom_belt[model.body_geomadr[b]: model.body_geomadr[b] + model.body_geomnum[b]] = i
-        belt_vel[i] = job["belts"][i]["velocity"]
+        vel = np.asarray(job["belts"][i]["velocity"], dtype=np.float64).reshape(-1, 3)
+        pts = np.asarray(job["belts"][i]["verts"], dtype=np.float64)
+        if len(vel) != len(pts) or np.ptp(vel, axis=0).max() < 1e-9:
+            belt_field.append((None, vel[:1]))
+        else:
+            belt_field.append((pts, vel))
     has_belts = bool(belt_bodies)
-    grip_tau = max(float(job.get("belt_grip_time", 0.08)), sub_dt)
+    # A belt pulls whatever it touches towards its speed as hard as friction allows -- the
+    # speed-up is over two substeps, i.e. as fast as the step can resolve, and the friction
+    # cap is what makes it a grip rather than a push.
+    grip_tau = 2.0 * sub_dt
 
     # ---- breakage thresholds ----
     slot_mass = model.body_mass[slot_body] if n_slots else np.zeros(0)
@@ -505,34 +512,28 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
         alive[s] = True
         born[s] = t
 
-    # Pending starts: instances at t=0, drops at their time.
-    pending = sorted(range(len(groups)), key=lambda g: groups[g][5] or 0.0)
-    if emitter:
-        e_lo = np.asarray(emitter["lo"], dtype=np.float64)
-        e_hi = np.asarray(emitter["hi"], dtype=np.float64)
-        drop_vel = np.asarray(emitter.get("velocity", (0.0, 0.0, 0.0)), dtype=np.float64)
-        spin = float(emitter.get("spin", 1.0))
+    pending = sorted(range(len(groups)), key=lambda g: groups[g][5])
+    delayed = 0
 
     def _start(gi, t) -> bool:
+        nonlocal delayed
         key, pos, quat, lin, ang, when = groups[gi]
         s = slot_of.get((gi, key))
         if s is None:
             return True
-        if when is None:
-            q = np.asarray(quat, dtype=np.float64)
-            _place(s, np.asarray(pos, dtype=np.float64), q, np.asarray(lin, dtype=np.float64),
-                   _quat_to_mat(q).T @ np.asarray(ang, dtype=np.float64), t)
-            return True
-        r_new = radius[key]
-        live = np.flatnonzero(alive)
-        others = data.xpos[slot_body[live]] if len(live) else np.zeros((0, 3))
-        other_r = np.array([radius[slot_key[k]] for k in live])
-        for _ in range(12):
-            p = e_lo + (e_hi - e_lo) * rng.random(3)
-            if not len(live) or np.all(np.linalg.norm(others - p, axis=1) > other_r + r_new):
-                _place(s, p, _random_quat(rng), drop_vel, rng.normal(size=3) * spin, t)
-                return True
-        return False  # no room yet: try again next frame rather than spawn inside a body
+        pos = np.asarray(pos, dtype=np.float64)
+        if when > 0.0:
+            live = np.flatnonzero(alive)
+            if len(live):
+                others = data.xpos[slot_body[live]]
+                other_r = np.array([radius[slot_key[k]] for k in live])
+                if np.any(np.linalg.norm(others - pos, axis=1) < other_r + radius[key]):
+                    delayed += 1
+                    return False
+        q = np.asarray(quat, dtype=np.float64)
+        _place(s, pos, q, np.asarray(lin, dtype=np.float64),
+               _quat_to_mat(q).T @ np.asarray(ang, dtype=np.float64), t)
+        return True
 
     breaks = []
     bad_qacc = _mj.mjtWarning.mjWARN_BADQACC
@@ -616,10 +617,14 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     for f in range(frames):
         if cancel is not None and cancel():
             raise RuntimeError("cancelled")
-        while pending and (groups[pending[0]][5] or 0.0) <= t + 1e-9:
-            if not _start(pending[0], t):
-                break
-            pending.pop(0)
+        # Every start that is due, in order; one still blocked keeps its place in the queue
+        # without holding back the ones behind it.
+        waiting = []
+        while pending and groups[pending[0]][5] <= t + 1e-9:
+            gi = pending.pop(0)
+            if not _start(gi, t):
+                waiting.append(gi)
+        pending[:0] = waiting
         if n_slots:
             _mj.mj_kinematics(model, data)
             positions[f] = data.xpos[slot_body]
@@ -630,7 +635,7 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
             if drivers:
                 _drive(f, sub / substeps)
             if has_belts:
-                _apply_belts(model, data, geom_belt, belt_vel, body_slot, grip_tau, alive, friction)
+                _apply_belts(model, data, geom_belt, belt_field, body_slot, grip_tau, alive, friction)
             saved_qpos = data.qpos.copy()
             saved_qvel = data.qvel.copy()
             warned = data.warning[bad_qacc].number
@@ -678,6 +683,7 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
             slots=n_slots,
             breaks=len(breaks),
             recovered=recovered,
+            delayed_starts=delayed,
             pieces_by_generation=by_gen.tolist(),
             build_seconds=build_seconds,
             sim_seconds=time.perf_counter() - started,
@@ -685,13 +691,15 @@ def simulate(job: dict, progress=None, cancel=None) -> dict:
     )
 
 
-def _apply_belts(model, data, geom_belt, belt_vel, body_slot, grip_tau, alive, friction) -> None:
-    """Drag bodies resting on a belt towards its surface velocity.
+def _apply_belts(model, data, geom_belt, belt_field, body_slot, grip_tau, alive, friction) -> None:
+    """Drag bodies resting on a moving surface towards the surface's velocity.
 
-    MuJoCo has no moving surfaces, and a belt modelled as a moving body would slide off its
-    own rollers. So the belt stays put, nearly frictionless, and every body touching it is
-    pushed -- along the contact plane only -- towards the belt's speed over *grip_tau*,
-    capped at friction x the contact's normal force: all the grip a real belt has.
+    A moving surface is geometry that stays put while its points say they move -- USD
+    ``velocities`` on a static mesh, Houdini's point ``v`` on a static collider. MuJoCo has
+    no such thing, and a belt modelled as a moving body would slide off its own rollers. So
+    the surface stays put, nearly frictionless, and every body touching it is pushed --
+    along the contact plane only -- towards the surface velocity where it touches, capped at
+    friction x the contact's normal force: exactly the grip friction gives.
     """
     data.xfrc_applied[:] = 0.0
     ncon = data.ncon
@@ -715,6 +723,7 @@ def _apply_belts(model, data, geom_belt, belt_vel, body_slot, grip_tau, alive, f
         return
     idx, belt, bodies = idx[keep], belt[keep], bodies[keep]
     normals = con.frame[:ncon][idx, :3]
+    points = con.pos[:ncon][idx]
     adr = con.efc_address[:ncon][idx]
     normal_force = np.where(adr >= 0, data.efc_force[np.maximum(adr, 0)], 0.0)
     for b in np.unique(bodies):
@@ -722,7 +731,12 @@ def _apply_belts(model, data, geom_belt, belt_vel, body_slot, grip_tau, alive, f
         k = rows[0]
         da = model.jnt_dofadr[model.body_jntadr[b]]
         n = normals[k]
-        dv = belt_vel[belt[k]] - data.qvel[da:da + 3]
+        pts, vel = belt_field[belt[k]]
+        if pts is None:
+            surface = vel[0]
+        else:
+            surface = vel[int(np.argmin(np.einsum("ij,ij->i", pts - points[k], pts - points[k])))]
+        dv = surface - data.qvel[da:da + 3]
         dv = dv - n * (dv @ n)
         force = model.body_mass[b] * dv / grip_tau
         cap = friction * float(normal_force[rows].sum())
@@ -943,6 +957,18 @@ def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: floa
                 world["found"].append(("animated", p.GetName(), "follows its transform"))
                 continue
 
+            # A moving surface, said the USD way: a mesh that stays put while its points carry
+            # velocities -- Houdini's static collider with point v.
+            pv = UsdGeom.Mesh(p).GetVelocitiesAttr().Get(start_frame)
+            if pv is not None and len(pv) == len(verts):
+                pv = np.asarray(pv, dtype=np.float64)
+                if np.abs(pv).max() > 1e-9:
+                    m = np.array(xfc.GetLocalToWorldTransform(p), dtype=np.float64)
+                    entry["velocity"] = pv @ m[:3, :3]
+                    world["belts"].append(entry)
+                    speed = float(np.linalg.norm(entry["velocity"], axis=1).max())
+                    world["found"].append(("moving surface", p.GetName(), f"{speed:.0f} units/s, velocities"))
+                    continue
             owner, vel = attr_up(p, SURFACE_VELOCITY, root)
             if owner is not None:
                 on = owner.GetAttribute(SURFACE_VELOCITY_ON)
@@ -950,8 +976,8 @@ def gather_world(stage, collider_prims, frames: int, start_frame: int, fps: floa
                     m = xfc.GetLocalToWorldTransform(owner)
                     entry["velocity"] = np.array(m.TransformDir(Gf.Vec3d(*vel)))
                     world["belts"].append(entry)
-                    world["found"].append(("conveyor", p.GetName(),
-                                           f"{float(np.linalg.norm(entry['velocity'])):.0f} units/s"))
+                    world["found"].append(("moving surface", p.GetName(),
+                                           f"{float(np.linalg.norm(entry['velocity'])):.0f} units/s, PhysX surface velocity"))
                     continue
             world["statics"].append(entry)
             world["found"].append(("static", p.GetName(), ""))
@@ -1159,7 +1185,7 @@ def describe_world(world, emitter_path="") -> str:
     for kind, name, note in world["found"]:
         kinds.setdefault(kind, []).append(f"{name} ({note})" if note else name)
     lines = []
-    for kind in ("spinning", "animated", "conveyor"):
+    for kind in ("spinning", "animated", "moving surface"):
         if kind in kinds:
             lines.append(f"{kind}: " + ", ".join(kinds[kind]))
     if "static" in kinds:
