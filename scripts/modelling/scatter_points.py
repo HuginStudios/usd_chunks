@@ -347,6 +347,137 @@ class _PoissonGrid:
         self._grid.setdefault(self._key(pt), []).append(pt)
 
 
+class _AvoidSet:
+    """Points to keep away from -- a curve's samples, another scatter -- on a spatial hash."""
+
+    def __init__(self, points, distance):
+        self._dist = max(distance, 1e-9)
+        self._cell = self._dist
+        self._grid: dict = {}
+        for p in np.asarray(points, dtype=np.float64).reshape(-1, 3):
+            self._grid.setdefault(self._key(p), []).append(p)
+
+    def _key(self, pt):
+        c = self._cell
+        return (math.floor(pt[0] / c), math.floor(pt[1] / c), math.floor(pt[2] / c))
+
+    def near(self, pt, extra=0.0):
+        reach = self._dist + max(extra, 0.0)
+        r = int(math.ceil(reach / self._cell))
+        kx, ky, kz = self._key(pt)
+        lim = reach * reach
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                for dz in range(-r, r + 1):
+                    for ex in self._grid.get((kx + dx, ky + dy, kz + dz), ()):
+                        if (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2 < lim:
+                            return True
+        return False
+
+
+def _avoid_points(stage, paths, step):
+    """World-space points of every prim under *paths*; curves are sampled every *step* along."""
+    out = []
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for path in paths:
+        root = stage.GetPrimAtPath(path) if path else None
+        if not root:
+            continue
+        for prim in Usd.PrimRange(root):
+            if prim.IsA(UsdGeom.PointInstancer):
+                attr = UsdGeom.PointInstancer(prim).GetPositionsAttr()
+            elif prim.IsA(UsdGeom.PointBased):
+                attr = UsdGeom.PointBased(prim).GetPointsAttr()
+            else:
+                continue
+            value = attr.Get()
+            if value is None and attr.GetNumTimeSamples():
+                value = attr.Get(attr.GetTimeSamples()[-1])
+            if not value:
+                continue
+            pts = np.asarray(value, dtype=np.float64).reshape(-1, 3)
+            if prim.IsA(UsdGeom.Curves):
+                counts = UsdGeom.Curves(prim).GetCurveVertexCountsAttr().Get() or [len(pts)]
+                dense, k = [], 0
+                for c in counts:
+                    seg = pts[k:k + c]
+                    k += c
+                    dense.append(seg[:1])
+                    for a, b in zip(seg[:-1], seg[1:]):
+                        n = max(1, int(math.ceil(float(np.linalg.norm(b - a)) / max(step, 1e-9))))
+                        t = (np.arange(1, n + 1) / n)[:, None]
+                        dense.append(a + (b - a) * t)
+                pts = np.concatenate(dense) if dense else pts
+            m = np.array(cache.GetLocalToWorldTransform(prim), dtype=np.float64)
+            out.append(pts @ m[:3, :3] + m[3, :3])
+    return np.concatenate(out) if out else np.zeros((0, 3))
+
+
+def _draw_scale(rng, lo, hi, bias):
+    """A random scale in lo..hi; *bias* above 1 favours the small end (1 = uniform)."""
+    u = rng.random()
+    return lo + (hi - lo) * (u ** bias if bias != 1.0 else u)
+
+
+def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi, bias,
+                   mask=None, avoid=None, vary=True):
+    """Like _scatter_on_triangles, but each candidate draws its scale first and keeps
+    Spacing x scale / Scale Max from the others -- small instances pack in between big ones,
+    and none overlap. Returns positions, normals and the scale each one drew."""
+    if not len(triangles):
+        return [], [], []
+    areas = triangles.areas()
+    total_area = float(areas.sum())
+    if total_area < 1e-10:
+        return [], [], []
+    cdf = (np.cumsum(areas) / total_area).tolist()
+    v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
+    # Radius per unit of scale -- or, with *vary* off, every instance keeps plain Spacing.
+    unit = spacing / max(scale_hi, 1e-9) * 0.5 if vary else 0.0
+    cell = max(spacing, 1e-6)
+    grid: dict = {}
+    positions, normals, scales = [], [], []
+    attempts, max_attempts = 0, count * 100
+    while len(positions) < count and attempts < max_attempts:
+        attempts += 1
+        tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
+        u, v = rng.random(), rng.random()
+        if u + v > 1.0:
+            u, v = 1.0 - u, 1.0 - v
+        w = 1.0 - u - v
+        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
+        pt = (w * v0[0] + u * v1[0] + v * v2[0], w * v0[1] + u * v1[1] + v * v2[1],
+              w * v0[2] + u * v1[2] + v * v2[2])
+        s = _draw_scale(scale_rng, scale_lo, scale_hi, bias)
+        r = unit * s if vary else spacing * 0.5
+        if avoid is not None and avoid.near(pt, r):
+            continue
+        key = (math.floor(pt[0] / cell), math.floor(pt[1] / cell), math.floor(pt[2] / cell))
+        clash = False
+        if r > 0:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        for ex, er in grid.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
+                            if (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2 < (r + er) ** 2:
+                                clash = True
+                                break
+                        if clash:
+                            break
+                    if clash:
+                        break
+        if clash:
+            continue
+        n = Gf.Vec3f(*normals_all[tri_idx])
+        if mask is not None and rng.random() > mask(Gf.Vec3f(*pt), n):
+            continue
+        grid.setdefault(key, []).append((pt, r))
+        positions.append(Gf.Vec3f(*pt))
+        normals.append(n)
+        scales.append(s)
+    return positions, normals, scales
+
+
 class _TriangleBuckets:
     """Triangles bucketed by their extent in two axes, for casting rays along the third.
 
@@ -1421,6 +1552,10 @@ def execute(node):
     scale_max = node.get_param("scale_max", is_f).value
     if scale_max < scale_min:
         scale_min, scale_max = scale_max, scale_min
+    scale_bias = max(0.05, node.get_param("scale_bias", is_f).value)
+    size_spacing = node.get_param("size_spacing", is_b).value
+    avoid_paths = [p.strip() for p in node.get_param("avoid_prims", is_s).value.split(",") if p.strip()]
+    avoid_distance = max(0.0, node.get_param("avoid_distance", is_f).value)
     normal_offset = node.get_param("normal_offset", is_f).value
     orient_mode = node.get_param("orient_mode", is_s).value
     sit_on_surface = node.get_param("sit_on_surface", is_b).value
@@ -1480,6 +1615,7 @@ def execute(node):
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
     placed, placed_normals = _painted_points(scratch_stage, points_input)
+    sizes = None  # scales the sampler already drew, when spacing follows scale
 
     with Usd.EditContext(stage, layer):
         instancer = UsdGeom.PointInstancer.Define(stage, inst_path)
@@ -1569,7 +1705,17 @@ def execute(node):
             # no wasted samples). The paint mask, being per-point, will instead be
             # passed as the `mask=` hook above.
             surf_tris = triangles.select(triangles.slope_mask(world_up, max_slope))
-            if len(surf_tris):
+            avoid = None
+            if avoid_paths and avoid_distance > 0:
+                avoid = _AvoidSet(_avoid_points(scratch_stage, avoid_paths, avoid_distance * 0.5), avoid_distance)
+            if len(surf_tris) and (size_spacing or avoid is not None):
+                # Spacing Follows Scale / Keep Away From: the scale is drawn with the point,
+                # so the spacing and the clearance can both take the instance's size.
+                positions, normals, drawn = _scatter_sized(
+                    surf_tris, max_count, rng, spacing, random.Random(seed + 13),
+                    scale_min, scale_max, scale_bias, mask=density, avoid=avoid, vary=size_spacing)
+                sizes = drawn
+            elif len(surf_tris):
                 positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
             else:
                 # No mesh / no qualifying faces — fall back to a jittered grid.
@@ -1623,7 +1769,7 @@ def execute(node):
                 # pinned to the index.
                 scale_rng = random.Random(seed + 13 + i)
                 orient_rng = random.Random(seed + 7 + i)
-            s = scale_rng.uniform(scale_min, scale_max)
+            s = sizes[i] if sizes else _draw_scale(scale_rng, scale_min, scale_max, scale_bias)
             nrm = normals[i]
 
             if scatter_mode == "Stack":
@@ -1863,6 +2009,32 @@ def main():
         )
     )
     dist_grp.add_param(
+        chunk.Checkbox(
+            "size_spacing",
+            "Spacing Follows Scale",
+            default_value=False,
+            tooltip="Surface mode: each instance keeps Spacing x its scale / Scale Max from the "
+            "others, so small ones fill in between big ones without touching them.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.LineEdit(
+            "avoid_prims",
+            "Keep Away From",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            tooltip="Surface mode: prims whose points (curves along their length) instances "
+            "stay clear of -- e.g. a Trails output. Comma-separate several.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.Spinbox(
+            "avoid_distance",
+            "Keep Away Distance",
+            default_value=0.0,
+            tooltip="How far from Keep Away From an instance's edge must stay. 0 = off.",
+        )
+    )
+    dist_grp.add_param(
         chunk.Spinbox(
             "max_count",
             "Max Count",
@@ -2040,6 +2212,17 @@ def main():
             "Scale Max",
             default_value=1.0,
             tooltip="Largest random scale. Set Min and Max apart for natural size variation.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Slider(
+            "scale_bias",
+            "Scale Bias",
+            min_value=0.2,
+            max_value=5.0,
+            default_value=1.0,
+            tooltip="1 spreads scales evenly between Min and Max. Higher: most instances small, "
+            "a few large -- condensation, gravel. Lower: mostly large.",
         )
     )
     var_grp.add_param(
