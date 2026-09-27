@@ -201,7 +201,7 @@ def test_the_real_chunk_library_has_no_undeclared_imports(tmp_path):
     """Regression guard on chunks/ itself: every chunk declares what it imports.
 
     The one offender this check found was rigs.turntabler, doing `from chunks.modelling
-    import add_mesh` -- which resolves only while the repo root happens to be importable as
+    import mesh` -- which resolves only while the repo root happens to be importable as
     a `chunks` package, and does not for anyone whose chunks live elsewhere. That module
     was outdated and has been removed, so the expected set is now empty and any new entry
     is a regression.

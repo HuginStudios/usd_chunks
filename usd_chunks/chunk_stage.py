@@ -2074,14 +2074,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if not prim.IsValid():
                     # Wiring this new prim's exec-chain connection just changed exec
                     # topology, and a dependency's own script can react to that reactively
-                    # (e.g. create_layer.py's execute() re-ranks its layer against the
+                    # (e.g. layer.py's execute() re-ranks its layer against the
                     # active view on any exec-chain change) -- reentrant, before this
                     # function returns. If that reentrant run reassigns subLayerPaths (it
                     # does, to reposition itself), the resulting stage recomposition can
                     # invalidate THIS prim's own Usd.Prim handle if it composes through
                     # the same layer subtree, even though the underlying prim spec itself
                     # is untouched. Re-fetch by path rather than continuing to hold (and
-                    # eventually deref) a dead handle -- chaining several Create Layer /
+                    # eventually deref) a dead handle -- chaining several Layer /
                     # Edit Target pairs does exactly this.
                     prim = self._stage.GetPrimAtPath(Sdf.Path(target_path))
 
@@ -3444,7 +3444,7 @@ def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: 
     which is where it's actually needed: a plain param edit never goes through
     recook_for_view at all, so nothing else protects that path. Chunks are included by "not
     downstream of me", not "reachable upstream of me" -- a mesh from an unwired sibling chunk
-    (e.g. an Add Mesh chunk the user picked by path, never wired into the exec chain) still
+    (e.g. a Mesh chunk the user picked by path, never wired into the exec chain) still
     resolves correctly; only genuine downstream chunks are excluded.
 
     Included layers keep their REAL relative strength order (read off the actual graph
@@ -4034,7 +4034,7 @@ def snapshot_edit_target_selections(stage: Usd.Stage) -> dict[str, str]:
     isn't (yet) one of its menu_items, edit_target.py's refresh handler resets it to the
     default, and that reset is a param write, so it lands back in USD -- overwriting the saved
     selection with "Session Layer". Mid-load that happens routinely: an Edit Target pointing
-    at "A" is rebuilt before the upstream Create Layer chunk has recreated layer A, so "A"
+    at "A" is rebuilt before the upstream Layer chunk has recreated layer A, so "A"
     isn't a menu item yet and the selection is destroyed on the way in.
 
     Reading afterwards therefore can't recover it, however carefully -- by then USD holds
@@ -4070,7 +4070,7 @@ def restore_edit_target_selections(
     A chunk.Menu rejects a value not in its menu_items, and on load the stored selection
     ("shot") is restored before the anon layer it names is recreated by the upstream Create
     Layer chunk -- so the Menu silently drops it and keeps the default ("Session Layer"). By
-    the time the whole graph has loaded, every Create Layer chunk has run, so the layers (and
+    the time the whole graph has loaded, every Layer chunk has run, so the layers (and
     therefore the menu items) exist; re-applying the stored value here restores the selection.
     The resulting value change re-publishes the marker and reconciles downstream via the
     normal path.
@@ -4364,7 +4364,7 @@ def recook_for_view(
     # blocking/muting a chunk on its own. Groups outside the cook set are muted from here
     # (their own recook_for_view with no view); groups inside it are cooked later, in the
     # execute loop, in cook_list order -- roots-first, so the group closest to the view runs
-    # last and a Create Layer-style chunk inside it, which reinserts itself at the front of a
+    # last and a Layer-style chunk inside it, which reinserts itself at the front of a
     # SHARED parent layer's subLayerPaths on every execute, ends up strongest. Visited in
     # cook_list order here too; anything outside the cook set isn't competing for layer
     # strength at all, so its relative order doesn't matter.

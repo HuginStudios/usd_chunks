@@ -290,7 +290,7 @@ def sync_socket_visibility(node) -> None:
     Qt rebuilds its typed ports when a param's HIDDEN bit flips and the hidden ones go
     away; Blender's equivalent is socket.hide, which folds an unlinked socket out of the
     node (a linked one stays, as Blender always keeps a wired socket visible). Without
-    this a chunk that shows one of several groups -- add_mesh's cube/tube/grid -- drew
+    this a chunk that shows one of several groups -- mesh's cube/tube/grid -- drew
     every group's rows at once and the menu that picks one visibly did nothing.
     """
     for collection in (node.inputs, node.outputs):

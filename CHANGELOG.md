@@ -11,6 +11,7 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Mesh has one menu entry per shape: Cube, Grid, Tube and Ground.
 - Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
   own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors
   left in the queue by whoever drew last, and a click did nothing but print a traceback.
@@ -62,6 +63,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** the Create Layer and Add Mesh chunks are now Layer (`chunks/usd/layer.py`)
+  and Mesh (`chunks/modelling/mesh.py`). A saved network records a chunk's module name, so
+  one using either will not load them, and Edit Target's follow entry is now
+  "(Follow Upstream Layer)".
 - `usd_chunks/plugins/` is split by what each file is. Toolkit frontends moved to
   `usd_chunks.frontends.{qt,flet,imgui,blender}` (`chunk_qt` -> `frontends.qt.factory`,
   `chunk_qt_nodegraph` -> `frontends.qt.nodegraph`, and so on), host entry points to

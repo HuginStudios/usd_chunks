@@ -715,7 +715,7 @@ def iter_copyable_params(chunk: core.ChunkCommon):
     """`iter_connectable_params`, minus anything flagged State.HIDDEN.
 
     A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
-    see or set directly -- e.g. chunks/usd/create_layer.py's _new_layer_id/_layer_name_used/
+    see or set directly -- e.g. chunks/usd/layer.py's _new_layer_id/_layer_name_used/
     _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
     instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
     instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
@@ -723,7 +723,7 @@ def iter_copyable_params(chunk: core.ChunkCommon):
     adopts and reuses the original's real layer object instead of creating an independent one
     of its own -- the two nodes end up secretly sharing state. Any chunk module using a
     HIDDEN param the same way has the identical hazard, so the exclusion lives at this
-    shared, module-agnostic level rather than as a create_layer-specific special case.
+    shared, module-agnostic level rather than as a layer-specific special case.
 
     Deliberately a separate generator from `iter_connectable_params` itself (used elsewhere
     for port placement) rather than changing what that one yields -- copy/paste is the only

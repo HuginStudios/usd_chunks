@@ -73,7 +73,7 @@ def tracked_chunk_sources() -> list[Path]:
     "relpath, package",
     [
         ("chunks/dynamics/rbd_solver.py", "mujoco"),
-        ("chunks/modelling/add_mesh.py", "numpy"),
+        ("chunks/modelling/mesh.py", "numpy"),
         ("chunks/modelling/add_curves.py", "numpy"),
     ],
 )

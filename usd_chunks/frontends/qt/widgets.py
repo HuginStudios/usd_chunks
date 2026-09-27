@@ -904,7 +904,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         with QtCore.QSignalBlocker(self):
             index = self.findText(value)
             if index < 0 and value:
-                # A resolved connection value (e.g. a Create Layer chunk's Layer
+                # A resolved connection value (e.g. a Layer chunk's Layer
                 # Name) is a plain name, not one of the raw identifiers/sentinels in
                 # menu_items -- setCurrentText() would silently no-op on a
                 # non-editable combo box, leaving the old selection on screen. Show

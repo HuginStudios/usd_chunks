@@ -465,7 +465,7 @@ def grid_changed(owner: chunk.Group, notice, sender):
 
 def execute(node: chunk.Chunk) -> None:
     """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
-    bulk-restoring its param values, so a reloaded Add Mesh actually rebuilds its shape
+    bulk-restoring its param values, so a reloaded Mesh actually rebuilds its shape
     instead of leaving the target prim empty (the real work lives in cube_changed/
     tube_changed/grid_changed, all add_callback handlers, which load's value-restore
     deliberately does not trigger).
@@ -538,7 +538,7 @@ def main():
     grid_group.add_callback(grid_changed)
     grid_group.add_callback(grid_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
-    chunk_api = chunk.Chunk("Add Mesh")
+    chunk_api = chunk.Chunk("Mesh")
     chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
     chunk_api.add_callback(menu_changed, sender=menu)
 
@@ -549,5 +549,14 @@ def config():
     # numpy is imported at module scope, so without it the registry skips this chunk
     # entirely -- declaring it turns that silence into a named package.
     return chunk.DefaultConfig(
-        category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"]
+        category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
+        # One entry per shape, so "Cube" is found and created directly rather than by
+        # creating Mesh and re-picking the type. No Sphere: the menu lists it, but nothing
+        # builds one yet. Ground is a grid preset, sized to stand things on.
+        variants=[
+            ("Cube", {"mesh_type": "cube", "prim_path": "/cube"}),
+            ("Grid", {"mesh_type": "grid", "prim_path": "/grid"}),
+            ("Tube", {"mesh_type": "tube", "prim_path": "/tube"}),
+            ("Ground", {"mesh_type": "grid", "prim_path": "/ground", "width1": 20.0, "height2": 20.0}),
+        ],
     )

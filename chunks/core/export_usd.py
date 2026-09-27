@@ -32,7 +32,7 @@ def _discover_export_layers(stage):
 def _refresh_layer_rows(owner, notice, sender):
     """Rebuild the per-layer export list from the real layers currently in the stage.
 
-    Live: rebuilt whenever the stage's contents change (a Create Layer chunk adding a
+    Live: rebuilt whenever the stage's contents change (a Layer chunk adding a
     new sublayer, etc.), carrying each surviving layer's own checkbox state across the
     resize by name -- a rebuild fires for any layer-set change at all, so dropping that
     state would mean one new layer wiping every choice already made about the others.
@@ -526,7 +526,7 @@ def main():
         "output_dir",
         "Output Directory",
         tooltip="Folder to export every real layer into, one file per layer, named after "
-        "each layer's own name (e.g. a Create Layer chunk's Layer Name). Includes the root "
+        "each layer's own name (e.g. a Layer chunk's Layer Name). Includes the root "
         "layer under its own file name — pick a folder that won't collide with existing "
         "scene files unless that's what you want.\n\nShown when Flatten into one file is "
         "unchecked.",
@@ -653,7 +653,7 @@ def config():
         category=chunk.StandardCategory.CORE,
         description=(
             "Exports every real layer in the composed stack to Output Directory, one file\n"
-            "per layer, named after that layer's own name — e.g. a Create Layer chunk with\n"
+            "per layer, named after that layer's own name — e.g. a Layer chunk with\n"
             "Layer Name \"MyEdits\" exports as MyEdits.usda. Name collisions get a _1, _2...\n"
             "suffix. Format picks the extension used for all of them. This is the common\n"
             "case and needs no other settings — just pick Output Directory and press Export.\n"

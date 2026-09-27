@@ -86,7 +86,7 @@ class ChunkFlags:
         # identifier, typically. Saving one records an address that is
         # already dead by the time anything reads it back, which is worse than recording
         # nothing: the chunk reloads holding a plausible-looking value naming an object that
-        # no longer exists. Create Layer keeps three of these.
+        # no longer exists. Layer keeps three of these.
         TRANSIENT = auto()
 
         # FILE

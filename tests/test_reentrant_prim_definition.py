@@ -43,11 +43,11 @@ def _make(scene, mod, module_name):
 
 
 def test_chaining_several_create_layer_edit_target_pairs_does_not_crash():
-    """Building N chained Create Layer -> Edit Target pairs one at a time (the Params
+    """Building N chained Layer -> Edit Target pairs one at a time (the Params
     tab's auto-chain behavior) must not crash, however many pairs.
 
     Wiring a new chunk's inputs:chunk connection to its predecessor changes exec
-    topology -- and Create Layer's own execute() reactively re-ranks its layer against
+    topology -- and Layer's own execute() reactively re-ranks its layer against
     the active view on any exec-chain change, reentrant, before _define_prim (still
     building the NEW chunk's own prim) has returned. That reentrant run reassigns
     subLayerPaths (repositioning itself), forcing a stage recomposition that can
@@ -56,7 +56,7 @@ def test_chaining_several_create_layer_edit_target_pairs_does_not_crash():
     Live-reproduced building a 3rd chained pair (crashed with "RuntimeError: Accessed
     invalid expired 'Chunk' prim"); this goes to 8 to stay well clear of that edge.
     """
-    create_mod = importlib.import_module("chunks.usd.create_layer")
+    create_mod = importlib.import_module("chunks.usd.layer")
     edit_mod = importlib.import_module("chunks.usd.edit_target")
 
     scene = _DummyScene()
