@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-scatter = importlib.import_module("scripts.modelling.scatter_points")
+scatter = importlib.import_module("chunks.modelling.scatter_points")
 
 
 def _mesh(stage, path, points, counts, indices):

@@ -12,8 +12,8 @@ from usd_chunks import chunk_stage
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt import nodegraph
 
 
 class _DummyScene(SceneSender):
@@ -217,7 +217,7 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     """Regression: reported live -- importing a Create Layer chunk with insert_mode="Index"
     restored the value correctly (visible in the field) but the Index spinbox widget itself
     stayed missing, because insert_mode's own add_callback handler (which unhides
-    insert_index -- scripts/usd/create_layer.py's _insert_mode_changed, registered on
+    insert_index -- chunks/usd/create_layer.py's _insert_mode_changed, registered on
     ChunkNoticeAlias.VALUE_CHANGED) never got a chance to run: the fix for the duplicate-layer
     bug above used set_blocked(True) during value restoration, which chunk_notice.py's
     value_changed() also treats as "suppress every per-param notice", not just the reserved

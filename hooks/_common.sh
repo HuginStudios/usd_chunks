@@ -13,11 +13,11 @@ run_local_hook() {
     fi
 }
 
-# CI runs the suite with USD_CHUNK_DIRS=scripts, i.e. the chunks of the checkout under
+# CI runs the suite with USD_CHUNK_DIRS=chunks, i.e. the chunks of the checkout under
 # test. Locally the variable is usually an ABSOLUTE path to whichever worktree was set up
 # first, so a hook running in any other worktree would validate that other checkout's
 # chunks and pass or fail for reasons that are not in the commit. Point it at this
 # checkout, always.
-export USD_CHUNK_DIRS="$(git rev-parse --show-toplevel)/scripts"
+export USD_CHUNK_DIRS="$(git rev-parse --show-toplevel)/chunks"
 
 say() { printf '%s\n' "$*" >&2; }

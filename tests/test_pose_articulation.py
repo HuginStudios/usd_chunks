@@ -24,13 +24,14 @@ from pathlib import Path
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from usd_chunks import chunk_gizmo, chunk_registry, chunk_utils
+from usd_chunks import chunk_registry, chunk_utils
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "rigs"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "dynamics"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "rigs"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "dynamics"))
 pose_mod = importlib.import_module("pose_articulation")
 rbd_mod = importlib.import_module("rbd_solver")
 

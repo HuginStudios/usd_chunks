@@ -1,4 +1,4 @@
-"""Tests for `usdchunks pin` (usd_chunks/pin.py).
+"""Tests for `usdchunks pin` (usd_chunks/store/pin.py).
 
 The resolve/materialize/lock logic is pure (no pxr) and tested with in-process
 fake stores + real temp files. The end-to-end pin() over a composed stage runs
@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from usd_chunks import pin as pinmod
-from usd_chunks.pin import (
+from usd_chunks.store import pin as pinmod
+from usd_chunks.store.pin import (
     PinEntry,
     materialize,
     read_lock,

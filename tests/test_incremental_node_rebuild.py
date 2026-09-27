@@ -44,7 +44,7 @@ def test_unrelated_chunk_create_does_not_recreate_existing_node_or_proxy(qapp) -
     present and unchanged, only tearing down/recreating nodes whose chunk actually appeared or
     disappeared.
     """
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -112,7 +112,7 @@ def test_deleting_one_chunk_only_tears_down_that_nodes_proxy(qapp) -> None:
     """Companion sanity check: the incremental reuse above must not break real removal -- a
     deleted chunk's node must actually disappear, and an unrelated node's proxy must survive
     that deletion too."""
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -147,7 +147,7 @@ def test_deleting_one_chunk_only_tears_down_that_nodes_proxy(qapp) -> None:
     proxy_before = scatter_node._proxy
     assert proxy_before is not None
 
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+    from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
     ChunkGraphView.mark_pending_delete_relevance([stray])
     stray.request_delete()

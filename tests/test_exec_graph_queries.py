@@ -111,7 +111,7 @@ def test_exec_dependencies_ignore_param_wires_and_wired_dependencies_do_not(grap
 
 
 def test_exec_boundary_reports_the_slot_each_consumer_used(graph):
-    from usd_chunks import chunk_graph
+    from usd_chunks.graph import engine as chunk_graph
 
     stage, scene, make, wire = graph
     a, b = make(2)

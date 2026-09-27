@@ -23,7 +23,7 @@ from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import export_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
-from usd_chunks.plugins.usdchunks_cli import cmd_run
+from usd_chunks.cli import cmd_run
 
 
 class _DummyScene(SceneSender):
@@ -152,8 +152,8 @@ class TestExportUsdCommit:
     """Export USD's commit() and its Export button must be the same implementation."""
 
     def setup_method(self):
-        self.create_mod = importlib.import_module("scripts.usd.create_layer")
-        self.export_mod = importlib.import_module("scripts.core.export_usd")
+        self.create_mod = importlib.import_module("chunks.usd.create_layer")
+        self.export_mod = importlib.import_module("chunks.core.export_usd")
 
     def _network(self, tmp_path, out_name="out"):
         scene, stage = _setup_stage()
@@ -224,8 +224,8 @@ class TestCliRunCommits:
     def _write_network(self, tmp_path):
         """Author a Light -> Export USD network and serialize it, returning the network
         file and the output path the Export USD chunk is configured to write."""
-        export_mod = importlib.import_module("scripts.core.export_usd")
-        light_mod = importlib.import_module("scripts.modelling.light")
+        export_mod = importlib.import_module("chunks.core.export_usd")
+        light_mod = importlib.import_module("chunks.modelling.light")
 
         scene, _stage = _setup_stage()
         light = _make(scene, light_mod, "light")
@@ -263,12 +263,12 @@ class TestCliRunCommits:
 
         repo_root = Path(__file__).resolve().parents[1]
         env = dict(os.environ)
-        env["USD_CHUNK_DIRS"] = str(repo_root / "scripts")
+        env["USD_CHUNK_DIRS"] = str(repo_root / "chunks")
         # Prepended, not assigned: USD's own bindings are often found through PYTHONPATH,
         # and replacing it left the child unable to import pxr at all.
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), os.environ.get("PYTHONPATH")]))
         proc = subprocess.run(
-            [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", str(net)],
+            [sys.executable, "-m", "usd_chunks.cli", "run", str(net)],
             cwd=str(repo_root),
             env=env,
             capture_output=True,

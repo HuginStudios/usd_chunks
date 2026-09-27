@@ -1764,7 +1764,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # Which real layer each individual chunk's content currently resolves against (same
         # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) -- lets
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
-        # content nests in (see scripts/core/export_usd.py's per-layer export mode).
+        # content nests in (see chunks/core/export_usd.py's per-layer export mode).
         self._chunk_target: dict[core.ChunkHash, Sdf.Layer] = {}
         # The graph_key each chunk's layer was last placed under. get_or_create_layer only
         # has to look for that layer in OTHER graph layers when this has changed since --

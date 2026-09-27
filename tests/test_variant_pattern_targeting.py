@@ -55,7 +55,7 @@ def scene():
 
 class TestVariantPatternTargeting:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.variant")
+        self.mod = importlib.import_module("chunks.usd.variant")
 
     def _make(self, name):
         c = self.mod.main()
@@ -85,7 +85,7 @@ class TestVariantPatternTargeting:
 
 class TestSetVariantPatternTargeting:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.set_variant")
+        self.mod = importlib.import_module("chunks.usd.set_variant")
 
     def _make(self, name):
         c = self.mod.main()

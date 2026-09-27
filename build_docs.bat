@@ -5,9 +5,9 @@ REM initusd is a local environment script, so only call it when it is actually p
 REM a contributor working from a plain pip install will not have one.
 where initusd >nul 2>nul && call initusd
 
-REM mkdocstrings introspects the package, and griffe_chunks.py walks the chunk modules,
+REM mkdocstrings introspects the package, and docs/griffe_chunks.py walks the chunk modules,
 REM so the build needs the same discovery path a normal session has.
-if not defined USD_CHUNK_DIRS set "USD_CHUNK_DIRS=%~dp0scripts"
+if not defined USD_CHUNK_DIRS set "USD_CHUNK_DIRS=%~dp0chunks"
 
 if /I "%~1"=="--share" goto :share
 if /I "%~1"=="-h" goto :usage

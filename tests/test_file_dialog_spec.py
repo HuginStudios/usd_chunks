@@ -82,7 +82,7 @@ class TestEveryFrontendOffersBrowsing:
         # flet is an optional extra; the Qt half of this contract still has to be checked
         # without it, so the skip is per-test rather than on the module.
         pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.plugins import chunk_flet
+        from usd_chunks.frontends.flet import factory as chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
         widget = factory.create_widget(param)
@@ -96,7 +96,7 @@ class TestEveryFrontendOffersBrowsing:
         # flet is an optional extra; the Qt half of this contract still has to be checked
         # without it, so the skip is per-test rather than on the module.
         pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.plugins import chunk_flet
+        from usd_chunks.frontends.flet import factory as chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
         widget = factory.create_widget(param)
@@ -113,7 +113,7 @@ class TestEveryFrontendOffersBrowsing:
         # flet is an optional extra; the Qt half of this contract still has to be checked
         # without it, so the skip is per-test rather than on the module.
         pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.plugins import chunk_flet
+        from usd_chunks.frontends.flet import factory as chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
         widget = factory.create_widget(param)
@@ -130,12 +130,12 @@ class TestEveryFrontendOffersBrowsing:
 
     def test_imgui_has_a_browse_path(self):
         pytest.importorskip("imgui_bundle")
-        from usd_chunks.plugins import chunk_imgui
+        from usd_chunks.frontends.imgui import factory as chunk_imgui
         assert callable(chunk_imgui._browse)
         assert callable(chunk_imgui.poll_dialogs)
 
     def test_imgui_polling_is_safe_with_nothing_pending(self):
         pytest.importorskip("imgui_bundle")
-        from usd_chunks.plugins import chunk_imgui
+        from usd_chunks.frontends.imgui import factory as chunk_imgui
         chunk_imgui._pending_dialogs.clear()
         assert chunk_imgui.poll_dialogs() is False

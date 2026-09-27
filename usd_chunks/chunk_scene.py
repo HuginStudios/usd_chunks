@@ -48,7 +48,7 @@ CHUNKGROUP_MODULE = "chunkgroup"
 class SceneSender(chunk_notice.ChunkNoticePropagator):
     """Scene access for one DCC: the stage, its selection and time, and notices for changes.
 
-    A DCC host subclasses this; see plugins/chunk_usdview/__init__.py for an example. The
+    A DCC host subclasses this; see hosts/usdview/__init__.py for an example. The
     class is not purely abstract, as most functions dealing with chunks are implemented
     here, but a subclass should implement every @abstractmethod.
     """

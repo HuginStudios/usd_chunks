@@ -21,7 +21,7 @@ from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.chunk_stage import save_scene
 
-property_editor = importlib.import_module("scripts.usd.property_editor")
+property_editor = importlib.import_module("chunks.usd.property_editor")
 
 _ATTR = "weight"  # a plain custom Float attr -- usd_type_map has no entry for "double",
 # which rules out a schema's built-in scalar attrs (e.g. UsdGeomSphere.radius) for this test.

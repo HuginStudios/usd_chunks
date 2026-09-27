@@ -176,8 +176,8 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
     documented as order-sensitive via leaked global listeners, and inserting a test
     there was observed to make an unrelated, later test in the same file flaky.
     """
-    create_mod = importlib.import_module("scripts.usd.create_layer")
-    edit_mod = importlib.import_module("scripts.usd.edit_target")
+    create_mod = importlib.import_module("chunks.usd.create_layer")
+    edit_mod = importlib.import_module("chunks.usd.edit_target")
 
     scene = _DummyChunkScene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")

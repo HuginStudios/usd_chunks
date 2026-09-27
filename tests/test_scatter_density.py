@@ -30,7 +30,7 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-scatter = importlib.import_module("scripts.modelling.scatter_points")
+scatter = importlib.import_module("chunks.modelling.scatter_points")
 
 
 # ---------------------------------------------------------------------------

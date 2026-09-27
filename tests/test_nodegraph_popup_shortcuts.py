@@ -37,7 +37,7 @@ def _key(key, text=""):
 def graph(qapp):
     """A real graph view with its router installed and the cursor parked over it (every
     shortcut under test is gated on the cursor being inside the view)."""
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

@@ -197,11 +197,11 @@ class TestInstalledVersion:
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="needs sys.stdlib_module_names")
 def test_the_real_chunk_library_has_no_undeclared_imports(tmp_path):
-    """Regression guard on scripts/ itself: every chunk declares what it imports.
+    """Regression guard on chunks/ itself: every chunk declares what it imports.
 
-    The one offender this check found was rigs.turntabler, doing `from scripts.modelling
+    The one offender this check found was rigs.turntabler, doing `from chunks.modelling
     import add_mesh` -- which resolves only while the repo root happens to be importable as
-    a `scripts` package, and does not for anyone whose chunks live elsewhere. That module
+    a `chunks` package, and does not for anyone whose chunks live elsewhere. That module
     was outdated and has been removed, so the expected set is now empty and any new entry
     is a regression.
     """
@@ -209,7 +209,7 @@ def test_the_real_chunk_library_has_no_undeclared_imports(tmp_path):
     registry.initialize(_NoScene(), "pytest")
     modules = registry.get_chunk_modules()
     if not modules:
-        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
     siblings = {m.module_name.split(".")[-1] for m in modules}
 
     offenders = {
@@ -237,7 +237,7 @@ def test_every_chunk_constrains_its_requirements():
     registry.initialize(_NoScene(), "pytest")
     modules = registry.get_chunk_modules()
     if not modules:
-        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
 
     unconstrained = {
         m.module_name: reqs for m in modules

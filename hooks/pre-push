@@ -65,7 +65,7 @@ tr -d '\r' < "$out" | grep '^FAILED ' | sed 's/^FAILED //; s/ - .*//' | sort -u 
 
 # Two lists, both optional. known-failures.txt is shared and is about the code -- what
 # fails on main for everyone. known-failures.local.txt is yours, gitignored, and is for
-# what only fails on YOUR machine: a scratch chunk in scripts/ that trips test_chunk_deps,
+# what only fails on YOUR machine: a scratch chunk in chunks/ that trips test_chunk_deps,
 # a pip test that needs a network you do not have. Keeping those out of the shared list
 # matters in both directions -- they would mask a real regression for everyone else, and
 # the "this passed, delete it" report would nag whoever does not share your environment.

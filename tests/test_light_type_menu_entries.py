@@ -12,7 +12,7 @@ from pxr import Usd, UsdLux
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
-from usd_chunks import chunk_graph
+from usd_chunks.graph import engine as chunk_graph
 
 
 class _Scene(SceneSender):

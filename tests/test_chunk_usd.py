@@ -1422,7 +1422,7 @@ def test_expression_listener_reconnects_after_reload() -> None:
     load_chunks must retry the listener setup once every chunk in the batch is
     registered, and the retry must actually restore live propagation."""
     import importlib
-    mo = importlib.import_module("scripts.utils.math_ops")
+    mo = importlib.import_module("chunks.utils.math_ops")
 
     stage = Usd.Stage.CreateInMemory()
     stage.GetRootLayer().ImportFromString(
@@ -2299,7 +2299,7 @@ def test_loft_translate_from_whole_chunk_transform_does_not_break_gizmos() -> No
     "a transform handle drives 9 params ... got 1" from inside a context-menu callback.
     """
     import weakref
-    from usd_chunks import chunk_gizmo
+    from usd_chunks.gizmo import runtime as chunk_gizmo
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2739,7 +2739,7 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     path -- ChunkGraphView._activate_menu_view's view:slot attribute + _view_state.set_slot
     -- not just wiring the exec chain by hand)."""
     from usd_chunks.chunk_stage import get_chunk_prim_path, view_cook_list
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

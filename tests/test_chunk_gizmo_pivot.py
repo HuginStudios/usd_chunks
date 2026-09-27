@@ -21,7 +21,8 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_gizmo, chunk_registry
+from usd_chunks import chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
 
@@ -36,7 +37,7 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-transform_mod = importlib.import_module("scripts.transforms.transform")
+transform_mod = importlib.import_module("chunks.transforms.transform")
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 urdf_import = importlib.import_module("urdf_import")
 rbd_solver = importlib.import_module("rbd_solver")
 

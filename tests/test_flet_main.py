@@ -21,7 +21,7 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
-from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
+from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
 
 
 class FakePage:

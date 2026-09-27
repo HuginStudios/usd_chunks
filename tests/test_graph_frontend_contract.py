@@ -22,8 +22,8 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 import inspect  # noqa: E402
 
 
-from usd_chunks import chunk_graph  # noqa: E402
-from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
+from usd_chunks.graph import engine as chunk_graph  # noqa: E402
+from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
 
 
 def frontends():
@@ -33,7 +33,7 @@ def frontends():
     """
     found = [("flet", fg.GraphView)]
     try:
-        from usd_chunks.plugins import chunk_qt_nodegraph as qg
+        from usd_chunks.frontends.qt import nodegraph as qg
     except ImportError:  # pragma: no cover - Qt not installed
         return found
     facade = getattr(qg, "QtGraphFrontend", None)
@@ -41,14 +41,14 @@ def frontends():
         found.append(("qt", facade))
 
     try:
-        from usd_chunks.plugins import chunk_imgui_nodegraph as ig
+        from usd_chunks.frontends.imgui import nodegraph as ig
     except ImportError:  # pragma: no cover - imgui-bundle is an optional extra
         ig = None
     if ig is not None:
         found.append(("imgui", ig.ImGuiGraphView))
 
     try:
-        from usd_chunks.plugins import chunk_blender_nodegraph as bg
+        from usd_chunks.frontends.blender import nodegraph as bg
     except ImportError:  # pragma: no cover - bpy only exists inside Blender
         return found
     found.append(("blender", bg.BlenderGraphView))

@@ -5,7 +5,7 @@ the USD layer handling, the host integrations, and the `usdchunks` CLI. Contribu
 those are very welcome.
 
 **It is not a place to publish chunks.** Chunks you write live in your own
-`USD_CHUNK_DIRS` and are distributed separately — the modules under [scripts/](scripts/)
+`USD_CHUNK_DIRS` and are distributed separately — the modules under [chunks/](chunks/)
 exist to exercise and demonstrate the core, not as a chunk library. Fixes to the existing
 examples are welcome; new ones are usually not what this repository is for. If a chunk you
 wrote exposes a gap in the core, that gap is the contribution.
@@ -32,14 +32,14 @@ specifically you will need a full USD build providing `pxr.Usdviewq`.
 ## Running the tests
 
 ```
-USD_CHUNK_DIRS=scripts pytest
+USD_CHUNK_DIRS=chunks pytest
 ```
 
-`USD_CHUNK_DIRS` must point at `scripts/` or the registry finds no chunk modules and the
+`USD_CHUNK_DIRS` must point at `chunks/` or the registry finds no chunk modules and the
 suite fails with a confusing `NoneType 'loaded'`. On Windows:
 
 ```
-set USD_CHUNK_DIRS=scripts
+set USD_CHUNK_DIRS=chunks
 pytest
 ```
 
@@ -97,10 +97,16 @@ rather than adding to it, so each hook here runs its `.git/hooks` counterpart fi
   callbacks and the DAG), `chunk_registry.py` (discovery and loading), `chunk_stage.py` (the chunk graph on
   the USD stage: sync, wiring, view-driven cooking), `chunk.py` (the public API that chunk
   authors import).
-- `usd_chunks/plugins/` — everything that binds the core to a host: `chunk_qt*.py` (widgets and node graph), `chunk_usdview/`,
-  `chunk_houdini/`, `chunk_kraken/`, and `usdchunks_cli.py`.
-- `tests/` — run with `USD_CHUNK_DIRS=scripts`.
-- `scripts/` — example chunks, used heavily as test fixtures.
+- `usd_chunks/frontends/` — one subpackage per UI toolkit (`qt/`, `flet/`, `imgui/`,
+  `blender/`), each with a widget `factory.py` and a `nodegraph.py` over `graph/engine.py`.
+- `usd_chunks/hosts/` — per-application entry points: `usdview/`, `kraken/`, `houdini/`.
+- `usd_chunks/cli.py` — the headless `usdchunks` command.
+- `usd_chunks/graph/`, `usd_chunks/gizmo/`, `usd_chunks/store/` — the graph engine and
+  layout, the gizmo declaration and runtime, and the store seam with `usdchunks pin`.
+- Old module names (`usd_chunks.plugins.*`, `chunk_graph`, ...) still import through
+  `usd_chunks/_moved.py`; new code uses the new names.
+- `tests/` — run with `USD_CHUNK_DIRS=chunks`.
+- `chunks/` — example chunks, used heavily as test fixtures.
 
 Two contracts worth knowing before changing the core, because chunks in the wild depend on
 them: a chunk module exposes `main()` (no arguments, returns a `Chunk`), optionally

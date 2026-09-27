@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from PySide6 import QtCore, QtWidgets
 
-from usd_chunks.plugins import chunk_window_state
+from usd_chunks.frontends.qt import window_state as chunk_window_state
 
 
 @pytest.fixture

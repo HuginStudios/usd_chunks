@@ -9,8 +9,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry, chunk_widget_api
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt import nodegraph
 
 
 class _DummyScene(SceneSender):

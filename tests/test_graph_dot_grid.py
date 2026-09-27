@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, _ProxyKeyRouter
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView, _ProxyKeyRouter
 
 
 def test_grid_points_snap_to_spacing_lines_for_a_positive_rect() -> None:

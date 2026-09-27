@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from usd_chunks.chunk_scene import SceneSender
 # The attribute layer -- declared attributes, their metadata and change notification --
 # lives in chunk_attributes. It is the mechanism; this file is the model that uses it.
-from usd_chunks.chunk_gizmo_types import (  # noqa: F401  (re-exported)
+from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
     GIZMO_AXES, GIZMO_BRUSH_TYPE, GIZMO_DEFAULT_EDIT_MODE, GIZMO_EDIT_MODES,
     GIZMO_MANIPULATOR_TYPES, GIZMO_SHAPE_TYPES, GIZMO_TRANSFORM_ARITY,
     GIZMO_TRANSFORM_TYPE, GIZMO_TYPES, GizmoBase, check_gizmo_sugar,
@@ -1537,7 +1537,7 @@ class ChunkCommon(AttributesBase):
         if not self._validate_path(attr, value):
             return False
 
-        # A `#`-padded value is a per-frame template (scripts/usd/value_clips.py's Clip
+        # A `#`-padded value is a per-frame template (chunks/usd/value_clips.py's Clip
         # field is the case this exists for: "./clips/points.###.usd"), not one literal
         # path -- by construction nothing on disk is ever named exactly that, so the
         # existence check does not apply. FILE_EXISTING still does its other job here:
@@ -2470,7 +2470,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     #: Param types whose value USD itself evaluates expression variables in: an asset path.
     #: A variant selection is the other place USD substitutes, and chunks author those as
-    #: text from a chunk module rather than from a param (see scripts/usd/set_variant.py).
+    #: text from a chunk module rather than from a param (see chunks/usd/set_variant.py).
     _STAGE_EXPRESSION_TYPES = ChunkFlags.ParamType.FILE
 
     @override

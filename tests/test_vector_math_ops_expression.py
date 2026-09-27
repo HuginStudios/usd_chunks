@@ -60,7 +60,7 @@ def scene():
 
 class TestVectorMathOpsExpression:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.utils.vector_math_ops")
+        self.mod = importlib.import_module("chunks.utils.vector_math_ops")
 
     def test_expression_resolves_and_stays_live(self, scene):
         node1 = _make_vector_math_ops(self.mod, "Vec1")

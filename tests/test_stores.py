@@ -1,4 +1,4 @@
-"""Tests for the store-provider plugin seam (usd_chunks/stores.py).
+"""Tests for the store-provider plugin seam (usd_chunks/store/providers.py).
 
 These exercise the runtime side of the seam with in-process fake providers --
 no marketplace, no entry points, no network. The point of the seam is that
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from usd_chunks import stores
-from usd_chunks.stores import StoreProvider, resolve_across_stores
+from usd_chunks.store import providers as stores
+from usd_chunks.store.providers import StoreProvider, resolve_across_stores
 
 
 class FakeStore:

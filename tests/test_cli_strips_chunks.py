@@ -84,7 +84,7 @@ def network(tmp_path):
 
 
 def _run(*args):
-    cmd = [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", *args]
+    cmd = [sys.executable, "-m", "usd_chunks.cli", "run", *args]
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
     assert result.returncode == 0, result.stdout + result.stderr
     return result

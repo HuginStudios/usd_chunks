@@ -48,7 +48,7 @@ def _mk(reg, scene, module_name):
 
 
 def _graph_session(qapp):
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

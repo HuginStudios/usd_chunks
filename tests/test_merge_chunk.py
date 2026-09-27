@@ -46,7 +46,7 @@ def _load(module_path: str):
 
 def _mk_chunk(module_name: str):
     """A chunk built from its module, configured as if discovery had loaded it."""
-    mod = _load(f"scripts.core.{module_name}")
+    mod = _load(f"chunks.core.{module_name}")
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
     return c
@@ -90,7 +90,7 @@ class TestSlotNaming:
 
 class TestMergeModule:
     def setup_method(self):
-        self.mod = _load("scripts.core.merge")
+        self.mod = _load("chunks.core.merge")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()

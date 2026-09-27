@@ -63,7 +63,7 @@ def _make_collection(mod, name: str):
 
 class TestCollectionChunk:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.collection")
+        self.mod = importlib.import_module("chunks.usd.collection")
 
     def test_main_returns_chunk(self, scene):
         c = self.mod.main()
@@ -117,7 +117,7 @@ class TestCollectionChunk:
 
 class TestCollectionTokenResolution:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.collection")
+        self.mod = importlib.import_module("chunks.usd.collection")
 
     def test_resolve_prim_paths_expands_collection_token(self, scene):
         c = _make_collection(self.mod, "Coll1")
@@ -144,7 +144,7 @@ class TestCollectionTokenResolution:
         coll_chunk.get_param("include_pattern").value = "/geo/*"
         _exec(self.mod, coll_chunk)
 
-        transform_mod = importlib.import_module("scripts.transforms.transform")
+        transform_mod = importlib.import_module("chunks.transforms.transform")
         t = transform_mod.main()
         t.name = "Xform1"
         t._config = ChunkConfig(module="transform")

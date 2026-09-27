@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "dynamics"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "dynamics"))
 import rbd_solver as rbd  # noqa: E402
 
 # Tree building and joint parsing are pure USD and run anywhere. Building a model, and

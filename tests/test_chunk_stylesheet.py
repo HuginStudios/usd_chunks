@@ -10,7 +10,7 @@ from PySide6 import QtWidgets
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt_widgets import CHUNK_STYLESHEET, ChunkWidget, apply_chunk_stylesheet
+from usd_chunks.frontends.qt.widgets import CHUNK_STYLESHEET, ChunkWidget, apply_chunk_stylesheet
 
 
 class _Scene(SceneSender):

@@ -17,7 +17,8 @@ import types
 import pytest
 from pxr import Gf
 
-from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
 
@@ -43,7 +44,7 @@ def _camera_chunk(hook=None, gizmos=None):
         chunk.Gizmo("aim", type="cube", anchor="primpath_location", driver="focusDistance"),
     ])
     if hook is not None:
-        module = types.ModuleType("scripts.camera_stub")
+        module = types.ModuleType("chunks.camera_stub")
         module.gizmo_changed = hook
         c._module = module
     return c
@@ -102,7 +103,7 @@ def test_handled_is_signalled_not_inferred() -> None:
 
 def test_a_non_callable_attribute_is_ignored() -> None:
     c = _camera_chunk()
-    module = types.ModuleType("scripts.camera_stub")
+    module = types.ModuleType("chunks.camera_stub")
     module.gizmo_changed = "not a function"
     c._module = module
 

@@ -40,7 +40,7 @@ from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.chunk_stage import initialize as chunk_stage_initialize, save_scene
 
-_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "chunks"
 for _chunk_dir in (_SCRIPTS / "utils", _SCRIPTS / "modelling"):
     if str(_chunk_dir) not in sys.path:
         sys.path.insert(0, str(_chunk_dir))

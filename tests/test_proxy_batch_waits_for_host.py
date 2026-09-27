@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from PySide6 import QtCore, QtWidgets
 
-from usd_chunks.plugins import chunk_qt_nodegraph as ng
+from usd_chunks.frontends.qt import nodegraph as ng
 
 
 class _Node:

@@ -23,8 +23,8 @@ from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks import chunk_stage
 
-transform_mod = importlib.import_module("scripts.transforms.transform")
-rbd_mod = importlib.import_module("scripts.dynamics.rbd_solver")
+transform_mod = importlib.import_module("chunks.transforms.transform")
+rbd_mod = importlib.import_module("chunks.dynamics.rbd_solver")
 
 
 class _Scene(SceneSender):
