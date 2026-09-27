@@ -155,11 +155,11 @@ def _parse_param_overrides(scene, overrides):
     # the inner param would, and means what the tool's author said it means.
     searchable = list(scene.get_contexts()) + list(_all_chunks(scene.get_chunks()))
     chunk_map = {c.name: c for c in reversed(searchable)}
-    for override in overrides:
+    for assignment in overrides:
         try:
-            name, value = override.split("=", 1)
+            name, value = assignment.split("=", 1)
         except ValueError:
-            print(f"Invalid argument format: {override!r} — expected param=value or ChunkName.param=value")
+            print(f"Invalid argument format: {assignment!r} — expected param=value or ChunkName.param=value")
             continue
 
         # Bare param name (e.g. variant_selection=A): search all chunks for a matching param.
