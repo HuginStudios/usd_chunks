@@ -676,7 +676,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         description=(
             "Builds a parametric fence — posts, rails and pickets — as a single mesh.\n"

@@ -407,7 +407,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description="""
         Python — runs a script with stage, prim, node, and usdviewApi in scope.

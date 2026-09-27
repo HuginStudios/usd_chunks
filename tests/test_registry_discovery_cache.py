@@ -24,7 +24,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="{label}")
+    return chunk.DefaultConfig(category="{label}")
 """
 
 

@@ -76,4 +76,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.USD)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.USD)

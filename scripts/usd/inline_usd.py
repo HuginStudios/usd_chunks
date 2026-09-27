@@ -30,7 +30,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         chunk.StandardCategory.USD,
         description="Write .usda code directly in to the text param. The resulting layer overrides the chunk layer",
     )

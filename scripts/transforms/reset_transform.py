@@ -55,7 +55,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.TRANSFORM,
         description=(
             "Clears all authored transform ops on the target prim, resetting it to its\n"

@@ -596,7 +596,7 @@ def execute(node):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         # Focus distance is a scalar handle: one shape, one driven param. axis="Z" because
         # the direction *is* the meaning here -- focus distance runs along the camera's -Z,
         # and a handle that slid in any direction would lose that. It also gives a native

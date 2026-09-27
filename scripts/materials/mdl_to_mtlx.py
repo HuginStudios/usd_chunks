@@ -154,4 +154,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.MTLX)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.MTLX)

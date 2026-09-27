@@ -337,7 +337,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_LAYER,
         description="""
         Create Layer chunk — authors a fresh anonymous layer and sublayers it into the

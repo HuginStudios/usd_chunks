@@ -71,7 +71,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description=(
             "Exports the current chunk graph as one clean, portable USD file — every\n"

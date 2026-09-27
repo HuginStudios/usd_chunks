@@ -466,7 +466,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.RIGS,
         description="""
         Poses an articulation: one slider per joint, read out of UsdPhysics rather than out

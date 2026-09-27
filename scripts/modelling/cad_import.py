@@ -943,7 +943,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         requirements=["cadquery-ocp>=7.8,<9"],
         description=(

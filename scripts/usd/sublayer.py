@@ -87,7 +87,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description="""
         Sublayer chunk: Lets the user add one or more external USD files as sublayers

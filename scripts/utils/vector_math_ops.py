@@ -314,7 +314,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS,
         description=(
             "Applies a vector math operation to A/B/C (and Scale for Scale/Refract).\n"

@@ -95,7 +95,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
         description="""
         Preview Surface chunk — defines a UsdPreviewSurface material and binds it

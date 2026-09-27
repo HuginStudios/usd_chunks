@@ -46,7 +46,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         chunk.StandardCategory.EXAMPLES,
         "Example showing chunk requirements on external packages. The requirements are "
         "installed if not found in the current environment.",

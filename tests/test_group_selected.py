@@ -369,7 +369,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Test")
+    return chunk.DefaultConfig(category="Test")
 """ % _PROBE
 
 

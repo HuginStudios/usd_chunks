@@ -73,7 +73,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
         description=(
             "Authors a uniform displayColor (primvars:displayColor) on the target prim —\n"

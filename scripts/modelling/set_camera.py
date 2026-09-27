@@ -109,7 +109,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         description="""
         Set Camera chunk — picks one of the stage's cameras and looks through it.

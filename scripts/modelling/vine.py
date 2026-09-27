@@ -1719,7 +1719,7 @@ def _collapsed(group):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         # Growth is array work over thousands of nodes and attractors -- see `_grow`.
         requirements=["numpy>=2,<3"],

@@ -19,7 +19,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description="""
         ChunkGroup: An empty container chunk that acts as a collection of Chunks.

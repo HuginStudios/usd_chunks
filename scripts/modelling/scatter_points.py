@@ -2133,7 +2133,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         # The mesh maths runs on arrays -- see `_TriangleSoup` for what it replaced and why.
         requirements=["numpy>=2,<3"],

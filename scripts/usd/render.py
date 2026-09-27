@@ -833,7 +833,7 @@ def commit(node):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
         description="""
         Render chunk — the ROP. Renders the live stage through Hydra, using the

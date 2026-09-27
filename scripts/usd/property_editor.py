@@ -71,7 +71,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.PROPERTIES,
         description="""
         Property Editor — select a prim and interactively edit all its

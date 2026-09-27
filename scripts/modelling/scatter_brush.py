@@ -1052,7 +1052,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         # Declared in full rather than as `gizmo=` sugar: sugar is type-only, and a brush
         # needs its radius named so the viewport can draw a ring the right size. The driver
         # is what the handle *reads*, unusually -- a brush writes a field, not params.

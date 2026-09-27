@@ -130,7 +130,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description="""
         Get Property — reads the current value of an attribute or relationship

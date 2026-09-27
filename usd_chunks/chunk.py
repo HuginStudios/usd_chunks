@@ -94,7 +94,7 @@ if TYPE_CHECKING:
 ###########
 
 
-class DefaulConfig(_cfg):
+class DefaultConfig(_cfg):
     """
     This class is used as a default config.
 
@@ -120,7 +120,7 @@ class Gizmo(_gizmo):
 
     ``` py
     def config():
-        return chunk.DefaulConfig(
+        return chunk.DefaultConfig(
             gizmos=[
                 chunk.Gizmo("body", type="transform", anchor="primpath_location",
                             driver={"translate": ("tx", "ty", "tz")}),
