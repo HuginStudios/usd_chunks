@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pxr import Sdf, Usd
 
-from usd_chunks.plugins.chunk_graph_layout import (
+from usd_chunks.chunk_graph_layout import (
     find_connected_components,
     grow_to_connected_subgraph,
     layout_positions,

@@ -38,7 +38,7 @@ from usd_chunks import chunk_utils
 from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks import chunk_naming, chunk_registry, chunk_scene
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_graph_layout
+from usd_chunks import chunk_graph_layout
 from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)

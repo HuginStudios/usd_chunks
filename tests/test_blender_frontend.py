@@ -45,7 +45,8 @@ from usd_chunks import chunk_registry  # noqa: E402
 from usd_chunks.chunk_core import ChunkConfig  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.chunk_scene import SceneSender  # noqa: E402
-from usd_chunks.plugins import chunk_blender, chunk_graph  # noqa: E402
+from usd_chunks.plugins import chunk_blender  # noqa: E402
+from usd_chunks import chunk_graph  # noqa: E402
 from usd_chunks import chunk_stage  # noqa: E402
 from usd_chunks.plugins import chunk_blender_addon as addon  # noqa: E402
 from usd_chunks.plugins import chunk_blender_nodegraph as bg  # noqa: E402
