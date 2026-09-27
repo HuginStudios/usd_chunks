@@ -18,6 +18,9 @@ from __future__ import annotations
 import copy
 import inspect
 import logging
+import sys
+import types
+import weakref
 from collections.abc import Callable
 from typing import (Any, Generic, Optional,
                     TypeVar, TypedDict, Union, dataclass_transform, get_origin)
@@ -40,6 +43,46 @@ _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 logger = logging.getLogger(__name__)
 
 ValueT = TypeVar("ValueT")
+
+_field_types: weakref.WeakKeyDictionary[type, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+
+def field_type(cls: type, attr: attrs.Attribute) -> Any:
+    """The runtime type of an attrs field on `cls`, with a string annotation resolved.
+
+    Every module here uses `from __future__ import annotations`, so attrs records each
+    annotation as a string. Validation and enum conversion need the real type, so the
+    string is evaluated in the module of the class that declared the field. Resolved once
+    per class and cached.
+
+    Args:
+        cls: The class the field is read from.
+        attr: The field.
+
+    Returns:
+        The type, or None when the annotation cannot be evaluated at runtime (a name
+        imported only under TYPE_CHECKING), which callers treat as nothing to check.
+    """
+    resolved = _field_types.get(cls)
+    if resolved is None:
+        resolved = {f.name: _resolve_annotation(cls, f.name, f.type) for f in attrs.fields(cls)}
+        _field_types[cls] = resolved
+    return resolved.get(attr.name, None if isinstance(attr.type, str) else attr.type)
+
+
+def _resolve_annotation(cls: type, name: str, annotation: Any) -> Any:
+    """Evaluate one string annotation in the namespace of the class that declared it."""
+    if not isinstance(annotation, str):
+        return annotation
+    for klass in cls.__mro__:
+        if name in klass.__dict__.get("__annotations__", {}):
+            module = sys.modules.get(klass.__module__)
+            namespace = {**(vars(module) if module else {}), klass.__name__: klass}
+            try:
+                return eval(annotation, namespace)
+            except Exception:
+                return None
+    return None
 
 
 def get_attr_index(cls, data):
@@ -728,10 +771,10 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             bool: If this value is supported by the Interface
         """
         # Attempt to cast to the type hint where applicable
-        if attr.type:
-            t = get_origin(attr.type)
+        if ftype := field_type(type(self), attr):
+            t = get_origin(ftype)
 
-            if t and (t is Generic or t is Union or t is Optional):
+            if t and (t is Generic or t is Union or t is Optional or t is types.UnionType):
                 return True
 
             if t and not isinstance(val, t):
