@@ -445,6 +445,14 @@ class ImGuiGraphView:
             self.status = f"toggled {len(chunks)}"
             self.reload()
 
+    def collapse_selected_or_all(self) -> None:
+        """Collapse the selection, or the whole graph when nothing is selected -- Qt's C."""
+        shown = [c for p, c in self.chunks.items() if p in self.prims]
+        if count := chunk_graph.collapse_or_expand(shown, self.selected_chunks()):
+            self.stage.GetRootLayer().Save()
+            self.status = f"collapsed or expanded {count}"
+            self.reload()
+
     def snapshot_selection(self):
         return chunk_graph.snapshot_selection(
             self.chunks, self.prims, self.positions, self.scene, self.stage,

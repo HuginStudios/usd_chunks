@@ -17,7 +17,7 @@ There are four today, deliberately different in shape:
 
 Pick the closest model and read it first. Retained/scene-based toolkits look like Qt;
 immediate-mode looks like ImGui; Flet sits between the two. If your host already *has* a
-node editor, read Blender — it is the case where the frontend supplies the sixteen verbs
+node editor, read Blender — it is the case where the frontend supplies the seventeen verbs
 and draws nothing at all, which is the clearest illustration that the engine is not
 secretly shaped around a canvas.
 
@@ -45,7 +45,7 @@ Everything in this list already works and must not be reimplemented.
   re-wire it. `rewire_pasted` reads ports off the stage, so it works before a reload.
 - `group_into_chunkgroup(...)` — the whole group operation: read the boundary, snapshot,
   delete, make the group, paste inside, wire it back into the chain.
-- `delete_chunks`, `toggle_disabled`, `apply_selection`, `chunks_for`.
+- `delete_chunks`, `toggle_disabled`, `collapse_or_expand`, `apply_selection`, `chunks_for`.
 
 **Clipboard**
 
@@ -68,11 +68,11 @@ shipped without it once and looked correct while doing nothing.
 
 ## What you must implement
 
-[`GraphFrontend`][usd_chunks.graph.engine.GraphFrontend] names sixteen verbs:
+[`GraphFrontend`][usd_chunks.graph.engine.GraphFrontend] names seventeen verbs:
 
 ```
 set_selection      selected_chunks
-delete_selected    toggle_disable_selected
+delete_selected    toggle_disable_selected    collapse_selected_or_all
 copy_selection     cut_selection      paste_at    duplicate_selection
 group_selection    create_chunk
 can_dive           dive_into          dive_out
