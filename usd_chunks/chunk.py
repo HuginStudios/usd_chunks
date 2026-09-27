@@ -820,6 +820,10 @@ def get_layer_manager() -> ChunkLayerManager | None:
 def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
     """Find a ChunkModule in the registry and run it's main() function, then add the resulting chunk(s) to the scene if not anonymous.
 
+    To build a network from a script, use `scene.create.<module>(...)` instead (see
+    docs/scripting.md): it also sets params, wires chunks together and reaches menu
+    variants. This stays for making a chunk without adding it (anonymous=True).
+
     Args:
         module_name (str): The name of the module to load, relative to USD_CHUNK_DIRS
         anonymous (bool, optional): If set to True, the resulting chunks will be added to the scene directly. Defaults to False.
