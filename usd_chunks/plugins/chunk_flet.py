@@ -55,9 +55,9 @@ class FocusTracker:
         self._count += 1
 
     def leave(self) -> None:
+        """Record that a widget lost keyboard focus; never below zero."""
         # Never below zero: a stray blur would otherwise make it take two focuses to
         # register one, and the guard would quietly stop working.
-        """Record that a widget lost keyboard focus; never below zero."""
         self._count = max(0, self._count - 1)
 
     def is_editing(self) -> bool:
@@ -418,8 +418,6 @@ class FletButtonWidget(FletParamWidget):
         self._update()
 
     def on_clicked(self, _event):
-        # A Button's "value" is the act of pressing it: the param's callbacks fire off the
-        # value change, so toggling it is what invokes them.
         """Press the button by toggling its value.
 
         A Button's "value" is the act of pressing it: the param's callbacks fire off the value

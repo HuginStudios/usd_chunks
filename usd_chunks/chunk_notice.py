@@ -621,7 +621,6 @@ class DagNode:
 
     @property
     def name(self):
-        # Useful for debugging the solve
         """The propagator's name, or its class name; used when debugging a solve."""
         return self.propagator.name if hasattr(self.propagator, "name") else self.propagator.__class__.__name__  # type: ignore
 

@@ -1300,9 +1300,9 @@ class HashVal:
         return hash(self) == hash(value)
 
     def __copy__(self):
+        """A new HashVal with a fresh key: a copy of an identity is a different identity."""
         # Should never be called, but just in case...
         # Copying this class should result in a new key
-        """A new HashVal with a fresh key: a copy of an identity is a different identity."""
         cls = self.__class__
         c = cls.__new__(cls)
         c.__init__()

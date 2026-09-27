@@ -190,9 +190,9 @@ class GraphView:
     # -- state -------------------------------------------------------------
 
     def reload(self):
+        """Re-read the context's nodes, ports, wires and positions from the stage."""
         # Recomputed here, not just at construction: grouping creates a context and
         # deleting a group removes one, and dive_out reads this list to find its parent.
-        """Re-read the context's nodes, ports, wires and positions from the stage."""
         self.available = contexts(self.stage)
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
