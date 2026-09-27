@@ -286,7 +286,7 @@ class ImGuiGraphView:
 
         imgui.indent(SIDE_PAD)
         if hidden:
-            imgui.text_disabled("+%d unwired ports  (P)" % hidden)
+            imgui.text_disabled(f"+{hidden} unwired ports  (P)")
 
         chunk = self.chunks.get(path)
         if chunk is not None:
@@ -633,7 +633,7 @@ class ImGuiGraphView:
             chunk_graph.write_position(self.prims.get(path), x, -y, owner=self.chunks.get(path))
         if placed:
             self.stage.GetRootLayer().Save()
-        self.status = "laid out %d" % len(placed)
+        self.status = f"laid out {len(placed)}"
 
     # -- shell -------------------------------------------------------------
 

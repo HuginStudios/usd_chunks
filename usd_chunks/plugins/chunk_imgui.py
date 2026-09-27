@@ -123,7 +123,7 @@ def draw_param(param, width: float = 150.0) -> bool:
     """
     kind = param.evaluate_type()
     name = param.get_label() or param.name
-    ident = "##%s" % param.name
+    ident = f"##{param.name}"
     imgui.push_id(str(id(param)))
     changed = False
     try:
@@ -214,7 +214,7 @@ def _inline_group(group, children, width: float) -> None:
             imgui.same_line(0.0, 4.0)
         imgui.push_id(str(id(child)))
         try:
-            _numeric(child, "##%s" % child.name, each)
+            _numeric(child, f"##{child.name}", each)
         finally:
             imgui.pop_id()
 

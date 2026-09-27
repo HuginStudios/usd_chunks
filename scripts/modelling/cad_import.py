@@ -597,7 +597,7 @@ def _author_proto(stage, path: Sdf.Path, proto: _Proto, scale: float, texture_si
         taken: set = set()
         for colour in sorted(distinct):
             faces = [i for i, c in enumerate(proto.face_colors) if c == colour]
-            name = _unique("mat_%02x%02x%02x" % tuple(int(round(c * 255)) for c in colour), taken)
+            name = _unique("mat_" + "".join(f"{int(round(c * 255)):02x}" for c in colour), taken)
             UsdGeom.Subset.CreateGeomSubset(
                 mesh, name, UsdGeom.Tokens.face, Vt.IntArray(faces), familyName="materialBind"
             )

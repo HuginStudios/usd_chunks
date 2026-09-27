@@ -342,14 +342,14 @@ def test_grouped_chunks_keep_their_names(graph):
 
 _PROBE = "_self_building_probe"
 
-_SELF_BUILDING_SRC = """
+_SELF_BUILDING_SRC = f"""
 import sys
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 
 
 def execute(node):
-    probe = sys.modules.get(%r)
+    probe = sys.modules.get({_PROBE!r})
     if not node.get_param("level").value:
         return
     scene = chunk_registry.ChunkRegistry().scene
@@ -369,7 +369,7 @@ def main():
 
 def config():
     return chunk.DefaultConfig(category="Test")
-""" % _PROBE
+"""
 
 
 @pytest.fixture

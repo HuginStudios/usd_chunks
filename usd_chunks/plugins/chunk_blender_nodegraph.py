@@ -418,7 +418,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
         chunk = node.get_chunk() if node else None
         param = chunk_blender.resolve_key(chunk, self.param_name) if chunk else None
         if param is None:
-            self.report({"WARNING"}, "no such param: %s" % self.param_name)
+            self.report({"WARNING"}, f"no such param: {self.param_name}")
             return {"CANCELLED"}
         param.click()
         return {"FINISHED"}
@@ -447,7 +447,7 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
         # A key, not a name: a prototype row's field is `prototypes.0.proto_path`.
         param = chunk_blender.resolve_key(chunk, self.param_name) if chunk else None
         if param is None:
-            self.report({"WARNING"}, "no such param: %s" % self.param_name)
+            self.report({"WARNING"}, f"no such param: {self.param_name}")
             return {"CANCELLED"}
         scene = param.get_scene()
         prims = scene.get_selected_prims() if scene else []
@@ -479,7 +479,7 @@ class USDCHUNKS_OT_revert_override(bpy.types.Operator):
         chunk = node.get_chunk() if node else None
         param = chunk_blender.resolve_key(chunk, self.param_name) if chunk else None
         if param is None:
-            self.report({"WARNING"}, "no such param: %s" % self.param_name)
+            self.report({"WARNING"}, f"no such param: {self.param_name}")
             return {"CANCELLED"}
         source = chunk_stage.param_override_source(param)
         if source is None:
@@ -507,7 +507,7 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
         chunk = node.get_chunk() if node else None
         group = chunk.get_param(self.list_name) if chunk else None
         if not isinstance(group, core.ChunkListGroupBase):
-            self.report({"WARNING"}, "no such list: %s" % self.list_name)
+            self.report({"WARNING"}, f"no such list: {self.list_name}")
             return {"CANCELLED"}
         size = max(0, group.size + self.delta)
         if size == group.size:
@@ -1110,7 +1110,7 @@ class BlenderGraphView:
             return
         removed = chunk_graph.delete_chunks(chosen)
         self.selected_nodes = set()
-        self.status = "deleted %d" % removed
+        self.status = f"deleted {removed}"
         self.reload()
 
     def toggle_disable_selected(self) -> None:
@@ -1157,7 +1157,7 @@ class BlenderGraphView:
             self.status = "nothing to copy"
             return
         # The engine's own lists, so a selection copied here pastes in Qt or Flet.
-        self.status = "copied %d" % chunk_graph.copy_to_clipboard(nodes, edges)
+        self.status = f"copied {chunk_graph.copy_to_clipboard(nodes, edges)}"
 
     def cut_selection(self) -> None:
         nodes, edges = self.snapshot_selection()
@@ -1166,7 +1166,7 @@ class BlenderGraphView:
             return
         count = chunk_graph.copy_to_clipboard(nodes, edges)
         self.delete_selected()
-        self.status = "cut %d" % count
+        self.status = f"cut {count}"
 
     def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
         """Materialize the clipboard and re-wire it.
@@ -1192,7 +1192,7 @@ class BlenderGraphView:
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_selection({chunk_stage.get_chunk_prim_path(c) for c in made.values()})
-        self.status = "pasted %d" % len(made)
+        self.status = f"pasted {len(made)}"
 
     def duplicate_selection(self) -> None:
         """Copy and paste at an offset without touching the clipboard, so duplicating never
@@ -1224,7 +1224,7 @@ class BlenderGraphView:
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_selection([group_path] if group_path in self.prims else ())
-        self.status = "grouped %d" % count
+        self.status = f"grouped {count}"
 
     def create_chunk(self, entry, x: float, y: float) -> None:
         """Create one registry MenuEntry's chunk(s) at a layout point.
@@ -1256,7 +1256,7 @@ class BlenderGraphView:
         self.reload()
 
         self.set_selection(set(made))
-        self.status = "created %s" % created[0].name
+        self.status = f"created {created[0].name}"
 
     # -- navigation --------------------------------------------------------
 
@@ -1270,7 +1270,7 @@ class BlenderGraphView:
             return
         self.context = path
         self.selected_nodes = set()
-        self.status = "in %s" % path.rsplit("/", 1)[-1]
+        self.status = f"in {path.rsplit('/', 1)[-1]}"
         self.reload()
 
     def dive_out(self) -> None:
@@ -1331,7 +1331,7 @@ class BlenderGraphView:
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_active_slot(slot)
-        self.status = "view %d" % slot
+        self.status = f"view {slot}"
 
     # -- layout ------------------------------------------------------------
 

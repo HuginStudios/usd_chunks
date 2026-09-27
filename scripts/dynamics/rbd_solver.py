@@ -1994,7 +1994,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
             mass = _authored(UsdPhysics.MassAPI(prim).GetMassAttr())
             if mass is not None and mass > 0.0:
                 out["mass"] = mass
-                found.append("mass=%g" % mass)
+                found.append(f"mass={mass:g}")
 
         # A kinematic body is driven rather than solved. The solver already has that notion
         # for animated colliders (mocap bodies), so honouring the flag keeps the asset's
@@ -2011,11 +2011,11 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
                 friction = _authored(material.GetStaticFrictionAttr())
             if friction is not None:
                 out["friction"] = friction
-                found.append("friction=%g" % friction)
+                found.append(f"friction={friction:g}")
             restitution = _authored(material.GetRestitutionAttr())
             if restitution is not None:
                 out["restitution"] = restitution
-                found.append("restitution=%g" % restitution)
+                found.append(f"restitution={restitution:g}")
 
         # The approximation is the asset author's decision about how this shape should be
         # collided -- exactly what Shape Type otherwise has to guess.
@@ -2024,7 +2024,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
             shape = _APPROXIMATION_TO_SHAPE.get(approximation)
             if shape:
                 out["shape_type"] = shape
-                found.append("shape=%s" % shape)
+                found.append(f"shape={shape}")
             elif approximation:
                 logger.debug(
                     "approximation '%s' has no single-geom MuJoCo equivalent -- "
@@ -2034,7 +2034,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
     gravity, scene_path = _scene_gravity(stage, out["gravity"])
     if scene_path:
         out["gravity"] = gravity
-        found.append("gravity=%g (%s)" % (gravity, scene_path))
+        found.append(f"gravity={gravity:g} ({scene_path})")
 
     if found:
         logger.debug("using authored UsdPhysics: %s", ", ".join(found))

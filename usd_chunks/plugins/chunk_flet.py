@@ -391,11 +391,8 @@ class FletColorWidget(FletParamWidget):
             self.field.value = "" if value is None else str(value)
             return
         self.field.value = f"{red:.3f}, {green:.3f}, {blue:.3f}"
-        self.swatch.bgcolor = "#%02x%02x%02x" % (
-            max(0, min(255, int(red * 255))),
-            max(0, min(255, int(green * 255))),
-            max(0, min(255, int(blue * 255))),
-        )
+        channels = (max(0, min(255, int(c * 255))) for c in (red, green, blue))
+        self.swatch.bgcolor = "#" + "".join(f"{c:02x}" for c in channels)
 
     def get_value(self):
         return self.read_text(self.field.value)

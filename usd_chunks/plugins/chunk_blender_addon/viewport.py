@@ -388,7 +388,7 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
             traceback.print_exc()
             return {"PASS_THROUGH"}
         bg.set_picked_prim_paths([path] if path else [])
-        self.report({"INFO"}, "picked %s" % path if path else "nothing under cursor")
+        self.report({"INFO"}, f"picked {path}" if path else "nothing under cursor")
         return {"PASS_THROUGH"}
 
 
@@ -441,7 +441,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
             try:
                 engine.SetRendererPlugin(self.plugin)
             except Exception:
-                self.report({"WARNING"}, "could not switch to %s" % self.plugin)
+                self.report({"WARNING"}, f"could not switch to {self.plugin}")
                 return {"CANCELLED"}
         _redraw()
         return {"FINISHED"}
@@ -499,7 +499,7 @@ class USDCHUNKS_PT_hydra_view(bpy.types.Panel):
 
         current = _state["renderer"]
         label = _renderer_display_name(current) if current else "default"
-        layout.menu(USDCHUNKS_MT_renderer.bl_idname, text="Renderer: %s" % label)
+        layout.menu(USDCHUNKS_MT_renderer.bl_idname, text=f"Renderer: {label}")
 
         stage = active_stage()
         layout.label(text="stage: %s" % ("open" if stage is not None else "no network"),

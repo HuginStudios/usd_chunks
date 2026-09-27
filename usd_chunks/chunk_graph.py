@@ -1467,8 +1467,8 @@ def rewire_pasted(stage: Usd.Stage, created: dict, edges, chunks: dict | None = 
         dst = ports.get(edge.dst_index)
         if src is None or dst is None:
             continue  # one end was not pasted; dropped rather than wired to the original
-        a = src[1].get("%s.%s" % (src[0], edge.src_attr))
-        b = dst[1].get("%s.%s" % (dst[0], edge.dst_attr))
+        a = src[1].get(f"{src[0]}.{edge.src_attr}")
+        b = dst[1].get(f"{dst[0]}.{edge.dst_attr}")
         if a is not None and b is not None and connect(stage, a, b, merged) is not None:
             made += 1
     return made
@@ -1510,7 +1510,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
                 scene.add_chunk(chunk)
     except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:
         logger.exception("could not create %s", getattr(entry, "module_name", entry))
-        return [], "create failed: %s: %s" % (type(exc).__name__, exc)
+        return [], f"create failed: {type(exc).__name__}: {exc}"
     return created, ""
 
 
@@ -1699,7 +1699,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | Non
     if not made:
         return None
     view_chunk = made[0]
-    view_chunk.name = "View%d" % slot
+    view_chunk.name = f"View{slot}"
     view_chunk.set_state(ChunkFlags.State.COLLAPSED)
 
     # Read the target's position BEFORE add_chunk: adding fires CHUNK_LOADED, which a
@@ -1707,7 +1707,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | Non
     target_x, target_y = node_position(target)
 
     scene.add_chunk(view_chunk)
-    view_path = "%s/%s" % (chunk_stage._resolve_chunk_root(view_chunk), view_chunk.name)
+    view_path = f"{chunk_stage._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
     view_prim = stage.GetPrimAtPath(Sdf.Path(view_path))
     if not view_prim.IsValid():
         return None
@@ -1720,7 +1720,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | Non
         if not (exec_in and exec_in.IsValid()):
             exec_in = view_prim.CreateAttribute(EXEC_INPUT, Sdf.ValueTypeNames.Token,
                                                 custom=False)
-        exec_in.SetConnections([Sdf.Path("%s.%s" % (target_prim_path, EXEC_OUTPUT))])
+        exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{EXEC_OUTPUT}")])
 
         slot_attr = view_prim.CreateAttribute(VIEW_SLOT_ATTR, Sdf.ValueTypeNames.Int,
                                               custom=True)
@@ -1812,7 +1812,7 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
     if slot:
         view_chunk = chunk_stage.find_view_chunk_for_slot(slot, stage, scene, context_chunk)
         if view_chunk is None:
-            return False, "no view in slot %d" % slot
+            return False, f"no view in slot {slot}"
 
     write_active_slot(stage, context, slot)
     try:
@@ -1823,8 +1823,8 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
         # the window because one chunk is broken would be worse than reporting it. Logged
         # as well as returned, or the traceback is gone for good.
         logger.exception("recook failed while switching view slot")
-        return True, "recook failed: %s" % type(exc).__name__
-    return True, ("view %d active" % slot) if slot else "no active view"
+        return True, f"recook failed: {type(exc).__name__}"
+    return True, f"view {slot} active" if slot else "no active view"
 
 
 def new_view_slot(stage: Usd.Stage, scene, context_chunk,

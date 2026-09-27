@@ -270,7 +270,7 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
     def execute(self, context):
         stage = Usd.Stage.Open(self.filepath)
         if stage is None:
-            self.report({"ERROR"}, "could not open %s" % self.filepath)
+            self.report({"ERROR"}, f"could not open {self.filepath}")
             return {"CANCELLED"}
         tree = _active_tree()
         if tree is None:
@@ -278,7 +278,7 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
         tree.chunk_network_path = self.filepath
         _show_tree(context, tree)
         _open_stage(stage, tree=tree)
-        self.report({"INFO"}, "opened %s" % self.filepath)
+        self.report({"INFO"}, f"opened {self.filepath}")
         return {"FINISHED"}
 
 
@@ -410,7 +410,7 @@ class USDCHUNKS_OT_publish_network(bpy.types.Operator):
         if chunk is None:
             self.report({"WARNING"}, "select a chunkgroup to publish")
             return {"CANCELLED"}
-        self.filepath = "%s.usda" % chunk.name
+        self.filepath = f"{chunk.name}.usda"
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
@@ -422,7 +422,7 @@ class USDCHUNKS_OT_publish_network(bpy.types.Operator):
         view = get_view()
         if view is not None:
             view.reload()
-        self.report({"INFO"}, "published %s" % self.filepath)
+        self.report({"INFO"}, f"published {self.filepath}")
         return {"FINISHED"}
 
 
@@ -451,7 +451,7 @@ class USDCHUNKS_OT_localise_network(bpy.types.Operator):
         view = get_view()
         if view is not None:
             view.reload()
-        self.report({"INFO"}, "localised %s" % name)
+        self.report({"INFO"}, f"localised {name}")
         return {"FINISHED"}
 
 

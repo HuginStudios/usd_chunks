@@ -180,7 +180,7 @@ def prop_key(param) -> str:
     if found is None:
         return param.name
     list_group, row = found
-    return "%s.%s.%s" % (list_group.name, row.name, param.name)
+    return f"{list_group.name}.{row.name}.{param.name}"
 
 
 def resolve_key(chunk, key: str):
@@ -278,7 +278,7 @@ def property_for(param):
         # wants .usda should at least be told what it expects.
         spec = chunk_widget_api.file_dialog_spec(param)
         if spec.patterns and spec.patterns != ("*",):
-            tip = (tip + "  " if tip else "") + "(%s)" % " ".join(spec.patterns)
+            tip = (tip + "  " if tip else "") + f"({' '.join(spec.patterns)})"
         return bpy.props.StringProperty(
             name=label, description=tip,
             subtype="DIR_PATH" if spec.directory else "FILE_PATH", update=upd)
@@ -452,7 +452,7 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
         drawn = True
     elif key in node.keys():
         # An ID property has no name of its own, so a label always has to be supplied.
-        row.prop(node, '["%s"]' % key,
+        row.prop(node, f'["{key}"]',
                  text=(param.label or param.name) if text is None else text)
         drawn = True
     if drawn and pinnable:
@@ -491,7 +491,7 @@ def draw_params(node, layout, chunk, skip=()) -> None:
     for key in node.keys():
         if key in _RESERVED or key in declared or key.startswith("_"):
             continue
-        layout.prop(node, '["%s"]' % key, text=key)
+        layout.prop(node, f'["{key}"]', text=key)
 
 
 def _draw_container(node, layout, container, skip, _depth: int = 0) -> None:
@@ -530,7 +530,7 @@ def _draw_container(node, layout, container, skip, _depth: int = 0) -> None:
 
 def _draw_list(node, layout, list_group, skip, _depth: int) -> None:
     header = layout.row(align=True)
-    header.label(text="%s (%d)" % (list_group.label or list_group.name, list_group.size))
+    header.label(text=f"{list_group.label or list_group.name} ({list_group.size})")
     for delta, icon in ((-1, "REMOVE"), (1, "ADD")):
         op = header.operator("usd_chunks.list_resize", text="", icon=icon)
         op.node_path = node.name

@@ -451,7 +451,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         self._chunk.start_gizmo()
         context.window_manager.modal_handler_add(self)
         self.report({"INFO"},
-                    "%s: X/Y/Z to constrain, click to confirm, Esc to cancel" % self.mode)
+                    f"{self.mode}: X/Y/Z to constrain, click to confirm, Esc to cancel")
         return {"RUNNING_MODAL"}
 
     def _world_at(self, mouse):

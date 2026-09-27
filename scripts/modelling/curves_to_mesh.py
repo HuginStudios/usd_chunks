@@ -466,7 +466,7 @@ def execute(node) -> None:
     _author(stage, out_path, built, first)
     node.get_param("out_mesh").value = out_path
     node.get_param("readout").value = (
-        "%d strands, %d faces" % (len(all_strands), len(built[3]))
+        f"{len(all_strands)} strands, {len(built[3])} faces"
     )
 
 
