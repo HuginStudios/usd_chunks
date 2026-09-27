@@ -1,4 +1,8 @@
-"""This script is a griffe extension for adding __init__ function signatures to our attrs classes"""
+"""A griffe extension that gives the attrs-built chunk classes their real __init__ signatures.
+
+The chunk classes get __init__ from attrs at runtime, so static analysis sees none; this
+reads the fields back so the API docs show the constructor.
+"""
 from __future__ import annotations
 
 import griffe
@@ -24,7 +28,13 @@ class GriffleChunks(griffe.Extension):
         loader: griffe.GriffeLoader,
         **kwargs,
     ) -> None:
-        
+        """Add the attrs-generated __init__ signature to a chunk class from the configured modules.
+
+        Args:
+            obj: The object griffe loaded.
+            loader: The griffe loader.
+            **kwargs: Other arguments griffe passes.
+        """
         if obj.analysis == "dynamic":
             return  # Skip runtime objects, their docstrings are already right.
 

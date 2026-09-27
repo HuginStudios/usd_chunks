@@ -1,3 +1,7 @@
+"""Generate the API reference pages and their navigation, one page per usd_chunks module.
+
+Run by mkdocs-gen-files during the docs build.
+"""
 from __future__ import annotations
 from pathlib import Path
 import mkdocs_gen_files

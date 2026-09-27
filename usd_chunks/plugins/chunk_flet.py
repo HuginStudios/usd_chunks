@@ -16,6 +16,8 @@ to the param there would be re-entered by the notice that write produces.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 import flet as ft
@@ -49,14 +51,17 @@ class FocusTracker:
         self._count = 0
 
     def enter(self) -> None:
+        """Record that a widget took keyboard focus."""
         self._count += 1
 
     def leave(self) -> None:
+        """Record that a widget lost keyboard focus; never below zero."""
         # Never below zero: a stray blur would otherwise make it take two focuses to
         # register one, and the guard would quietly stop working.
         self._count = max(0, self._count - 1)
 
     def is_editing(self) -> bool:
+        """Whether any widget is being typed into."""
         return self._count > 0
 
 
@@ -75,6 +80,7 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     @classmethod
     def row_height(cls) -> float:
+        """The height one row of this widget takes, label included."""
         return (LABEL_H if cls.HAS_LABEL else 0.0) + cls.CONTROL_H
 
     def __init__(self, param, *args, **kwargs):
@@ -93,6 +99,7 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     # -- param -> widget ---------------------------------------------------
 
+    @override
     def set_value(self, value):
         if self.control is None:
             return
@@ -107,34 +114,42 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
         self._update()
 
     def apply_value(self, value):
+        """Show a value in the control."""
         self.control.value = value
 
+    @override
     def get_value(self):
         return None if self.control is None else self.control.value
 
+    @override
     def set_label(self, text: str):
         self.label_control.value = text or ""
         self.label_control.visible = bool(text)
         self._update(self.label_control)
 
+    @override
     def set_icon(self, icon: str):
         # Flet takes icon names, not paths, and a chunk's icon is a path. Ignored rather
         # than guessed at: showing the wrong glyph is worse than showing none.
         pass
 
+    @override
     def set_param_layout(self, layout_flags):
         pass
 
+    @override
     def set_hidden(self, val: bool):
         if self.control is not None:
             self.control.visible = not val
             self._update()
 
+    @override
     def set_enabled(self, val: bool):
         if self.control is not None:
             self.control.disabled = not val
             self._update()
 
+    @override
     def update_from_state(self):
         state = getattr(self.param, "state", None)
         if state is None:
@@ -149,16 +164,20 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
     focus: FocusTracker | None = None
 
     def on_focus(self, _event):
+        """Report to the focus tracker that this control is being typed into."""
         if self.focus is not None:
             self.focus.enter()
 
     def on_blur(self, _event):
+        """Report to the focus tracker that this control is no longer being typed into."""
         if self.focus is not None:
             self.focus.leave()
 
     def _typing(self, control):
-        """Wire a control's focus signals, if it has them. Called by the widgets whose
-        control accepts typed text -- a Checkbox or a Button cannot swallow a shortcut.
+        """Wire a control's focus signals, if it has them.
+
+        Called by the widgets whose control accepts typed text -- a Checkbox or a Button cannot
+        swallow a shortcut.
         """
         if hasattr(control, "on_focus"):
             control.on_focus = self.on_focus
@@ -166,11 +185,13 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
         return control
 
     def on_changed(self, event):
+        """Write the control's new value to the param, unless the change came from the param."""
         if self._suppress:
             return
         self.param.value = self.read_event(event)
 
     def read_event(self, event):
+        """The value a change event carries."""
         return event.control.value
 
     # -- plumbing ----------------------------------------------------------
@@ -203,7 +224,9 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
 
 class FletSliderWidget(FletParamWidget):
+    """A Slider param, float or int, as a Flet slider."""
     CONTROL_H = 26.0
+    @override
     def build(self):
         param = self.param
         self.readout = ft.Text("", size=10, color="#cab46a", width=52,
@@ -217,6 +240,7 @@ class FletSliderWidget(FletParamWidget):
         # dragging it is not the same control.
         self.control = ft.Row([self.slider, self.readout], spacing=4, tight=True)
 
+    @override
     def apply_value(self, value):
         try:
             self.slider.value = float(value)
@@ -228,9 +252,11 @@ class FletSliderWidget(FletParamWidget):
         self.readout.value = ("%d" if getattr(self.param, "is_int", False) else "%.3f") % (
             self.slider.value)
 
+    @override
     def get_value(self):
         return self.slider.value
 
+    @override
     def read_event(self, event):
         value = float(event.control.value)
         return int(round(value)) if getattr(self.param, "is_int", False) else value
@@ -247,6 +273,7 @@ class FletFileWidget(FletParamWidget):
 
     CONTROL_H = 30.0
 
+    @override
     def build(self):
         self.field = self._typing(ft.TextField(
             dense=True, on_change=self.on_changed, expand=True, text_size=11,
@@ -264,8 +291,11 @@ class FletFileWidget(FletParamWidget):
     async def browse(self, _event):
         """Open the dialog this param asked for and apply what comes back.
 
-        Async because Flet 0.80's picker methods are coroutines returning the result --
-        there is no on_result callback to register.
+        Async because Flet 0.80's picker methods are coroutines returning the result -- there is
+        no on_result callback to register.
+
+        Args:
+            _event: The click event.
         """
         spec = chunk_widget_api.file_dialog_spec(self.param)
         # Flet wants bare extensions, not globs.
@@ -282,8 +312,11 @@ class FletFileWidget(FletParamWidget):
         self.apply_picked(chosen)
 
     def apply_picked(self, chosen) -> None:
-        """Write a picked path back. pick_files hands back a LIST of files; the other two
-        hand back a path or None.
+        """Write a picked path back to the param.
+
+        Args:
+            chosen: What the picker returned: a list of files from pick_files, a path or None
+                from the other two.
         """
         if isinstance(chosen, (list, tuple)):
             chosen = chosen[0] if chosen else None
@@ -291,12 +324,15 @@ class FletFileWidget(FletParamWidget):
         if path:
             self.param.value = path
 
+    @override
     def apply_value(self, value):
         self.field.value = "" if value is None else str(value)
 
 
 class FletTextWidget(FletParamWidget):
+    """A LineEdit param, as a text field."""
     CONTROL_H = 30.0
+    @override
     def build(self):
         self.control = self._typing(ft.TextField(
             dense=True, on_change=self.on_changed, text_size=11,
@@ -304,12 +340,15 @@ class FletTextWidget(FletParamWidget):
             filled=True, fill_color="#202020", border_color="#404040",
             focused_border_color="#cab46a", border_radius=3, height=30))
 
+    @override
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
 
 
 class FletMultilineTextWidget(FletTextWidget):
+    """A TextEdit param, as a multi-line text field."""
     CONTROL_H = 76.0
+    @override
     def build(self):
         self.control = self._typing(ft.TextField(
             multiline=True, min_lines=3, dense=True, on_change=self.on_changed,
@@ -319,19 +358,25 @@ class FletMultilineTextWidget(FletTextWidget):
 
 
 class FletCheckboxWidget(FletParamWidget):
+    """A Checkbox param."""
     CONTROL_H = 26.0
+    @override
     def build(self):
         self.control = ft.Checkbox(on_change=self.on_changed)
 
+    @override
     def apply_value(self, value):
         self.control.value = bool(value)
 
+    @override
     def read_event(self, event):
         return bool(event.control.value)
 
 
 class FletMenuWidget(FletParamWidget):
+    """A Menu param, as a dropdown."""
     CONTROL_H = 34.0
+    @override
     def build(self):
         items = [ft.dropdown.Option(str(i)) for i in getattr(self.param, "menu_items", [])]
         # on_select, not on_change: Flet 0.80's Dropdown has no on_change at all and
@@ -343,23 +388,29 @@ class FletMenuWidget(FletParamWidget):
             filled=True, fill_color="#202020", border_color="#404040",
             border_radius=3, content_padding=ft.Padding.symmetric(vertical=4, horizontal=8)))
 
+    @override
     def apply_value(self, value):
         self.control.value = None if value is None else str(value)
 
 
 class FletButtonWidget(FletParamWidget):
+    """A Button param."""
     CONTROL_H = 34.0
     HAS_LABEL = False
+    @override
     def build(self):
         self.control = ft.ElevatedButton(content=self.param.get_label() or self.param.name,
                                          on_click=self.on_clicked)
 
+    @override
     def apply_value(self, value):
         pass
 
+    @override
     def get_value(self):
         return None
 
+    @override
     def set_label(self, text: str):
         # A button carries its label on itself rather than above it.
         self.control.content = text or self.param.name
@@ -367,10 +418,14 @@ class FletButtonWidget(FletParamWidget):
         self._update()
 
     def on_clicked(self, _event):
-        # A Button's "value" is the act of pressing it: the param's callbacks fire off the
-        # value change, so toggling it is what invokes them.
+        """Press the button by toggling its value.
+
+        A Button's "value" is the act of pressing it: the param's callbacks fire off the value
+        change, so toggling it is what invokes them.
+        """
         self.param.value = not bool(self.param.value)
 
+    @override
     def as_row(self) -> ft.Control:
         return self.control
 
@@ -379,6 +434,7 @@ class FletColorWidget(FletParamWidget):
     """No native colour picker in Flet, so: a swatch plus editable "r, g, b"."""
     CONTROL_H = 30.0
 
+    @override
     def build(self):
         self.swatch = ft.Container(width=22, height=22, border_radius=3,
                                    bgcolor="#808080")
@@ -386,6 +442,7 @@ class FletColorWidget(FletParamWidget):
             ft.TextField(dense=True, on_change=self.on_changed, expand=True))
         self.control = ft.Row([self.swatch, self.field], spacing=6, tight=True)
 
+    @override
     def apply_value(self, value):
         try:
             red, green, blue = (float(c) for c in list(value)[:3])
@@ -396,14 +453,17 @@ class FletColorWidget(FletParamWidget):
         channels = (max(0, min(255, int(c * 255))) for c in (red, green, blue))
         self.swatch.bgcolor = "#" + "".join(f"{c:02x}" for c in channels)
 
+    @override
     def get_value(self):
         return self.read_text(self.field.value)
 
+    @override
     def read_event(self, event):
         return self.read_text(event.control.value)
 
     @staticmethod
     def read_text(text):
+        """Parse "r, g, b" text into a colour tuple, or None if it is not three numbers."""
         try:
             parts = [float(p) for p in str(text).replace(",", " ").split()]
         except ValueError:
@@ -412,33 +472,43 @@ class FletColorWidget(FletParamWidget):
 
 
 class FletSeparatorWidget(FletParamWidget):
+    """A Separator param, as a divider."""
     CONTROL_H = 8.0
     HAS_LABEL = False
+    @override
     def build(self):
         self.control = ft.Divider(height=1, color="#4a4a4a")
 
+    @override
     def apply_value(self, value):
         pass
 
+    @override
     def get_value(self):
         return None
 
+    @override
     def set_label(self, text: str):
         self.label_control.visible = False
 
+    @override
     def as_row(self) -> ft.Control:
         return self.control
 
 
 class FletLabelWidget(FletParamWidget):
+    """A Label param, as read-only text."""
     CONTROL_H = 16.0
     HAS_LABEL = False
+    @override
     def build(self):
         self.control = ft.Text("", size=11, color="#cccccc")
 
+    @override
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
 
+    @override
     def as_row(self) -> ft.Control:
         return self.control
 
@@ -466,6 +536,7 @@ class ChunkFletWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.COLOR_PICKER: FletColorWidget,
     }
 
+    @override
     def create_widget(self, param: chunk.ChunkParamBase):
         widget_class = self.get_map().get(param.evaluate_type())
         if widget_class is None:
@@ -508,6 +579,7 @@ class FletGroupWidget:
     live = False
 
     def toggle(self, _event=None):
+        """Collapse or expand the group, recording it in the group's COLLAPSED state."""
         self.collapsed = not self.collapsed
         if self.collapsed:
             self.group.set_state(ChunkFlags.State.COLLAPSED)
@@ -530,11 +602,17 @@ def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = Non
                          focus: FocusTracker | None = None):
     """Every param of a chunk as Flet controls, groups collapsible, nothing hidden.
 
-    Returns (controls, widgets, offsets). The widgets come back because nothing else holds
-    them:
-    each registers a notice callback, and a widget that is collected stops updating -- the
-    same lifetime trap plain closures have with add_callback. Group widgets are included
-    for the same reason: they own the collapse toggle.
+    Args:
+        chunk_obj: The chunk.
+        factory: The widget factory; a default ChunkFletWidgetFactory when None.
+        focus: The tracker the widgets report typing to.
+
+    Returns:
+        (controls, widgets, offsets). The widgets come back because nothing else holds them:
+        each registers a notice callback, and a widget that is collected stops updating --
+        the same lifetime trap plain closures have with add_callback. Group widgets are
+        included for the same reason: they own the collapse toggle. offsets maps each param
+        name to the y of its row's centre, so a port can be drawn level with its control.
     """
     factory = factory or ChunkFletWidgetFactory()
     widgets = []
@@ -580,6 +658,12 @@ def file_pickers(widgets) -> list:
     Flet requires a picker to be on the page (in page.overlay) before it can open one, and
     only the view can put it there -- so they come back with the widgets rather than being
     added by the widget itself.
+
+    Args:
+        widgets: The widgets from build_chunk_controls.
+
+    Returns:
+        The pickers.
     """
     return [w.picker for w in widgets if isinstance(w, FletFileWidget)]
 
@@ -590,6 +674,9 @@ def mark_live(widgets) -> None:
     Called by the view after page.add. Before that a widget must stay silent: update() on
     an unmounted control can block on a round-trip that never happens, and every widget
     sets its initial value while being built.
+
+    Args:
+        widgets: The widgets from build_chunk_controls.
     """
     for widget in widgets:
         widget.live = True

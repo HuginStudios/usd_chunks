@@ -22,6 +22,8 @@ Hydra-drawn prim is not a Blender object and cannot be in `context.selected_obje
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 import math
 
@@ -65,8 +67,13 @@ def preset_kwargs(select_id) -> dict:
 
     `select_id` is how Blender tells a gizmo which pick buffer id to draw into, and it is
     only meaningful in the select pass -- the ordinary draw has none. Passing None anyway
-    is not "no id": the argument is typed int and rejects it, so every redraw raised and
-    nothing was drawn at all.
+    is not "no id": the argument is typed int and rejects it, and the draw raises.
+
+    Args:
+        select_id: The pick buffer id, or None outside the select pass.
+
+    Returns:
+        The keyword arguments.
     """
     return {} if select_id is None else {"select_id": select_id}
 
@@ -101,13 +108,14 @@ def _picked_prim(stage):
 
 
 def _visible_descs(prim, view):
-    """The handles to show for this prim: the ones whose editmode matches a viewport
-    selection, filtered to the chunk the node graph has selected when it has one.
+    """The handles to show for this prim.
 
-    The filter is the contract's rule in §1 -- a prim touched by two transform chunks in
-    one chain would otherwise show two identical handles in the same place, and a handle
-    must only ever edit the chunk you are looking at. With nothing selected in the graph,
-    `descs[0]` is the chunk nearest the view, which is the one the user can actually see.
+    Those whose editmode matches a viewport selection, filtered to the chunk the node graph
+    has selected when it has one. The filter is the contract's rule in section 1 -- a prim
+    touched by two transform chunks in one chain would otherwise show two identical handles
+    in the same place, and a handle must only ever edit the chunk you are looking at. With
+    nothing selected in the graph, `descs[0]` is the chunk nearest the view, which is the
+    one the user can actually see.
     """
     descs = [d for d in chunk_gizmo.resolve_gizmos(prim)
              if "onPrimSelection" in d.editmode or "always" in d.editmode]
@@ -127,6 +135,13 @@ def placement_desc(prim, view):
     A `transform` handle first, since it takes the whole matrix; otherwise the handle of
     the gesture's own kind, which is how a chunk offering only some of the three
     (rbd_solver declares translate and rotate offsets and no scale) is still driveable.
+
+    Args:
+        prim: The picked prim.
+        view: The graph view.
+
+    Returns:
+        The gizmo desc, or None.
     """
     descs = _visible_descs(prim, view)
     for desc in descs:
@@ -139,8 +154,10 @@ def placement_desc(prim, view):
 
 
 def _chunk_for(view, desc):
-    """The live chunk object a desc names, or None. Needed for the start/stop bracket,
-    which is a method on the chunk; the write itself goes by prim path.
+    """The live chunk object a desc names, or None.
+
+    Needed for the start/stop bracket, which is a method on the chunk; the write itself goes
+    by prim path.
     """
     if view is None or desc is None:
         return None
@@ -148,11 +165,17 @@ def _chunk_for(view, desc):
 
 
 def anchor_world(stage, desc):
-    """Where the pivot is, in world space: the anchor's local-to-world with the chunk's
-    pivot applied when it has an opinion about one.
+    """Where the pivot is in world space: the anchor's local-to-world, with the chunk's pivot.
 
-    `offset` is a point in the anchor's OWN object space (contract §2), so it maps through
-    the anchor's local-to-world rather than being added in world space.
+    `offset` is a point in the anchor's OWN object space (contract section 2), so it maps
+    through the anchor's local-to-world rather than being added in world space.
+
+    Args:
+        stage: The stage.
+        desc: The gizmo desc.
+
+    Returns:
+        The world-space point, or None without a valid anchor.
     """
     if stage is None or desc is None:
         return None
@@ -170,12 +193,19 @@ def anchor_world(stage, desc):
 
 
 def parent_rotation(stage, desc) -> Matrix:
-    """The rotation taking a world-space direction into the space the chunk's params are
-    in: the inverse of the anchor's PARENT's local-to-world.
+    """The rotation taking a world-space direction into the space the chunk's params are in.
 
-    A chunk's translate is the prim's own local translation, so a world-space drag on a
-    parented prim has to come back through the parent before it means anything. Rotation
-    and scale only -- a translation offset is not a direction.
+    That is the inverse of the anchor's PARENT's local-to-world. A chunk's translate is the
+    prim's own local translation, so a world-space drag on a parented prim has to come back
+    through the parent before it means anything. Rotation and scale only -- a translation
+    offset is not a direction.
+
+    Args:
+        stage: The stage.
+        desc: The gizmo desc.
+
+    Returns:
+        The rotation matrix; identity without a valid anchor.
     """
     if stage is None or desc is None or not desc.anchor:
         return Matrix()
@@ -202,8 +232,15 @@ def constrain(delta, axis, basis: Matrix) -> Vector:
 
     `X`/`Y`/`Z` during a gesture is Blender's axis lock, and the axis is the one in
     `basis` -- the world's for a world-space handle, the anchor's own for a local one --
-    so the projection is onto that column, not onto a global axis. Unconstrained, the
-    delta is whatever the mouse did.
+    so the projection is onto that column, not onto a global axis.
+
+    Args:
+        delta: The drag, in world space.
+        axis: "X", "Y", "Z", or None for unconstrained.
+        basis: The matrix whose columns are the axes.
+
+    Returns:
+        The constrained delta; the whole delta when unconstrained.
     """
     if axis is None:
         return Vector(delta)
@@ -219,8 +256,16 @@ def screen_angle(centre_2d, start_2d, now_2d) -> float:
     """The angle the mouse has swept about the pivot, in radians.
 
     Blender's own rotate: the pivot is the anchor on screen and the angle is between where
-    the drag began and where it is now. Zero when either arm has no length, since an angle
-    about a point the mouse sits exactly on is not defined.
+    the drag began and where it is now.
+
+    Args:
+        centre_2d: The pivot, in region pixels.
+        start_2d: Where the drag began.
+        now_2d: Where the mouse is now.
+
+    Returns:
+        The angle; zero when either arm has no length, since an angle about a point the
+        mouse sits exactly on is not defined.
     """
     start = Vector(start_2d) - Vector(centre_2d)
     now = Vector(now_2d) - Vector(centre_2d)
@@ -232,9 +277,16 @@ def screen_angle(centre_2d, start_2d, now_2d) -> float:
 def screen_scale(centre_2d, start_2d, now_2d) -> float:
     """How much further from the pivot the mouse is than when the drag began.
 
-    Blender's own scale. One when the gesture started on the pivot, since a ratio against
-    no distance is not a number -- and "no change" is the honest answer for a gesture that
-    cannot say anything yet.
+    Blender's own scale.
+
+    Args:
+        centre_2d: The pivot, in region pixels.
+        start_2d: Where the drag began.
+        now_2d: Where the mouse is now.
+
+    Returns:
+        The ratio; one when the gesture started on the pivot, since a ratio against no
+        distance is not a number and "no change" is the honest answer.
     """
     start = (Vector(start_2d) - Vector(centre_2d)).length
     now = (Vector(now_2d) - Vector(centre_2d)).length
@@ -250,6 +302,15 @@ def rotated(values, axis, radians: float, view_axis=None) -> list:
     other two as the user had them. An unconstrained one is about the view axis, so it
     goes through a matrix and back -- which is what `chunk_gizmo.decompose` is for, and
     doing it there keeps one Euler convention in the codebase instead of two.
+
+    Args:
+        values: The current Euler angles, in degrees.
+        axis: "X", "Y", "Z", or None to turn about the view axis.
+        radians: The turn.
+        view_axis: The world-space axis for an unconstrained turn; +Z when None.
+
+    Returns:
+        The new Euler angles, in degrees.
     """
     degrees = radians * _DEG
     if axis is not None:
@@ -285,8 +346,9 @@ def scaled(values, axis, factor: float) -> list:
 # ---------------------------------------------------------------------------
 
 def _current(chunk, kind) -> list:
-    """The chunk's translate/rotate/scale, read off its params rather than remembered: a
-    param moves for reasons that are not this gesture, and a cached one would write back a
+    """The chunk's translate, rotate or scale, read off its params rather than remembered.
+
+    A param moves for reasons that are not this gesture, and a cached one would write back a
     stale two thirds of the matrix.
     """
     names = {_TRANSLATE: ("tx", "ty", "tz"),
@@ -321,8 +383,13 @@ def write_components(desc, chunk, components) -> None:
 
     A `transform` desc takes a matrix, so all three go together and the chunk decomposes
     once; a desc of one component's own type takes that vector. Every tick, never batched
-    to the end of the gesture (contract §5): the chunk cooks per write, and that is what
-    makes the prim follow the cursor.
+    to the end of the gesture (contract section 5): the chunk cooks per write, and that is
+    what makes the prim follow the cursor.
+
+    Args:
+        desc: The gizmo desc.
+        chunk: The chunk it drives.
+        components: {"translate": ..., "rotate": ..., "scale": ...}.
     """
     if desc.type == "transform":
         payload = _compose(components[_TRANSLATE], components[_ROTATE], components[_SCALE])
@@ -338,9 +405,18 @@ def write_components(desc, chunk, components) -> None:
 # ---------------------------------------------------------------------------
 
 def pivot_point(stage, view):
-    """Where to draw the dot, or None: the driven anchor if a chunk owns this prim, else
-    the prim's own origin -- a picked-but-undriven prim still gets a dot, since a gesture
-    on it creates the chunk that drives it and the dot is the only sign the click landed.
+    """Where to draw the pivot dot, or None.
+
+    The driven anchor if a chunk owns this prim, else the prim's own origin -- a
+    picked-but-undriven prim still gets a dot, since a gesture on it creates the chunk that
+    drives it and the dot is the only sign the click landed.
+
+    Args:
+        stage: The stage.
+        view: The graph view.
+
+    Returns:
+        The world-space point, or None with nothing picked.
     """
     prim = _picked_prim(stage)
     if prim is None:
@@ -407,6 +483,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
     )
 
     @classmethod
+    @override
     def poll(cls, context):
         # Only with the live view up and a prim picked. Anything else and this keymap item
         # stands aside, so G is Blender's own grab as always.
@@ -416,6 +493,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
             return False
         return _picked_prim(viewport.active_stage()) is not None
 
+    @override
     def invoke(self, context, event):
         from bpy_extras import view3d_utils
 
@@ -461,6 +539,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         return view3d_utils.region_2d_to_location_3d(
             self._region, self._rv3d, mouse, self._pivot)
 
+    @override
     def modal(self, context, event):
         if event.type in {"X", "Y", "Z"} and event.value == "PRESS":
             # Pressing the same axis again releases it, the way Blender's second press
@@ -533,6 +612,7 @@ def _unregister_keymap() -> None:
 
 
 def register() -> None:
+    """Register the gizmo operators, keymap and draw handler."""
     for cls in _CLASSES:
         # cls.is_registered, not a bpy.types lookup: Blender addresses an operator by its
         # bl_idname and does NOT publish it on bpy.types under its class name, so asking
@@ -548,6 +628,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    """Unregister everything register() added."""
     _unregister_keymap()
     if _draw_state["handle"] is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_state["handle"], "WINDOW")

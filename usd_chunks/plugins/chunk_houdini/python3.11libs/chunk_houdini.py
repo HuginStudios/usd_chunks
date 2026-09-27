@@ -1,4 +1,11 @@
+"""The Houdini host: runs chunks inside a LOP network, one LOP node per chunk.
+
+Each chunk's params become the node's parameter interface, and the node's editable
+stage is the stage the chunk authors.
+"""
 from __future__ import annotations
+
+from typing_extensions import override
 from usd_chunks import chunk, chunk_registry, chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -8,12 +15,18 @@ import hou
 
 
 class HoudiniSceneProxy(chunk_core.SceneSender):
+    """The SceneSender for one Houdini LOP node, reading the stage and selection from it.
+
+    Args:
+        lopnode: The LOP node hosting the chunk.
+    """
     def __init__(self, lopnode: hou.LopNode, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         self.node = lopnode
         self.chunk: chunk.Chunk | None = None
 
+    @override
     def get_stage(self) -> Usd.Stage:
         if not self.node:
             raise AttributeError("No valid node. Could not get stage")
@@ -27,10 +40,10 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
         raise AttributeError("Could not get stage")
 
     def get_selected_prims(self) -> list[Usd.Prim]:
-        """Get the selected prims in the scene
+        """The prims matched by the node's "prims" selection parameter.
 
         Returns:
-            List[Usd.Prim]: Selected prims
+            list[Usd.Prim]: Selected prims
         """
         res = []
 
@@ -45,15 +58,23 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
         return res
 
     def get_selected_property(self) -> Usd.Property:
-        """Get the selected property in the scene
+        """Not supported in Houdini.
 
-        Returns:
-            Usd.Property: Selected property
+        Raises:
+            NotImplementedError: Always.
         """
         raise NotImplementedError
 
 
 def parm_template_from_chunk_param(param: chunk.ChunkParamBase):
+    """The Houdini parm template for one chunk param, and the callback code that syncs it.
+
+    Args:
+        param: The param.
+
+    Returns:
+        (parm template, callback code), or (None, None) for a param with no template.
+    """
     if isinstance(param, chunk_core.ProxyParam):
         return None, None
 
@@ -78,6 +99,14 @@ def parm_template_from_chunk_param(param: chunk.ChunkParamBase):
 
 
 def parm_template_from_chunk_group(group: chunk_core.ChunkContainerBase):
+    """A Houdini folder parm template for a chunk group, with its children inside.
+
+    Args:
+        group: The group or chunk.
+
+    Returns:
+        (folder template, callback code).
+    """
     folder_type = hou.folderType.Collapsible if not isinstance(group, chunk.ChunkBase) else hou.folderType.Simple
     grp = hou.FolderParmTemplate(group.name, group.get_label(), folder_type=folder_type)
     code = ""
@@ -101,7 +130,16 @@ def parm_template_from_chunk_group(group: chunk_core.ChunkContainerBase):
 
 
 def handle_state_changed(owner: chunk.Chunk, notice, sender):
+    """STATE_CHANGED callback for a chunk hosted on a LOP node. Nothing is mirrored yet.
 
+    It only looks up the chunk's node; reflecting hidden or disabled state onto the node's
+    parameters is still to be written.
+
+    Args:
+        owner: The chunk, whose user_data holds its node.
+        notice: The STATE_CHANGED notice.
+        sender: The sender.
+    """
     node: hou.LopNode | None = owner.user_data.get("node")
     if not node:
         return
@@ -126,6 +164,17 @@ c.add_callback(chunk_houdini.handle_state_changed, notice_alias=chunk.ChunkNotic
 
 
 def create_lop_node(chunk_name: str):
+    """Build the LOP subnet that hosts a chunk under /stage, replacing one of the same name.
+
+    The subnet holds a Python Script node whose code wires the chunk's callbacks, and gets
+    the chunk's params as its parameter interface. Does nothing without a /stage network.
+
+    Args:
+        chunk_name: The chunk module's name.
+
+    Raises:
+        ModuleNotFoundError: No chunk module has that name.
+    """
     root = hou.node("/stage")
     if not root:
         return

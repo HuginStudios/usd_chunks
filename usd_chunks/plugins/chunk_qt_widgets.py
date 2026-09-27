@@ -1,6 +1,13 @@
+"""The Qt widgets that show chunks: one per param type, the group and chunk containers, and dialogs.
+
+ChunkQTWidgetFactory maps each ParamType to its widget; ContainerWidget and ChunkWidget
+lay out a group's or chunk's widgets, collapsible, with the chunk's right-click menu and
+the Params page filter bar.
+"""
 from __future__ import annotations
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Any, Generic
+from typing_extensions import override
 
 from pxr import Sdf, Usd
 
@@ -162,10 +169,17 @@ def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
 
 
 class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
+    """A QSyntaxHighlighter driven by a chunk_core.SyntaxHighlightMapping.
+
+    Args:
+        parent: The document to highlight.
+        chunk_highlighter: The patterns and styles to apply.
+    """
     def __init__(self, parent, chunk_highlighter: chunk_core.SyntaxHighlightMapping):
         super().__init__(parent)
         self._hl = chunk_highlighter
 
+    @override
     def highlightBlock(self, text):
         for start, end, style in self._hl.match_text(text):
             fmt = QtGui.QTextCharFormat()
@@ -179,13 +193,14 @@ class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
 
 
 class _FineDragSlider(QtWidgets.QSlider):
-    """A QSlider whose drag speed drops to a fraction of normal while Ctrl is held, for
-    fine-tuning a value that spans a wide range in a narrow widget (e.g. a translate
-    slider covering meters of range when the desired precision is centimeters). Qt's
-    default drag jumps the value straight to whatever range-to-pixel position is under
-    the cursor -- fine at full speed, but too coarse to hit a precise value in a wide
-    range squeezed into a narrow widget. Only Ctrl+drag is affected; a plain drag keeps
-    Qt's normal behavior untouched (including click-to-jump on press).
+    """A QSlider whose drag slows to a fraction of normal while Ctrl is held.
+
+    For fine-tuning a value that spans a wide range in a narrow widget (e.g. a translate
+    slider covering metres of range when the desired precision is centimetres). Qt's
+    default drag jumps the value straight to whatever range-to-pixel position is under the
+    cursor -- fine at full speed, but too coarse to hit a precise value in a wide range
+    squeezed into a narrow widget. Only Ctrl+drag is affected; a plain drag keeps Qt's
+    normal behaviour untouched (including click-to-jump on press).
     """
 
     _FINE_SENSITIVITY = 0.1
@@ -199,6 +214,7 @@ class _FineDragSlider(QtWidgets.QSlider):
         # setValue()'s integer rounding instead of eventually adding up.
         self._drag_value = 0.0
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if (
             event.button() == QtCore.Qt.MouseButton.LeftButton
@@ -212,6 +228,7 @@ class _FineDragSlider(QtWidgets.QSlider):
         self._fine_dragging = False
         super().mousePressEvent(event)
 
+    @override
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if not self._fine_dragging:
             super().mouseMoveEvent(event)
@@ -226,6 +243,7 @@ class _FineDragSlider(QtWidgets.QSlider):
         self.setValue(round(self._drag_value))
         event.accept()
 
+    @override
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         if self._fine_dragging:
             self._fine_dragging = False
@@ -237,13 +255,21 @@ class _FineDragSlider(QtWidgets.QSlider):
 def caret_step(text: str, caret: int, point: str = ".") -> tuple:
     """Which digit the caret is on, and the size of a step of that digit.
 
-    Returns (digit_index, step). The digit is the one just left of the caret, or the one
-    just right of it when what is on the left is not a digit -- the start of the field, a
-    sign, or the point: "12|.50" steps the 2, "12.|50" steps the 5. The step is the digit's
-    place value: 1 for the last integer digit, 10 for the one before it, 0.1 for the first
-    decimal. (-1, None) when there is no digit to step, which a blank field is.
+    The digit is the one just left of the caret, or the one just right of it when what is
+    on the left is not a digit -- the start of the field, a sign, or the point: "12|.50"
+    steps the 2, "12.|50" steps the 5. The step is the digit's place value: 1 for the last
+    integer digit, 10 for the one before it, 0.1 for the first decimal.
 
     Pure so it can be tested without a widget.
+
+    Args:
+        text: The field's text.
+        caret: The caret position.
+        point: The decimal point character.
+
+    Returns:
+        (digit_index, step), or (-1, None) when there is no digit to step, as in a blank
+        field.
     """
     digit = -1
     if 0 < caret <= len(text) and text[caret - 1].isdigit():
@@ -300,12 +326,17 @@ class NumberField(QtWidgets.QLineEdit):
     # -- value ---------------------------------------------------------------------------
 
     def value(self):
+        """The number shown."""
         return self._value
 
     def setValue(self, value) -> None:
-        """Show `value`, keeping the caret on the same place value when the text changes
-        shape (9.9 -> 10.0 gains a digit on the left), so holding Up keeps stepping the
-        digit that was chosen. Emits valueChanged when the value actually changed.
+        """Show `value`, keeping the caret on the same place value when the text changes shape.
+
+        9.9 -> 10.0 gains a digit on the left, so holding Up keeps stepping the digit that was
+        chosen. Emits valueChanged when the value actually changed.
+
+        Args:
+            value: The number to show.
         """
         value = float(value) if self._is_float else int(round(value))
         offset = self.cursorPosition() - self._point_at(self.text())
@@ -355,6 +386,7 @@ class NumberField(QtWidgets.QLineEdit):
 
     # -- keys ----------------------------------------------------------------------------
 
+    @override
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         key = event.key()
         steps = {
@@ -370,6 +402,7 @@ class NumberField(QtWidgets.QLineEdit):
         event.accept()
 
     def stepBy(self, steps: int) -> None:
+        """Step the digit under the caret by `steps` of its place value."""
         _digit, step = caret_step(self.text(), self.cursorPosition())
         if step is None:
             return
@@ -382,12 +415,14 @@ class NumberField(QtWidgets.QLineEdit):
             new = round(new, self._decimals)
         self.setValue(new)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
         # Same as the slider beside it: the wheel scrolls the panel, it does not edit.
         event.ignore()
 
 
 class SpinSlider(QtWidgets.QWidget):
+    """A slider paired with a number field, kept in step with each other."""
     def __init__(self, parent=None, is_float=False):
         super().__init__(parent)
         self._step = 1000 if is_float else 1
@@ -416,21 +451,27 @@ class SpinSlider(QtWidgets.QWidget):
             self.slider.setValue(int(real_value * self._step))
 
     def setRange(self, min_int, max_int):
+        """Set the slider's range, in its integer steps."""
         self.slider.setRange(min_int, max_int)
 
     def setValue(self, int_value):
+        """Set the slider's position, in its integer steps."""
         self.slider.setValue(int_value)
 
     def value(self):
+        """The slider's position, in its integer steps."""
         return self.slider.value()
 
     def setOrientation(self, orient):
+        """Lay the slider out horizontally or vertically."""
         self.slider.setOrientation(orient)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
 class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
+    """A Slider param, int or float, as a SpinSlider."""
     def __init__(self, param: chunk.Slider):
         is_float = ChunkFlags.ParamType.FLOAT in param.evaluate_type()
         super().__init__(param, is_float=is_float)
@@ -448,6 +489,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
         self.setRange(min_int, max_int)
 
+    @override
     def handle_param_changed(self, notice, sender):
         # A range that moves after the widget exists -- a Wedge row's Min/Max edited once
         # its slider is lofted -- would otherwise leave the slider spanning the old one.
@@ -455,9 +497,11 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
             self._apply_range()
         super().handle_param_changed(notice, sender)
 
+    @override
     def get_value(self):
         return self.value() / self._step
 
+    @override
     def set_value(self, value):
         if isinstance(value, str):
             value = self.param.value
@@ -468,12 +512,14 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
             self.slider.setValue(int_val)
             self.spin_box.setValue(int_val / self._step)
 
+    @override
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
         is_horizontal = ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
         self.setOrientation(orient)
 
+    @override
     def value_changed(self, value: int | float | None = None):
         if not self.param or value is None:
             return
@@ -485,14 +531,17 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
             result = int(result)
         super().value_changed(result)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
+    """A float Spinbox param."""
     def __init__(self, param: chunk.Spinbox):
         super().__init__(param)
 
@@ -514,9 +563,11 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
 
+    @override
     def get_value(self):
         return self.value()
 
+    @override
     def set_value(self, value):
         if isinstance(value, str):
             value = self.param.value
@@ -525,17 +576,21 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         with QtCore.QSignalBlocker(self):
             self.setValue(value)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpinBox):
+    """An int Spinbox param."""
     def __init__(self, param: chunk.Spinbox):
         super().__init__(param)
 
@@ -557,9 +612,11 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
 
+    @override
     def get_value(self):
         return self.value()
 
+    @override
     def set_value(self, value):
         if isinstance(value, str):
             value = self.param.value
@@ -568,38 +625,48 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         with QtCore.QSignalBlocker(self):
             self.setValue(value)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
+    """A Label param, as read-only text."""
     def __init__(self, param: chunk.Label):
         super().__init__(param)
         self.setup_chunk_widget()
 
+    @override
     def get_value(self):
         return self.text()
 
+    @override
     def set_value(self, value):
         return self.set_label(value)
 
+    @override
     def set_label(self, text):
         return self.setText(text)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidget):
+    """A LineEdit param; a prim-path field also gets a button to pick the selected prims."""
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
 
@@ -636,12 +703,14 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         # row's proxy widget gets created) -- apply current state explicitly, once, now.
         self.update_from_state()
 
+    @override
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
         if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
             self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
         return super().handle_param_changed(notice, sender)
 
     def pin_prim(self):
+        """Fill the field with the host's selected prims; nothing selected leaves it as it is."""
         scene = self.param.get_scene()
         if not scene:
             return
@@ -666,8 +735,11 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         that is not wholly existing prims -- a name, a glob, a path not authored yet -- gives
         nothing, so ctrl+click there stays an ordinary click.
 
-        Read from the param, not the text box: an expression field shows `@Other.param@`
-        while its value is the path it resolves to.
+        Read from the param, not the text box: an expression field shows `@Other.param@` while
+        its value is the path it resolves to.
+
+        Returns:
+            The prim paths, or an empty list.
         """
         scene = self.param.get_scene()
         stage = scene.get_stage() if scene else None
@@ -685,10 +757,12 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return paths
 
     def select_in_scene(self) -> bool:
+        """Select the prims this field names in the host. True if it did."""
         scene = self.param.get_scene()
         paths = self.scene_prim_paths()
         return bool(scene and paths and scene.select_prims(paths))
 
+    @override
     def eventFilter(self, watched, event):
         if watched is self.text:
             if (event.type() == QtCore.QEvent.Type.MouseButtonPress
@@ -710,18 +784,23 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
                 return True
         return super().eventFilter(watched, event)
 
+    @override
     def get_value(self):
         return self.text.text()
 
+    @override
     def set_value(self, value):
         return self.text.setText(str(value))
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
+    @override
     def update_from_state(self):
         # Base ChunkParamWidgetBase.update_from_state is a no-op stub with no default
         # implementation -- without this override, DISABLED never actually renders as
@@ -731,6 +810,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
 
 class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
+    """A TextEdit param, as a multi-line text box."""
     def __init__(self, param: chunk.TextEdit):
         super().__init__(param)
 
@@ -763,26 +843,32 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         self.setLayout(self.main_layout)
         self.setup_chunk_widget()
 
+    @override
     def focusOutEvent(self, event: QtGui.QFocusEvent) -> None:
         self.value_changed(self.get_value())
         return super().focusOutEvent(event)
 
+    @override
     def get_value(self):
         return self.text.document().toPlainText()
 
+    @override
     def set_value(self, value):
         if value != self.get_value():
             with QtCore.QSignalBlocker(self.text):
                 self.text.setPlainText(str(value))
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
+    """A FileBrowser param: a path field with a button that opens a file dialog."""
     ValueChanged = QtCore.Signal(str)
 
     def __init__(self, param: chunk.FileBrowser):
@@ -802,6 +888,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         self.ValueChanged.connect(self.value_changed)
 
     def open_file_dial(self):
+        """Open the file dialog the param asks for and write the chosen path back."""
         if not self.param:
             return
 
@@ -821,15 +908,19 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
             self.set_value(file)
             self.ValueChanged.emit(file)
 
+    @override
     def get_value(self):
         return self.text.text()
 
+    @override
     def set_value(self, value):
         return self.text.setText(str(value))
 
+    @override
     def set_icon(self, icon: str):
         self.button.setIcon(QtGui.QIcon(icon))
 
+    @override
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
         if ChunkFlags.LayoutFlags.VERTICAL == layout_flags:
             self.main_layout = QtWidgets.QVBoxLayout()
@@ -842,14 +933,17 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
 
         self.setLayout(self.main_layout)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox):
+    """A Menu param, as a combo box."""
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
 
@@ -860,9 +954,11 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         self.currentTextChanged.connect(self.value_changed)
 
     def menu_items_changed(self, notice, sender):
+        """Refill the combo box when the param's menu_items change."""
         self.update_menu_items(self.param)
 
     def update_menu_items(self, param: chunk.Menu):
+        """Refill the combo box from the param's menu_items, keeping its current value."""
         menu_items = self.param.menu_items
         # clear()/addItems() make Qt auto-select (and emit currentTextChanged for) the
         # first item as the list goes from empty to populated. That signal is wired to
@@ -878,9 +974,11 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
             if val:
                 self.set_value(val)
 
+    @override
     def get_value(self):
         return self.currentText()
 
+    @override
     def set_value(self, value):
         if isinstance(value, str) and chunk_utils.has_expression(value):
             # setup_chunk_widget()/handle_param_changed() (ChunkParamWidgetBase) pass
@@ -901,6 +999,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
                 self.addItem(value)
             self.setCurrentIndex(index)
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() != QtCore.Qt.LeftButton:
             super().mousePressEvent(event)
@@ -931,26 +1030,32 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
     def _menu_item_chosen(self, action) -> None:
         self.setCurrentText(action.text())
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheckBox):
+    """A Checkbox param."""
     def __init__(self, param: chunk.Checkbox):
         super().__init__(param)
         self.setup_chunk_widget()
 
         self.toggled.connect(self.value_changed)
 
+    @override
     def get_value(self):
         return self.isChecked()
 
+    @override
     def set_value(self, value: bool):
         if isinstance(value, str):
             value = self.param.value
@@ -959,39 +1064,54 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
         with QtCore.QSignalBlocker(self):
             self.setChecked(value)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
+    """A Button param."""
     def __init__(self, param: chunk.Button):
         super().__init__(param)
         self.setup_chunk_widget()
         self.clicked.connect(self.value_changed)
 
+    @override
     def set_label(self, text):
         self.setText(text)
 
+    @override
     def set_icon(self, icon: str):
         qicon = QtGui.QIcon(icon)
         self.setIcon(qicon)
 
     def value_changed(self, value: Any = None):
-        """Override for buttons as the param do not have a value. Better to just send the param notice directly"""
+        """Click the button param.
+
+        A button has no value to write, so the click goes straight to the param, which sends
+        its notice.
+
+        Args:
+            value: Ignored.
+        """
         if self.param:
             self.param.click()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
+    """A Separator param, as a horizontal line."""
     def __init__(self, param: chunk.Separator):
         super().__init__(param)
 
@@ -1002,14 +1122,17 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
 
         self.setup_chunk_widget()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
 
 class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.QPushButton):
+    """A ColorPicker param: a colour swatch that opens a colour dialog."""
     def __init__(self, param: chunk.ColorPicker):
         super().__init__(param)
         self.setFixedHeight(24)
@@ -1031,9 +1154,11 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             f"border-radius: 3px;"
         )
 
+    @override
     def get_value(self):
         return self.param.value
 
+    @override
     def set_value(self, value):
         if value is None:
             return
@@ -1044,12 +1169,15 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
                 max(0.0, min(1.0, float(value[2]))),
             ))
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
+    @override
     def update_from_state(self):
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
         is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
@@ -1084,6 +1212,7 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
 
 
 class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
+    """Creates the Qt widget for each ParamType."""
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
         ChunkFlags.ParamType.INT_SLIDER: ChunkSliderWidget,
@@ -1101,14 +1230,14 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     }
 
     def create_widget(self, param: chunk.ChunkParamBase) -> ChunkParamWidgetBase | None:
-        """Create a Qt widget based on the ChunkParam object. The param.get_type() should determine the type of Qt Widget to create
+        """Create the Qt widget for a param, chosen by its evaluate_type().
 
         Args:
-            param (chunk.ChunkParamBase): The parameter. The widget will update param.value when widget value is changed
+            param (chunk.ChunkParamBase): The param. The widget updates param.value when its
+                value is changed
 
         Returns:
-            QtWidgets.QWidget: The QtWidget created
-            None: If failed to create a widget
+            ChunkParamWidgetBase | None: The widget, or None if the type has no mapping
         """
         key = param.evaluate_type()
         widget_class = self.get_map().get(key, None)
@@ -1134,6 +1263,7 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
 
 
 class LabeledWidget(QtWidgets.QWidget):
+    """A param widget with its label, value tooltip, and expression and override marks."""
     def __init__(self, widget, parent=None):
         super().__init__(parent)
 
@@ -1199,6 +1329,7 @@ class LabeledWidget(QtWidgets.QWidget):
             self.setHidden(hidden)
 
     def should_show_tooltip(self):
+        """Whether hovering shows the param's value as a tooltip."""
         if not isinstance(self.widget, ChunkParamWidgetBase):
             return False
         if isinstance(self.widget, ChunkSliderWidget):
@@ -1210,8 +1341,10 @@ class LabeledWidget(QtWidgets.QWidget):
         return True
 
     def tooltip_pos(self):
+        """Where the value tooltip appears: just below and right of the cursor."""
         return QtGui.QCursor.pos() + QtCore.QPoint(16, 8)
 
+    @override
     def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if obj is self.label:
             if event.type() == QtCore.QEvent.Type.Enter:
@@ -1226,6 +1359,7 @@ class LabeledWidget(QtWidgets.QWidget):
         return False
 
     def show_tooltip(self):
+        """Show the label's name hint, or the param's value, as a tooltip."""
         if self._label_hovered and self._name_hint:
             text = self._name_hint
         elif self.should_show_tooltip():
@@ -1258,10 +1392,12 @@ class LabeledWidget(QtWidgets.QWidget):
         return self._show_timer
 
     def hide_tooltip(self):
+        """Hide the value tooltip."""
         if self._value_tooltip is not None:
             self._value_tooltip.hide()
 
     def update_value(self, notice: chunk_notice.ChunkNotice, sender):
+        """Refresh the label and marks when the param's name, label or value changes."""
         name = notice.data.name
         if name in ["label", "name"]:
             self.update_label(notice.data.value)
@@ -1272,16 +1408,18 @@ class LabeledWidget(QtWidgets.QWidget):
                 self.show_tooltip()
 
     def update_label(self, text):
+        """Show `text` as the label, hiding the label when it is empty."""
         self.label.setHidden(not bool(text))
         self.label.setText(text)
         self._sync_expression_mark()
         self._sync_override_mark()
 
     def _sync_override_mark(self):
-        """Show on the label that this param's value overrides one composed in from a file
-        (chunk_stage.param_override_source): a sequence's chunk nudged in the shot. The
-        question every shot artist asks of a referenced network is "what did we change
-        here", and the field itself cannot say -- the value it shows is just a value.
+        """Show on the label whether this param's value overrides one composed in from a file.
+
+        See chunk_stage.param_override_source: a sequence's chunk nudged in the shot. The
+        question every shot artist asks of a referenced network is "what did we change here",
+        and the field itself cannot say -- the value it shows is just a value.
         """
         if not isinstance(self.widget, ChunkParamWidgetBase):
             return
@@ -1320,23 +1458,27 @@ class LabeledWidget(QtWidgets.QWidget):
             self.label.style().polish(self.label)
         self.label.setToolTip(str(raw) if expr else "")
 
+    @override
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self.should_show_tooltip():
             event.accept()
         return super().mouseMoveEvent(event)
 
+    @override
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:
         if self.should_show_tooltip() and not self._label_hovered:
             self._hover_timer().start(600)
             event.accept()
         return super().enterEvent(event)
 
+    @override
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         if self._show_timer is not None:
             self._show_timer.stop()
         self.hide_tooltip()
         return super().leaveEvent(event)
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not isinstance(self.widget, ChunkParamWidgetBase):
             event.ignore()
@@ -1423,6 +1565,7 @@ class LabeledWidget(QtWidgets.QWidget):
 
 
 class ChunkArea(QtWidgets.QScrollArea):
+    """The scrolling area of a Params page, holding chunk widgets in a flow layout."""
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -1445,10 +1588,11 @@ class ChunkArea(QtWidgets.QScrollArea):
         self.setWidgetResizable(True)
 
     def add_widget(self, w):
+        """Add a chunk widget to the page."""
         self.flow.addWidget(w)
 
     def delete_chunks(self):
-        # Deletes all chunks in this ScrollArea. Currently undoable: TODO: add undo/redo
+        """Delete every chunk shown on the page. This cannot be undone."""
         for i in range(self.flow.count()):
             if item := self.flow.itemAt(i):
                 w = item.widget()
@@ -1459,8 +1603,9 @@ class ChunkArea(QtWidgets.QScrollArea):
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QFrame
 ):
-    """Chunk is a base class for creating UI components.
-    It provides a structure for initializing the API and creating UI Chunks.
+    """The Qt widget for a group: a collapsible header over its children's widgets.
+
+    List groups also get their add and remove row controls.
     """
 
     group_height_changed = QtCore.Signal(float)
@@ -1491,6 +1636,7 @@ class ContainerWidget(
         cfg = getattr(self.group, 'get_config', lambda: None)()
         return not (cfg and getattr(cfg, 'module', None))
 
+    @override
     def build_collapsable(self):
         if self._is_context_tab():
             # Plain tab contexts are scrollable containers for all child chunks.
@@ -1568,15 +1714,18 @@ class ContainerWidget(
             f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
 
+    @override
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
 
     @QtCore.Property(float)
     def animation_value(self):  # type: ignore
+        """The collapse animation's progress, in milliseconds."""
         return self._animation_value
 
     @animation_value.setter
     def animation_value(self, val):
+        """Advance the collapse animation, resizing the content to match."""
         self._animation_value = val
         scale = max(self._animation_value / self.animation_duration, 0)
 
@@ -1592,7 +1741,11 @@ class ContainerWidget(
         self.content.setFixedHeight(int(h * scale))
 
     def animation_finished(self):
-        """Modify the layout sizeConstraint when collapsed. Otherwise the child groups of collapsed ContainerWidgets will scale the widget when addWidget is called on the cild"""
+        """Set the content layout's size constraint for the collapsed or expanded state.
+
+        Collapsed, it is unconstrained; otherwise the child groups of a collapsed
+        ContainerWidget would resize the widget whenever addWidget is called on a child.
+        """
         # Drop the measurement so a later animation re-measures content that may have
         # changed size in the meantime (params added, a nested group expanded).
         self._anim_target_h = None
@@ -1601,12 +1754,14 @@ class ContainerWidget(
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
+    @override
     def get_widget_factory(self) -> chunk_widget_api.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
             return factory
         else:
             return ChunkQTWidgetFactory()
 
+    @override
     def update_from_layout(self):
         if ChunkFlags.LayoutFlags.HORIZONTAL == self.group.layout:
             self.content_layout.setDirection(QtWidgets.QBoxLayout.Direction.LeftToRight)
@@ -1614,6 +1769,7 @@ class ContainerWidget(
             self.content_layout.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom)
         return super().update_from_layout()
 
+    @override
     def update_from_flags(self):
         if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
             # Enables animatiable collapsing of the group
@@ -1647,31 +1803,38 @@ class ContainerWidget(
             self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
             self.list_expand_button.clicked.connect(self.list_expand)
 
+    @override
     def update_label(self, text: str):
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
             self.minimize_button.setText(text)
 
     def list_expand(self):
+        """Add a row to a list group."""
         if not isinstance(self.group, chunk_core.ChunkListGroupBase):
             return
 
         self.group.size += 1
 
+    @override
     def set_hidden(self, val: bool):
         # See LabeledWidget._sync_hidden: asking for the state it is already in is not free
         # during construction, and update_from_state asks for it once per container.
         if val != self.isHidden():
             self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.content.setEnabled(val)
 
+    @override
     def set_selected(self, val: bool):
         pass
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         event.accept()
 
+    @override
     def update_from_state(self):
         super().update_from_state()
 
@@ -1681,6 +1844,7 @@ class ContainerWidget(
             if self.is_collapsed():
                 self.content.setFixedHeight(0)
 
+    @override
     def set_expanded(self, checked):
         arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
         direction = (
@@ -1717,6 +1881,7 @@ class ContainerWidget(
                 self._button_sheet = sheet
                 self.minimize_button.setStyleSheet(sheet)
 
+    @override
     def delete_self(self):
         try:
             self.deleteLater()
@@ -1729,6 +1894,7 @@ class ContainerWidget(
             # C++ object already destroyed (e.g. by QGraphicsProxyWidget teardown)
             pass
 
+    @override
     def remove_widget(self, widget: QtWidgets.QWidget):
         try:
             count = self.content_layout.count()
@@ -1759,6 +1925,7 @@ class ContainerWidget(
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
 
+    @override
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
@@ -1786,6 +1953,7 @@ class ContainerWidget(
         self.content_layout.addWidget(labeled)
 
     def remove_from_list_group(self, widget: QtWidgets.QWidget):
+        """Remove a row's widget from a list group, and the row with it."""
         if isinstance(self.group, chunk_core.ChunkListGroupBase):
             for i in range(self.content_layout.count()):
                 item = self.content_layout.itemAt(i)
@@ -1825,17 +1993,21 @@ class ViewSlotState(QtCore.QObject):
 
     @property
     def active_slot(self) -> int:
+        """The active view slot, 0 for none."""
         return self._slot
 
     def set_slot(self, slot: int) -> None:
+        """Set the active view slot, emitting slot_changed when it changes."""
         if slot != self._slot:
             self._slot = slot
             self.slot_changed.emit(slot)
 
     def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
-        """Thin, overridable seam around QMenu.exec() -- PySide6 doesn't allow monkeypatching
-        QMenu.exec itself (it's a bound virtual slot, not a plain Python attribute), so tests
-        stub this plain instance method instead of driving a real modal popup.
+        """A thin, overridable seam around QMenu.exec().
+
+        PySide6 doesn't allow monkeypatching QMenu.exec itself (it's a bound virtual slot, not a
+        plain Python attribute), so tests stub this plain instance method instead of driving a
+        real modal popup.
         """
         return menu.exec(pos)
 
@@ -1885,17 +2057,21 @@ class ViewSlotState(QtCore.QObject):
         global_pos: QtCore.QPoint,
         graph_view=None,
     ) -> None:
-        """Build and exec the shared right-click menu for a chunk.
+        """Build and run the shared right-click menu for a chunk.
 
-        Handles custom callback actions, Inspect Layer, and Set View / Activate
-        View N.  The actual view-node creation is delegated to ChunkGraphView
-        via the create_view_for signal.
+        Handles custom callback actions, Inspect Layer, and Set View / Activate View N. The
+        view-node creation itself is delegated to ChunkGraphView via the create_view_for
+        signal.
 
-        graph_view: the owning ChunkGraphView, passed only by the graph node right-click
-        (ChunkGraphView._show_chunk_menu) -- None from the Params-tab widget's own right-click
-        (ChunkWidget.contextMenuEvent), which has no graph selection to act on. Gates
-        Copy/Cut/Duplicate, which operate on the graph's current (possibly multi-node)
-        selection via graph_view, not just this one right-clicked chunk.
+        Args:
+            grp: The chunk right-clicked.
+            prim_path: Its prim path.
+            global_pos: Where to show the menu, in screen coordinates.
+            graph_view: The owning ChunkGraphView, passed only by the graph node right-click
+                (ChunkGraphView._show_chunk_menu) -- None from the Params page's own right-click
+                (ChunkWidget.contextMenuEvent), which has no graph selection to act on. Gates
+                Copy/Cut/Duplicate, which act on the graph's current (possibly multi-node)
+                selection rather than just this chunk.
         """
         # What this menu acts on. Right-clicking a node inside the selection acts on the
         # whole selection; right-clicking one outside it acts on that node alone, the same
@@ -2030,10 +2206,11 @@ class ViewSlotState(QtCore.QObject):
 
 
 class ParamsFilterBar(QtWidgets.QWidget):
-    """Per-tab filter bar shown at the top of a context's Params page: a pin-filter toggle plus
-    a fuzzy search box with a Name/Type/Both scope combobox -- two independent, AND'd filters
-    over the same Params page (see chunk_stage.chunk_matches_search /
-    ChunkWidget._is_hidden_by_params_filter).
+    """The filter bar at the top of a context's Params page.
+
+    A pin-filter toggle plus a fuzzy search box with a Name/Type/Both scope -- two
+    independent filters, both of which a chunk must pass to show (see
+    chunk_stage.chunk_matches_search and ChunkWidget._is_hidden_by_params_filter).
     """
 
     pin_filter_toggled = QtCore.Signal(bool)
@@ -2064,11 +2241,13 @@ class ParamsFilterBar(QtWidgets.QWidget):
         layout.addWidget(self.scope_combo)
 
     def set_pin_filter_checked(self, checked: bool) -> None:
+        """Show the pin filter's state without emitting a change."""
         self.pin_filter_checkbox.blockSignals(True)
         self.pin_filter_checkbox.setChecked(checked)
         self.pin_filter_checkbox.blockSignals(False)
 
     def set_search_state(self, query: str, scope: str) -> None:
+        """Show a search query and scope without emitting a change."""
         self.search_box.blockSignals(True)
         self.search_box.setText(query)
         self.search_box.blockSignals(False)
@@ -2079,6 +2258,7 @@ class ParamsFilterBar(QtWidgets.QWidget):
         self.scope_combo.blockSignals(False)
 
     def current_scope(self) -> str:
+        """The search scope chosen: "both", "name" or "type"."""
         return self.scope_combo.currentData()
 
     def _on_scope_changed(self, _index: int) -> None:
@@ -2089,8 +2269,10 @@ class ParamsFilterBar(QtWidgets.QWidget):
 
 
 class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
-    """Chunk is a base class for creating UI components.
-    It provides a structure for initializing the API and creating UI Chunks.
+    """The Qt widget for a chunk: its params, header, right-click menu and view-slot overlay.
+
+    A tab's context also gets the Params page filter bar and decides which of its chunks the
+    page shows.
     """
 
     SELECTED_COLOR = "#cab46a"
@@ -2124,6 +2306,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
     def set_view_state(self, vs: ViewSlotState) -> None:
+        """Switch to another ViewSlotState, moving the signal connections over."""
         if self._view_state is not None:
             self._view_state.slot_changed.disconnect(self._update_view_overlay)
             self._view_state.pin_changed.disconnect(self._on_pin_changed)
@@ -2135,16 +2318,19 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._update_view_overlay(vs.active_slot)
 
     def _on_pin_filter_toggled(self, enabled: bool) -> None:
-        """The filter bar's pin-filter checkbox changed for this tab. Unlike a single chunk's
-        pin toggle, this can change visibility for every chunk in the tab at once.
+        """Apply a change to this tab's pin-filter checkbox.
+
+        Unlike a single chunk's pin toggle, this can change visibility for every chunk in the
+        tab at once.
         """
         chunk_stage.set_pin_filter_enabled(self.group, enabled)
         self._reconcile_all_children()
 
     def _on_search_changed(self, query: str, scope: str) -> None:
-        """The filter bar's search box or a scope chip changed for this tab -- live, on every
-        keystroke, same as the create-menu's FilterableChunkMenu search. Can change visibility
-        for every chunk in the tab at once.
+        """Apply a change to this tab's search box or scope.
+
+        Live, on every keystroke, like the create menu's FilterableChunkMenu search. It can
+        change visibility for every chunk in the tab at once.
         """
         chunk_stage.set_search_query(self.group, query)
         chunk_stage.set_search_scope(self.group, scope)
@@ -2163,10 +2349,10 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._reconcile_chunk_visibility(target_chunk)
 
     def _reconcile_chunk_visibility(self, target_chunk: chunk.ChunkBase) -> None:
-        """Show or hide target_chunk in this tab's Params page to match the current combined
-        filter state (right now just the pin filter; issue #06 adds search on top). Used both
-        for a single chunk's pin toggle and, looped over every child, for a filter-bar change
-        that can affect many chunks in the tab at once.
+        """Show or hide target_chunk on this tab's Params page to match the current filters.
+
+        Used both for a single chunk's pin toggle and, looped over every child, for a filter-bar
+        change that can affect many chunks in the tab at once.
         """
         hidden = self._is_hidden_by_params_filter(target_chunk)
         shown = target_chunk.get_hash() in self.group_widgets
@@ -2177,8 +2363,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _reconcile_all_children(self) -> None:
         """Re-apply the current filter state to every direct child chunk of this tab context.
-        Call after a filter-bar change (e.g. the pin-filter toggle) -- unlike a single chunk's
-        pin toggle, that can change visibility for many chunks in the tab at once.
+
+        Call after a filter-bar change -- unlike a single chunk's pin toggle, that can change
+        visibility for many chunks in the tab at once.
         """
         if not self._is_tab_context_widget:
             return
@@ -2247,11 +2434,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             sz.height(),
         )
 
+    @override
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._view_overlay:
             self._position_view_overlay()
 
+    @override
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
             if event.key() in (
@@ -2275,6 +2464,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         """True only when shown as a node in a parent context (not as the tab context widget itself)."""
         return self._is_group_chunk() and not getattr(self, '_is_tab_context_widget', False)
 
+    @override
     def build_collapsable(self):
         super().build_collapsable()
 
@@ -2375,6 +2565,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self.content.hide()
                 self.content.setMaximumHeight(0)
 
+    @override
     def add_widget(self, widget: QtWidgets.QWidget, label=None):
         if self._is_group_chunk_node() and not isinstance(widget, ChunkParamWidgetBase):
             # Shown as a node: suppress all non-lofted widgets.
@@ -2392,11 +2583,12 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             super().add_widget(widget, label)
 
     def _is_hidden_by_params_filter(self, group_chunk) -> bool:
-        """True if group_chunk should be hidden from THIS tab's Params page under the current
-        combined filter state -- the pin filter AND the search box, two independent filters
-        that both have to pass for a chunk to show. Only meaningful when self is the
-        tab-context widget -- a context's own direct children are the only things this filter
-        applies to, never nested groups within a chunk's own UI.
+        """Whether group_chunk should be hidden from THIS tab's Params page under the current filters.
+
+        The pin filter AND the search box are two independent filters that both have to pass
+        for a chunk to show. Only meaningful when self is the tab-context widget -- a context's
+        own direct children are the only things this filter applies to, never nested groups
+        within a chunk's own UI.
         """
         if not self._is_tab_context_widget:
             return False
@@ -2434,6 +2626,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             return
         super()._build_param_widgets(group)
 
+    @override
     def animation_finished(self):
         super().animation_finished()
         if self._is_context_tab() and not self.is_collapsed():
@@ -2442,6 +2635,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(16777215)
 
+    @override
     def update_from_state(self):
         if self._is_group_chunk_node():
             # Skip super() -- it would start the collapse animation which calls
@@ -2543,6 +2737,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             p = p.parent()
         return None
 
+    @override
     def contextMenuEvent(self, event):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             event.ignore()
@@ -2559,16 +2754,17 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         vs.show_chunk_menu(self.group, prim_path, event.globalPos())
 
     def get_category(self) -> str:
-        """Get the category of this Chunk
+        """Get the menu category of this chunk.
 
         Returns:
-            str: Category of this Chunk
+            str: The category from the chunk's config, or the default category
         """
         if isinstance(self.group, chunk_core.ChunkBase):
             if config := self.group.get_config():
                 return config.category
         return chunk.DefaultConfig().category
 
+    @override
     def set_selected(self, val: bool):
         selected = bool(
             val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk())
@@ -2595,6 +2791,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
         return super().set_selected(val)
 
+    @override
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if (watched is getattr(self, 'minimize_button', None)
                 and event.type() == QtCore.QEvent.Type.MouseButtonDblClick
@@ -2625,12 +2822,14 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
 
 def confirm_dial(msg) -> bool:
+    """Ask a yes/no question in a message box. True for yes."""
     dial = QtWidgets.QMessageBox(text=msg)
     dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
 
 
 def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
+    """Show source code in a read-only, highlighted dialog."""
     _editor = QtWidgets.QPlainTextEdit(src, readOnly=True)
 
     SyntaxHighlighter(_editor.document(), highlighter)
@@ -2818,6 +3017,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             # text is what makes it measure again after the list changes size.
             self._results_action.setText(f"{len(ranked or ())}:{self.results.height()}")
 
+    @override
     def eventFilter(self, obj, event):
         if obj is self.filter_widget:
             if event.type() == event.Type.KeyPress:
@@ -2941,6 +3141,16 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
 
 def file_dial(name_filter: str | None = None, create_new=False, directory=False):
+    """Ask for a file or directory with a file dialog.
+
+    Args:
+        name_filter: The file name filter, e.g. "*.usda *.usd".
+        create_new: Ask for a file to save rather than one to open.
+        directory: Ask for a directory instead of a file.
+
+    Returns:
+        The chosen path, or "" if the dialog was cancelled.
+    """
     if directory:
         return QtWidgets.QFileDialog.getExistingDirectory(None, "Open Directory", "")
 
@@ -2999,10 +3209,12 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
     def showEvent(self, event):
         """Take the size the path needs, once there is something laid out to measure.
 
-        A layout skips hidden widgets, and a child created while its parent is not yet
-        visible is hidden -- so sizing at set_context time measured the margins alone and
-        left a 12x4 plate holding four buttons nobody could see. Being shown is the first
-        moment the hint is real.
+        A layout skips hidden widgets, and a child created while its parent is not yet visible
+        is hidden -- so sizing earlier would measure the margins alone and leave the buttons
+        out of sight. Being shown is the first moment the hint is real.
+
+        Args:
+            event: The show event.
         """
         super().showEvent(event)
         self.resize(self.sizeHint())
@@ -3074,12 +3286,18 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
 
 
 def context_ancestry(ctx) -> list:
-    """Ctx and everything it is nested inside, outermost first.
+    """The context `ctx` and everything it is nested inside, outermost first.
 
     Walks _parent_context, which is what actually records the nesting -- get_context()
     returns self for a context chunk and so says nothing about where it sits. Guarded
     against a cycle: prim nesting should prevent one, but a path widget is a poor place to
     discover otherwise.
+
+    Args:
+        ctx: The context.
+
+    Returns:
+        The contexts, outermost first.
     """
     chain: list = []
     seen: set = set()

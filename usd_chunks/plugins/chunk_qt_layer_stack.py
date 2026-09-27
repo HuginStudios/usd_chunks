@@ -17,6 +17,8 @@ a later one -- so reading top-to-bottom is reading strongest-to-weakest.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Usd, Sdf, Pcp, Tf
 
@@ -67,8 +69,9 @@ def _short_id(layer):
 
 
 class _UsdHighlighter(QtGui.QSyntaxHighlighter):
-    """Lightweight USD-text colouring for the inspect dialog (keywords / types /
-    strings / comments). Intentionally rough -- this is a read-only inspector.
+    """Lightweight USD-text colouring for the inspect dialog: keywords, types, strings, comments.
+
+    Intentionally rough -- this is a read-only inspector.
     """
 
     def __init__(self, doc):
@@ -96,6 +99,7 @@ class _UsdHighlighter(QtGui.QSyntaxHighlighter):
         cm.setForeground(QtGui.QColor("#6a6a6a"))
         self._rules.append((QtCore.QRegularExpression(r"#[^\n]*"), cm))
 
+    @override
     def highlightBlock(self, text):
         for rx, fmt in self._rules:
             it = rx.globalMatch(text)
@@ -237,6 +241,7 @@ class LayerStackPanel(QtWidgets.QWidget):
         self._follow_selection = on
         self.refresh()
 
+    @override
     def closeEvent(self, event):
         # Drop the Tf listeners so we don't fire into a dead widget.
         for lst in self._listeners:
@@ -268,6 +273,7 @@ class LayerStackPanel(QtWidgets.QWidget):
 
     # -------------------------------------------------------------- rendering
     def refresh(self):
+        """Rebuild both trees from the current stage."""
         stage = self._get_stage()
         self.layer_tree.clear()
         self.prim_tree.clear()
@@ -478,8 +484,13 @@ class LayerStackPanel(QtWidgets.QWidget):
 
 
 def open_window(api):
-    """Create (or raise) the Layer Stack window. Returns the window so the caller
-    can keep a reference alive.
+    """Create and raise the Layer Stack window.
+
+    Args:
+        api: The usdview API object.
+
+    Returns:
+        The window, so the caller can keep a reference alive.
     """
     parent = getattr(api, "qMainWindow", None)
     win = LayerStackPanel(api, parent=parent)

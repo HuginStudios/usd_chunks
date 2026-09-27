@@ -4,6 +4,8 @@ This module provides a framework for dynamically loading and managing custom UI 
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 from pxr import Tf, Usd, Gf, Sdf, UsdGeom
@@ -50,9 +52,7 @@ def _set_clip_overrides(free_cam, clip):
 
 
 class UsdviewScene(chunk_core.SceneSender):
-    """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
-    TODO: Make this abstract and move implementation to a UsdView related location
-    """
+    """The SceneSender for usdview: the stage, selection, camera and renderer come from usdview."""
 
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
@@ -90,20 +90,25 @@ class UsdviewScene(chunk_core.SceneSender):
 
         super().__init__()
 
+    @override
     def get_current_frame(self) -> float:
         return self.usdviewAPI.dataModel.currentFrame
 
+    @override
     def get_end_frame(self) -> float:
         return self.usdviewAPI.dataModel.frameRangeEnd
 
+    @override
     def get_start_frame(self) -> float:
         return self.usdviewAPI.dataModel.frameRangeBegin
 
+    @override
     def set_current_frame(self, frame: float):
         appCtrl = self.usdviewAPI._UsdviewApi__appController
         appCtrl.setFrame(frame)
         QtCore.QCoreApplication.processEvents()
 
+    @override
     def set_end_frame(self, frame: float):
         stage = self.get_stage()
         if not stage:
@@ -116,6 +121,7 @@ class UsdviewScene(chunk_core.SceneSender):
             appCtrl.realEndTimeCode = frame
         appCtrl._UpdateTimeSamples()
 
+    @override
     def set_start_frame(self, frame: float):
         stage = self.get_stage()
         if not stage:
@@ -128,20 +134,25 @@ class UsdviewScene(chunk_core.SceneSender):
             appCtrl.realStartTimeCode = frame
         appCtrl._UpdateTimeSamples()
 
+    @override
     def should_install_package(self, package_name: str) -> bool:
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
+    @override
     def primSelectionChangedCallback(self, added, removed):
         if not added and not removed:
             return
         return super().primSelectionChangedCallback()
 
+    @override
     def get_stage(self) -> Usd.Stage:
         return self.usdviewAPI.stage  # type: ignore
 
+    @override
     def get_selected_prims(self) -> list[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
 
+    @override
     def select_prims(self, paths) -> bool:
         stage = self.get_stage()
         if not stage:
@@ -158,6 +169,7 @@ class UsdviewScene(chunk_core.SceneSender):
                 selection.addPrimPath(path)
         return True
 
+    @override
     def get_selected_property(self) -> Usd.Property:
         return self.usdviewAPI.property  # type: ignore
 
@@ -167,6 +179,7 @@ class UsdviewScene(chunk_core.SceneSender):
         except Exception:
             return None
 
+    @override
     def refresh_timeline(self, start: float, end: float) -> None:
         ctrl = self._get_ctrl()
         if ctrl:
@@ -181,6 +194,7 @@ class UsdviewScene(chunk_core.SceneSender):
         ctrl = self._get_ctrl()
         return getattr(ctrl, "_stageView", None) if ctrl else None
 
+    @override
     def get_viewport_renderer(self) -> str:
         view = self._get_stage_view()
         if view is None:
@@ -193,15 +207,16 @@ class UsdviewScene(chunk_core.SceneSender):
     def set_viewport_renderer_settings(self, settings) -> None:
         """Hand settings to the delegate usdview is drawing with.
 
-        StageView.SetRendererSetting is the same call usdview's own Hydra Settings menu
-        makes, so this reaches the delegate exactly where the built-in UI does -- and
-        the two do overwrite each other, last write winning, since there is only one
-        delegate between them.
+        StageView.SetRendererSetting is the same call usdview's own Hydra Settings menu makes,
+        so this reaches the delegate exactly where the built-in UI does -- and the two do
+        overwrite each other, last write winning, since there is only one delegate between them.
 
-        Each call redraws the viewport, so the mapping handed in is expected to hold
-        only what actually changed. One bad setting is skipped rather than abandoning
-        the rest: keys come from what a delegate said it accepts, but a value can still
-        be one it refuses.
+        Each call redraws the viewport, so the mapping handed in is expected to hold only what
+        actually changed. One bad setting is skipped rather than abandoning the rest: keys come
+        from what a delegate said it accepts, but a value can still be one it refuses.
+
+        Args:
+            settings: {setting name: value}.
         """
         view = self._get_stage_view()
         if view is None:
@@ -217,6 +232,7 @@ class UsdviewScene(chunk_core.SceneSender):
         app = self.usdviewAPI._UsdviewApi__appController
         return app._dataModel.viewSettings.freeCamera
 
+    @override
     def get_active_camera(self):
         free_cam = self._get_free_camera()
         if free_cam is None:
@@ -227,6 +243,7 @@ class UsdviewScene(chunk_core.SceneSender):
         app = self.usdviewAPI._UsdviewApi__appController
         app._dataModel.viewSettings.cameraPrim = prim
 
+    @override
     def set_viewport_camera(self, prim) -> None:
         # Before pointing the viewport at a prim, while the free camera is still the user's
         # own. From here on usdview rebuilds it from that prim on every navigation, so this is
@@ -373,15 +390,19 @@ def launch_chunks(usdviewApi) -> None:
 
 
 class ChunksPluginContainer(PluginContainer):
+    """Registers the Chunks menu commands with usdview."""
     def openModuleSettings(self, usdviewApi):
+        """Open the chunk module loader dialog."""
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
         dial.show()
 
     def reloadChunks(self, usdviewApi):
+        """Reload every chunk module."""
         reg = chunk_registry.ChunkRegistry()
         reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
+        """Export each chunk's layer into a chosen directory."""
         reg = chunk_stage.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
@@ -390,18 +411,27 @@ class ChunksPluginContainer(PluginContainer):
         reg.save_layers(path)
 
     def saveScene(self, usdviewApi):
-        """The "nice save flow" -- the chunk graph plus correct up-axis/units.
+        """Save the chunk graph with the stage's up-axis and units.
+
         See chunk_qt.save_scene_dialog.
+
+        Args:
+            usdviewApi: The usdview API object.
         """
         chunk_qt.save_scene_dialog()
 
     def saveChunkGroup(self, usdviewApi):
         """Export the current chunk graph as one clean, portable USD layer.
+
         See chunk_qt.save_chunkgroup_dialog.
+
+        Args:
+            usdviewApi: The usdview API object.
         """
         chunk_qt.save_chunkgroup_dialog()
 
     def importChunk(self, usdviewApi):
+        """Import a chunk module file chosen in a file dialog."""
         reg = chunk_registry.ChunkRegistry()
 
         flt = "*" + chunk_registry.PY_MODULE_EXT
@@ -449,6 +479,7 @@ class ChunksPluginContainer(PluginContainer):
 
         launch_chunks(plugCtx)
 
+    @override
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._openModuleSettingsCommand)

@@ -19,6 +19,8 @@ speaks integer ids, not prim paths), and the sixteen contract verbs.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import contextlib
 import inspect
 import logging
@@ -86,12 +88,15 @@ class _Scene(SceneSender):
         super().__init__()
         self._stage = stage
 
+    @override
     def get_stage(self):
         return self._stage
 
+    @override
     def get_selected_prims(self):
         return []
 
+    @override
     def should_install_package(self, package):
         return False
 
@@ -178,6 +183,7 @@ class ImGuiGraphView:
     # -- reading -----------------------------------------------------------
 
     def reload(self):
+        """Re-read the context's nodes, ports and wires from the stage."""
         self.available = chunk_graph.contexts(self.stage)
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
@@ -419,13 +425,16 @@ class ImGuiGraphView:
     # -- the contract ------------------------------------------------------
 
     def set_selection(self, paths, add: bool = False) -> None:
+        """Select these nodes, mirroring onto the chunks' SELECTED state."""
         self.selected_nodes = chunk_graph.apply_selection(
             self.chunks, paths, self.selected_nodes, add)
 
     def selected_chunks(self) -> list:
+        """The chunks of the selected nodes."""
         return chunk_graph.chunks_for(self.chunks, self.selected_nodes)
 
     def delete_selected(self) -> None:
+        """Delete the selected chunks and save."""
         chunks = self.selected_chunks()
         if not chunks:
             self.status = "nothing selected"
@@ -438,6 +447,7 @@ class ImGuiGraphView:
         self.reload()
 
     def toggle_disable_selected(self) -> None:
+        """Flip DISABLED on the selected chunks and save."""
         chunks = self.selected_chunks()
         chunk_graph.toggle_disabled(chunks)
         if chunks:
@@ -446,11 +456,13 @@ class ImGuiGraphView:
             self.reload()
 
     def snapshot_selection(self):
+        """The selected nodes and the wires between them, as clipboard entries."""
         return chunk_graph.snapshot_selection(
             self.chunks, self.prims, self.positions, self.scene, self.stage,
             self.selected_nodes)
 
     def copy_selection(self) -> None:
+        """Copy the selection to the clipboard shared by every frontend."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to copy"
@@ -458,6 +470,7 @@ class ImGuiGraphView:
         self.status = f"copied {chunk_graph.copy_to_clipboard(nodes, edges)}"
 
     def cut_selection(self) -> None:
+        """Copy the selection to the shared clipboard, then delete it."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to cut"
@@ -470,6 +483,7 @@ class ImGuiGraphView:
         return chunk_graph.nest_target(self.chunks.get(self.context))
 
     def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
+        """Materialize clipboard nodes at a layout point and re-wire them."""
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
         edges = chunk_graph.edge_clipboard if edges is None else edges
         if not nodes or self.scene is None:
@@ -486,6 +500,7 @@ class ImGuiGraphView:
         self.status = f"pasted {len(made)}"
 
     def duplicate_selection(self) -> None:
+        """Copy and paste at an offset, leaving the clipboard alone."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to duplicate"
@@ -496,6 +511,7 @@ class ImGuiGraphView:
         self.paste_at(origin[0] + 40, origin[1] + 40, nodes, edges)
 
     def group_selection(self) -> None:
+        """Put the selected chunks in a new chunkgroup."""
         group_path, count = chunk_graph.group_into_chunkgroup(
             self.stage, self.scene, self.chunks, self.prims, self.positions,
             self.selected_nodes, to_usd=lambda x, y: (x, -y))
@@ -508,9 +524,11 @@ class ImGuiGraphView:
         self.status = f"grouped {count}"
 
     def menu_entries(self):
+        """Every chunk the registry offers."""
         return chunk_graph.menu_entries()
 
     def create_chunk(self, entry, x: float, y: float) -> None:
+        """Create one menu entry's chunk(s) at a layout point."""
         created, error = chunk_graph.create_from_entry(
             self.scene, entry, (x, -y), self._nest_target())
         if error:
@@ -522,9 +540,11 @@ class ImGuiGraphView:
             self.reload()
 
     def can_dive(self, path: str) -> bool:
+        """Whether `path` is a subnet the user may navigate into."""
         return chunk_graph.can_dive(self.chunks, path)
 
     def dive_into(self, path: str) -> None:
+        """Show the inside of a chunkgroup as the graph."""
         if not self.can_dive(path):
             return
         self.context = path
@@ -534,6 +554,7 @@ class ImGuiGraphView:
         self.reload()
 
     def dive_out(self) -> None:
+        """Go back to the context enclosing this one."""
         parent = chunk_graph.parent_context(self.context, self.available)
         if parent is None:
             self.status = "already at the top"
@@ -548,8 +569,12 @@ class ImGuiGraphView:
     def create_view(self, target_path: str | None = None) -> None:
         """V: wire a view to the selected node, or to the end of the chain.
 
-        A view is what drives execution -- recook_for_view cooks its upstream tree and
-        blocks the rest -- so a context without one cooks nothing at all.
+        A view is what drives execution -- recook_for_view cooks its upstream tree and blocks
+        the rest -- so a context without one cooks nothing at all.
+
+        Args:
+            target_path: Prim path of the node to view; None uses the selection, or the chain's
+                tail.
         """
         if self.scene is None:
             self.status = "no chunk session"
@@ -572,9 +597,11 @@ class ImGuiGraphView:
         return self.chunks.get(self.context)
 
     def active_slot(self) -> int:
+        """The view slot driving execution in this context, 0 for none."""
         return chunk_graph.read_active_slot(self.stage, self.context)
 
     def set_active_slot(self, slot: int) -> None:
+        """Switch which view drives execution, recook, and save."""
         changed, self.status = chunk_graph.activate_view_slot(
             self.stage, self.scene, self.context, self.chunks, slot)
         if not changed:
@@ -583,11 +610,14 @@ class ImGuiGraphView:
         self.reload()
 
     def frame(self, paths) -> None:
-        """The editor owns navigation, so framing is one call to it.
+        """Fit these nodes in the editor.
 
-        Qt unions rects and calls fitInView; Flet solves a zoom and a pan by hand. Here
-        navigate_to_content does the whole job -- which is the clearest single example of
-        what a node-editor library buys you.
+        The editor owns navigation, so framing is one call to it. Qt unions rects and calls
+        fitInView; Flet solves a zoom and a pan by hand. Here navigate_to_content does the whole
+        job -- which is the clearest single example of what a node-editor library buys you.
+
+        Args:
+            paths: Prim paths of the nodes to frame.
         """
         if self._editor is None:
             return  # no editor headless; navigation is the editor's job
@@ -638,6 +668,7 @@ class ImGuiGraphView:
     # -- shell -------------------------------------------------------------
 
     def summary(self) -> str:
+        """The status line: where you are, what the graph holds, and the last status."""
         return (f"{self.context}   —   {len(self.prims)} nodes · {len(self.edges)} wires"
                 + (f"   —   {self.session_error}" if self.session_error else "")
                 + (f"   —   {self.status}" if self.status else ""))
@@ -670,6 +701,12 @@ def _quiet_introspection():
 
 
 def main(network: str, context: str | None = None):
+    """Run the ImGui graph for one network file.
+
+    Args:
+        network: The .usda file.
+        context: The context to open, or None for the default.
+    """
     view = ImGuiGraphView(network, context)
 
     def gui():

@@ -38,6 +38,8 @@ type and cannot be handed to it -- which is why `usd-core` is an optional extra.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 import re
 
@@ -148,10 +150,11 @@ def _port_name(attr_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 class UsdChunksNodeTree(bpy.types.NodeTree):
-    """The tree type. Its whole job is to exist, so the node editor has something to draw --
-    except for update(), which exists because dragging a wire in Blender's OWN editor is
-    otherwise pure cosmetics: Blender creates the bpy.types.NodeLink itself, entirely
-    internally, and nothing else here ever hears about it. See update()'s docstring.
+    """The node tree type, which gives the node editor something to draw.
+
+    Its update() is what turns a wire dragged in Blender's OWN editor into a USD connection:
+    Blender creates the bpy.types.NodeLink itself, entirely internally, and nothing else
+    here hears about it. See update().
     """
 
     bl_idname = TREE_ID
@@ -159,35 +162,37 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
     bl_icon = "NODETREE"
 
     def update(self) -> None:
-        """Blender's own hook for "this tree's topology changed" -- a link or node added
-        or removed. Without this, a wire the user just dragged would author nothing: no USD
-        .connect, no @Node.attr@ expression text, so the destination param's displayed
-        value would never follow the wire it visually has.
+        """Author the wires the user added or cut in the editor.
 
-        Blender's update() does not say what changed -- and it is not only topology:
-        Blender also calls it for every node PROPERTY change, so it runs on each tick of a
-        slider drag. So this diffs the tree's links against the model's edges and touches
-        only the difference: a link the model lacks is connected, an edge the tree lacks
-        is disconnected. Connecting every link on every call, which is what stood here,
-        meant chunk_graph.connect() re-authoring each wire and reporting a change on every
-        slider tick; the reload that scheduled recreated every node -- which Blender
-        creates SELECTED -- half a second into the drag, and took the drag with it.
+        Blender's own hook for "this tree's topology changed" -- a link or node added or
+        removed. A wire the user drags must author a USD .connect and its @Node.attr@
+        expression text, or the destination param's displayed value would never follow the
+        wire it visually has.
 
-        The disconnect half is what makes Ctrl+RMB link-cut, and re-dragging a wire from
-        one source to another, mean anything: without it the USD connection survived and
-        the wire came back on the next reload.
+        Blender's update() does not say what changed -- and it is not only topology: Blender
+        also calls it for every node PROPERTY change, so it runs on each tick of a slider drag.
+        So this diffs the tree's links against the model's edges and touches only the
+        difference: a link the model lacks is connected, an edge the tree lacks is
+        disconnected. Re-connecting every link on every call would re-author each wire and
+        report a change on every slider tick, and the reload that schedules recreates every
+        node -- which Blender creates SELECTED -- half a second into the drag, taking the drag
+        with it.
+
+        The disconnect half is what makes Ctrl+RMB link-cut, and re-dragging a wire from one
+        source to another, mean anything: without it the USD connection survives and the wire
+        comes back on the next reload.
 
         Removed edges go first. Re-dragging an input's wire is a remove plus an add on the
-        SAME socket, and disconnect clears that socket's attribute -- run after the connect
-        it would clear the wire the user just made.
+        SAME socket, and disconnect clears that socket's attribute -- run after the connect it
+        would clear the wire the user just made.
 
         heal=False, because a wire the user cut in the editor is one wire. Healing is for
-        detaching a whole node from a chain (delete does that); here it took A -> B -> View,
-        cut B's input, and rewired View to A, which is not what a cut wire means.
+        detaching a whole node from a chain (delete does that); for A -> B -> View, cutting B's
+        input must not rewire View to A.
 
         Guarded against _rebuild_tree's own link.new() calls (see _rebuilding) and against
-        firing for a tree that is not the one currently open (Blender calls this for any
-        tree of this type, not only the visible one).
+        firing for a tree that is not the one currently open (Blender calls this for any tree
+        of this type, not only the visible one).
         """
         if _rebuilding:
             return
@@ -236,6 +241,13 @@ def socket_param(socket, node):
     Resolved through `iter_connectable_params` -- the same walk `iter_ports` used to make
     the socket -- rather than `get_param`, so the match cannot drift: a name that produced
     a port resolves here, and one that did not resolves nowhere.
+
+    Args:
+        socket: The node socket.
+        node: The node it belongs to.
+
+    Returns:
+        The param, or None.
     """
     if socket.port_type == chunk_graph.PORT_EXEC:
         return None
@@ -255,6 +267,13 @@ def socket_draws_value(socket, param) -> bool:
     `draw_buttons`, then inputs, and exposes neither an alignment flag nor a socket
     position, so an output row can never sit beside the field it reports -- it can only say
     which param it is. A linked input has a wire for its value, as in any Blender node.
+
+    Args:
+        socket: The node socket.
+        param: The param it mirrors, or None.
+
+    Returns:
+        True if the socket draws the control.
     """
     if param is None or socket.is_output or socket.is_linked:
         return False
@@ -271,6 +290,12 @@ def socket_drawn_params(node) -> set:
 
     A Vector is ONE port but several drawable params (a Transform's tx/ty/tz), so its
     socket claims its children -- which is also why this returns names rather than params.
+
+    Args:
+        node: The node.
+
+    Returns:
+        The param names.
     """
     names: set = set()
     for socket in node.inputs:
@@ -289,9 +314,12 @@ def sync_socket_visibility(node) -> None:
 
     Qt rebuilds its typed ports when a param's HIDDEN bit flips and the hidden ones go
     away; Blender's equivalent is socket.hide, which folds an unlinked socket out of the
-    node (a linked one stays, as Blender always keeps a wired socket visible). Without
-    this a chunk that shows one of several groups -- add_mesh's cube/tube/grid -- drew
-    every group's rows at once and the menu that picks one visibly did nothing.
+    node (a linked one stays, as Blender always keeps a wired socket visible). Without it a
+    chunk that shows one of several groups -- add_mesh's cube/tube/grid -- would draw every
+    group's rows at once, and the menu that picks one would visibly do nothing.
+
+    Args:
+        node: The node.
     """
     for collection in (node.inputs, node.outputs):
         for socket in collection:
@@ -304,9 +332,10 @@ def sync_socket_visibility(node) -> None:
 
 
 class UsdChunksSocket(bpy.types.NodeSocket):
-    """One port. Named for the USD attribute it mirrors (`inputs:chunk`, `inputs:<param>`),
-    which is what lets the reconciler match a Blender link back to a USD connection without
-    keeping a side table.
+    """One port, named for the USD attribute it mirrors (`inputs:chunk`, `inputs:<param>`).
+
+    The name is what lets the reconciler match a Blender link back to a USD connection
+    without keeping a side table.
 
     An unlinked *input* draws its param's control right here, which is the whole reason the
     node body skips it. Blender will not interleave sockets with body rows -- see
@@ -320,6 +349,7 @@ class UsdChunksSocket(bpy.types.NodeSocket):
 
     port_type: bpy.props.StringProperty(default="exec")
 
+    @override
     def draw(self, context, layout, node, text):
         param = socket_param(self, node)
         if socket_draws_value(self, param):
@@ -341,6 +371,7 @@ class UsdChunksSocket(bpy.types.NodeSocket):
         # layout rather than a necessary part of it.
         layout.label(text=(param.label or text) if param is not None else text)
 
+    @override
     def draw_color(self, context, node):
         return _PORT_COLOURS.get(self.port_type, _DEFAULT_COLOUR)
 
@@ -361,6 +392,7 @@ class UsdChunksNodeBase(bpy.types.Node):
     chunk_path: bpy.props.StringProperty(name="Chunk", default="")
 
     @classmethod
+    @override
     def poll(cls, tree):
         return tree.bl_idname == TREE_ID
 
@@ -370,6 +402,9 @@ class UsdChunksNodeBase(bpy.types.Node):
         Resolved through the registry every time rather than cached: a reload rebuilds the
         chunk objects under a tree Blender has kept, so a cached reference outlives what it
         points at. The prim path is the stable identity.
+
+        Returns:
+            The chunk, or None.
         """
         view = active_view()
         if view is None:
@@ -377,17 +412,22 @@ class UsdChunksNodeBase(bpy.types.Node):
         return view.chunks.get(self.chunk_path)
 
     def copy(self, node) -> None:
-        """Blender's hook for a node made by duplicating `node` -- Shift+D, Ctrl+C/V, or
-        the Node menu. It copies every RNA property, `chunk_path` included, so the copy
-        pointed at the ORIGINAL prim: its fields wrote into the original chunk and its
-        wires were authored onto the original's attributes. The chunk operators shadow
-        those keys inside this tree type (see the add-on's keymap) and go through
-        `duplicate_selection`/`paste_at`, which make a real chunk; a copy that still
-        arrives here is a node with no chunk behind it, and blanking the path makes it
-        exactly that -- it draws "<no chunk>" and the next reload drops it.
+        """Blender's hook for a node made by duplicating `node`: blank the copy's chunk path.
+
+        Shift+D, Ctrl+C/V and the Node menu copy every RNA property, `chunk_path` included, so
+        the copy would point at the ORIGINAL prim: its fields would write into the original
+        chunk and its wires would be authored onto the original's attributes. The chunk
+        operators shadow those keys inside this tree type (see the add-on's keymap) and go
+        through `duplicate_selection`/`paste_at`, which make a real chunk; a copy that still
+        arrives here is a node with no chunk behind it, and blanking the path makes it exactly
+        that -- it draws "<no chunk>" and the next reload drops it.
+
+        Args:
+            node: The node that was duplicated.
         """
         self.chunk_path = ""
 
+    @override
     def draw_buttons(self, context, layout):
         chunk = self.get_chunk()
         if chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
@@ -412,6 +452,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -440,6 +481,7 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -473,6 +515,7 @@ class USDCHUNKS_OT_revert_override(bpy.types.Operator):
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -501,6 +544,7 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
     list_name: bpy.props.StringProperty()
     delta: bpy.props.IntProperty(default=1)
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -526,6 +570,7 @@ _generated: dict = {}
 
 
 def node_class_id(module_name: str) -> str:
+    """The Blender class identifier for a chunk module's node type."""
     return "UsdChunksNode_" + module_name.replace(".", "_").replace("-", "_")
 
 
@@ -536,6 +581,12 @@ def register_chunk_types(scene=None) -> list:
     add-on load, before any graph exists. A chunk whose `main()` raises -- an example that
     imports a missing dependency, say -- is skipped with a note rather than taking the
     whole add-on down with it, which mirrors what the registry itself does on discovery.
+
+    Args:
+        scene: The scene to build the throwaway chunks in.
+
+    Returns:
+        The node classes made.
     """
     registry = chunk_registry.ChunkRegistry()
     made = []
@@ -583,6 +634,7 @@ def register_chunk_types(scene=None) -> list:
 
 
 def unregister_chunk_types() -> None:
+    """Unregister every generated node class."""
     for cls in list(_generated.values()):
         try:
             bpy.utils.unregister_class(cls)
@@ -611,6 +663,9 @@ def active_view():
     Module-level because a Blender node is constructed by Blender, not by us, so there is
     no constructor to hand a view to. One graph editor at a time is the working assumption;
     a second tree would need this keyed by tree name.
+
+    Returns:
+        The active BlenderGraphView, or None.
     """
     return _active_view
 
@@ -624,10 +679,12 @@ _picked_prim_paths: list = []
 
 
 def set_picked_prim_paths(paths) -> None:
+    """Record the prims last picked in the viewport."""
     _picked_prim_paths[:] = [str(p) for p in paths]
 
 
 def get_picked_prim_paths() -> list:
+    """The prims last picked in the viewport."""
     return list(_picked_prim_paths)
 
 
@@ -684,14 +741,14 @@ def _chunk_of(sender):
 
 
 def _is_locked(stage, prim) -> bool:
-    """Qt's rule: a prim is locked when it is composed in -- its def comes from a foreign
-    layer or across an arc (chunk_utils.composed_in_from) -- and that layer is not the
-    current edit target, so edits here would not reach it.
+    """Qt's lock rule: a prim is locked when it is composed in and its layer is not the edit target.
+
+    Composed in means its def comes from a foreign layer or across an arc
+    (chunk_utils.composed_in_from); edits here would not reach that layer.
 
     Its OWN def in a layer we own means it is ours to move, however much composes in
     beneath it: a Reference hosting a network has the network's group under its prim and
-    is still this graph's node. Reading the prim stack without that test locked the host
-    along with its contents.
+    is still this graph's node, so the whole prim stack is not what decides it.
     """
     src_layer = chunk_utils.composed_in_from(prim)
     return src_layer is not None and src_layer.identifier != stage.GetEditTarget().GetLayer().identifier
@@ -797,6 +854,7 @@ class BlenderGraphView:
 
     @tree.setter
     def tree(self, tree) -> None:
+        """Point the view at a tree, remembered by name."""
         self.tree_name = tree.name if tree is not None else ""
 
     # -- reading -----------------------------------------------------------
@@ -942,16 +1000,20 @@ class BlenderGraphView:
     # -- keeping the tree honest between reloads ---------------------------
 
     def apply_node_state(self, node, prim, chunk) -> None:
-        """Show on the node what Qt paints: disabled, collapsed, stale, locked, group,
-        active view.
+        """Show on the node what Qt paints: disabled, collapsed, stale, locked, group, active view.
 
-        Disabled is Blender's own mute flag and collapsed its own hide flag, so both read
-        as what they are to a Blender user without inventing a second convention -- and
-        both survive a reload, because the chunk's state bits are what is read, not what
-        the tree happened to show. Everything else is the header
-        colour, in the order Qt resolves it -- a view's colour says whether it is driving,
-        a group is a group, a locked node is locked -- with stale on top of all of them,
-        because "this result is out of date" is the one that asks for an action.
+        Disabled is Blender's own mute flag and collapsed its own hide flag, so both read as
+        what they are to a Blender user without inventing a second convention -- and both
+        survive a reload, because the chunk's state bits are what is read, not what the tree
+        happened to show. Everything else is the header colour, in the order Qt resolves it --
+        a view's colour says whether it is driving, a group is a group, a locked node is locked
+        -- with stale on top of all of them, because "this result is out of date" is the one
+        that asks for an action.
+
+        Args:
+            node: The node.
+            prim: Its chunk prim.
+            chunk: Its live chunk, or None.
         """
         node.mute = chunk_graph.is_disabled(prim)
         if chunk is not None:
@@ -974,10 +1036,11 @@ class BlenderGraphView:
         node.color = colour
 
     def _is_current(self) -> bool:
-        """Whether this view is the one open. The connections are global and outlive a
-        view that was replaced (opening another network makes a new one), and a replaced
-        view answering notices for chunks it no longer shows -- id() reuse makes that
-        possible -- would rebuild a tree nobody is looking at.
+        """Whether this view is the one open.
+
+        The connections are global and outlive a view that was replaced (opening another
+        network makes a new one), and a replaced view answering notices for chunks it no longer
+        shows -- id() reuse makes that possible -- would rebuild a tree nobody is looking at.
         """
         return active_view() is self
 
@@ -995,8 +1058,10 @@ class BlenderGraphView:
         self._mark_dirty(sender)
 
     def _on_params_changed(self, notice, sender) -> None:
-        """A param was lofted onto or removed from a chunk: its PORTS changed, and sockets
-        are only made in _rebuild_tree_body -- so this is a rebuild, not a re-sync.
+        """Rebuild when a param is lofted onto or removed from a chunk.
+
+        Its PORTS changed, and sockets are only made in _rebuild_tree_body -- so this is a
+        rebuild, not a re-sync.
         """
         self._request_reload_for(sender)
 
@@ -1011,11 +1076,12 @@ class BlenderGraphView:
             self._request_reload()
 
     def _on_objects_changed(self, notice, sender) -> None:
-        """A prim-level resync under the context is a chunk added, removed, enabled or
-        disabled by something other than this frontend -- the CLI, undo, another
-        frontend on the same stage. Property-level changes are the hot path (a cook
-        emits hundreds) and every one of them that matters here arrives as a chunk notice
-        too, so those fall through.
+        """Reload when a prim under the context is resynced by something other than this frontend.
+
+        That is a chunk added, removed, enabled or disabled by the CLI, undo, or another
+        frontend on the same stage. Property-level changes are the hot path (a cook emits
+        hundreds) and every one of them that matters here arrives as a chunk notice too, so
+        those fall through.
         """
         if not sender or self.stage is None or not self._is_current():
             return
@@ -1033,10 +1099,11 @@ class BlenderGraphView:
         self._schedule_flush()
 
     def _schedule_flush(self) -> None:
-        """One flush, next tick. Never synchronous: the notice that gets here is being
-        dispatched from inside a param write or a cook, and rebuilding the tree -- or even
-        assigning a node's RNA property, whose update callback writes a param -- from
-        inside that is the re-entrancy every frontend guards against.
+        """Schedule one flush on the next tick. Never synchronous.
+
+        The notice that gets here is being dispatched from inside a param write or a cook, and
+        rebuilding the tree -- or even assigning a node's RNA property, whose update callback
+        writes a param -- from inside that is the re-entrancy every frontend guards against.
         """
         if self._flush_scheduled:
             return
@@ -1086,6 +1153,10 @@ class BlenderGraphView:
 
         The bit, not a private attribute: the shared operations read the chunks, so a
         selection kept only here would be invisible to them.
+
+        Args:
+            paths: Prim paths of the nodes to select.
+            add: Add to the current selection instead of replacing it.
         """
         self.selected_nodes = chunk_graph.apply_selection(
             self.chunks, paths, self.selected_nodes, add)
@@ -1094,11 +1165,14 @@ class BlenderGraphView:
                 node.select = node.name in self.selected_nodes
 
     def selected_chunks(self) -> list:
+        """The chunks of the selected nodes."""
         return chunk_graph.chunks_for(self.chunks, self.selected_nodes)
 
     def pull_selection_from_tree(self) -> None:
-        """Adopt Blender's own selection. Blender owns the box-select and click handling,
-        so the frontend follows the editor rather than the other way round.
+        """Adopt Blender's own selection.
+
+        Blender owns the box-select and click handling, so the frontend follows the editor
+        rather than the other way round.
         """
         if self.tree is None:
             return
@@ -1107,6 +1181,7 @@ class BlenderGraphView:
     # -- editing -----------------------------------------------------------
 
     def delete_selected(self) -> None:
+        """Delete the selected chunks."""
         chosen = self.selected_chunks()
         if not chosen:
             self.status = "nothing to delete"
@@ -1150,11 +1225,13 @@ class BlenderGraphView:
         self.flush()
 
     def snapshot_selection(self):
+        """The selected nodes and the wires between them, as clipboard entries."""
         return chunk_graph.snapshot_selection(
             self.chunks, self.prims, self.positions, self.scene, self.stage,
             self.selected_nodes)
 
     def copy_selection(self) -> None:
+        """Copy the selection to the clipboard shared by every frontend."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to copy"
@@ -1163,6 +1240,7 @@ class BlenderGraphView:
         self.status = f"copied {chunk_graph.copy_to_clipboard(nodes, edges)}"
 
     def cut_selection(self) -> None:
+        """Copy the selection to the shared clipboard, then delete it."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to cut"
@@ -1175,10 +1253,15 @@ class BlenderGraphView:
         """Materialize the clipboard and re-wire it.
 
         Synchronous, like Flet and unlike Qt: Blender builds nodes immediately, so there is
-        no deferred-proxy window to wire around.
+        no deferred-proxy window to wire around. Wiring is chunk_graph.rewire_pasted, which
+        reads the real port types off the stage so copied param wires survive alongside exec
+        wires.
 
-        Wiring is chunk_graph.rewire_pasted, which reads the real port types off the stage
-        so copied param wires survive alongside exec wires.
+        Args:
+            x: Layout x of the paste.
+            y: Layout y of the paste.
+            nodes: Clipboard nodes; None pastes the shared clipboard.
+            edges: Clipboard edges; None uses the shared clipboard.
         """
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
         edges = chunk_graph.edge_clipboard if edges is None else edges
@@ -1198,8 +1281,9 @@ class BlenderGraphView:
         self.status = f"pasted {len(made)}"
 
     def duplicate_selection(self) -> None:
-        """Copy and paste at an offset without touching the clipboard, so duplicating never
-        clobbers what was last explicitly copied.
+        """Copy and paste at an offset without touching the clipboard.
+
+        So duplicating never clobbers what was last explicitly copied.
         """
         nodes, edges = self.snapshot_selection()
         if not nodes:
@@ -1235,6 +1319,11 @@ class BlenderGraphView:
 
         Takes an entry rather than a module name so a chunk's `variants` work, and takes no
         menu: how the user picked it is Blender's business (Shift+A).
+
+        Args:
+            entry: The menu entry.
+            x: Layout x of the new node.
+            y: Layout y of the new node.
         """
         created, error = chunk_graph.create_from_entry(
             self.scene, entry, (x, y),
@@ -1265,12 +1354,21 @@ class BlenderGraphView:
     # -- navigation --------------------------------------------------------
 
     def can_dive(self, path: str) -> bool:
-        """Keyed on is_subnet, never on the CONTEXT flag: a chunk-in-chunk carries
-        CONTEXT too and is an implementation detail, not a subnet.
+        """Whether `path` is a subnet the user may navigate into.
+
+        Keyed on is_subnet, never on the CONTEXT flag: a chunk-in-chunk carries CONTEXT too and
+        is an implementation detail, not a subnet.
+
+        Args:
+            path: Prim path of the node.
+
+        Returns:
+            True if the node can be dived into.
         """
         return chunk_graph.can_dive(self.chunks, path)
 
     def dive_into(self, path: str) -> None:
+        """Show the inside of a chunkgroup as the graph."""
         if not self.can_dive(path):
             return
         self.context = path
@@ -1302,13 +1400,17 @@ class BlenderGraphView:
         return chunk_graph.context_prim(self.stage, self.context)
 
     def active_slot(self) -> int:
+        """The view slot driving execution in this context, 0 for none."""
         return chunk_graph.read_active_slot(self.stage, self.context)
 
     def set_active_slot(self, slot: int) -> None:
         """Switch which view drives execution, and recook for it.
 
-        Resolve BEFORE writing: writing first persisted a slot with no view behind it, so
-        the attribute said 3, nothing cooked, and the file carried that to the next open.
+        The slot is resolved before anything is written, so an empty slot is never persisted;
+        see chunk_graph.activate_view_slot.
+
+        Args:
+            slot: The view slot, or 0 for none.
         """
         changed, self.status = chunk_graph.activate_view_slot(
             self.stage, self.scene, self.context, self.chunks, slot)
@@ -1411,9 +1513,12 @@ class BlenderGraphView:
     def frame(self, paths) -> None:
         """Fit those nodes in the editor.
 
-        Blender frames its own *selection*, so this selects and asks the editor to view it
-        -- rather than computing a bounding box and setting a transform the way a
-        custom canvas must.
+        Blender frames its own *selection*, so this selects and asks the editor to view it --
+        rather than computing a bounding box and setting a transform the way a custom canvas
+        must.
+
+        Args:
+            paths: Prim paths of the nodes; empty frames everything.
         """
         paths = set(paths) or set(self.prims)
         self.set_selection(paths)
@@ -1482,9 +1587,11 @@ class USDCHUNKS_OT_add_node(bpy.types.Operator):
     entry_index: bpy.props.IntProperty(default=-1)
 
     @classmethod
+    @override
     def poll(cls, context):
         return getattr(getattr(context, "space_data", None), "tree_type", "") == TREE_ID
 
+    @override
     def execute(self, context):
         view = active_view()
         if view is None:
@@ -1530,11 +1637,14 @@ def _register_menu(node: dict, prefix: tuple) -> None:
 
 
 def build_add_menu() -> int:
-    """(Re)build the Add menu from the registry. Returns how many entries it holds.
+    """(Re)build the Add menu from the registry.
 
     Called wherever the node classes are built, because both read the same registry and a
     menu listing a chunk with no registered node class would offer something that cannot be
     created.
+
+    Returns:
+        How many entries the menu holds.
     """
     unregister_add_menu()
     _menu_entries[:] = chunk_graph.menu_entries()
@@ -1543,6 +1653,7 @@ def build_add_menu() -> int:
 
 
 def unregister_add_menu() -> None:
+    """Unregister every generated Add menu class."""
     for cls in list(_menu_classes.values()):
         try:
             bpy.utils.unregister_class(cls)
@@ -1587,6 +1698,7 @@ def _register_once(cls) -> None:
 
 
 def register() -> None:
+    """Register the node tree, sockets, node classes and Add menu."""
     for cls in _CLASSES:
         _register_once(cls)
     _register_once(UsdChunksNodeBase)
@@ -1596,6 +1708,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    """Unregister everything register() added."""
     try:
         bpy.types.NODE_MT_add.remove(_draw_add_menu)
     except Exception:  # pragma: no cover - never appended

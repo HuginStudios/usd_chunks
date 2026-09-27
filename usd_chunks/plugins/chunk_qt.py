@@ -1,4 +1,12 @@
+"""The Qt chunk panel: the dock, its context tabs, and the Params and Graph pages.
+
+Each context gets a tab holding a Params page (the chunks' widgets) and a Graph page
+(the node graph). The panel adds a widget for every chunk the registry loads, and the
+save and module-loader dialogs the host plugins put in their menus live here too.
+"""
 from __future__ import annotations
+
+from typing_extensions import override
 import inspect
 import os
 import weakref
@@ -49,11 +57,14 @@ from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, droppable_path
 
 
 def save_chunkgroup_dialog(scene=None) -> None:
-    """Export the current chunk graph as one clean, portable USD layer -- every
-    chunk's own bookkeeping freshly authored into a brand-new layer, with no
-    subLayerPaths at all, carrying the scene's up-axis and units. Same mechanism
-    as the Export ChunkGroup chunk. Shared by the DCC plugins' Save ChunkGroup
-    menu entries.
+    """Ask for a file and export the current chunk graph to it as one clean, portable layer.
+
+    Every chunk's own bookkeeping is freshly authored into a brand-new layer with no
+    subLayerPaths at all, carrying the scene's up-axis and units -- the same mechanism as
+    the Export ChunkGroup chunk. Shared by the host plugins' Save ChunkGroup menu entries.
+
+    Args:
+        scene: The scene to export; the registry's scene when None.
     """
     scene = scene or chunk_registry.ChunkRegistry().scene
 
@@ -66,8 +77,12 @@ def save_chunkgroup_dialog(scene=None) -> None:
 
 
 def save_scene_dialog(scene=None) -> None:
-    """Save the scene -- see chunk_stage.save_scene. Writes the same file Save
-    ChunkGroup does, kept as its own menu entry.
+    """Ask for a file and save the scene to it; see chunk_stage.save_scene.
+
+    Writes the same file Save ChunkGroup does, kept as its own menu entry.
+
+    Args:
+        scene: The scene to save; the registry's scene when None.
     """
     scene = scene or chunk_registry.ChunkRegistry().scene
 
@@ -80,6 +95,7 @@ def save_scene_dialog(scene=None) -> None:
 
 
 class EditableTabBar(QtWidgets.QTabBar):
+    """A tab bar whose tab names can be edited in place with a double-click."""
     request_delete = QtCore.Signal(int)
     request_toggle_disable = QtCore.Signal(int)
     tab_name_changed = QtCore.Signal(str, int)
@@ -93,9 +109,11 @@ class EditableTabBar(QtWidgets.QTabBar):
         self._editor.editingFinished.connect(self.handleEditingFinished)
         self._editor.installEventFilter(self)
 
+    @override
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         idx = self.tabAt(event.pos())
         if idx < 0:
@@ -117,6 +135,7 @@ class EditableTabBar(QtWidgets.QTabBar):
         elif res == disable_action:
             self.request_toggle_disable.emit(idx)
 
+    @override
     def eventFilter(self, widget, event):
         if (
             event.type() == QtCore.QEvent.Type.MouseButtonPress
@@ -127,12 +146,14 @@ class EditableTabBar(QtWidgets.QTabBar):
 
         return super().eventFilter(widget, event)
 
+    @override
     def mouseDoubleClickEvent(self, event):
         index = self.tabAt(event.pos())
         if index > 0:
             self.editTab(index)
 
     def editTab(self, index):
+        """Open an inline editor over a tab's name."""
         if self.shape() in [
             QtWidgets.QTabBar.Shape.RoundedEast,
             QtWidgets.QTabBar.Shape.RoundedWest,
@@ -155,6 +176,7 @@ class EditableTabBar(QtWidgets.QTabBar):
             self._editor.show()
 
     def handleEditingFinished(self):
+        """Apply the edited name to the tab and emit tab_name_changed."""
         index = self.currentIndex()
         if index >= 0:
             self._editor.hide()
@@ -178,9 +200,10 @@ def _guarded_copy():
 
 
 def _focused_view_is_graph(focused: QtWidgets.QWidget | None) -> bool:
-    """True if focused sits inside a ChunkGraphView (the Graph page), for either page's
-    copy/paste shortcut -- both pages of a tab share one QShortcut (WidgetWithChildrenShortcut),
-    so this is how paste tells which surface it was actually triggered from.
+    """Whether the focused widget sits inside a ChunkGraphView (the Graph page).
+
+    Both pages of a tab share one copy/paste QShortcut (WidgetWithChildrenShortcut), so
+    this is how paste tells which surface it was actually triggered from.
     """
     w = focused
     while w is not None:
@@ -204,6 +227,7 @@ def _guarded_paste():
 
 
 class ChunkTabContextStack(QtWidgets.QStackedWidget):
+    """One context's tab: its Params page and its Graph page, one shown at a time."""
     def __init__(self, ctx: chunk_core.ChunkBase, idx: int, parent=None):
         super().__init__(parent)
 
@@ -243,13 +267,12 @@ class ChunkTabContextStack(QtWidgets.QStackedWidget):
 
 
 class _EmptyPanelTabRouter(QtCore.QObject):
-    """Application-level event filter: bootstraps the first context tab when Tab is
-    pressed while hovering the chunk panel before any tab exists.
+    """Application-level event filter that creates the first context tab when Tab is pressed.
 
-    ChunkGraphView installs its own Tab-to-create router (_ProxyKeyRouter in
-    chunk_qt_nodegraph) once it's built, but that requires a context tab to already
-    exist. Before the first tab is created the panel holds no tab at all, so there is no
-    graph view and nothing listening for Tab. This filter covers exactly that gap.
+    It covers the panel before any tab exists. ChunkGraphView installs its own
+    Tab-to-create router (_ProxyKeyRouter in chunk_qt_nodegraph) once it is built, but that
+    requires a context tab to already exist; before the first one, there is no graph view
+    and nothing listening for Tab.
     """
 
     def __init__(self, tab_widget: ChunkTabWidget):
@@ -262,6 +285,7 @@ class _EmptyPanelTabRouter(QtCore.QObject):
         if (app := QtWidgets.QApplication.instance()) is not None:
             app.removeEventFilter(self)
 
+    @override
     def eventFilter(self, _obj, event) -> bool:
         if (tab_widget := self._tab_widget()) is None:
             self.uninstall()
@@ -287,6 +311,7 @@ class _EmptyPanelTabRouter(QtCore.QObject):
 
 
 class ChunkTabWidget(QtWidgets.QTabWidget):
+    """The row of context tabs in the chunk panel."""
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -317,6 +342,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         self.update_stylesheet()
 
     def update_stylesheet(self):
+        """Restyle the tab row, which is drawn differently once there is more than one tab."""
         code = ""
 
         if self.count() > 1:
@@ -364,6 +390,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         self.setStyleSheet(code)
 
     def toggle_disabled_tab(self, idx):
+        """Enable or disable the context shown in a tab."""
         if t := self.get_chunk_context(idx):
             if t.group.has_state(ChunkFlags.State.DISABLED):
                 t.group.enable()
@@ -371,11 +398,13 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
                 t.group.disable()
 
     def delete_tab(self, idx):
+        """Delete the context shown in a tab."""
         if t := self.get_chunk_context(idx):
             t.group.request_delete()
         self.update_stylesheet()
 
     def update_context_name(self, name, idx):
+        """Rename a tab's context to match its edited tab name."""
         if tab := self.get_chunk_context(idx):
             tab.group.name = name
 
@@ -389,18 +418,21 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             return []
         return droppable_paths(event)
 
+    @override
     def dragEnterEvent(self, event):
         if self._empty_panel_drop_paths(event):
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
+    @override
     def dragMoveEvent(self, event):
         if self._empty_panel_drop_paths(event):
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
 
+    @override
     def dropEvent(self, event):
         paths = self._empty_panel_drop_paths(event)
         if not paths:
@@ -453,19 +485,23 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             self.setCurrentIndex(idx)
 
     def update_tab_position(self):
+        """Put the tabs on the side when the panel is taller than it is wide, else on top."""
         if self.height() > self.width():
             self._tabPosition = QtWidgets.QTabWidget.TabPosition.East
         else:
             self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
         self.setTabPosition(self._tabPosition)
 
+    @override
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         self.update_tab_position()
         return super().resizeEvent(event)
 
+    @override
     def tabPosition(self) -> QtWidgets.QTabWidget.TabPosition:
         return self._tabPosition
 
+    @override
     def contextMenuEvent(self, event):
         entry = FilterableChunkMenu().select_module(event.globalPos())
         if not entry:
@@ -486,6 +522,17 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             chunk_stage._pin_new_chunks = None
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
+        """The Params widget of the context in a tab, or None.
+
+        Not every tab holds a context: during teardown the current widget can momentarily be
+        something else.
+
+        Args:
+            idx: The tab index.
+
+        Returns:
+            The ChunkWidget, or None.
+        """
         w = self.widget(idx)
         if isinstance(w, ChunkTabContextStack):
             w = w.widget(0)
@@ -497,10 +544,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
     def mark_ancestors(self, ctx) -> None:
         """Mark the open tabs that the current context is nested inside.
 
-        The breadcrumb says where you are; this says which of the tabs already in front of
-        you are on that path -- the one thing arranging the tab row by hierarchy was meant
-        to convey, without moving anything. Colour only: a tab that is an ancestor is still
-        an ordinary tab, and its position never changes.
+        The breadcrumb says where you are; this says which of the tabs already in front of you
+        are on that path, without moving anything. Colour only: a tab that is an ancestor is
+        still an ordinary tab, and its position never changes.
+
+        Args:
+            ctx: The current context.
         """
         ancestry = {id(node) for node in context_ancestry(ctx)}
         palette = self.palette()
@@ -513,6 +562,17 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             self.tabBar().setTabTextColor(i, marked if on_path else plain)
 
     def get_chunk_context_index(self, ctx: chunk_core.ChunkBase) -> int | None:
+        """The index of the tab showing a context, or None.
+
+        Matched on the tab stack's own context reference: while a context is deleted its Params
+        widget goes first, but the stack's reference stays valid until it is collected.
+
+        Args:
+            ctx: The context.
+
+        Returns:
+            The tab index, or None.
+        """
         for i in range(self.count()):
             w = self.widget(i)
             if isinstance(w, ChunkTabContextStack):
@@ -531,6 +591,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return None
 
     def add_chunk_context(self, c: chunk.ChunkBase):
+        """Add a tab for a context and select it."""
         stack = ChunkTabContextStack(c, self._view_mode, self)
         idx = self.addTab(stack, c.name)
         cfg = c.get_config() if hasattr(c, "get_config") else None
@@ -559,6 +620,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             self.setTabText(idx, ctx.name)
 
     def set_view_mode(self, mode: int):
+        """Show the Params page (0) or the Graph page (1) in every tab."""
         self._view_mode = mode
         for i in range(self.count()):
             w = self.widget(i)
@@ -566,6 +628,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
                 w.setCurrentIndex(mode)
 
     def get_current_graph_view(self):
+        """The current tab's graph view, or None."""
         w = self.widget(self.currentIndex())
         if isinstance(w, ChunkTabContextStack):
             gv = w.widget(1)
@@ -574,6 +637,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return None
 
     def add_chunk_to_tab(self, param: chunk_core.ChunkBase, tabidx=None):
+        """Add a chunk's widget to a tab, creating a tab first if there is none to take it.
+
+        Args:
+            param: The chunk.
+            tabidx: The tab; the current one when None.
+        """
         if tabidx is None:
             tabidx = self.tabBar().currentIndex()
         # No context tab to receive the chunk -- -1 means there is no tab at all, either
@@ -595,6 +664,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
 
 
 class ChunkWidgetDocker(QtWidgets.QWidget):
+    """The chunk panel: context tabs, the Params/Graph switch, and the graph's navigation."""
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -621,7 +691,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.build()
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
-        """Called whenever CHUNK_LOADED notice was received - will in turn add a new chunk widget
+        """Add a widget for a chunk the registry just loaded.
 
         Args:
             notice (chunk_notice.ChunkLoadedNotice): The notice sent from the registry
@@ -696,6 +766,14 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._invalidate_graph_views()
 
     def create_chunk_widget(self, loaded_chunk: chunk.ChunkBase):
+        """Show a newly loaded chunk in the panel.
+
+        A context gets a tab; a chunkgroup's widget goes into its parent tab's content; any
+        other chunk goes into its context's tab.
+
+        Args:
+            loaded_chunk: The chunk.
+        """
         if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             cfg = loaded_chunk.get_config()
             if cfg and cfg.module:
@@ -726,8 +804,10 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                 self.tab_widget.add_chunk_to_tab(loaded_chunk, idx)
 
     def _refresh_context_path(self) -> None:
-        """Mark the tabs the current context is nested inside. The path itself is drawn by
-        the graph view, in its own top strip -- see ChunkContextBreadcrumb.
+        """Mark the tabs the current context is nested inside.
+
+        The path itself is drawn by the graph view, in its own top strip -- see
+        ChunkContextBreadcrumb.
         """
         self.tab_widget.mark_ancestors(self._current_context())
 
@@ -747,10 +827,13 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                     gv.scene().invalidate()
 
     def _rebuild_graph(self, changed_chunks=None):
-        """changed_chunks: passed through to ChunkGraphView.build()'s post-build recook when the
-        caller knows exactly which chunk(s) triggered this rebuild (e.g. one chunk was just
-        created) -- see build()'s docstring for why this matters. Omit for a genuine view/tab
-        switch, which always needs a full recook.
+        """Rebuild the current tab's graph view.
+
+        Args:
+            changed_chunks: Passed through to ChunkGraphView.build()'s post-build recook when the
+                caller knows exactly which chunk(s) triggered this rebuild (e.g. one chunk was
+                just created) -- see build()'s docstring for why this matters. Omit for a
+                genuine view/tab switch, which always needs a full recook.
         """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -841,9 +924,11 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         return False
 
     def navigate_back(self) -> bool:
+        """Go back to the previous context in the graph's history. True if it moved."""
         return self._nav_step(-1)
 
     def navigate_forward(self) -> bool:
+        """Go forward in the graph's context history. True if it moved."""
         return self._nav_step(1)
 
     def _on_view_mode_changed(self, mode: int):
@@ -852,6 +937,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             self._rebuild_graph()
 
     def build(self):
+        """Build the panel's tabs, view switch and layout."""
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.MinimumExpanding)
         self.tab_widget: ChunkTabWidget = ChunkTabWidget(self)
 
@@ -893,6 +979,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
 
 class ChunkModuleLoader(QtWidgets.QDialog):
+    """A dialog listing every chunk module, with a checkbox to load or unload each."""
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -910,6 +997,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         self.content.model().dataChanged.connect(self.handle_data_change)
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not (item := self.content.currentItem()):
             return
@@ -951,9 +1039,11 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         return super().contextMenuEvent(event)
 
     def get_check_state(self, loaded):
+        """The checkbox state for a loaded or unloaded module."""
         return QtCore.Qt.CheckState.Checked if loaded else QtCore.Qt.CheckState.Unchecked
 
     def new_row(self, row, mod: chunk_registry.ChunkModule):
+        """Add a table row for a module: its name, file and loaded state."""
         self.content.insertRow(row)
 
         c1 = QtWidgets.QTableWidgetItem(mod.module_name)
@@ -968,17 +1058,20 @@ class ChunkModuleLoader(QtWidgets.QDialog):
         self.content.setItem(row, 2, c3)
 
     def load_chunks(self):
+        """Fill the table with every registered module."""
         reg = chunk_registry.ChunkRegistry()
         for row, c in enumerate(reg.get_chunk_modules()):
             self.new_row(row, c)
 
     def load_unload(self, mod: chunk_registry.ChunkModule, check):
+        """Load or unload a module to match its checkbox."""
         if check and not mod.loaded:
             mod.load()
         elif not check and mod.loaded:
             mod.unload()
 
     def handle_data_change(self, first: QtCore.QModelIndex, last: QtCore.QModelIndex, roles):
+        """Load or unload the modules whose checkboxes changed."""
         if QtCore.Qt.ItemDataRole.CheckStateRole not in roles:
             return
 
@@ -1019,7 +1112,11 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
 
 def build_chunk_docker(parent_window: QtWidgets.QMainWindow):
-    # Create an empty dock widget to hold the modules
+    """Add the Chunks dock to a host window, unless it is already there.
+
+    Args:
+        parent_window: The host's main window.
+    """
     module_dock = parent_window.findChild(QtWidgets.QDockWidget, "Chunks")
     if module_dock:
         return

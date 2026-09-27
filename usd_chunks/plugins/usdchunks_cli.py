@@ -6,6 +6,8 @@ Usage:
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import filecmp
 import os
 import subprocess
@@ -36,10 +38,16 @@ RESET = "\033[0m"
 
 
 class HeadlessScene(chunk_core.SceneSender):
+    """A SceneSender with a stage and nothing else: no UI, no selection.
+
+    Args:
+        stage: The stage chunks author on, or None.
+    """
     def __init__(self, stage):
         super().__init__()
         self._stage = stage
 
+    @override
     def get_stage(self):
         return self._stage
 
@@ -147,11 +155,11 @@ def _parse_param_overrides(scene, overrides):
     # the inner param would, and means what the tool's author said it means.
     searchable = list(scene.get_contexts()) + list(_all_chunks(scene.get_chunks()))
     chunk_map = {c.name: c for c in reversed(searchable)}
-    for override in overrides:
+    for assignment in overrides:
         try:
-            name, value = override.split("=", 1)
+            name, value = assignment.split("=", 1)
         except ValueError:
-            print(f"Invalid argument format: {override!r} — expected param=value or ChunkName.param=value")
+            print(f"Invalid argument format: {assignment!r} — expected param=value or ChunkName.param=value")
             continue
 
         # Bare param name (e.g. variant_selection=A): search all chunks for a matching param.
@@ -185,6 +193,7 @@ def _parse_param_overrides(scene, overrides):
 
 
 def cmd_info(args):
+    """`usdchunks info`: show the ChunkGroups in a .usda file and their exposed params."""
     stage = Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
@@ -232,6 +241,7 @@ def cmd_info(args):
         print("="*120)
 
 def cmd_validate(args):
+    """`usdchunks validate`: check every chunk type in a file resolves, before running it."""
     stage = Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
@@ -283,6 +293,7 @@ def cmd_validate(args):
 
 
 def cmd_pin(args):
+    """`usdchunks pin`: freeze a network to exact store versions, or list its lock."""
     from usd_chunks import pin as pinmod
 
     if args.list:
@@ -386,6 +397,7 @@ def _active_view(stage, scene):
 
 
 def cmd_run(args):
+    """`usdchunks run`: execute a chunk network from a .usda file."""
     stage = Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
@@ -493,6 +505,7 @@ def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
 
 
 def cmd_sweep(args):
+    """`usdchunks sweep`: run every variant of a network's wedge."""
     stage = Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
@@ -594,13 +607,16 @@ def _verify(args, name, indices):
 
 
 def cmd_deps(args):
-    """Report chunks whose dependencies are undeclared or unpinned.
+    """`usdchunks deps`: report chunks whose dependencies are undeclared or unpinned.
 
     Both matter for the same reason, and it is not really about installing. A recipe claims
     that regenerating it reproduces the dataset; a dependency that is undeclared never
     reaches the run's manifest, and one that is unpinned can move underneath an unchanged
     recipe. Either way two runs can disagree while every recorded fact matches -- which is
     worse than recording nothing, because it reads as authoritative.
+
+    Args:
+        args: The parsed command line.
     """
     registry = chunk_registry.ChunkRegistry()
     registry.initialize(HeadlessScene(None), "cli")
@@ -642,10 +658,13 @@ def cmd_deps(args):
 
 
 def cmd_plugin_path(args):
-    """Print the directory to put on PXR_PLUGINPATH_NAME for a given host.
+    """`usdchunks plugin-path`: print the directory to put on PXR_PLUGINPATH_NAME for a host.
 
     Resolved from the installed package rather than the source tree, so the printed path
     is correct whether usd_chunks was pip-installed or is being run from a checkout.
+
+    Args:
+        args: The parsed command line.
     """
     host_dirs = {"usdview": "chunk_usdview", "kraken": "chunk_kraken", "houdini": "chunk_houdini"}
     path = Path(files("usd_chunks.plugins")) / host_dirs[args.host]
@@ -656,6 +675,7 @@ def cmd_plugin_path(args):
 
 
 def main():
+    """The `usdchunks` command-line entry point."""
     parser = ArgumentParser(
         prog="usdchunks",
         description="Execute and inspect USD chunk networks serialized as .usda files.",
