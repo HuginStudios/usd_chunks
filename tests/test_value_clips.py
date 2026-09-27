@@ -24,8 +24,22 @@ from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 import chunks.usd.value_clips as value_clips
 
-_CUBE_CLIPS = os.path.join(os.path.dirname(__file__), "..", "chunks", "usd",
-                           "test_value_clips", "clips", "clip.###.usda")
+
+def _write_cube_clips(folder) -> str:
+    """Ten one-frame clips of a unit cube whose top rises from 0.5 to 3.0, and the
+    ``clip.###.usda`` template that names them."""
+    for frame in range(1, 11):
+        layer = Sdf.Layer.CreateNew(str(folder / f"clip.{frame:03d}.usda"))
+        stage = Usd.Stage.Open(layer)
+        mesh = stage.DefinePrim("/CubeGeo", "Mesh")
+        stage.SetDefaultPrim(mesh)
+        top = 0.5 + (frame - 1) * 2.5 / 9
+        points = [Gf.Vec3f(x, y, z) for y in (-0.5, top) for x, z in
+                  ((-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5))]
+        mesh.CreateAttribute("points", Sdf.ValueTypeNames.Point3fArray).Set(
+            Vt.Vec3fArray(points), frame)
+        layer.Save()
+    return str(folder / "clip.###.usda").replace("\\", "/")
 
 
 # Sparse array edits (Vt.*ArrayEditBuilder) arrived in USD 26. Older builds -- the 25.x
@@ -261,13 +275,13 @@ class TestTiming:
 
 
 class TestTemplate:
-    def test_template_reads_its_range_off_disk(self):
+    def test_template_reads_its_range_off_disk(self, tmp_path):
         stage = Usd.Stage.CreateInMemory()
         stage.DefinePrim("/CubeGeo", "Mesh")
         scene = _make_scene(stage)
         node = _make_chunk(scene)
         node.get_param("target_prim").value = "/CubeGeo"
-        _set_rows(node, [{"clip_path": os.path.abspath(_CUBE_CLIPS).replace("\\", "/"), "start_frame": 0}])
+        _set_rows(node, [{"clip_path": _write_cube_clips(tmp_path), "start_frame": 0}])
 
         info = Usd.ClipsAPI(stage.GetPrimAtPath("/CubeGeo")).GetClips()["clip"]
         assert (info["templateStartTime"], info["templateEndTime"]) == (1.0, 10.0)
