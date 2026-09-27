@@ -110,8 +110,7 @@ def install(window: QtWidgets.QMainWindow) -> None:
     """Restore the saved layout onto `window`, and arrange to save it again on close.
 
     Called after the Chunks dock exists: `restoreState` can only place docks that are
-    already there, so restoring first would drop ours and leave it at the default width --
-    the exact symptom this is here to remove.
+    already there, so restoring first would drop ours and leave it at the default width.
 
     Nothing saved yet is the ordinary first-run case and does nothing, leaving whatever
     usdview and `build_chunk_docker` decided.

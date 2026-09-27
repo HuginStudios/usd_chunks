@@ -280,9 +280,8 @@ def test_ctrl_g_reaches_it(graph):
 
 
 # ---------------------------------------------------------------------------
-# Reported on the kitchen layout: grouping Materials and the four AMD MaterialX
-# Library nodes (the chain feeding a Merge's second slot) unplugged the Appliances
-# group from the Merge's first slot, and the walls lost their materials.
+# Grouping the chain feeding a Merge's second slot must not unplug whatever feeds the
+# Merge's first slot.
 # ---------------------------------------------------------------------------
 
 

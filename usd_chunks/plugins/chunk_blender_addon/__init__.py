@@ -71,8 +71,7 @@ class BlenderScene(SceneSender):
 
         NOT Blender's own object selection: a USD prim shown by the live draw handler
         (viewport.py) has no Blender object at all to select in the first place, so that
-        road really is a dead end (which is what this docstring used to be about, before
-        viewport picking existed) -- this instead reads
+        road is a dead end -- this instead reads
         chunk_blender_nodegraph.get_picked_prim_paths(), written by viewport.py's
         USDCHUNKS_OT_pick_prim from its own UsdImagingGL.Engine.TestIntersection call.
         """

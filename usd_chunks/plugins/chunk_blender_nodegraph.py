@@ -840,10 +840,9 @@ class BlenderGraphView:
         # Blender owns dragging, so a moved node's new position lives ONLY in
         # node.location until something writes it back -- and _rebuild_tree below
         # unconditionally clears and recreates every node from USD. Without this, any
-        # drag done since the last reload was silently discarded the next time anything
-        # triggered one: Shift+A, a view-slot change, even a recook. Reported as "I moved
-        # a node and dropping a new one put everything back". Pulled against the OLD
-        # self.prims/tree, i.e. exactly the nodes about to be thrown away.
+        # drag done since the last reload would be silently discarded the next time
+        # anything triggered one: Shift+A, a view-slot change, even a recook. Pulled
+        # against the OLD self.prims/tree, i.e. exactly the nodes about to be thrown away.
         self.pull_positions_from_tree()
         # Selection too, for the same reason: Blender owns clicking and box-select, so
         # the editor's selection is only in node.select until it is read -- and the
@@ -1248,10 +1247,9 @@ class BlenderGraphView:
         # scene's default chunkgroup, which is not the graph being shown when a brand-new
         # network opens at CHUNKS_ROOT -- so follow the chunk to where it actually landed,
         # or Shift+A appears to do nothing at all on a new network. Doing it after a first
-        # rebuild also meant `reload` ran once at the old context, and the view it creates
-        # records its slot on the CONTEXT prim: the slot was stamped on /chunks while the
-        # view itself lived in /chunks/ChunkGroup, so the graph had a view node and still
-        # cooked nothing.
+        # rebuild would also run `reload` once at the old context, and the view it creates
+        # records its slot on the CONTEXT prim: the slot would land on /chunks while the
+        # view itself lives in /chunks/ChunkGroup, and the graph would cook nothing.
         landed = made[0].rsplit("/", 1)[0]
         if landed != self.context:
             self.context = landed

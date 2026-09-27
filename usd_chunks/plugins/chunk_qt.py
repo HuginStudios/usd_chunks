@@ -64,9 +64,8 @@ def save_chunkgroup_dialog(scene=None) -> None:
 
 
 def save_scene_dialog(scene=None) -> None:
-    """The "nice save flow" (Dan's request) -- see chunk_stage.save_scene. Writes the
-    same file Save ChunkGroup does now that export_chunks carries up-axis and units
-    itself; kept as its own menu entry."""
+    """Save the scene -- see chunk_stage.save_scene. Writes the same file Save
+    ChunkGroup does, kept as its own menu entry."""
     scene = scene or chunk_registry.ChunkRegistry().scene
 
     flt = "*.usda *.usd *.usdc *.usdz"
@@ -426,10 +425,10 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         remains for the two paths that need a context to exist at all: a chunk created with
         no tab to receive it (add_chunk_to_tab), and the empty-panel Tab shortcut.
 
-        It used to mint its own `Tab {count}` context at /Tab0. Running before anything else
-        needed a context, that beat chunk_core's default to it, so a scene's ground prim was
-        a tab rather than the default chunkgroup under /chunks. Defer to get_root_context so
-        there is one answer, and reuse the tab if the root already has one -- creating the
+        It does not mint a `Tab {count}` context of its own: running before anything else
+        needs a context, that would beat chunk_core's default to it and make a scene's ground
+        prim a tab rather than the default chunkgroup under /chunks. Defer to
+        get_root_context so there is one answer, and reuse the tab if the root already has one -- creating the
         context publishes CHUNK_ADDED which builds a tab, but an existing root fires nothing.
         """
         scene = chunk.get_scene()
@@ -674,13 +673,10 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         # A view chunk's context is not always a TAB: a view living inside a chunkgroup
         # belongs to that group, which only has a tab of its own while the user is dived
         # into it. get_chunk_context_index then returns None, and passing that straight to
-        # get_chunk_context raised TypeError out of QTabWidget.widget(None) -- from inside
-        # the CHUNK_LOADED dispatch, which aborted the whole rest of load_chunks' restore
-        # pass: the remaining chunks never got their DAG dependencies rebuilt or their
-        # execute() called. Live-reported as a saved scene reopening with a chunkgroup's
-        # inner chunks (an AMD MaterialX Library's Reference/BindMaterial) never taking
-        # effect -- an empty layer and the original material -- until the user dived into
-        # the group and back out, which finally cooked them.
+        # get_chunk_context would raise TypeError out of QTabWidget.widget(None) -- from
+        # inside the CHUNK_LOADED dispatch, aborting the rest of load_chunks' restore pass:
+        # the remaining chunks would never get their DAG dependencies rebuilt or their
+        # execute() called.
         idx = self.tab_widget.get_chunk_context_index(ctx)
         if idx is None:
             return

@@ -263,9 +263,9 @@ _param_port_type = chunk_graph.param_port_type
 
 
 
-# The clipboard lives in chunk_graph (see the aliases at the top of this file). These
-# two names used to be rebound here, which silently gave Qt a clipboard of its own --
-# so a copy in one frontend was invisible to the other despite the shared format.
+# The clipboard lives in chunk_graph (see the aliases at the top of this file). Never
+# rebind these two names here: that would silently give Qt a clipboard of its own, and a
+# copy in one frontend would be invisible to the others despite the shared format.
 
 
 
@@ -361,11 +361,11 @@ def _paste_guard_sets(chunks) -> "tuple[list, list]":
     """(guarded, self_building) for chunks about to be pasted.
 
     guarded: every non-view chunk. Setting a copied value runs a chunk's module, and a
-    paste sets them before the chunk is in the scene. Chunks that own children used to be
-    left out of the guard, because they must not be *blocked* -- but a chunk that builds its
-    own children (AMD MaterialX Library) then built them from outside the scene: named
-    against nothing, with layers the stage never took, and again once it was added. The
-    children came out doubled, and the orphan layers made the next recook raise.
+    paste sets them before the chunk is in the scene. That includes chunks that own
+    children, even though they must not be *blocked*: unguarded, a chunk that builds its
+    own children (AMD MaterialX Library) would build them from outside the scene -- named
+    against nothing, with layers the stage never took -- and again once it was added,
+    doubling the children and leaving orphan layers that make the next recook raise.
 
     self_building: the ones among them that make their own children. Nothing else cooks
     them -- recook_for_view never executes a group -- so each gets its one execute once it
@@ -689,9 +689,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._on_param_added, ChunkNoticeAlias.PARAM_REMOVED, chunk
         )
         # A param's own HIDDEN state toggling (e.g. Create Layer's Index field, shown only
-        # for Insert == "Index") needs the same rebuild PARAM_ADDED gets -- reported live:
-        # switching Insert away from "Index" left the Index port sitting there until
-        # something unrelated (deselecting the node) forced a fresh layout pass. Unlike a
+        # for Insert == "Index") needs the same rebuild PARAM_ADDED gets, or the port stays
+        # on the node until something unrelated forces a fresh layout pass. Unlike a
         # group's own collapse animation (toggle_anim.finished, connected in create_proxy),
         # there's no Qt signal to hang this off at all -- a hide is a direct
         # set_state(HIDDEN), no animation involved -- so geometryChanged has nothing to
@@ -1154,8 +1153,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # no port at all there (nothing to point at, and it declutters exactly the way
         # collapsing the whole node already does for its own unwired ports); a connected
         # one still needs one, staggered below the anchor so two sharing it don't land on
-        # the same pixel -- previously they did, and whichever ended up topmost silently
-        # ate every drag aimed at the other one's port.
+        # the same pixel, where whichever ended up topmost would silently eat every drag
+        # aimed at the other one's port.
         #
         # Checked against the chunk-level state model (has_state(COLLAPSED) walked up
         # param's own owner chain), not widget.isVisible(): a collapsed ContainerWidget
@@ -1693,14 +1692,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._proxy is not None:
             self._proxy.setVisible(not collapsed)
         if collapsed:
-            # Rebuild rather than reposition: the old code moved every existing typed
-            # port straight onto the header centre point, which is also where the exec
-            # ports already live -- every data port for every param, connected or not,
-            # ended up stacked on that one pixel along with them. Whichever port item
-            # was topmost then ate all hover/click, so a wire could look like it landed
-            # on the wrong port entirely, and the node never grew to fit anything either.
-            # A full rebuild both drops unwired ports (nothing to show) and spaces the
-            # wired ones out (see _place_param_ports_collapsed), same as an expand does.
+            # Rebuild rather than reposition: moving every typed port onto the header
+            # centre point would stack them all on the exec ports' pixel, where the topmost
+            # item eats all hover/click. A full rebuild both drops unwired ports (nothing
+            # to show) and spaces the wired ones out (see _place_param_ports_collapsed),
+            # same as an expand does.
             self._rebuild_typed_ports()
         else:
             self._height = self._full_height
@@ -2047,10 +2043,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         A node whose chunk is still present and unchanged is REUSED, not torn down and
         recreated — tearing down and rebuilding every node's ChunkWidget proxy (a native Qt
         window under the hood) on every single structural change, even for one unrelated
-        new/deleted node, made the whole graph visibly flash/collapse/expand and could show a
-        genuine OS-level popup-window flicker (reported live): create_proxy()'s "never let the
-        OS show a top-level window" workaround was being exercised once per EXISTING node, every
-        time, not just for the node that actually changed. Only nodes whose chunk no longer
+        new/deleted node, would make the whole graph visibly flash/collapse/expand and could
+        show OS-level popup-window flicker, since create_proxy()'s "never let the OS show a
+        top-level window" workaround would run once per EXISTING node. Only nodes whose chunk no longer
         exists are torn down, and only nodes that are newly created get a new proxy built.
         """
         if not self._stage or not self._scene_sender:
@@ -2258,10 +2253,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     def _request_build_edges(self):
         """Coalesce edge rebuilds onto one deferred pass.
 
-        _build_edges tears down and re-walks every node's attributes, and each node's port
-        rebuild used to trigger its own. Creating one 64-param shader ran it 1031 times for
-        ~1s of a 6s create. A burst of port changes only needs the one rebuild that follows
-        it, so collapse them onto a zero-timer.
+        _build_edges tears down and re-walks every node's attributes, and a single create can
+        rebuild ports on one node hundreds of times. A burst of port changes only needs the
+        one rebuild that follows it, so collapse them onto a zero-timer.
         """
         if self._edge_timer is None:
             self._edge_timer = QtCore.QTimer()
@@ -2269,9 +2263,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             self._edge_timer.setInterval(0)
             self._edge_timer.timeout.connect(self._build_edges)
         # Only when idle. The interval is zero, so restarting a running timer delays
-        # nothing -- but it is not free, and this is called for every stage change: grouping
-        # the kitchen layout's material chain restarted it half a million times, 100 s of a
-        # 183 s operation.
+        # nothing -- but it is not free, and this is called for every stage change, which
+        # on a large scene can mean hundreds of thousands of restarts in one operation.
         if not self._edge_timer.isActive():
             self._edge_timer.start()
 
@@ -2401,7 +2394,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # when upstream chunks were side-effect-free on cook, but a real chunk (e.g. a reactive
         # Scatter) now re-runs, once per param, every time anything with many params is deleted.
         #
-        # Default to a full recook -- safe/correct, matches pre-existing behaviour -- UNLESS
+        # Default to a full recook -- safe and correct -- UNLESS
         # ChunkGraphView._delete_selected already proved this specific delete can't matter and
         # flagged it via _recook_skip_next_delete. That flag has to be set BEFORE
         # request_delete() runs: request_delete() force-unblocks the chunk as a prerequisite for
@@ -2409,7 +2402,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # time this notice arrives, is_blocked() always reads False regardless of whether the
         # chunk was ever really cooking -- the delete itself erases that signal, so it can't be
         # judged here after the fact. Deletes triggered from elsewhere (e.g. the Params panel)
-        # never set the flag, so they keep recooking unconditionally, same as before this fix.
+        # never set the flag, so they always recook.
         self._schedule_rebuild()
         for v in self.views():
             if not isinstance(v, ChunkGraphView):
@@ -2425,7 +2418,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         Deliberately compares against prims rather than against live chunk objects: a chunk
         with no prim has no node either way, so it is not evidence of staleness, whereas a
-        prim with no node is exactly the reported symptom.
+        prim with no node is exactly what a stale graph looks like.
         """
         root_prim = self._stage.GetPrimAtPath(root)
         if not root_prim.IsValid():
@@ -2605,15 +2598,13 @@ class _ProxyKeyRouter(QtCore.QObject):
         if QtWidgets.QApplication.activePopupWidget() is not None:
             # A popup (a QMenu) owns the keyboard while it is up, and every shortcut below
             # is a GRAPH shortcut -- none of them mean anything until it closes. This filter
-            # is installed on the QApplication, so without this it kept firing straight
-            # through an open menu, and the menu's own filter does not stop it: that one
-            # only forwards printable characters to the search box, and Tab is not printable.
+            # is installed on the QApplication, so without this it would keep firing
+            # straight through an open menu, and the menu's own filter does not stop it: that
+            # one only forwards printable characters to the search box, and Tab is not.
             #
-            # Live-reported as pressing Tab repeatedly stacking up a chunk menu per press --
-            # the Tab branch below re-entered _open_tab_menu while its own blocking exec_()
-            # was still running. The same gap silently ate "f" and "l" typed into that
-            # menu's search box, firing frame-selection / auto-layout on the graph behind it
-            # instead of reaching the box.
+            # Otherwise pressing Tab repeatedly would re-enter _open_tab_menu while its own
+            # blocking exec_() is still running, stacking a menu per press, and "f" / "l"
+            # typed into the search box would frame / auto-layout the graph behind it.
             return False
 
         fw = QtWidgets.QApplication.focusWidget()
@@ -2750,8 +2741,7 @@ class _ProxyKeyRouter(QtCore.QObject):
         # Delete-selected: same fallback pattern as Ctrl+C/V/D/X above. Selecting a node
         # is itself a click on its embedded proxy body, which is exactly the case native
         # view focus (ChunkGraphView.keyPressEvent's own Key_Delete handler) can't be
-        # trusted to have -- live-reported as Delete intermittently doing nothing on a
-        # node that was clearly selected. Gated on `not typing_in_proxy` so Delete still
+        # trusted to have. Gated on `not typing_in_proxy` so Delete still
         # edits text inside a focused field instead of deleting the node underneath it.
         if not typing_in_proxy and event.key() == QtCore.Qt.Key.Key_Delete:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
@@ -3125,11 +3115,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         A bulk file load calls build() once per chunk, synchronously, in the same call
         stack (see load_chunks' _add_prim_mods -- each restored chunk fires its own
         CHUNK_LOADED, which ChunkWidgetDocker._loaded_module_callback turns straight into a
-        build() call while the Graph tab is active). Each call used to arm its own
-        independent 100ms timer, and recook_for_view re-executes its whole cook set every
-        time it runs, not just what changed (see _recook_active_view's docstring) -- so an
-        N-chunk load re-ran the entire upstream chain N times, live-reported as repeated
-        "Updated stage with sublayer" / "Scattered N instances" spam on every reload.
+        build() call while the Graph tab is active). recook_for_view re-executes its whole
+        cook set every time it runs, not just what changed (see _recook_active_view's
+        docstring), so one timer per call would re-run the entire upstream chain N times for
+        an N-chunk load. The calls share one timer instead.
 
         Only this recook is debounced, not build() itself: scene.build() above (the actual
         node/proxy-widget creation) stays fully synchronous, since several callers -- both
@@ -3378,8 +3367,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     for c in guarded:
                         c._executing = False
                     if view_exists:
-                        # Stays inert (muted/uncooked) until manually wired into the view,
-                        # same as before -- _executing only guarded the value-restoration
+                        # Stays inert (muted/uncooked) until manually wired into the view --
+                        # _executing only guarded the value-restoration
                         # window above, it doesn't keep the chunk out of recook_for_view's
                         # later cook-membership decisions the way set_blocked() does.
                         for c in blockable:
@@ -3682,7 +3671,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # A drag-and-drop chunk import is picking its own, scoped-to-just-the-imported-nodes
         # tail via _ensure_view_for_imported -- let it, rather than racing it here and
         # possibly latching onto an unrelated pre-existing tail elsewhere in the same context
-        # first (see _ensure_view_for_imported's docstring for the reported symptom).
+        # first (see _ensure_view_for_imported's docstring).
         if self._suppress_default_view:
             return
         registry = chunk_registry.ChunkRegistry()
@@ -4570,9 +4559,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """Create a view node wired to target_prim_path, then activate its slot.
 
         The creation itself is chunk_graph.create_view_for, shared with the Flet and ImGui
-        frontends -- it was 75 lines of USD and registry work here and nothing at all
-        there, which is why the same file used to show a view node in this graph and none
-        in the others.
+        frontends, so every frontend shows the same view nodes for the same file.
         """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -4671,9 +4658,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         node just created/deleted/(dis)connected). recook_for_view re-*executes* its whole
         cook set every time it runs (not just chunks that actually changed — see its own
         docstring), so calling it unconditionally on every structural edit anywhere in the
-        graph was re-running unrelated upstream chunks (a stray "Scattered N instances" print
-        from creating/deleting a node nowhere near the active view) and re-dimming every
-        blocked chunk for no reason. When changed_chunks is given and none of them are the
+        graph would re-run unrelated upstream chunks and re-dim every blocked chunk for no
+        reason. When changed_chunks is given and none of them are the
         view or already reachable from it, the edit provably can't change what the view cooks
         (cook-set membership is exactly graph reachability from the view), so it's skipped.
         Omit changed_chunks (the default) to always recook, as before — used for genuinely
@@ -4950,9 +4936,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # "Import as Chunks" only makes sense for a file that actually carries chunk prims
         # (a chunkgroup export) -- offering it for a plain scene would be a dead choice.
         # Sublayer and Reference apply either way, so the popup always shows at least those
-        # two: a plain scene file no longer silently defaults to Sublayer the way it used to
-        # before Reference was an option here, since that default would make the new choice
-        # unreachable for the single most common drop (a plain USD asset with no chunk prims).
+        # two. A plain scene file does not silently default to Sublayer: that would make
+        # Reference unreachable for the single most common drop (a plain USD asset with no
+        # chunk prims).
         chosen = self._prompt_import_kind(global_pos, offer_chunks=(kind != "scene"))
         if chosen == "chunks":
             self._import_as_chunks(path, scene_pos)
@@ -5011,8 +4997,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         in the tab (e.g. a pre-existing Edit Target chunk with nothing wired after it -- also a
         valid 'tail'), so without scoping to just the newly imported nodes, the generic
         auto-view could easily latch onto that unrelated pre-existing node instead of the
-        workflow the user just dropped in (reported live: view landed on Edit Target instead of
-        the dropped file's own terminal RBD Solver node). No-ops if the context already has a
+        workflow the user just dropped in. No-ops if the context already has a
         view -- matches _ensure_default_view's own rule of never stealing an existing view.
 
         Always releases the _suppress_default_view hold _import_as_chunks took, whichever
@@ -5071,7 +5056,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         owner chain), so a blocked chunk's ATTRIBUTE_CHANGED notice never fires at all --
         meaning Sublayer's own add_callback handler (which is what actually authors
         subLayerPaths) would simply never run, and the dropped path would sit in the field
-        with no effect (reported live: "empty sublayer"). That blocking is right for a chunk
+        with no effect. That blocking is right for a chunk
         with real, parent-resolution-dependent side effects (e.g. Create Layer -- see
         _materialize_at), but Sublayer's callback only ever writes into its OWN
         already-established edit layer, so there's no equivalent hazard here to guard
@@ -5220,8 +5205,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 return
 
         # Empty canvas: offer Paste alongside the existing "New Chunk" fuzzy-search popup,
-        # but only when there's actually something to paste -- otherwise this behaves exactly
-        # as before (straight into the fuzzy search, no extra menu step).
+        # but only when there's actually something to paste -- otherwise it goes straight
+        # into the fuzzy search, with no extra menu step.
         if _node_clipboard:
             quick_menu = QtWidgets.QMenu()
             paste_action = quick_menu.addAction("Paste")

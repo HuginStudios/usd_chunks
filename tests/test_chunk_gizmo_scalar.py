@@ -539,8 +539,7 @@ class _CamNode:
 
 
 def test_the_camera_declares_both_handles() -> None:
-    """A focus-distance handle and a whole-chunk transform, which is what Dan asked for --
-    and the transform drives the camera's *own* params, so nothing reaches across chunks."""
+    """A focus-distance handle and a whole-chunk transform -- and the transform drives the camera's *own* params, so nothing reaches across chunks."""
     camera_mod, c, _stage = _camera_chunk_and_stage()
 
     names = sorted(g.name for g in chunk_gizmo.get_gizmos(c))

@@ -645,8 +645,8 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         if not scene:
             return
         prims = scene.get_selected_prims()
-        # Nothing selected is a misfire, not an instruction to erase. Pinning used to blank the
-        # field, which is a bad trade: the path you had was worth more than the empty selection.
+        # Nothing selected is a misfire, not an instruction to erase: the path already in the
+        # field is worth more than the empty selection.
         if not prims:
             return
         # Assigned through the param rather than calling its set_prims(). Inside a ListGroup row
@@ -1360,8 +1360,8 @@ class LabeledWidget(QtWidgets.QWidget):
         )
         raw = param.raw_value
         # is_expression_text, not has_expression: a ${VAR} stage expression is just as much
-        # an expression to clear or edit, and the menu used to offer "Set Expression..." on
-        # a field that already had one.
+        # an expression to clear or edit, so the menu must not offer "Set Expression..." on
+        # a field that already has one.
         has_expr = is_expr_capable and chunk_utils.is_expression_text(raw)
 
         menu = QtWidgets.QMenu()
@@ -2572,8 +2572,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
         # setStyleSheet re-polishes the whole subtree beneath the widget and cost ~10ms a
         # call — 112 of them, 1.7s, easily the most expensive thing in building a chunk.
-        # Every nested group is its own ChunkWidget and each used to apply the entire
-        # CHUNK_STYLESHEET. Qt stylesheets cascade, so only the outermost needs to, and
+        # Every nested group is its own ChunkWidget, but Qt stylesheets cascade, so only
+        # the outermost needs to apply CHUNK_STYLESHEET, and
         # the selection border rides a dynamic property resolved by that one sheet.
         # build_collapsable now does this while the subtree is still empty, so this is
         # normally its no-op guard path; it still matters for a widget reparented out from
@@ -3010,8 +3010,8 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
                 # Hidden, never unparented. deleteLater() waits for the event loop it was
                 # called from, so a popup opened straight after (the empty-panel Tab and
                 # file-drop paths) runs its nested loop with the old button still alive --
-                # and unparented it was a top-level window, which Windows showed and
-                # activated, closing the popup the instant it appeared.
+                # and unparented it would be a top-level window, which Windows shows and
+                # activates, closing the popup the instant it appears.
                 w.hide()
                 w.deleteLater()
 

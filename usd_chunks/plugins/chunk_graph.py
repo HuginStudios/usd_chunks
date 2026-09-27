@@ -496,9 +496,8 @@ def set_param_visibly(chunk_obj, param, value) -> None:
 
     A chunk created by dropping a wire into empty space is blocked the moment it is made
     (view-driven execution: nothing is wired to it yet), and a blocked chunk suppresses its
-    own param notices -- which is how a deferred connect could author the expression, have
-    it resolve correctly, and still leave the field on the node showing nothing at all.
-    Live-reported as "the wire works but the Prim Path param is empty".
+    own param notices -- so a deferred connect could author the expression, have it resolve
+    correctly, and still leave the field on the node showing nothing at all.
 
     Unblocking for the write is what makes the widget update, and `_executing` is what keeps
     that from running the module: set_blocked suppresses per-param VALUE_CHANGED notices as
@@ -1587,8 +1586,8 @@ def can_dive(chunks: dict, path: str) -> bool:
 
     Keyed on is_subnet, never on the CONTEXT flag. Both a chunkgroup and a
     chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material` as
-    an implementation detail) carry CONTEXT, so the flag cannot tell them apart -- which is
-    exactly why diving into the AMD node used to be offered and should not be. A chunk
+    an implementation detail) carry CONTEXT, so the flag cannot tell them apart, and only
+    the chunkgroup may be dived into. A chunk
     hosting a referenced network (chunk_stage.is_network_host) is a subnet too.
     """
     chunk = chunks.get(path)

@@ -1,4 +1,4 @@
-"""Tests for chunk_stage.save_scene -- the "nice save flow" (Dan's request) -- and for the
+"""Tests for chunk_stage.save_scene and for the
 stage metadata (up-axis, units) that export_chunks, which it wraps, now carries itself.
 
 Previously wrote a bundled pair (the chunk graph plus a flattened snapshot of everything

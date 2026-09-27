@@ -47,8 +47,8 @@ _CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
 # active=false recording why, and simply vanished on reopen.
 _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
-# /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
-# default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
+# /chunks is just a scope -- like /lights or /render. Nothing lives at it: the default
+# chunkgroup sits under it, and everything else under that. Typing it Chunk would make the
 # scope look like a chunk prim to anything reading the stage back.
 _CHUNKS_ROOT_TYPENAME = chunk_naming.CHUNKS_ROOT_TYPENAME
 _CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
@@ -4305,9 +4305,8 @@ def recook_for_view(
             if c in cook_set:
                 # Cooked at its turn in the loop below, not here. Here is before any of
                 # the context's own chunks have been revealed and cooked, so a group cooked
-                # now read a stage its upstream was not on yet -- the kitchen layout's
-                # Materials script, moved into a group, found none of the appliances and
-                # converted 0 of 86 materials.
+                # now would read a stage its upstream is not on yet, and a chunk inside it
+                # would find none of the prims it acts on.
                 deferred_groups.add(id(c))
             else:
                 recook_for_view(stage, scene, c, None)
