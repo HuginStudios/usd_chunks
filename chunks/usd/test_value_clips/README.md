@@ -25,7 +25,7 @@ The animation: the bottom 4 vertices stay at `y = -0.5`, the top 4 vertices move
 
 1. **Open `scene.usda` in usdview**
    ```
-   usdview scripts/usd/test_value_clips/scene.usda
+   usdview chunks/usd/test_value_clips/scene.usda
    ```
 
 2. **Add the Value Clips chunk** from the chunk panel (category: USD)
@@ -59,7 +59,7 @@ At each frame, USD resolves the template (e.g. frame 5 → `./clips/clip.005.usd
 
 To tweak the animation, edit `generate_clips.py` and run:
 ```
-python scripts/usd/test_value_clips/generate_clips.py
+python chunks/usd/test_value_clips/generate_clips.py
 ```
 
 ## 2. Sparse override: a wave over a walk cycle
@@ -75,7 +75,7 @@ licence). It is not checked in.
 
 1. **Write the wave clip** next to the walk:
    ```
-   python scripts/usd/test_value_clips/make_wave_clip.py <path>/UsdSkelExamples/HumanFemale
+   python chunks/usd/test_value_clips/make_wave_clip.py <path>/UsdSkelExamples/HumanFemale
    ```
    That reads the walk clip's joint order and the skeleton's bind pose and writes
    `HumanFemale.wave.usda`. Open it: every sample is an `edit [...]` touching three

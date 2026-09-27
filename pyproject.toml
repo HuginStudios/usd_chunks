@@ -49,7 +49,7 @@ ui = ["PySide6"]
 # rest of the package, but `usdchunks-flet`/`-imgui` need these.
 flet = ["flet>=0.28"]
 imgui = ["imgui-bundle>=1.6"]
-# `requests` is not a library dependency — the suite loads example chunks from scripts/
+# `requests` is not a library dependency — the suite loads example chunks from chunks/
 # that import it. Chunks whose imports fail are skipped by the registry, so the heavier
 # example deps (numpy, opencv) are deliberately left out.
 dev = ["pytest", "pytest-xdist", "ruff", "build", "types-usd", "requests", "usd-core",

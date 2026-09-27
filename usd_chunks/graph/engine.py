@@ -722,7 +722,7 @@ def iter_copyable_params(chunk: core.ChunkCommon):
     """`iter_connectable_params`, minus anything flagged State.HIDDEN.
 
     A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
-    see or set directly -- e.g. scripts/usd/create_layer.py's _new_layer_id/_layer_name_used/
+    see or set directly -- e.g. chunks/usd/create_layer.py's _new_layer_id/_layer_name_used/
     _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
     instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
     instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds

@@ -33,7 +33,7 @@ from usd_chunks import chunk, chunk_core, chunk_utils
 
 logger = logging.getLogger(__name__)
 
-#: Read by scripts/modelling/scatter_points.py. Kept as a literal rather than imported, so a scene with
+#: Read by chunks/modelling/scatter_points.py. Kept as a literal rather than imported, so a scene with
 #: only one of the two chunks installed still loads.
 DENSITY_PRIMVAR = "scatterDensity"
 

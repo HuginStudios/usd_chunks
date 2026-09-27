@@ -55,7 +55,7 @@ def scene():
 
 class TestSemanticLabels:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.semantics")
+        self.mod = importlib.import_module("chunks.usd.semantics")
 
     def _make(self, name):
         c = self.mod.main()

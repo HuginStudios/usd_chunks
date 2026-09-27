@@ -65,9 +65,9 @@ def _setup_stage():
 
 class TestCreateLayerNestingAndExport:
     def setup_method(self):
-        self.create_mod = _load("scripts.usd.create_layer")
-        self.edit_mod = _load("scripts.usd.edit_target")
-        self.export_mod = _load("scripts.core.export_usd")
+        self.create_mod = _load("chunks.usd.create_layer")
+        self.edit_mod = _load("chunks.usd.edit_target")
+        self.export_mod = _load("chunks.core.export_usd")
 
     def _create_layer(self, scene, name, module_name):
         c = _make(scene, self.create_mod, module_name)
@@ -148,8 +148,8 @@ class TestCreateLayerNestingAndExport:
         sit). A Baked export of layer2 alone must contain only its own real content, no
         chunk-graph bookkeeping mixed in even though it's directly inside layer2 too.
         """
-        prim_mod = _load("scripts.usd.prim")
-        export_chunkgroup_mod = _load("scripts.core.export_chunkgroup")
+        prim_mod = _load("chunks.usd.prim")
+        export_chunkgroup_mod = _load("chunks.core.export_chunkgroup")
         scene, stage = _setup_stage()
 
         layer1 = self._create_layer(scene, "layer1", "create_layer_1")
@@ -323,7 +323,7 @@ class TestCreateLayerNestingAndExport:
         the chunk-graph bookkeeping only -- each chunk's real content stays in its own
         private layer (not copied in), so reloading the recipe re-runs execute() to
         regenerate it, rather than the file already containing a baked-out copy."""
-        light_mod = _load("scripts.modelling.light")
+        light_mod = _load("chunks.modelling.light")
         scene, stage = _setup_stage()
 
         self._create_layer(scene, "shot", "create_layer_shot")
@@ -385,7 +385,7 @@ class TestCreateLayerNestingAndExport:
         unchecked now) must strip *all* of it
         regardless of how many different chunks ended up nested there, leaving only
         Light's real DiskLight."""
-        light_mod = _load("scripts.modelling.light")
+        light_mod = _load("chunks.modelling.light")
         scene, stage = _setup_stage()
 
         self._create_layer(scene, "shot", "create_layer_shot")
@@ -433,7 +433,7 @@ class TestCreateLayerNestingAndExport:
         """A chunk whose Bake checkbox is checked (via Bake all -- rows default to
         unchecked now) gets no
         bookkeeping prim added to the exported layer, only its real content."""
-        light_mod = _load("scripts.modelling.light")
+        light_mod = _load("chunks.modelling.light")
         scene, stage = _setup_stage()
 
         self._create_layer(scene, "shot", "create_layer_shot")
@@ -459,7 +459,7 @@ class TestCreateLayerNestingAndExport:
         assert [p for p in recipe_stage.Traverse() if p.GetTypeName() == "DiskLight"]
 
     def _setup_light_in_shot(self, tmp_path):
-        light_mod = _load("scripts.modelling.light")
+        light_mod = _load("chunks.modelling.light")
         scene, stage = _setup_stage()
 
         self._create_layer(scene, "shot", "create_layer_shot")
@@ -558,8 +558,8 @@ class TestCreateLayerNestingAndExport:
         no subLayerPaths at all, unlike Export USD's Mode: Procedural (a raw copy of
         the live session layer, which can carry forward subLayerPaths to in-memory
         anon: layers that don't resolve once the session ends)."""
-        export_chunkgroup_mod = _load("scripts.core.export_chunkgroup")
-        light_mod = _load("scripts.modelling.light")
+        export_chunkgroup_mod = _load("chunks.core.export_chunkgroup")
+        light_mod = _load("chunks.modelling.light")
         scene, stage = _setup_stage()
 
         self._create_layer(scene, "shot", "create_layer_shot")

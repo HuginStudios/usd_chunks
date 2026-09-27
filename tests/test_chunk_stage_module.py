@@ -34,7 +34,7 @@ def test_the_old_import_path_is_the_same_module():
 
 def test_nothing_here_imports_the_old_path():
     offenders = []
-    for folder in ("usd_chunks", "scripts", "tests"):
+    for folder in ("usd_chunks", "chunks", "tests"):
         for path in (REPO / folder).rglob("*.py"):
             rel = path.relative_to(REPO).as_posix()
             if rel == _SHIM or rel == "tests/test_chunk_stage_module.py":

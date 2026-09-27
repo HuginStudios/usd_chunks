@@ -39,7 +39,7 @@ def entries():
     registry.initialize(_NoScene(), "pytest")
     found = registry.get_menu_entries(sort_result=True)
     if not found:
-        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
     return found
 
 

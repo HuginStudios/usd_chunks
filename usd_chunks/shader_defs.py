@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # round-trip. color4f is left as a Vector -- a ColorPicker is rgb only.
 # Filter for a shader's asset inputs. An asset on a shader is a texture in practice, and
 # without a filter the browser lists every file in the directory. Same set as
-# scripts/materials/uv_texture.py, so both texture browsers behave alike.
+# chunks/materials/uv_texture.py, so both texture browsers behave alike.
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".exr", ".tx", ".tif", ".tiff", ".hdr")
 
 _TYPE_OVERRIDES: dict = {

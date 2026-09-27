@@ -16,7 +16,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 
-brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
+brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
 
 
 class _DummyScene(SceneSender):

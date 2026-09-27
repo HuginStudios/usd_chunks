@@ -5,7 +5,7 @@ not in the graph, so it does not survive the next cook and is not what gets save
 scene. Dragging a prim nothing owns therefore has to create the chunk that will own it --
 the same move Houdini makes when editing geometry drops an Edit node in front of you.
 
-Uses the real scripts/transforms/transform.py rather than a stand-in: the point is partly that its
+Uses the real chunks/transforms/transform.py rather than a stand-in: the point is partly that its
 param names and gizmo names are the ones the auto-create path reaches for.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
 from usd_chunks import chunk_stage
 
-transform_mod = importlib.import_module("scripts.transforms.transform")
+transform_mod = importlib.import_module("chunks.transforms.transform")
 
 
 # ---------------------------------------------------------------------------

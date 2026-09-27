@@ -83,7 +83,7 @@ def view():
     chunk_stage.ChunkStageSync().initialize(stage, scene)
     bg.register()
 
-    # Through the registry, which is what puts scripts/ on sys.path. A bare
+    # Through the registry, which is what puts chunks/ on sys.path. A bare
     # `import reference` here only worked when some earlier test file had already
     # initialised a registry, so this file errored out when run on its own.
     ref = _make(registry.get_chunk_module("reference"))

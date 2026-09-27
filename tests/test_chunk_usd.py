@@ -1422,7 +1422,7 @@ def test_expression_listener_reconnects_after_reload() -> None:
     load_chunks must retry the listener setup once every chunk in the batch is
     registered, and the retry must actually restore live propagation."""
     import importlib
-    mo = importlib.import_module("scripts.utils.math_ops")
+    mo = importlib.import_module("chunks.utils.math_ops")
 
     stage = Usd.Stage.CreateInMemory()
     stage.GetRootLayer().ImportFromString(

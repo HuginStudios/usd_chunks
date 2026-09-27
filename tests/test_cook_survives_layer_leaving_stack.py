@@ -2,7 +2,7 @@
 
 Live-reported while wiring a new light and transform into a Stage Expression Switch:
 
-    File "scripts/transforms/transform.py", line 41, in _rescale_translate_range
+    File "chunks/transforms/transform.py", line 41, in _rescale_translate_range
       param.min_value = -span
     ...
     File "usd_chunks/chunk_notice.py", line 1303, in execute

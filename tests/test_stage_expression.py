@@ -176,7 +176,7 @@ def test_a_plain_value_is_untouched(scene) -> None:
 
 def _stage_expression(scene, *rows):
     """Build the chunk with one row per (name, type, value) triple."""
-    mod = importlib.import_module("scripts.utils.stage_expression")
+    mod = importlib.import_module("chunks.utils.stage_expression")
 
     node = mod.main()
     node._config = ChunkConfig(module="stage_expression")

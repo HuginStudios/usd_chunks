@@ -1537,7 +1537,7 @@ class ChunkCommon(AttributesBase):
         if not self._validate_path(attr, value):
             return False
 
-        # A `#`-padded value is a per-frame template (scripts/usd/value_clips.py's Clip
+        # A `#`-padded value is a per-frame template (chunks/usd/value_clips.py's Clip
         # field is the case this exists for: "./clips/points.###.usd"), not one literal
         # path -- by construction nothing on disk is ever named exactly that, so the
         # existence check does not apply. FILE_EXISTING still does its other job here:
@@ -2470,7 +2470,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     #: Param types whose value USD itself evaluates expression variables in: an asset path.
     #: A variant selection is the other place USD substitutes, and chunks author those as
-    #: text from a chunk module rather than from a param (see scripts/usd/set_variant.py).
+    #: text from a chunk module rather than from a param (see chunks/usd/set_variant.py).
     _STAGE_EXPRESSION_TYPES = ChunkFlags.ParamType.FILE
 
     @override

@@ -225,7 +225,7 @@ def find_gizmo(chunk: core.ChunkBase, name: str):
 def resolve_anchor_param(chunk: core.ChunkBase, gizmo) -> core.ChunkParamBase:
     """The param holding the target prim path for this gizmo.
 
-    Name-first, then the flag. Across scripts/, the name is the more reliable signal: only
+    Name-first, then the flag. Across chunks/, the name is the more reliable signal: only
     about half the chunks with a target path set PRIM_SELECTION (camera.py, light.py,
     reference.py and others name the param but never flag it), while the name
     `primpath_location` is near-universal.

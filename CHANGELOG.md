@@ -76,6 +76,9 @@ This file starts with the first release; development before that is in the commi
   The standalone graphs run as `python -m usd_chunks.frontends.flet.nodegraph` and
   `python -m usd_chunks.frontends.imgui.nodegraph`.
 
+- The example chunk library moved from `scripts/` to `chunks/`. Point `USD_CHUNK_DIRS` at
+  `<repo>/chunks`; the test suite adds it itself.
+
 - A network brought in by composition is tweaked, never rewritten. Sublayer a sequence's
   network into a shot, or reference it under a chunkgroup, and editing a param in the shot
   authors a sparse `over` in the stage's edit target (the shot file itself, unless the

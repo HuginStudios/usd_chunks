@@ -255,7 +255,7 @@ def write_character_override(character, out_dir):
     return out_path
 
 
-# Not `main`: this file sits under scripts/, which is USD_CHUNK_DIRS, and the registry
+# Not `main`: this file sits under chunks/, which is USD_CHUNK_DIRS, and the registry
 # registers any module there with a top-level main() as a chunk. Created from the menu,
 # main() would run argparse against the HOST's sys.argv -- usdview's own arguments --
 # raising SystemExit past the registry's `except Exception`, or, given two file

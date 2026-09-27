@@ -39,7 +39,7 @@ def _rbd_solver():
     """The rbd_solver chunk, found by chunk name so it resolves wherever the two live.
 
     A bare `import rbd_solver` worked only while every chunk sat in one folder on sys.path,
-    and `import scripts.dynamics.rbd_solver` only inside this repo.
+    and `import chunks.dynamics.rbd_solver` only inside this repo.
     """
     mod = chunk_registry.ChunkRegistry().get_chunk_module("rbd_solver")
     if mod.module is None:

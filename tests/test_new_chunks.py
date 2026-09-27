@@ -45,7 +45,7 @@ def _load(module_path: str):
 
 class TestDot:
     def setup_method(self):
-        self.mod = _load("scripts.core.dot")
+        self.mod = _load("chunks.core.dot")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -96,7 +96,7 @@ class TestDot:
 
 class TestBindMaterial:
     def setup_method(self):
-        self.mod = _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.bind_material")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -180,7 +180,7 @@ class TestAMDMaterialXLibrary:
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
 
     def test_main_returns_context_chunk(self):
         c = self.mod.main()
@@ -257,10 +257,10 @@ class TestAMDMaterialXLibraryChildCreation:
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
         # Ensure the child chunk modules _create_child resolves are registered.
-        _load("scripts.usd.reference")
-        _load("scripts.materials.bind_material")
+        _load("chunks.usd.reference")
+        _load("chunks.materials.bind_material")
 
     @staticmethod
     def _fake_zip_bytes() -> bytes:
@@ -477,7 +477,7 @@ class TestAMDMaterialXLibraryChildCreation:
         # self.mod is NOT the module load_chunks' reconstruction actually runs: the
         # registry resolves chunk modules by the short config name ("Foo"),
         # while this test file imported the same source under a different
-        # sys.modules key ("scripts.examples.Foo") via _load(). Those are two
+        # sys.modules key ("chunks.examples.Foo") via _load(). Those are two
         # distinct module objects with independent globals, so patches on self.mod
         # are invisible to code executing as the registry's copy -- reach through
         # the registry to patch the module identity that will actually run.
@@ -514,7 +514,7 @@ class TestBindMaterialResilience:
     """
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.bind_material")
 
     @staticmethod
     def _node(stage, chunk_obj):
@@ -616,9 +616,9 @@ class TestAMDMaterialXCaching:
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
-        _load("scripts.usd.reference")
-        _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
+        _load("chunks.usd.reference")
+        _load("chunks.materials.bind_material")
 
     def test_second_apply_hits_the_cache_and_makes_no_network_call(self, monkeypatch, tmp_path):
         stage = Usd.Stage.CreateInMemory()
@@ -686,9 +686,9 @@ class TestAMDMaterialXAsyncApply:
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
-        _load("scripts.usd.reference")
-        _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
+        _load("chunks.usd.reference")
+        _load("chunks.materials.bind_material")
 
     def test_apply_downloads_off_thread_and_assigns_on_the_main_thread(self, monkeypatch, tmp_path, qapp):
         import threading

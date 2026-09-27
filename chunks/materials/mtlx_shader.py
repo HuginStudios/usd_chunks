@@ -574,7 +574,7 @@ def _author_shader(node, stage, sdef, prim_path, shader_path) -> None:
     # of the chain wire_shader_input walks: a downstream chunk's inputs: connection names
     # this chunk's prim, and it then reads *this* attr's connections to find the shader to
     # wire to. Without it a wire between two nodes resolves to nothing. Same authoring
-    # (session layer, chunk-prim bookkeeping) as scripts/materials/uv_texture.py.
+    # (session layer, chunk-prim bookkeeping) as chunks/materials/uv_texture.py.
     if chunk_prim and chunk_prim.IsValid():
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             for prop in sdef.outputs:

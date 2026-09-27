@@ -22,9 +22,9 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
-import scripts.usd.value_clips as value_clips
+import chunks.usd.value_clips as value_clips
 
-_CUBE_CLIPS = os.path.join(os.path.dirname(__file__), "..", "scripts", "usd",
+_CUBE_CLIPS = os.path.join(os.path.dirname(__file__), "..", "chunks", "usd",
                            "test_value_clips", "clips", "clip.###.usda")
 
 

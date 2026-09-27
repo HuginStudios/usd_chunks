@@ -9,7 +9,7 @@ consults clip sets alphabetically, which is nobody's intended order.
 Stacking is what makes sparse clips useful. A clip authored as array edits -- OpenUSD
 26.03's `edit [write q to [i]]` -- changes the elements it names and leaves the rest to
 the next clip set down, so a layered performance can be exactly the joints it moves. See
-`scripts/usd/test_value_clips/make_wave_clip.py` for a clip written that way.
+`chunks/usd/test_value_clips/make_wave_clip.py` for a clip written that way.
 
 Everything is authored on the chunk's own layer: absolute asset paths resolve from an
 anonymous layer just fine, and two chunks on one prim then compose their clip sets

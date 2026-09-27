@@ -30,7 +30,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # directory keeps it, and keeps precedence, since entries earlier in the list win on a
 # duplicate module name (ChunkEnvVar._get). Absolute, so the suite does not depend on
 # being run from the repo root.
-_SCRIPTS = str(pathlib.Path(__file__).resolve().parent.parent / "scripts")
+_SCRIPTS = str(pathlib.Path(__file__).resolve().parent.parent / "chunks")
 if _SCRIPTS not in os.environ.get("USD_CHUNK_DIRS", "").split(os.pathsep):
     _existing = os.environ.get("USD_CHUNK_DIRS", "")
     os.environ["USD_CHUNK_DIRS"] = (

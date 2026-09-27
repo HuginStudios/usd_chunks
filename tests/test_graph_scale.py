@@ -16,8 +16,8 @@ The full-stack tier is opt-in (`USD_CHUNKS_SCALE=1`): a 1000-node build is a cou
 minutes, which is worth having on demand but not on every suite run. Run the sweep
 directly to get the phase table and the fitted growth exponent per phase:
 
-    USD_CHUNK_DIRS=scripts python tests/test_graph_scale.py --sweep 25,50,100,200
-    USD_CHUNK_DIRS=scripts python tests/test_graph_scale.py --n 1000
+    USD_CHUNK_DIRS=chunks python tests/test_graph_scale.py --sweep 25,50,100,200
+    USD_CHUNK_DIRS=chunks python tests/test_graph_scale.py --n 1000
 
 `--sweep` is the useful mode: absolute numbers move with the machine, but the exponent
 (how the phase grows as N doubles) is what says whether a phase is linear, quadratic or
@@ -129,7 +129,7 @@ def build_chunk_graph(count: int) -> list[tuple[str, float]]:
 
     module = registry.get_chunk_module("dot")
     if not module:
-        pytest.skip("USD_CHUNK_DIRS must point at scripts/ for the dot chunk to be found")
+        pytest.skip("USD_CHUNK_DIRS must point at chunks/ for the dot chunk to be found")
 
     _ACTIVE["scene"] = scene
     _ACTIVE["stage"] = stage

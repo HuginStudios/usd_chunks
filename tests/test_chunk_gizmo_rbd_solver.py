@@ -21,7 +21,7 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks import chunk_stage
 
-rbd_mod = importlib.import_module("scripts.dynamics.rbd_solver")
+rbd_mod = importlib.import_module("chunks.dynamics.rbd_solver")
 
 
 class _Scene(SceneSender):

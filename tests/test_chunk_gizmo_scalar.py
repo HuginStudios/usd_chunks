@@ -235,7 +235,7 @@ def test_an_explicit_gizmo_wins_over_sugar_of_the_same_name() -> None:
 # ---------------------------------------------------------------------------
 
 def test_anchor_infers_from_the_name_without_prim_selection() -> None:
-    """camera.py names primpath_location but never flags it, and roughly half of scripts/ is
+    """camera.py names primpath_location but never flags it, and roughly half of chunks/ is
     the same -- which is why the name is the primary signal rather than the flag."""
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
     assert not c.get_param("primpath_location").has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION)
@@ -250,7 +250,7 @@ def test_anchor_infers_from_the_name_without_prim_selection() -> None:
 # ---------------------------------------------------------------------------
 
 def test_shipped_camera_declares_a_focus_distance_handle() -> None:
-    camera_mod = importlib.import_module("scripts.modelling.camera")
+    camera_mod = importlib.import_module("chunks.modelling.camera")
     gizmos = camera_mod.config().gizmos
 
     assert [g.name for g in gizmos] == ["zdist"]
@@ -262,7 +262,7 @@ def test_shipped_camera_pins_the_handle_to_the_cameras_view_direction() -> None:
     """Signed, and the sign matters: a camera looks down -Z, so an unsigned "Z" would put the
     focus handle out the back of the camera. Found by reconstructing the handle on paper from
     the authored USD alone -- exactly what that exercise is for."""
-    camera_mod = importlib.import_module("scripts.modelling.camera")
+    camera_mod = importlib.import_module("chunks.modelling.camera")
     assert camera_mod.config().gizmos[0].axis == "-Z"
 
 
@@ -493,7 +493,7 @@ def test_a_transform_declared_by_hand_must_drive_nine() -> None:
 
 def _camera_chunk_and_stage():
     """The real camera chunk, cooking against a stage of its own."""
-    camera_mod = importlib.import_module("scripts.modelling.camera")
+    camera_mod = importlib.import_module("chunks.modelling.camera")
     stage = Usd.Stage.CreateInMemory()
 
     class _StagedScene(_DummyScene):
@@ -609,7 +609,7 @@ def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None
     """Both chunks must invert to the same decomposition, or one handle drifts and the other
     does not -- which would look like a gizmo bug rather than a chunk bug."""
     camera_mod, c, _stage = _camera_chunk_and_stage()
-    transform_mod = importlib.import_module("scripts.transforms.transform")
+    transform_mod = importlib.import_module("chunks.transforms.transform")
 
     for name, value in [("tx", 1.0), ("ty", -2.0), ("rx", 30.0), ("ry", 15.0), ("sz", 2.0)]:
         c.get_param(name).value = value
@@ -706,7 +706,7 @@ def test_a_failing_hook_leaves_the_handle_visible() -> None:
     import types as _types
 
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
-    module = _types.ModuleType("scripts.camera_stub")
+    module = _types.ModuleType("chunks.camera_stub")
 
     def gizmo_hidden(node, gizmo):
         raise RuntimeError("boom")

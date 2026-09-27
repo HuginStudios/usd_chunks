@@ -21,7 +21,7 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-ci = importlib.import_module("scripts.modelling.cad_import")
+ci = importlib.import_module("chunks.modelling.cad_import")
 
 needs_ocp = pytest.mark.skipif(not ci._HAS_OCP, reason="needs cadquery-ocp")
 

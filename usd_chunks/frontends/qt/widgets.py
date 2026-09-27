@@ -2314,7 +2314,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
             if self._is_tab_context_widget:
                 # A distinct "toolbar" panel -- prim path, a context's own lofted top-level
-                # params (e.g. scripts/core/chunkgroup.py's "doc" Description TextEdit -- the
+                # params (e.g. chunks/core/chunkgroup.py's "doc" Description TextEdit -- the
                 # pre-existing description for a chunkgroup; empty/invisible for a plain tab,
                 # which has no own params), and the filter bar -- visually separated from the
                 # chunk list below by a tinted background + embossed edge, not just a plain line.

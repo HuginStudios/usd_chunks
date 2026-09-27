@@ -3,7 +3,7 @@ node_modules
 .pytest_cache
 .vscode
 .venv
-scripts/user
+chunks/user
 .mypy*
 .env
 _installed_deps

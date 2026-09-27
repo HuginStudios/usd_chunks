@@ -62,7 +62,7 @@ def scene():
 
 class TestMathOpsExpression:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.utils.math_ops")
+        self.mod = importlib.import_module("chunks.utils.math_ops")
 
     def test_expression_survives_first_execute(self, scene):
         node1 = _make_math_ops(self.mod, "Mult1")

@@ -26,8 +26,8 @@ from pathlib import Path
 import pytest
 from pxr import Usd, UsdGeom, UsdShade
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "modelling"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "modelling"))
 import add_mesh  # noqa: E402
 
 

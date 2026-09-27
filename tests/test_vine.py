@@ -35,10 +35,10 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-vine = importlib.import_module("scripts.modelling.vine")
+vine = importlib.import_module("chunks.modelling.vine")
 #: The field name is the brush's to define. Reading it from there rather than restating it
 #: is the point: if the two chunks ever stopped agreeing, these tests have to notice.
-brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
+brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
 DENSITY = brush_mod.DENSITY_PRIMVAR
 
 

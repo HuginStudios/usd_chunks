@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 import rbd_solver as rbd  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

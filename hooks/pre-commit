@@ -7,7 +7,7 @@
 #
 #   * ruff over the staged Python, which is literally CI's first step
 #   * a core smoke set (~4s): the framework basics, and test_new_chunks, which loads every
-#     chunk in scripts/ and so catches a chunk that no longer imports or builds
+#     chunk in chunks/ and so catches a chunk that no longer imports or builds
 #   * any test file the commit itself touches -- a new test is exactly the one most likely
 #     to be wrong, and you already believe it is worth running
 #

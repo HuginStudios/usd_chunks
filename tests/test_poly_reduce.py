@@ -18,7 +18,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
-pr = importlib.import_module("scripts.modelling.poly_reduce")
+pr = importlib.import_module("chunks.modelling.poly_reduce")
 
 needs_simplify = pytest.mark.skipif(
     not pr._HAS_SIMPLIFY, reason="needs fast-simplification"
@@ -539,7 +539,7 @@ def test_a_mesh_of_thousands_of_disconnected_cards_reduces_promptly() -> None:
 def _live_module():
     """The module copy the registry actually loaded and calls `execute` on.
 
-    Importing `scripts.modelling.poly_reduce` gives a *second*, independent copy under a
+    Importing `chunks.modelling.poly_reduce` gives a *second*, independent copy under a
     different `sys.modules` key -- with its own `_LAST_COOK` -- so a test about cook state
     has to reach the registry's one.
     """

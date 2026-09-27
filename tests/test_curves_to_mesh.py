@@ -28,7 +28,7 @@ class _DummyScene(SceneSender):
 
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
-ctm = importlib.import_module("scripts.modelling.curves_to_mesh")
+ctm = importlib.import_module("chunks.modelling.curves_to_mesh")
 
 
 # ---------------------------------------------------------------------------

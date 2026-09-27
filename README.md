@@ -44,7 +44,7 @@ they are writing have stopped moving.
 
 ## What comes with it
 
-[`scripts/`](/scripts/) holds the chunks this has been built against — transforms,
+[`chunks/`](/chunks/) holds the chunks this has been built against — transforms,
 references, payloads, sublayers, variants and variant authoring, collections, material
 binding, MaterialX shading, render settings, products, vars and passes, scattering, mesh
 and curve creation, and a MuJoCo rigid-body solver. They are also the worked examples:
@@ -110,7 +110,7 @@ def config():
 
 ![image](docs/assets/example_add_cube.png)
 
-See more examples and use cases in [scripts](/scripts/)
+See more examples and use cases in [chunks](/chunks/)
 
 A Chunk is defined in a python module like above and should be returned from a **main()** function of the same module. Similarly, a **config()** function may return a configuration of the chunk module. This module is found from the **USD_CHUNK_DIRS** environment variable, where .py files are scanned for a **main()** function returning a Chunk. 
 
@@ -317,7 +317,7 @@ copy. Install the docs extra and build:
 
 ```
 pip install -e ".[docs]"
-USD_CHUNK_DIRS=scripts mkdocs serve
+USD_CHUNK_DIRS=chunks mkdocs serve
 ```
 
 That serves the site locally; `mkdocs build` writes it to `site/` instead. The docs are not

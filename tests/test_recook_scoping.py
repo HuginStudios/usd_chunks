@@ -111,7 +111,7 @@ def test_unrelated_chunk_create_and_delete_do_not_recook(qapp) -> None:
     transform_mod = reg.get_chunk_module("transform")
 
     # The module object the reactive dispatch actually calls execute() on -- not
-    # importlib.import_module("scripts.modelling.scatter_points"), which can resolve to a different
+    # importlib.import_module("chunks.modelling.scatter_points"), which can resolve to a different
     # module object than the registry's own plugin-loaded one.
     real_scatter_module = reg.get_chunk_module("scatter_points").module
     call_count = {"n": 0}
