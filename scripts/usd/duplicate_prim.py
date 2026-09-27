@@ -1,4 +1,4 @@
-"""Duplicate Prim chunk — deep copies a prim (full subtree) to a new path.
+"""Duplicate Prim chunk -- deep copies a prim (full subtree) to a new path.
 
 Copies all attributes, metadata, and children from the source prim's composed
 view to the destination path. The copy is authored on the chunk's own layer.
@@ -149,7 +149,7 @@ def execute(node):
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel — duplicate the prim on any param change."""
+    """Callback for the chunk panel -- duplicate the prim on any param change."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:

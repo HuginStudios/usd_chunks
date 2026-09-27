@@ -1,4 +1,4 @@
-"""Wedge — one network, N variants, reproducible from the file.
+"""Wedge -- one network, N variants, reproducible from the file.
 
 A chunk network produces one result. A wedge turns it into a family of them: each row of
 the Ranges list lofts an OUTPUT param -- a *range* -- and cooking at `current_index` picks
@@ -69,7 +69,7 @@ def _unit(seed: int, index: int, name: str) -> float:
     any order, in parallel, without producing the 5,431 before it. Sequential sampling would
     work identically for a full run and quietly break every one of those properties.
     """
-    digest = hashlib.sha256(f"{seed}:{index}:{name}".encode("utf-8")).digest()
+    digest = hashlib.sha256(f"{seed}:{index}:{name}".encode()).digest()
     return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
 

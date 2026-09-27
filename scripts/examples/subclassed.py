@@ -4,6 +4,7 @@ An example chunk demonstrating how a chunk class can be implemented.
 When serialized, the MyCustomChunk instance will be serialized with 
 the current counter value, and upon loading, the counter value is restored.
 """
+from __future__ import annotations
 
 from usd_chunks import chunk
 

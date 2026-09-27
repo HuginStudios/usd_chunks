@@ -6,6 +6,7 @@ chunk is loaded, if they are not already importable. That is what makes the top-
 this module body (see _ConfigTransformer), installs what is missing, and only then lets
 the body run.
 """
+from __future__ import annotations
 
 from usd_chunks import chunk
 

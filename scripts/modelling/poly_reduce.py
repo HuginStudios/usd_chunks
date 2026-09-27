@@ -1,28 +1,28 @@
-"""Poly Reduce chunk — quadric-error decimation of a mesh, or a whole hierarchy of them.
+"""Poly Reduce chunk -- quadric-error decimation of a mesh, or a whole hierarchy of them.
 
 The reduction itself is Garland & Heckbert's quadric error metric, via
 `fast_simplification` (Sven Forstmann's C++ implementation, the one PyVista ships). QEM
 is the method every DCC's decimator is built on: each edge collapse is scored by how far
 it moves the surface away from the original planes meeting at that edge, and the cheapest
 collapse is always taken next. That is what "reduce a lot without destroying the shape"
-means in practice — flat regions lose almost all of their triangles, silhouettes and
+means in practice -- flat regions lose almost all of their triangles, silhouettes and
 creases keep theirs, because moving them is expensive.
 
 What actually makes or breaks a reducer on a real asset is not the collapse maths, though
-— it's everything hanging off the topology. This one:
+ -- it's everything hanging off the topology. This one:
 
 * **triangulates first** (fan), remembering which original face-corner each triangle
   corner came from, so every per-corner value can be carried back afterwards;
 * **splits vertices at UV seams** before decimating, by welding on (point index, all
   faceVarying primvar values) rather than point index alone. A seam then *is* an open
-  border to the decimator, which will not collapse a border vertex into an interior one —
+  border to the decimator, which will not collapse a border vertex into an interior one --
   so the UV layout survives the reduction instead of smearing across the seam. The
   faceVarying primvars come back out as vertex primvars on the reduced mesh, which is
   exactly what the split bought us;
 * **keeps materials** by putting each `GeomSubset`'s face membership into that same weld
   key. Two faces with different materials no longer share a vertex, so no collapse can
   ever straddle the boundary, and every surviving triangle still belongs to exactly one
-  subset — its `indices` are rewritten to match;
+  subset -- its `indices` are rewritten to match;
 * **carries vertex primvars through** (`displayColor`, skinning weights, anything
   `vertex`/`varying`) by resolving the decimator's own collapse history into an
   original-vertex → reduced-vertex mapping (`collapse_mapping`).
@@ -86,7 +86,7 @@ _STALE_ATTRS = (
 
 
 # ---------------------------------------------------------------------------
-# array maths — no USD, no Qt, unit-testable on its own
+# array maths -- no USD, no Qt, unit-testable on its own
 # ---------------------------------------------------------------------------
 
 
@@ -95,7 +95,7 @@ class ReducedMesh:
     """The result of one decimation, plus the two lookups needed to rebuild its attributes.
 
     `source_point[j]` / `source_corner[j]` name one original vertex and one original
-    face-corner that ended up merged into reduced vertex `j` — the representative whose
+    face-corner that ended up merged into reduced vertex `j` -- the representative whose
     primvar values that vertex inherits. Which of several merged sources is picked is
     arbitrary and always has been in every decimator; what matters is that it is one of
     them, so the value is real data from the neighbourhood rather than an average that
@@ -103,7 +103,7 @@ class ReducedMesh:
 
     Both are None when the caller did not ask for them, or when the collapse history could
     not be resolved. That is a "no attributes survive" answer, not a "use these anyway"
-    one — a wrong mapping would scatter UVs across the mesh, which is far worse than a
+    one -- a wrong mapping would scatter UVs across the mesh, which is far worse than a
     reduced mesh that has lost them.
     """
 
@@ -117,7 +117,7 @@ def fan_triangulate(counts, indices):
     """Fan-triangulate a polygon mesh: `(triangles, corners, face_of_triangle)`.
 
     `corners` is the same shape as `triangles` but indexes the flat face-corner array
-    (i.e. positions within `faceVertexIndices`) instead of the point array — that is what
+    (i.e. positions within `faceVertexIndices`) instead of the point array -- that is what
     lets a faceVarying primvar be read per triangle corner afterwards.
 
     Faces with fewer than three vertices contribute nothing but still consume their slots
@@ -155,7 +155,7 @@ def component_codes(values) -> list:
     """Label each *component* of a per-element value with a small integer, one array each.
 
     Labelling `st.x` and `st.y` separately and combining the two labels afterwards
-    partitions the corners exactly the same way as labelling whole `(u, v)` rows would —
+    partitions the corners exactly the same way as labelling whole `(u, v)` rows would --
     the product of the two partitions is the row partition. It is worth the detour because
     a one-column `np.unique` is an ordinary sort, while the row version is a lexsort over a
     2-D array: on a million-triangle mesh that difference is seconds, not milliseconds.
@@ -172,7 +172,7 @@ def component_codes(values) -> list:
 
 
 def _width(column) -> int:
-    """One past the largest label in a column — how many values it can take."""
+    """One past the largest label in a column -- how many values it can take."""
     return int(column.max()) + 1 if column.size else 1
 
 
@@ -208,8 +208,8 @@ def combine_codes(*code_arrays) -> np.ndarray:
     *product* of the column widths and three float components of a UV set blow past int64
     on their own: a mesh with a few million distinct u's, v's and w's gives 10**18 before
     the third column is even folded in. Renumbering what has been folded so far collapses
-    that back to the number of combinations actually present — normally orders of magnitude
-    smaller — and folding continues. Getting this wrong is not a correctness bug (the
+    that back to the number of combinations actually present -- normally orders of magnitude
+    smaller -- and folding continues. Getting this wrong is not a correctness bug (the
     row-wise fallback is exact) but a 5x one: on a 4.2M-triangle tree the lexsort it fell
     back to cost 10.6s where the packed path costs ~2s.
     """
@@ -244,7 +244,7 @@ def _distinct_corners(triangles) -> np.ndarray:
 
     Both callers mean the same thing by it: a triangle two of whose corners have become the
     same vertex is not a triangle any more. Welding can do that (a degenerate face in the
-    source), and so can an edge collapse — which is exactly when the decimator deletes one.
+    source), and so can an edge collapse -- which is exactly when the decimator deletes one.
     """
     return (
         (triangles[:, 0] != triangles[:, 1])
@@ -256,8 +256,8 @@ def _distinct_corners(triangles) -> np.ndarray:
 def _weld(points, triangles, corners, split_codes):
     """Split vertices so that each distinct (point, split code) pair is its own vertex.
 
-    With `split_codes` None this is a plain compaction — unreferenced points dropped,
-    indices renumbered — which is still worth doing: the decimator's own bookkeeping
+    With `split_codes` None this is a plain compaction -- unreferenced points dropped,
+    indices renumbered -- which is still worth doing: the decimator's own bookkeeping
     assumes a dense vertex array.
     """
     flat_point = triangles.reshape(-1)
@@ -360,14 +360,14 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
 
     `collapses[i] = [i0, i1]` says vertex `i1` was merged into `i0`. Each vertex can only
     be collapsed away once, so the pairs form a forest and resolving every chain to its
-    root is pointer-jumping — a handful of vectorised passes, no ordering to respect.
+    root is pointer-jumping -- a handful of vectorised passes, no ordering to respect.
     A surviving triangle is then an original triangle whose three roots are still distinct
     (an edge collapse deletes a triangle exactly when two of its corners merge), and the
     decimator numbers the survivors in original-index order, which `np.searchsorted` over
     the sorted survivors reproduces.
 
     Not the library's `replay_simplification`, which returns the same answer
-    — but gets there via `np.delete` inside a Python loop over the isolated points it has
+ -- but gets there via `np.delete` inside a Python loop over the isolated points it has
     to clean up. On a mesh made of thousands of disconnected cards (a tree's twigs, say)
     that list is enormous and the loop goes quadratic -- sub-second decimation becomes
     minutes. Deriving it here is exact, and free.
@@ -379,7 +379,7 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
     collapses = np.asarray(collapses, dtype=np.int64).reshape(-1, 2)
     if collapses.size:
         parent[collapses[:, 1]] = collapses[:, 0]
-        for _ in range(64):  # a cap, not an expected bound — depth is logarithmic in practice
+        for _ in range(64):  # a cap, not an expected bound -- depth is logarithmic in practice
             jumped = parent[parent]
             if np.array_equal(jumped, parent):
                 break
@@ -516,7 +516,7 @@ class _Plan:
 
     Nothing is authored while the reduction is still running. A chunk's layer is its
     output, and clearing it before the work is done leaves the stage showing a half-built
-    mesh for as long as the cook takes — and showing nothing at all if the cook then
+    mesh for as long as the cook takes -- and showing nothing at all if the cook then
     raises.
     """
 
@@ -562,7 +562,7 @@ def _plan_mesh(prim, settings: _Settings):
     for primvar in UsdGeom.PrimvarsAPI(prim).GetPrimvars():
         interpolation = primvar.GetInterpolation()
         if interpolation == UsdGeom.Tokens.constant:
-            continue  # one value for the whole mesh — topology cannot invalidate it
+            continue  # one value for the whole mesh -- topology cannot invalidate it
         values = _primvar_values(primvar)
         if values is None:
             continue
@@ -601,7 +601,7 @@ def _plan_mesh(prim, settings: _Settings):
     if reduced.source_corner is None:
         if subsets:
             # Without a mapping the subsets cannot be rewritten, and a subset left pointing
-            # at the old face list is not stale but *out of range* — Hydra drops it and says
+            # at the old face list is not stale but *out of range* -- Hydra drops it and says
             # so once per index. Leaving the mesh at full resolution is the lesser failure:
             # it is visibly not reduced, rather than quietly missing its materials.
             logger.warning(
@@ -653,7 +653,7 @@ def _author(stage, plan: _Plan) -> None:
     Split into resolve-then-write on purpose. The new topology and the rewritten
     `GeomSubset` indices have to become visible together: a subset still holding indices
     into the *old* face list is not merely stale, it is out of range, and Hydra reacts by
-    throwing the subset away —
+    throwing the subset away --
 
         Geom subset index 2107245 is larger than number of faces (1044205), removing.
 
@@ -661,8 +661,8 @@ def _author(stage, plan: _Plan) -> None:
     change notice, so writing points first and subsets last guaranteed a window where the
     two disagreed. Batching the value writes into one `Sdf.ChangeBlock` closes it.
 
-    Everything that touches the stage's *structure* — looking prims up, creating primvar
-    attributes, asking whether an attribute has an authored value — happens before the
+    Everything that touches the stage's *structure* -- looking prims up, creating primvar
+    attributes, asking whether an attribute has an authored value -- happens before the
     block opens. Composed reads and namespace edits inside a change block are exactly what
     it is documented not to be safe for.
     """
@@ -740,18 +740,18 @@ _LAST_COOK: dict = {}
 
 
 def _checksum(values, previous: dict, current: dict):
-    """A content signature for one USD array — its length, dtype and a CRC of its bytes.
+    """A content signature for one USD array -- its length, dtype and a CRC of its bytes.
 
     The CRC is the whole cost of deciding a recook can be skipped (~90ms of the ~94ms on a
     4.2M-triangle mesh), and almost every time it is spent confirming that nothing moved.
     VtArray is copy-on-write, so an attribute whose value has not changed hands back the
-    *same buffer* on every `Get()` — a matching address is therefore proof the contents
+    *same buffer* on every `Get()` -- a matching address is therefore proof the contents
     match, and no proof is needed beyond it. Holding a reference to the array we signed is
     what makes that sound: the allocator cannot hand the same address to something else
     while we still own it.
 
     `previous` is the last cook's address book and `current` the one being built, so only
-    one generation of arrays is ever retained — and those are the arrays the stage is
+    one generation of arrays is ever retained -- and those are the arrays the stage is
     holding anyway.
     """
     if values is None:
@@ -760,7 +760,7 @@ def _checksum(values, previous: dict, current: dict):
     # Only a zero-copy *view* may be keyed by address: then the buffer belongs to `values`,
     # which the entry holds, so nothing else can be allocated there while the entry lives.
     # A dtype numpy has to copy (tokens, say) would hand back a temporary's address, freed
-    # the moment this returns and free for the next temporary to land on — a false hit.
+    # the moment this returns and free for the next temporary to land on -- a false hit.
     shared = array.size and not array.flags.owndata
     address = array.__array_interface__["data"][0] if shared else 0
     if address and (cached := previous.get(address)) is not None:
@@ -781,11 +781,11 @@ def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
     The graph re-runs a chunk far more often than its inputs actually change: switching the
     active view, adding a node, wiring one up all trigger a view-driven recook of the whole
     upstream tree. That is fine for a chunk that costs a millisecond and unusable for one
-    that costs forty seconds — a 4M-triangle reduction was re-running on every unrelated
+    that costs forty seconds -- a 4M-triangle reduction was re-running on every unrelated
     edit in the graph. Comparing this against the last cook's makes those re-runs cost a
     few array checksums instead (~0.4s on that same mesh) rather than the whole decimation.
 
-    It signs the geometry, every primvar and every subset — not just the point count —
+    It signs the geometry, every primvar and every subset -- not just the point count --
     because an upstream chunk editing a mesh in place is exactly the case that *must* still
     re-cook, and it usually leaves the array lengths alone.
     """

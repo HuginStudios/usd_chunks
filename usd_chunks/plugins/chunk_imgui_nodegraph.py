@@ -1,4 +1,4 @@
-"""A Dear ImGui view of a chunk network — the third frontend over one engine.
+"""A Dear ImGui view of a chunk network -- the third frontend over one engine.
 
     python -m usd_chunks.plugins.chunk_imgui_nodegraph <network.usda> [context_prim_path]
 
@@ -8,8 +8,8 @@ retained scene. See docs/graph-frontends.md.
 
 What this frontend does NOT contain, compared with the Flet one, is the interesting part:
 
-- no `port_at` / `node_at` — imgui_node_editor owns hit-testing
-- no zoom, pan or canvas transform — the editor owns navigation
+- no `port_at` / `node_at` -- imgui_node_editor owns hit-testing
+- no zoom, pan or canvas transform -- the editor owns navigation
 - no curve maths for drawing wires or for splice detection
 - no widget classes, no notice callbacks, no focus tracker object; every frame re-reads the
   params, so a change made anywhere shows up on the next frame by construction
@@ -117,7 +117,7 @@ class _Ids:
             self._next += 1
         return self._to_int[key]
 
-    def key(self, value) -> "str | None":
+    def key(self, value) -> str | None:
         return self._to_key.get(int(value.id()) if hasattr(value, "id") else int(value))
 
 
@@ -286,7 +286,7 @@ class ImGuiGraphView:
 
         imgui.indent(SIDE_PAD)
         if hidden:
-            imgui.text_disabled("+%d unwired ports  (P)" % hidden)
+            imgui.text_disabled(f"+{hidden} unwired ports  (P)")
 
         chunk = self.chunks.get(path)
         if chunk is not None:
@@ -599,7 +599,7 @@ class ImGuiGraphView:
 
     # -- layout ------------------------------------------------------------
 
-    def _node_size(self, path: str) -> "tuple[float, float]":
+    def _node_size(self, path: str) -> tuple[float, float]:
         """A node's real size once the editor has drawn it, else a nominal one.
 
         get_node_size returns zeroes for a node that has not been through a frame yet, so
@@ -633,7 +633,7 @@ class ImGuiGraphView:
             chunk_graph.write_position(self.prims.get(path), x, -y, owner=self.chunks.get(path))
         if placed:
             self.stage.GetRootLayer().Save()
-        self.status = "laid out %d" % len(placed)
+        self.status = f"laid out {len(placed)}"
 
     # -- shell -------------------------------------------------------------
 

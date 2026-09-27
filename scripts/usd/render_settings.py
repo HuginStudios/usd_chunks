@@ -1,4 +1,4 @@
-"""Render Settings chunk — creates a UsdRender.Settings prim: the resolution,
+"""Render Settings chunk -- creates a UsdRender.Settings prim: the resolution,
 camera and products that describe one render.
 
 Requires: pxr (OpenUSD), usd_chunks.

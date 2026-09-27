@@ -1,4 +1,4 @@
-"""URDF in, UsdPhysics out — and the RBD Solver reads back what URDF said.
+"""URDF in, UsdPhysics out -- and the RBD Solver reads back what URDF said.
 
 The round trip is the point. This chunk authors the exact attributes
 `rbd_solver.read_articulations` parses, so a robot can be imported and simulated without a

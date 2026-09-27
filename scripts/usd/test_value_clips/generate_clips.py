@@ -8,13 +8,14 @@ IMPORTANT: Value clips require the attribute to be authored as a TIME SAMPLE
 in each clip file, not a default value. Each clip file has the points
 authored at its own frame number.
 """
+from __future__ import annotations
 
 import os
 
 CLIP_DIR = os.path.join(os.path.dirname(__file__), "clips")
 NUM_FRAMES = 10
 
-# Base cube points — bottom 4, then top 4
+# Base cube points -- bottom 4, then top 4
 BOTTOM_Y = -0.5
 START_TOP_Y = 0.5
 END_TOP_Y = 3.0

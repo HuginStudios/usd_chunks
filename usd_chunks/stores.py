@@ -17,7 +17,8 @@ lock. That knowledge lives in the consumer (``usdchunks pin``), which uses
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional, Protocol, Tuple, runtime_checkable
+from collections.abc import Iterable
+from typing import Protocol, runtime_checkable
 
 try:  # py3.8+ stdlib; importlib_metadata is the backport
     from importlib.metadata import EntryPoint, entry_points
@@ -40,7 +41,7 @@ class StoreProvider(Protocol):
 
     name: str
 
-    def select(self, chunk_type: str, spec: Optional[str]) -> Optional[str]:
+    def select(self, chunk_type: str, spec: str | None) -> str | None:
         """Concrete version satisfying ``spec`` (this becomes the lock), or
         ``None`` if this store does not carry ``chunk_type``.
 
@@ -50,7 +51,7 @@ class StoreProvider(Protocol):
         """
         ...
 
-    def provide(self, chunk_type: str, version: str) -> Optional[Path]:
+    def provide(self, chunk_type: str, version: str) -> Path | None:
         """Ensure that exact ``version`` is present locally (fetch/download if
         needed) and return the file to link, or ``None`` if it cannot be
         provided (unknown chunk/version, or the store is unreachable)."""
@@ -65,7 +66,7 @@ def _iter_entry_points(group: str) -> Iterable[EntryPoint]:
     return eps.get(group, [])  # type: ignore[union-attr]  # py3.9 dict-like
 
 
-def discovered_stores() -> List[StoreProvider]:
+def discovered_stores() -> list[StoreProvider]:
     """Every registered store provider, in entry-point order.
 
     Each entry point loads to a zero-argument factory (typically the provider
@@ -73,7 +74,7 @@ def discovered_stores() -> List[StoreProvider]:
     construct is skipped, never fatal -- a broken or unconfigured marketplace
     must not break the runtime.
     """
-    stores: List[StoreProvider] = []
+    stores: list[StoreProvider] = []
     for ep in _iter_entry_points(STORE_ENTRY_POINT_GROUP):
         try:
             factory = ep.load()
@@ -86,9 +87,9 @@ def discovered_stores() -> List[StoreProvider]:
 
 def resolve_across_stores(
     chunk_type: str,
-    spec: Optional[str],
-    stores: Optional[Iterable[StoreProvider]] = None,
-) -> Optional[Tuple[StoreProvider, str]]:
+    spec: str | None,
+    stores: Iterable[StoreProvider] | None = None,
+) -> tuple[StoreProvider, str] | None:
     """Ask each store in order for a version satisfying ``spec``; first hit wins.
 
     Returns ``(store, version)`` -- the store to fetch from and the concrete

@@ -1,7 +1,7 @@
 """The brush half: a gesture becomes a field, and scatter reads that field.
 
 `test_scatter_density.py` covers the reading end with a hand-authored primvar. This covers the
-writing end, and — more importantly — that the two agree. They are separate chunks that talk
+writing end, and -- more importantly -- that the two agree. They are separate chunks that talk
 only through `primvars:scatterDensity`, so a disagreement about interpolation, space or
 clamping would leave each half passing its own tests while painting did nothing.
 
@@ -1188,7 +1188,7 @@ def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
     c.stop_gizmo()
     before = _weights(stage)
 
-    # What a reopen leaves: the chunk prim and its record, and a surface with no field on it —
+    # What a reopen leaves: the chunk prim and its record, and a surface with no field on it --
     # the per-chunk layer that held the paint is not part of a chunk-only save.
     for spec_layer in stage.GetLayerStack():
         prim_spec = spec_layer.GetPrimAtPath(Sdf.Path("/World/Floor"))

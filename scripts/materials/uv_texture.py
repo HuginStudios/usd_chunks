@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import Gf, Sdf, Usd, UsdShade
 from usd_chunks import chunk, chunk_utils
 
@@ -24,7 +25,7 @@ def execute(node):
     if not shader_path:
         return
 
-    # Clear and recreate only when the shader location changes — same pattern as camera.py.
+    # Clear and recreate only when the shader location changes -- same pattern as camera.py.
     if shader_path != getattr(node, '_last_shader_path', None):
         node._last_shader_path = shader_path
         stage.GetEditTarget().GetLayer().Clear()

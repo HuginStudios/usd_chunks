@@ -1,12 +1,12 @@
 """CAD Import: the structure a converter is actually judged on.
 
 Turning B-rep into triangles is the easy half, and every converter does it. What separates
-a useful CAD import from a dump of meshes is what survives the trip — the assembly tree,
+a useful CAD import from a dump of meshes is what survives the trip -- the assembly tree,
 which components are the same part placed twice, and the colours that are the only material
 intent a STEP file carries. Those are what these pin.
 
 The reading tests build their own STEP file with OCCT's own writer rather than committing a
-binary fixture: the file is then small, readable, regenerable, and — the point — authored
+binary fixture: the file is then small, readable, regenerable, and -- the point -- authored
 with known names, a known colour and a part deliberately placed twice, so an assertion about
 instancing is an assertion about something we put there on purpose.
 
@@ -87,12 +87,12 @@ def _placed(name, proto, matrix=None, children=None):
 
 
 # ---------------------------------------------------------------------------
-# authoring — no OCP required
+# authoring -- no OCP required
 # ---------------------------------------------------------------------------
 
 
 def test_the_prototype_is_hidden_but_its_placements_are_not() -> None:
-    """The shared copy must not render on its own — only through its references.
+    """The shared copy must not render on its own -- only through its references.
 
     It is an ordinary prim, hidden by the scope above it. That the invisibility does *not*
     travel down the reference onto the placement is the whole reason it is authored there,
@@ -160,7 +160,7 @@ def test_a_placement_with_its_own_colour_is_not_instanced() -> None:
 
 
 def test_flattening_keeps_every_part_where_it_was() -> None:
-    """Dropping the hierarchy must move nothing — the parent's transform is composed in."""
+    """Dropping the hierarchy must move nothing -- the parent's transform is composed in."""
     child_matrix = Gf.Matrix4d().SetTranslate(Gf.Vec3d(1.0, 0.0, 0.0))
     parent_matrix = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 1, 0), 90.0))
     tree = ci._Node(
@@ -247,7 +247,7 @@ def test_sibling_names_never_collide() -> None:
 
 
 # ---------------------------------------------------------------------------
-# reading — needs the OCCT wheel
+# reading -- needs the OCCT wheel
 # ---------------------------------------------------------------------------
 
 
@@ -340,7 +340,7 @@ def test_identical_geometry_exported_as_two_products_becomes_one_prototype(widge
     """The case that actually decides whether instancing does anything on a real file.
 
     XCAF identity alone sees `Bracket` and `Bracket_copy` as two unrelated parts, because in
-    the file they are. Only the geometry digest collapses them — and on a real assembly that
+    the file they are. Only the geometry digest collapses them -- and on a real assembly that
     is the difference between instancing sixteen bolts and instancing none of them.
     """
     assert len(widget.protos) == 2  # the box (x3 placements) and the pin
@@ -366,7 +366,7 @@ def test_colour_survives_the_round_trip(widget) -> None:
 
 @needs_ocp
 def test_millimetres_in_metres_out(widget) -> None:
-    """A 100 mm box is 0.1 in a metres stage, not 100 — the commonest CAD import bug."""
+    """A 100 mm box is 0.1 in a metres stage, not 100 -- the commonest CAD import bug."""
     box = _proto_of(widget, "left")
     span = max(p[0] for p in box.points) - min(p[0] for p in box.points)
     assert span == pytest.approx(0.1, abs=1e-6)
@@ -384,7 +384,7 @@ def test_placements_keep_their_own_transforms(widget) -> None:
 def test_faces_are_not_welded_together(widget) -> None:
     """Each B-rep face keeps its own vertices, which is what creases the edges for free.
 
-    A welded box has 8 points. This one must have 24 — six faces of four — or a renderer
+    A welded box has 8 points. This one must have 24 -- six faces of four -- or a renderer
     averaging normals across the corners would round the box off.
     """
     box = _proto_of(widget, "left")
@@ -414,7 +414,7 @@ def test_no_st_primvar_when_uvs_are_turned_off() -> None:
 
 
 def test_st_is_authored_per_vertex() -> None:
-    """One UV per point, with no index array — which only works because faces are unwelded.
+    """One UV per point, with no index array -- which only works because faces are unwelded.
 
     Every point belongs to exactly one face, so `vertex` carries the same information a
     `faceVarying` primvar would at half the size.
@@ -454,7 +454,7 @@ def test_uvs_measure_surface_distance_in_metres(widget) -> None:
     """The claim the whole rescaling exists to make, checked against a known shape.
 
     OCCT hands back each face's UVs in its surface's own parameter domain, whose scale is
-    arbitrary — on a real part the metres-per-UV-unit varied by 204x between faces. After
+    arbitrary -- on a real part the metres-per-UV-unit varied by 204x between faces. After
     rescaling, a UV unit is a metre of surface everywhere. The bracket is a 100x50x20 mm box,
     so its faces must measure 0.1, 0.05 and 0.02 in UV space and nothing else.
     """

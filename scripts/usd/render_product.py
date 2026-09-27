@@ -1,4 +1,4 @@
-"""Render Product chunk — creates a UsdRender.Product prim: one rendered output
+"""Render Product chunk -- creates a UsdRender.Product prim: one rendered output
 file, its camera, and the ordered AOVs it contains.
 
 Requires: pxr (OpenUSD), usd_chunks.

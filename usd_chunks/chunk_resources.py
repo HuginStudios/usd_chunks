@@ -4,6 +4,7 @@ These must resolve *inside* the installed package. An earlier version walked up 
 ``resources`` directory sitting next to the package, which works from a checkout but
 resolves to a non-existent ``site-packages/resources`` once pip-installed.
 """
+from __future__ import annotations
 
 from importlib.resources import files
 from pathlib import Path

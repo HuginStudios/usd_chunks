@@ -109,7 +109,7 @@ def test_unrelated_chunk_create_does_not_recreate_existing_node_or_proxy(qapp) -
 
 
 def test_deleting_one_chunk_only_tears_down_that_nodes_proxy(qapp) -> None:
-    """Companion sanity check: the incremental reuse above must not break real removal — a
+    """Companion sanity check: the incremental reuse above must not break real removal -- a
     deleted chunk's node must actually disappear, and an unrelated node's proxy must survive
     that deletion too."""
     from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker

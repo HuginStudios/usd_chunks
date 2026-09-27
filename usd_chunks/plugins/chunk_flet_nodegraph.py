@@ -436,7 +436,7 @@ class GraphView:
         if not nodes:
             self.status = "nothing to copy"
             return self.refresh()
-        self.status = "copied %d" % chunk_graph.copy_to_clipboard(nodes, edges)
+        self.status = f"copied {chunk_graph.copy_to_clipboard(nodes, edges)}"
         self.refresh()
 
     def cut_selection(self):
@@ -446,7 +446,7 @@ class GraphView:
             return self.refresh()
         count = chunk_graph.copy_to_clipboard(nodes, edges)
         self.delete_selected()
-        self.status = "cut %d" % count
+        self.status = f"cut {count}"
         self.refresh()
 
     def paste_at(self, x: float, y: float, nodes=None, edges=None):
@@ -470,7 +470,7 @@ class GraphView:
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_selection(get_chunk_prim_path(c) for c in made.values())
-        self.status = "pasted %d" % len(made)
+        self.status = f"pasted {len(made)}"
         self.refresh(bodies=True)
 
     # -- grouping ----------------------------------------------------------
@@ -492,7 +492,7 @@ class GraphView:
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_selection([group_path] if group_path in self.prims else ())
-        self.status = "grouped %d" % count
+        self.status = f"grouped {count}"
         self.refresh(bodies=True)
 
     def duplicate_selection(self):
@@ -536,7 +536,7 @@ class GraphView:
             self._write_position(path, x, y)
         if placed:
             self.stage.GetRootLayer().Save()
-        self.status = "laid out %d" % len(placed)
+        self.status = f"laid out {len(placed)}"
         self.reload()
         self.refresh(bodies=True)
 
@@ -659,7 +659,7 @@ class GraphView:
                 if edge.is_exec and edge.src_node_path == path:
                     chunk_stage.connect_exec(self.stage, self.scene, source, edge.dst_node_path)
         self.stage.GetRootLayer().Save()
-        self.status = "disconnected %s" % path.rsplit("/", 1)[-1]
+        self.status = f"disconnected {path.rsplit('/', 1)[-1]}"
         self.reload()
         self.refresh(bodies=True)
 
@@ -686,11 +686,11 @@ class GraphView:
         # Framing is per-graph: the inside of a group has its own coordinates, and keeping
         # the outer zoom would open it somewhere off-screen.
         self.zoom, self.pan = 1.0, (0.0, 0.0)
-        self.status = "in %s" % path.rsplit("/", 1)[-1]
+        self.status = f"in {path.rsplit('/', 1)[-1]}"
         self.reload()
         self.refresh(bodies=True)
 
-    def parent_context(self) -> "str | None":
+    def parent_context(self) -> str | None:
         """The context enclosing this one, or None at the top."""
         return chunk_graph.parent_context(self.context, self.available)
 
@@ -710,7 +710,7 @@ class GraphView:
         # Land with the group you came out of selected, so you can see where you were.
         if inner in self.prims:
             self.set_selection([inner])
-        self.status = "in %s" % parent.rsplit("/", 1)[-1]
+        self.status = f"in {parent.rsplit('/', 1)[-1]}"
         self.refresh(bodies=True)
 
     def on_double_tap(self, event):
@@ -719,7 +719,7 @@ class GraphView:
             return self.dive_out()
         if self.can_dive(node):
             return self.dive_into(node)
-        self.status = "%s is not a subnet" % node.rsplit("/", 1)[-1]
+        self.status = f"{node.rsplit('/', 1)[-1]} is not a subnet"
         self.refresh()
 
     def _nest_target(self):

@@ -10,7 +10,7 @@ names -- lives in chunk_gizmo.py. This file is only the record and the token set
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import attrs
 
@@ -106,11 +106,11 @@ class GizmoBase:
     label: str = ""
     anchor: str = ""
     driver: Any = attrs.field(factory=dict)
-    axis: Optional[str] = None
+    axis: str | None = None
     space: str = "local"
     editmode: Any = (GIZMO_DEFAULT_EDIT_MODE,)
     offset: Any = None
-    size: Optional[float] = None
+    size: float | None = None
 
     def __attrs_post_init__(self) -> None:
         if self.type not in GIZMO_TYPES:

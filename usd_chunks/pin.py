@@ -33,7 +33,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from usd_chunks.stores import StoreProvider, discovered_stores, resolve_across_stores
 from usd_chunks import chunk_naming
@@ -59,7 +59,7 @@ class PinEntry:
     chunk_type: str
     store: str
     version: str
-    source: Optional[Path]  # store impl path; None if the store couldn't provide
+    source: Path | None  # store impl path; None if the store couldn't provide
 
 
 @dataclass
@@ -77,31 +77,31 @@ class MaterializedPin:
 class PinResult:
     scene: Path
     pin_dir: Path
-    materialized: List[MaterializedPin] = field(default_factory=list)
-    problems: List[str] = field(default_factory=list)
-    lock_location: Optional[Path] = None
-    lock_mode: Optional[str] = None  # "in-place" | "wrapper"
+    materialized: list[MaterializedPin] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+    lock_location: Path | None = None
+    lock_mode: str | None = None  # "in-place" | "wrapper"
     #: {package: installed version} recorded beside the impl pins.
-    packages: Dict[str, str] = field(default_factory=dict)
+    packages: dict[str, str] = field(default_factory=dict)
     #: {chunkType: "sha256:..."} of the materialized impls -- integrity, where the
     #: version is provenance.
-    hashes: Dict[str, str] = field(default_factory=dict)
+    hashes: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
         return not self.problems
 
-    def lock(self) -> Dict[str, str]:
+    def lock(self) -> dict[str, str]:
         return {m.chunk_type: f"{m.store}:{m.version}" for m in self.materialized}
 
 
 # --- resolution (pure: no pxr, no filesystem writes) -------------------------
 
 def resolve_pins(
-    specs: Dict[str, Optional[str]],
-    existing: Dict[str, str],
-    stores: Optional[Iterable[StoreProvider]] = None,
-) -> Tuple[List[PinEntry], List[str]]:
+    specs: dict[str, str | None],
+    existing: dict[str, str],
+    stores: Iterable[StoreProvider] | None = None,
+) -> tuple[list[PinEntry], list[str]]:
     """Turn {chunkType: spec} into resolved (store, version, source) entries.
 
     A chunkType already in ``existing`` (the recorded lock) is *reused* -- its
@@ -111,8 +111,8 @@ def resolve_pins(
     """
     stores = list(discovered_stores() if stores is None else stores)
     by_name = {s.name: s for s in stores}
-    entries: List[PinEntry] = []
-    problems: List[str] = []
+    entries: list[PinEntry] = []
+    problems: list[str] = []
 
     for chunk_type in sorted(specs):
         spec = specs[chunk_type]
@@ -145,7 +145,7 @@ def resolve_pins(
 
 # --- materialization ----------------------------------------------------------
 
-def _find_in_dir(pin_dir: Path, chunk_type: str) -> Optional[Path]:
+def _find_in_dir(pin_dir: Path, chunk_type: str) -> Path | None:
     for p in pin_dir.glob(f"{chunk_type}.*"):
         if p.is_file():
             return p
@@ -168,8 +168,8 @@ def _link_or_copy(src: Path, dst: Path, copy: bool) -> str:
 
 
 def materialize(
-    entries: List[PinEntry], pin_dir: Path, copy: bool = False
-) -> Tuple[List[MaterializedPin], List[str]]:
+    entries: list[PinEntry], pin_dir: Path, copy: bool = False
+) -> tuple[list[MaterializedPin], list[str]]:
     """Lay resolved entries into the flat pin folder as ``<chunkType><ext>``.
 
     An entry whose store couldn't provide a source is only OK if the impl is
@@ -177,8 +177,8 @@ def materialize(
     the scene); otherwise it is a problem.
     """
     pin_dir.mkdir(parents=True, exist_ok=True)
-    out: List[MaterializedPin] = []
-    problems: List[str] = []
+    out: list[MaterializedPin] = []
+    problems: list[str] = []
     for e in entries:
         if e.source is not None:
             ext = e.source.suffix or ".py"
@@ -199,15 +199,15 @@ def materialize(
 
 # --- USD I/O (lazy pxr) -------------------------------------------------------
 
-def collect_specs(stage) -> Dict[str, Optional[str]]:
+def collect_specs(stage) -> dict[str, str | None]:
     """{chunkType: info:chunkVersion spec} for every Chunk prim in the composed
     stage (the container 'chunkgroup' sentinel excluded). Read-only.
 
     Multiple prims of the same chunkType must agree on a spec; a genuine
     conflict (two different non-None specs) raises PinError.
     """
-    specs: Dict[str, Optional[str]] = {}
-    conflicts: Dict[str, set] = {}
+    specs: dict[str, str | None] = {}
+    conflicts: dict[str, set] = {}
     for prim in stage.Traverse():
         if prim.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
             continue
@@ -234,7 +234,7 @@ def collect_specs(stage) -> Dict[str, Optional[str]]:
     return specs
 
 
-def read_lock(layer) -> Dict[str, str]:
+def read_lock(layer) -> dict[str, str]:
     """The recorded {chunkType: 'store:version'} lock on a layer, or {}."""
     cld = layer.customLayerData
     pins = cld.get(PINS_KEY) if cld else None
@@ -243,7 +243,7 @@ def read_lock(layer) -> Dict[str, str]:
     return {str(k): str(v) for k, v in dict(pins).items()}
 
 
-def read_scene_lock(scene_path) -> Dict[str, str]:
+def read_scene_lock(scene_path) -> dict[str, str]:
     """The recorded {chunkType: 'store:version'} lock on a scene's root layer.
 
     Read-only and cheap: opens just the layer (no stage composition), so `pin
@@ -258,7 +258,7 @@ def read_scene_lock(scene_path) -> Dict[str, str]:
     return read_lock(layer)
 
 
-def collect_packages(chunk_types: Iterable[str]) -> Dict[str, str]:
+def collect_packages(chunk_types: Iterable[str]) -> dict[str, str]:
     """{package: installed version} for everything the scene's chunks require.
 
     The versions actually importable now, not the ranges the chunks declared. A range says
@@ -275,7 +275,7 @@ def collect_packages(chunk_types: Iterable[str]) -> Dict[str, str]:
     registry = chunk_registry.ChunkRegistry()
     modules = {m.module_name: m for m in registry.get_chunk_modules()} if registry.initialized else {}
 
-    packages: Dict[str, str] = {}
+    packages: dict[str, str] = {}
     for chunk_type in chunk_types:
         module = modules.get(str(chunk_type))
         if module is None:
@@ -289,7 +289,7 @@ def collect_packages(chunk_types: Iterable[str]) -> Dict[str, str]:
     return packages
 
 
-def hash_file(path) -> Optional[str]:
+def hash_file(path) -> str | None:
     """sha256 of a file's bytes, as "sha256:<hex>", or None if it cannot be read.
 
     Whole bytes, not the whitespace-stripped main() digest ChunkModule keeps for its cache:
@@ -304,7 +304,7 @@ def hash_file(path) -> Optional[str]:
     return f"sha256:{digest}"
 
 
-def collect_hashes(materialized: Iterable["MaterializedPin"]) -> Dict[str, str]:
+def collect_hashes(materialized: Iterable[MaterializedPin]) -> dict[str, str]:
     """{chunkType: "sha256:..."} for the impls actually laid into the pin folder.
 
     A version and a hash answer different questions and a lock needs both. "rbd_solver
@@ -314,14 +314,14 @@ def collect_hashes(materialized: Iterable["MaterializedPin"]) -> Dict[str, str]:
     identical lock. Fetch by version, verify by hash -- npm records both, so does Cargo, and
     for this reason.
     """
-    hashes: Dict[str, str] = {}
+    hashes: dict[str, str] = {}
     for pin_entry in materialized:
         if (digest := hash_file(pin_entry.path)) is not None:
             hashes[pin_entry.chunk_type] = digest
     return hashes
 
 
-def read_hashes(layer) -> Dict[str, str]:
+def read_hashes(layer) -> dict[str, str]:
     """The recorded {chunkType: "sha256:..."} on a layer, or {}."""
     cld = layer.customLayerData
     recorded = cld.get(HASHES_KEY) if cld else None
@@ -330,7 +330,7 @@ def read_hashes(layer) -> Dict[str, str]:
     return {str(k): str(v) for k, v in dict(recorded).items()}
 
 
-def write_hashes(layer, hashes: Dict[str, str]) -> None:
+def write_hashes(layer, hashes: dict[str, str]) -> None:
     """Set the integrity hashes on a layer's customLayerData. Caller Saves."""
     if not hashes:
         return
@@ -339,7 +339,7 @@ def write_hashes(layer, hashes: Dict[str, str]) -> None:
     layer.customLayerData = cld
 
 
-def verify_hashes(materialized: Iterable["MaterializedPin"], recorded: Dict[str, str]) -> List[str]:
+def verify_hashes(materialized: Iterable[MaterializedPin], recorded: dict[str, str]) -> list[str]:
     """Impls whose bytes no longer match what the lock recorded.
 
     The case a version alone cannot see: same store, same version number, edited file. Also
@@ -365,7 +365,7 @@ def verify_hashes(materialized: Iterable["MaterializedPin"], recorded: Dict[str,
     return problems
 
 
-def read_packages(layer) -> Dict[str, str]:
+def read_packages(layer) -> dict[str, str]:
     """The recorded {package: version} lock on a layer, or {}."""
     cld = layer.customLayerData
     recorded = cld.get(PACKAGES_KEY) if cld else None
@@ -374,7 +374,7 @@ def read_packages(layer) -> Dict[str, str]:
     return {str(k): str(v) for k, v in dict(recorded).items()}
 
 
-def write_packages(layer, packages: Dict[str, str]) -> None:
+def write_packages(layer, packages: dict[str, str]) -> None:
     """Set the package lock on a layer's customLayerData. Caller Saves.
 
     A separate key from the impl pins rather than nested inside them: read_lock's contract
@@ -388,7 +388,7 @@ def write_packages(layer, packages: Dict[str, str]) -> None:
     layer.customLayerData = cld
 
 
-def write_lock(layer, lock: Dict[str, str]) -> None:
+def write_lock(layer, lock: dict[str, str]) -> None:
     """Set the flat pin lock on a layer's customLayerData (one write, layer
     level, ignored by composition). Caller Saves."""
     cld = dict(layer.customLayerData) if layer.customLayerData else {}
@@ -396,9 +396,9 @@ def write_lock(layer, lock: Dict[str, str]) -> None:
     layer.customLayerData = cld
 
 
-def _write_wrapper(scene_path: Path, lock: Dict[str, str], pin_dir: Path,
-                   packages: Optional[Dict[str, str]] = None,
-                   hashes: Optional[Dict[str, str]] = None):
+def _write_wrapper(scene_path: Path, lock: dict[str, str], pin_dir: Path,
+                   packages: dict[str, str] | None = None,
+                   hashes: dict[str, str] | None = None):
     """A thin layer that sublayers the (immutable) scene and carries the lock,
     written into the pin folder so the source is never touched. Render this."""
     from pxr import Sdf
@@ -414,9 +414,9 @@ def _write_wrapper(scene_path: Path, lock: Dict[str, str], pin_dir: Path,
     return wrapper
 
 
-def _record_lock(scene_path: Path, entry_layer, lock: Dict[str, str], pin_dir: Path, wrapper: bool,
-                 packages: Optional[Dict[str, str]] = None,
-                 hashes: Optional[Dict[str, str]] = None):
+def _record_lock(scene_path: Path, entry_layer, lock: dict[str, str], pin_dir: Path, wrapper: bool,
+                 packages: dict[str, str] | None = None,
+                 hashes: dict[str, str] | None = None):
     """Write the lock onto the entry layer in place, or into a wrapper layer if
     the entry layer is read-only (or --wrapper was forced). Returns (path, mode)."""
     if not wrapper:
@@ -439,7 +439,7 @@ def venv_python(venv_dir: Path) -> Path:
     return windows if os.name == "nt" else venv_dir / "bin" / "python"
 
 
-def provision_venv(packages: Dict[str, str], venv_dir, system_site_packages: bool = True):
+def provision_venv(packages: dict[str, str], venv_dir, system_site_packages: bool = True):
     """Create a venv and install the locked package versions into it.
 
     **--system-site-packages by default, and it is not a convenience.** A chunk runs against
@@ -488,7 +488,7 @@ def pin(
     pin_dir=None,
     copy: bool = False,
     wrapper: bool = False,
-    stores: Optional[Iterable[StoreProvider]] = None,
+    stores: Iterable[StoreProvider] | None = None,
 ) -> PinResult:
     """Pin (or restore) a chunk network. See module docstring.
 

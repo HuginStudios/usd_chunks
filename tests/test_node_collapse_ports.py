@@ -195,7 +195,7 @@ def _expanded_container(qapp, node, group):
     """The group's ContainerWidget, expanded and settled.
 
     scatter_points ships its param groups collapsed (it is a tall chunk), so a test about
-    *collapsing* one has to open it first — otherwise the click below is a no-op and the
+    *collapsing* one has to open it first -- otherwise the click below is a no-op and the
     params never get the ports the test is checking.
     """
     container = _container_for(node, group)

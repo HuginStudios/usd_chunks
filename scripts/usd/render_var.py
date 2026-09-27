@@ -1,4 +1,4 @@
-"""Render Var chunk — creates a UsdRender.Var prim describing a single AOV.
+"""Render Var chunk -- creates a UsdRender.Var prim describing a single AOV.
 
 Requires: pxr (OpenUSD), usd_chunks.
 """

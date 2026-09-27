@@ -1,5 +1,5 @@
 """Test that whole-vector @Node.vecParam@ expressions resolve, persist, and stay live
-across chained Vector Math Ops chunks — the vector equivalent of test_math_ops_expression.py.
+across chained Vector Math Ops chunks -- the vector equivalent of test_math_ops_expression.py.
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ class TestVectorMathOpsExpression:
         assert a2[1].value == pytest.approx(7.0)
         assert a2[2].value == pytest.approx(9.0)
 
-        # Live update — mutation on node1 must propagate through without re-authoring.
+        # Live update -- mutation on node1 must propagate through without re-authoring.
         node1.get_param("a").value = (10.0, 20.0, 30.0)
         assert a2.raw_value == "@Vec1.result@", "expression must survive the mutation"
         assert a2.value == pytest.approx((14.0, 25.0, 36.0))
@@ -118,7 +118,7 @@ class TestVectorMathOpsExpression:
     def test_connection_cleared_when_operation_hides_the_param(self, scene):
         """C is only used by Multiply Add. Wiring C via expression then switching to an
         op that hides it (Add) must clear both the Python-side expression and the USD
-        connection — otherwise switching back would silently reconnect to a source the
+        connection -- otherwise switching back would silently reconnect to a source the
         user never re-picked, with no indication anything is still wired."""
         node1 = _make_vector_math_ops(self.mod, "Vec1")
         node2 = _make_vector_math_ops(self.mod, "Vec2")
@@ -137,7 +137,7 @@ class TestVectorMathOpsExpression:
         attr = stage.GetAttributeAtPath(Sdf.Path(f'{_chunk_path("Vec2")}.inputs:c'))
         assert len(attr.GetConnections()) == 1
 
-        # Add doesn't use C — switching to it must clear the connection, not just hide it.
+        # Add doesn't use C -- switching to it must clear the connection, not just hide it.
         node2.get_param("operation").value = "Add"
         assert c2.raw_value == (0.0, 0.0, 0.0)
         assert c2.has_state(chunk.ChunkFlags.State.HIDDEN)
@@ -150,7 +150,7 @@ class TestVectorMathOpsExpression:
 
     def test_downstream_connection_cleared_when_driver_output_type_changes(self, scene):
         """The DRIVER (source) node's own operation change is what breaks the link this
-        time — not the receiving node's. Vec1.result (a Vector) drives Vec2.a; switching
+        time -- not the receiving node's. Vec1.result (a Vector) drives Vec2.a; switching
         Vec1 to a float-output op (Dot Product) makes 'result' inactive (execute() stops
         writing to it), so Vec2's connection must be cleared even though Vec2's own
         operation never changed. This is the exact scenario from the user's screenshot:
@@ -169,7 +169,7 @@ class TestVectorMathOpsExpression:
         attr = stage.GetAttributeAtPath(Sdf.Path(f'{_chunk_path("Vec2")}.inputs:a'))
         assert len(attr.GetConnections()) == 1
 
-        # Driver switches to a float-output op — 'result' (vector) goes inactive.
+        # Driver switches to a float-output op -- 'result' (vector) goes inactive.
         driver.get_param("operation").value = "Dot Product"
         assert a2.raw_value == (0.0, 0.0, 0.0), "downstream must be cleared, not left stale"
         assert len(attr.GetConnections()) == 0

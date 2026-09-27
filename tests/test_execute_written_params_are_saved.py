@@ -70,7 +70,7 @@ def _add(scene: SceneSender, module: str):
     return chunk_obj
 
 
-def _reopen(scene: SceneSender, module: str, tmp_path) -> "tuple[Usd.Stage, list]":
+def _reopen(scene: SceneSender, module: str, tmp_path) -> tuple[Usd.Stage, list]:
     """Save the scene, open the file fresh, and hand back the stage and its chunks."""
     out = pathlib.Path(tmp_path) / "scene.usda"
     save_scene(scene, out)

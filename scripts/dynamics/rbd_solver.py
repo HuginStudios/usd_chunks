@@ -1,7 +1,7 @@
-"""MuJoCo RBD Solver — rigid body simulation via MuJoCo.
+"""MuJoCo RBD Solver -- rigid body simulation via MuJoCo.
 
 Requires: pxr (OpenUSD), usd_chunks, mujoco, numpy.
-Optional: scipy — smoother/denser heightfield colliders; falls back gracefully if absent.
+Optional: scipy -- smoother/denser heightfield colliders; falls back gracefully if absent.
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     """Sample the top surface of *cprim*'s meshes into a MuJoCo heightfield.
 
     A bowl/plate/terrain inner surface is single-valued in height, so a
-    heightfield gives stable, smooth *concave* collision — unlike a mesh geom,
+    heightfield gives stable, smooth *concave* collision -- unlike a mesh geom,
     which MuJoCo only ever collides as its convex hull (this build has no
     generic mesh-SDF collider).
 
@@ -328,7 +328,7 @@ def _collider_triangles(cprim: Usd.Prim, world: bool = True) -> tuple[list, list
 
 
 def _add_triangle_soup(
-    spec: "_mj.MjSpec",
+    spec: _mj.MjSpec,
     body,
     cprim: Usd.Prim,
     name: str,
@@ -401,7 +401,7 @@ def _add_triangle_soup(
 
 
 def _add_colliders(
-    spec: "_mj.MjSpec",
+    spec: _mj.MjSpec,
     collision_prims: list[Usd.Prim] | None,
     up_idx: int,
     friction: float,
@@ -418,13 +418,13 @@ def _add_colliders(
 
     No collision prims â†’ infinite ground plane. Otherwise each prim becomes, by mode:
 
-    * ``Mesh`` — one thin convex prism per triangle (see _add_triangle_soup): exact for
+    * ``Mesh`` -- one thin convex prism per triangle (see _add_triangle_soup): exact for
       any shape, concave or thin-walled, and the only option that lets a body go *inside*
       a cup or a bottle. Animated colliders get the same thing on a mocap body.
-    * ``Heightfield`` — a 2.5D elevation grid: cheap for terrain and huge meshes, but only
+    * ``Heightfield`` -- a 2.5D elevation grid: cheap for terrain and huge meshes, but only
       one surface height per cell, so walls become cliffs.
-    * ``Box`` — the collider's bounding box.
-    * ``Auto`` (default) — Mesh while the collider's triangle count fits *tri_budget*,
+    * ``Box`` -- the collider's bounding box.
+    * ``Auto`` (default) -- Mesh while the collider's triangle count fits *tri_budget*,
       else Heightfield, else Box.
 
     *dyn_radius* sizes the heightfield cell-size cap to the dynamic body. *geometry* is
@@ -456,7 +456,7 @@ def _add_colliders(
         pg.condim = 3
         return mocap_col_names
 
-    # Catch-all ground plane at the lowest point of the colliders — the "table"
+    # Catch-all ground plane at the lowest point of the colliders -- the "table"
     # the bowl sits on. An infinite plane is a rock-solid (non-singular) contact,
     # so it reliably catches anything a collider ejects AND any body that
     # rolls/spills off the rim, instead of letting it fall forever.
@@ -610,7 +610,7 @@ def _add_colliders(
 #: Built collider specs, keyed by the collider geometry and the settings that shape it.
 #: Small on purpose -- a handful of entries covers "the artist is re-running the same
 #: scene", which is the whole point, and each entry holds a full MjSpec.
-_COLLIDER_SPEC_CACHE: "collections.OrderedDict[bytes, tuple]" = collections.OrderedDict()
+_COLLIDER_SPEC_CACHE: collections.OrderedDict[bytes, tuple] = collections.OrderedDict()
 _COLLIDER_SPEC_CACHE_MAX = 4
 
 
@@ -765,19 +765,19 @@ def _sim_prim_gen_mj(
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     floor_drop: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
-    """MuJoCo rigid body simulation — yields frame index, returns all_mats.
+    """MuJoCo rigid body simulation -- yields frame index, returns all_mats.
 
     Uses MjSpec to build the scene programmatically from USD mesh data (no file I/O).
     Concave static colliders use heightfields (see _build_heightfield); this
     build of MuJoCo has no generic mesh-SDF collider.
-    MuJoCo quaternions are [w,x,y,z] matching USD — no reordering needed.
+    MuJoCo quaternions are [w,x,y,z] matching USD -- no reordering needed.
     """
     # --- body frame, geometry extent ---
     # The MuJoCo body frame goes on the GEOMETRY, not on the prim's transform origin. A prim
@@ -813,7 +813,7 @@ def _sim_prim_gen_mj(
     rest_mat.SetRotate(world_rot_quat)
     rest_mat.SetTranslateOnly(body_centre)
     rest_inv = rest_mat.GetInverse()
-    # The prim's world transform without scale — the writer re-applies the prim's own scale,
+    # The prim's world transform without scale -- the writer re-applies the prim's own scale,
     # so carrying it here as well would square it.
     prim_world_rest = world_xf.RemoveScaleShear()
 
@@ -924,7 +924,7 @@ def _sim_prim_gen_mj(
         hull_ma = spec.add_mesh()
         hull_ma.name = "hull_dyn"
         hull_ma.uservert = mesh_pts.flatten()
-        # MuJoCo builds a convex hull internally from the vertex cloud —
+        # MuJoCo builds a convex hull internally from the vertex cloud --
         # maxhullvert caps the output vertex count for the collision hull.
         hull_ma.maxhullvert = max(hull_max_verts, 64) if hull_max_verts > 0 else 1024
         if collision_margin != 0.0:
@@ -992,7 +992,7 @@ def _sim_prim_gen_mj(
 
         # Sample state before stepping (frame N shows where the body was at the start of step N)
         pos = data.xpos[bid]
-        qmj = data.xquat[bid]  # [w, x, y, z] — same convention as USD, no reordering needed
+        qmj = data.xquat[bid]  # [w, x, y, z] -- same convention as USD, no reordering needed
 
         body_now = Gf.Matrix4d()
         body_now.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
@@ -1182,7 +1182,7 @@ def simulate_mujoco(
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
     floor_drop: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
@@ -1295,12 +1295,12 @@ def simulate_mujoco_articulated(
     ang_damping: float = 0.05,
     collision_margin: float = 0.0,
     node=None,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
-) -> "dict | None":
+) -> dict | None:
     """Run an articulated MuJoCo simulation and bake a transform per link.
 
     The counterpart of simulate_mujoco for an asset that is a mechanism rather than a
@@ -1362,8 +1362,8 @@ def simulate_mujoco_articulated(
 def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarray | None:
     """One prototype's mesh vertices, for its convex-hull collider (extracted once).
 
-    Points are gathered in the prototype's world-bound space — the same space the
-    caller measures proto extent/centre in — so per-instance scaling stays
+    Points are gathered in the prototype's world-bound space -- the same space the
+    caller measures proto extent/centre in -- so per-instance scaling stays
     consistent with the sphere/box path. Subsampled to *cap* points to keep the
     per-asset hull build cheap. Returns None if the prototype has no mesh data.
     """
@@ -1416,7 +1416,7 @@ def simulate_mujoco_instancer(
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
     floor_drop: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
@@ -1429,7 +1429,7 @@ def simulate_mujoco_instancer(
     same collider stack as the single-prim path (concave heightfield + backstop
     for a bowl, else a ground plane). *shape_type* picks the per-instance collider:
     "Sphere" (fast, most stable in dense piles), "Box", or "Convex Hull" (accurate,
-    heavier — the shared prototype hull is built once and reused per distinct
+    heavier -- the shared prototype hull is built once and reused per distinct
     scale). A sphere is rotationally symmetric, so the rotation offset and each
     instance's own orientation only influence the physics for Box / Convex Hull.
     """
@@ -1453,14 +1453,14 @@ def simulate_mujoco_instancer(
     world_xf = xform_cache.GetLocalToWorldTransform(prim)
     world_inv = world_xf.GetInverse()
     # Instancer orientations are in instancer-local space; convert to/from world
-    # with the instancer's own rotation (scale stripped — see note in simulate_mujoco).
+    # with the instancer's own rotation (scale stripped -- see note in simulate_mujoco).
     inst_rot = world_xf.RemoveScaleShear().ExtractRotation()
     inst_rot_inv = inst_rot.GetInverse()
 
     # Each prototype's UNSCALED bound (extents + centre), measured once per prototype.
     # The scatter tool clears the prototype's transform and bakes the real scale into
     # per-instance scales, so the collider must multiply the proto extent by each
-    # instance's scale — otherwise the spheres are ~100x too small and the instances
+    # instance's scale -- otherwise the spheres are ~100x too small and the instances
     # clip straight through everything.
     #
     # Per PROTOTYPE, not just the first one: a scatter of mixed assets (the usual case --
@@ -1476,7 +1476,7 @@ def simulate_mujoco_instancer(
         if proto_prim:
             # Local, NOT world: the instancer's world transform (e.g. a Transform node feeding it)
             # is already applied to the body positions via world_xf. Using ComputeWorldBound here
-            # would double-count it in the collider centre/extent — offsetting and rescaling the
+            # would double-count it in the collider centre/extent -- offsetting and rescaling the
             # collision geometry away from the visible instance. The two agree when the
             # instancer is untransformed.
             rng = bbox_cache.ComputeLocalBound(proto_prim).ComputeAlignedRange()
@@ -1826,7 +1826,7 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
     Chunk layers are ordered so the earlier-added sibling wins. When the solver
     animates a prim that another chunk authored (e.g. a PointInstancer created by
     ScatterPoints), that source chunk's static values would otherwise override the
-    baked time samples. Move the bake layer — and its parent graph layer — to the
+    baked time samples. Move the bake layer -- and its parent graph layer -- to the
     front of their containers so the simulation wins.
     """
     lreg = chunk.get_layer_manager()
@@ -1834,7 +1834,7 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
         return
     try:
         # Each graph layer's own parent is whatever real layer it's currently sublayered
-        # under (session layer by default, or an Edit-Target-chosen layer) — build the
+        # under (session layer by default, or an Edit-Target-chosen layer) -- build the
         # hierarchy from iter_chunk_layers() rather than a single fixed root, since a
         # chunk's graph layer no longer always attaches to the same place.
         hierarchy: dict = {}
@@ -1994,7 +1994,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
             mass = _authored(UsdPhysics.MassAPI(prim).GetMassAttr())
             if mass is not None and mass > 0.0:
                 out["mass"] = mass
-                found.append("mass=%g" % mass)
+                found.append(f"mass={mass:g}")
 
         # A kinematic body is driven rather than solved. The solver already has that notion
         # for animated colliders (mocap bodies), so honouring the flag keeps the asset's
@@ -2011,11 +2011,11 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
                 friction = _authored(material.GetStaticFrictionAttr())
             if friction is not None:
                 out["friction"] = friction
-                found.append("friction=%g" % friction)
+                found.append(f"friction={friction:g}")
             restitution = _authored(material.GetRestitutionAttr())
             if restitution is not None:
                 out["restitution"] = restitution
-                found.append("restitution=%g" % restitution)
+                found.append(f"restitution={restitution:g}")
 
         # The approximation is the asset author's decision about how this shape should be
         # collided -- exactly what Shape Type otherwise has to guess.
@@ -2024,7 +2024,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
             shape = _APPROXIMATION_TO_SHAPE.get(approximation)
             if shape:
                 out["shape_type"] = shape
-                found.append("shape=%s" % shape)
+                found.append(f"shape={shape}")
             elif approximation:
                 logger.debug(
                     "approximation '%s' has no single-geom MuJoCo equivalent -- "
@@ -2034,7 +2034,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
     gravity, scene_path = _scene_gravity(stage, out["gravity"])
     if scene_path:
         out["gravity"] = gravity
-        found.append("gravity=%g (%s)" % (gravity, scene_path))
+        found.append(f"gravity={gravity:g} ({scene_path})")
 
     if found:
         logger.debug("using authored UsdPhysics: %s", ", ".join(found))
@@ -2367,22 +2367,22 @@ def _sim_articulated_gen_mj(
     solver_iters: int,
     lin_damping: float = 0.0,
     ang_damping: float = 0.05,
-    collision_prims: "list | None" = None,
+    collision_prims: list | None = None,
     hfield_res: int = 96,
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     floor_drop: float = 0.0,
     free_root: bool = True,
-    init_vel: "list | None" = None,
-    ang_vel: "list | None" = None,
+    init_vel: list | None = None,
+    ang_vel: list | None = None,
     collision_margin: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
-) -> Generator[int, None, "dict | None"]:
+) -> Generator[int, None, dict | None]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
 
     Bodies are nested to mirror the joint tree, in each link's own prim frame rather than
@@ -2484,7 +2484,7 @@ def build_articulated_spec(
     dt: float,
     up_idx: int,
     solver_iters: int,
-    collision_prims: "list | None" = None,
+    collision_prims: list | None = None,
     hfield_res: int = 96,
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,

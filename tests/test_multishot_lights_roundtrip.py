@@ -122,7 +122,7 @@ def _build(tmp_path) -> pathlib.Path:
     return out
 
 
-def _reopen(path) -> "tuple[Usd.Stage, SceneSender]":
+def _reopen(path) -> tuple[Usd.Stage, SceneSender]:
     chunk_registry.ChunkLayerManager().reset()
     stage = Usd.Stage.Open(str(path))
     return stage, _scene_for(stage)

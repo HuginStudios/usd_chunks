@@ -1,4 +1,4 @@
-"""Scatter Brush chunk — paints where instances are allowed to land.
+"""Scatter Brush chunk -- paints where instances are allowed to land.
 
 Pairs with Scatter Points. This chunk owns a **field**, not a stroke: a per-vertex weight
 (`primvars:scatterDensity`) on the surface, which the scatter chunk samples per candidate

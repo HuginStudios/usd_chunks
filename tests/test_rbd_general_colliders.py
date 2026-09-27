@@ -33,7 +33,7 @@ import numpy as np  # noqa: E402
 
 
 def _box_mesh(stage, path, centre, size):
-    """A closed box mesh whose POINTS are at *centre* — the prim transform stays identity,
+    """A closed box mesh whose POINTS are at *centre* -- the prim transform stays identity,
     so the geometry sits wherever centre says, exactly like model-space asset geometry."""
     cx, cy, cz = centre
     hx, hy, hz = (s * 0.5 for s in size)
@@ -55,7 +55,7 @@ def _box_mesh(stage, path, centre, size):
 def _cup_mesh(stage, path, centre, inner=8.0, height=12.0, wall=0.6):
     """An open box "cup": a floor and four thin upright walls, points at *centre*.
 
-    Thin-walled and concave — the two properties a heightfield cannot describe (one height
+    Thin-walled and concave -- the two properties a heightfield cannot describe (one height
     per cell) and a single convex mesh geom cannot either (it fills the interior in).
     """
     cx, cy, cz = centre
@@ -166,7 +166,7 @@ def _drop(
 
 def test_a_body_authored_far_from_its_origin_does_not_launch() -> None:
     """The reported explosion. The crayon's points sat 230 units from its prim origin, and
-    the solver put the MuJoCo body frame on that origin — so the free joint carried its mass
+    the solver put the MuJoCo body frame on that origin -- so the free joint carried its mass
     at the end of a 230-unit lever, and the first contact impulse became an enormous angular
     one. Speeds went from 80 to 1000 units/s within 4 ms of touching, then to 1e6 and NaN.
 
@@ -189,7 +189,7 @@ def test_a_body_authored_far_from_its_origin_does_not_launch() -> None:
 
 
 def test_it_settles_inside_the_cup_it_was_dropped_into() -> None:
-    """Not just stable — correct. The crayon has to end up in the cup, not on top of it and
+    """Not just stable -- correct. The crayon has to end up in the cup, not on top of it and
     not through it.
     """
     stage = _stage()

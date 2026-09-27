@@ -23,7 +23,8 @@ from __future__ import annotations
 import itertools
 import logging
 import math
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 import attrs
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
@@ -57,15 +58,15 @@ class GizmoDesc:
     # chunk the user has selected, and to name the chunk when writing back. Without it the
     # loop cannot be closed at all -- `name` is not unique across chunks, since more than
     # one of them calls its handle "transform".
-    chunk_prim: Optional["Sdf.Path"] = None
+    chunk_prim: Sdf.Path | None = None
     anchor: tuple = ()          # resolved scene prims the handle hangs off
     anchor_source: str = ""     # the param that produced them, for our own write-back
     driver: tuple = ()          # the properties this handle writes, in order
-    axis: Optional[str] = None
+    axis: str | None = None
     space: str = "local"
     editmode: tuple = (core.GIZMO_DEFAULT_EDIT_MODE,)
-    offset: Optional[tuple] = None   # where the handle sits relative to the anchor
-    size: Optional[float] = None     # relative size hint; None means the host decides
+    offset: tuple | None = None   # where the handle sits relative to the anchor
+    size: float | None = None     # relative size hint; None means the host decides
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ def _driver_attr_name(gizmo_name: str) -> str:
 # declaration -> chunk
 # ---------------------------------------------------------------------------
 
-def get_gizmos(chunk: "core.ChunkBase") -> list:
+def get_gizmos(chunk: core.ChunkBase) -> list:
     """Every gizmo a chunk declares -- in config(), plus any `gizmo=` sugar on its params.
 
     Desugaring happens here rather than at load because it needs both halves at once: the
@@ -111,7 +112,7 @@ def get_gizmos(chunk: "core.ChunkBase") -> list:
     return gizmos
 
 
-def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
+def _sugared_gizmos(chunk: core.ChunkBase) -> list:
     """`gizmo=` kwargs on this chunk's params, as Gizmo records.
 
     A scalar param drives itself; a Vector drives itself as one vector-typed attribute; a
@@ -172,7 +173,7 @@ def _sugared_gizmos(chunk: "core.ChunkBase") -> list:
 _TRANSFORM_PARTS = ("translate", "rotate", "scale")
 
 
-def _whole_chunk_transform(chunk: "core.ChunkBase"):
+def _whole_chunk_transform(chunk: core.ChunkBase):
     """The single transform handle a chunk declares with `gizmo="transform"`, if it does.
 
     The params come from the groups already carrying `gizmo="translate"` / `"rotate"` /
@@ -207,14 +208,14 @@ def _whole_chunk_transform(chunk: "core.ChunkBase"):
     )
 
 
-def find_gizmo(chunk: "core.ChunkBase", name: str):
+def find_gizmo(chunk: core.ChunkBase, name: str):
     for gizmo in get_gizmos(chunk):
         if gizmo.name == name:
             return gizmo
     return None
 
 
-def resolve_anchor_param(chunk: "core.ChunkBase", gizmo) -> "core.ChunkParamBase":
+def resolve_anchor_param(chunk: core.ChunkBase, gizmo) -> core.ChunkParamBase:
     """The param holding the target prim path for this gizmo.
 
     Name-first, then the flag. Surveying scripts/, the name is the more reliable signal:
@@ -251,7 +252,7 @@ def resolve_anchor_param(chunk: "core.ChunkBase", gizmo) -> "core.ChunkParamBase
     )
 
 
-def _anchor_targets(chunk: "core.ChunkBase", gizmo, stage: Usd.Stage) -> list:
+def _anchor_targets(chunk: core.ChunkBase, gizmo, stage: Usd.Stage) -> list:
     """Resolved scene prim paths for a gizmo's anchor.
 
     A rel to the *resolved prim*, not to the anchor param, is the whole point: a host must
@@ -341,7 +342,7 @@ def _iter_vectors(obj, prefix: str = ""):
             yield from _iter_vectors(param, path)
 
 
-def _param_path(chunk: "core.ChunkBase", entry: str) -> str:
+def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     """The full dotted path of a driven param, from either its path or its bare name.
 
     Needed because a chunk's params are usually nested -- transform.py's translate sliders
@@ -355,7 +356,7 @@ def _param_path(chunk: "core.ChunkBase", entry: str) -> str:
     raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
 
 
-def _driver_targets(prim: Usd.Prim, chunk: "core.ChunkBase", entries: Iterable[str]) -> list:
+def _driver_targets(prim: Usd.Prim, chunk: core.ChunkBase, entries: Iterable[str]) -> list:
     """Turn declared driver entries into connection targets.
 
     A bare param path (`tx`, `translate_grp.tx`) resolves on the chunk's own prim; a full
@@ -385,7 +386,7 @@ def _uniform_token(prim: Usd.Prim, name: str, array: bool = False) -> Usd.Attrib
     return attr
 
 
-def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
+def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> None:
     """Author every gizmo a chunk declares onto its chunk prim.
 
     Called from both chunk-prim authoring sites -- create-time and re-author/export. Both
@@ -408,7 +409,7 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> 
             logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
 
 
-def _author_hidden(prim: Usd.Prim, chunk: "core.ChunkBase", name: str) -> None:
+def _author_hidden(prim: Usd.Prim, chunk: core.ChunkBase, name: str) -> None:
     """Author (or clear) the suppression flag for one handle.
 
     Written into USD rather than only answered by resolve_gizmos, so a host doing pure-USD
@@ -425,7 +426,7 @@ def _author_hidden(prim: Usd.Prim, chunk: "core.ChunkBase", name: str) -> None:
         existing.Set(False)
 
 
-def _author_offset(prim: Usd.Prim, chunk: "core.ChunkBase", gizmo) -> None:
+def _author_offset(prim: Usd.Prim, chunk: core.ChunkBase, gizmo) -> None:
     """Author (or clear) where one handle sits.
 
     Only authored when there is one. An absent offset means "on the anchor, host's choice of
@@ -451,7 +452,7 @@ def _author_offset(prim: Usd.Prim, chunk: "core.ChunkBase", gizmo) -> None:
     attr.Set(value)
 
 
-def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo) -> None:
+def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmo) -> None:
     _uniform_token(prim, _attr_name(gizmo.name, "type")).Set(gizmo.type)
     _uniform_token(prim, _attr_name(gizmo.name, "label")).Set(gizmo.label or chunk.name)
     _uniform_token(prim, _attr_name(gizmo.name, "editmode"), array=True).Set(list(gizmo.editmode))
@@ -486,7 +487,7 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase", gizmo
     attr.SetConnections(_driver_targets(prim, chunk, gizmo.driver))
 
 
-def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
+def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> None:
     """Re-resolve every gizmo's anchor rel, offset and suppression flag, from current params.
 
     Cheap no-op for the overwhelming majority of chunks, which declare no gizmos at all --
@@ -651,7 +652,7 @@ def _is_meaningful_spec(spec) -> bool:
     return spec.specifier != Sdf.SpecifierOver
 
 
-def _chunk_prim(stage: Usd.Stage, chunk: "core.ChunkBase") -> Optional[Usd.Prim]:
+def _chunk_prim(stage: Usd.Stage, chunk: core.ChunkBase) -> Usd.Prim | None:
     path = getattr(chunk, "_exec_prim_path", None) or getattr(chunk, "prim_path", None)
     if not path:
         return None
@@ -775,7 +776,7 @@ def _gizmos_anchored_at(prim: Usd.Prim) -> list:
     return found
 
 
-def _is_silenced(stage: Usd.Stage, chunk: "core.ChunkBase") -> bool:
+def _is_silenced(stage: Usd.Stage, chunk: core.ChunkBase) -> bool:
     """Whether this chunk should be offering no handles at all.
 
     The layer-stack route gets this for free -- a disabled or muted chunk has no spec in the
@@ -802,7 +803,7 @@ def _is_silenced(stage: Usd.Stage, chunk: "core.ChunkBase") -> bool:
 _GIMBAL_EPSILON = 1e-9
 
 
-def decompose(matrix: "Gf.Matrix4d", pivot: Optional[tuple] = None) -> dict:
+def decompose(matrix: Gf.Matrix4d, pivot: tuple | None = None) -> dict:
     """Split a TRS matrix into one value per handle, in the convention transform.py composes in.
 
     Returns ``{"translate": Vec3d, "rotate": Vec3d, "scale": Vec3d}`` -- keyed by gizmo
@@ -862,7 +863,7 @@ def decompose(matrix: "Gf.Matrix4d", pivot: Optional[tuple] = None) -> dict:
     }
 
 
-def _translation_about(matrix: "Gf.Matrix4d", translation, pivot: Optional[tuple]) -> "Gf.Vec3d":
+def _translation_about(matrix: Gf.Matrix4d, translation, pivot: tuple | None) -> Gf.Vec3d:
     """The translate a pivoted composition needs to land on the same matrix.
 
     A chunk composing about a pivot builds ``T(-p) * S * R * T(p) * T(t)``, whose translation
@@ -885,7 +886,7 @@ def _translation_about(matrix: "Gf.Matrix4d", translation, pivot: Optional[tuple
 # write-back
 # ---------------------------------------------------------------------------
 
-def chunk_at_prim_path(path) -> Optional["core.ChunkBase"]:
+def chunk_at_prim_path(path) -> core.ChunkBase | None:
     """The chunk whose chunk prim sits at `path`, if it is still around.
 
     The bridge from a GizmoDesc back to something writable: `resolve_gizmos` gives a host
@@ -902,7 +903,7 @@ def chunk_at_prim_path(path) -> Optional["core.ChunkBase"]:
     return None
 
 
-def _param_for_entry(chunk: "core.ChunkBase", entry: str):
+def _param_for_entry(chunk: core.ChunkBase, entry: str):
     """The param a driver entry names.
 
     Own chunk only. An earlier draft let an entry be a full property path into another
@@ -922,7 +923,7 @@ def _param_for_entry(chunk: "core.ChunkBase", entry: str):
 GIZMO_HIDDEN_HOOK = "gizmo_hidden"
 
 
-def is_gizmo_hidden(chunk: "core.ChunkBase", name: str) -> bool:
+def is_gizmo_hidden(chunk: core.ChunkBase, name: str) -> bool:
     """Whether a chunk is currently suppressing one of its own handles.
 
     Some chunks have a mode that fights a handle. camera.py's `lock_to_freecam` re-authors
@@ -955,7 +956,7 @@ def is_gizmo_hidden(chunk: "core.ChunkBase", name: str) -> bool:
 GIZMO_OFFSET_HOOK = "gizmo_offset"
 
 
-def gizmo_offset(chunk: "core.ChunkBase", name: str, declared: Optional[tuple] = None) -> Optional[tuple]:
+def gizmo_offset(chunk: core.ChunkBase, name: str, declared: tuple | None = None) -> tuple | None:
     """Where a chunk wants one of its handles right now, in the anchor's local space.
 
     The declared `offset` on a Gizmo is static config, decided at load. A pivot is not: it is
@@ -994,7 +995,7 @@ def gizmo_offset(chunk: "core.ChunkBase", name: str, declared: Optional[tuple] =
 GIZMO_OFFSET_CHANGED_HOOK = "gizmo_offset_changed"
 
 
-def _anchor_prim(chunk: "core.ChunkBase", gizmo) -> Optional[Usd.Prim]:
+def _anchor_prim(chunk: core.ChunkBase, gizmo) -> Usd.Prim | None:
     """The prim a handle's offset is measured against -- the first anchor that resolves.
 
     First, not all of them: an offset is one point, so it can only be expressed in one prim's
@@ -1010,7 +1011,7 @@ def _anchor_prim(chunk: "core.ChunkBase", gizmo) -> Optional[Usd.Prim]:
     return None
 
 
-def apply_offset(chunk: "core.ChunkBase", name: str, world_point: Any) -> bool:
+def apply_offset(chunk: core.ChunkBase, name: str, world_point: Any) -> bool:
     """Move where a handle sits, from a point in **world space**. True if the chunk took it.
 
     The write counterpart to the `gizmo_offset` hook, and the reason a host can offer
@@ -1071,7 +1072,7 @@ def apply_offset(chunk: "core.ChunkBase", name: str, world_point: Any) -> bool:
 GIZMO_STROKE_HOOK = "gizmo_stroke"
 
 
-def apply_stroke(chunk: "core.ChunkBase", name: str, samples: Any) -> bool:
+def apply_stroke(chunk: core.ChunkBase, name: str, samples: Any) -> bool:
     """Hand a brush gesture to the chunk. True if it took it.
 
     `samples` is a sequence of ``(Gf.Vec3d world_point, float weight)`` -- where the user
@@ -1129,7 +1130,7 @@ def apply_stroke(chunk: "core.ChunkBase", name: str, samples: Any) -> bool:
 GIZMO_CHANGED_HOOK = "gizmo_changed"
 
 
-def _dispatch_solve_hook(chunk: "core.ChunkBase", name: str, value: Any) -> bool:
+def _dispatch_solve_hook(chunk: core.ChunkBase, name: str, value: Any) -> bool:
     """Give the chunk's module a chance to solve this drag itself. True if it did.
 
     Some handles are not 1:1 with any param, so there is nothing to declare. A lookat point's
@@ -1202,7 +1203,7 @@ def _values_for(entries: tuple, value: Any) -> list:
     return values
 
 
-def apply_bindings(chunk: "core.ChunkBase", name: str, value: Any) -> None:
+def apply_bindings(chunk: core.ChunkBase, name: str, value: Any) -> None:
     """Write a handle's value back through the chunk's params.
 
     One value, because a gizmo drives one thing and its **type** says what::
@@ -1333,7 +1334,7 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     return transform_desc(prim) or _own_transform_desc(chunk)
 
 
-def _own_transform_desc(chunk: "core.ChunkBase"):
+def _own_transform_desc(chunk: core.ChunkBase):
     """The chunk's own transform gizmo, read off the chunk rather than the scene prim.
 
     Fallback for the window where the chunk exists but its `ui:gizmo:*` has not been
@@ -1393,7 +1394,7 @@ def _create_chunk_at_tail(module_name: str):
     return chunk
 
 
-def _node_pos(prim: Usd.Prim) -> "tuple[float, float] | None":
+def _node_pos(prim: Usd.Prim) -> tuple[float, float] | None:
     """A chunk prim's authored node-graph position, in USD space (Y-up)."""
     if prim is None or not prim.IsValid():
         return None
@@ -1404,7 +1405,7 @@ def _node_pos(prim: Usd.Prim) -> "tuple[float, float] | None":
     return (float(value[0]), float(value[1]))
 
 
-def _position_after_tail(scene) -> "tuple[float, float] | None":
+def _position_after_tail(scene) -> tuple[float, float] | None:
     """One step right of the chunk the new node is about to be chained onto.
 
     None means "no opinion" -- the caller's default placement then applies, which is right
@@ -1437,7 +1438,7 @@ def _position_after_tail(scene) -> "tuple[float, float] | None":
     return None if pos is None else (pos[0] + chunk_stage._NODE_STEP, pos[1])
 
 
-def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
+def _nudge_downstream_views(chunk: core.ChunkBase) -> None:
     """Move any view that just got repointed onto `chunk` out from under it.
 
     View-follows-tail rewires the view to consume the new chunk but leaves it where it was
@@ -1480,7 +1481,7 @@ def _nudge_downstream_views(chunk: "core.ChunkBase") -> None:
             )
 
 
-def _target_prim(chunk: "core.ChunkBase", prim: Usd.Prim) -> None:
+def _target_prim(chunk: core.ChunkBase, prim: Usd.Prim) -> None:
     """Point the new chunk at the prim being dragged."""
     param = chunk.get_param("primpath_location")
     if param is None:
@@ -1494,7 +1495,7 @@ def _target_prim(chunk: "core.ChunkBase", prim: Usd.Prim) -> None:
         param.value = str(prim.GetPath())
 
 
-def _local_transform(prim: Usd.Prim) -> "Gf.Matrix4d | None":
+def _local_transform(prim: Usd.Prim) -> Gf.Matrix4d | None:
     """The prim's current local transform, or None if it has none worth carrying over."""
     xformable = UsdGeom.Xformable(prim)
     if not xformable:
@@ -1507,7 +1508,7 @@ def _local_transform(prim: Usd.Prim) -> "Gf.Matrix4d | None":
     return None if local == Gf.Matrix4d(1.0) else local
 
 
-def _seed(chunk: "core.ChunkBase", matrix: "Gf.Matrix4d") -> None:
+def _seed(chunk: core.ChunkBase, matrix: Gf.Matrix4d) -> None:
     """Start the chunk where the prim already was, so creating it moves nothing."""
     by_type = {g.type: g.name for g in get_gizmos(chunk)}
 
@@ -1536,7 +1537,7 @@ def _seed(chunk: "core.ChunkBase", matrix: "Gf.Matrix4d") -> None:
 # xformOpOrder, derived from the graph
 # ---------------------------------------------------------------------------
 
-def xform_op_order(node: "core.ChunkBase", prim: Usd.Prim, my_op: str) -> list:
+def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     """The full `xformOpOrder` for `prim`: its own ops, then every chunk's op upstream-first.
 
     Derived from the exec chain rather than from whatever happens to be composed when a
@@ -1586,6 +1587,6 @@ def xform_op_order(node: "core.ChunkBase", prim: Usd.Prim, my_op: str) -> list:
     return base + sorted(depths, key=lambda name: (depths[name], name))
 
 
-def _own_prim_path(stage: Usd.Stage, node: "core.ChunkBase"):
+def _own_prim_path(stage: Usd.Stage, node: core.ChunkBase):
     prim = _chunk_prim(stage, node)
     return prim.GetPath() if prim is not None else Sdf.Path("/")

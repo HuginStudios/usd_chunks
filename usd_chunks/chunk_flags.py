@@ -1,5 +1,5 @@
+from __future__ import annotations
 from enum import IntFlag, IntEnum, auto
-from typing import List
 from pxr import Gf, Sdf
 
 
@@ -67,7 +67,7 @@ class ChunkFlags:
 
         Attributes:
             LABELED: If the param should have a label in the ui
-            OUTPUT: The param is a computed output — hidden from the UI and not user-editable.
+            OUTPUT: The param is a computed output -- hidden from the UI and not user-editable.
                     Its inputs: attr on the chunk prim is still available for @ChunkName.param@ expressions.
             FILE_EXISTING: For FILE type params, this rule hints to the file browser that we can not create new files
             DIRECTORY: For FILE type params. Allows selection of folders
@@ -167,7 +167,7 @@ class ChunkFlags:
         COLOR_PICKER = VECTOR | (1 << 0)
 
     @staticmethod
-    def ParamTypeToTypes(t: ParamType) -> List[type]:
+    def ParamTypeToTypes(t: ParamType) -> list[type]:
         """Provides default values for ParamType enums. If t is a combination of multiple ParamTypes, returns all supported values
 
         Args:

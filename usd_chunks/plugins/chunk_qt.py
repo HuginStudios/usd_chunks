@@ -1,3 +1,4 @@
+from __future__ import annotations
 import inspect
 import os
 import weakref
@@ -48,7 +49,7 @@ from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, droppable_path
 
 
 def save_chunkgroup_dialog(scene=None) -> None:
-    """Export the current chunk graph as one clean, portable USD layer — every
+    """Export the current chunk graph as one clean, portable USD layer -- every
     chunk's own bookkeeping freshly authored into a brand-new layer, with no
     subLayerPaths at all, carrying the scene's up-axis and units. Same mechanism
     as the Export ChunkGroup chunk. Shared by the DCC plugins' Save ChunkGroup
@@ -176,7 +177,7 @@ def _guarded_copy():
 
 def _focused_view_is_graph(focused: QtWidgets.QWidget | None) -> bool:
     """True if focused sits inside a ChunkGraphView (the Graph page), for either page's
-    copy/paste shortcut — both pages of a tab share one QShortcut (WidgetWithChildrenShortcut),
+    copy/paste shortcut -- both pages of a tab share one QShortcut (WidgetWithChildrenShortcut),
     so this is how paste tells which surface it was actually triggered from."""
     w = focused
     while w is not None:
@@ -226,11 +227,11 @@ class ChunkTabContextStack(QtWidgets.QStackedWidget):
         self.ctx = weakref.ref(ctx, self._ctx_died)
 
     def _ctx_died(self, ref):
-        # Weakref finalizer — can fire during app shutdown after Qt has already destroyed
+        # Weakref finalizer -- can fire during app shutdown after Qt has already destroyed
         # this stack's C++ object, so setParent/deleteLater would raise. Ignore that.
         try:
             # Visible widget reparented to no parent becomes a real top-level window that
-            # Qt shows immediately — suppress that before detaching.
+            # Qt shows immediately -- suppress that before detaching.
             self.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
             self.setParent(None)
             self.deleteLater()
@@ -248,7 +249,7 @@ class _EmptyPanelTabRouter(QtCore.QObject):
     graph view and nothing listening for Tab. This filter covers exactly that gap.
     """
 
-    def __init__(self, tab_widget: "ChunkTabWidget"):
+    def __init__(self, tab_widget: ChunkTabWidget):
         super().__init__(tab_widget)
         # Weak, deliberately -- see _ProxyKeyRouter for why (installing on the
         # QApplication would otherwise pin the whole panel through this filter).
@@ -375,7 +376,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         if tab := self.get_chunk_context(idx):
             tab.group.name = name
 
-    def _empty_panel_drop_paths(self, event) -> "list[str]":
+    def _empty_panel_drop_paths(self, event) -> list[str]:
         """Droppable paths, but only while there is no graph view to handle them itself.
 
         Once a context tab exists its ChunkGraphView accepts drops directly and must keep
@@ -470,7 +471,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         chunks = entry.create()
 
         # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
-        # view (view-follows-tail) and auto-pins it — node-graph creates don't set either flag,
+        # view (view-follows-tail) and auto-pins it -- node-graph creates don't set either flag,
         # there wiring is manual and pin is opt-in via the node's right-click menu.
         chunk_stage._params_tab_create = True
         chunk_stage._pin_new_chunks = True
@@ -514,7 +515,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             if isinstance(w, ChunkTabContextStack):
                 # Match on the stack's own context weakref. During delete the inner params
                 # ChunkWidget is torn down first, which shifts page 0 to the graph view and
-                # breaks a widget(0).group lookup — the stack's ctx stays valid until GC.
+                # breaks a widget(0).group lookup -- the stack's ctx stays valid until GC.
                 if w.ctx() is ctx:
                     return i
                 w = w.widget(0)
@@ -603,7 +604,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         # refs: a context can be deleted while it is still in the history, and holding it
         # alive to remember visiting it would leak every group the session ever entered.
         # Entries are (weakref-or-None), None meaning the root graph.
-        self._nav_history: "list[weakref.ReferenceType | None]" = []
+        self._nav_history: list[weakref.ReferenceType | None] = []
         self._nav_index: int = -1
         # Set while WE are the ones changing tab, so retracing does not itself get recorded.
         self._nav_replaying = False
@@ -696,7 +697,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
             cfg = loaded_chunk.get_config()
             if cfg and cfg.module:
                 # User-created ChunkGroup: add a standalone ChunkWidget directly to
-                # the parent tab's content layout — NOT via add_param, which would
+                # the parent tab's content layout -- NOT via add_param, which would
                 # propagate sub-chunk PARAM_ADDED notices up to the parent context.
                 parent_ctx = getattr(loaded_chunk, "_parent_context", None)
                 parent_ctx = parent_ctx() if parent_ctx else None
@@ -758,14 +759,14 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         context = self._current_context()
         scene = graph_view.scene()
         if not getattr(scene, "_dirty", True) and scene._built_context == context:
-            return  # already built for this context and not invalidated — keep the cache
+            return  # already built for this context and not invalidated -- keep the cache
         graph_view.build(stage, registry.scene, context, changed_chunks=changed_chunks)
         graph_view.dive_into.connect(self._on_dive_into, QtCore.Qt.UniqueConnection)
 
     def _on_dive_into(self, context_chunk):
         idx = self.tab_widget.get_chunk_context_index(context_chunk)
         if idx is None:
-            # Ensure the group isn't collapsed when we build its tab — the scroll
+            # Ensure the group isn't collapsed when we build its tab -- the scroll
             # area is sized via setFixedHeight inside update_from_state, so a
             # lingering COLLAPSED state would make it 0px tall on first show.
             context_chunk.unset_state(ChunkFlags.State.COLLAPSED)
@@ -784,7 +785,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._rebuild_graph()
         # Re-establish the viewport for the tab we switched to: its active view must drive the
         # (global) stage, muting a view left active in another context. _rebuild_graph skips
-        # build() when the graph is cached, so recook here too — covers the cached-tab switch.
+        # build() when the graph is cached, so recook here too -- covers the cached-tab switch.
         gv = self.tab_widget.get_current_graph_view()
         if gv is not None:
             QtCore.QTimer.singleShot(0, gv, gv._recook_active_view)
@@ -852,7 +853,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._view_bar = QtWidgets.QTabBar(self)
         self._view_bar.addTab("Params")
         self._view_bar.addTab("Graph")
-        # Start on Graph, not Params — an empty graph rather than an empty Params tab.
+        # Start on Graph, not Params -- an empty graph rather than an empty Params tab.
         # Set directly (not via setCurrentIndex) since no slot is connected yet and any
         # tabs created below must pick up view mode 1 from the start.
         self.tab_widget.set_view_mode(1)
@@ -868,7 +869,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         if registry.initialized:
-            # Context chunks are excluded from get_chunks() — process them first
+            # Context chunks are excluded from get_chunks() -- process them first
             # so tabs exist before non-context chunks are added to them.
             for ctx in registry.scene.chunks.get_my_params():
                 if isinstance(ctx, chunk_core.ChunkBase) and ctx.has_flag(ChunkFlags.GroupFlags.CONTEXT):

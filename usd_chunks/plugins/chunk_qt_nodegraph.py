@@ -12,7 +12,7 @@ import os
 import re
 import time
 import weakref
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import shiboken6
 from pxr import Gf, Sdf, Usd, UsdUI
@@ -118,8 +118,8 @@ _COL_NODE_BG = QtGui.QColor("#3a3a3a")
 _COL_NODE_HEADER = QtGui.QColor("#2a2a2a")
 _COL_NODE_BORDER = QtGui.QColor("#555555")
 _COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COLOR
-_COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black — group/context nodes
-_COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber — locked (external-layer) nodes
+_COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black -- group/context nodes
+_COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber -- locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
 _COL_CANVAS_BG = QtGui.QColor("#252525")  # ChunkGraphView's background brush
 _DIM_ALPHA = 0.35  # the opacity disabled nodes are drawn at when their body is showing
@@ -144,10 +144,10 @@ def _dimmed(color: QtGui.QColor) -> QtGui.QColor:
         )
         _DIM_CACHE[key] = hit
     return hit
-_COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange — the ACTIVE view (driving execution)
-_COL_VIEW_INACTIVE = QtGui.QColor("#4a453e")  # dim grey-brown — an inactive view (not driving)
-_COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green — active view border accent
-_COL_STALE = QtGui.QColor("#e0902a")   # amber — chunk's result no longer reflects its inputs
+_COL_VIEW_HEADER = QtGui.QColor("#c87830")   # pale orange -- the ACTIVE view (driving execution)
+_COL_VIEW_INACTIVE = QtGui.QColor("#4a453e")  # dim grey-brown -- an inactive view (not driving)
+_COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green -- active view border accent
+_COL_STALE = QtGui.QColor("#e0902a")   # amber -- chunk's result no longer reflects its inputs
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -164,14 +164,14 @@ _EXEC_INPUT = chunk_naming.EXEC_INPUT
 _EXEC_OUTPUT = chunk_naming.EXEC_OUTPUT
 _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
 # Child predicate that keeps disabled chunks: disabling sets the chunk prim inactive
-# (prim.SetActive(False)), and the default GetChildren() skips inactive prims — which would
+# (prim.SetActive(False)), and the default GetChildren() skips inactive prims -- which would
 # drop the disabled node out of the graph. Include inactive-but-defined prims so a disabled
 # node stays put (greyed out) instead of vanishing.
 _INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 
 # Hidden top-level sink widget: child QWidgets parented here avoid a native OS
 # window (and the Windows flash that comes with it) while staying off the viewport.
-_proxy_sink: Optional[QtWidgets.QWidget] = None
+_proxy_sink: QtWidgets.QWidget | None = None
 
 
 def _get_proxy_sink() -> QtWidgets.QWidget:
@@ -218,7 +218,7 @@ _PORT_TYPE_COLOR = {
 class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
     """A connection dot on a node."""
 
-    def __init__(self, attr_path: str, port_type: str, parent: "ChunkNodeItem", show_label: bool = False):
+    def __init__(self, attr_path: str, port_type: str, parent: ChunkNodeItem, show_label: bool = False):
         r = _PORT_RADIUS
         super().__init__(-r, -r, r * 2, r * 2, parent)
         self.attr_path = attr_path
@@ -236,7 +236,7 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
             text.setBrush(QtGui.QColor("#cccccc"))
             tw = text.boundingRect().width()
             th = text.boundingRect().height()
-            # Output ports sit on the right edge — label goes to the left of the dot
+            # Output ports sit on the right edge -- label goes to the left of the dot
             text.setPos(-r - 3 - tw, -th / 2)
 
     def set_highlighted(self, on: bool) -> None:
@@ -270,7 +270,7 @@ _param_port_type = chunk_graph.param_port_type
 
 
 
-def _prim_graph_pos(prim: "Usd.Prim | None") -> QtCore.QPointF:
+def _prim_graph_pos(prim: Usd.Prim | None) -> QtCore.QPointF:
     """A prim's authored node-graph position as a QPointF.
 
     The Y-up-to-Y-down flip is chunk_graph.graph_position's now -- both frontends draw on
@@ -356,7 +356,7 @@ def _author_raw_connection(
 
 
 
-def _paste_guard_sets(chunks) -> "tuple[list, list]":
+def _paste_guard_sets(chunks) -> tuple[list, list]:
     """(guarded, self_building) for chunks about to be pasted.
 
     guarded: every non-view chunk. Setting a copied value runs a chunk's module, and a
@@ -389,7 +389,7 @@ def _paste_guard_sets(chunks) -> "tuple[list, list]":
 _SCRIPT_EXT = ".py"
 
 
-def droppable_paths(event) -> "list[str]":
+def droppable_paths(event) -> list[str]:
     """The USD and Python file paths a drag carries, if any.
 
     Module-level because the tab panel needs the same answer before a graph view exists:
@@ -405,7 +405,7 @@ def droppable_paths(event) -> "list[str]":
     ]
 
 
-def _detect_dropped_usd_kind(path: str) -> "str | None":
+def _detect_dropped_usd_kind(path: str) -> str | None:
     """Classification of a dropped file for ChunkGraphView.dropEvent: 'chunks' if it has any
     Chunk-typed prim ANYWHERE in it, 'scene' if it's a USD file with none, None if it isn't a
     recognized USD file at all. There's no fixed root to shortcut the check against -- a
@@ -428,7 +428,7 @@ def _detect_dropped_usd_kind(path: str) -> "str | None":
         return None
     found = False
 
-    def _visit(spec_path: "Sdf.Path") -> None:
+    def _visit(spec_path: Sdf.Path) -> None:
         nonlocal found
         if found or not spec_path.IsPrimPath():
             return
@@ -440,7 +440,7 @@ def _detect_dropped_usd_kind(path: str) -> "str | None":
     return "chunks" if found else "scene"
 
 
-def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]") -> "_ClipboardNode | None":
+def _build_clip_node_from_prim(prim: Usd.Prim, rel_pos: tuple[float, float]) -> _ClipboardNode | None:
     """Build a _ClipboardNode straight from a Usd.Prim on a throwaway, unregistered stage (a
     dropped file opened via Usd.Stage.Open) -- the drag-and-drop counterpart of
     _snapshot_chunk_node, which instead reads a *live* chunk already registered in the real
@@ -514,7 +514,7 @@ def _build_clip_node_from_prim(prim: "Usd.Prim", rel_pos: "tuple[float, float]")
     return clip_node
 
 
-def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], list[_ClipboardEdge]]":
+def _snapshot_layer_chunks(layer: Sdf.Layer) -> tuple[list[_ClipboardNode], list[_ClipboardEdge]]:
     """Read every top-level module-backed chunk prim out of a dropped .usd(a/c/z) file into
     clipboard-shaped data, ready for ChunkGraphView._materialize_at -- the drag-and-drop
     counterpart of Ctrl+C copying a live selection. Opens the file as its own throwaway
@@ -530,7 +530,7 @@ def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], l
     stage = Usd.Stage.Open(layer)
     if not stage:
         return [], []
-    candidates: "dict[str, Usd.Prim]" = {}
+    candidates: dict[str, Usd.Prim] = {}
     # _INCLUDE_INACTIVE, not the bare default predicate -- Traverse()'s default excludes
     # inactive prims, and a disabled chunk is authored as prim.SetActive(False) (see this
     # file's other _INCLUDE_INACTIVE uses), so a disabled chunk in the dropped file would
@@ -556,7 +556,7 @@ def _snapshot_layer_chunks(layer: "Sdf.Layer") -> "tuple[list[_ClipboardNode], l
     ]:
         del candidates[path]
 
-    def _is_top_level(prim: "Usd.Prim") -> bool:
+    def _is_top_level(prim: Usd.Prim) -> bool:
         p = prim.GetParent()
         while p and not p.IsPseudoRoot():
             if str(p.GetPath()) in candidates:
@@ -649,7 +649,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Height settling -- see _note_height_sample and is_height_settled.
         self._last_height_sample = None
         self._drag_active = False
-        self._drag_moved = False  # True once a drag actually moves — plain clicks stay False
+        self._drag_moved = False  # True once a drag actually moves -- plain clicks stay False
         self._drag_start = QtCore.QPointF()
         self._shake_samples: list[tuple[float, float]] = []  # (time, scene x) during a drag
         self._shake_fired = False
@@ -657,15 +657,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Multi-select drag: other selected (unlocked) nodes moved alongside this one, and
         # whether a plain (no-drag) click on an already-multi-selected node should collapse
         # the selection down to just this node once the press/release completes without moving.
-        self._drag_companions: list["ChunkNodeItem"] = []
+        self._drag_companions: list[ChunkNodeItem] = []
         self._drag_pending_collapse = False
-        self._proxy: Optional[QtWidgets.QGraphicsProxyWidget] = None
-        self._port_rebuild_timer: Optional[QtCore.QTimer] = None
+        self._proxy: QtWidgets.QGraphicsProxyWidget | None = None
+        self._port_rebuild_timer: QtCore.QTimer | None = None
         self._height = _NODE_HEADER_H
         self._full_height = _NODE_HEADER_H
         self._outputs_start_y: float = 0.0  # >0 when typed output ports are present
 
-        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, False)  # handled manually — header only
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, False)  # handled manually -- header only
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsFocusable, True)
 
@@ -699,12 +699,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         self._build_ports(prim)
         self._apply_usd_pos(prim)
-        # Reflect disabled state on (re)build — otherwise a rebuilt disabled node renders at
+        # Reflect disabled state on (re)build -- otherwise a rebuilt disabled node renders at
         # full opacity until the next state change (e.g. selecting it).
         self._apply_dim()
 
     def set_pinned(self, pinned: bool) -> None:
-        """Update the cached pin badge state after a menu toggle and repaint just this node —
+        """Update the cached pin badge state after a menu toggle and repaint just this node --
         no full graph rebuild needed for a cosmetic change."""
         self._pinned = pinned
         self.update()
@@ -718,7 +718,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def set_locked(self, locked: bool) -> None:
         """Update the cached locked state (edit-target changed, or this node is reused across a
-        rebuild) and repaint just this node — no full node reconstruction needed."""
+        rebuild) and repaint just this node -- no full node reconstruction needed."""
         if locked != self._locked:
             self._locked = locked
             self.update()
@@ -747,8 +747,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # One port per connected branch, plus one empty trailing slot to attach the next
             # branch to. The trailer is deliberately UI-only, with no backing attribute:
             # _author_connection creates the attribute on demand from the port's own
-            # attr_path, so an unconnected inputs:chunkN never has to be authored — and then
-            # serialized into every saved file forever — just to give a wire somewhere to
+            # attr_path, so an unconnected inputs:chunkN never has to be authored -- and then
+            # serialized into every saved file forever -- just to give a wire somewhere to
             # land. Ports read top-to-bottom as strongest-to-weakest.
             slots = len(chunk_stage.exec_input_connections(prim)) + 1
             for i in range(slots):
@@ -758,7 +758,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 port.setPos(0, _MERGE_PORT_TOP + i * _MERGE_PORT_SPACING)
                 self._ports.append(port)
             # Everything that asks a node for "its" exec input (splice-on-drop, wire-drop
-            # targeting) should get the primary one, which is slot 0 — the strongest.
+            # targeting) should get the primary one, which is slot 0 -- the strongest.
             self._exec_in_port = self._ports[0]
             self._exec_in_ports = list(self._ports)
             self._height = max(
@@ -798,7 +798,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._exec_out_port = None
             return
 
-        # Exec ports only — lightweight, no widget creation.
+        # Exec ports only -- lightweight, no widget creation.
         # Proxy (ChunkWidget) is created later via create_proxy() to allow batched deferred loading.
         # Spread across the header band rather than down the left edge: the slots stay
         # clear of the body below, so a node keeps its measured height and nothing has to
@@ -828,8 +828,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         Such a node shows one port per branch plus one empty trailer, so wiring the trailer
         has to grow a fresh one and clearing a slot has to drop one. Ports are built once at
-        node construction, and a connection change does not rebuild the node — only the
-        edges — so without this the trailer would only appear after some unrelated full
+        node construction, and a connection change does not rebuild the node -- only the
+        edges -- so without this the trailer would only appear after some unrelated full
         scene rebuild.
 
         Returns:
@@ -857,7 +857,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def create_proxy(self):
         """Create the embedded ChunkWidget proxy. Called in deferred batches after scene build."""
-        # A merge has no params, so there is no body worth embedding — and skipping the proxy
+        # A merge has no params, so there is no body worth embedding -- and skipping the proxy
         # also keeps _rebuild_typed_ports a no-op for it (it bails on a None proxy), which
         # matters because that method rebuilds _ports from the two exec port slots alone and
         # would otherwise drop every numbered slot port.
@@ -916,7 +916,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._port_rebuild_timer.setSingleShot(True)
         # Long enough to outlast a burst of geometry changes. Expanding a group animates
         # the content height, and every frame emits geometryChanged and restarts this
-        # timer — at interval 0 it fired between frames, so a rebuild that walks the whole
+        # timer -- at interval 0 it fired between frames, so a rebuild that walks the whole
         # widget tree twice (two findChildren sweeps) ran once per frame. Ports only need
         # to be right once the geometry settles, so wait for it to stop moving.
         self._port_rebuild_timer.setInterval(_PORT_REBUILD_MS)
@@ -946,7 +946,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def _rebuild_typed_ports(self):
         # This is deferred (singleShot), so by the time it runs the chunk may already be
-        # gone — disabled (prim inactive) or deleted (prim expired). Rebuilding ports reads
+        # gone -- disabled (prim inactive) or deleted (prim expired). Rebuilding ports reads
         # prim attributes, so bail rather than crash; the scene rebuild will drop this node.
         if not self.prim.IsValid():
             return
@@ -957,7 +957,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 return
         except RuntimeError:
             # C++ QGraphicsProxyWidget already destroyed (e.g. node deleted between
-            # scheduling this deferred rebuild and it firing) — nothing to rebuild.
+            # scheduling this deferred rebuild and it firing) -- nothing to rebuild.
             return
         scene = self.scene()
         for port in self._typed_ports:
@@ -970,7 +970,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # drop its other slots' ports on the first body relayout.
         self._ports = [p for p in (*self._exec_in_ports, self._exec_out_port) if p is not None]
         if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
-            # Proxy is hidden — place ports at header centre using param list alone.
+            # Proxy is hidden -- place ports at header centre using param list alone.
             self._place_param_ports_collapsed()
         else:
             self._place_param_ports(self._proxy.widget())
@@ -980,7 +980,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # burst settles.
             scene._request_build_edges()
         # New/removed/recolored port items don't always get their region marked
-        # dirty automatically — without this the old pixels can linger on screen
+        # dirty automatically -- without this the old pixels can linger on screen
         # until something unrelated (e.g. deselecting the node) forces a repaint.
         self.update()
         # Both branches above have just written self._height; this is the one place every
@@ -1017,7 +1017,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def _place_prim_output_ports(self, y_start: float, extend_height: bool = False):
         """Create output ports for every outputs:* attribute on the prim (excluding
-        outputs:chunk) that isn't already represented by a param-level port — every
+        outputs:chunk) that isn't already represented by a param-level port -- every
         connectable param gets its own inputs:/outputs: pair from _place_param_ports
         regardless of the OUTPUT flag, so an OUTPUT param's real outputs:attr would
         otherwise show up twice (once inline with its widget, once again down here)."""
@@ -1047,7 +1047,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._height = needed
                 self.prepareGeometryChange()
 
-    def _connected_param_names(self) -> "set[str]":
+    def _connected_param_names(self) -> set[str]:
         """Names of connectable params with a real wire touching them, either end.
 
         Collapsed nodes have no visible per-param widgets to hang ports off, so this is
@@ -1075,7 +1075,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                         names.add(src_attr_suffix[len("outputs:"):])
         return names
 
-    def _nearest_collapsed_group(self, param) -> "core.ChunkCommon | None":
+    def _nearest_collapsed_group(self, param) -> core.ChunkCommon | None:
         """The outermost Group between param and self.chunk that's currently collapsed, or
         None if none of them are.
 
@@ -1251,7 +1251,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     # ------------------------------------------------------------------
     # Port lookup
 
-    def get_port(self, attr_path: str) -> Optional["ChunkPortItem"]:
+    def get_port(self, attr_path: str) -> ChunkPortItem | None:
         for port in self._ports:
             if port.attr_path == attr_path:
                 return port
@@ -1341,7 +1341,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         painter.setPen(QtGui.QPen(border_color, border_w))
         painter.drawRoundedRect(body, 4, 4)
 
-        # Header background — square bottom corners so it merges with body
+        # Header background -- square bottom corners so it merges with body
         if self._is_view:
             # Only the active view gets the warm orange header; inactive views go dim/grey
             # so it's obvious at a glance which one is driving execution.
@@ -1390,7 +1390,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             str(chunk_type),
         )
 
-        # Stale badge — a small fixed-position corner icon rather than a border-color swap,
+        # Stale badge -- a small fixed-position corner icon rather than a border-color swap,
         # so it never fights with the selected (gold) or active-view (green) border colors.
         if self._stale:
             badge_r = 7.0
@@ -1406,7 +1406,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 "↻",
             )
 
-        # Typed outputs section — separator line + darker strip
+        # Typed outputs section -- separator line + darker strip
         if self._outputs_start_y > _NODE_HEADER_H and self._height > self._outputs_start_y:
             outputs_rect = QtCore.QRectF(
                 0, self._outputs_start_y,
@@ -1446,8 +1446,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             now = time.monotonic()
             debounced = now - self._last_collapse_toggle_time < _COLLAPSE_TOGGLE_DEBOUNCE
             if self._is_chunkgroup:
-                # A collapsed group hides its whole embedded widget — including the minimize
-                # arrow — so the header double-click is the only way to expand it in the graph.
+                # A collapsed group hides its whole embedded widget -- including the minimize
+                # arrow -- so the header double-click is the only way to expand it in the graph.
                 # Collapsed -> expand; expanded -> dive in.
                 if self.chunk.has_state(ChunkFlags.State.COLLAPSED):
                     if not debounced:
@@ -1493,9 +1493,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                     # Plain click on a node that's already part of a (possibly multi-node)
                     # selection: keep the whole selection for now (so it can be drag-moved as
                     # a group) and only collapse to just this node if the click ends up being
-                    # a plain click with no drag movement — see mouseReleaseEvent.
+                    # a plain click with no drag movement -- see mouseReleaseEvent.
                     self._drag_pending_collapse = True
-            # A merge has no embedded widget, so its whole body is dead space — dragging is
+            # A merge has no embedded widget, so its whole body is dead space -- dragging is
             # the only thing it could mean. Restricting it to the header would leave a tall
             # merge grabbable only by its top 40px. (Ports are child items and are hit first
             # by the view's own handler, so they still start a wire drag.)
@@ -1546,7 +1546,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         reversals = 0
         travel = 0.0
         last_dir = 0
-        prev_x: Optional[float] = None
+        prev_x: float | None = None
         for _, x in self._shake_samples:
             if prev_x is not None:
                 dx = x - prev_x
@@ -1568,7 +1568,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     def mouseReleaseEvent(self, event):
         if self._drag_active:
             self._drag_active = False
-            # Only persist the move / consider a wire-splice if the node actually moved —
+            # Only persist the move / consider a wire-splice if the node actually moved --
             # a plain click on the header must not splice the node into an overlapping wire.
             if self._drag_moved:
                 self._write_pos_to_usd()
@@ -1585,7 +1585,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._try_insert_on_edge()
             elif self._drag_pending_collapse:
                 # A plain click (no movement) on a node that was already part of a multi-node
-                # selection — collapse the selection down to just this node now.
+                # selection -- collapse the selection down to just this node now.
                 scene = self.scene()
                 sender = getattr(scene, "_scene_sender", None) if scene else None
                 if sender:
@@ -1674,7 +1674,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         ui_api = UsdUI.NodeGraphNodeAPI(self.prim)
         pos_attr = ui_api.GetPosAttr() or ui_api.CreatePosAttr()
         # Chunk-prim bookkeeping (this attr) follows Edit Target now, not always the
-        # session layer — writing without an EditContext relies on the stage's ambient
+        # session layer -- writing without an EditContext relies on the stage's ambient
         # edit target, which may not match wherever this attr's spec actually lives
         # (or, for the very first write, wherever it *should* go). Update an existing
         # spec in place; only resolve a fresh target for a genuinely new one.
@@ -1704,7 +1704,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def _on_state_changed(self, notice, sender):
         # This is a global STATE_CHANGED callback and can arrive after the node's chunk was
-        # removed — the node's C++ item (and its proxy) may already be destroyed, so any Qt
+        # removed -- the node's C++ item (and its proxy) may already be destroyed, so any Qt
         # call raises. Nothing to update in that case.
         try:
             selected = self.chunk.has_state(ChunkFlags.State.SELECTED)
@@ -1792,7 +1792,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             else ""
         )
 
-    def _build_param_state_conns(self) -> "list[NoticeConnection]":
+    def _build_param_state_conns(self) -> list[NoticeConnection]:
         """One STATE_CHANGED listener per connectable param, so a param's own HIDDEN
         toggling triggers a port rebuild the same way PARAM_ADDED/PARAM_REMOVED already
         do. Rebuilt (not just added to) on every param add/remove -- see _on_param_added --
@@ -1850,8 +1850,8 @@ class ChunkEdgeItem(QtWidgets.QGraphicsPathItem):
 
     def __init__(
         self,
-        src_port: "ChunkPortItem",
-        dst_port: "ChunkPortItem",
+        src_port: ChunkPortItem,
+        dst_port: ChunkPortItem,
         expression: str | None = None,
     ):
         super().__init__()
@@ -1924,22 +1924,22 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # Disable the BSP spatial index. clear() (used on every rebuild) can leave a
         # destroyed QGraphicsProxyWidget dangling in the BSP index, so a later itemAt()
         # returns freed memory and usdview crashes on the next click. NoIndex makes itemAt
-        # linearly scan the live item list instead — fine for the small node counts here.
+        # linearly scan the live item list instead -- fine for the small node counts here.
         self.setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
         # Graph-wide height settling -- see heights_settled.
         self._heights_settled = False
         self._height_settle_timer = None
         self._build_complete = False
-        self._stage: Optional[Usd.Stage] = None
-        self._scene_sender: Optional[core.SceneSender] = None
+        self._stage: Usd.Stage | None = None
+        self._scene_sender: core.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
         self._edges: list[ChunkEdgeItem] = []
-        self._objects_changed_conn: Optional[NoticeConnection] = None
+        self._objects_changed_conn: NoticeConnection | None = None
         self._show_param_edges: bool = True
-        self._built_context: object = _UNBUILT  # sentinel — tracks what context is currently rendered
+        self._built_context: object = _UNBUILT  # sentinel -- tracks what context is currently rendered
         self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
-        self._edge_timer: Optional[QtCore.QTimer] = None
-        self._proxy_busy_wait_since: Optional[float] = None  # see _create_proxies_batch
+        self._edge_timer: QtCore.QTimer | None = None
+        self._proxy_busy_wait_since: float | None = None  # see _create_proxies_batch
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -2002,7 +2002,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 proxy.setWidget(None)
                 if w is not None:
                     # A visible widget reparented to no parent becomes a real top-level
-                    # window and Qt shows it immediately — set this before setParent(None)
+                    # window and Qt shows it immediately -- set this before setParent(None)
                     # or every rebuild flashes one native window per node (see create_proxy).
                     w.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
                     w.setParent(None)
@@ -2011,8 +2011,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 pass
         self.clear()
 
-    def _teardown_node(self, node: "ChunkNodeItem") -> None:
-        """Same detach-then-destroy sequence as _teardown_items, but for one node — used by the
+    def _teardown_node(self, node: ChunkNodeItem) -> None:
+        """Same detach-then-destroy sequence as _teardown_items, but for one node -- used by the
         incremental path in _rebuild_nodes so a node that's actually gone doesn't wait for (or
         force) a full-scene wipe."""
         proxy = getattr(node, "_proxy", None)
@@ -2038,7 +2038,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         and render greyed.
 
         A node whose chunk is still present and unchanged is REUSED, not torn down and
-        recreated — tearing down and rebuilding every node's ChunkWidget proxy (a native Qt
+        recreated -- tearing down and rebuilding every node's ChunkWidget proxy (a native Qt
         window under the hood) on every single structural change, even for one unrelated
         new/deleted node, would make the whole graph visibly flash/collapse/expand and could
         show OS-level popup-window flicker, since create_proxy()'s "never let the OS show a
@@ -2051,7 +2051,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         scene_sender = self._scene_sender
         context = self._built_context
         if context is _UNBUILT:
-            return  # not built yet — a real build() will render with a proper context
+            return  # not built yet -- a real build() will render with a proper context
 
         # Derive the prim root for this context
         if context is not None and getattr(context, "prim_path", None):
@@ -2093,8 +2093,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             f"{chunk_stage._resolve_chunk_root(c)}/{c.name}": c
             for c in scene_sender.get_chunks()
             # Exclude the context chunk itself: get_context() returns self for a CONTEXT chunk,
-            # so a group would otherwise map to "{its own prim}/{its name}" — the path of a child
-            # inside it — and shadow a real nested chunk of the same name (backing that node with
+            # so a group would otherwise map to "{its own prim}/{its name}" -- the path of a child
+            # inside it -- and shadow a real nested chunk of the same name (backing that node with
             # the wrong chunk, so double-clicking it dives into the parent instead of the child).
             if c.get_context() == context and c is not context
         }
@@ -2130,7 +2130,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
             existing = self._nodes.get(path)
             if existing is not None and existing.chunk is chunk:
-                # Same chunk, same node — refresh what a fresh construction would have picked
+                # Same chunk, same node -- refresh what a fresh construction would have picked
                 # up (the prim handle itself may have been recomposed) and keep everything
                 # else, including its proxy widget, exactly as-is.
                 try:
@@ -2151,7 +2151,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     if existing._proxy is None and not existing._is_dot and not existing._is_merge:
                         new_nodes.append(existing)
                 except RuntimeError:
-                    existing = None  # its C++ item was already destroyed somehow — rebuild it
+                    existing = None  # its C++ item was already destroyed somehow -- rebuild it
             else:
                 existing = None
 
@@ -2171,13 +2171,13 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._build_edges()
 
         # Proxy widgets (ChunkWidget) are created in small batches so newly-added nodes fill
-        # in progressively — existing nodes already have theirs and are left untouched.
+        # in progressively -- existing nodes already have theirs and are left untouched.
         if new_nodes:
             self._create_proxies_batch(new_nodes, self._build_gen)
 
     def _create_proxies_batch(self, remaining: list, gen: int):
         if gen != getattr(self, "_build_gen", gen):
-            return  # a newer rebuild superseded this batch — don't touch its stale nodes
+            return  # a newer rebuild superseded this batch -- don't touch its stale nodes
         # Not while the host is busy. usdview holds a busy override cursor from early in its
         # start-up until its first image is drawn, and drains every pending zero-timer -- so
         # this whole batch chain -- inside a processEvents() call it makes on the way. A
@@ -2204,7 +2204,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         batch, rest = remaining[:self._PROXY_BATCH_SIZE], remaining[self._PROXY_BATCH_SIZE:]
         for node in batch:
             # Never let one bad proxy abort the whole batch (which would leave every remaining
-            # node without its widget — the "only the port dot shows" corruption). Log and skip.
+            # node without its widget -- the "only the port dot shows" corruption). Log and skip.
             try:
                 node.create_proxy()
             except Exception as e:
@@ -2276,7 +2276,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Before resolving ports: a merge grows/loses a slot as branches are wired and
         # cleared, and the port the next loop looks up has to exist. Safe to do here (rather
-        # than at the connection site) precisely because edges have just been dropped —
+        # than at the connection site) precisely because edges have just been dropped --
         # rebuilding a node's ports destroys the port items any surviving edge would hold.
         for node in self._nodes.values():
             node.sync_merge_ports()
@@ -2291,7 +2291,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 attr_name = attr.GetName()
                 if not attr_name.startswith("inputs:"):
                     continue
-                # Every exec slot, not just inputs:chunk — a merge's branches past the first
+                # Every exec slot, not just inputs:chunk -- a merge's branches past the first
                 # live on inputs:chunk<N>, and treating those as typed param edges would hide
                 # them behind the "Show param connections" toggle and then fail to find a
                 # port for them at all.
@@ -2338,8 +2338,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     # ------------------------------------------------------------------
     # Auto-layout (L key)
 
-    def layout_nodes(self, seed_paths: "list[str] | None" = None) -> None:
-        """Auto-layout — see chunk_graph_layout.py for the algorithm itself.
+    def layout_nodes(self, seed_paths: list[str] | None = None) -> None:
+        """Auto-layout -- see chunk_graph_layout.py for the algorithm itself.
 
         seed_paths: prim paths to grow into their full connected subgraph before laying out
         (the "Layout Selected" case). None lays out every node currently in this context.
@@ -2367,7 +2367,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             is_locked=lambda path: self._nodes[path]._locked,
         )
 
-        # Apply after the full layout is computed (not interleaved with computing it) — each
+        # Apply after the full layout is computed (not interleaved with computing it) -- each
         # setPos triggers itemChange -> update_edges_for automatically, and _write_pos_to_usd
         # persists the same ui:nodegraph:node:pos attribute an interactive drag already writes.
         for path, (x, y) in positions.items():
@@ -2435,7 +2435,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
             return
         # A prim-level resync under our chunks root means a chunk was added/removed/enabled/
-        # disabled. Rebuild the whole graph from scratch — only active chunks survive —
+        # disabled. Rebuild the whole graph from scratch -- only active chunks survive --
         # instead of editing nodes in place around expired or inactive prims. Property-level
         # resyncs (e.g. wiring a connection) don't change the node set, so they fall through
         # to the cheap edge rebuild below.
@@ -2471,8 +2471,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 node = self._nodes.get(prim_path)
                 if node:
                     node._apply_usd_pos(node.prim)
-        # Deferred: a single cook emits hundreds of these notices — one per attribute it
-        # writes — and rebuilding every edge in the scene on each was 286 rebuilds for one
+        # Deferred: a single cook emits hundreds of these notices -- one per attribute it
+        # writes -- and rebuilding every edge in the scene on each was 286 rebuilds for one
         # group expand. The edges only have to be right once the notices stop arriving.
         self._request_build_edges()
 
@@ -2494,15 +2494,15 @@ class _ProxyKeyRouter(QtCore.QObject):
     camera-key shortcuts (F/W/A/S/D…) don't fire while the user is typing.
     """
 
-    def __init__(self, view: "ChunkGraphView"):
+    def __init__(self, view: ChunkGraphView):
         super().__init__(view)
         # Weak, deliberately. Installing this router on the QApplication pins the router,
-        # and a strong back-reference here would pin the whole ChunkGraphView through it —
+        # and a strong back-reference here would pin the whole ChunkGraphView through it --
         # leaking the entire scene and widget tree for every view ever constructed, and
         # preventing the destroyed signal that uninstall() hangs off from ever firing.
         self._view = weakref.ref(view)
         self._busy = False
-        self._active: Optional[QtWidgets.QWidget] = None  # proxy widget last clicked
+        self._active: QtWidgets.QWidget | None = None  # proxy widget last clicked
         self._view_active: bool = False  # True while graph view was most recently clicked
         self._installed = False
 
@@ -2540,7 +2540,7 @@ class _ProxyKeyRouter(QtCore.QObject):
             app.removeEventFilter(self)
         self._installed = False
 
-    def set_active(self, widget: Optional[QtWidgets.QWidget]) -> None:
+    def set_active(self, widget: QtWidgets.QWidget | None) -> None:
         self._active = widget
 
     def set_view_active(self, active: bool) -> None:
@@ -2610,12 +2610,12 @@ class _ProxyKeyRouter(QtCore.QObject):
                 fw is self._active or self._active.isAncestorOf(fw)
             )
             if inside_proxy:
-                # QLineEdit inside our proxy has Qt-internal focus — prevent shortcuts
+                # QLineEdit inside our proxy has Qt-internal focus -- prevent shortcuts
                 # but let KeyPress flow natively so the widget handles it directly.
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
                     event.accept()
                 return False
-            # Input widget outside our proxy has focus — deactivate and defer.
+            # Input widget outside our proxy has focus -- deactivate and defer.
             self._active = None
             self._view_active = False
             return False
@@ -2844,7 +2844,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     """QGraphicsView with zoom, pan (middle mouse or Space+drag), and F to frame."""
 
     _SCENE_EXTENT = 50000
-    _GRID_SPACING = 200  # scene units — fixed world-space, so it scales naturally with zoom
+    _GRID_SPACING = 200  # scene units -- fixed world-space, so it scales naturally with zoom
     # ...but only down to a point. The dots are cosmetic (constant screen size), so as the
     # view zooms out they crowd together into a speckle that reads as noise rather than a
     # grid, and their count grows with the square of the zoom-out -- thousands of them at
@@ -2915,17 +2915,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # -- ~QObject emits destroyed() before deleting children.
         self.destroyed.connect(lambda *_, _router=self._proxy_key_router: _router.uninstall())
 
-        self._drag_src_port: Optional[ChunkPortItem] = None
-        self._drag_edge: Optional[QtWidgets.QGraphicsPathItem] = None
-        self._drag_detach_attr: Optional[Usd.Attribute] = None
-        self._drag_detach_source_port: Optional[ChunkPortItem] = None
-        self._drag_reused_edge: Optional[ChunkEdgeItem] = None
+        self._drag_src_port: ChunkPortItem | None = None
+        self._drag_edge: QtWidgets.QGraphicsPathItem | None = None
+        self._drag_detach_attr: Usd.Attribute | None = None
+        self._drag_detach_source_port: ChunkPortItem | None = None
+        self._drag_reused_edge: ChunkEdgeItem | None = None
         # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
         # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
         self._suppress_default_view = False
         # Debounce state for build()'s post-build recook -- see _schedule_restore_active_view.
         self._restore_view_token = 0
-        self._restore_view_changed_chunks: "Optional[set]" = set()
+        self._restore_view_changed_chunks: set | None = set()
         self._view_state = ViewSlotState(self)
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
@@ -2991,7 +2991,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:
         """Scene-space grid dot positions covering rect, snapped to fixed spacing-unit lines.
 
-        Pure math, no painter — kept separate from drawBackground so the snapping/coverage
+        Pure math, no painter -- kept separate from drawBackground so the snapping/coverage
         logic is unit-testable without a real paint device.
         """
         # Snap down to the nearest grid line at or before rect's edges. Python's % on a
@@ -3029,7 +3029,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def drawBackground(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
         # super() fills with setBackgroundBrush's flat color; dots paint on top of that.
         super().drawBackground(painter, rect)
-        # Only the exposed rect is ever painted here (never the full 100k-unit scene extent —
+        # Only the exposed rect is ever painted here (never the full 100k-unit scene extent --
         # Qt only calls drawBackground for the currently visible region).
         points = self._grid_points_in_rect(rect, self._grid_spacing_for_view())
         if not points:
@@ -3099,13 +3099,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Cheap (just a membership scan) even when re-triggered by an unrelated create, so this
         # one stays unconditional.
         QtCore.QTimer.singleShot(80, self, lambda ctx=context: self._ensure_default_view(ctx))
-        # Switching to this context must re-establish the viewport for ITS active view — the
+        # Switching to this context must re-establish the viewport for ITS active view -- the
         # viewport is one global stage, so a view activated in another context (e.g. an inner
         # group view) otherwise stays cooked and the wrong result shows. Deferred past the
         # auto-view step. (On create we deliberately don't re-cook, to avoid churn.)
         self._schedule_restore_active_view(changed_chunks)
 
-    def _schedule_restore_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]]) -> None:
+    def _schedule_restore_active_view(self, changed_chunks: Iterable[core.ChunkBase] | None) -> None:
         """Debounce build()'s post-build recook across a burst of build() calls landing in
         the same event-loop tick.
 
@@ -3224,7 +3224,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         return clip_nodes, clip_edges, QtCore.QPointF(min_x, min_y)
 
-    def selected_chunks(self, including: "core.ChunkBase | None" = None) -> "list[core.ChunkBase]":
+    def selected_chunks(self, including: core.ChunkBase | None = None) -> list[core.ChunkBase]:
         """The chunks this graph has selected, with `including` first if it is one of them.
 
         `including` is the chunk a menu was opened on. Right-clicking a node that is NOT in
@@ -3283,15 +3283,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         scene_pos = self.mapToScene(self.mapFromGlobal(global_pos))
         self._paste_clipboard_at(scene_pos)
 
-    def _paste_clipboard_at(self, scene_pos: QtCore.QPointF) -> "list[core.ChunkBase]":
+    def _paste_clipboard_at(self, scene_pos: QtCore.QPointF) -> list[core.ChunkBase]:
         """Materialize the module-level clipboard as new chunk(s) centered at scene_pos."""
         if not _node_clipboard:
             return []
         return self._materialize_at(_node_clipboard, _edge_clipboard, scene_pos)
 
     def _materialize_at(
-        self, clip_nodes: "list[_ClipboardNode]", clip_edges: "list[_ClipboardEdge]", scene_pos: QtCore.QPointF
-    ) -> "list[core.ChunkBase]":
+        self, clip_nodes: list[_ClipboardNode], clip_edges: list[_ClipboardEdge], scene_pos: QtCore.QPointF
+    ) -> list[core.ChunkBase]:
         """Create new chunk(s) from clip_nodes centered at scene_pos, wire clip_edges between
         them, and select the result -- nested into whatever context/tab this view is
         currently showing, same mechanism right-click "New Chunk" already uses
@@ -3406,8 +3406,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def _materialize_children(
         self, parent_chunk: core.ChunkBase,
-        clip_children: "list[_ClipboardNode]", clip_child_edges: "list[_ClipboardEdge]",
-        clip_lofts: "list[tuple[int, str]] | None" = None,
+        clip_children: list[_ClipboardNode], clip_child_edges: list[_ClipboardEdge],
+        clip_lofts: list[tuple[int, str]] | None = None,
     ) -> None:
         """Recreate a ChunkGroup's copied children nested inside the newly created
         parent_chunk (recursing further for a nested sub-group), wiring their internal
@@ -3626,9 +3626,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     def _wire_pasted_edges(
         self,
-        new_path_by_index: "dict[int, str]",
-        edges: "list[_ClipboardEdge]",
-        pasted: "list[core.ChunkBase] | None" = None,
+        new_path_by_index: dict[int, str],
+        edges: list[_ClipboardEdge],
+        pasted: list[core.ChunkBase] | None = None,
     ) -> None:
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
@@ -3678,7 +3678,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         # Nothing to do if this context already has a view. A newly created node is blocked at
         # creation (see contextMenuEvent), so it doesn't execute until it's wired in and recook
-        # unblocks it — no need to re-cook here.
+        # unblocks it -- no need to re-cook here.
         if self._context_has_view(registry.scene, context):
             return
         tails = chunk_stage.exec_tails(stage, registry.scene, context)
@@ -3758,7 +3758,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         return frozenset(node for node in nodes if id(node) not in keep)
 
     # ------------------------------------------------------------------
-    # Pan — middle mouse or Space + left drag
+    # Pan -- middle mouse or Space + left drag
 
     def _start_pan(self, pos: QtCore.QPoint):
         self._pan_active = True
@@ -3824,11 +3824,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # top-level proxy widget, so key events reach e.g. QLineEdit directly.
         # itemAt can return a proxy whose C++ object was already freed by a rebuild (a stale
         # item lingering in the scene). Touching it (mapFromScene/widget) dereferences freed
-        # memory → native crash, which no try/except can catch — so validity-check first.
+        # memory → native crash, which no try/except can catch -- so validity-check first.
         # Do NOT call into the proxy's C++ (mapFromScene/widget/childAt) here: on some Qt/
         # PySide6 builds that dereferences a proxy left in a bad state by a rebuild and crashes
         # usdview. Resolve the key-router target from the live node's pinned ChunkWidget via
-        # Python identity instead — no C++ touch on the proxy.
+        # Python identity instead -- no C++ touch on the proxy.
         target_widget = None
         graph_scene = self.scene()
         if proxy is not None and isinstance(graph_scene, ChunkGraphScene):
@@ -3848,7 +3848,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._start_pan(event.pos())
         elif event.button() == QtCore.Qt.LeftButton and hit is None:
             # Empty canvas: start a rubber-band box-select. A plain click with no drag
-            # movement resolves to an empty box on release, which clears the selection —
+            # movement resolves to an empty box on release, which clears the selection --
             # same end result as the old immediate-clear-on-press behavior.
             self._rubber_band_add = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
             self._rubber_band_origin = event.pos()
@@ -3906,7 +3906,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Keyboard
 
-    def frontend(self, docker=None) -> "QtGraphFrontend":
+    def frontend(self, docker=None) -> QtGraphFrontend:
         """This view as a chunk_graph.GraphFrontend.
 
         Cached, because the adapter is stateless but callers hold on to what they get and
@@ -3988,7 +3988,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # (slot 0), which would block the whole graph. Keeps an active view at all times.
             registry = chunk_registry.ChunkRegistry()
             stage = registry.scene.get_stage() if registry.initialized else None
-            # Scope the check to THIS graph's context — slots are per-context now, so a global
+            # Scope the check to THIS graph's context -- slots are per-context now, so a global
             # scan would accept a slot that only exists in another tab/group, then recook
             # (context-scoped) finds no view here and mutes everything.
             if stage and chunk_stage.find_view_chunk_for_slot(
@@ -4129,7 +4129,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         and self._drag_target_ok(port)
                     )
 
-    def _nearest_target_port(self, scene_pos: QtCore.QPointF) -> Optional[ChunkPortItem]:
+    def _nearest_target_port(self, scene_pos: QtCore.QPointF) -> ChunkPortItem | None:
         """Closest valid drop target to scene_pos within _PORT_SNAP_PIXELS on screen, if any."""
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
@@ -4200,7 +4200,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         scene = _chunk.get_scene()
         if not scene:
             return
-        # Block on creation (view-driven) — see contextMenuEvent. Here the node is about to be
+        # Block on creation (view-driven) -- see contextMenuEvent. Here the node is about to be
         # wired to the dragged port, so the deferred connect's recook will unblock + cook it.
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
@@ -4249,7 +4249,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_edge = None
         if self._drag_reused_edge is not None:
             # If a connection change happened, _build_edges() already tore this
-            # item down — touching it further is a no-op (RuntimeError guarded).
+            # item down -- touching it further is a no-op (RuntimeError guarded).
             # Otherwise, snap it back to its real solid path/pen.
             try:
                 edge = self._drag_reused_edge
@@ -4290,7 +4290,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return False
         if hit.is_input != src.is_input:
             return self._can_connect(src, hit)
-        # Same role as the grabbed port — only meaningful when we picked up an
+        # Same role as the grabbed port -- only meaningful when we picked up an
         # existing connection at an input port, moving its destination elsewhere.
         if not src.is_input or self._drag_detach_source_port is None:
             return False
@@ -4300,8 +4300,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         )
 
     def _find_sibling_output_port(
-        self, conn_path: Sdf.Path, graph_scene: "ChunkGraphScene"
-    ) -> Optional[ChunkPortItem]:
+        self, conn_path: Sdf.Path, graph_scene: ChunkGraphScene
+    ) -> ChunkPortItem | None:
         """Resolve the ChunkPortItem for the source end of a connection. Exec connections
         point straight at outputs:chunk; typed param connections point at the source's
         inputs:param (see _author_connection), so the matching output port lives on the
@@ -4315,7 +4315,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             attr_name = "outputs:" + attr_name[len("inputs:"):]
         return src_node.get_port(f"{src_prim_path}.{attr_name}")
 
-    def _engine_context(self, graph_scene: "ChunkGraphScene"):
+    def _engine_context(self, graph_scene: ChunkGraphScene):
         """The prims and chunks the engine needs, keyed the way it keys them.
 
         Not _graph_context: this class already has one of those, answering a different
@@ -4363,7 +4363,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         touched = {chunks[path] for path in change.touched_nodes if path in chunks}
         self._recook_active_view(touched or None)
 
-    def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: "ChunkGraphScene") -> None:
+    def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: ChunkGraphScene) -> None:
         """Cut the wire into a port, then redraw and recook.
 
         Only that wire: the node it fed keeps its own downstream wiring (see
@@ -4394,7 +4394,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         touched = {chunks[path] for path in change.touched_nodes if path in chunks}
         self._recook_active_view(touched or None)
 
-    def _clear_input_connection(self, port: ChunkPortItem, graph_scene: "ChunkGraphScene") -> bool:
+    def _clear_input_connection(self, port: ChunkPortItem, graph_scene: ChunkGraphScene) -> bool:
         """Clear one input port's connections (no exec chain-heal). For typed ports also reset
         the param and re-execute so shader-level connections clear. Returns True if it changed."""
         attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
@@ -4414,7 +4414,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 node.chunk.execute()
         return True
 
-    def _shake_disconnect_node(self, node: "ChunkNodeItem") -> None:
+    def _shake_disconnect_node(self, node: ChunkNodeItem) -> None:
         """Disconnect all of a node's wires, but heal the exec chain: for A -> C -> B, shaking C
         rewires B's exec input to A (A -> B) before isolating C. Data/typed connections to C are
         just cleared (no generic heal)."""
@@ -4426,7 +4426,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         changed = False
 
         # Heal the exec chain: rewire each successor's exec input to this node's
-        # predecessor(s). The predecessor is read from slot 0 only — a successor has one slot
+        # predecessor(s). The predecessor is read from slot 0 only -- a successor has one slot
         # to inherit into, so it can be handed exactly one branch, and slot 0 is the primary
         # one (same choice as chunk_stage.heal_exec_chain_on_delete).
         exec_in = stage.GetAttributeAtPath(Sdf.Path(node_prim + ".inputs:chunk"))
@@ -4478,7 +4478,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             graph_scene._build_edges()
             self._recook_active_view()
 
-    def _show_chunk_menu(self, node: "ChunkNodeItem", global_pos: QtCore.QPoint) -> None:
+    def _show_chunk_menu(self, node: ChunkNodeItem, global_pos: QtCore.QPoint) -> None:
         # Copy/Cut/Duplicate act on the current selection, not just this one right-clicked
         # node -- right-clicking a node that's already part of a multi-selection must leave
         # that selection alone, but right-clicking an unselected node should select just it
@@ -4507,11 +4507,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         self._create_view_node_for(selected[0])
 
-    def _create_view_node_for(self, target_node: "ChunkNodeItem") -> None:
+    def _create_view_node_for(self, target_node: ChunkNodeItem) -> None:
         self._create_view_node_for_prim(str(target_node.prim.GetPath()))
 
     def _activate_menu_view(self, view_chunk, context, stage) -> None:
-        """A view created from the chunk menu is inert — it has no view:slot and isn't active,
+        """A view created from the chunk menu is inert -- it has no view:slot and isn't active,
         so it does nothing. Assign it a free slot (scoped to this graph) on its prim and make it
         the active view, so it behaves like a view from 'Set View' (just unwired until connected)."""
         vp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(view_chunk)))
@@ -4592,10 +4592,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._recook_active_view()
         self.viewport().update()
 
-    def _restore_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
+    def _restore_active_view(self, changed_chunks: Iterable[core.ChunkBase] | None = None) -> None:
         """Adopt this context's saved view as the active view after a (re)build.
 
-        A freshly built graph starts at slot 0 ("no view"), which cooks everything — but a
+        A freshly built graph starts at slot 0 ("no view"), which cooks everything -- but a
         loaded file whose graph has view chunks should come up with its view driving
         execution, as it was when saved. Both groups and tabs persist their slot on the
         context prim (chunk:activeView, written by _recook_active_view); files saved
@@ -4640,17 +4640,17 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         else:
             self._recook_active_view(changed_chunks)
 
-    def _recook_active_view(self, changed_chunks: Optional[Iterable[core.ChunkBase]] = None) -> None:
+    def _recook_active_view(self, changed_chunks: Iterable[core.ChunkBase] | None = None) -> None:
         """(Re)apply view-driven execution for this context's active view.
 
         Called on every structural change (wire, disconnect, delete, create) and on view
         switch so which chunks cook stays live. With no active view (slot 0) it falls back
-        to legacy "run everything". Must NOT be called from inside a graph rebuild — the
+        to legacy "run everything". Must NOT be called from inside a graph rebuild -- the
         execute() it triggers would author, fire ObjectsChanged, and loop.
 
         changed_chunks: the specific chunk(s) a caller knows triggered this call (e.g. the
         node just created/deleted/(dis)connected). recook_for_view re-*executes* its whole
-        cook set every time it runs (not just chunks that actually changed — see its own
+        cook set every time it runs (not just chunks that actually changed -- see its own
         docstring), so calling it unconditionally on every structural edit anywhere in the
         graph would re-run unrelated upstream chunks and re-dim every blocked chunk for no
         reason. When changed_chunks is given and none of them are the
@@ -4662,7 +4662,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # This is always reachable through a deferred QTimer.singleShot (build()'s own
         # debounced post-build recook -- see _schedule_restore_active_view -- and
         # ChunkGraphScene._on_chunk_deleted's debounce both end up here later, not
-        # synchronously) — by the time it fires this view can have been torn down already
+        # synchronously) -- by the time it fires this view can have been torn down already
         # (e.g. a test's fixture finished, or the tab/context it belonged to was closed),
         # which crashes as "Internal C++ object already deleted" the moment anything below
         # touches self. A no-op recook on a dead view is correct: there's nothing left to
@@ -4671,7 +4671,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         # Only the CURRENTLY SELECTED tab should drive the (global) stage. Gate on the owning
         # tab stack's visibility, NOT self.isVisible(): the graph is page 1 of a QStackedWidget,
-        # so in Params mode this widget is hidden even though its tab is current — self.isVisible()
+        # so in Params mode this widget is hidden even though its tab is current -- self.isVisible()
         # would then wrongly skip the recook and the viewport wouldn't follow tab switches while
         # on the Params tab. The stack is visible whenever its tab is current, either page showing.
         stack = self.parentWidget()
@@ -4695,7 +4695,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Persist the active view slot on the context prim. For groups a parent cook picks
         # the same inner view from it (find_group_active_view); for tabs it round-trips the
         # last-active view through save/load (_restore_active_view reads it). Only a real
-        # slot is written — 0 just means "not restored yet" and must not clobber the saved
+        # slot is written -- 0 just means "not restored yet" and must not clobber the saved
         # value before the deferred restore has read it.
         if context is not None and slot:
             gp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(context)))
@@ -4703,7 +4703,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 prev_w = chunk_stage.chunk_notice._usd_write_active
                 chunk_stage.chunk_notice._usd_write_active = True
                 try:
-                    # Bookkeeping like any other chunk-prim attr — update in place if it
+                    # Bookkeeping like any other chunk-prim attr -- update in place if it
                     # already has a spec, else resolve fresh via the group's current Edit
                     # Target, rather than relying on the stage's ambient one (see
                     # set_chunk_pinned for the same "second mutation doesn't propagate"
@@ -4805,7 +4805,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # None = always recook (a relevant chunk was deleted); () = definitely irrelevant, skip.
         self._recook_active_view(None if force_full else ())
 
-    def _graph_context(self) -> "Optional[core.ChunkBase]":
+    def _graph_context(self) -> core.ChunkBase | None:
         graph_scene = self.scene()
         return graph_scene._built_context if isinstance(graph_scene, ChunkGraphScene) else None
 
@@ -4890,7 +4890,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Drag-and-drop file import
 
-    def _droppable_paths(self, event) -> "list[str]":
+    def _droppable_paths(self, event) -> list[str]:
         return droppable_paths(event)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
@@ -4941,7 +4941,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         elif chosen == "reference":
             self._import_as_reference(path, scene_pos)
 
-    def _prompt_import_kind(self, global_pos: QtCore.QPoint, offer_chunks: bool) -> "str | None":
+    def _prompt_import_kind(self, global_pos: QtCore.QPoint, offer_chunks: bool) -> str | None:
         menu = QtWidgets.QMenu()
         as_chunks = menu.addAction("Import as Chunks") if offer_chunks else None
         as_sublayer = menu.addAction("Import as Sublayer")
@@ -4983,7 +4983,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # chain's exec connections actually exist on the stage before tails are computed.
         QtCore.QTimer.singleShot(150, self, lambda chunks=pasted: self._ensure_view_for_imported(chunks))
 
-    def _ensure_view_for_imported(self, imported_chunks: "list[core.ChunkBase]") -> None:
+    def _ensure_view_for_imported(self, imported_chunks: list[core.ChunkBase]) -> None:
         """Point a fresh default view at the tail of JUST the imported chunks -- not left to
         build()'s generic _ensure_default_view, which picks tails[0] among EVERY disconnected
         exec tail in the whole context, in whatever order scene.get_chunks() happens to yield.
@@ -5023,7 +5023,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if not tails:
                 return
 
-            def _x(c: "core.ChunkBase") -> float:
+            def _x(c: core.ChunkBase) -> float:
                 node = graph_scene._nodes.get(chunk_stage.get_chunk_prim_path(c))
                 return node.pos().x() if node is not None else float("-inf")
 
@@ -5176,7 +5176,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     while w is not None:
                         if isinstance(w, LabeledWidget):
                             # Send a fresh QContextMenuEvent through Qt's event
-                            # system rather than calling the method directly —
+                            # system rather than calling the method directly --
                             # direct calls bypass popup state tracking and cause
                             # menu.exec_() to close immediately.
                             local_pos = w.mapFromGlobal(event.globalPos())
@@ -5243,7 +5243,7 @@ class QtGraphFrontend:
     says so rather than pretending.
     """
 
-    def __init__(self, view: "ChunkGraphView", docker=None):
+    def __init__(self, view: ChunkGraphView, docker=None):
         #: The ChunkGraphView. Its scene and scene_sender are reached through it, so the
         #: adapter holds one reference rather than three that could drift apart.
         self.view = view

@@ -64,7 +64,7 @@ def define_ancestors(layer: Sdf.Layer, defined_elsewhere=None) -> int:
     return len(todo)
 
 
-def broken_property_specs(layer: Sdf.Layer) -> "list[Sdf.Path]":
+def broken_property_specs(layer: Sdf.Layer) -> list[Sdf.Path]:
     """Property paths this layer lists but holds no usable spec for.
 
     A spec whose type never got set is invisible to GetObjectAtPath while Traverse still
@@ -74,12 +74,12 @@ def broken_property_specs(layer: Sdf.Layer) -> "list[Sdf.Path]":
 
     What creates one is not yet known -- see drop_broken_property_specs.
     """
-    found: "list[Sdf.Path]" = []
+    found: list[Sdf.Path] = []
     layer.Traverse(Sdf.Path("/"), lambda path: found.append(path))
     return [p for p in found if p.IsPropertyPath() and layer.GetObjectAtPath(p) is None]
 
 
-def drop_broken_property_specs(layers, logger=None) -> "list[str]":
+def drop_broken_property_specs(layers, logger=None) -> list[str]:
     """Remove every unusable property stub from layers, and say what was removed.
 
     Deliberately loud rather than quiet: this is a rescue, not a repair. What creates these

@@ -5,6 +5,7 @@ applied its preset with a cook: the chunk cooked before it was in any context, i
 the stage had not adopted, and the real cook on add was then skipped by light.py's own
 'nothing changed' guard -- the right menu value, and no prim at all.
 """
+from __future__ import annotations
 
 from pxr import Usd, UsdLux
 

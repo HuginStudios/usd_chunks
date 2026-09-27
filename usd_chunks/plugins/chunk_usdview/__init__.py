@@ -2,6 +2,7 @@
 
 This module provides a framework for dynamically loading and managing custom UI modules
 """
+from __future__ import annotations
 
 import logging
 
@@ -14,7 +15,6 @@ from usd_chunks import chunk_registry, chunk_core, shader_defs
 from usd_chunks.plugins import chunk_qt, chunk_window_state, chunk_qt_layer_stack
 from usd_chunks import chunk_stage
 
-from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class UsdviewScene(chunk_core.SceneSender):
     def get_stage(self) -> Usd.Stage:
         return self.usdviewAPI.stage  # type: ignore
 
-    def get_selected_prims(self) -> List[Usd.Prim]:
+    def get_selected_prims(self) -> list[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
 
     def select_prims(self, paths) -> bool:

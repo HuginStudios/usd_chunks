@@ -29,7 +29,7 @@ def _author_collection(stage, owner, name, includes, excludes=(), rule=Usd.Token
 
 
 def test_resolve_prim_paths_skips_pseudo_root():
-    """The pseudo-root '/' must never be a target — authoring an op on it raises. A param
+    """The pseudo-root '/' must never be a target -- authoring an op on it raises. A param
     value of '/' (e.g. an empty PRIM_SELECTION) previously resolved to ['/'] and crashed
     chunks like Transform (AddTransformOp on the pseudo-root)."""
     stage = _stage("/a")
@@ -116,7 +116,7 @@ def test_resolve_dedups_overlapping_matches():
 
 def test_resolve_dedup_preserves_order():
     stage = _stage("/World/a", "/World/b", "/World/c")
-    # /World/b listed explicitly first, then again via the glob — order of first
+    # /World/b listed explicitly first, then again via the glob -- order of first
     # appearance is kept, no duplicate.
     result = CU.resolve_prim_paths(stage, "/World/b, /World/*")
     assert result[0] == "/World/b"

@@ -99,7 +99,7 @@ def pick_matrix(ndc_x: float, ndc_y: float, dx: float, dy: float):
             * Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(1.0 / dx, 1.0 / dy, 1.0)))
 
 
-def hit_path(result) -> "str | None":
+def hit_path(result) -> str | None:
     """The prim path out of whatever TestIntersection returned, or None for a miss.
 
     Scanned rather than indexed: the out-params (hit point, normal, prim path, instancer
@@ -135,7 +135,7 @@ def ray_from_region(region, rv3d, mouse_x, mouse_y):
     return tuple(origin), tuple(direction)
 
 
-def pick_by_bounds(stage, origin, direction, time=None) -> "str | None":
+def pick_by_bounds(stage, origin, direction, time=None) -> str | None:
     """The nearest prim whose world bounding box the ray enters, or None.
 
     The fallback for when Hydra's own pick is unavailable -- which on some builds is
@@ -388,7 +388,7 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
             traceback.print_exc()
             return {"PASS_THROUGH"}
         bg.set_picked_prim_paths([path] if path else [])
-        self.report({"INFO"}, "picked %s" % path if path else "nothing under cursor")
+        self.report({"INFO"}, f"picked {path}" if path else "nothing under cursor")
         return {"PASS_THROUGH"}
 
 
@@ -441,7 +441,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
             try:
                 engine.SetRendererPlugin(self.plugin)
             except Exception:
-                self.report({"WARNING"}, "could not switch to %s" % self.plugin)
+                self.report({"WARNING"}, f"could not switch to {self.plugin}")
                 return {"CANCELLED"}
         _redraw()
         return {"FINISHED"}
@@ -499,7 +499,7 @@ class USDCHUNKS_PT_hydra_view(bpy.types.Panel):
 
         current = _state["renderer"]
         label = _renderer_display_name(current) if current else "default"
-        layout.menu(USDCHUNKS_MT_renderer.bl_idname, text="Renderer: %s" % label)
+        layout.menu(USDCHUNKS_MT_renderer.bl_idname, text=f"Renderer: {label}")
 
         stage = active_stage()
         layout.label(text="stage: %s" % ("open" if stage is not None else "no network"),

@@ -2,7 +2,7 @@
 
 Builds a shot layer via Create Layer, points Edit Target at it, then creates
 light/fx/layout sublayers (also via Create Layer) while that Edit Target is
-active — they should nest directly under the shot layer, not the session
+active -- they should nest directly under the shot layer, not the session
 layer. Export All Layers should then write session/shot/light/fx/layout each
 to their own file, with shot.usda's subLayerPaths rewritten to the sibling
 filenames instead of left as session-local anon: identifiers.
@@ -41,7 +41,7 @@ def _make(scene, mod, module_name):
     c._config = ChunkConfig(module=module_name)
     c._module = mod
     # Edit Target is now resolved from exec-chain topology (nearest upstream Edit Target
-    # chunk), not execution order — so chunks must actually be wired into the chain, the
+    # chunk), not execution order -- so chunks must actually be wired into the chain, the
     # way the Params tab auto-chains them (prev -> new via inputs:chunk). Flip the same
     # flag the Params-tab create path sets so add_chunk builds that linear chain here too.
     import usd_chunks.chunk_stage as _cu
@@ -85,7 +85,7 @@ class TestCreateLayerNestingAndExport:
 
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -141,7 +141,7 @@ class TestCreateLayerNestingAndExport:
         Target to the new one too, add a Prim chunk (nests under the second).
 
         Chunk-prim bookkeeping now follows Edit Target (chunk_utils.get_bookkeeping_layer)
-        instead of always the session layer — Prim's own bookkeeping prim should end up
+        instead of always the session layer -- Prim's own bookkeeping prim should end up
         directly inside layer2, not session. Export ChunkGroup must still gather every
         chunk's prim into one file regardless of how scattered they are (it rebuilds
         each fresh from the live Python objects, not by copying wherever specs currently
@@ -189,7 +189,7 @@ class TestCreateLayerNestingAndExport:
         assert graph.GetPrimAtPath(get_chunk_prim_path(edit_target1)) is not None
         assert graph.GetPrimAtPath(get_chunk_prim_path(edit_target2)) is not None
 
-        # Baked export of layer2 alone: real content only, no chunk-graph bookkeeping —
+        # Baked export of layer2 alone: real content only, no chunk-graph bookkeeping --
         # even though bookkeeping is now directly inside layer2 itself.
         export_usd_chunk = _make(scene, self.export_mod, "export_usd")
         # Bake is off by default now; the Bake all switch flips every row's checkbox.
@@ -213,7 +213,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -227,7 +227,7 @@ class TestCreateLayerNestingAndExport:
         self.export_mod.export_all(export_param, None, None)
 
         # Stage.GetRootLayer() is a separate real layer from the session layer (even
-        # for an in-memory stage) and export_all writes it too — under whatever
+        # for an in-memory stage) and export_all writes it too -- under whatever
         # display name it happens to have, not asserted here.
         written = {p.name for p in tmp_path.iterdir()}
         expected = {"SessionLayer.usda", "shot.usda", "light.usda", "fx.usda", "layout.usda"}
@@ -237,18 +237,18 @@ class TestCreateLayerNestingAndExport:
         shot_out = Sdf.Layer.FindOrOpen(str(tmp_path / "shot.usda"))
         assert shot_out is not None
         # subLayerPaths must be rewritten from session-local anon: identifiers to the
-        # sibling export filenames — not left dangling as in-session-only references.
+        # sibling export filenames -- not left dangling as in-session-only references.
         assert set(shot_out.subLayerPaths) == {"light.usda", "fx.usda", "layout.usda"}
 
     def test_keep_session_layer_unchecked_skips_it(self, tmp_path):
-        """Unchecking Keep Session Layer skips writing SessionLayer.usda — only the
+        """Unchecking Keep Session Layer skips writing SessionLayer.usda -- only the
         real, driven-content layers get exported."""
         scene, stage = _setup_stage()
 
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -271,7 +271,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -299,7 +299,7 @@ class TestCreateLayerNestingAndExport:
                 fx_bake = rows.get_indexed_param(bake_t, i)
                 rows.get_indexed_param(export_t, i).value = False
 
-        # Unchecking Export clears that same row's Bake checkbox — its .value, which is the
+        # Unchecking Export clears that same row's Bake checkbox -- its .value, which is the
         # only thing a ProxyParam keeps per row. Asserting a per-row DISABLED state instead
         # could never hold: state is a group flag the proxy forwards to the shared template,
         # so it is the whole column's, and the winner was whichever row's callback fired last.
@@ -320,7 +320,7 @@ class TestCreateLayerNestingAndExport:
 
     def test_procedural_leaves_recipe_only_no_baked_content(self, tmp_path):
         """Unchecking a layer's Bake checkbox (Procedural) in Layers to Export exports
-        the chunk-graph bookkeeping only — each chunk's real content stays in its own
+        the chunk-graph bookkeeping only -- each chunk's real content stays in its own
         private layer (not copied in), so reloading the recipe re-runs execute() to
         regenerate it, rather than the file already containing a baked-out copy."""
         light_mod = _load("scripts.modelling.light")
@@ -329,7 +329,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -370,7 +370,7 @@ class TestCreateLayerNestingAndExport:
         assert light_spec is not None, "Light chunk's bookkeeping prim should be in the recipe export"
         assert light_spec.GetInfo("typeName") == "Chunk"
 
-        # No baked content — Light's real DiskLight stays in its own private layer,
+        # No baked content -- Light's real DiskLight stays in its own private layer,
         # not copied into this recipe-only export.
         recipe_stage = Usd.Stage.Open(shot_out)
         assert not [p for p in recipe_stage.Traverse() if p.GetTypeName() == "DiskLight"]
@@ -378,10 +378,10 @@ class TestCreateLayerNestingAndExport:
     def test_baked_strips_every_chunk_regardless_of_how_many_nested_there(self, tmp_path):
         """Chunk-prim bookkeeping follows Edit Target now (get_bookkeeping_layer), so any
         chunk that authors/re-authors its own bookkeeping while shot is the active Edit
-        Target ends up with that bookkeeping directly inside shot — not just Light,
+        Target ends up with that bookkeeping directly inside shot -- not just Light,
         whose real content is meant to be there. Export USD's own params get set here
         (via _refresh_layer_rows, after Edit Target -> shot), landing its bookkeeping in
-        shot too. Bake chunk outputs checked (via the Bake all switch — rows default to
+        shot too. Bake chunk outputs checked (via the Bake all switch -- rows default to
         unchecked now) must strip *all* of it
         regardless of how many different chunks ended up nested there, leaving only
         Light's real DiskLight."""
@@ -391,7 +391,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -430,7 +430,7 @@ class TestCreateLayerNestingAndExport:
         assert [p for p in out_stage.Traverse() if p.GetTypeName() == "DiskLight"]
 
     def test_baked_chunk_unchanged_no_recipe_added(self, tmp_path):
-        """A chunk whose Bake checkbox is checked (via Bake all — rows default to
+        """A chunk whose Bake checkbox is checked (via Bake all -- rows default to
         unchecked now) gets no
         bookkeeping prim added to the exported layer, only its real content."""
         light_mod = _load("scripts.modelling.light")
@@ -439,7 +439,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -465,7 +465,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 
@@ -496,8 +496,8 @@ class TestCreateLayerNestingAndExport:
 
     def test_export_flatten_procedural_is_session_layer_only(self, tmp_path):
         """Flatten checked, Mode=Procedural: equivalent to exporting Session Layer
-        directly — only the chunk graph, no driven content authored directly in the
-        file. (Checked via the file's own Sdf specs, not a re-opened Usd.Stage — the
+        directly -- only the chunk graph, no driven content authored directly in the
+        file. (Checked via the file's own Sdf specs, not a re-opened Usd.Stage -- the
         exported file's subLayerPaths still literally references the shot layer's
         anon: identifier, which only resolves because it's still alive in this same
         test process; a real reload elsewhere would leave it dangling, per the
@@ -524,7 +524,7 @@ class TestCreateLayerNestingAndExport:
 
     def test_export_flatten_based_on_settings_adds_marked_recipes(self, tmp_path):
         """Flatten checked, Mode=Based on Settings: Baked content, plus the recipe of
-        every chunk whose target layer is marked Procedural in Layers to Export —
+        every chunk whose target layer is marked Procedural in Layers to Export --
         merged into the one output file rather than split by layer."""
         scene, stage, export_chunk, light = self._setup_light_in_shot(tmp_path)
 
@@ -554,7 +554,7 @@ class TestCreateLayerNestingAndExport:
         assert out.GetPrimAtPath(get_chunk_prim_path(light)) is not None
 
     def test_export_chunkgroup_is_self_contained(self, tmp_path):
-        """Export ChunkGroup rebuilds every chunk prim fresh into one brand-new layer —
+        """Export ChunkGroup rebuilds every chunk prim fresh into one brand-new layer --
         no subLayerPaths at all, unlike Export USD's Mode: Procedural (a raw copy of
         the live session layer, which can carry forward subLayerPaths to in-memory
         anon: layers that don't resolve once the session ends)."""
@@ -565,7 +565,7 @@ class TestCreateLayerNestingAndExport:
         self._create_layer(scene, "shot", "create_layer_shot")
         edit_target = _make(scene, self.edit_mod, "edit_target")
         # edit_target now stores/matches display names, not raw (session-ephemeral)
-        # Sdf identifiers — see edit_target.py's _refresh_edit_target/_resolve_layer.
+        # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
         edit_target.execute()
 

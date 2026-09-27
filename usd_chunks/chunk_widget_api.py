@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import weakref
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Generic, Optional, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from usd_chunks import chunk_notice
 
@@ -76,7 +76,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.WIDGET_CHANGED
 
-    def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: "ChunkParamBase"):
+    def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: ChunkParamBase):
         """
         callback for handling changes to the parameter. Currently implements changes to
         value, name, label and icon attributes
@@ -210,7 +210,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
         self.set_enabled(not is_output and not self.param.has_state(ChunkFlags.State.DISABLED))
 
-    def value_changed(self, value: Optional[Any] = None):
+    def value_changed(self, value: Any | None = None):
         """
         Called whenever the value of the widget changed, and forwards the new value to self.set_value.
         This will also update param.value
@@ -240,9 +240,9 @@ class ChunkWidgetFactoryBase(Protocol):
             object types and its corresponding widget.
     """
 
-    widget_map: Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]
+    widget_map: dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]
 
-    def get_map(self) -> Dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]:
+    def get_map(self) -> dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]:
         """
         Return the widget_map of the factory
 
@@ -274,7 +274,7 @@ class ChunkWidgetFactoryBase(Protocol):
         return key in self.get_map()
 
     @abstractmethod
-    def create_widget(self, param: "ChunkParamBase") -> ChunkParamWidgetBase | None:
+    def create_widget(self, param: ChunkParamBase) -> ChunkParamWidgetBase | None:
         """
         A subclass should implement this and create a new widget from the param
 
@@ -309,7 +309,7 @@ class FileDialogSpec:
         title (str): A dialog title, derived from the param's label.
     """
 
-    patterns: "tuple[str, ...]"
+    patterns: tuple[str, ...]
     directory: bool
     must_exist: bool
     title: str

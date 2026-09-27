@@ -1,3 +1,4 @@
+from __future__ import annotations
 import math
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
@@ -172,9 +173,9 @@ _OPS: dict = {
 }
 
 
-def _clear_connection(param: "chunk.ChunkParamBase") -> None:
+def _clear_connection(param: chunk.ChunkParamBase) -> None:
     """Reset param to its default and drop any USD-level connection. A param hidden by
-    the current operation is no longer meaningful — keeping a stale connection around
+    the current operation is no longer meaningful -- keeping a stale connection around
     would silently reappear (with possibly wrong semantics) if the op is switched back."""
     if param is None:
         return
@@ -200,10 +201,10 @@ def _clear_matching_params(obj, target: str) -> None:
             _clear_matching_params(param, target)
 
 
-def _clear_downstream_references(owner: "chunk.Chunk", attr_name: str) -> None:
+def _clear_downstream_references(owner: chunk.Chunk, attr_name: str) -> None:
     """Find every OTHER chunk in the scene with a param currently wired to
     @owner.name.attr_name@ and clear it. Needed because switching this chunk's own
-    operation can make one of its two outputs (result vs result_value) inactive —
+    operation can make one of its two outputs (result vs result_value) inactive --
     execute() stops writing to it, so a downstream connection to it silently goes
     stale instead of erroring, and would reappear untouched if the op is switched
     back even though nothing recomputed it in the meantime."""
@@ -217,7 +218,7 @@ def _clear_downstream_references(owner: "chunk.Chunk", attr_name: str) -> None:
         _clear_matching_params(other, target)
 
 
-def _update_inputs(owner: "chunk.Chunk", operation: str) -> None:
+def _update_inputs(owner: chunk.Chunk, operation: str) -> None:
     entry = _OPS.get(operation)
     inputs = entry[0] if entry else ()
     labels = dict(inputs)
@@ -252,7 +253,7 @@ def _update_inputs(owner: "chunk.Chunk", operation: str) -> None:
             result_value.set_state(chunk.ChunkFlags.State.HIDDEN)
 
 
-def _operation_changed(owner: "chunk.Chunk", notice, sender: "chunk.ChunkParamBase"):
+def _operation_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     _update_inputs(owner, sender.value)
 
 

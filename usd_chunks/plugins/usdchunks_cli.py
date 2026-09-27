@@ -1,10 +1,11 @@
 """
-usdchunks CLI — headless execution of chunk networks serialized as .usda files.
+usdchunks CLI -- headless execution of chunk networks serialized as .usda files.
 
 Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]
     usdchunks info my_setup.usda
 """
+from __future__ import annotations
 
 import filecmp
 import os
@@ -425,7 +426,7 @@ def cmd_run(args):
         recook_focus(stage, scene, None, view)
 
     # The solve has settled, so anything the network declared as an output on disk (an
-    # Export USD chunk, ...) gets written now — before --export/--printout report on the
+    # Export USD chunk, ...) gets written now -- before --export/--printout report on the
     # composed stage.
     # Ordered from the stage's own connections, not DagNode depth: a param port wired in
     # the node graph authors an expression rather than an add_dependency edge, so depth
@@ -466,7 +467,7 @@ def _find_wedge(stage):
 
 
 def _variant_dir(out, index):
-    return os.path.join(out, "variant_%05d" % index)
+    return os.path.join(out, f"variant_{index:05d}")
 
 
 def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
@@ -481,7 +482,7 @@ def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
     os.makedirs(directory, exist_ok=True)
     cmd = [
         sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", usda,
-        "%s.current_index=%d" % (wedge_name, index),
+        f"{wedge_name}.current_index={index}",
         "--export", os.path.join(directory, "variant.usda"),
     ]
     if procedural:
@@ -495,12 +496,12 @@ def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
 def cmd_sweep(args):
     stage = Usd.Stage.Open(args.usda)
     if not stage:
-        print("Failed to open: %s" % args.usda)
+        print(f"Failed to open: {args.usda}")
         sys.exit(1)
 
     wedge = _find_wedge(stage)
     if wedge is None:
-        print("%sNo wedge chunk in %s%s" % (RED, args.usda, RESET), file=sys.stderr)
+        print(f"{RED}No wedge chunk in {args.usda}{RESET}", file=sys.stderr)
         print("A sweep needs a Wedge chunk -- it is what says which params vary and how.")
         sys.exit(1)
 
@@ -512,7 +513,7 @@ def cmd_sweep(args):
         indices = [int(i) for i in args.only.split(",") if i.strip() != ""]
     else:
         if count <= 0:
-            print("%sNothing to sweep: no --count and no count on %s%s" % (RED, name, RESET), file=sys.stderr)
+            print(f"{RED}Nothing to sweep: no --count and no count on {name}{RESET}", file=sys.stderr)
             sys.exit(1)
         indices = list(range(count))
 
@@ -520,7 +521,7 @@ def cmd_sweep(args):
         return _verify(args, name, indices)
 
     os.makedirs(args.out, exist_ok=True)
-    print("Sweeping %d variant(s) of %s -> %s" % (len(indices), name, args.out))
+    print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}")
 
     def one(i):
         return _run_variant(args.usda, name, i, args.out, args.procedural, args.all)
@@ -529,16 +530,16 @@ def cmd_sweep(args):
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
         for index, code, output in pool.map(one, indices):
             if code == 0:
-                print("  variant_%05d" % index)
+                print(f"  variant_{index:05d}")
             else:
                 failed.append(index)
-                print("%s  variant_%05d FAILED%s" % (RED, index, RESET))
+                print(f"{RED}  variant_{index:05d} FAILED{RESET}")
                 print("\n".join(output.strip().splitlines()[-8:]))
 
     if failed:
-        print("\n%s%d of %d failed%s: %s" % (RED, len(failed), len(indices), RESET, failed[:10]))
+        print(f"\n{RED}{len(failed)} of {len(indices)} failed{RESET}: {failed[:10]}")
         sys.exit(1)
-    print("\n%s%d variant(s)%s -> %s" % (GREEN, len(indices), RESET, args.out))
+    print(f"\n{GREEN}{len(indices)} variant(s){RESET} -> {args.out}")
 
 
 def _verify(args, name, indices):
@@ -557,10 +558,10 @@ def _verify(args, name, indices):
         if not os.path.exists(os.path.join(_variant_dir(args.out, i), "variant.usda"))
     ]
     if missing:
-        print("%sNot swept yet%s: %s" % (RED, RESET, missing[:10]))
+        print(f"{RED}Not swept yet{RESET}: {missing[:10]}")
         sys.exit(1)
 
-    print("Verifying %d variant(s) of %s against %s" % (len(indices), name, args.out))
+    print(f"Verifying {len(indices)} variant(s) of {name} against {args.out}")
     with tempfile.TemporaryDirectory(prefix="usdchunks-verify-") as scratch:
         def one(i):
             return _run_variant(args.usda, name, i, scratch, args.procedural, args.all)
@@ -570,7 +571,7 @@ def _verify(args, name, indices):
             for index, code, output in pool.map(one, indices):
                 if code != 0:
                     errored.append(index)
-                    print("%s  variant_%05d ERRORED%s" % (RED, index, RESET))
+                    print(f"{RED}  variant_{index:05d} ERRORED{RESET}")
                     print("\n".join(output.strip().splitlines()[-8:]))
                     continue
                 a = os.path.join(_variant_dir(args.out, index), "variant.usda")
@@ -582,15 +583,15 @@ def _verify(args, name, indices):
                     identical.append(index)
                 else:
                     differing.append(index)
-                    print("%s  variant_%05d DIFFERS%s" % (RED, index, RESET))
+                    print(f"{RED}  variant_{index:05d} DIFFERS{RESET}")
 
-    print("\nidentical : %d/%d" % (len(identical), len(indices)))
+    print(f"\nidentical : {len(identical)}/{len(indices)}")
     if errored:
-        print("errored   : %d %s" % (len(errored), errored[:10]))
+        print(f"errored   : {len(errored)} {errored[:10]}")
     if differing or errored:
-        print("\n%sRESULT: not reproducible%s" % (RED, RESET))
+        print(f"\n{RED}RESULT: not reproducible{RESET}")
         sys.exit(1)
-    print("\n%sRESULT: every variant regenerated byte-identical in a fresh process.%s" % (GREEN, RESET))
+    print(f"\n{GREEN}RESULT: every variant regenerated byte-identical in a fresh process.{RESET}")
 
 
 def cmd_deps(args):

@@ -1,33 +1,33 @@
-"""Pure auto-layout math for the embedded node graph — no Qt/USD dependency, so it's directly
+"""Pure auto-layout math for the embedded node graph -- no Qt/USD dependency, so it's directly
 unit-testable without a real scene/stage. See ``plugins/chunk_qt_nodegraph.py`` for the Qt/USD
 glue: node sizing via ``ChunkNodeItem.boundingRect()``, position persistence via
 ``ChunkNodeItem._write_pos_to_usd()``, and connection data built by walking prim attributes
 (exec + typed, mirroring ``ChunkGraphScene._build_edges``).
 
 Ported from the removed ``scripts/node_graph/_graph_layout.py`` (recoverable at git branch
-``feat/node-graph``) — that file's backdrop/group-stacking half doesn't apply here (this
+``feat/node-graph``) -- that file's backdrop/group-stacking half doesn't apply here (this
 codebase's chunkgroups are subnets, not spatial containers), so this operates directly on
 individual nodes with no grouping concept at all: topological depth assigns X-columns, and
 within a column each node's target Y is the average Y of its already-placed upstream/downstream
-neighbors, pushed down only on collision — the same "target-then-push" strategy, applied to
+neighbors, pushed down only on collision -- the same "target-then-push" strategy, applied to
 nodes instead of node-groups.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Set, Tuple
+from collections.abc import Callable
 
 X_GAP = 65  # horizontal gap between depth columns
 Y_GAP = 55  # vertical gap between nodes in the same column (or around a locked obstacle)
 CHAIN_GAP = 60  # vertical gap between disconnected components
 
-SizeOf = Callable[[str], Tuple[float, float]]
-PosOf = Callable[[str], Tuple[float, float]]
+SizeOf = Callable[[str], tuple[float, float]]
+PosOf = Callable[[str], tuple[float, float]]
 IsLocked = Callable[[str], bool]
-AdjacencyMap = Dict[str, Set[str]]
+AdjacencyMap = dict[str, set[str]]
 
 
-def find_connected_components(node_ids: List[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> List[List[str]]:
+def find_connected_components(node_ids: list[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> list[list[str]]:
     """Union-find over node_ids using only edges where both ends are in node_ids."""
     ids = list(node_ids)
     id_set = set(ids)
@@ -52,16 +52,16 @@ def find_connected_components(node_ids: List[str], up_of: AdjacencyMap, down_of:
             if d in id_set:
                 union(nid, d)
 
-    buckets: Dict[str, List[str]] = {}
+    buckets: dict[str, list[str]] = {}
     for nid in ids:
         buckets.setdefault(find(nid), []).append(nid)
     return list(buckets.values())
 
 
-def topo_depth(ids: List[str], up_of: AdjacencyMap) -> Dict[str, int]:
+def topo_depth(ids: list[str], up_of: AdjacencyMap) -> dict[str, int]:
     """Longest-path-from-a-source depth, restricted to upstream neighbors within ids."""
     id_set = set(ids)
-    depth: Dict[str, int] = {}
+    depth: dict[str, int] = {}
 
     def _d(nid: str) -> int:
         if nid in depth:
@@ -86,24 +86,24 @@ def _rects_overlap(
 
 
 def layout_positions(
-    node_ids: List[str],
+    node_ids: list[str],
     size_of: SizeOf,
     is_locked: IsLocked,
     current_pos: PosOf,
     up_of: AdjacencyMap,
     down_of: AdjacencyMap,
-) -> Dict[str, Tuple[float, float]]:
+) -> dict[str, tuple[float, float]]:
     """Return {node_id: (x, y)} for every node in node_ids that ISN'T locked.
 
-    Locked nodes are never included in the result — callers must leave them exactly where
-    they are — but they still participate as fixed reference points for target-Y averaging
+    Locked nodes are never included in the result -- callers must leave them exactly where
+    they are -- but they still participate as fixed reference points for target-Y averaging
     (so a movable neighbor visually gravitates toward a locked node it's wired to) and as
     obstacles: a movable node is nudged down if its computed rect would overlap any locked
     node's real (unchanged) rect, checked as an actual 2D bounding-box test rather than a
     same-column-only approximation, since a locked node's real X may not line up with
     whichever column is currently being placed.
 
-    up_of / down_of must only contain edges where BOTH ends are in node_ids — callers building
+    up_of / down_of must only contain edges where BOTH ends are in node_ids -- callers building
     them from a "grow selection to its full connected subgraph" BFS closure already guarantee
     this, so this function doesn't need to filter external references itself.
     """
@@ -118,8 +118,8 @@ def layout_positions(
     start_x = min(current_pos(nid)[0] for nid in node_ids)
     start_y = min(current_pos(nid)[1] for nid in node_ids)
 
-    placed_cy: Dict[str, float] = {}
-    locked_rects: List[Tuple[float, float, float, float]] = []  # (x, y, w, h)
+    placed_cy: dict[str, float] = {}
+    locked_rects: list[tuple[float, float, float, float]] = []  # (x, y, w, h)
     for nid in locked:
         x, y = current_pos(nid)
         w, h = size_of(nid)
@@ -129,25 +129,25 @@ def layout_positions(
     components = find_connected_components(movable, up_of, down_of)
     components.sort(key=len, reverse=True)  # largest first, anchors the top of the canvas
 
-    result: Dict[str, Tuple[float, float]] = {}
+    result: dict[str, tuple[float, float]] = {}
     cursor_y = start_y
 
     for comp_ids in components:
         depth = topo_depth(comp_ids, up_of)
-        columns: Dict[int, List[str]] = {}
+        columns: dict[int, list[str]] = {}
         for nid in comp_ids:
             columns.setdefault(depth[nid], []).append(nid)
         sorted_cols = sorted(columns.keys())
 
         cur_x = start_x
-        col_x: Dict[int, float] = {}
+        col_x: dict[int, float] = {}
         for ci in sorted_cols:
             col_x[ci] = cur_x
             max_w = max(size_of(nid)[0] for nid in columns[ci])
             cur_x += max_w + X_GAP
 
-        def _place_column(col_ids: List[str], cx: float, chain_top: float) -> None:
-            targets: List[Tuple[float, str]] = []
+        def _place_column(col_ids: list[str], cx: float, chain_top: float) -> None:
+            targets: list[tuple[float, str]] = []
             for nid in col_ids:
                 ups = [placed_cy[u] for u in up_of.get(nid, ()) if u in placed_cy]
                 dws = [placed_cy[d] for d in down_of.get(nid, ()) if d in placed_cy]
@@ -161,7 +161,7 @@ def layout_positions(
                 targets.append((ty, nid))
             targets.sort(key=lambda t: t[0])
 
-            occupied: List[Tuple[float, float]] = []
+            occupied: list[tuple[float, float]] = []
             for ty, nid in targets:
                 w, h = size_of(nid)
                 y = ty - h / 2
@@ -184,7 +184,7 @@ def layout_positions(
             _place_column(columns[ci], col_x[ci], cursor_y)
 
         # Re-place source nodes (no upstream at all, in the first column) toward their now-
-        # known downstream targets — the concrete mechanism behind "source nodes pulled close
+        # known downstream targets -- the concrete mechanism behind "source nodes pulled close
         # to their targets".
         source_col = sorted_cols[0]
         src_ids = [nid for nid in columns[source_col] if not up_of.get(nid)]
@@ -201,11 +201,11 @@ def layout_positions(
     return result
 
 
-def grow_to_connected_subgraph(seed_ids: List[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> Set[str]:
+def grow_to_connected_subgraph(seed_ids: list[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> set[str]:
     """BFS from seed_ids through every connection (up and down) in the FULL up_of/down_of maps
-    (which may reference ids outside seed_ids — that's the point) and return every node
+    (which may reference ids outside seed_ids -- that's the point) and return every node
     reached, including the seeds themselves."""
-    visited: Set[str] = set(seed_ids)
+    visited: set[str] = set(seed_ids)
     frontier = list(seed_ids)
     while frontier:
         nid = frontier.pop()

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import Ar, Usd, UsdGeom, Sdf, UsdShade
 from usd_chunks import chunk, chunk_utils
 import itertools
@@ -6,7 +7,6 @@ import numpy as np
 import os
 from enum import IntEnum
 
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,7 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
             g.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
 
 
-def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
+def add_texture(prim: Usd.Prim, texture_file: str | None = None):
     x_scale = 1
     y_scale = 1
 

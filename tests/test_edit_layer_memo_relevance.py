@@ -7,6 +7,7 @@ Edit Target marker, and each cost every chunk a fresh walk of the chain above it
 case here is one route a change arrives by, checked against a live stage rather than
 assumed, the same way test_load_chunks_scope pins USD's notice behaviour.
 """
+from __future__ import annotations
 
 from pxr import Sdf, Tf, Usd
 

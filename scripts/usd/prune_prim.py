@@ -1,4 +1,4 @@
-"""Prune Prim chunk — marks prims for removal from the composed result.
+"""Prune Prim chunk -- marks prims for removal from the composed result.
 
 Since we can't remove specs from other layers non-destructively, this chunk
 deactivates the prim AND authors a custom metadata flag that signals downstream
@@ -49,7 +49,7 @@ def execute(node):
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel — prune selected prims."""
+    """Callback for the chunk panel -- prune selected prims."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:

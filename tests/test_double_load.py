@@ -73,7 +73,7 @@ def test_loading_the_same_file_twice_restores_it_twice(tmp_path) -> None:
 def test_loading_does_not_empty_the_file_s_root_layer(tmp_path) -> None:
     """The direct cause, asserted on its own: opening a file must not rewrite it.
 
-    Checked on the root LAYER rather than the composed stage — the stage stayed correct
+    Checked on the root LAYER rather than the composed stage -- the stage stayed correct
     even while the layer was being gutted, which is why this went unnoticed.
     """
     path = str(tmp_path / "net.usda")

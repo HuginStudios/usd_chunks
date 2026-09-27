@@ -1,4 +1,4 @@
-"""Set Metadata chunk — authors metadata on a prim using structured UI widgets.
+"""Set Metadata chunk -- authors metadata on a prim using structured UI widgets.
 
 Supports standard metadata (kind, hidden, active, documentation, purpose)
 and custom metadata (customData). If the metadata key doesn't exist as
@@ -182,7 +182,7 @@ def _on_prim_change(owner, notice, sender):
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel — author the metadata value."""
+    """Callback for the chunk panel -- author the metadata value."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:

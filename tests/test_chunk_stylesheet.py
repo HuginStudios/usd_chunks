@@ -4,6 +4,7 @@ setStyleSheet re-polishes the whole subtree beneath the widget, so where and *wh
 sheet is applied is a performance decision, not a cosmetic one: applied late, to a finished
 chunk tree, one call was the most expensive thing in building a node.
 """
+from __future__ import annotations
 
 from PySide6 import QtWidgets
 

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_notice, chunk_utils
@@ -5,21 +6,21 @@ from usd_chunks import chunk_stage
 
 # Selecting this instead of a specific layer identifier follows whatever layer the
 # upstream Create Layer chunk (found via the exec-chain dependency already wiring the
-# two nodes together) currently owns — so a rename downstream of it (which swaps in a
+# two nodes together) currently owns -- so a rename downstream of it (which swaps in a
 # new Sdf identifier) doesn't require coming back to manually re-pick the dropdown.
 _FOLLOW_UPSTREAM = "(Follow Upstream Create Layer)"
 
 
 def _find_upstream_create_layer(chunk_obj):
     """Return the nearest upstream chunk that owns a _new_layer_id param (i.e. a
-    Create Layer chunk), found via the exec-chain dependency graph — the same
-    connection that already sequences the two nodes — or None if there isn't one.
+    Create Layer chunk), found via the exec-chain dependency graph -- the same
+    connection that already sequences the two nodes -- or None if there isn't one.
 
     Exec edges only, which is why this asks chunk_stage.exec_dependencies rather than
     chunk_obj.get_dependencies(): the Python DAG also mirrors param wires, and a param
     wire means a value flows, not that one chunk precedes another. Following one here
     would let a Create Layer wired for some unrelated param silently decide where every
-    downstream chunk authors — and get_dependencies() returns both kinds in no
+    downstream chunk authors -- and get_dependencies() returns both kinds in no
     particular order, so with both present it would be a coin toss which won.
 
     A Create Layer whose Layer Name port *is* wired into this chunk needs no walk at
@@ -33,10 +34,10 @@ def _find_upstream_create_layer(chunk_obj):
 
 def _resolve_layer(stage, selection):
     """Resolve `selection` to a layer that's actually part of stage's current layer
-    stack — normally a plain display name (the dropdown-picked/stored case, and also
+    stack -- normally a plain display name (the dropdown-picked/stored case, and also
     what a node-graph connection to a Create Layer chunk's Layer Name port feeds in
     live), matched via GetDisplayName() so it keeps resolving correctly across a
-    rename *and* across a save/reload (unlike a raw Sdf identifier — see below).
+    rename *and* across a save/reload (unlike a raw Sdf identifier -- see below).
     Falls back to an exact identifier match for the rare item with no display name
     (e.g. an anonymous root layer, listed by identifier in _refresh_edit_target).
 
@@ -44,13 +45,13 @@ def _resolve_layer(stage, selection):
     USD's whole process-global layer registry, not just this stage, so it can return
     a layer that's technically still alive somewhere (e.g. referenced by a different,
     unrelated stage, or orphaned after being removed from this one) but not actually
-    in stage's local layer stack — stage.SetEditTarget() on such a layer raises
+    in stage's local layer stack -- stage.SetEditTarget() on such a layer raises
     ("Layer ... is not in the local LayerStack"). Only ever matching against
     stage.GetLayerStack() guarantees whatever this returns is safe to set as an edit
     target right now.
 
-    `selection` may also be a *stale* anon: identifier — from a session saved before
-    this function stored display names instead, or a stray manual edit — left with no
+    `selection` may also be a *stale* anon: identifier -- from a session saved before
+    this function stored display names instead, or a stray manual edit -- left with no
     live layer of that exact identifier, since anon layers never survive a save/reload
     (a fresh random hex address every time). Extract its tag ("anon:<hex>:<tag>" ->
     "<tag>") and match on that too, so an old save still resolves once the layer with
@@ -67,7 +68,7 @@ def _resolve_layer(stage, selection):
 def _refresh_edit_target(owner, notice, sender):
     """Rebuild the edit-target menu from the current stage's layer stack.
 
-    Registered with listen_globally=True — safe with any number of Edit Target
+    Registered with listen_globally=True -- safe with any number of Edit Target
     instances since NoticeConnection now shares one real Tf.Notice.RegisterGlobally()
     per alias across all of them (see chunk_notice._register_global).
     """
@@ -92,7 +93,7 @@ def _refresh_edit_target(owner, notice, sender):
     #
     # Listed (and stored, once picked) by display name, not raw Sdf identifier: an
     # anon: identifier's hex address is regenerated every time that layer is recreated
-    # (a fresh session, or a downstream Create Layer chunk re-running on reload) — an
+    # (a fresh session, or a downstream Create Layer chunk re-running on reload) -- an
     # exact identifier saved to disk can never resolve again, whereas the display name
     # (the tag a Create Layer chunk gave it) is stable across all of that, and
     # _resolve_layer already matches on it. Falls back to the identifier only for a
@@ -108,24 +109,24 @@ def _refresh_edit_target(owner, notice, sender):
     target_menu = _chunk.get_param("edit_target")
     if target_menu is None:
         # Deleting this chunk tears its params down, but the layer-stack edits that teardown
-        # makes are themselves stage content changes — so this global handler still fires for
+        # makes are themselves stage content changes -- so this global handler still fires for
         # the half-dismantled chunk. Nothing left to refresh.
         return
-    # Only assign when the items actually changed — this handler fires on essentially
+    # Only assign when the items actually changed -- this handler fires on essentially
     # every authoring op, and reassigning identical menu_items itself authors attr
     # changes that re-fire this same notice (feedback churn).
     if list(getattr(target_menu, "menu_items", [])) != target_items:
         target_menu.menu_items = target_items
     # A connected value (e.g. a Create Layer chunk's Layer Name wired straight in)
-    # is a plain name, not one of these menu items/sentinels — don't stomp it.
+    # is a plain name, not one of these menu items/sentinels -- don't stomp it.
     prop = target_menu.get_usd_prop()
     is_connected = bool(prop and prop.GetConnections())
     if not is_connected and target_menu.value not in target_items:
-        # Not literally one of the current menu items — but it may still be a stale
+        # Not literally one of the current menu items -- but it may still be a stale
         # anon: identifier that _resolve_layer can match by tag (e.g. a downstream
         # Create Layer chunk that hasn't (re-)created its layer yet at this exact
         # moment during load, but will later in the same load). Only actually give up
-        # and reset to the default once it's genuinely unresolvable — resetting
+        # and reset to the default once it's genuinely unresolvable -- resetting
         # unconditionally here would permanently overwrite the stored selection with
         # "Session Layer" before that chunk ever gets a chance to run.
         #
@@ -135,7 +136,7 @@ def _refresh_edit_target(owner, notice, sender):
         # ahead in the same load) rather than proof the selection is genuinely gone.
         # Resetting on that transient reading would silently revert chained Edit
         # Target chunks to "Session Layer" on reload, depending on whether each was
-        # checked before or after its own upstream layer existed — so skip the reset
+        # checked before or after its own upstream layer existed -- so skip the reset
         # entirely while loading and let a later refresh pass, triggered by that same
         # layer's own creation, resolve it correctly instead.
         if chunk_notice._loading_stage:
@@ -148,7 +149,7 @@ def execute(node):
     # menu_items/value assignments above (and target_layer's own attr writes below)
     # can reactively re-trigger this same chunk's execute() before this call returns
     # (e.g. via another chunk's refresh cascading back here). We must NOT suppress
-    # that reactivity at the notice level — chunk_utils.suppress_reexecution's
+    # that reactivity at the notice level -- chunk_utils.suppress_reexecution's
     # set_blocked() would also block the notice the node-graph widget needs to know
     # it should repaint, silently breaking the UI. Guard the
     # reentrant *call* directly instead, so widgets still refresh normally.
@@ -176,8 +177,8 @@ def execute(node):
             # There's no stage.SetEditTarget here: the effective target is resolved per
             # chunk from graph topology (nearest upstream Edit Target), not from the
             # stage's ambient edit target, which the exec dispatch loop rewrites on every
-            # run anyway. Every chunk downstream of this one — its own bookkeeping
-            # (inputs:/outputs:/exec connections, node position) and its driven content —
+            # run anyway. Every chunk downstream of this one -- its own bookkeeping
+            # (inputs:/outputs:/exec connections, node position) and its driven content --
             # lands in target_layer, until another Edit Target chunk downstream changes it.
             chunk_stage.publish_edit_target(node, stage, target_layer)
     finally:

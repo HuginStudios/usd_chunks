@@ -1,20 +1,20 @@
-"""Scatter Points chunk — distributes prototype instances across a mesh.
+"""Scatter Points chunk -- distributes prototype instances across a mesh.
 
 Three placement modes:
 
-* **Surface** — area-weighted sampling on the faces, Poisson-disk spacing to avoid overlap.
-* **Volume** — uniform fill of a closed interior.
-* **Stack** — a regular hex/grid lattice packed against the target, every instance resting
+* **Surface** -- area-weighted sampling on the faces, Poisson-disk spacing to avoid overlap.
+* **Volume** -- uniform fill of a closed interior.
+* **Stack** -- a regular hex/grid lattice packed against the target, every instance resting
   exactly on the surface it lands on and optionally tiered into levels. This is the mode for
   "a cup of crayons standing up, tight but not intersecting": the pitch comes from the
   prototype's own oriented bounding box, so tight *is* collision-free by construction.
 
 Prototypes are a list, each row carrying its own share of the mix (a percentage, normalised
 across the rows), a scale multiplier, and optionally a variant selection written straight
-into the path — ``/asset/crayon{color=red}``. ``{color=*}`` expands to one prototype per
+into the path -- ``/asset/crayon{color=red}``. ``{color=*}`` expands to one prototype per
 variant in that set, which is the cheap way to scatter a whole colour range from one row.
 
-Physical settling (apples coming to rest in a bowl) is still the RBD Solver's job — scatter
+Physical settling (apples coming to rest in a bowl) is still the RBD Solver's job -- scatter
 loosely, then settle. Stack mode is the deterministic alternative for when you want a tidy,
 packed result with no simulation at all.
 
@@ -54,7 +54,7 @@ _SCATTER_MODES = ["Surface", "Volume", "Stack"]
 _PACK_PATTERNS = ["Hex", "Grid"]
 _STACK_ORIENTS = ["Stand Up", "Lay Along Rows", "Keep Original"]
 
-# /asset/crayon{color=red} — the variant value may be "*" (every variant in the set), which
+# /asset/crayon{color=red} -- the variant value may be "*" (every variant in the set), which
 # chunk_utils.split_variant_path's \w+ deliberately doesn't accept, hence the local regex.
 _VARIANT_RE = re.compile(r"\{(\w+)=([\w*]+)\}")
 
@@ -721,7 +721,7 @@ class _NearestWeight:
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     """Area-weighted point sampling with min-distance rejection.
 
-    *mask*: optional per-point hook ``mask(point, normal) -> 0..1`` — the paint
+    *mask*: optional per-point hook ``mask(point, normal) -> 0..1`` -- the paint
     gizmo will pass a weight function here; a candidate is kept with that
     probability. None means accept everything that passes spacing.
 
@@ -840,7 +840,7 @@ def _volume_cells(triangle_count):
 
 
 # ---------------------------------------------------------------------------
-# rotation helpers — internal math in Quatf, converted to Quath only on write
+# rotation helpers -- internal math in Quatf, converted to Quath only on write
 # ---------------------------------------------------------------------------
 
 
@@ -934,7 +934,7 @@ def _compute_orientation(mode, normal, rng, proto=None, world_up=None):
         return _align_quat(proto.long_axis_dir(), world_up or Gf.Vec3f(0, 0, 1))
     if mode == "Long Axis to Normal" and proto is not None:
         return _align_quat(proto.long_axis_dir(), normal)
-    # "Keep Original" / "Up" — prototype's own orientation.
+    # "Keep Original" / "Up" -- prototype's own orientation.
     return Gf.Quatf(1, 0, 0, 0)
 
 
@@ -963,8 +963,8 @@ def _apply_random_rotation(base_quat, axis, amount_deg, rng):
 class _Proto:
     """One resolved prototype: where it came from, how much of the mix it takes, how big it is.
 
-    ``bmin``/``bmax`` are the *untransformed* local bounds — the prototype reference has its
-    xformOpOrder cleared, so that is what the instancer actually instances — and ``scale`` is
+    ``bmin``/``bmax`` are the *untransformed* local bounds -- the prototype reference has its
+    xformOpOrder cleared, so that is what the instancer actually instances -- and ``scale`` is
     the source prim's world scale, which the instancer re-applies per instance. Effective
     world size is therefore ``(bmax - bmin) * scale * instance_scale``.
     """
@@ -1098,7 +1098,7 @@ def _expand_variants(stage, prim_path, selections):
             if vset:
                 names = list(vset.GetVariantNames())
         if not names:
-            # Unknown set (or a prim that isn't there yet) — drop the wildcard rather than
+            # Unknown set (or a prim that isn't there yet) -- drop the wildcard rather than
             # authoring a bogus selection.
             continue
         combos = [c + ((vset_name, n),) for c in combos for n in names]
@@ -1116,7 +1116,7 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage):
     """Author one prototype prim per _Proto under <inst_path>/Prototypes.
 
     Each is an internal reference to the source prim with its xformOpOrder cleared (the
-    instancer supplies the transform) plus any variant selection for that entry — the same
+    instancer supplies the transform) plus any variant selection for that entry -- the same
     asset can therefore appear several times, each row selecting a different variant.
 
     Returns the prototypes that actually resolved; an empty result means the caller should
@@ -1213,7 +1213,7 @@ def _quota(weights, total):
 def _stack_sites(triangles, up_idx, world_up, cfg, rng):
     """Lattice sites packed over the target, level by level.
 
-    Returns [(point, normal, level)] in fill order — a whole level before the next one
+    Returns [(point, normal, level)] in fill order -- a whole level before the next one
     starts, so a Max Count that doesn't cover the lattice gives a complete single layer
     rather than a lopsided tower.
     """
@@ -1407,7 +1407,7 @@ def execute(node):
 
     surface_paths = node.get_param("surface_prim").resolve_paths()
 
-    # `.value` is already typed and defaults when unset — no cast/`or` needed. inst_path
+    # `.value` is already typed and defaults when unset -- no cast/`or` needed. inst_path
     # keeps its fallback because an empty path (user cleared the field) is invalid here.
     inst_path = node.get_param("inst_path", is_s).value or "/ScatterInstancer"
     scatter_mode = node.get_param("scatter_mode", is_s).value
@@ -1564,14 +1564,14 @@ def execute(node):
             normals = [world_up] * len(positions)
             levels = [0] * len(positions)
         else:
-            # Surface — slope pre-filters the triangle set (correct area weighting,
+            # Surface -- slope pre-filters the triangle set (correct area weighting,
             # no wasted samples). The paint mask, being per-point, will instead be
             # passed as the `mask=` hook above.
             surf_tris = triangles.select(triangles.slope_mask(world_up, max_slope))
             if len(surf_tris):
                 positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
             else:
-                # No mesh / no qualifying faces — fall back to a jittered grid.
+                # No mesh / no qualifying faces -- fall back to a jittered grid.
                 sp = max(spacing, 2.0)
                 n = int(math.sqrt(max_count))
                 off = (n - 1) * sp / 2
@@ -1628,7 +1628,7 @@ def execute(node):
             if scatter_mode == "Stack":
                 quat = base_quats[pidx]
                 if pack_tilt > 1e-6:
-                    # Lean about a random lateral axis — a pile that isn't machine-perfect.
+                    # Lean about a random lateral axis -- a pile that isn't machine-perfect.
                     tilt_axis = Gf.Cross(world_up, _random_lateral(tilt_rng, lat_a, lat_b, axis_vec))
                     quat = _quat_mul(_axis_quat(tilt_axis, math.radians(tilt_rng.uniform(0.0, pack_tilt))), quat)
             else:
@@ -1714,7 +1714,7 @@ _GF = (
 
 
 def _collapsed(group):
-    """Collapse a group by default — the chunk is tall, so only the target is open."""
+    """Collapse a group by default -- the chunk is tall, so only the target is open."""
     group.set_state(chunk.ChunkFlags.State.COLLAPSED)
     return group
 

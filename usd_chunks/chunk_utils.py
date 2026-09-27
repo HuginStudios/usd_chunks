@@ -1,3 +1,4 @@
+from __future__ import annotations
 import ast
 import hashlib
 import logging
@@ -54,7 +55,7 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     published by the nearest Edit Target chunk reachable by walking the exec chain upstream
     from `owner`, or the session layer if there is no upstream Edit Target.
 
-    A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer) — resolution
+    A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer) -- resolution
     never depends on which chunk happened to execute last.
 
     Use this instead of hardcoding stage.GetSessionLayer() for override/redirect-style
@@ -63,15 +64,15 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     bookkeeping does.
 
     owner is the authoring chunk. When None, falls back to the chunk whose execute() is
-    currently running (chunk_notice._executing_chunk) — so callers invoked from inside a
+    currently running (chunk_notice._executing_chunk) -- so callers invoked from inside a
     chunk's execute() (author_in_variant_context, wire_shader_input, …) resolve correctly
     without threading owner through every call site. With no owner at all, returns the
     session layer.
 
     The fallback is safe despite being ambient state because its sole writer
-    (chunk_notice.py:1171-1185) save/restores it around each module run — set to the running
+    (chunk_notice.py:1171-1185) save/restores it around each module run -- set to the running
     module's own chunk right before module.execute(), popped back to the prior value in the
-    finally — so it can never transiently point at the wrong chunk, even when a reconcile
+    finally -- so it can never transiently point at the wrong chunk, even when a reconcile
     re-executes a chunk from inside another chunk's execute(). Anything running outside a
     module execute() (e.g. reconcile_edit_targets) passes owner explicitly rather than
     relying on this fallback.
@@ -97,13 +98,13 @@ def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
     chunk, or always the session layer for a CONTEXT chunk (Tab containers, groups),
     regardless of what target is currently active.
 
-    CONTEXT chunks are structural scaffolding for the graph itself, not content —
+    CONTEXT chunks are structural scaffolding for the graph itself, not content --
     letting their own bookkeeping follow whatever target applies at their position would
     split a single container's own prim across layers over its lifetime, recreating the
     exact per-layer graph scatter get_edit_layer avoids for content. Regular (non-CONTEXT)
     chunks have no such risk, so they follow get_edit_layer like everything else.
 
-    owner may be None (caller couldn't resolve an owning chunk) — treated as non-CONTEXT.
+    owner may be None (caller couldn't resolve an owning chunk) -- treated as non-CONTEXT.
     """
     if owner is not None and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
         return stage.GetSessionLayer()
@@ -159,7 +160,7 @@ def is_composed_in(prim: Usd.Prim) -> bool:
     return defined
 
 
-def composed_in_from(prim: Usd.Prim) -> "Sdf.Layer | None":
+def composed_in_from(prim: Usd.Prim) -> Sdf.Layer | None:
     """The layer a composed-in prim's strongest `def` comes from, or None when the prim is
     defined locally (or not at all). The layer a UI names when it says where a locked node
     came from, and the one is_composed_in is really asking about."""
@@ -201,7 +202,7 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     the attr has no spec anywhere yet.
 
     Use this to update an attribute that already exists (value, connections, a rename),
-    rather than re-resolving "the current Edit Target" on every change — a chunk's own
+    rather than re-resolving "the current Edit Target" on every change -- a chunk's own
     bookkeeping attr can now live in whatever layer was active when it was first
     authored (get_bookkeeping_layer), and Edit Target may have moved on to somewhere
     else by the time it's edited again. Always writing new edits back to the attr's own
@@ -226,7 +227,7 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
 
 
 def chunk_internal_layer_ids() -> set:
-    """Identifiers of layers owned by the chunk graph itself — every per-graph and
+    """Identifiers of layers owned by the chunk graph itself -- every per-graph and
     per-chunk procedural layer, wherever they're currently sublayered (session layer
     by default, or an Edit-Target-chosen real layer if one is active).
 
@@ -236,7 +237,7 @@ def chunk_internal_layer_ids() -> set:
 
     Reads ChunkLayerManager's own incrementally-maintained internal_layer_ids set
     (same source of truth as chunk_registry.is_chunk_internal_layer) instead of
-    deriving it by walking every tracked layer's live subLayerPaths — a callback
+    deriving it by walking every tracked layer's live subLayerPaths -- a callback
     that fires per stage edit, once per live Create Layer/Edit Target/Export USD
     chunk (see those modules' listen_globally refresh handlers), doing a full
     tree-walk here on top of that fan-out made chunk deletion cost scale with the
@@ -285,7 +286,7 @@ def resolve_prim_paths(stage, location_str):
 
     %name    → every prim in the UsdCollectionAPI named "name" (see find_collection),
                however it was authored (explicit includes/excludes, expansion rule, or
-               a membership expression) — resolved via the collection's own query.
+               a membership expression) -- resolved via the collection's own query.
 
     A glob may follow a variant selection: /asset{color=red}/**/*Body* matches under
     /asset with "red" selected, and every match comes back carrying the selection --
@@ -372,7 +373,7 @@ _TEXT_TYPES = (
 )
 
 
-def attr_holds_text(attr: "Usd.Attribute") -> bool:
+def attr_holds_text(attr: Usd.Attribute) -> bool:
     """Whether a str can be Set() on attr: its type is String, Token or Asset."""
     return attr.GetTypeName() in _TEXT_TYPES
 
@@ -449,7 +450,7 @@ def store_expression_text(attr: Usd.Attribute, raw: str) -> None:
         attr.SetCustomDataByKey(EXPR_TEXT_KEY, raw)
 
 
-def read_expression_text(attr: Usd.Attribute) -> "str | None":
+def read_expression_text(attr: Usd.Attribute) -> str | None:
     """Return the expression text authored on attr, from whichever place it was kept.
 
     Accepts either form. A @Node.param@ wire always comes with connections on the attr;
@@ -498,7 +499,7 @@ def store_lofted_label(attr: Usd.Attribute, label: str) -> None:
     attr.SetCustomDataByKey(LOFTED_LABEL_KEY, label)
 
 
-def read_lofted_label(attr: Usd.Attribute) -> "str | None":
+def read_lofted_label(attr: Usd.Attribute) -> str | None:
     """The label a user gave a lofted param, or None if it still has its generated default."""
     val = attr.GetCustomDataByKey(LOFTED_LABEL_KEY)
     return val if isinstance(val, str) and val else None
@@ -628,7 +629,7 @@ def get_unique_path(stage, prim_path):
     """Return prim_path if unused on stage, else a unique variant with a numeric suffix.
 
     Also accepts a ChunkParamBase in place of a string.  If the param's raw value is an
-    expression the resolved path is returned as-is — expressions define an explicit derived
+    expression the resolved path is returned as-is -- expressions define an explicit derived
     path, so uniqueness bumping would be wrong.
 
     When a param is passed, the chunk's procedural layer is cleared of the old prim spec
@@ -726,7 +727,7 @@ def wire_shader_input(
     shader output in the session layer. This function follows that two-hop chain and sets
     shader_attr directly to the upstream shader's output path.
 
-    Writes redirects into the current edit layer (get_edit_layer — the user's chosen Edit
+    Writes redirects into the current edit layer (get_edit_layer -- the user's chosen Edit
     Target if set, else the session layer) so they override the connect_usd_attr opinion
     (which _author_driven_connections also authors there). When no upstream connection is
     found that redirect is cleared, letting the anonymous-layer connect_usd_attr link (or
@@ -921,7 +922,7 @@ def author_in_variant_selections(stage, var_selections):
                 anchor_prim = stage.OverridePrim(anchor_prim_path)
             vset = anchor_prim.GetVariantSets().GetVariantSet(vs_name)
 
-            # Record only the edit-layer opinion — not the composed selection.
+            # Record only the edit-layer opinion -- not the composed selection.
             # Restoring the composed prev would bleed upstream chunk-layer defaults
             # back into the edit layer, overriding downstream overrides.
             spec = edit_layer.GetPrimAtPath(anchor_prim_path)
@@ -1189,7 +1190,7 @@ def _mint_suffix(node, prim, stage) -> str:
     seed = str(prim.GetPath()) if prim is not None else readable
     taken = _recorded_suffixes(stage, prim)
     for salt in range(1000):
-        digest = hashlib.sha1(f"{seed}#{salt}".encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha1(f"{seed}#{salt}".encode()).hexdigest()[:8]
         candidate = f"{readable}_{digest}"
         if candidate not in taken:
             return candidate

@@ -1,7 +1,7 @@
-"""Swedish House chunk — builds a Falu-red cottage from a box.
+"""Swedish House chunk -- builds a Falu-red cottage from a box.
 
 A procedural-modelling showcase: one chunk, no input mesh, no wiring required. Width is
-the headline control, and dragging it does not just stretch a shape — it re-derives the
+the headline control, and dragging it does not just stretch a shape -- it re-derives the
 whole structure. Window bays re-tile to stay evenly spaced (more of them, not wider
 ones), the roof re-spans at a constant pitch and re-tiles itself, and the chimney rides
 along with the ridge at a fixed real-world size rather than scaling with the house. That
@@ -9,7 +9,7 @@ re-derivation, not the shape change itself, is the point: it is what "parametric
 in practice.
 
 **Walls are punched, not painted.** Each wall is a slab with real openings cut through
-it — `_build_wall_panel` decomposes the wall into the solid strips left over once the
+it -- `_build_wall_panel` decomposes the wall into the solid strips left over once the
 bays are removed, columns first and then the gaps between stacked floors. That is what
 lets a window be a window: the frame fills the hole through the wall's full thickness and
 the glass sits back inside it, so the opening reads by parallax and self-shadowing rather
@@ -18,7 +18,7 @@ truth for where those openings are, so the hole and the frame that fills it can 
 drift apart.
 
 **Windows, roof tiles and ridge caps are instanced.** Each is one small prototype mesh
-under a `UsdGeom.PointInstancer` — a few hundred faces authored once, placed a thousand
+under a `UsdGeom.PointInstancer` -- a few hundred faces authored once, placed a thousand
 times. Roof tiles are laid course by course across every roof plane by one generic
 routine (`_tile_plane`) that works off the plane's own polygon, so a Gable's rectangles,
 a Gambrel's four bands, a Mono's single slope and a Hip's corner triangles are all tiled
@@ -32,7 +32,7 @@ ridge segment (to cap, and to sit the chimney on). Gable and Saltbox are in fact
 *same* builder driven by a different ridge split; only Hip (no gable ends) and Mono (its
 two long walls differ in height) need code of their own.
 
-Everything is flat `constant` display colour, not a shader network — so it draws the same
+Everything is flat `constant` display colour, not a shader network -- so it draws the same
 in usdview and in Blender, and the chunk stays self-contained. The defaults lean
 cartoonish on purpose: saturated Falu red, green trim, chunky trim boards, plank grooves,
 and a warm terracotta tiled roof.
@@ -73,13 +73,13 @@ _SEED = 20260913
 
 
 # ---------------------------------------------------------------------------
-# a tiny unshared-vertex mesh builder — flat shading with no authored normals
+# a tiny unshared-vertex mesh builder -- flat shading with no authored normals
 # ---------------------------------------------------------------------------
 
 
 def _dedupe(points, eps=1e-7):
-    """Drop consecutive (and a closing) duplicate point, so a degenerate polygon —
-    the pyramid apex a Hip roof collapses to when width <= depth — still has 3+ points
+    """Drop consecutive (and a closing) duplicate point, so a degenerate polygon --
+    the pyramid apex a Hip roof collapses to when width <= depth -- still has 3+ points
     or is dropped rather than authored as a broken face."""
     out = []
     for p in points:
@@ -94,13 +94,13 @@ class _Mesh:
     """Accumulates one flat-shaded polygon soup, in a chunk-local (u, v, w) frame.
 
     Every face gets its own unshared vertices rather than sharing corners between
-    faces — the cheap way to get crisp, faceted shading with no authored normals.
+    faces -- the cheap way to get crisp, faceted shading with no authored normals.
 
     (u, v, w) rather than raw (x, y, z) so every builder is written once and works on a
     Y-up or Z-up stage alike: `u` is always "along the front wall", `v` always "into the
-    house", `w` always "up" — see `_axes`. A prototype mesh reuses the same frame with a
+    house", `w` always "up" -- see `_axes`. A prototype mesh reuses the same frame with a
     local meaning: u across the part, v into the wall or down the slope, w out of the
-    surface — which is exactly the convention `_orient_quat` rotates from.
+    surface -- which is exactly the convention `_orient_quat` rotates from.
     """
 
     __slots__ = ("right", "forward", "up", "points", "counts", "indices")
@@ -136,7 +136,7 @@ class _Mesh:
 
 
 def _axes(stage):
-    """(right, forward, up) unit vectors for this stage's up axis — the local (u, v, w)
+    """(right, forward, up) unit vectors for this stage's up axis -- the local (u, v, w)
     frame every builder works in."""
     if UsdGeom.GetStageUpAxis(stage).upper() == "Y":
         return Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 0, 1), Gf.Vec3d(0, 1, 0)
@@ -162,8 +162,8 @@ def _unit(v):
 def _orient_quat(axes, v_dir, w_dir):
     """The rotation carrying a prototype's canonical (u, v, w) frame onto (·, v_dir, w_dir).
 
-    Prototypes are modelled in the house's own frame — u across the part, v into the wall
-    or down the slope, w out of the surface — so an instance only ever needs the rotation
+    Prototypes are modelled in the house's own frame -- u across the part, v into the wall
+    or down the slope, w out of the surface -- so an instance only ever needs the rotation
     that takes those three onto the wall or roof plane it belongs to. Pass where v and w
     must end up; the across direction is *derived* rather than passed, because it is not
     free: it has to keep the target basis at the same handedness as the canonical one, or
@@ -199,7 +199,7 @@ def _spin(v_dir, w_dir, angle):
     """`v_dir` turned about `w_dir` by `angle`, both unit and perpendicular.
 
     Rodrigues with the parallel term dropped, which is exact here precisely because the
-    two are perpendicular — it is how a tile gets its hand-laid twist without composing
+    two are perpendicular -- it is how a tile gets its hand-laid twist without composing
     quaternions.
     """
     if abs(angle) < 1e-9:
@@ -245,17 +245,17 @@ def _author_instancer(stage, path, prototypes, positions, orientations, indices)
 
 
 # ---------------------------------------------------------------------------
-# bays — where every opening is, for both the hole and the thing that fills it
+# bays -- where every opening is, for both the hole and the thing that fills it
 # ---------------------------------------------------------------------------
 
 
 def _wall_defs(w, d, style):
-    """One descriptor per wall the openings are cut into — the axis it runs along, its
+    """One descriptor per wall the openings are cut into -- the axis it runs along, its
     length, its fixed coordinate on the other axis, and which way is outward.
 
     Mono has no left/right entry on purpose: those walls slope from `h_front` to
     `h_back`, and punching openings into a wall of varying height is more bookkeeping
-    than this needs — a shed-roofed house with windows on its two long faces reads as a
+    than this needs -- a shed-roofed house with windows on its two long faces reads as a
     design choice, not an omission.
     """
     walls = [
@@ -304,7 +304,7 @@ def _layout_bays(walls, s):
             z0 = f * wall_h + s["sill_height"]
             z1 = z0 + s["window_height"]
             if z1 > (f + 1) * wall_h - s["frame_bar"] * 2.0:
-                continue  # would break through the floor above — skip rather than clip
+                continue  # would break through the floor above -- skip rather than clip
             for p in centers:
                 if f == 0 and door_zone and door_zone[0] < p < door_zone[1]:
                     continue
@@ -329,7 +329,7 @@ def _hole_slack(s):
 
     A crooked frame in a square hole swings its corners out past the edges; cut the hole
     to the frame's true size and the gap shows on the far side of every one. Undersizing
-    it by the worst-case swing means the architrave always laps the boards instead —
+    it by the worst-case swing means the architrave always laps the boards instead --
     which is what an architrave does anyway. Capped well inside the architrave's width,
     so the frame is never cut narrower than the hole it fills.
     """
@@ -342,7 +342,7 @@ def _hole_slack(s):
 def _wall_holes(wall, bays, bar, slack=0.0):
     """The rectangles to cut out of one wall: (u_lo, u_hi, z_lo, z_hi).
 
-    The hole is the frame's *outer* extent, not the glass's — the frame fills the hole
+    The hole is the frame's *outer* extent, not the glass's -- the frame fills the hole
     exactly, so the two are derived from the same half-width and the same bar.
     """
     holes = []
@@ -390,7 +390,7 @@ def _build_wall_panel(mesh, wall, height, thickness, holes):
     its own stacked z gaps.
 
     Each surviving strip is a whole box rather than a pair of skinned faces, which is
-    what gives the opening its reveal for free — the strips bordering a hole already
+    what gives the opening its reveal for free -- the strips bordering a hole already
     carry the faces that face into it.
     """
     length, fixed, sign = wall["length"], wall["fixed"], wall["sign"]
@@ -427,7 +427,7 @@ def _build_wall_panel(mesh, wall, height, thickness, holes):
 
 
 def _mono_end_walls(mesh, mesh_planks, w, d, h_front, h_back, spacing):
-    """The two sloped, window-less end walls under a Mono roof — flat trapezoids, since
+    """The two sloped, window-less end walls under a Mono roof -- flat trapezoids, since
     nothing is ever punched into them, grooved to the roofline like every other wall."""
     for u, sign in ((0.0, -1), (w, 1)):
         mesh.ngon([(u, 0.0, 0.0), (u, d, 0.0), (u, d, h_back), (u, 0.0, h_front)])
@@ -450,7 +450,7 @@ _BOARD_GAP = 0.17
 
 
 def _add_siding(mesh, walls, bays, s, heights, bar):
-    """Vertical boards standing off the wall, one per board — not scored lines.
+    """Vertical boards standing off the wall, one per board -- not scored lines.
 
     The wall slab behind them is painted a much darker shade of the same red and is only
     ever seen *between* the boards, so each gap reads as the shadow in a board joint. That
@@ -491,14 +491,14 @@ def _add_siding(mesh, walls, bays, s, heights, bar):
 
 
 # ---------------------------------------------------------------------------
-# windows — one prototype, instanced into every opening
+# windows -- one prototype, instanced into every opening
 # ---------------------------------------------------------------------------
 
 
 def _window_prototypes(axes, s):
     """The window, modelled once: a frame and a pane of glass.
 
-    Canonical frame — u along the wall from the bay centre, v into the wall from its
+    Canonical frame -- u along the wall from the bay centre, v into the wall from its
     outer face, w up from the bottom of the opening. Built at real size, so every
     instance is the same window turned to face its own wall and no instance needs a scale.
 
@@ -581,7 +581,7 @@ def _inward(wall):
 def _window_instances(axes, bays):
     """Positions and orientations for every window opening, frame and glass alike.
 
-    Two entries per bay at the same transform, one per prototype — the frame and the
+    Two entries per bay at the same transform, one per prototype -- the frame and the
     glass are separate prims only because a prim carries a single flat colour.
     """
     right, forward, up = axes
@@ -609,7 +609,7 @@ def _window_instances(axes, bays):
 
 
 def _build_door(mesh_trim, mesh_door, wall, s):
-    """The door, authored in place rather than instanced — there is only ever one.
+    """The door, authored in place rather than instanced -- there is only ever one.
 
     Same anatomy as a window: a ring through the wall's thickness, and the slab set back
     inside it, so the doorway is a recess rather than a panel stuck to the wall.
@@ -666,7 +666,7 @@ def _build_door(mesh_trim, mesh_door, wall, s):
 
 
 # ---------------------------------------------------------------------------
-# roofs — each builder returns (planes, ridge_a, ridge_b)
+# roofs -- each builder returns (planes, ridge_a, ridge_b)
 # ---------------------------------------------------------------------------
 
 
@@ -676,7 +676,7 @@ def _roof_profile(style, depth, pitch):
     Gable and Saltbox are the same shape with a different ridge split: centred is a
     Gable, off-centre a Saltbox, whose long low slope is simply whichever side got the
     bigger share. The steeper side's pitch is then *implied* by that split rather than
-    set — real saltboxes work the same way, an added-on roof sharing one ridge height
+    set -- real saltboxes work the same way, an added-on roof sharing one ridge height
     with the steeper original.
     """
     if style == ROOF_SALTBOX:
@@ -703,7 +703,7 @@ def _eave_board(mesh, u0, u1, v, z, depth, drop):
 
 
 def _rake_board(mesh, gu, sign, a, b, board_width):
-    """A trim board following one sloped segment of a gable end exactly — a flat quad
+    """A trim board following one sloped segment of a gable end exactly -- a flat quad
     offset along its own perpendicular rather than a world-aligned box, so it reads as a
     clean diagonal rather than a staircase."""
     (v_a, z_a), (v_b, z_b) = a, b
@@ -723,7 +723,7 @@ def _rake_board(mesh, gu, sign, a, b, board_width):
 
 
 def _profile_height(pts, v):
-    """The roofline height at one depth, by walking the profile — what a groove on the
+    """The roofline height at one depth, by walking the profile -- what a groove on the
     gable end has to stop at."""
     for (v_a, z_a), (v_b, z_b) in zip(pts, pts[1:]):
         if v_a - 1e-9 <= v <= v_b + 1e-9 and abs(v_b - v_a) > 1e-9:
@@ -735,7 +735,7 @@ def _gable_grooves(mesh_planks, gu, sign, pts, wall_top, pitch, depth):
     """Carry the wall's boards up over the gable end to the roofline.
 
     Same pitch and the same positions the side wall uses, so a board does not stop dead at
-    the wall plate and restart somewhere else above it — the gable is the top of the same
+    the wall plate and restart somewhere else above it -- the gable is the top of the same
     boards.
     """
     if pitch <= 0.0:
@@ -804,7 +804,7 @@ def _build_profile_roof(
 
 
 def _build_hip_roof(mesh_roof, w, d, wall_top, overhang, pitch):
-    """Four planes to one ridge — or, when the footprint is deeper than it is wide, to a
+    """Four planes to one ridge -- or, when the footprint is deeper than it is wide, to a
     single apex, which `_Mesh.ngon`'s dedupe turns the degenerate trapezoids into clean
     triangles for. No gable ends, which makes Hip the simplest wall case of the five."""
     rise = d / 2.0 * math.tan(pitch)
@@ -843,7 +843,7 @@ def _build_mono_roof(
     trim_width,
     plank_spacing,
 ):
-    """A single flat slope, front wall short and back wall tall — the one style whose
+    """A single flat slope, front wall short and back wall tall -- the one style whose
     walls are not uniform height."""
     rise = d * math.tan(pitch)
     h_front, h_back = wall_top, wall_top + rise
@@ -861,7 +861,7 @@ def _build_mono_roof(
 
 
 # ---------------------------------------------------------------------------
-# roof tiles and ridge caps — instanced
+# roof tiles and ridge caps -- instanced
 # ---------------------------------------------------------------------------
 
 
@@ -871,7 +871,7 @@ _TILE_STANDOFF = 0.14
 
 #: A pantile's cross-section, as (across the tile, height) in fractions of its width and
 #: camber. Emphatically not a semicircle: an arch spanning the whole width is a half
-#: cylinder, and a roof of them reads as a stack of pipes. A real pantile is an S — most
+#: cylinder, and a roof of them reads as a stack of pipes. A real pantile is an S -- most
 #: of its width is a shallow, nearly flat **pan**, with a single raised **roll** near one
 #: edge. Laid side by side that alternates pan, roll, pan, roll, which is the wave an
 #: actual tiled roof has. Both ends sit at the same height so neighbours meet flush.
@@ -895,7 +895,7 @@ _PANTILE_SECTION = (
 #: line a tiled roof is mostly read by.
 _TILE_RISE = 0.20
 
-#: Course pitch, as a share of the tile — the rest is the lap.
+#: Course pitch, as a share of the tile -- the rest is the lap.
 _TILE_LAP = 0.66
 
 
@@ -903,19 +903,19 @@ def _tile_prototype(axes, size, camber):
     """One clay pantile: a barrel arched across its width, standing off the deck, with a
     skirt closing its downslope edge.
 
-    Canonical frame — u across the tile, v down the slope, w out of the roof.
+    Canonical frame -- u across the tile, v down the slope, w out of the roof.
 
     The shape is what lets tiles *abut* instead of lapping. A lapped tile is what a real
     roof does and the wrong thing to model: geometry that overlaps by a third of its width
     and is then jittered does not interlock, it interpenetrates, and a deep arch cutting
     through its neighbour is the mess that results. So the relief comes out of the tile
-    rather than out of the overlap — the body floats one standoff above the deck and the
+    rather than out of the overlap -- the body floats one standoff above the deck and the
     skirt drops back down to it at the leading edge, which puts a vertical face at every
     course boundary. That face is the shadow line a lap would have given, and the next
     course starts exactly where it ends, touching but never crossing.
 
-    The camber is deep rather than token: repeated down a column — courses are laid in
-    line, not bonded like brick — it is what gives a pantile roof its vertical ribbing.
+    The camber is deep rather than token: repeated down a column -- courses are laid in
+    line, not bonded like brick -- it is what gives a pantile roof its vertical ribbing.
     A shallow one reads as fish scales.
     """
     mesh = _Mesh(axes)
@@ -925,8 +925,8 @@ def _tile_prototype(axes, size, camber):
     section = [(-hw + size * u_frac, camber * w_frac) for u_frac, w_frac in _PANTILE_SECTION]
 
     for (u_a, c_a), (u_b, c_b) in zip(section, section[1:]):
-        # Ramped head to nose. Every quad stays planar — its height is a function of `u`
-        # plus a function of `v`, so opposite corners still sum equal — which is what lets
+        # Ramped head to nose. Every quad stays planar -- its height is a function of `u`
+        # plus a function of `v`, so opposite corners still sum equal -- which is what lets
         # the tiler keep treating a tile as something that sits on a flat plane.
         mesh.ngon(
             [
@@ -950,12 +950,12 @@ def _tile_prototype(axes, size, camber):
 
 
 def _ridge_prototype(axes, size, length, drop):
-    """One ridge cap, as a closed shell. Canonical frame — u along the ridge, v across it,
+    """One ridge cap, as a closed shell. Canonical frame -- u along the ridge, v across it,
     w up. Every roof style's ridge runs parallel to the width axis, so these never need
     turning: the instances are a translation apiece.
 
     Closed on all six sides, which an arch alone is not. An open half-tube shows straight
-    through itself at the end of the run — at a gable that is a hole looking out over the
+    through itself at the end of the run -- at a gable that is a hole looking out over the
     overhang, and the cap reads as floating rather than as sitting on anything. The side
     skirts drop `drop` below the cap so it laps the top course of tiles instead of hovering
     clear of them, and the two end faces close the tube.
@@ -983,7 +983,7 @@ def _ridge_prototype(axes, size, length, drop):
 
 
 def _polygon_normal(points):
-    """Newell's normal — robust on the slightly non-planar quads an overhang can produce,
+    """Newell's normal -- robust on the slightly non-planar quads an overhang can produce,
     where a single cross product of two edges is not."""
     nx = ny = nz = 0.0
     n = len(points)
@@ -1016,11 +1016,11 @@ def _tile_plane(axes, plane, size, jitter, rng, budget):
     Works off the plane's own polygon rather than off which roof style produced it, so
     every style is tiled by this one routine. The plane's frame is derived from it: the
     normal by Newell, the down-slope as the steepest descent within the plane, and the
-    across direction as their cross product — which is the same vector `_orient_quat`
+    across direction as their cross product -- which is the same vector `_orient_quat`
     derives for the instance, so the grid and the tiles it places cannot end up rotated
     90 degrees from each other.
 
-    Courses overlap — the step is a fraction of the tile — since a tile that merely abuts
+    Courses overlap -- the step is a fraction of the tile -- since a tile that merely abuts
     its neighbour leaves a seam the moment anything jitters.
     """
     normal = _polygon_normal(plane)
@@ -1043,7 +1043,7 @@ def _tile_plane(axes, plane, size, jitter, rng, budget):
     offset = normal * Gf.Dot(pts[0], normal)
 
     # Across the slope tiles abut: the section is the same height at both of its own
-    # edges, so neighbours in a course meet without crossing. Down the slope they *lap* —
+    # edges, so neighbours in a course meet without crossing. Down the slope they *lap* --
     # the tile is ramped, so the head of each course passes under the nose of the one
     # above it and the step between them is what throws the course shadow.
     step_x = max(size, 1e-3)
@@ -1052,7 +1052,7 @@ def _tile_plane(axes, plane, size, jitter, rng, budget):
     # Snapped to one lattice shared by every plane, rather than started from each
     # polygon's own corner. A sagging roof is cut into bands so each stays flat, and
     # bands whose grids each began at their own edge put their courses at different
-    # heights — the seams between them were the whole reason the roof read as scrambled.
+    # heights -- the seams between them were the whole reason the roof read as scrambled.
     # Quantising the start to a multiple of the step makes every band agree.
     x_start = math.floor(min(xs) / step_x) * step_x + step_x * 0.5
     y_start = math.floor(min(ys) / step_y) * step_y + step_y * 0.5
@@ -1077,7 +1077,7 @@ def _tile_plane(axes, plane, size, jitter, rng, budget):
                 # Laid by hand, not by machine. This is where a storybook roof gets its
                 # look: courses that wander up and down, tiles that sit askew, nod forward
                 # or back, and stand a little proud of their neighbours. Lopsided on
-                # purpose — across the slope a shift breaks the rib a column shares, so
+                # purpose -- across the slope a shift breaks the rib a column shares, so
                 # that axis gets least; along it a shift only wanders the course line,
                 # which is the point. The lap is deep enough to absorb all of it.
                 jx = rng.uniform(-1.0, 1.0) * jitter * step_x * 0.05
@@ -1098,14 +1098,14 @@ def _ridge_instances(axes, ridge_a, ridge_b, nominal, lift, blocked):
     """Caps marching along the ridge: (instances, the length one cap should be built at).
 
     The pitch is returned rather than assumed so the prototype can be built a little
-    shorter than it — closed caps stepped by exactly their own length meet face to face
+    shorter than it -- closed caps stepped by exactly their own length meet face to face
     and z-fight over the seam, where a small gap reads as the joint between two ridge
     tiles instead.
 
     `lift` raises them clear of the top course: the ridge line is the *deck's* peak, and
     the tiles meeting there already stand a standoff and a camber above it, so a cap left
     on the line would be buried. `blocked` are (centre, half-width) spans along the ridge
-    a chimney already occupies — a cap there would run straight through it.
+    a chimney already occupies -- a cap there would run straight through it.
     """
     ax, ay, az = ridge_a
     bx, by, bz = ridge_b
@@ -1147,7 +1147,7 @@ def _chimney_bricks(axes, u, v, z0, z1, half, size, rng, crooked):
     middle of the course below instead of stacking them into a continuous vertical seam.
     Doing that by sliding a single brick along would push half of one off the end of the
     face; changing how many go in the same span instead keeps every course flush and needs
-    no half bricks — at the cost of a second prototype, which is free.
+    no half bricks -- at the cost of a second prototype, which is free.
 
     The run is inset by the brick's own depth at each end so the four faces do not
     interpenetrate at the corners, and the mortar core shows through there as a joint.
@@ -1171,8 +1171,8 @@ def _chimney_bricks(axes, u, v, z0, z1, half, size, rng, crooked):
 
     # Leaned, and laid by hand. A stack built dead plumb out of identical bricks is the
     # one part of the house that always gives the model away. The lean is carried by
-    # tilting the `up` the orientation is built from — `_orient_quat` re-squares each
-    # face against it — rather than by composing a second rotation onto every brick.
+    # tilting the `up` the orientation is built from -- `_orient_quat` re-squares each
+    # face against it -- rather than by composing a second rotation onto every brick.
     lean_u, lean_v = 0.82, 0.57  # in the house's own (u, v), not world
     tilt = math.radians(crooked * 4.0)
     up_tilted = _unit(up * math.cos(tilt) + (right * lean_u + forward * lean_v) * math.sin(tilt))
@@ -1241,7 +1241,7 @@ def _place_chimneys(mesh_chimney, axes, ridge_a, ridge_b, count, size, height, o
 
 
 def _brick_prototype(axes, length, height, depth):
-    """One brick. Canonical frame — u along the face, v into the wall, w up."""
+    """One brick. Canonical frame -- u along the face, v into the wall, w up."""
     mesh = _Mesh(axes)
     mesh.box(-length / 2.0, length / 2.0, 0.0, depth, 0.0, height)
     return mesh
@@ -1362,7 +1362,7 @@ def _report(node, s, windows, tiles):
 
 
 def execute(node: chunk.Chunk) -> None:
-    """Build the house. Reactive: any param change re-runs this from scratch — there is
+    """Build the house. Reactive: any param change re-runs this from scratch -- there is
     no incremental path, because at this geometry budget there is nothing to save by
     having one."""
     stage = node.get_stage()

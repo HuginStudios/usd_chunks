@@ -21,7 +21,8 @@ import logging
 import weakref
 from abc import abstractmethod
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from pxr import Gf, Usd, UsdGeom
 
@@ -60,12 +61,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self._modified = False
         self._scene_file = Path()
-        self._current_context: Optional[weakref.ReferenceType[ChunkBase]] = None
+        self._current_context: weakref.ReferenceType[ChunkBase] | None = None
         self._selected_chunks: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
         self._stage_replaced_listeners: list = []
 
     @property
-    def current_context(self) -> "ChunkBase | None":
+    def current_context(self) -> ChunkBase | None:
         """The chunk new chunks are parented to, or None for the scene root.
 
         add_chunk reads this. Both graph frontends have to set it -- creating a node while
@@ -75,7 +76,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self._current_context() if self._current_context else None
 
     @contextlib.contextmanager
-    def creating_in(self, context: "ChunkBase | None"):
+    def creating_in(self, context: ChunkBase | None):
         """Parent chunks created in this block to `context`.
 
         Replaces the save-assign-restore each frontend wrote by hand around
@@ -119,7 +120,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # which asks for a root to parent the new context to.
     _creating_root_context = False
 
-    def peek_root_context(self) -> "ChunkBase | None":
+    def peek_root_context(self) -> ChunkBase | None:
         """The scene's outermost container if it exists, without creating one.
 
         get_root_context is find-or-CREATE, so read paths (get_chunks, and anything built
@@ -130,7 +131,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 return c
         return None
 
-    def get_root_context(self) -> "ChunkBase | None":
+    def get_root_context(self) -> ChunkBase | None:
         """The scene's default container, created on demand. Find-or-create.
 
         A chunkgroup carries a module config, so add_chunk restores _current_context after
@@ -158,11 +159,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # misconfigured USD_CHUNK_DIRS). Fall back to a plain context so a chunk still has
         # somewhere to go rather than being dropped.
         logger.warning(
-            f"chunk module {CHUNKGROUP_MODULE!r} unavailable; falling back to a plain context"
+            "chunk module %r unavailable; falling back to a plain context", CHUNKGROUP_MODULE
         )
         return self.add_context("Chunks")
 
-    def add_context(self, name: str, prim_path: Optional[str] = None) -> ChunkBase | None:
+    def add_context(self, name: str, prim_path: str | None = None) -> ChunkBase | None:
         """
         Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
         ChunkBase object is just a ChunkBase with the CONTEXT flag. This can be used as a organisatorial chunk that contains other chunks
@@ -312,7 +313,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         elif ctx := self.get_root_context():
             ctx.add_param(c, notify=notify)
         else:
-            logger.error(f"Failed to add chunk {c}")
+            logger.error("Failed to add chunk %s", c)
             return
 
         self._modified = True
@@ -362,7 +363,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         res = self.chunks.get_param(chunk)
         return res if isinstance(res, ChunkBase) else None
 
-    def get_context_for_prim_path(self, path: str) -> "ChunkBase | None":
+    def get_context_for_prim_path(self, path: str) -> ChunkBase | None:
         """Return the CONTEXT chunk whose prim_path matches path, or None."""
         for c in self.get_chunks():
             if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
@@ -370,7 +371,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                     return c
         return None
 
-    def get_contexts(self) -> Tuple[ChunkBase, ...]:
+    def get_contexts(self) -> tuple[ChunkBase, ...]:
         """Every container in the scene, including the ones get_chunks() leaves out.
 
         A container owns lofted interface params, and those are the names a tool presents
@@ -400,7 +401,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             stack.extend(i.get_my_params())
         return tuple(res)
 
-    def get_chunks(self) -> Tuple[ChunkBase, ...]:
+    def get_chunks(self) -> tuple[ChunkBase, ...]:
         # The scene's outermost container is the one context that is not a node in any
         # graph: a chunkgroup is a node in its PARENT's graph, and this one has no parent
         # graph to be a node in.
@@ -439,7 +440,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         for i in self.get_selected_chunks():
             i.set_selected(False)
 
-    def get_selected_chunks(self) -> Tuple[ChunkBase, ...]:
+    def get_selected_chunks(self) -> tuple[ChunkBase, ...]:
         """
         get the currently selected chunks
 
@@ -666,11 +667,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Whether this host can display chunk gizmos at all."""
         return False
 
-    def show_gizmos(self, chunk: "ChunkBase", gizmos: list) -> None:
+    def show_gizmos(self, chunk: ChunkBase, gizmos: list) -> None:
         """Ask the host to display these gizmos. See chunk_gizmo.resolve_gizmos."""
         pass
 
-    def hide_gizmos(self, chunk: "ChunkBase") -> None:
+    def hide_gizmos(self, chunk: ChunkBase) -> None:
         """Ask the host to stop displaying this chunk's gizmos."""
         pass
 

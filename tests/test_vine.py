@@ -1,6 +1,6 @@
 """Vines grow where a brush painted, and nowhere else.
 
-Two halves, deliberately. The maths — projection, pruning, strand extraction — is exercised
+Two halves, deliberately. The maths -- projection, pruning, strand extraction -- is exercised
 directly, because a hand-written closest-point-on-triangle that is subtly wrong produces vines
 that look fine and sit a millimetre inside the wall. The cook is exercised through the registry
 with a real Scatter Brush upstream, because the thing worth protecting is not that either chunk
@@ -50,7 +50,7 @@ SIZE = 10.0
 
 
 def _wall(stage, path=WALL, size=SIZE, divisions=30):
-    """A vertical grid in the XZ plane — something a vine can plausibly climb."""
+    """A vertical grid in the XZ plane -- something a vine can plausibly climb."""
     mesh = UsdGeom.Mesh.Define(stage, path)
     points, counts, indices = [], [], []
     step = size / divisions
@@ -142,7 +142,7 @@ def _brute_closest(point, v0, v1, v2, samples=60):
     """Closest point on one triangle, found by densely sampling it.
 
     Slow and obviously correct, which is the point: `_closest_on_triangles` is a hand-written
-    region test, and the failure it can produce — a vine sitting a hair inside the wall — is
+    region test, and the failure it can produce -- a vine sitting a hair inside the wall -- is
     invisible in a picture and permanent in a shot.
     """
     best, best_d = None, np.inf
@@ -175,7 +175,7 @@ def test_the_closest_surface_point_matches_a_brute_force_search(point) -> None:
     found = vine._closest_on_triangles(np.asarray(point, dtype=np.float64), v0, v1, v2)[0]
     expected, expected_d = _brute_closest(np.asarray(point, dtype=np.float64), v0[0], v1[0], v2[0])
 
-    # The brute force only samples the triangle, so it is the loose one — ours may only be better.
+    # The brute force only samples the triangle, so it is the loose one -- ours may only be better.
     assert float(np.linalg.norm(found - np.asarray(point))) <= expected_d + 1e-9
     assert float(np.linalg.norm(found - expected)) < 0.05
 
@@ -234,7 +234,7 @@ def test_short_side_branches_are_pruned_and_longer_ones_are_not() -> None:
 
 
 def test_the_longest_path_is_the_one_kept_whole() -> None:
-    """"Trunk" is not a thing the growth records — it is whatever path runs furthest. A side
+    """"Trunk" is not a thing the growth records -- it is whatever path runs furthest. A side
     shoot that outgrows the stem it left becomes the vine, and the stem becomes the side shoot,
     which is why pruning is judged on subtree length rather than on creation order."""
     nodes = _chain(10, branches=[(5, 8)])
@@ -247,7 +247,7 @@ def test_the_longest_path_is_the_one_kept_whole() -> None:
 
 
 def test_pruning_keeps_a_tip_however_short_it_is() -> None:
-    """A branch's continuation is never a stub — pruning it would blunt every vine."""
+    """A branch's continuation is never a stub -- pruning it would blunt every vine."""
     nodes = _chain(3)
 
     assert len(vine._prune(nodes, 20)) == 3
@@ -400,7 +400,7 @@ def test_a_vine_is_thickest_at_its_base(host) -> None:
 
 
 def test_the_vines_sit_on_the_surface_rather_than_in_it(host) -> None:
-    """The wall is the plane y=0. A vine has to clear it — a tube lifted by less than its own
+    """The wall is the plane y=0. A vine has to clear it -- a tube lifted by less than its own
     radius is half buried, and on a flat surface seen face-on that is z-fighting."""
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine()
@@ -416,7 +416,7 @@ def test_the_vines_sit_on_the_surface_rather_than_in_it(host) -> None:
 def test_step_decides_how_smoothly_a_vine_curves_and_not_how_thick_it_is(host) -> None:
     """Regression for the reported "cooks but nothing is visible".
 
-    Every visible size used to be a multiple of Step, and Step is a *resolution* — Auto Step is
+    Every visible size used to be a multiple of Step, and Step is a *resolution* -- Auto Step is
     the painted region over 150. So growing more finely grew a thinner vine, and at the default
     the stem came out at a five-hundredth of the object: one pixel on screen, a quarter of one
     at the tips. Width belongs to Thickness, which is a share of the region, and Step may not
@@ -527,7 +527,7 @@ def test_wider_leaf_spacing_leaves_fewer_leaves(host) -> None:
 
 
 def test_the_leaf_cloud_exists_even_with_leaves_turned_off(host) -> None:
-    """Wiring an output is how you decide to use it, so it cannot require having used it —
+    """Wiring an output is how you decide to use it, so it cannot require having used it --
     the same reason the brush publishes its points path before anything is painted."""
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(leaves=False)
@@ -555,7 +555,7 @@ def test_the_outputs_are_published_before_anything_grows(host) -> None:
 
 def test_a_brush_stroke_decides_where_the_vine_grows(host) -> None:
     """The integration that matters. The two chunks share nothing but a primvar name, carried
-    over a wire — so this is what would fail if either end changed its mind about it."""
+    over a wire -- so this is what would fail if either end changed its mind about it."""
     brush = host.chunk("scatter_brush")
     brush.get_param("surface_prim").value = WALL
     brush.get_param("radius").value = 1.5
@@ -599,7 +599,7 @@ def test_painted_points_become_the_roots(host) -> None:
 def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
     """The whole reason the cloud has that shape.
 
-    Leaves are somebody's asset, so this chunk grows none — it publishes points with a normal,
+    Leaves are somebody's asset, so this chunk grows none -- it publishes points with a normal,
     which is exactly what a Scatter Brush publishes, and Scatter Points already knows how to
     place one instance per point and lay it flat. That contract is two chunks wide and written
     down nowhere but here, so it is worth a test that actually runs both.

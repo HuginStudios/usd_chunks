@@ -251,7 +251,7 @@ class TestRenderSettings:
         assert usd_settings.GetRenderingColorSpaceAttr().Get() == "acescg"
 
     def test_empty_optional_tokens_are_left_unauthored(self):
-        """An empty field must not author an empty token list — that would override
+        """An empty field must not author an empty token list -- that would override
         the schema fallback with something meaningless."""
         scene, stage = _setup_stage()
         _var, _product, settings = _render_network(scene)
@@ -303,7 +303,7 @@ class TestRenderSettings:
 
     def test_stage_render_settings_metadata_is_set(self):
         """A renderer finds the settings prim through stage metadata, not by path
-        convention — so the checkbox that writes it is what makes the network
+        convention -- so the checkbox that writes it is what makes the network
         renderable without telling the renderer where to look."""
         scene, stage = _setup_stage()
         _var, _product, settings = _render_network(scene)
@@ -1066,7 +1066,7 @@ class TestHydraMode:
         assert (tmp_path / "aovs").is_dir()
 
     def test_never_shells_out(self, monkeypatch, tmp_path):
-        """The whole point of the default mode — no subprocess, no PATH lookup."""
+        """The whole point of the default mode -- no subprocess, no PATH lookup."""
         mod, rop, _fake, _stage = self._hydra_rop(monkeypatch)
         rop.get_param("output_image").value = str(tmp_path / "beauty.png")
 
@@ -1243,7 +1243,7 @@ class TestRenderRop:
 
 class TestRenderCommandResolution:
     """USD ships usdrecord as an extension-less Python script. shutil.which finds it,
-    but Windows cannot CreateProcess a file it has no association for — which failed
+    but Windows cannot CreateProcess a file it has no association for -- which failed
     with WinError 2 while the tool was plainly installed."""
 
     def test_extension_less_script_runs_through_the_interpreter(self, monkeypatch):
@@ -1354,7 +1354,7 @@ class TestCliRunRenders:
 
         Uses the bare `param=value` form rather than `Chunk.param=value` on purpose.
         Chunk names currently gain a numeric suffix across an export/load round trip
-        (a chunk authored as "Render" reloads as "Render1" — reproducible with any
+        (a chunk authored as "Render" reloads as "Render1" -- reproducible with any
         chunk, including Light and Prim, so it is not specific to these), which makes
         the qualified form unusable against a serialized network. The bare form
         searches every chunk for a matching param and is unaffected.

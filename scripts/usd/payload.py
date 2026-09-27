@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from pxr import Sdf
 from usd_chunks import chunk, chunk_stage, chunk_utils

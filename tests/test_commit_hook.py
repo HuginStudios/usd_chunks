@@ -1,7 +1,7 @@
 """Tests for the reserved commit(node) chunk hook.
 
 commit() is the write-to-disk counterpart to execute(): dispatched once per chunk that
-defines it, in topological order, after the DAG solve has settled — rather than from
+defines it, in topological order, after the DAG solve has settled -- rather than from
 inside the notice propagation loop, the way execute() is re-run throughout a solve.
 
 Covers the dispatch itself (chunk_scheduler.commit_all), Export USD's implementation of
@@ -49,7 +49,7 @@ def _setup_stage():
 
 def _make(scene, mod, module_name):
     """Create a chunk from mod and add it to scene, auto-chaining it onto the previous
-    one exactly as the Params tab does — Edit Target resolves from exec-chain topology,
+    one exactly as the Params tab does -- Edit Target resolves from exec-chain topology,
     so chunks have to actually be wired into the chain."""
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
@@ -104,7 +104,7 @@ class TestCommitDispatch:
         ordering has to come from depth, where ownership pulls a chunk at least as deep as
         its deepest param.
 
-        Note this is the in-memory add_dependency API, NOT what the node graph does — a
+        Note this is the in-memory add_dependency API, NOT what the node graph does -- a
         dragged param port authors an expression and creates no DAG edge at all. That path
         is covered by TestCommitOrderFromStage, which orders from the stage instead."""
         chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
@@ -218,7 +218,7 @@ class TestExportUsdCommit:
 
 class TestCliRunCommits:
     """`usdchunks run` on a network containing an Export USD chunk writes that chunk's
-    configured output — the deliberate behaviour change that makes the chunk reachable
+    configured output -- the deliberate behaviour change that makes the chunk reachable
     headlessly at all, since it has no execute() to reach it through."""
 
     def _write_network(self, tmp_path):
@@ -256,8 +256,8 @@ class TestCliRunCommits:
     def test_run_writes_the_networks_driven_content(self, tmp_path):
         """The same thing end to end, in a clean interpreter. Loading a second network
         into a process that already holds a live scene does not re-cook the loaded
-        chunks — `--printout` comes back empty there too, so it is not something commit
-        introduced — and only a fresh process shows that what `run` commits is the real
+        chunks -- `--printout` comes back empty there too, so it is not something commit
+        introduced -- and only a fresh process shows that what `run` commits is the real
         driven content, not an empty stage."""
         net, result = self._write_network(tmp_path)
 
@@ -284,7 +284,7 @@ class TestCliRunCommits:
 
 
 class TestCommitOrderFromStage:
-    """chunk_stage.commit_order_from_stage — ordering read from USD connections.
+    """chunk_stage.commit_order_from_stage -- ordering read from USD connections.
 
     Depth used to be blind to a param port: drag-to-connect authors an @Node.param@
     expression whose live link is a NoticeConnection, not a DAG edge, so both chunks sat at

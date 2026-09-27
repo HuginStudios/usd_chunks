@@ -3,14 +3,14 @@
 The Edit Target chunk publishes the layer it points at onto its own prim
 (chunk:editTargetLayer). A chunk's effective edit layer is the one published by the
 nearest Edit Target chunk reachable by walking inputs:chunk upstream (session layer if
-there is none) — see chunk_stage.nearest_upstream_edit_layer. When that resolved target
+there is none) -- see chunk_stage.nearest_upstream_edit_layer. When that resolved target
 changes (an Edit Target repoints, or is removed), the downstream chunk's bookkeeping AND
 driven content move to the new layer, and its old edits are removed from the old one
 (chunk_stage.reconcile_edit_targets).
 
 Chunks are wired into the exec chain the way the Params tab auto-chains them
 (prev -> new via inputs:chunk); the _make helper flips _params_tab_create to build that
-linear chain, since the topology — not execution order — is what now decides the target.
+linear chain, since the topology -- not execution order -- is what now decides the target.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ class TestEditTargetMigration:
         """Delete each scene's chunks instead of just dropping the reference to the scene.
 
         create_layer and edit_target both register their refresh handlers with
-        listen_globally=True, and a chunk left alive keeps answering those notices — on
+        listen_globally=True, and a chunk left alive keeps answering those notices -- on
         whatever stage is current, since ChunkBase.get_stage() resolves the live one rather
         than the stage the chunk was built on. Left to leak, one test's chunks go on
         authoring layers into the next test's stage.
@@ -108,7 +108,7 @@ class TestEditTargetMigration:
         # module_name is what gets written to the prim as info:chunkType. The reload test
         # passes the real "create_layer" so the registry can rebuild a working chunk from it
         # and the layer this authors exists again on the other side of a reload; the rest
-        # pass nothing and get a per-layer stand-in, which no module backs — they only care
+        # pass nothing and get a per-layer stand-in, which no module backs -- they only care
         # about where edits land, and a name the registry can't resolve keeps their chunks
         # from re-running module code as unrelated notices cascade past.
         c = _make(scene, self.create_mod, module_name or f"cl_{name}")
@@ -174,7 +174,7 @@ class TestEditTargetMigration:
 
     def test_selection_and_homing_survive_reload(self, tmp_path):
         """A saved graph of chained Edit Targets reloads with each selection intact and each
-        downstream chunk re-homed under the right layer — the reload path re-applies the
+        downstream chunk re-homed under the right layer -- the reload path re-applies the
         stored selections (which a Menu drops on load until its layer is recreated),
         upstream-first, from a pre-read snapshot so a cascade can't corrupt a sibling's value.
         """
@@ -255,7 +255,7 @@ class TestEditTargetMigration:
         assert layer_b.GetPrimAtPath(ppath) is not None
         assert stage2.GetSessionLayer().GetPrimAtPath(ppath) is None
 
-        # Every chunk prim must survive the reload's migrations still *defined* — the node
+        # Every chunk prim must survive the reload's migrations still *defined* -- the node
         # graph iterates Usd.PrimIsDefined, so one demoted to a bare `over` stops drawing.
         undefined = [
             str(c2path)
@@ -271,7 +271,7 @@ class TestEditTargetMigration:
 
         _migrate_chunk_bookkeeping deletes the source specs, so if the destination keeps its
         `over` specifier and empty typeName the prim becomes undefined and typeless across
-        the whole stack — invisible to every Usd.PrimIsDefined traversal, which is what the
+        the whole stack -- invisible to every Usd.PrimIsDefined traversal, which is what the
         node graph iterates, so the chunk silently stops drawing a node.
         """
         scene, stage = self._setup()
@@ -299,7 +299,7 @@ class TestEditTargetMigration:
         their params.
 
         The teardown's own PARAM_REMOVED / layer-stack notices cascade straight back into the
-        graph — an Edit Target's refresh callback re-runs, reconcile_edit_targets re-executes
+        graph -- an Edit Target's refresh callback re-runs, reconcile_edit_targets re-executes
         chunks. Any chunk that lost its params without being asked to delete is still live to
         all of that, and every chunk script crashes on a get_param() that now returns None.
         """

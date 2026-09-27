@@ -44,7 +44,7 @@ def _make_scene(stage: Usd.Stage) -> SceneSender:
     return scene
 
 
-def _build_stage_with_a_chunk() -> "tuple[Usd.Stage, SceneSender]":
+def _build_stage_with_a_chunk() -> tuple[Usd.Stage, SceneSender]:
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageMetersPerUnit(stage, 0.01)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)

@@ -279,7 +279,7 @@ def test_the_menu_is_a_tree_of_registered_blender_menus():
     assert root._node["subs"], "the library has categories, so the menu must have submenus"
     for name in root._node["subs"]:
         child = bg._menu_classes.get((name,))
-        assert child is not None, "no menu class for the %s category" % name
+        assert child is not None, f"no menu class for the {name} category"
         assert child.is_registered
         assert child.bl_idname == bg._menu_id((name,))
 
@@ -795,7 +795,7 @@ def test_publish_makes_a_group_host_its_own_file(view, tmp_path):
     chunk_stage.publish_network(group, out)
     assert view.stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(group)).HasAuthoredReferences()
     saved = Sdf.Layer.FindOrOpen(out)
-    assert saved.GetAttributeAtPath("/chunks/%s.info:chunkType" % group.name).default == "chunkgroup"
+    assert saved.GetAttributeAtPath(f"/chunks/{group.name}.info:chunkType").default == "chunkgroup"
 
 
 def test_the_verbs_are_wired_to_operators_that_get_registered():

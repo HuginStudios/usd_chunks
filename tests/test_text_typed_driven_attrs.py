@@ -6,6 +6,7 @@ asset take a str just as well, so those guards silently dropped every real value
 one: a dome light's texture file never reached the prim, and neither did any schema enum
 picked from a menu. Live-reported on the Light chunk's DomeLight image.
 """
+from __future__ import annotations
 
 import pytest
 from pxr import Sdf, Usd, UsdLux

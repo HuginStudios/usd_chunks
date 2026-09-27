@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import Sdf, Tf, Usd, UsdShade
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, shader_defs

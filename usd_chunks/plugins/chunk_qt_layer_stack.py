@@ -1,7 +1,7 @@
 """
-Layer Stack Inspector — a usdview window (Chunks ▸ Layer Stack).
+Layer Stack Inspector -- a usdview window (Chunks ▸ Layer Stack).
 
-Why this exists: usdview's built-in "Layer Stack" tab is *prim-scoped* — it only
+Why this exists: usdview's built-in "Layer Stack" tab is *prim-scoped* -- it only
 lists the layers that have an opinion on the currently selected prim, so a freshly
 opened scene (or an unauthored prim) shows just the root layer. This window shows
 the whole picture instead:
@@ -14,8 +14,9 @@ the whole picture instead:
     each authored attribute.
 
 Strength rule: session beats root, and within any layer an earlier sublayer beats
-a later one — so reading top-to-bottom is reading strongest-to-weakest.
+a later one -- so reading top-to-bottom is reading strongest-to-weakest.
 """
+from __future__ import annotations
 
 from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Usd, Sdf, Pcp, Tf
@@ -30,12 +31,12 @@ _ARC_LABEL = {
     Pcp.ArcTypeSpecialize: "specialize",
 }
 
-_COL_EDIT = "#cab46a"     # gold — the active edit target
-_COL_SESSION = "#7fa8d0"  # blue — session layer
-_COL_ANON = "#9a8fb5"     # purple — anonymous (chunk / in-memory) layers
-_COL_MUTED = "#6a6a6a"    # grey — muted (excluded from composition)
+_COL_EDIT = "#cab46a"     # gold -- the active edit target
+_COL_SESSION = "#7fa8d0"  # blue -- session layer
+_COL_ANON = "#9a8fb5"     # purple -- anonymous (chunk / in-memory) layers
+_COL_MUTED = "#6a6a6a"    # grey -- muted (excluded from composition)
 _COL_DIM = "#8a8a8a"
-_COL_WIN = "#79b07a"      # green — winning opinion
+_COL_WIN = "#79b07a"      # green -- winning opinion
 
 _STYLE = """
 QWidget { font-size: 11px; }
@@ -68,7 +69,7 @@ def _short_id(layer):
 
 class _UsdHighlighter(QtGui.QSyntaxHighlighter):
     """Lightweight USD-text colouring for the inspect dialog (keywords / types /
-    strings / comments). Intentionally rough — this is a read-only inspector."""
+    strings / comments). Intentionally rough -- this is a read-only inspector."""
 
     def __init__(self, doc):
         super().__init__(doc)
@@ -138,7 +139,7 @@ class _LayerTextDialog(QtWidgets.QDialog):
 class LayerStackPanel(QtWidgets.QWidget):
     """Top-level window: layer hierarchy on top, selected-prim opinions below.
 
-    `api` is the usdview API object (usdviewApi) — used only to read `stage`, the
+    `api` is the usdview API object (usdviewApi) -- used only to read `stage`, the
     focus prim, and the selection-changed signal.
     """
 
@@ -212,7 +213,7 @@ class LayerStackPanel(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ live refresh
     def _connect_signals(self):
-        # Recompose/layer edits — refresh (debounced so a burst collapses to one).
+        # Recompose/layer edits -- refresh (debounced so a burst collapses to one).
         for notice in (Usd.Notice.StageContentsChanged, Usd.Notice.ObjectsChanged):
             try:
                 self._listeners.append(Tf.Notice.RegisterGlobally(notice, self._on_usd_notice))

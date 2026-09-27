@@ -1,4 +1,4 @@
-"""Python chunk — live Python scripting panel in usdview.
+"""Python chunk -- live Python scripting panel in usdview.
 
 Executes arbitrary Python with stage, prim, node, and usdviewApi in scope. Runs like any
 other chunk in the node graph's exec chain (via the reserved `execute(node)` hook) rather
@@ -9,7 +9,7 @@ Whatever the script assigns to `result` is exposed on an output param, so it can
 into a downstream chunk's input (e.g. a computed prim name feeding a Duplicate Prim chunk's
 destination path).
 
-The output is available in four types — string, int, float, bool — each on its OWN output
+The output is available in four types -- string, int, float, bool -- each on its OWN output
 param, because a USD attribute's value type is fixed when the attribute is created and
 cannot be retyped in place: one param cannot be a String one moment and an Int the next.
 The "Output Type" menu picks which one the script's `result` is coerced into and populated

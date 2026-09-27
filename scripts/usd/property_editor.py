@@ -1,12 +1,13 @@
-"""Property Editor chunk — select a prim and edit all its attributes interactively.
+"""Property Editor chunk -- select a prim and edit all its attributes interactively.
 
 Dynamically creates typed UI widgets (sliders, menus, text fields, etc.) for
 every attribute and relationship on the selected prim. Changes write directly
 to the USD attribute via the chunk's param-to-attribute connection system.
 
-This is the "inspector/editor" tool — you point it at a prim and get full
+This is the "inspector/editor" tool -- you point it at a prim and get full
 interactive control over all its properties without knowing attribute names.
 """
+from __future__ import annotations
 
 from usd_chunks import chunk, chunk_utils
 

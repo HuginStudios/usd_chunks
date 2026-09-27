@@ -1,7 +1,8 @@
-"""Reset Transform chunk — clears authored transform ops on the selected prim(s).
+"""Reset Transform chunk -- clears authored transform ops on the selected prim(s).
 
 Requires: pxr (OpenUSD), usd_chunks.
 """
+from __future__ import annotations
 
 from pxr import UsdGeom
 from usd_chunks import chunk

@@ -1,4 +1,4 @@
-"""Export ChunkGroup chunk — exports the current chunk graph as one clean, portable
+"""Export ChunkGroup chunk -- exports the current chunk graph as one clean, portable
 USD layer: every chunk's own bookkeeping (wiring, node-graph position, chunk type)
 freshly authored into a brand-new layer, with no subLayerPaths at all.
 
@@ -36,7 +36,7 @@ def export(owner, notice, sender):
         export_chunks(scene, output_path)
     except Exception:
         # A NoticeConnection callback's exceptions are caught and only logged
-        # (chunk_notice.NoticeConnection.handle_callback) — never surfaced in the UI,
+        # (chunk_notice.NoticeConnection.handle_callback) -- never surfaced in the UI,
         # so without this print a crash here looks identical to nothing happening.
         logger.error("Export failed:\n%s", traceback.format_exc())
         return

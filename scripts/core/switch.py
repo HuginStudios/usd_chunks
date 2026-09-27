@@ -1,4 +1,4 @@
-"""Switch — one of several upstream branches reaches the output.
+"""Switch -- one of several upstream branches reaches the output.
 
 A Merge is fan-in: every branch wired into it contributes, and slot order decides who wins.
 A Switch is the choice instead of the sum: the branch in the selected slot contributes and

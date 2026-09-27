@@ -4,6 +4,7 @@ Skipped wholesale where the running USD has no MaterialX: pip usd-core ships no 
 so Sdr reports only ['USD', 'glslfx'] there and every shader these assert on is absent.
 They do run against a USD built with usdMtlx (the usdbundle usdview environment).
 """
+from __future__ import annotations
 
 import pytest
 from pxr import Sdf, Usd, UsdShade
