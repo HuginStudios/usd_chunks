@@ -2,4 +2,7 @@
 
 Each directory is what a host is pointed at (``PXR_PLUGINPATH_NAME`` for the USD plugin
 hosts, ``HOUDINI_PATH`` for Houdini); ``usdchunks plugin-path <host>`` prints it.
+
+``script.py`` is the one host with no application: a plain Python script, and the
+``usdchunks`` CLI. Its ``Scene`` is re-exported as ``usd_chunks.Scene``.
 """

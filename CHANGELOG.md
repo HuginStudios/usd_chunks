@@ -11,6 +11,14 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `from usd_chunks import Scene` builds and runs chunk networks from a plain script:
+  `scene.create.<chunk>()` for every chunk module and menu variant (`scene.create.cube()`,
+  `scene.create.rect_light()`), upstream chunks passed positionally, and `with chunk:` to
+  nest into a chunkgroup or run after any other chunk -- so `with
+  scene.create.edit_target(...)` authors what is inside into that layer. `save()` writes
+  the network, `export()` the plain-USD result. Examples in `examples/scripts/`.
+  The same calls work on any host's scene: `usd_chunks.current_scene()` inside usdview
+  builds into the network the graph is showing.
 - Mesh has one menu entry per shape: Cube, Grid, Tube and Ground.
 - Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
   own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors

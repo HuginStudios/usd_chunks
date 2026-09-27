@@ -3258,6 +3258,15 @@ class ChunkBase(ChunkGroupBase):
             send_on_create=False,
             private=True,
         )
+
+    def __enter__(self) -> Self:
+        """`with chunk:` -- where chunks created inside the block go is the scene's to say
+        (see SceneSender.enter_chunk)."""
+        self.get_scene().enter_chunk(self)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.get_scene().exit_chunk(self)
         self.add_callback(
             self.enable,
             notice_alias=chunk_notice.ChunkNoticeAlias.MENU_ACTION_NOTICE,

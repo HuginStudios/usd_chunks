@@ -16,13 +16,13 @@ from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
 
-from pxr import Sdf, Usd, UsdUtils
+from pxr import Usd
 from usd_chunks import chunk_naming
-from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler
+from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks.store import pin as pinmod
+from usd_chunks.chunk_scene import execute_roots
+from usd_chunks.hosts.script import Scene, flatten_without_chunks
 from usd_chunks.chunk_stage import (
-    ChunkLayerManager,
-    ChunkStageSync,
     commit_order_from_stage,
     find_group_active_view,
     is_view_chunk,
@@ -36,31 +36,12 @@ GREEN = "\033[32m"
 RESET = "\033[0m"
 
 
-class HeadlessScene(chunk_scene.SceneSender):
-    def __init__(self, stage):
-        super().__init__()
-        self._stage = stage
-
-    def get_stage(self):
-        return self._stage
-
-
 def _all_chunks(chunks):
     """Yield every chunk recursively, including sub-chunks inside ChunkGroups."""
     for c in chunks:
         yield c
         sub = [p for p in c.get_my_params() if isinstance(p, chunk_core.ChunkBase)]
         yield from _all_chunks(sub)
-
-
-def _re_execute_roots(chunks):
-    """Call execute() on every root node (no dependencies), recursing into groups."""
-    for c in chunks:
-        sub = [p for p in c.get_my_params() if isinstance(p, chunk_core.ChunkBase)]
-        if sub:
-            _re_execute_roots(sub)
-        elif not c.get_dependencies():
-            c.execute()
 
 
 def _coerce(param, raw):
@@ -94,48 +75,6 @@ def _coerce(param, raw):
         return first(raw), None
     except (TypeError, ValueError):
         return None, f"cannot read {raw!r} as {getattr(first, '__name__', first)}"
-
-
-def _flatten_without_chunks(stage):
-    """Flatten the stage to a layer carrying the result but none of the recipe.
-
-    A Chunk prim left in a delivered file is not inert: open it anywhere usd_chunks is
-    installed and the network reloads and re-cooks, overriding the very geometry the
-    file was exported to carry. Stripping them is what makes the output plain USD that
-    anyone can open with nothing installed.
-
-    FlattenLayerStack rather than Stage.Export, because it keeps references as
-    references where Export inlines the referenced asset outright -- which stops
-    mattering only while a network builds all its own geometry.
-
-    Shallowest path first, so removing a parent Chunk takes its children with it and
-    the later lookup for those children simply finds nothing.
-    """
-    flat = UsdUtils.FlattenLayerStack(stage)
-    tmp = Usd.Stage.Open(flat)
-    chunk_paths = sorted(
-        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME),
-        key=lambda p: p.pathElementCount,
-    )
-    for path in chunk_paths:
-        spec = flat.GetPrimAtPath(path)
-        if not spec:
-            continue  # already removed as child of a shallower Chunk
-        parent = spec.nameParent
-        if parent:
-            del parent.nameChildren[spec.name]
-        else:
-            del flat.pseudoRoot.nameChildren[spec.name]
-
-    # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
-    # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
-    # left in a file whose whole point is to carry none -- and it is enough to make a
-    # delivered asset look like it wants usd_chunks installed. Only when it IS empty: a
-    # stage that parks something else there keeps both the scope and that something.
-    root = flat.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
-    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
-        del flat.pseudoRoot.nameChildren[root.name]
-    return flat
 
 
 def _parse_param_overrides(scene, overrides):
@@ -238,9 +177,9 @@ def cmd_validate(args):
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
 
-    scene = HeadlessScene(stage)
-    registry = chunk_registry.ChunkRegistry()
-    registry.initialize(scene, "cli")
+    # Registry only: validating reads the chunk modules, it does not load or cook the network.
+    scene = Scene(stage, "cli", sync=False)
+    registry = scene.registry
 
     print(f"Validating: {stage.GetRootLayer().identifier}")
     print()
@@ -390,11 +329,8 @@ def cmd_run(args):
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
 
-    scene = HeadlessScene(stage)
-    chunk_registry.ChunkRegistry().initialize(scene, "cli")
-    ChunkLayerManager().initialize(stage)
-    # This replaces a bare load_chunks: initialize loads the network itself and, unlike a
-    # bare call, leaves the sync listening while it does.
+    # The scene's stage sync replaces a bare load_chunks: initialize loads the network
+    # itself and, unlike a bare call, leaves the sync listening while it does.
     #
     # Params a chunk creates during its own execute -- a Light chunk's attribute group,
     # anything else built by show_attribute -- reach their real prim only through the
@@ -406,11 +342,11 @@ def cmd_run(args):
     # It also restores Edit Target selections, which a bare load_chunks skips -- so a
     # network whose chunks write into named layers now lands its edits where the file
     # says, rather than wherever the default target happened to be.
-    ChunkStageSync().initialize(stage, scene)
+    scene = Scene(stage, "cli")
 
     if args.params:
         _parse_param_overrides(scene, args.params)
-        _re_execute_roots(scene.get_chunks())
+        execute_roots(scene.get_chunks())
 
     # Establish the active view, exactly as the UI does on focus. load_chunks has already
     # executed every dependency-free chunk by this point -- in the UI the view recook then
@@ -438,11 +374,11 @@ def cmd_run(args):
         if args.procedural:
             stage.Export(args.export)
         else:
-            _flatten_without_chunks(stage).Export(args.export)
+            flatten_without_chunks(stage).Export(args.export)
         print(f"Exported: {args.export}")
 
     if args.printout:
-        print(_flatten_without_chunks(stage).ExportToString())
+        print(flatten_without_chunks(stage).ExportToString())
 
 
 WEDGE_CHUNK_TYPE = "wedge"
@@ -601,8 +537,7 @@ def cmd_deps(args):
     recipe. Either way two runs can disagree while every recorded fact matches -- which is
     worse than recording nothing, because it reads as authoritative.
     """
-    registry = chunk_registry.ChunkRegistry()
-    registry.initialize(HeadlessScene(None), "cli")
+    registry = Scene(host_name="cli", sync=False).registry
     modules = registry.get_chunk_modules()
     siblings = {m.module_name.split(".")[-1] for m in modules}
 
