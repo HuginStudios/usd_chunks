@@ -65,6 +65,7 @@ from usd_chunks.chunk_attributes import (  # noqa: F401  (re-exported)
     CopyMode,
     SendMode,
     add_validate_and_convert,
+    field_type,
     get_attr_index,
 )
 
@@ -1399,10 +1400,11 @@ class ChunkCommon(AttributesBase):
         if attr.name == "name":
             return re.sub(r"\W+", "", str(val))[0:100]
 
-        if inspect.isclass(attr.type) and issubclass(attr.type, Enum):
-            if val is not None and not isinstance(val, attr.type):
+        ftype = field_type(type(self), attr)
+        if inspect.isclass(ftype) and issubclass(ftype, Enum):
+            if val is not None and not isinstance(val, ftype):
                 try:
-                    return attr.type(val)
+                    return ftype(val)
                 except TypeError:
                     return val
 
