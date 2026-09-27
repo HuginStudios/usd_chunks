@@ -39,7 +39,7 @@ from typing import (
 
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
-from typing_extensions import Self
+from typing_extensions import Self, override
 from usd_chunks import chunk_scheduler
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,7 @@ _RECORD_ALIASES = _STRUCTURAL_ALIASES | {ChunkNoticeAlias.ATTRIBUTE_CHANGED}
 class RegistrySingleton(type):
     _instances = {}
 
+    @override
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
             cls._instances[cls] = super().__call__(*args, **kwargs)

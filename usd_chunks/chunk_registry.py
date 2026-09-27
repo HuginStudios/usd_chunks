@@ -28,6 +28,7 @@ from typing import (
     TypeVar,
     overload,
 )
+from typing_extensions import override
 from enum import Enum
 
 from pxr import Sdf, Usd, UsdUtils
@@ -505,16 +506,20 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self._loader = util.LazyLoader(loader)
         self._module = mod
 
+    @override
     def get_filename(self, fullname: str) -> str:  # noqa: ARG002
         return self.path
 
+    @override
     def get_data(self, path: str | bytes) -> bytes:
         with open(path, "rb") as f:
             return f.read()
 
+    @override
     def load_module(self, fullname: str) -> types.ModuleType:
         return self._loader.load_module(fullname)
 
+    @override
     def exec_module(self, module: types.ModuleType) -> None:
         source_bytes = self.get_data(self.get_filename(self.fullname))
         source = source_bytes.decode("utf-8")

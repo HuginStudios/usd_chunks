@@ -40,7 +40,7 @@ from typing import (
 
 import attrs
 from pxr import Sdf, Tf, Usd
-from typing_extensions import Self, Required
+from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
 from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils
@@ -612,7 +612,9 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
 class ChunkHash(Protocol):
     """Protocol for hashable Chunk object"""
 
+    @override
     def __hash__(self) -> int: ...
+    @override
     def __eq__(self, value: object, /) -> bool: ...
 
 
@@ -690,9 +692,11 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             return param
         raise ReferenceError("Reference to param is dead")
 
+    @override
     def __eq__(self, value: object) -> bool:
         return self.__hashable == value
 
+    @override
     def __hash__(self) -> int:
         return self.__hashable.__hash__()
 
@@ -718,9 +722,11 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             return self.__value_sender
         return self._param_ref.get_attribute_sender(name)
 
+    @override
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return self._param_ref.get_notice_alias()
 
+    @override
     def request_delete(self):
         self._children.clear()
         self._children.set_owner(None)
@@ -735,6 +741,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
         self.set_owner(None)
 
+    @override
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         if not notice or not (res := super().data_changed(notice)):
             return None
@@ -744,6 +751,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
                 self.send_self(alias, prop)
         return res
 
+    @override
     def send_self(
         self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None
     ) -> chunk_notice.ChunkNotice | None:
@@ -767,6 +775,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
                 conn.handle_callback(notice, self)
         return res
 
+    @override
     def __getattribute__(self, name: str) -> Any:
         if name in ("value", "raw_value"):
             # Return the value stored on the proxy so widgets display the proxy's own value,
@@ -804,6 +813,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
         return super().__getattribute__(name)
 
+    @override
     def __setattr__(self, name: str, value: Any) -> None:
         # All attributes except 'owner' and 'value' are proxied, meaning we set the attributes
         # back on to the parameter we're proxying.
@@ -901,6 +911,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
 
 
+    @override
     def get_notice_data(self) -> Self:
         return self
 
@@ -953,6 +964,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
             target.add(proxy)
         return target
 
+    @override
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         # Override to reflect any changes on the children in this ds. Used to update the names when a name changes
         if notice and (p := notice.data):
@@ -961,6 +973,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
         return super().data_changed(notice)
 
+    @override
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         # We are only interested in hijacking data_changed, and should not send any signals.
         return chunk_notice.ChunkNoticeAlias.NONE
@@ -1225,9 +1238,11 @@ class HashVal:
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
+    @override
     def __hash__(self) -> int:
         return hash(self._uuid)
 
+    @override
     def __eq__(self, value: object) -> bool:
         return hash(self) == hash(value)
 
@@ -1351,11 +1366,13 @@ class ChunkCommon(AttributesBase):
 
         return f"{name}_{val}"
 
+    @override
     def get_logger(self) -> logging.Logger:
         if not self._logger:
             self._logger = logging.getLogger(f"usd_chunks.{self.__class__.__name__}.{self.name}")
         return self._logger
 
+    @override
     def is_blocked(self) -> bool:
         v = self.has_state(ChunkFlags.State.DISABLED)
         return v or super().is_blocked()
@@ -1396,6 +1413,7 @@ class ChunkCommon(AttributesBase):
         """Clears DISABLED and HIDDEN states"""
         self.unset_state(ChunkFlags.State.DISABLED | ChunkFlags.State.HIDDEN)
 
+    @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "name":
             return re.sub(r"\W+", "", str(val))[0:100]
@@ -1410,6 +1428,7 @@ class ChunkCommon(AttributesBase):
 
         return super().convert_attr(attr, val)
 
+    @override
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         # Called when a attrs.field is modified. Should raise ValueError if the validation fails
         if attr.name in ["name"]:
@@ -1556,9 +1575,11 @@ class ChunkCommon(AttributesBase):
         else:
             self.unset_state(ChunkFlags.State.SELECTED)
 
+    @override
     def __hash__(self) -> int:
         return hash(self._hashable)
 
+    @override
     def __eq__(self, value: object) -> bool:
         return self._hashable == value
 
@@ -1722,6 +1743,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
+    @override
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         my_notice = super().data_changed(notice)
 
@@ -2201,6 +2223,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         ),
     )
 
+    @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "value":
             if val is None:
@@ -2234,6 +2257,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
         return super().convert_attr(attr, val)
 
+    @override
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "value" and val is not None:
             if chunk_utils.is_expression_text(val):
@@ -2279,6 +2303,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         """
         return self.get_type()
 
+    @override
     def get_notice_alias(self):
         return chunk_notice.ChunkNoticeAlias.PARAM_CHANGED
 
@@ -2365,6 +2390,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     #: text from a chunk module rather than from a param (see scripts/usd/set_variant.py).
     _STAGE_EXPRESSION_TYPES = ChunkFlags.ParamType.FILE
 
+    @override
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if attrname == "default_value" and hasattr(self, "value") and (self.value is None or self.value == old_value):
             self.value = value
@@ -2458,6 +2484,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         """The stored value before expression evaluation. Use this for display purposes."""
         return self.__dict__.get("value")
 
+    @override
     def __getattribute__(self, name: str) -> Any:
         if name == "value" and "value" in self.__dict__:
             raw = self.__dict__["value"]
@@ -2576,13 +2603,16 @@ class ChunkContainerBase(ChunkCommon):
         metadata=AttributeMetadata(copy_mode=CopyMode.SHARE),
     )
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         self.children.set_owner(self)
 
+    @override
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.GROUP_CHANGED
 
+    @override
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         if isinstance(notice, chunk_notice.AttributeStateChangeNotice) and notice.data.get_owner() == self:
             # If this container holds nested chunks, and the DISABLED state was switched, we should propagate the state
@@ -3053,6 +3083,7 @@ class ChunkListGroupBase(ChunkGroupBase):
         raise ValueError(f"Predicate {predicate} failed for get_indexed_param with index {index}")
 
 
+    @override
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if old_value is None or attrname != "size":
             return super().value_changed(attrname, old_value, value)
@@ -3092,12 +3123,14 @@ class ChunkListGroupBase(ChunkGroupBase):
     @overload
     def get_params(self, predicate: Predicate[ValueT] | None = None) -> tuple[ValueT, ...]: ...
 
+    @override
     def get_params(self, predicate: Predicate[ValueT] | None = None):
         res = []
         for container in self.proxy_params:
             res.extend(container.get_params(predicate))
         return tuple(res)
 
+    @override
     def get_my_params(self, *args, **kwargs) -> tuple[ChunkGroupBase, ...]:
         return tuple(self.proxy_params)
 
@@ -3122,6 +3155,7 @@ class ChunkListGroupBase(ChunkGroupBase):
 
         self.size -= 1
 
+    @override
     def add_param(self, param: ChunkT, force_unique: bool = True) -> ChunkT:
         param = super().add_param(param, force_unique)
 
@@ -3143,6 +3177,7 @@ class ChunkBase(ChunkGroupBase):
     # _CHUNKS_ROOT when None.
     prim_path: str | None = attrs.field(default=None)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         self.add_callback(
@@ -3170,6 +3205,7 @@ class ChunkBase(ChunkGroupBase):
             private=True,
         )
 
+    @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         # Sanitize each path segment so prim_path stays a valid USD path, but leave None
         # alone -- otherwise str(None) makes prim_path the string "None", which is truthy
@@ -3216,17 +3252,21 @@ class ChunkBase(ChunkGroupBase):
     def get_config(self) -> ChunkConfig | None:
         return self._config
 
+    @override
     def get_edit_context(self) -> Sdf.Layer | None:
         if self._config and self._config.interactive:
             return None
         return super().get_edit_context()
 
+    @override
     def get_chunk(self) -> ChunkBase | None:
         return self
 
+    @override
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED
 
+    @override
     def add_param(self, param: ChunkT, force_unique: bool = True, notify: bool = True) -> ChunkT:
         do_context_setup = notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase)
         if do_context_setup:
@@ -3321,6 +3361,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         default=False, init=False, metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND)
     )
 
+    @override
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
         if attr.name == "suffixes" and val is not None:
             if len(val) < self.length:
@@ -3329,6 +3370,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 )
         return super().validate_attr(attr, val)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         self._attr_senders["value"] = AttributeSender(self, "value", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
@@ -3387,6 +3429,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             raise KeyError(f"Index {key} does not exist on vector")
         return param
 
+    @override
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         my_notice = super().data_changed(notice)
 
@@ -3657,6 +3700,7 @@ class ChunkConfig(AttributesBase):
     )
     gizmos: list[GizmoBase] = attrs.field(factory=list)  # viewport handles: authored as ui:gizmo:* on the chunk prim
 
+    @override
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
 
