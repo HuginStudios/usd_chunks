@@ -118,7 +118,7 @@ def execute(node):
         xform.SetPivotPosition(Gf.Vec3d(*point))
     matrix = xform.GetMatrix()
 
-    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             continue
@@ -179,7 +179,7 @@ def gizmo_changed(node, gizmo, value):
     if not primpath_param or not primpath_param.value:
         return False
     stage = node.get_stage()
-    targets = list(chunk_utils.iter_prim_targets(stage, primpath_param))
+    targets = chunk_utils.target_paths(primpath_param)
     if not targets:
         return False
 
@@ -315,7 +315,7 @@ def _center_pivot(owner, notice, sender):
     primpath_param = node.get_param("primpath_location")
     if not primpath_param or not primpath_param.value:
         return
-    targets = list(chunk_utils.iter_prim_targets(stage, primpath_param))
+    targets = chunk_utils.target_paths(primpath_param)
     if not targets:
         return
     # One pivot for however many prims the path pattern matched, so it can only be centred on

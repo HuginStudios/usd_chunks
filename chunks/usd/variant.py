@@ -25,7 +25,7 @@ def execute(node):
             variants = [v.strip() for v in v_names.split(",") if v.strip()]
             vsets[vs_name] = (variants, v_default)
 
-    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         target_prim = stage.OverridePrim(target_path)
         for vs_name, (variants, v_default) in vsets.items():
             vset = target_prim.GetVariantSets().AddVariantSet(vs_name)

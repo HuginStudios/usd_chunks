@@ -297,7 +297,6 @@ def execute(node):
     is_s = chunk.is_param_t(str)
     is_b = chunk.is_param_t(bool)
 
-    prim_path = node.get_param("prim_path", is_s).value or "/Fence"
     path_paths = node.get_param("path_prim").resolve_paths()
     up_is_z = UsdGeom.GetStageUpAxis(stage).upper() != "Y"
 
@@ -346,11 +345,13 @@ def execute(node):
         "missing": node.get_param("missing", is_f).value,
     }
 
-    with chunk_utils.author_in_variant_context(stage, prim_path) as target:
+    prim_path_param = node.get_param("prim_path", is_s)
+    mesh = None
+    for target in chunk_utils.author_in_variant_contexts(stage, prim_path_param):
         mesh = build_fence(stage, target, cfg, points)
 
     if mesh:
-        print(f"[Fence] Built {len(mesh.GetFaceVertexCountsAttr().Get())} faces at {prim_path}")
+        print(f"[Fence] Built {len(mesh.GetFaceVertexCountsAttr().Get())} faces at {prim_path_param.value}")
 
 
 def main():

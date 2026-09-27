@@ -12,7 +12,7 @@ import re
 
 from pxr import Sdf, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_utils
 
 # Parented under "usd_chunks" so this module's messages reach the package handler and
 # its INFO level; a chunk module imported under its own file name otherwise logs from
@@ -83,7 +83,7 @@ def _warn_if_format_cannot_hold(product_name, var_paths):
         product_name,
         extension,
         len(var_paths),
-        ", ".join(p.name for p in var_paths),
+        ", ".join(Sdf.Path(p).name for p in var_paths),
     )
 
 
@@ -109,27 +109,9 @@ def _existing_vars(stage, var_paths):
             "out of orderedVars (%s). A disabled Render Var chunk authors nothing.",
             len(dropped),
             len(var_paths),
-            ", ".join(p.name for p in dropped),
+            ", ".join(Sdf.Path(p).name for p in dropped),
         )
     return live
-
-
-def _resolve_targets(stage, param):
-    """Prim paths named by a path/glob param, in the order given.
-
-    iter_prim_targets resolves globs and %collection tokens the same way the rest
-    of the toolkit does; ordering matters here because orderedVars is an ordered
-    relationship, so duplicates are dropped rather than re-sorted.
-    """
-    seen = set()
-    paths = []
-    for path in chunk_utils.iter_prim_targets(stage, param):
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        paths.append(Sdf.Path(key))
-    return paths
 
 
 def main():
@@ -172,18 +154,8 @@ def execute(node):
     if not raw_path:
         return
 
-    _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections and not chunk_notice._loading_stage:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
-        # Recorded as a value, not left as a local. This is the only thing telling this
-        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
-        # values -- without it two cameras reopened both claiming /cameras/camera1 and
-        # authored over one prim. Guarded so a path that did not move is not written back
-        # on every cook.
-        if raw_path != node.get_param("primpath_location").value:
-            node.get_param("primpath_location").value = raw_path
-
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
         product = UsdRender.Product.Define(stage, Sdf.Path(target_path))
         if not product:
             return
@@ -195,16 +167,12 @@ def execute(node):
 
         # Resolved rather than taken verbatim -- see render_settings.py: a PRIM_SELECTION
         # param can hold several paths, and a relationship target must be one absolute path.
-        if camera_targets := _resolve_targets(stage, node.get_param("camera"))[:1]:
+        if camera_targets := chunk_utils.target_paths(node.get_param("camera"))[:1]:
             product.CreateCameraRel().SetTargets(camera_targets)
 
-        if var_paths := _existing_vars(stage, _resolve_targets(stage, node.get_param("ordered_vars"))):
+        if var_paths := _existing_vars(stage, chunk_utils.target_paths(node.get_param("ordered_vars"))):
             product.CreateOrderedVarsRel().SetTargets(var_paths)
             _warn_if_format_cannot_hold(node.get_param("product_name").value, var_paths)
-
-        authored = product.GetPrim().GetPath().pathString
-        if not var_selections and authored != target_path:
-            node.get_param("primpath_location").value = authored
 
 
 def config():

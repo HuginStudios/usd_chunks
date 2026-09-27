@@ -1,7 +1,7 @@
 """One transform chunk, several target prims, one handle.
 
-`chunk_utils.iter_prim_targets` lets a chunk drive many prims while `anchor` is singular in
-the declaration, so the resolved anchor has to carry all of them. The decision is **one
+`chunk_utils.author_in_variant_contexts` lets a chunk drive many prims while `anchor` is
+singular in the declaration, so the resolved anchor has to carry all of them. The decision is **one
 handle at the averaged pivot**, not one handle per target -- `usdviewTools/gizmo` already
 does bbox-centroid offsets for multi-prim selection, so the pivot itself is the viewport
 layer's job. What this repo owes it is the full target list and a single set of params.

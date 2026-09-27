@@ -75,7 +75,7 @@ def _surface_prim(node):
     param = node.get_param("surface_prim") if node else None
     if stage is None or not param or not param.value:
         return None, None
-    targets = list(chunk_utils.iter_prim_targets(stage, param))
+    targets = chunk_utils.target_paths(param)
     if not targets:
         return None, None
     prim = stage.GetPrimAtPath(targets[0])

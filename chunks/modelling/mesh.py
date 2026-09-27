@@ -397,11 +397,11 @@ def cube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height", chunk.is_param_t(float))
     depth = owner.get_param("depth", chunk.is_param_t(float))
 
-    raw_path = "/cube"
-    if c := owner.get_chunk():
-        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+    if not (c := owner.get_chunk()):
+        return
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
+    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
         build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
 
 
@@ -423,11 +423,11 @@ def tube_changed(owner: chunk.Group, notice, sender):
     height = owner.get_param("height1", chunk.is_param_t(float))
     caps = owner.get_param("caps", chunk.is_param_t(bool))
 
-    raw_path = "/tube"
-    if c := owner.get_chunk():
-        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+    if not (c := owner.get_chunk()):
+        return
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
+    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
         build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
@@ -453,11 +453,11 @@ def grid_changed(owner: chunk.Group, notice, sender):
     if topo.value == "tris":
         topo_val = Topo.TRIS
 
-    raw_path = "/plane"
-    if c := owner.get_chunk():
-        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+    if not (c := owner.get_chunk()):
+        return
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
+    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
         grid = build_plane(stage, path, dimx.value, dimy.value, width.value, height.value, topo=topo_val)
         if grid:
             add_texture(grid.GetPrim())

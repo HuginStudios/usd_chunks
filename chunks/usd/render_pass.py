@@ -19,26 +19,13 @@ import logging
 
 from pxr import Sdf, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_utils
 
 # Parented under "usd_chunks" so this module's messages reach the package handler and
 # its INFO level; a chunk module imported under its own file name otherwise logs from
 # outside the package tree, where only WARNING and above escape, unformatted, through
 # logging's lastResort. See the note in render.py.
 logger = logging.getLogger(f"usd_chunks.{__name__}")
-
-
-def _resolve_targets(stage, param):
-    """Prim paths named by a path/glob param, order preserved, duplicates dropped."""
-    seen = set()
-    paths = []
-    for path in chunk_utils.iter_prim_targets(stage, param):
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        paths.append(Sdf.Path(key))
-    return paths
 
 
 def main():
@@ -82,18 +69,8 @@ def execute(node):
     if not raw_path:
         return
 
-    _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections and not chunk_notice._loading_stage:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
-        # Recorded as a value, not left as a local. This is the only thing telling this
-        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
-        # values -- without it two cameras reopened both claiming /cameras/camera1 and
-        # authored over one prim. Guarded so a path that did not move is not written back
-        # on every cook.
-        if raw_path != node.get_param("primpath_location").value:
-            node.get_param("primpath_location").value = raw_path
-
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
         render_pass = UsdRender.Pass.Define(stage, Sdf.Path(target_path))
         if not render_pass:
             return
@@ -104,10 +81,10 @@ def execute(node):
         # One source: renderSource names the settings this pass renders with, and a
         # pass renders one thing. Resolved rather than taken verbatim, like every other
         # path param here, so a multi-selection or a relative path cannot raise.
-        if source := _resolve_targets(stage, node.get_param("render_source"))[:1]:
+        if source := chunk_utils.target_paths(node.get_param("render_source"))[:1]:
             render_pass.CreateRenderSourceRel().SetTargets(source)
 
-        if inputs := _resolve_targets(stage, node.get_param("input_passes")):
+        if inputs := chunk_utils.target_paths(node.get_param("input_passes")):
             render_pass.CreateInputPassesRel().SetTargets(inputs)
 
         if command := node.get_param("command").value.strip():
@@ -115,10 +92,6 @@ def execute(node):
 
         if file_name := node.get_param("file_name").value.strip():
             render_pass.CreateFileNameAttr().Set(file_name)
-
-        authored = render_pass.GetPrim().GetPath().pathString
-        if not var_selections and authored != target_path:
-            node.get_param("primpath_location").value = authored
 
 
 def config():

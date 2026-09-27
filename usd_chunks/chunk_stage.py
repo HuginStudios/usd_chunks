@@ -294,15 +294,27 @@ def _push_driven_values(stage: Usd.Stage, param, layer: Sdf.Layer | None = None)
         return
     driven_var_selections = getattr(param, "_driven_var_selections", {})
     for path in paths:
-        attr = stage.GetAttributeAtPath(Sdf.Path(path))
-        if not attr:
-            continue
-        if isinstance(value, str) and not chunk_utils.attr_holds_text(attr):
-            continue
-        if attr.Get(0) != value:
-            var_selections = driven_var_selections.get(path, ())
-            with chunk_utils.edit_context_for(stage, var_selections, layer):
+        # Inside the recorded variant before the lookup: a prim that only exists in that
+        # variant is not on the stage while another one is selected.
+        var_selections = driven_var_selections.get(path, ())
+        with chunk_utils.edit_context_for(stage, var_selections, layer):
+            attr = stage.GetAttributeAtPath(Sdf.Path(path))
+            if not attr:
+                continue
+            if isinstance(value, str) and not chunk_utils.attr_holds_text(attr):
+                continue
+            if attr.Get(0) != value:
                 attr.Set(value)
+
+
+def _variant_scope_of(param, stage) -> tuple:
+    """(var_selections, layer) for re-entering the variant `param` was bound in.
+
+    The layer is the param's chunk layer, since a chunk's edits always go there -- or None
+    outside a variant, which leaves edit_context_for a no-op there as before.
+    """
+    selections = getattr(param, "_var_selections", ())
+    return selections, (chunk_utils.chunk_write_layer(stage, param) if selections else None)
 
 
 def params_are_bound(chunk: core.ChunkBase) -> bool:
@@ -1539,21 +1551,23 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         vector._connect_param_attr(attr)
 
         if real_attr_path and real_attr_path != str(attr.GetPath()):
-            if old_attr := self._stage.GetAttributeAtPath(Sdf.Path(real_attr_path)):
-                if old_attr.IsValid():
-                    # Through _drive_from_storage, not hand-rolled: it carries the
-                    # muted-layer guard _push_driven_values has (USD raises rather than
-                    # no-ops authoring into a muted layer) and threads var_selections
-                    # through to connect_usd_attr, so a Vector param show_attribute bound
-                    # inside a variant (displayColor, extent, a Vec3f xformOp on a
-                    # variant-scoped prim) keeps its edits inside that variant.
-                    self._drive_from_storage(vector, old_attr)
-                    # See _sync_param_input's matching comment: vector._var_selections
-                    # described old_attr, not `attr` (this chunk's own storage attr) that
-                    # _param_attr_path is now bound to. _drive_from_storage already read it
-                    # above; clear it now so this vector's own future storage-attr writes
-                    # don't misfire into a stale variant scope.
-                    vector._var_selections = ()
+            # Inside the old binding's variant -- see _sync_param_input.
+            with chunk_utils.edit_context_for(self._stage, *_variant_scope_of(vector, self._stage)):
+                if old_attr := self._stage.GetAttributeAtPath(Sdf.Path(real_attr_path)):
+                    if old_attr.IsValid():
+                        # Through _drive_from_storage, not hand-rolled: it carries the
+                        # muted-layer guard _push_driven_values has (USD raises rather than
+                        # no-ops authoring into a muted layer) and threads var_selections
+                        # through to connect_usd_attr, so a Vector param show_attribute bound
+                        # inside a variant (displayColor, extent, a Vec3f xformOp on a
+                        # variant-scoped prim) keeps its edits inside that variant.
+                        self._drive_from_storage(vector, old_attr)
+                        # See _sync_param_input's matching comment: vector._var_selections
+                        # described old_attr, not `attr` (this chunk's own storage attr) that
+                        # _param_attr_path is now bound to. _drive_from_storage already read it
+                        # above; clear it now so this vector's own future storage-attr writes
+                        # don't misfire into a stale variant scope.
+                        vector._var_selections = ()
 
     def _refresh_gizmo_anchors(self, chunk: core.ChunkBase) -> None:
         """Keep every gizmo's anchor rel pointing at the prim the chunk currently targets.
@@ -1656,20 +1670,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         param._connect_param_attr(attr)
 
         if existing and existing != str(attr.GetPath()):
-            old_attr = self._stage.GetAttributeAtPath(Sdf.Path(existing))
-            if old_attr and old_attr.IsValid():
-                self._drive_from_storage(param, old_attr)
-                # param._var_selections (still the OLD binding's, since _connect_param_attr
-                # above was called without var_selections and leaves it alone) described
-                # `existing` -- a real prim's attribute, possibly variant-scoped. attr, the
-                # NEW _param_attr_path, is this chunk's own bookkeeping attribute, which is
-                # never inside anyone's variant. Leaving the stale tuple in place misdirects
-                # every future edit's OWN storage-attr write (ChunkUsdAttributeSupport's
-                # data_changed) into `existing`'s variant context for an unrelated path,
-                # which USD silently no-ops -- the edit stops reaching the chunk prim's
-                # saved value at all, so a save/reload restores the pre-edit number.
-                # _drive_from_storage already read the old value above; safe to clear now.
-                param._var_selections = ()
+            # Inside the variant the old binding was made in: a prim that only exists in
+            # that variant is not on the stage while another one is selected, so looking
+            # it up outside found nothing and the param was never promoted to a driven
+            # connection -- its edits then went nowhere.
+            with chunk_utils.edit_context_for(self._stage, *_variant_scope_of(param, self._stage)):
+                old_attr = self._stage.GetAttributeAtPath(Sdf.Path(existing))
+                if old_attr and old_attr.IsValid():
+                    self._drive_from_storage(param, old_attr)
+                    # param._var_selections (still the OLD binding's, since _connect_param_attr
+                    # above was called without var_selections and leaves it alone) described
+                    # `existing` -- a real prim's attribute, possibly variant-scoped. attr, the
+                    # NEW _param_attr_path, is this chunk's own bookkeeping attribute, which is
+                    # never inside anyone's variant. Leaving the stale tuple in place misdirects
+                    # every future edit's OWN storage-attr write (ChunkUsdAttributeSupport's
+                    # data_changed) into `existing`'s variant context for an unrelated path,
+                    # which USD silently no-ops -- the edit stops reaching the chunk prim's
+                    # saved value at all, so a save/reload restores the pre-edit number.
+                    # _drive_from_storage already read the old value above; safe to clear now.
+                    param._var_selections = ()
 
     def _delete_stale_attr_specs(self, prim: Usd.Prim, attr_name: str) -> None:
         """Remove attr_name's spec from every layer in the stack where it is found.
@@ -1726,9 +1745,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 backing_path = getattr(param, '_param_attr_path', None)
                 if not is_expr:
                     if backing_path:
-                        # param_from_attr: only store if the real USD attr has been authored
-                        backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
-                        if not (backing and backing.HasAuthoredValue()):
+                        # param_from_attr: only store if the real USD attr has been authored.
+                        # Looked up inside its recorded variant -- see _sync_param_input.
+                        with chunk_utils.edit_context_for(self._stage, *_variant_scope_of(param, self._stage)):
+                            backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
+                            authored = bool(backing and backing.HasAuthoredValue())
+                        if not authored:
                             continue
                     else:
                         default = getattr(param, 'default_value', None)
@@ -1752,18 +1774,20 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             param._connect_param_attr(attr)  # reads attr value and updates param
 
             if old_storage_path and old_storage_path != str(attr.GetPath()):
-                old_attr = self._stage.GetAttributeAtPath(Sdf.Path(old_storage_path))
-                if old_attr and old_attr.IsValid():
-                    self._drive_from_storage(param, old_attr)
-                    # See _sync_param_input's matching comment: param._var_selections
-                    # described old_attr (a real prim's attribute, possibly variant-scoped),
-                    # not `attr` (this chunk's own, never variant-scoped, bookkeeping attr)
-                    # that _param_attr_path now points at. _drive_from_storage already read
-                    # it above; clear it now so this param's own future storage-attr writes
-                    # resolve through get_attr_home_layer instead of a stale variant scope
-                    # that silently swallows them (USD no-ops a write mapped to a path
-                    # outside the variant's own subtree).
-                    param._var_selections = ()
+                # Inside the old binding's variant -- see _sync_param_input.
+                with chunk_utils.edit_context_for(self._stage, *_variant_scope_of(param, self._stage)):
+                    old_attr = self._stage.GetAttributeAtPath(Sdf.Path(old_storage_path))
+                    if old_attr and old_attr.IsValid():
+                        self._drive_from_storage(param, old_attr)
+                        # See _sync_param_input's matching comment: param._var_selections
+                        # described old_attr (a real prim's attribute, possibly variant-scoped),
+                        # not `attr` (this chunk's own, never variant-scoped, bookkeeping attr)
+                        # that _param_attr_path now points at. _drive_from_storage already read
+                        # it above; clear it now so this param's own future storage-attr writes
+                        # resolve through get_attr_home_layer instead of a stale variant scope
+                        # that silently swallows them (USD no-ops a write mapped to a path
+                        # outside the variant's own subtree).
+                        param._var_selections = ()
 
         for _, vector in _iter_chunk_vectors(chunk):
             self._sync_vector_input(chunk, vector)

@@ -1826,56 +1826,64 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
                 try:
-                    if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
-                        # self._param_attr_path is usually the chunk-prim's own storage attr --
-                        # bookkeeping, independent of the stage's ambient/Edit-Target-driven
-                        # edit target (which _write_driven_attrs below correctly targets
-                        # separately via get_edit_context()). It already exists (that's what
-                        # having a _param_attr_path means), so update it wherever its spec
-                        # already lives -- not wherever Edit Target currently resolves to,
-                        # which may have moved on since it was first authored.
-                        #
-                        # No home means the attr is new; it goes where a new bookkeeping
-                        # attr of this chunk goes (get_bookkeeping_layer). An attr composed
-                        # in from a sequence file has a home: the host's edit target.
-                        #
-                        # A param bound straight to a real prim's attribute from inside a
-                        # variant (show_attribute, from the Property Editor or Light) is the
-                        # exception: get_attr_home_layer walks the stage's plain layer stack,
-                        # which cannot see a spec keyed under a variant's own internal path,
-                        # so it always comes back empty there and the edit would otherwise
-                        # fall through to the fallback -- outside the variant entirely.
-                        # Re-enter the selections recorded at bind time instead.
-                        fallback = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
-                            stage, self.get_chunk()
-                        )
-                        with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
-                            if not is_expr:
-                                current = usd_attr.Get(0)
-                                # Don't write a string to a typed (numeric) attr -- an unresolved
-                                # forwarded value can arrive as text and raise a type-mismatch.
-                                bad_str = isinstance(val, str) and not chunk_utils.attr_holds_text(usd_attr)
-                                if not bad_str and current != val:
-                                    usd_attr.Set(val)
-                            if is_expr:
-                                chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
-                                conns = []
-                                for node, attr_name in chunk_utils.parse_expression(raw):
-                                    ref_prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
-                                    # The referenced node may not exist (a stale/renamed expression
-                                    # ref, or a lofted chain pointing at a prim not on this stage) --
-                                    # GetAttribute on a null prim raises, so guard it and default to
-                                    # the inputs: port. USD lets a connection target a not-yet-present
-                                    # path, so the connection is still authored.
-                                    use_out = (
-                                        ref_prim.IsValid()
-                                        and ref_prim.GetAttribute(f"outputs:{attr_name}").IsValid()
-                                    )
-                                    suffix = f"outputs:{attr_name}" if use_out else f"inputs:{attr_name}"
-                                    conns.append(Sdf.Path(f"{chunk_root}/{node}.{suffix}"))
-                                usd_attr.SetConnections(conns)
-                                if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
-                                    usd_attr.Set(raw)
+                    # Entered before the lookup, not only around the write: a prim that
+                    # exists only in the recorded variant is not on the stage while another
+                    # one is selected, so looking it up first found nothing and the edit was
+                    # dropped. A no-op outside a variant; the inner edit_context_for below
+                    # re-enters the same scopes, which is skipped rather than nested.
+                    # Inside a variant the write still goes into this chunk's own layer.
+                    variant_layer = chunk_utils.chunk_write_layer(stage, self) if self._var_selections else None
+                    with chunk_utils.edit_context_for(stage, self._var_selections, variant_layer):
+                        if usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path)):
+                            # self._param_attr_path is usually the chunk-prim's own storage attr --
+                            # bookkeeping, independent of the stage's ambient/Edit-Target-driven
+                            # edit target (which _write_driven_attrs below correctly targets
+                            # separately via get_edit_context()). It already exists (that's what
+                            # having a _param_attr_path means), so update it wherever its spec
+                            # already lives -- not wherever Edit Target currently resolves to,
+                            # which may have moved on since it was first authored.
+                            #
+                            # No home means the attr is new; it goes where a new bookkeeping
+                            # attr of this chunk goes (get_bookkeeping_layer). An attr composed
+                            # in from a sequence file has a home: the host's edit target.
+                            #
+                            # A param bound straight to a real prim's attribute from inside a
+                            # variant (show_attribute, from the Property Editor or Light) is the
+                            # exception: get_attr_home_layer walks the stage's plain layer stack,
+                            # which cannot see a spec keyed under a variant's own internal path,
+                            # so it always comes back empty there and the edit would otherwise
+                            # fall through to the fallback -- outside the variant entirely.
+                            # Re-enter the selections recorded at bind time instead.
+                            fallback = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
+                                stage, self.get_chunk()
+                            )
+                            with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
+                                if not is_expr:
+                                    current = usd_attr.Get(0)
+                                    # Don't write a string to a typed (numeric) attr -- an unresolved
+                                    # forwarded value can arrive as text and raise a type-mismatch.
+                                    bad_str = isinstance(val, str) and not chunk_utils.attr_holds_text(usd_attr)
+                                    if not bad_str and current != val:
+                                        usd_attr.Set(val)
+                                if is_expr:
+                                    chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
+                                    conns = []
+                                    for node, attr_name in chunk_utils.parse_expression(raw):
+                                        ref_prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
+                                        # The referenced node may not exist (a stale/renamed expression
+                                        # ref, or a lofted chain pointing at a prim not on this stage) --
+                                        # GetAttribute on a null prim raises, so guard it and default to
+                                        # the inputs: port. USD lets a connection target a not-yet-present
+                                        # path, so the connection is still authored.
+                                        use_out = (
+                                            ref_prim.IsValid()
+                                            and ref_prim.GetAttribute(f"outputs:{attr_name}").IsValid()
+                                        )
+                                        suffix = f"outputs:{attr_name}" if use_out else f"inputs:{attr_name}"
+                                        conns.append(Sdf.Path(f"{chunk_root}/{node}.{suffix}"))
+                                    usd_attr.SetConnections(conns)
+                                    if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
+                                        usd_attr.Set(raw)
                     if not self.is_blocked():
                         self._write_driven_attrs(stage, val)
                 finally:
@@ -1906,16 +1914,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if not chunk_layer or stage.IsLayerMuted(chunk_layer.identifier):
             return
         for path in self._driven_attr_paths:
-            sdf_path = Sdf.Path(path)
-            if driven_attr := stage.GetAttributeAtPath(sdf_path):
+            # Looked up inside the recorded variant, not before entering it: a prim that
+            # only exists in that variant is not on the stage while another one is
+            # selected, so the lookup came back empty and the edit was silently dropped.
+            var_selections = self._driven_var_selections.get(path, ())
+            with chunk_utils.edit_context_for(stage, var_selections, chunk_layer):
+                driven_attr = stage.GetAttributeAtPath(Sdf.Path(path))
+                if not driven_attr:
+                    continue
                 # An expression that did not resolve (a typo, an unset variable) stays
                 # text; a typed attr refuses it, and the raise took the whole edit down.
                 if isinstance(val, str) and not chunk_utils.attr_holds_text(driven_attr):
                     continue
                 if driven_attr.Get(0) != val:
-                    var_selections = self._driven_var_selections.get(path, ())
-                    with chunk_utils.edit_context_for(stage, var_selections, chunk_layer):
-                        driven_attr.Set(val)
+                    driven_attr.Set(val)
 
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
@@ -2185,15 +2197,16 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
         for path in self._driven_attr_paths:
             sdf_path = Sdf.Path(path)
-            real_attr = stage.GetAttributeAtPath(sdf_path)
-            if not (real_attr and real_attr.IsValid()):
-                prim = stage.GetPrimAtPath(sdf_path.GetPrimPath())
-                if not (prim and prim.IsValid()):
-                    continue
-                real_attr = prim.CreateAttribute(sdf_path.name, type_name, custom=False)
-            if real_attr and real_attr.IsValid():
-                var_selections = self._driven_var_selections.get(path, ())
-                with chunk_utils.edit_context_for(stage, var_selections, chunk_layer):
+            # Inside the recorded variant before the lookup -- see _write_driven_attrs.
+            var_selections = self._driven_var_selections.get(path, ())
+            with chunk_utils.edit_context_for(stage, var_selections, chunk_layer):
+                real_attr = stage.GetAttributeAtPath(sdf_path)
+                if not (real_attr and real_attr.IsValid()):
+                    prim = stage.GetPrimAtPath(sdf_path.GetPrimPath())
+                    if not (prim and prim.IsValid()):
+                        continue
+                    real_attr = prim.CreateAttribute(sdf_path.name, type_name, custom=False)
+                if real_attr and real_attr.IsValid():
                     real_attr.SetConnections([storage_path])
 
         # SetConnections only authors topology -- Get() on the driven attr doesn't follow
@@ -3548,15 +3561,18 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
                 try:
-                    if self._param_attr_path and (usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))):
-                        # See ChunkParamBase.data_changed for why a param bound from inside a
-                        # variant (show_attribute) must re-enter it here rather than rely on
-                        # the ambient edit target -- that is the ordinary case for a ChunkVectorBase
-                        # too (displayColor, extent, ... are common on a variant-scoped prim).
-                        # fallback_layer=None preserves the ambient edit target this always
-                        # used before the variant carve-out, unlike its scalar counterpart's
-                        # get_attr_home_layer fallback -- ChunkVectorBase never resolved one.
-                        with chunk_utils.edit_context_for(stage, self._var_selections, None):
+                    # Inside a variant the write still goes into this chunk's own layer.
+                    variant_layer = chunk_utils.chunk_write_layer(stage, self) if self._var_selections else None
+                    with chunk_utils.edit_context_for(stage, self._var_selections, variant_layer):
+                        if self._param_attr_path and (usd_attr := stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))):
+                            # See ChunkParamBase.data_changed for why a param bound from inside a
+                            # variant (show_attribute) must re-enter it here rather than rely on
+                            # the ambient edit target -- that is the ordinary case for a ChunkVectorBase
+                            # too (displayColor, extent, ... are common on a variant-scoped prim).
+                            # Outside a variant this keeps the ambient edit target it always
+                            # used, unlike its scalar counterpart's get_attr_home_layer fallback
+                            # -- ChunkVectorBase never resolved one. Inside one, the chunk's own
+                            # layer, where a chunk's edits always go.
                             if not is_expr:
                                 current = usd_attr.Get(0)
                                 if current != val:

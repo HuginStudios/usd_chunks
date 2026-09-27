@@ -73,7 +73,8 @@ def execute(node):
         else:
             ref = Sdf.Payload(payload_path)
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             prim = stage.DefinePrim(target_path, "Xform")
@@ -121,6 +122,6 @@ def config():
         into the node to see and tweak the network, as with a chunkgroup. Tweaks are
         overrides in the current file; the network file is never written to.
 
-        Import is also variant-context-aware via author_in_variant_context, so the
+        Import is also variant-context-aware via author_in_variant_contexts, so the
         Payload is authored inside any active variant selection on the stage.
         """)

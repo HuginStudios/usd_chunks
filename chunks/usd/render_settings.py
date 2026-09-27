@@ -374,19 +374,6 @@ def _token_list(value):
     return [token.strip() for token in (value or "").split(",") if token.strip()]
 
 
-def _resolve_targets(stage, param):
-    """Prim paths named by a path/glob param, order preserved, duplicates dropped."""
-    seen = set()
-    paths = []
-    for path in chunk_utils.iter_prim_targets(stage, param):
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        paths.append(Sdf.Path(key))
-    return paths
-
-
 def main():
     chunk_api = chunk.Chunk("Render Settings")
 
@@ -455,18 +442,9 @@ def execute(node):
     if not raw_path:
         return
 
-    _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections and not chunk_notice._loading_stage:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
-        # Recorded as a value, not left as a local. This is the only thing telling this
-        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
-        # values -- without it two cameras reopened both claiming /cameras/camera1 and
-        # authored over one prim. Guarded so a path that did not move is not written back
-        # on every cook.
-        if raw_path != node.get_param("primpath_location").value:
-            node.get_param("primpath_location").value = raw_path
-
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    authored = None
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
         settings = UsdRender.Settings.Define(stage, Sdf.Path(target_path))
         if not settings:
             return
@@ -500,15 +478,13 @@ def execute(node):
         # seeded from whatever happened to be selected when the chunk was created -- which
         # may be several paths at once, or none of them a prim. A relationship target has
         # to be a single absolute path, and USD raises rather than ignoring a bad one.
-        if camera_targets := _resolve_targets(stage, node.get_param("camera"))[:1]:
+        if camera_targets := chunk_utils.target_paths(node.get_param("camera"))[:1]:
             settings.CreateCameraRel().SetTargets(camera_targets)
 
-        if product_paths := _resolve_targets(stage, node.get_param("products")):
+        if product_paths := chunk_utils.target_paths(node.get_param("products")):
             settings.CreateProductsRel().SetTargets(product_paths)
 
         authored = settings.GetPrim().GetPath().pathString
-        if not var_selections and authored != target_path:
-            node.get_param("primpath_location").value = authored
 
         _author_delegate_settings(node, settings.GetPrim())
 

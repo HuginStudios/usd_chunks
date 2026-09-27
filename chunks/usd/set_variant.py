@@ -25,8 +25,7 @@ def _first_target_prim(node):
     param = node.get_param("primpath_location")
     if not stage or param is None or not param.value:
         return None
-    for path_str in param.resolve_paths():
-        _anchor, target, _selections = chunk_utils.split_variant_path(path_str)
+    for target in chunk_utils.target_paths(param):
         prim = stage.GetPrimAtPath(target)
         if prim and prim.IsValid():
             return prim
@@ -118,7 +117,7 @@ def execute(node):
     if not vs_name or not primpath_param.value:
         return
 
-    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.OverridePrim(target_path)
         vset = prim.GetVariantSets().GetVariantSet(vs_name)
         if not vset:

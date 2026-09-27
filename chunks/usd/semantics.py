@@ -29,7 +29,7 @@ def execute(node):
         existing = taxonomies.setdefault(taxonomy, [])
         existing.extend(v for v in values if v not in existing)
 
-    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         target_prim = stage.OverridePrim(target_path)
         for taxonomy, values in taxonomies.items():
             # CanApply rejects instance names that aren't valid identifiers ("2bad",
