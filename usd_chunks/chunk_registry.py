@@ -279,8 +279,9 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if proc.returncode != 0:
             output = (proc.stdout or b"").decode(errors="replace").strip()
             logger.error(
-                f"Failed to install chunk dependencies {packages} (pip exited {proc.returncode}). "
-                f"They will be retried the next time a chunk requires them.\n{output}"
+                "Failed to install chunk dependencies %s (pip exited %s). "
+                "They will be retried the next time a chunk requires them.\n%s",
+                packages, proc.returncode, output,
             )
             return
 
@@ -399,7 +400,7 @@ class _ConfigTransformer(ast.NodeTransformer):
         try:
             self._module.config = self._deferred_config()
         except Exception as e:  # noqa: BLE001 - keep a bad config from taking down discovery
-            logger.warning(f"Could not evaluate config() for {self._module.module_name}: {e}")
+            logger.warning("Could not evaluate config() for %s: %s", self._module.module_name, e)
 
         self._deferred_config = None
 
@@ -765,7 +766,7 @@ class ChunkModule:
             name = p.stem
 
         if p.suffix != PY_MODULE_EXT:
-            logger.warning(f"Cannot import {p.name}: a chunk module is a .py file")
+            logger.warning("Cannot import %s: a chunk module is a .py file", p.name)
             return []
 
         # No deserialising to do -- loading the module is ChunkModule's own job.
@@ -809,13 +810,13 @@ class ChunkModule:
 
     def _exec_module(self):
         if not self.module_file.exists():
-            logger.error(f"Could not load module from file {self.module_file}")
+            logger.error("Could not load module from file %s", self.module_file)
             return False
 
         elif self.module_file.suffix == PY_MODULE_EXT:
             spec = util.spec_from_file_location(self.module_name, self.module_file)
             if not spec or not spec.loader:
-                logger.warning(f"Module spec or loader failed for module {self.module_name}. Skipping")
+                logger.warning("Module spec or loader failed for module %s. Skipping", self.module_name)
                 return False
 
             loader = _ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
@@ -826,7 +827,7 @@ class ChunkModule:
                 spec.loader.exec_module(module)
             except Exception:
                 # This module failed to load. Set to file_name so we can try loading it again later§
-                logger.exception(f"Failed to load module {self.module_name}")
+                logger.exception("Failed to load module %s", self.module_name)
                 return False
 
             if not self.has_main():
@@ -881,7 +882,7 @@ class ChunkModule:
             self.func = getattr(self.module, "main")
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later
-            logger.exception(f"Failed to run module {self.module_name}")
+            logger.exception("Failed to run module %s", self.module_name)
             self.loaded = False
             return False
 
@@ -900,7 +901,7 @@ class ChunkModule:
             bool: True if loaded successfully, False otherwise
         """
         if not self._pre_load():
-            logger.warning(f"Could not load module {self.module}")
+            logger.warning("Could not load module %s", self.module)
             return []
 
         start = timer()
@@ -909,7 +910,7 @@ class ChunkModule:
         self.loaded = len(res) > 0
         end = timer()
 
-        logger.info(f"loaded module: {self.module_name}. Load took {end - start} seconds")
+        logger.info("loaded module: %s. Load took %s seconds", self.module_name, end - start)
         return res
 
     def unload(self):
@@ -942,7 +943,7 @@ class ChunkModule:
             except TypeError:
                 loaded.append(retval)
         else:
-            logger.warning(f"module {self.module_name} does not have a function for creating chunks")
+            logger.warning("module %s does not have a function for creating chunks", self.module_name)
             return []
 
         if self.config:
@@ -999,13 +1000,13 @@ class ChunkModule:
             return
 
         if p.suffix != PY_MODULE_EXT:
-            logger.warning(f"wrong file extension {path}")
+            logger.warning("wrong file extension %s", path)
             return
 
         try:
             source = inspect.getsource(self.module)
         except (OSError, TypeError):
-            logger.exception(f"Could not read the source of {self.module_name}")
+            logger.exception("Could not read the source of %s", self.module_name)
             return
 
         with open(p, "w", encoding="utf-8") as f:
@@ -1264,7 +1265,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         self.register_chunk_modules(ordered_dirs + extras)
 
         c = len(self.get_chunk_modules(loaded=True))
-        logger.info(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
+        logger.info("Found %s chunks. Loaded %s", len(self.registered_modules), c)
         self._report_shadows()
         self.initialized = True
 
@@ -1300,7 +1301,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             chunk_dir (str): A pathlike string to add
         """
         if (p := Path(chunk_dir)) and not p.exists():
-            logger.warning(f"{chunk_dir} directory not found.")
+            logger.warning("%s directory not found.", chunk_dir)
             return
 
         if p in self.registered_directories:
@@ -1367,19 +1368,19 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             ChunkModule | None: The registered module, or None if failed
         """
         if not module.has_main():
-            logger.info(f"Skipping {module.module_name}. Module has no main function defined")
+            logger.info("Skipping %s. Module has no main function defined", module.module_name)
             return
         if not module.has_config():
-            logger.info(f"Skipping {module.module_name}. Module has no config function defined")
+            logger.info("Skipping %s. Module has no config function defined", module.module_name)
             return
         if not module.module:
-            logger.info(f"Skipping {module.module_name}. Module has no valid python source module")
+            logger.info("Skipping %s. Module has no valid python source module", module.module_name)
             return
         if not module.should_load_for_plugin(self.plugin):
-            logger.info(f"Skipping {module.module_name}. Module should not be registered in this context")
+            logger.info("Skipping %s. Module should not be registered in this context", module.module_name)
             return
         if not module.should_load_for_filter():
-            logger.info(f"Skipping {module.module_name}. Module is excluded in CHUNK_MODULE_FILTER")
+            logger.info("Skipping %s. Module is excluded in CHUNK_MODULE_FILTER", module.module_name)
             return
 
         name = module.module_name
@@ -1395,7 +1396,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             self.shadowed_modules.append(
                 (name, Path(winner.module_file), Path(module.module_file))
             )
-            logger.debug(f"Skipping {module.module_file}. Duplicate module: {name}")
+            logger.debug("Skipping %s. Duplicate module: %s", module.module_file, name)
             return
 
         self.registered_modules[name] = module
@@ -1427,8 +1428,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         if _is_truthy(USD_CHUNK_VERBOSE()):
             for name, winner, loser in self.shadowed_modules:
                 logger.info(
-                    f"shadowed chunk '{name}': using {winner} [{self._tier_of(winner)}], "
-                    f"ignoring {loser} [{self._tier_of(loser)}]"
+                    "shadowed chunk '%s': using %s [%s], ignoring %s [%s]",
+                    name, winner, self._tier_of(winner), loser, self._tier_of(loser),
                 )
             return
 
@@ -1440,8 +1441,9 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         if same_tier:
             names = ", ".join(sorted({s[0] for s in same_tier}))
             logger.info(
-                f"usd_chunks: {len(same_tier)} shadowed chunk name(s) at the same "
-                f"precedence tier ({names}) -- set USD_CHUNK_VERBOSE=1 to list"
+                "usd_chunks: %d shadowed chunk name(s) at the same precedence tier (%s) "
+                "-- set USD_CHUNK_VERBOSE=1 to list",
+                len(same_tier), names,
             )
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
@@ -1704,7 +1706,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def save_layers(self, path: str | Path) -> dict[str, str]:
         p = Path(path)
         if not p.is_dir():
-            logger.warning(f"Can't save layers. Path is not a directory {path}")
+            logger.warning("Can't save layers. Path is not a directory %s", path)
             return {}
 
         layers = {}

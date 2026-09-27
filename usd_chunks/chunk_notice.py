@@ -469,7 +469,7 @@ def send_notice(alias: ChunkNoticeAlias, sender: Any = None, data: Any = None) -
         else:
             notice.Send(sender)
     except Tf.ErrorException:
-        logger.exception(f"Could not send notice {notice}")
+        logger.exception("Could not send notice %s", notice)
         return
 
     return notice

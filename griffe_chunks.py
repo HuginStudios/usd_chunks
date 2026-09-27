@@ -37,7 +37,7 @@ class GriffleChunks(griffe.Extension):
         try:
             runtime_obj = griffe.dynamic_import(obj.path)
         except ImportError as error:
-            logger.warning(f"Could not import {obj.path}: {error}")
+            logger.warning("Could not import %s: %s", obj.path, error)
             return
 
         if not isclass(runtime_obj):
@@ -51,7 +51,7 @@ class GriffleChunks(griffe.Extension):
         except attr.exceptions.NotAnAttrsClassError:
             return
 
-        logger.info(f"Parsing class {obj.path}")
+        logger.info("Parsing class %s", obj.path)
 
         params = []
         for field_name, field in fields:

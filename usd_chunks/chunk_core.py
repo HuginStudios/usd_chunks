@@ -1662,7 +1662,7 @@ class ChunkCommon(AttributesBase):
         self.set_blocked(False)
 
         if not self.can_delete():
-            logger.warning(f"Deleting node: {self.name} with connected outputs. Stuff may break")
+            logger.warning("Deleting node: %s with connected outputs. Stuff may break", self.name)
             self.get_dag_node().disconnect()
 
         owner = self.get_owner()
@@ -2462,9 +2462,9 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                         # batch is registered and reports whatever is still dangling
                         # then, so warning here would only ever be a false alarm.
                         if chunk_notice._loading_stage is not None:
-                            logger.debug(f"Expression ref @{node_name}.{param_name}@ not resolvable yet (loading)")
+                            logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
                         else:
-                            logger.warning(f"Expression ref @{node_name}.{param_name}@ not found")
+                            logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
                         continue
                     conn = chunk_notice.NoticeConnection(
                         method=self._on_ref_changed,
@@ -3557,7 +3557,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             for node_name, param_name in chunk_utils.parse_expression(val):
                 ref = self._resolve_expression_ref(node_name, param_name)
                 if ref is None:
-                    logger.warning(f"Expression ref @{node_name}.{param_name}@ not found")
+                    logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
                     continue
                 conn = chunk_notice.NoticeConnection(
                     method=self._on_ref_changed,

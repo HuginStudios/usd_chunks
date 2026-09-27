@@ -159,7 +159,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # misconfigured USD_CHUNK_DIRS). Fall back to a plain context so a chunk still has
         # somewhere to go rather than being dropped.
         logger.warning(
-            f"chunk module {CHUNKGROUP_MODULE!r} unavailable; falling back to a plain context"
+            "chunk module %r unavailable; falling back to a plain context", CHUNKGROUP_MODULE
         )
         return self.add_context("Chunks")
 
@@ -313,7 +313,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         elif ctx := self.get_root_context():
             ctx.add_param(c, notify=notify)
         else:
-            logger.error(f"Failed to add chunk {c}")
+            logger.error("Failed to add chunk %s", c)
             return
 
         self._modified = True

@@ -256,7 +256,7 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
         try:
             yield _def_from_sdr(node)
         except Exception as e:  # noqa: BLE001 - one bad definition must not kill discovery
-            logger.debug(f"Skipping shader definition {name}: {e}")
+            logger.debug("Skipping shader definition %s: %s", name, e)
 
 
 #: Started once per process; see warm_registry_in_background.
@@ -386,7 +386,7 @@ def param_for_prop(prop: ShaderProp):
     try:
         param = cls(prop.name, prop.label, **kwargs)
     except Exception as e:  # noqa: BLE001 - a default this param type cannot hold
-        logger.debug(f"Could not build param for {prop.name} ({prop.sdf_type}): {e}")
+        logger.debug("Could not build param for %s (%s): %s", prop.name, prop.sdf_type, e)
         kwargs.pop("default_value", None)
         try:
             param = cls(prop.name, prop.label, **kwargs)

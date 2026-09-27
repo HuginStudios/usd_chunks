@@ -224,7 +224,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         if not self.get_owner():
             return
         if not hasattr(self.get_owner(), self.name):
-            logger.error(f"Failed to set attribute {self.name} from AttributeSender")
+            logger.error("Failed to set attribute %s from AttributeSender", self.name)
             return
 
         setattr(self.get_owner(), self.name, val)
