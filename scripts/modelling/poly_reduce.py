@@ -1083,7 +1083,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         requirements=["fast-simplification>=0.2,<1", "numpy>=2,<3"],
         description=(

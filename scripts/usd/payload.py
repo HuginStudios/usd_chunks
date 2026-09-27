@@ -98,7 +98,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description="""
         Payload chunk: Lets the user pick an external USD file and insert it as a

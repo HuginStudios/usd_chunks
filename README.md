@@ -104,7 +104,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
 
 ```
 
@@ -195,7 +195,7 @@ other chunks rather than as a node itself. In the Qt plugin that is a tab.
 
 **Discovery.** `USD_CHUNK_DIRS` is scanned recursively for `.py` files. Any module with a
 `main()` function is registered as a chunk module. `main()` takes no arguments and returns a
-`Chunk`. An optional `config()` returns a `DefaulConfig`, which sets the category the chunk
+`Chunk`. An optional `config()` returns a `DefaultConfig`, which sets the category the chunk
 is filed under (`StandardCategory.MODELLING`, `UTILS`, `RIGS`, `PROPERTIES`, `USER`,
 `EXAMPLES`) and whether it loads automatically. Chunks installed by a store are picked up the
 same way from `GLOBAL_USDCHUNKS`, appended after `USD_CHUNK_DIRS` so your own chunks win a

@@ -644,7 +644,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description=(
             "Exports every real layer in the composed stack to Output Directory, one file\n"

@@ -79,7 +79,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description="""
         Mute Prim — deactivates (bypasses) prims on the stage via SetActive(false).

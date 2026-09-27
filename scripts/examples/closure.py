@@ -29,4 +29,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(chunk.StandardCategory.EXAMPLES)

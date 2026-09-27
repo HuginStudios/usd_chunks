@@ -208,7 +208,7 @@ def execute(node):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
         description="""
         Render Product chunk — creates a UsdRender.Product prim: one rendered

@@ -84,7 +84,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description=(
             "Authors a named UsdCollectionAPI on Owner Prim from an Include/Exclude prim\n"

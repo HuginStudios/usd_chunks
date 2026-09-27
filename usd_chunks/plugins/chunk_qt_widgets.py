@@ -2563,7 +2563,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if isinstance(self.group, chunk_core.ChunkBase):
             if config := self.group.get_config():
                 return config.category
-        return chunk.DefaulConfig().category
+        return chunk.DefaultConfig().category
 
     def set_selected(self, val: bool):
         selected = bool(

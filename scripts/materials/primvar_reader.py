@@ -98,7 +98,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
         outputs=[("result", "Float2")],
         description="""

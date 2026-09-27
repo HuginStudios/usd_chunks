@@ -206,7 +206,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS,
         description=(
             "Declares USD stage expression variables -- a name, a type and a value per row.\n"

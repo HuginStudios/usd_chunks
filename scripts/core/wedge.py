@@ -625,7 +625,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description=(
             "Turns one network into N variants. Each lofted range drives a param by "

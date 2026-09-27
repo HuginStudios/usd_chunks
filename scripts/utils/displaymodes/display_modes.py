@@ -49,4 +49,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(load_for_plugin="chunk_usdview", category=chunk.StandardCategory.UTILS)
+    return chunk.DefaultConfig(load_for_plugin="chunk_usdview", category=chunk.StandardCategory.UTILS)

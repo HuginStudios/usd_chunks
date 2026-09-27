@@ -26,4 +26,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES, interactive=True)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES, interactive=True)

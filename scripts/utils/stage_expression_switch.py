@@ -189,7 +189,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS,
         # Two positional exec inputs: the top one is the normal path, the bottom one the
         # matched path. Positional, so they get a port each rather than stacking on one --

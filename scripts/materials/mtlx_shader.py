@@ -666,7 +666,7 @@ def _menu_variants():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MTLX,
         variants=_menu_variants,
         description="""

@@ -11,7 +11,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description="Pure passthrough — routes the execution chain without modifying the stage. Fan-out by connecting multiple downstream chunks to the single outputs:chunk.",
     )

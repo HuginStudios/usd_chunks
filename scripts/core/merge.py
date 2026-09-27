@@ -19,7 +19,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description="Fan-in for the execution chain: many upstream branches converge on one "
         "output, instead of being strung out in a single serial line. Inputs are ordered and "

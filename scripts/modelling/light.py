@@ -134,7 +134,7 @@ def execute(node):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         # One searchable menu entry per light type -- "Dome Light" is found and created
         # directly rather than by creating Light and re-picking the type. Each still

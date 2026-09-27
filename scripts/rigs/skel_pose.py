@@ -472,7 +472,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.RIGS,
         description="""
         Skel Pose -- holds a few joints of a UsdSkel character in a pose, over whatever

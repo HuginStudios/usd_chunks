@@ -147,7 +147,7 @@ def execute(node):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
         description="""
         Render Var chunk — creates a UsdRender.Var prim, the USD description of a

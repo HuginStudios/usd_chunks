@@ -162,7 +162,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS + "/math",
         # Every operation gets its own menu entry, so "Sine" is searchable and creatable
         # directly instead of being reachable only by creating Math Ops and re-picking the

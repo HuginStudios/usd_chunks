@@ -98,7 +98,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description="""
         Prune Prim — marks prims for permanent removal from the composed result.

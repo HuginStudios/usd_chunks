@@ -288,4 +288,4 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)

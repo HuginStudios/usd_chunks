@@ -525,7 +525,7 @@ def execute(node):
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
         description="""
         Render Settings chunk — creates a UsdRender.Settings prim describing one

@@ -409,7 +409,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         # No gizmos block: the handles are declared as gizmo= on the three groups in main().
         category=chunk.StandardCategory.TRANSFORM,
         description="""

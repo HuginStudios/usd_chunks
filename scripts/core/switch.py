@@ -97,7 +97,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         description="Picks one upstream branch. Where a Merge sums every branch wired into "
         "it, a Switch passes the one in the selected slot and mutes the rest -- the whole "

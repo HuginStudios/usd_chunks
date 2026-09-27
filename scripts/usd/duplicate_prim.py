@@ -231,7 +231,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
         description="""
         Duplicate Prim — deep copies a prim and its full subtree to a new path.
