@@ -593,8 +593,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
         # No blocked check here. A blocked chunk (outside the active view's tree) must not
         # react to a change, but the change itself still has to be recorded: dropping it at
-        # this point lost renames and values for good -- the UI kept the old name, and the
-        # prim kept the old attribute and value, so the next save wrote them back. Whether
+        # this point would lose renames and values for good -- the UI would keep the old
+        # name, the prim the old attribute and value, and the next save would write them
+        # back. Whether
         # anything reacts is decided further on, by the owner's own notice (see
         # AttributeSender.is_blocked).
 

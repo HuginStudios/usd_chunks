@@ -1256,7 +1256,7 @@ class ChunkNoticePropagator:
             #
             # Read back from the verdict chunk_scheduler recorded rather than re-derived from
             # the aliases: a `presentation_only` param raises PARAM_CHANGED, not
-            # STATE_CHANGED, so the old alias test called it a data change and re-cooked.
+            # STATE_CHANGED, so testing the alias would call it a data change and re-cook.
             state_only = n.only_presentation_changed()
             if not state_only and (module := getattr(prop, '_module', None)):
                 stage = prop.get_stage()
@@ -1287,7 +1287,7 @@ class ChunkNoticePropagator:
                 # crashes on the first stage call. The host can genuinely have no stage for a
                 # window — usdview clears its stage before opening the next file while still
                 # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
-                # window, used to reach here and take the chunk down with it.
+                # window, can reach here.
                 if (callable(getattr(module, 'execute', None)) and stage is not None
                         and not getattr(prop, '_executing', False)
                         and not getattr(prop, '_deleting', False)
@@ -1645,13 +1645,12 @@ def _register_global(alias: "ChunkNoticeAlias", notice_type, connection: "Notice
     """Ensure exactly one Tf.Notice.RegisterGlobally() exists for `alias`, and add
     `connection` as one of its subscribers.
 
-    A separate NoticeConnection created per chunk instance for the same alias used to
-    each call Tf.Notice.RegisterGlobally() directly — harmless for rarely-fired custom
+    Each NoticeConnection must not call Tf.Notice.RegisterGlobally() itself — harmless for rarely-fired custom
     notices (e.g. CAMERA_CHANGED), but for the notices backed by real Usd.Notice types
     (STAGE_CONTENTS_CHANGED, STAGE_CHANGED, OBJECT_CHANGED, STAGE_EDIT_TARGET_CHANGED)
-    2+ independent registrations reliably hung the interpreter on shutdown. Routing all
-    globally=True connections for the same alias through one shared listener avoids the
-    whole class of bug, for every alias, not just the ones we've hit so far.
+    two or more independent registrations reliably hang the interpreter on shutdown.
+    Routing all globally=True connections for the same alias through one shared listener
+    rules that out for every alias.
     """
     dispatch = _global_dispatches.get(alias)
     if dispatch is None:
@@ -1774,10 +1773,9 @@ class NoticeConnection:
     def _wants_owner(meth) -> bool:
         """Whether `meth` declares the (owner, notice, sender) form rather than (notice, sender).
 
-        Read from the callback's own signature. Arity used to be inferred from whether an
-        owner happened to still be alive, which made it depend on garbage-collection
-        timing: once the owner weakref died, a three-argument callback was invoked with
-        two and raised `missing 1 required positional argument: 'sender'` mid-teardown.
+        Read from the callback's own signature, never from whether an owner happens to
+        still be alive: that would make the arity depend on garbage-collection timing, and
+        a three-argument callback would be called with two once its owner died.
 
         Uses ``co_argcount`` rather than ``inspect.signature`` because this runs on every
         dispatch. Callables without a ``__code__`` (builtins, ``functools.partial``,

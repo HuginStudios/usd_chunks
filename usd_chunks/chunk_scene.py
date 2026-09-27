@@ -227,8 +227,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # already ends up that way (a group nested in another both default to "ChunkGroup").
         # Restoring one from a file must therefore not rename it -- the file is authoritative
         # about what it is called, its prim path already makes it unique, and the name is what
-        # expressions reference and what a saved file records. Renaming on load meant a scene
-        # came back with a group its own expressions no longer named.
+        # expressions reference and what a saved file records. Renaming on load would bring a
+        # scene back with a group its own expressions no longer name.
         restoring = (
             chunk_notice._loading_stage is not None
             and c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
@@ -245,9 +245,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             # A chunkgroup created with nothing dived into still belongs INSIDE the scene's
             # outermost container, exactly like a plain chunk does -- it is a node in that
-            # container's graph. Without this it fell back to the /chunks scope and became a
-            # SIBLING of the root instead (/chunks/Group next to /chunks/ChunkGroup), so it
-            # was a node in no graph at all and simply never appeared (live-reported).
+            # container's graph. Without this it would fall back to the /chunks scope and
+            # become a SIBLING of the root (/chunks/Group next to /chunks/ChunkGroup) -- a
+            # node in no graph at all, never shown.
             # peek_root_context is None while the root itself is being created, which is what
             # keeps the root from trying to parent itself.
             parent = self._current_context

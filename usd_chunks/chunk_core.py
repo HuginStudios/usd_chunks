@@ -856,15 +856,12 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # A list-group row (e.g. Sublayer's imports:sublayer_path) is a ProxyParam, so
             # _load_wire_inputs' bulk restore reaches this setattr directly -- not through
             # ChunkBase.value_changed, the only place chunk_notice._loading_stage is normally
-            # checked (see its own guard). Without this, restoring a row's saved value fired a
-            # real, immediate ATTRIBUTE_CHANGED here regardless of the bulk load in progress,
-            # live-reported as the whole downstream chain re-executing repeatedly on every
-            # reload of a saved scene (a list-group row was the one param path load_chunks'
-            # suppression never actually covered). load_chunks' own later, correctly-ordered
-            # "trigger the DAG solve for root nodes" pass still runs once everything is
-            # restored -- and now reliably reaches this chunk's real content (see the layer
-            # pre-registration added just above the re-sort pass in _add_prim_mods), so this
-            # doesn't lose the eventual real execute(), only the early, repeated ones.
+            # checked (see its own guard). Without this, restoring a row's saved value would
+            # fire a real, immediate ATTRIBUTE_CHANGED here during the bulk load, re-executing
+            # the whole downstream chain once per row. load_chunks' own "trigger the DAG solve
+            # for root nodes" pass still runs once everything is restored (see the layer
+            # pre-registration above the re-sort pass in _add_prim_mods), so this skips only
+            # the early, repeated execute() calls, not the real one.
             if not chunk_notice._loading_stage:
                 self.__value_sender.execute()
             return
@@ -3264,8 +3261,7 @@ class ChunkBase(ChunkGroupBase):
         # and Sdf.Path("None") collapses to an invalid empty path (breaks chunkgroups /
         # _resolve_chunk_root).
         #
-        # Used to only strip spaces, which is the one illegal character a name happened to
-        # hit first. Anything else — a comma or a hyphen in a context's display name
+        # Every illegal character matters, not just spaces. Anything — a comma or a hyphen in a context's display name
         # ("SO-101 Bench", "One Stage, Three Shots") — produced a prim_path Sdf.Path
         # silently refuses to compose into a real prim: the tab looked created, but no
         # chunk placed "under" it ever actually had anywhere to live. Tf.MakeValidIdentifier
@@ -3700,11 +3696,9 @@ class ChunkConfig(AttributesBase):
                 variants = list(variants())
             except Exception as e:  # noqa: BLE001 - a menu must still open
                 # Variants are an optional extra on one entry, and this runs while a menu is
-                # being drawn for EVERY chunk -- so one module that cannot build its list
-                # took the whole chunk menu with it. Live-reported on a USD 26.05 build
-                # where Sdr.Registry() raises because some installed plugin advertises an
-                # invalid version: right-clicking the node graph produced a traceback and no
-                # menu at all, for every chunk in it.
+                # being drawn for EVERY chunk -- one module that cannot build its list must
+                # not take the whole chunk menu with it. Sdr.Registry() can raise, for
+                # example, when an installed plugin advertises an invalid version.
                 logger.warning("Could not build menu variants for %r: %s", self.module, e)
                 return []
             object.__setattr__(self, "variants", variants)

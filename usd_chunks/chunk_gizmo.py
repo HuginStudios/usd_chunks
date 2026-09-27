@@ -637,10 +637,9 @@ def _is_meaningful_spec(spec) -> bool:
     ancestor, but they are in its prim stack all the same -- so a Transform chunk driving
     `/apple/grp/mesh` looked like it also drove `/apple` and `/apple/grp`.
 
-    Reported live as an asymmetry, which is what gives it away: dragging the mesh and then
-    its parent reused the mesh's chunk, while dragging the parent and then the mesh
-    correctly made a second one. A descendant is not scaffolding for an ancestor, so only
-    one direction breaks.
+    Only one direction is allowed: a descendant is not scaffolding for an ancestor.
+    Dragging a mesh and then its parent must make a second chunk, just as dragging the
+    parent and then the mesh does.
 
     Anything the chunk genuinely authored -- a property, metadata such as an `active` flag
     from a prune, or a specifier that defines rather than overrides -- counts.
@@ -733,13 +732,11 @@ def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
     """Nearest the view first, so a host driving descs[0] edits the chunk that has the
     final say.
 
-    Layer strength alone is not enough, which is what prompted this. A chunk that has not
-    authored yet is not in the prim's layer stack at all -- an Offset Transform sitting at
-    zero authors nothing by design -- so it sorted last however far downstream it was.
-    Reported live: adding an Offset Transform after a Transform and dragging kept editing
-    the Transform, until a value was typed into the Offset by hand, at which point it
-    started authoring and took over. The ownership flipped based on whether a number had
-    been entered, which is not something anyone should have to know.
+    Layer strength alone is not enough. A chunk that has not authored yet is not in the
+    prim's layer stack at all -- an Offset Transform sitting at zero authors nothing by
+    design -- so it would sort last however far downstream it is, and dragging would keep
+    editing the upstream Transform until a value was typed into the Offset by hand.
+    Ownership must not depend on whether a number has been entered.
 
     Exec depth answers it for authored and un-authored chunks alike, and agrees with layer
     strength where both apply: recook already orders each graph layer's subLayerPaths so the
@@ -783,8 +780,8 @@ def _is_silenced(stage: Usd.Stage, chunk: "core.ChunkBase") -> bool:
 
     The layer-stack route gets this for free -- a disabled or muted chunk has no spec in the
     prim's stack, so it simply does not come up. Anchors carry no such information: they are
-    authored once and keep pointing at the prim regardless, so muting a chunk's layer left
-    its handles on screen driving a chunk that is no longer contributing anything.
+    authored once and keep pointing at the prim regardless, so muting a chunk's layer would
+    leave its handles on screen driving a chunk that is no longer contributing anything.
     """
     if chunk.has_state(core.ChunkFlags.State.DISABLED):
         return True
@@ -1321,13 +1318,10 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     if not create:
         return None
 
-    # Deliberately no seeding. A chunk used to REPLACE the prim's transform, so a new one
-    # had to be pre-loaded with the prim's current placement or the object jumped to the
-    # origin the moment you grabbed it -- and only this path did that, so the same node
-    # behaved differently depending on whether it was dragged into existence or added by
-    # hand. Now that a chunk owns its own xformOp and composes on top of what is already
-    # there, an untouched chunk contributes identity and moves nothing. The drag itself is
-    # converted from absolute to op-local by the module's gizmo_changed hook.
+    # Deliberately no seeding. A chunk owns its own xformOp and composes on top of what is
+    # already there, so an untouched chunk contributes identity and moves nothing -- and a
+    # node behaves the same whether it was dragged into existence or added by hand. The
+    # drag itself is converted from absolute to op-local by the module's gizmo_changed hook.
     chunk = _create_chunk_at_tail(AUTO_TRANSFORM_MODULE)
     if chunk is None:
         return None

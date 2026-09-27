@@ -90,10 +90,9 @@ def topology_changed(*nodes: "DagNode"):
     the nodes affected by an edge change are exactly the ones downstream of it -- the same
     closure a dirty propagation walks. Everything else keeps the depth it already had.
 
-    Passing nothing means "shape changed somewhere", and throws the lot away. That is what
-    the old unconditional behaviour did on every single edge, which made building or
-    loading a graph quadratic: every add_dependency wiped the cache, so the next depth
-    query re-walked the whole chain from scratch.
+    Passing nothing means "shape changed somewhere", and throws the lot away. Doing that on
+    every edge would make building or loading a graph quadratic: every add_dependency would
+    wipe the cache, and the next depth query would re-walk the whole chain.
 
     Args:
         nodes (DagNode): The nodes whose connections changed, if known
@@ -247,12 +246,12 @@ def propagate_presentation(seed: "DagNode"):
     has to reach the UI, and the UI hangs off the owners: a group's data_changed spreads
     DISABLED to nested chunks, the SceneSender's keeps the selection set. So the owners
     solve, and each records the *seed's* reason -- not the alias of the node it inherited
-    it through. Stamping GROUP_CHANGED / PARAM_CHANGED on the way up is what used to make a
-    collapsed group read as a data change by the time it reached the chunk, and
-    ChunkNoticePropagator.execute() re-cooked the module on it.
+    it through. Stamping GROUP_CHANGED / PARAM_CHANGED on the way up would make a collapsed
+    group read as a data change by the time it reached the chunk, and
+    ChunkNoticePropagator.execute() would re-cook the module on it.
 
     Dependants are left clean, so nothing travels along the exec chain: selecting one node
-    used to dirty every chunk downstream of it and re-cook the lot.
+    must not dirty every chunk downstream of it.
 
     Args:
         seed (DagNode): The node that changed

@@ -54,9 +54,8 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     published by the nearest Edit Target chunk reachable by walking the exec chain upstream
     from `owner`, or the session layer if there is no upstream Edit Target.
 
-    A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer) — this
-    replaces the old global ChunkStageSync._user_edit_layer state, so resolution no longer
-    depends on which chunk happened to execute last.
+    A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer) — resolution
+    never depends on which chunk happened to execute last.
 
     Use this instead of hardcoding stage.GetSessionLayer() for override/redirect-style
     opinions (variant selections, shader input redirects, etc.) so they follow whatever
@@ -364,8 +363,8 @@ def has_expression(text: str) -> bool:
 # The attribute types a Python str is a legitimate value for. Not just String: a token
 # takes one (every schema enum -- visibility, purpose, a light's shaderId) and so does an
 # asset (a texture file). The guards that keep unresolved expression text out of a typed
-# attr used to test `!= String`, which also dropped every real string bound for a token
-# or asset -- a dome light's texture never reached the prim (live-reported).
+# attr must test against all three; testing `!= String` alone would drop every real string
+# bound for a token or asset, such as a dome light's texture.
 _TEXT_TYPES = (
     Sdf.ValueTypeNames.String,
     Sdf.ValueTypeNames.Token,
@@ -842,8 +841,8 @@ def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform")
             continue
 
         # The leaf is what the caller asked for, so it is always defined as `type_name`.
-        # Skipping it when it happens to be typed already is how importing onto an existing
-        # Scope used to hand back a root nothing can be transformed by. DefinePrim is
+        # Skipping it when it happens to be typed already would let importing onto an
+        # existing Scope hand back a root nothing can be transformed by. DefinePrim is
         # idempotent and will retype, which is the point.
         prim = stage.DefinePrim(prefix, type_name)
     return prim
@@ -1012,17 +1011,16 @@ def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=
     #
     # Installing a param fires notices; a cook reached that way can recompose the stage; and
     # a resync EXPIRES this prim handle along with every attribute already read off it, so
-    # the next read raises. The case that found it: a Stage Expression Switch writes the
-    # record of what it muted, that write cascades into cooking a light on the branch it
-    # just suppressed, and the light's own prim is gone by the time this loop reaches its
+    # the next read raises. For example, a Stage Expression Switch writes the record of
+    # what it muted, that write cascades into cooking a light on the branch it just
+    # suppressed, and the light's own prim is gone by the time this loop reaches its
     # second attribute.
     #
-    # Raising there was not a local failure -- the exception escaped into
-    # gate_to_branches and left the gate half done, with the branch it was suppressing
-    # still composed (live-reported as a gated light that would not go away when the shot
-    # changed, until a param on it was touched). Collecting first turns that into a lost
-    # cook rather than a half-emptied chunk: nothing has been deleted yet, the params the
-    # chunk already has stay exactly as they were, and the next cook rebuilds them.
+    # Raising there is not a local failure -- the exception would escape into
+    # gate_to_branches and leave the gate half done, with the branch it was suppressing
+    # still composed. Collecting first turns that into a lost cook rather than a
+    # half-emptied chunk: nothing has been deleted yet, the params the chunk already has
+    # stay exactly as they were, and the next cook rebuilds them.
     prim_path = prim.GetPath()
     specs = []
     try:
@@ -1097,9 +1095,9 @@ def existing_xform_op_name(node):
 def xform_op_name(node) -> str:
     """The xformOp suffix this chunk owns: readable, unique, and stable across renames.
 
-    Chunks used to author `xformOp:transform` -- the same attribute on every chunk -- so
-    two chunks placing one prim competed for one slot and USD discarded the loser. Owning a
-    distinctly named op each is what lets them compose instead.
+    If every chunk authored the same `xformOp:transform`, two chunks placing one prim would
+    compete for one slot and USD would discard the loser. Owning a distinctly named op each
+    is what lets them compose instead.
 
     The name carries two things because it has two jobs. The id is what identity rests on:
     generated once, recorded on the chunk's prim, and never regenerated, so renaming a
