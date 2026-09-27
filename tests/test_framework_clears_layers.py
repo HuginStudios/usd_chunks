@@ -19,7 +19,8 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf
 
-from usd_chunks import Scene, chunk_notice, chunk_stage
+from usd_chunks import Scene, chunk_notice, chunk_registry, chunk_stage
+from usd_chunks.chunk_core import ChunkConfig
 
 
 def _param(node, suffix):
@@ -71,6 +72,31 @@ def test_a_changed_param_leaves_only_the_new_result():
         assert not stage.GetPrimAtPath("/a").IsValid(), "the previous cook's prim must be cleared"
 
 
+def test_an_interactive_chunk_is_never_cleared():
+    """interactive=True: the chunk has no layer of its own and authors into the stage's edit
+    target -- the user's file. Nothing there is the framework's to clear, and a cook must
+    not bump its own claimed path along either, since its last result is still standing."""
+    with Scene() as scene:
+        module = chunk_registry.ChunkRegistry().get_chunk_module("prim")
+        prim = (module.create() if module.loaded else module.load())[0]
+        # Interactive from the start, before it joins the scene and could get a layer.
+        prim._config = ChunkConfig(module="prim", interactive=True)
+        prim.get_param("primpath_location").value = "/mine"
+        stage = scene.get_stage()
+        stage.DefinePrim("/users_own", "Xform")
+        scene.add_chunk(prim)
+        assert prim.get_edit_context() is None
+
+        for _ in range(3):
+            prim.execute()
+
+        target = stage.GetEditTarget().GetLayer()
+        assert target.GetPrimAtPath("/users_own") is not None, "the user's work must survive a cook"
+        assert prim.get_param("primpath_location").value == "/mine"
+        names = sorted(p.GetName() for p in stage.GetPseudoRoot().GetChildren() if p.GetName() != "chunks")
+        assert names == ["mine", "users_own"]
+
+
 def test_a_cook_leaves_the_chunk_clean_and_a_new_layer_makes_it_stale():
     with Scene() as scene:
         prim = scene.create.prim(primpath_location="/p")
@@ -119,6 +145,27 @@ def test_recook_for_view_cooks_a_stale_chunk_and_everything_below_it(monkeypatch
 
         assert counts == {a.name: 1, b.name: 1}
         assert not chunk_notice.is_cook_stale(a) and not chunk_notice.is_cook_stale(b)
+
+
+def test_recook_for_view_does_not_execute_a_chunk_with_nothing_to_cook(monkeypatch):
+    """A chunk with no execute() (Property Editor works through callbacks) never gets its
+    stale mark cleared by a cook. Executing it on every recook would push a DAG solve to
+    everything downstream of it each time."""
+    with Scene() as scene:
+        a = scene.create.prim(primpath_location="/a")
+        editor = scene.create.property_editor(a)
+        b = scene.create.prim(editor, primpath_location="/b")
+        view = scene.create.view(b)
+        stage = a.get_stage()
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        solves = []
+        monkeypatch.setattr(type(editor), "execute", lambda self: solves.append(self.name))
+        counts = _count_cooks(monkeypatch, a, b)
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        assert solves == [] and counts == {a.name: 0, b.name: 0}
+        assert not chunk_notice.is_cook_stale(editor)
 
 
 def test_a_light_keeps_its_params_across_a_cook():

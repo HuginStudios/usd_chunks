@@ -4469,7 +4469,13 @@ def recook_for_view(
             continue
         if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
-            if _force or chunk_notice.is_cook_stale(c):
+            if not callable(getattr(getattr(c, "_module", None), "execute", None)):
+                # Nothing to cook -- a chunk that works through callbacks (Property Editor).
+                # Nothing ever clears its stale mark either, so executing it would push a
+                # DAG solve to everything downstream on every recook. Whatever a change
+                # upstream of it means for those, their own marks already say.
+                c._cook_stale = False
+            elif _force or chunk_notice.is_cook_stale(c):
                 c.execute()
 
     if not cook_list:
