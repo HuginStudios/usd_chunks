@@ -156,20 +156,20 @@ def downstream_closure(seed: DagNode) -> dict[DagNode, None]:
 
 
 def dirty_component(seed: DagNode) -> dict[DagNode, None]:
-    """Every dirty node connected to seed along a path of dirty nodes, walking dependants
-    and owners downstream *and* dependencies upstream.
+    """Every dirty node connected to `seed` along a path of dirty nodes, in both directions.
 
-    The upstream half is what stops a node running ahead of a dependency that has not
-    solved yet: a node downstream of seed may have a second, dirty dependency on a branch
-    seed knows nothing about, and that branch has to be pulled into the same sort rather
-    than left behind. Clean nodes end the walk, which is what confines a solve to the
-    part of the graph that actually changed.
+    The walk follows dependants and owners downstream *and* dependencies upstream. The
+    upstream half is what stops a node running ahead of a dependency that has not solved yet:
+    a node downstream of seed may have a second, dirty dependency on a branch seed knows
+    nothing about, and that branch has to be pulled into the same sort rather than left
+    behind. Clean nodes end the walk, which is what confines a solve to the part of the graph
+    that actually changed.
 
     Args:
-        seed (DagNode): The node the solve was requested for
+        seed: The node the solve was requested for.
 
     Returns:
-        Dict[DagNode, None]: The dirty component, in discovery order
+        The dirty component, in discovery order.
     """
     found: dict[DagNode, None] = {seed: None}
     pending = [seed]

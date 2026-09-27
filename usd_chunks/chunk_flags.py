@@ -9,10 +9,10 @@ class _FlagRepr(IntFlag):
 
 
 class ChunkFlags:
-    """Hold common flags for chunks"""
+    """Hold common flags for chunks."""
 
     class LayoutFlags(IntEnum):
-        """Flags for layout hinting parameters and groups
+        """Flags for layout hinting parameters and groups.
 
         Attributes:
             HORIZONTAL: Hint the ui to display this parameter or group horizontally
@@ -23,7 +23,7 @@ class ChunkFlags:
         VERTICAL = auto()
 
     class State(_FlagRepr):
-        """Store current state of parameters and containers
+        """Store current state of parameters and containers.
 
         Attributes:
             NONE: No specified state
@@ -44,7 +44,7 @@ class ChunkFlags:
         STALE = auto()
 
     class GroupFlags(_FlagRepr):
-        """Flags for chunk container type objects (Chunk, Group)
+        """Flags for chunk container type objects (Chunk, Group).
 
         Attributes:
             LABELED: If the group should have a label in the ui
@@ -63,7 +63,7 @@ class ChunkFlags:
         CONTEXT = auto()
 
     class ParamFlags(_FlagRepr):
-        """Flags for chunk params
+        """Flags for chunk params.
 
         Attributes:
             LABELED: If the param should have a label in the ui
@@ -101,8 +101,10 @@ class ChunkFlags:
         USD_SYNTAX_HIGHLIGHT = auto()
 
     class ParamType(_FlagRepr):
-        """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
-        implement the UI based on these.
+        """Flags for parameters, describing their types.
+
+        UI factories should use param.get_type() to get these types, and implement the UI
+        based on them.
 
         The concrete types are combinations of any of NONE, EMPTY, FLOAT, STRING, INT, BOOL.
         As these are flags, they can be combined using bitwise operators to create more complex
@@ -168,13 +170,14 @@ class ChunkFlags:
 
     @staticmethod
     def ParamTypeToTypes(t: ParamType) -> list[type]:
-        """Provides default values for ParamType enums. If t is a combination of multiple ParamTypes, returns all supported values
+        """Provides default values for ParamType enums.
 
         Args:
             t (ParamType): Input ParamType which to request value for
 
         Returns:
-            Any: A default value for t
+            list[type]: The value types `t` supports; all of them when `t` combines several
+            ParamTypes.
         """
         result = []
 

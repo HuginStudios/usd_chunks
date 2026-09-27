@@ -99,6 +99,12 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
 
     The sugar's *validation* is not deferred -- that runs in the param's constructor, so a
     bad `gizmo=` still fails at load rather than at first drag.
+
+    Args:
+        chunk: The chunk to read.
+
+    Returns:
+        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name.
     """
     config = chunk.get_config() if hasattr(chunk, "get_config") else None
     gizmos = list(getattr(config, "gizmos", None) or ())
@@ -209,6 +215,7 @@ def _whole_chunk_transform(chunk: core.ChunkBase):
 
 
 def find_gizmo(chunk: core.ChunkBase, name: str):
+    """The gizmo called `name` on a chunk, or None."""
     for gizmo in get_gizmos(chunk):
         if gizmo.name == name:
             return gizmo
@@ -218,14 +225,23 @@ def find_gizmo(chunk: core.ChunkBase, name: str):
 def resolve_anchor_param(chunk: core.ChunkBase, gizmo) -> core.ChunkParamBase:
     """The param holding the target prim path for this gizmo.
 
-    Name-first, then the flag. Surveying scripts/, the name is the more reliable signal:
-    only about half the chunks with a target path set PRIM_SELECTION (camera.py, light.py,
+    Name-first, then the flag. Across scripts/, the name is the more reliable signal: only
+    about half the chunks with a target path set PRIM_SELECTION (camera.py, light.py,
     reference.py and others name the param but never flag it), while the name
     `primpath_location` is near-universal.
 
-    Raises loudly rather than returning None -- a gizmo whose anchor cannot be resolved has
-    nowhere to draw, and failing at load with the chunk's name in the message is far
-    cheaper to diagnose than a handle that silently never appears.
+    Args:
+        chunk: The chunk declaring the gizmo.
+        gizmo: The gizmo whose anchor to find.
+
+    Returns:
+        The anchor param.
+
+    Raises:
+        ValueError: The anchor cannot be resolved. Raising rather than returning None -- a
+            gizmo whose anchor cannot be resolved has nowhere to draw, and failing at load
+            with the chunk's name in the message is far cheaper to diagnose than a handle that
+            silently never appears.
     """
     if gizmo.anchor:
         param = chunk.get_param(gizmo.anchor)
@@ -396,6 +412,11 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> No
 
     Assumes the caller has already entered the right edit context, exactly like the
     config.outputs loop it sits beside.
+
+    Args:
+        stage: The stage to author on.
+        prim: The chunk's prim.
+        chunk: The chunk whose gizmos to author.
     """
     gizmos = get_gizmos(chunk)
     if not gizmos or not (prim and prim.IsValid()):
@@ -493,6 +514,11 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
 
     Cheap no-op for the overwhelming majority of chunks, which declare no gizmos at all --
     that early return is why this can hang off the generic param-changed path.
+
+    Args:
+        stage: The stage to author on.
+        prim: The chunk's prim.
+        chunk: The chunk whose gizmos to refresh.
     """
     gizmos = get_gizmos(chunk)
     if not gizmos or not (prim and prim.IsValid()):
@@ -599,6 +625,12 @@ def chunks_for_prim(prim: Usd.Prim) -> list:
     which chunks touched it -- no scan of /chunks, no separate index to keep in sync, and
     no anchor matching. It also stays correct for free when a chunk is disabled or its layer
     muted: no spec in the stack, no handle.
+
+    Args:
+        prim: A scene prim.
+
+    Returns:
+        The chunks that touched it.
     """
     manager = ChunkLayerManager()
     if not getattr(manager, "initialized", False) or not manager.chunk_layers:
@@ -671,10 +703,14 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
 
     A chunk prim is accepted too, for the node-graph case.
 
-    Returns gizmos from *every* chunk that touched the prim, upstream ones included. The
-    host filters to the selected chunk -- a prim touched by two transform chunks in one
-    chain would otherwise get two identical handles in the same place. Stated from the other
-    end: a handle only ever edits the chunk you are looking at.
+    Args:
+        prim: The selected prim, or a chunk prim.
+
+    Returns:
+        Gizmos from *every* chunk that touched the prim, upstream ones included. The host
+        filters to the selected chunk -- a prim touched by two transform chunks in one chain
+        would otherwise get two identical handles in the same place. Stated from the other
+        end: a handle only ever edits the chunk you are looking at.
     """
     if not (prim and prim.IsValid()):
         return []
@@ -807,17 +843,11 @@ _GIMBAL_EPSILON = 1e-9
 def decompose(matrix: Gf.Matrix4d, pivot: tuple | None = None) -> dict:
     """Split a TRS matrix into one value per handle, in the convention transform.py composes in.
 
-    Returns ``{"translate": Vec3d, "rotate": Vec3d, "scale": Vec3d}`` -- keyed by gizmo
-    *type*, so each entry goes straight to the handle of that name::
+    The result is keyed by gizmo *type*, so each entry goes straight to the handle of that
+    name::
 
         for gizmo_type, value in decompose(matrix).items():
             apply_bindings(chunk, handles[gizmo_type], value)
-
-    `pivot` is the point the chunk rotates and scales about, in the same space the matrix is
-    expressed in. Rotation and scale come off the 3x3 and do not care where the pivot is;
-    only the translation does, so that is the sole correction made here. Left at None the
-    result is the plain origin-pivot decomposition, which is what every caller predating
-    pivots wants.
 
     **Offered to hosts, not required of them.** A native handle that already produces Euler
     angles ignores this entirely. Keeping it here means the Euler convention lives in exactly
@@ -839,7 +869,16 @@ def decompose(matrix: Gf.Matrix4d, pivot: tuple | None = None) -> dict:
     A mismatch here does not fail loudly. It shows up as the handle drifting a little further
     from the object on each successive drag, which is miserable to diagnose from a bug report.
 
-    Rotations are Euler XYZ in degrees; translate and scale are `Gf.Vec3d`.
+    Args:
+        matrix: The TRS matrix.
+        pivot: The point the chunk rotates and scales about, in the same space the matrix is
+            expressed in. Rotation and scale come off the 3x3 and do not care where the pivot
+            is; only the translation does, so that is the sole correction made here. None
+            gives the plain origin-pivot decomposition.
+
+    Returns:
+        ``{"translate": Vec3d, "rotate": Vec3d, "scale": Vec3d}``. Rotations are Euler XYZ
+        in degrees.
     """
     transform = Gf.Transform(matrix)
     rotation = Gf.Matrix3d(transform.GetRotation().GetQuat())
@@ -892,6 +931,12 @@ def chunk_at_prim_path(path) -> core.ChunkBase | None:
 
     The bridge from a GizmoDesc back to something writable: `resolve_gizmos` gives a host
     plain data, and `apply_bindings` needs the live chunk.
+
+    Args:
+        path: The chunk prim's path.
+
+    Returns:
+        The live chunk, or None.
     """
     scene = getattr(ChunkRegistry(), "scene", None)
     if scene is None:
@@ -940,6 +985,13 @@ def is_gizmo_hidden(chunk: core.ChunkBase, name: str) -> bool:
     Chunk-side rather than a call into the host: it needs no new contract, works in every
     host including ones that never import us, and the chunk is the only thing that knows
     its own modes.
+
+    Args:
+        chunk: The chunk that declares the gizmo.
+        name: The gizmo's name.
+
+    Returns:
+        True if the handle should not be shown. A hook that raises counts as False.
     """
     module = getattr(chunk, "_module", None)
     hook = getattr(module, GIZMO_HIDDEN_HOOK, None)
@@ -967,13 +1019,19 @@ def gizmo_offset(chunk: core.ChunkBase, name: str, declared: tuple | None = None
         def gizmo_offset(node, gizmo):
             return pivot(node) if gizmo == "transform" else None
 
-    Returning None means "no opinion" and the declared value stands -- *not* "clear it". A
-    chunk with several handles would otherwise wipe the static offset on the ones its hook
-    does not answer for, which is the kind of bug that only shows on the second gizmo.
-
     Chunk-side rather than a call into the host, for the same reason as `gizmo_hidden`: the
     chunk is the only thing that knows its own params, and a host reading the authored
     `ui:gizmo:*:offset` attribute needs to know none of this.
+
+    Args:
+        chunk: The chunk that declares the gizmo.
+        name: The gizmo's name.
+        declared: The static offset from the Gizmo declaration.
+
+    Returns:
+        The hook's offset, or `declared` when the hook returns None. None means "no opinion"
+        and the declared value stands -- *not* "clear it". A chunk with several handles would
+        otherwise wipe the static offset on the ones its hook does not answer for.
     """
     module = getattr(chunk, "_module", None)
     hook = getattr(module, GIZMO_OFFSET_HOOK, None)
@@ -1013,7 +1071,7 @@ def _anchor_prim(chunk: core.ChunkBase, gizmo) -> Usd.Prim | None:
 
 
 def apply_offset(chunk: core.ChunkBase, name: str, world_point: Any) -> bool:
-    """Move where a handle sits, from a point in **world space**. True if the chunk took it.
+    """Move where a handle sits, from a point in **world space**.
 
     The write counterpart to the `gizmo_offset` hook, and the reason a host can offer
     drag-the-pivot at all. A host has a world position under the mouse and nothing else --
@@ -1027,10 +1085,21 @@ def apply_offset(chunk: core.ChunkBase, name: str, world_point: Any) -> bool:
             ...             # value is a Gf.Vec3d in the anchor's own space
             return True     # and say so
 
-    Falsy -- including the common "not my gizmo" -- means nothing was written, and a host
-    that gets False back should leave the pivot alone rather than fall back to moving the
-    prim. There is no declarative path here on purpose: where a chunk keeps its pivot is not
+    There is no declarative path here on purpose: where a chunk keeps its pivot is not
     something a driver list can express, since it also has to hold the object still.
+
+    Args:
+        chunk: The chunk, or its chunk prim path.
+        name: The gizmo's name.
+        world_point: The new handle position, in world space.
+
+    Returns:
+        True if the chunk took it. False -- including the common "not my gizmo" -- means
+        nothing was written, and a host should then leave the pivot alone rather than fall
+        back to moving the prim.
+
+    Raises:
+        ValueError: No chunk exists at the given path.
     """
     if not isinstance(chunk, core.ChunkBase):
         resolved = chunk_at_prim_path(chunk)
@@ -1074,11 +1143,7 @@ GIZMO_STROKE_HOOK = "gizmo_stroke"
 
 
 def apply_stroke(chunk: core.ChunkBase, name: str, samples: Any) -> bool:
-    """Hand a brush gesture to the chunk. True if it took it.
-
-    `samples` is a sequence of ``(Gf.Vec3d world_point, float weight)`` -- where the user
-    touched the surface this tick and how hard. **World space**, like `apply_offset`: a host
-    knows where its cursor hit geometry and nothing else about what a chunk means by it.
+    """Hand a brush gesture to the chunk.
 
     The only handle type whose payload is not a value. Every other one sends back a number, a
     vector or a matrix, and a brush sends a gesture -- so there is no declarative driver path
@@ -1098,6 +1163,20 @@ def apply_stroke(chunk: core.ChunkBase, name: str, samples: Any) -> bool:
     what keeps a brush inside "usd_chunks records, the DCC interprets" rather than an
     exception to it -- a stroke log would be a recording of host behaviour, replayable only by
     something that agreed on what a stroke meant.
+
+    Args:
+        chunk: The chunk, or its chunk prim path.
+        name: The gizmo's name.
+        samples: A sequence of ``(Gf.Vec3d world_point, float weight)`` -- where the user
+            touched the surface this tick and how hard. **World space**, like
+            `apply_offset`: a host knows where its cursor hit geometry and nothing else about
+            what a chunk means by it.
+
+    Returns:
+        True if the chunk took the stroke.
+
+    Raises:
+        ValueError: No chunk exists at the given path.
     """
     if not isinstance(chunk, core.ChunkBase):
         resolved = chunk_at_prim_path(chunk)
@@ -1212,9 +1291,6 @@ def apply_bindings(chunk: core.ChunkBase, name: str, value: Any) -> None:
         apply_bindings(chunk, "translate_grp", Gf.Vec3d(1, 2, 3))   # type="translate"
         apply_bindings(chunk, "zdist", 12.5)                        # type="cube"
 
-    A manipulator type sends a `Gf.Vec3d`; rotations are Euler XYZ in degrees. A shape type
-    sends a single number.
-
     Never a matrix. Native hosts already produce a scalar for a scalar handle -- Houdini's
     linear handle and Blender's arrow gizmo both hand back a float -- so making them compose
     a matrix just so we can extract the float again is work in both directions, and lossy in
@@ -1222,6 +1298,15 @@ def apply_bindings(chunk: core.ChunkBase, name: str, value: Any) -> None:
     came from. A host holding a full transform calls `decompose()` and makes one call per
     handle, which is what a viewport does anyway: you grab the arrows or the ring, never a
     single thing that is somehow both.
+
+    Args:
+        chunk: The chunk, or its chunk prim path.
+        name: The gizmo's name.
+        value: A `Gf.Vec3d` for a manipulator type (rotations are Euler XYZ in degrees), a
+            single number for a shape type.
+
+    Raises:
+        ValueError: No chunk exists at the given path.
     """
     # A host holds a GizmoDesc, which carries a chunk *path* rather than a live object --
     # accept either, so closing the loop needs no lookup the caller has to know about.
@@ -1274,9 +1359,15 @@ def placement_gizmos(prim: Usd.Prim) -> list:
     Deliberately not "is there a transform handle". A chunk can own a prim's placement
     without offering a single combined manipulator: rbd_solver declares separate `translate`
     and `rotate` offsets and no `scale`, so it cannot form a whole-chunk transform -- yet it
-    plainly owns where that body starts. Testing only for `transform` reported the prim as
-    unowned and stacked an auto-created Transform chunk on top of the solver, which is the
+    plainly owns where that body starts. Testing only for `transform` would report the prim
+    as unowned and stack an auto-created Transform chunk on top of the solver, which is the
     exact duplicate this check exists to prevent.
+
+    Args:
+        prim: The scene prim.
+
+    Returns:
+        The placement handles.
     """
     return [d for d in resolve_gizmos(prim) if d.type in GIZMO_PLACEMENT_TYPES]
 
@@ -1286,6 +1377,12 @@ def transform_desc(prim: Usd.Prim):
 
     Narrower than `placement_gizmos` on purpose: this is "who takes a whole matrix", which
     is not the same question as "who owns this prim".
+
+    Args:
+        prim: The scene prim.
+
+    Returns:
+        The transform handle, or None.
     """
     for desc in resolve_gizmos(prim):
         if desc.type == core.GIZMO_TRANSFORM_TYPE:
@@ -1304,9 +1401,16 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     node in front of you.
 
     The new chunk lands at the end of the active context's chain, seeded from the prim's
-    current local transform so that creating it does not move anything. Returns the handle
-    to write through, or None if a chunk could not be created (no ``transform`` module
-    registered, no live scene) -- callers decide whether that is fatal.
+    current local transform so that creating it does not move anything.
+
+    Args:
+        prim: The scene prim.
+        create: False only looks, never creates.
+
+    Returns:
+        The handle to write through, or None if a chunk could not be created (no
+        ``transform`` module registered, no live scene) -- callers decide whether that is
+        fatal.
     """
     if not (prim and prim.IsValid()):
         return None
@@ -1549,15 +1653,22 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     copies DIFFER, so which one survives decides the result: a chunk that cooked before its
     neighbour existed holds a list naming only itself, and if that copy wins, the
     neighbour's op sits on the prim, typed and valued, and is never read. The chunk silently
-    does nothing, which is worse than an odd order and is what blocked retiring
-    a Transform chunk further down the chain.
+    does nothing, which is worse than an odd order.
 
     Building every copy from the graph instead makes them IDENTICAL, so it stops mattering
     which one USD keeps. The contention is not resolved, it is made irrelevant -- which is
     also why this needs no coordination between chunks and no cook-order guarantees.
 
-    The graph order and the op order are the same order, incidentally: the chain says A
-    feeds B, and the op list says A's op then B's op. One fact, written twice.
+    The graph order and the op order are the same order: the chain says A feeds B, and the
+    op list says A's op then B's op. One fact, written twice.
+
+    Args:
+        node: The chunk authoring the order.
+        prim: The prim whose ops are ordered.
+        my_op: The op `node` authors.
+
+    Returns:
+        The op names, in order.
     """
     stage = prim.GetStage()
     scene = getattr(ChunkRegistry(), "scene", None)

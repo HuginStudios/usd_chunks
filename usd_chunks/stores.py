@@ -42,19 +42,31 @@ class StoreProvider(Protocol):
     name: str
 
     def select(self, chunk_type: str, spec: str | None) -> str | None:
-        """Concrete version satisfying ``spec`` (this becomes the lock), or
-        ``None`` if this store does not carry ``chunk_type``.
+        """The concrete version satisfying `spec`, or None if this store does not carry the chunk.
 
-        The store owns its own version-matching semantics, so no shared semver
-        code is required anywhere. ``spec`` is the author's specifier from
-        ``info:chunkVersion`` (exact, trailing wildcard, or ``None`` for latest).
+        The store owns its own version-matching semantics, so no shared semver code is required
+        anywhere.
+
+        Args:
+            chunk_type: The chunk to look up.
+            spec: The author's specifier from ``info:chunkVersion``: exact, trailing wildcard, or
+                None for latest.
+
+        Returns:
+            The version, which becomes the lock, or None.
         """
         ...
 
     def provide(self, chunk_type: str, version: str) -> Path | None:
-        """Ensure that exact ``version`` is present locally (fetch/download if
-        needed) and return the file to link, or ``None`` if it cannot be
-        provided (unknown chunk/version, or the store is unreachable).
+        """Make sure an exact version is present locally and return the file to link.
+
+        Args:
+            chunk_type: The chunk to provide.
+            version: The exact version, fetched or downloaded if needed.
+
+        Returns:
+            The file, or None if it cannot be provided (unknown chunk or version, or the store is
+            unreachable).
         """
         ...
 
@@ -70,10 +82,12 @@ def _iter_entry_points(group: str) -> Iterable[EntryPoint]:
 def discovered_stores() -> list[StoreProvider]:
     """Every registered store provider, in entry-point order.
 
-    Each entry point loads to a zero-argument factory (typically the provider
-    class itself) that returns a provider. A store that fails to load or
-    construct is skipped, never fatal -- a broken or unconfigured marketplace
-    must not break the runtime.
+    Each entry point loads to a zero-argument factory (typically the provider class itself)
+    that returns a provider. A store that fails to load or construct is skipped, never fatal
+    -- a broken or unconfigured marketplace must not break the runtime.
+
+    Returns:
+        The providers that loaded.
     """
     stores: list[StoreProvider] = []
     for ep in _iter_entry_points(STORE_ENTRY_POINT_GROUP):
@@ -91,13 +105,19 @@ def resolve_across_stores(
     spec: str | None,
     stores: Iterable[StoreProvider] | None = None,
 ) -> tuple[StoreProvider, str] | None:
-    """Ask each store in order for a version satisfying ``spec``; first hit wins.
+    """Ask each store in order for a version satisfying `spec`; first hit wins.
 
-    Returns ``(store, version)`` -- the store to fetch from and the concrete
-    version that becomes the lock -- or ``None`` if no store carries the chunk.
     This is the store-agnostic resolution ``usdchunks pin`` runs; anything
-    marketplace-specific stays inside the provider. Pass ``stores`` to resolve
-    against a fixed set (e.g. in tests); otherwise the registered ones are used.
+    marketplace-specific stays inside the provider.
+
+    Args:
+        chunk_type: The chunk to resolve.
+        spec: The author's version specifier, or None for latest.
+        stores: A fixed set to resolve against (e.g. in tests); None uses the registered ones.
+
+    Returns:
+        ``(store, version)`` -- the store to fetch from and the concrete version that becomes
+        the lock -- or None if no store carries the chunk.
     """
     for store in (discovered_stores() if stores is None else stores):
         version = store.select(chunk_type, spec)
