@@ -312,7 +312,7 @@ Two things that would otherwise be surprising:
 ## Build documentation
 
 The reference pages are generated from the source, so usd_chunks has to be importable —
-mkdocstrings and `griffe_chunks.py` introspect the modules rather than reading a static
+mkdocstrings and `docs/griffe_chunks.py` introspect the modules rather than reading a static
 copy. Install the docs extra and build:
 
 ```
