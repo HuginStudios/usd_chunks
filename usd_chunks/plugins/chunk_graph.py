@@ -1620,8 +1620,7 @@ def parent_context(context: str, available) -> "str | None":
 #
 # A view is what drives execution: chunk_stage.recook_for_view cooks the active view's
 # upstream tree and blocks everything else. A context with no view therefore cooks
-# NOTHING, which is why Qt has always made one on open -- and why the other two frontends
-# showing four nodes where Qt showed five was a real difference, not a cosmetic one.
+# NOTHING, which is why every frontend makes one on open (default_view_slot).
 # ---------------------------------------------------------------------------
 
 VIEW_MODULE = "view"
@@ -1677,9 +1676,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> "int | No
     Returns the EXISTING slot rather than making a duplicate when a view is already wired
     to that prim, so a caller can simply activate what comes back either way.
 
-    All USD and registry work -- no toolkit. Qt had this as a 75-line private method and
-    the other two frontends had nothing, which is why the same file showed five nodes in
-    one and four in the others.
+    All USD and registry work -- no toolkit -- so every frontend creates views the same way.
     """
     target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
     if not target.IsValid():

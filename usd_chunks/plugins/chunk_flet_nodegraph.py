@@ -793,8 +793,8 @@ class GraphView:
         self.set_active_slot(slot)
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open, as Qt has always done. Without one, nothing
-        cooks -- a network would look right and do nothing."""
+        """Give the context a view on open. Without one, nothing cooks -- a network would
+        look right and do nothing."""
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, self.chunks.get(self.context))
         if slot is None:

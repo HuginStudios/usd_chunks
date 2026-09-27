@@ -618,7 +618,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self.build()
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
-        """Called whenever CHUNK_LOADED notice was recieved - will in turn add a new chunk widget
+        """Called whenever CHUNK_LOADED notice was received - will in turn add a new chunk widget
 
         Args:
             notice (chunk_notice.ChunkLoadedNotice): The notice sent from the registry

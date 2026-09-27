@@ -268,10 +268,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             ):
                 # Find-or-CREATE: a chunkgroup made when the scene is still empty must not
                 # become the container itself -- it is a node dropped into the default
-                # group, exactly like one made later ("droppar du ned en chunkgroup i
-                # graphen ska den neatly under parentchunkgroupen"). Without this the very
-                # first group silently became the root, so whether a group was a node or a
-                # container depended on how empty the scene happened to be.
+                # group, exactly like one made later. Otherwise whether a group is a node
+                # or a container would depend on how empty the scene happened to be.
                 root = self.get_root_context()
                 if root is not None and root is not c:
                     parent = weakref.ref(root)
@@ -404,14 +402,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def get_chunks(self) -> Tuple[ChunkBase, ...]:
         # The scene's outermost container is the one context that is not a node in any
-        # graph. Dan: "default chunkgroupen ska inte vara en chunk i graphen, den ska vara
-        # en upp" -- a chunkgroup is a node in its PARENT's graph, and this one has no
-        # parent graph to be a node in.
+        # graph: a chunkgroup is a node in its PARENT's graph, and this one has no parent
+        # graph to be a node in.
         #
         # Identity, not depth: add_chunk puts EVERY context straight into self.chunks, so a
         # user-created chunkgroup sits at the same container depth as the root and a
-        # depth test hides all of them (live-reported: no chunkgroup visible in the graph,
-        # and none creatable).
+        # depth test would hide all of them.
         root = self.peek_root_context()
         seen: set = set()
         res: list = []

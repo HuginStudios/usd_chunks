@@ -907,11 +907,11 @@ class ChunkModule:
 
     def load(self) -> Sequence[core.ChunkBase]:
         """
-        Loads the module. This ensures that the module is properly created. If Already loaded, it's preffered to
+        Loads the module. This ensures that the module is properly created. If Already loaded, it's preferred to
         call create() directly, to skip some initialization stuff that should only be called once
 
         Returns:
-            bool: True if loaded successfully, Fale otherwise
+            bool: True if loaded successfully, False otherwise
         """
         if not self._pre_load():
             logger.warning(f"Could not load module {self.module}")
@@ -1238,7 +1238,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     Attributes:
         registered_directories (Set[str]) : A set of directories we have searched
         registered_modules (Dict[str, ChunkModule]) : A mapping between module names and modules
-        scene (SceneSender) : An instance of the SceneSender for accesing the scene
+        scene (SceneSender) : An instance of the SceneSender for accessing the scene
         plugin (str) : A string identifier of the currently loaded plugin
     """
 
@@ -1372,7 +1372,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
         """
-        Register a ChunkModule. This will wnsure that the module is kept alive and accessible
+        Register a ChunkModule. This will ensure that the module is kept alive and accessible
 
         Args:
             module (ChunkModule): The module to add to the registry
@@ -1381,10 +1381,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             ChunkModule | None: The registered module, or None if failed
         """
         if not module.has_main():
-            logger.info(f"Skipping {module.module_name}. Module is has no main function defined")
+            logger.info(f"Skipping {module.module_name}. Module has no main function defined")
             return
         if not module.has_config():
-            logger.info(f"Skipping {module.module_name}. Module is has no config function defined")
+            logger.info(f"Skipping {module.module_name}. Module has no config function defined")
             return
         if not module.module:
             logger.info(f"Skipping {module.module_name}. Module has no valid python source module")

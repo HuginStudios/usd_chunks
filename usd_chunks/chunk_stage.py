@@ -5265,8 +5265,7 @@ def _load_chunks(
             if loaded_prim_paths is not None:
                 loaded_prim_paths.add(prim_path)
             if prim_path == _CHUNKS_ROOT:
-                # A scope holds chunks without being a context itself ("/chunks det är
-                # bara ett scope"). Recording the path is still what routes its children
+                # A scope holds chunks without being a context itself. Recording the path is still what routes its children
                 # to _EXISTING_CONTEXT, so they keep their saved home instead of being
                 # wrapped in a tab named after the file -- we just do not mint a context
                 # for the scope to be that home.

@@ -1175,9 +1175,8 @@ class BlenderGraphView:
         Synchronous, like Flet and unlike Qt: Blender builds nodes immediately, so there is
         no deferred-proxy window to wire around.
 
-        Wiring is chunk_graph.rewire_pasted. The version that lived here built PortRefs by
-        hand and typed every one of them PORT_EXEC, which silently dropped every copied
-        param wire; the engine reads the real ports off the stage instead.
+        Wiring is chunk_graph.rewire_pasted, which reads the real port types off the stage
+        so copied param wires survive alongside exec wires.
         """
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
         edges = chunk_graph.edge_clipboard if edges is None else edges

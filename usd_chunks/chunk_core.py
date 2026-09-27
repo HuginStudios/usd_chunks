@@ -1,6 +1,6 @@
 """
 Defines all base classes which the chunks and associated classes should derive from. These classes should not
-be instatiated, instead use the implementations from [usd_chunks.chunk](chunk.md).
+be instantiated, instead use the implementations from [usd_chunks.chunk](chunk.md).
 
 We use the attrs library behind the scenes to get dataclass-like behaviour for all the Chunk classes in order to
 easily create and manage attributes. The attributes and function definitions from attrs are inherited through the mro
@@ -11,7 +11,7 @@ of further interfering with attrs. AttributesMetaclass also add some custom vali
 
 All chunk objects inherits from ChunkCommon, which declare some fields that all chunk objects should have; name, f.e.
 
-Every modifyable field are themselves instances of AttributeSender. As AttributeSender also inherits from ChunkNoticePropagator,
+Every modifiable field are themselves instances of AttributeSender. As AttributeSender also inherits from ChunkNoticePropagator,
 we can propagate the attribute changes up the hierarchy in order to send notices and similar when any attribute is modified.
 
 """
@@ -647,7 +647,7 @@ class ChunkHash(Protocol):
 
 class ProxyParam(chunk_notice.ChunkNoticePropagator):
     """
-    A proxy parameter lies ontop of a concrete parameter. The proxy stores only a uniuqe value and unique children
+    A proxy parameter lies on top of a concrete parameter. The proxy stores only a unique value and unique children
     if the parameter is a group. This is useful for lists, where an original group dictates the content of each list
     entry, but the list entries can hold unique values. This means we can change any attribute except 'value' on the
     original, and the proxies will update.
@@ -759,7 +759,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # If the parameter is alive, we should send
             owner = self.get_owner()
             if owner and isinstance(owner, NameSyncedContainer):
-                # Owner is a NameSyncedContainer, pop it from the contiainer. When successfully removed,
+                # Owner is a NameSyncedContainer, pop it from the container. When successfully removed,
                 # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
                 owner.send_removed(self)
 
@@ -891,7 +891,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     return same as passing obj._hashable.
     TODO: This is a bit un-intuituve, and should perhaps be reconsidered.
 
-    names map betweeen the current (mutable) name of a param and the uuid. This exists in order to quicker acccess
+    names map between the current (mutable) name of a param and the uuid. This exists in order to quicker access
     params by their name. This container need to be maintained and updated whenever a param name is changed, which is currently
     achieved by subclassing ChunkNoticePropagator, in order to insert itself in hierarchy of objects and modifying the mapping
     whenever a name changes.
@@ -973,7 +973,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
     def add_nested(self, nested: "NameSyncedContainer[ChunkT]"):
         """
-        Appends nested params to the ChainMap. This allows for fast lookups accross the layers.
+        Appends nested params to the ChainMap. This allows for fast lookups across the layers.
 
         Args:
             nested ("NameSyncedContainer[ChunkT]"): The nested params to add
@@ -1086,7 +1086,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
 
     def get_by_name(self, name: str, predicate: Optional[Predicate[ValueT]] = None) -> Optional[ChunkT] | ValueT:
         """
-        Excplicitly retrieve a param by its name. In order to find nested children, one can
+        Explicitly retrieve a param by its name. In order to find nested children, one can
         pass the hierarchy to the 'name' argument by adding a dot (.) for each level in the hierarchy:
 
         ``` py
@@ -1284,7 +1284,7 @@ class HashVal:
 
 class ChunkCommon(AttributesBase):
     """Base class for all Chunk objects. Should not be instantiated directly, but inherited by concrete classes.
-    Holds attributes that all chunk objects are excpected to support
+    Holds attributes that all chunk objects are expected to support
 
     Attributes:
         name: The name of the chunk object
@@ -1421,7 +1421,7 @@ class ChunkCommon(AttributesBase):
         Use when modifying the stage and the changes should be added to the local
         Sdf.Layer corresponding to this chunk object. Will traverse up the hierarchy
         to find the nearest ChunkBase parent and use the layer from it, instead of having
-        seperate layers for every parameter
+        separate layers for every parameter
 
         ``` py
         with Usd.EditContext(stage, param.get_edit_context()):
@@ -1509,7 +1509,7 @@ class ChunkCommon(AttributesBase):
             value (str): The value to validate
 
         Returns:
-            bool: True if succcess
+            bool: True if success
         """
         if not self._validate_path(attr, value):
             return False
@@ -1651,7 +1651,7 @@ class ChunkCommon(AttributesBase):
 
     def request_delete(self):
         """Sends a notice for owners to delete this Chunk object. It's the owners responsibility to remove their reference to this object.
-        If this parameter lies withing a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
+        If this parameter lies within a ChunkContainerBase, then the containers' delete_param_or_group is called, with this instance as argument.
 
         In addition, all callbacks will be removed from this object, and the owner will be set to None.
         """
@@ -1681,7 +1681,7 @@ class ChunkCommon(AttributesBase):
             # Owner is a group, so delete this param from the group
             owner.remove_param_or_group(self)
         elif owner and isinstance(owner, NameSyncedContainer):
-            # Owner is a NameSyncedContainer, pop it from the contiainer. When successfully removed,
+            # Owner is a NameSyncedContainer, pop it from the container. When successfully removed,
             # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
             owner.pop(self)
 
@@ -1707,7 +1707,7 @@ def params_bound_to(path: str) -> "list[ChunkUsdAttributeSupport]":
 
 class ChunkUsdAttributeSupport(AttributesBase):
     """
-    This inteface class can be subclassed for valued parameter classes in order to support connections
+    This interface class can be subclassed for valued parameter classes in order to support connections
     to UsdAttribute objects. This enables a parameter to be generated from a UsdAttribute, and creating
     the NoticeConnections for managaging the value setting and getting between the param and the
     UsdAttribute
@@ -2726,7 +2726,7 @@ class ChunkContainerBase(ChunkCommon):
     ) -> Optional[ChunkCommon] | ValueT:
         """
         Get a parameter or group inside of this group. A string can be passed to get a parameter by name.
-        The string can also be the explicit hierarchical identifier of a param by spacing the hiearchy levels with a dot
+        The string can also be the explicit hierarchical identifier of a param by spacing the hierarchy levels with a dot
 
         ``` py
         myChunk.get_param("groupA.groupB.param")
@@ -2986,7 +2986,7 @@ class ChunkGroupBase(ChunkContainerBase):
             self.children.add(new_param)
 
             if isinstance(new_param, ChunkContainerBase):
-                # Also append the children of the group, as this allows for fast lookups accross the layers
+                # Also append the children of the group, as this allows for fast lookups across the layers
                 self.children.add_nested(new_param.children)
 
         else:
@@ -3002,7 +3002,7 @@ class ChunkGroupBase(ChunkContainerBase):
             param (ChunkParamBase): A ChunkParam or ChunkContainer object to copy
 
         Returns:
-            ChunkT: If the parameter was valid, return the parameter but with posibly a new name as to not fix name conflicts
+            ChunkT: If the parameter was valid, return the parameter but with possibly a new name as to not fix name conflicts
 
         Raises:
             ValueError: If a duplicate was found
@@ -3049,7 +3049,7 @@ class ChunkGroupBase(ChunkContainerBase):
 
         Args:
             orig_name (str): The name to make valid
-            reserved_names (Set[str]): A list of reserved names. This paramater can't have a name
+            reserved_names (Set[str]): A list of reserved names. This parameter can't have a name
                 which exist in this list. The new, valid name will be appended to this list to nest a group inside an already created group
 
         Returns:
@@ -3358,10 +3358,10 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
     ```
 
     Attributes:
-        param (ChunkParamBase): The parameter to use as for the vector. Will clone it lenght times
+        param (ChunkParamBase): The parameter to use as for the vector. Will clone it length times
         length (int): How many elements in the vector
         suffixes (Optional[Tuple[str, ...] | str]): A string or tuple of strings where len(suffixes) == length. These decide how the
-            parameters should be nammed. If the param has a name already, the suffixes will be appended to the name
+            parameters should be named. If the param has a name already, the suffixes will be appended to the name
     """
 
     param: ChunkParamBase = attrs.field(default=None, repr=False, metadata=AttributeMetadata(serialize=False))

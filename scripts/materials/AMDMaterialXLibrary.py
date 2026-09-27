@@ -646,8 +646,8 @@ def apply_material(owner, _notice, _sender):
 
     The split is possible because the two halves are cleanly separable: _fetch_package is
     pure network/filesystem, and the assign is pure USD. So the worker only gets the
-    package onto disk, then hands back to the main thread (QTimer.singleShot(0, ...), the
-    project's standard hop -- see CLAUDE.md) to set picked_title and run the normal
+    package onto disk, then hands back to the main thread (QTimer.singleShot(0, ...)) to
+    set picked_title and run the normal
     reactive path. That path calls _fetch_package again, but by then it is a cache hit, so
     it costs nothing and there is exactly one code path that ever authors USD.
     """

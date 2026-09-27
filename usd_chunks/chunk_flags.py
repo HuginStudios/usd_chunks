@@ -44,13 +44,13 @@ class ChunkFlags:
         STALE = auto()
 
     class GroupFlags(_FlagRepr):
-        """Flags for chunk constainer type objects (Chunk, Group)
+        """Flags for chunk container type objects (Chunk, Group)
 
         Attributes:
             LABELED: If the group should have a label in the ui
             COLLAPSABLE: If the group should be able to collapse
             FRAMED: A simple style flag
-            LIST: Parameters on this group is treated as a list that can be extended and shrinked
+            LIST: Parameters on this group is treated as a list that can be extended and shrunk
             CONTEXT: The group should be displayed as a context rather than a node/chunk. A chunk 
                 context only displays the children of said chunk. In the QT plugin, this is a tab
         """
@@ -106,7 +106,7 @@ class ChunkFlags:
 
         The concrete types are combinations of any of NONE, EMPTY, FLOAT, STRING, INT, BOOL.
         As these are flags, they can be combined using bitwise operators to create more complex
-        parameters. It's up the the ui impelementation to handle these.
+        parameters. It's up to the ui implementation to handle these.
 
         Attributes:
             NONE : A default param type. Nothing will be drawn in the ui
@@ -124,7 +124,7 @@ class ChunkFlags:
             INT_SLIDER : The parameter is an int valued slider
             INT_SPINBOX : The parameter is an int valued spinbox
             LABEL : The parameter is a string valued label
-            LINEEDIT : The parameter is an editable stiring
+            LINEEDIT : The parameter is an editable string
             FILE : The parameter is a string value referring to a file
             STRING_MENU : The parameter is a string valued menu with multiple choices
         """
