@@ -1,3 +1,9 @@
+"""USD helpers shared by the chunk system and by chunk modules.
+
+Which layer a write belongs in (a chunk's Edit Target, its bookkeeping layer, or the
+host's edit target for an override), prim path patterns and namespaces, expression text
+kept beside typed values, variant-aware authoring, and per-chunk xformOp names.
+"""
 from __future__ import annotations
 import ast
 import hashlib
@@ -20,9 +26,17 @@ _PATH_LIST_SPLIT = re.compile(r"([,\s]+)")
 
 
 def apply_namespace(namespace: str, paths: str) -> str:
-    """Put every absolute prim path in `paths` (one, or a comma/space-separated list, globs
-    included) under `namespace`. A path already under it, or a relative one, is left
-    alone, and so is the separators' spelling.
+    """Put every absolute prim path in `paths` under `namespace`.
+
+    A path already under it, or a relative one, is left alone, and so is the separators'
+    spelling.
+
+    Args:
+        namespace: The prim path to put paths under; "" returns `paths` unchanged.
+        paths: One path, or a comma/space-separated list, globs included.
+
+    Returns:
+        `paths` with each absolute path prefixed.
     """
     if not namespace:
         return paths
@@ -36,8 +50,16 @@ def apply_namespace(namespace: str, paths: str) -> str:
 
 
 def strip_namespace(namespace: str, paths: str) -> str:
-    """The inverse of apply_namespace: every path under `namespace` made relative to it
-    again -- the form a param inside a namespaced host stores.
+    """The inverse of apply_namespace: every path under `namespace` made relative to it again.
+
+    That is the form a param inside a namespaced host stores.
+
+    Args:
+        namespace: The prim path to strip; "" returns `paths` unchanged.
+        paths: One path, or a comma/space-separated list.
+
+    Returns:
+        `paths` with the namespace removed from each path under it.
     """
     if not namespace:
         return paths
@@ -53,34 +75,40 @@ def strip_namespace(namespace: str, paths: str) -> str:
 
 
 def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
-    """Return the layer a chunk should author into for its exec-chain position: the layer
-    published by the nearest Edit Target chunk reachable by walking the exec chain upstream
-    from `owner`, or the session layer if there is no upstream Edit Target.
+    """The layer a chunk should author into for its exec-chain position.
 
-    A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer) -- resolution
-    never depends on which chunk happened to execute last.
+    That is the layer published by the nearest Edit Target chunk reachable by walking the
+    exec chain upstream from `owner`, or the session layer if there is no upstream Edit
+    Target. A pure function of graph topology (see chunk_stage.nearest_upstream_edit_layer)
+    -- resolution never depends on which chunk happened to execute last.
 
     Use this instead of hardcoding stage.GetSessionLayer() for override/redirect-style
     opinions (variant selections, shader input redirects, etc.) so they follow whatever
     Edit Target applies at the authoring chunk's place in the graph, same as chunk prim
     bookkeeping does.
 
-    owner is the authoring chunk. When None, falls back to the chunk whose execute() is
-    currently running (chunk_notice._executing_chunk) -- so callers invoked from inside a
-    chunk's execute() (author_in_variant_context, wire_shader_input, …) resolve correctly
-    without threading owner through every call site. With no owner at all, returns the
-    session layer.
+    The fallback for a missing `owner` is safe despite being ambient state because its sole
+    writer (ChunkNoticePropagator.execute) save/restores it around each module run -- set to
+    the running module's own chunk right before module.execute(), popped back to the prior
+    value in the finally -- so it can never transiently point at the wrong chunk, even when a
+    reconcile re-executes a chunk from inside another chunk's execute(). Anything running
+    outside a module execute() (e.g. reconcile_edit_targets) passes owner explicitly rather
+    than relying on this fallback.
 
-    The fallback is safe despite being ambient state because its sole writer
-    (chunk_notice.py:1171-1185) save/restores it around each module run -- set to the running
-    module's own chunk right before module.execute(), popped back to the prior value in the
-    finally -- so it can never transiently point at the wrong chunk, even when a reconcile
-    re-executes a chunk from inside another chunk's execute(). Anything running outside a
-    module execute() (e.g. reconcile_edit_targets) passes owner explicitly rather than
-    relying on this fallback.
+    The imports are local because chunk_stage imports this module at module scope, so
+    importing it back at module scope here would fail depending on which of the two loads
+    first.
 
-    Local imports: chunk_stage imports this module at module scope, so importing it
-    back at module scope here would fail depending on which of the two loads first.
+    Args:
+        stage: The stage being authored.
+        owner: The authoring chunk. When None, falls back to the chunk whose execute() is
+            currently running (chunk_notice._executing_chunk) -- so callers invoked from
+            inside a chunk's execute() (author_in_variant_context, wire_shader_input, ...)
+            resolve correctly without threading owner through every call site.
+
+    Returns:
+        The layer to author into; the session layer when there is no owner at all, and None
+        when there is no stage.
     """
     if stage is None:
         return None
@@ -95,10 +123,10 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
 
 
 def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
-    """Return where a chunk's own bookkeeping (its node prim's storage attrs, wiring,
-    node-graph position) should be authored: get_edit_layer(stage, owner) for a regular
-    chunk, or always the session layer for a CONTEXT chunk (Tab containers, groups),
-    regardless of what target is currently active.
+    """Where a chunk's own bookkeeping belongs: its node prim's storage attrs, wiring and position.
+
+    That is get_edit_layer(stage, owner) for a regular chunk, or always the session layer for
+    a CONTEXT chunk (Tab containers, groups), regardless of what target is currently active.
 
     CONTEXT chunks are structural scaffolding for the graph itself, not content --
     letting their own bookkeeping follow whatever target applies at their position would
@@ -106,7 +134,13 @@ def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
     exact per-layer graph scatter get_edit_layer avoids for content. Regular (non-CONTEXT)
     chunks have no such risk, so they follow get_edit_layer like everything else.
 
-    owner may be None (caller couldn't resolve an owning chunk) -- treated as non-CONTEXT.
+    Args:
+        stage: The stage being authored.
+        owner: The chunk; None (the caller couldn't resolve an owning chunk) is treated as
+            non-CONTEXT.
+
+    Returns:
+        The layer to author bookkeeping into.
     """
     if owner is not None and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
         return stage.GetSessionLayer()
@@ -136,6 +170,12 @@ def host_edit_layer(stage: Usd.Stage) -> Sdf.Layer:
     callback. A write from inside one of those (a callback setting a sibling param) sees
     that layer as the ambient target, and it is Clear()ed on the next cook -- so an
     internal layer is never the answer, and the root layer stands in for it.
+
+    Args:
+        stage: The stage being authored.
+
+    Returns:
+        The stage's edit target layer, or its root layer when the target is internal.
     """
     layer = stage.GetEditTarget().GetLayer()
     if layer is None or chunk_registry.is_chunk_internal_layer(layer):
@@ -144,11 +184,18 @@ def host_edit_layer(stage: Usd.Stage) -> Sdf.Layer:
 
 
 def is_composed_in(prim: Usd.Prim) -> bool:
-    """Whether this prim is defined only by layers the chunk system does not own: every
-    `def` for it is in a foreign layer (is_foreign_layer) or reached across a reference or
-    payload, so any local opinion on it is an override. A prim that is not defined at all
-    yet (mid-creation) is not composed in; neither is one with a `def` in an owned layer,
-    however many foreign opinions sit beneath it.
+    """Whether this prim is defined only by layers the chunk system does not own.
+
+    Every `def` for it is in a foreign layer (is_foreign_layer) or reached across a
+    reference or payload, so any local opinion on it is an override. A prim that is not
+    defined at all yet (mid-creation) is not composed in; neither is one with a `def` in an
+    owned layer, however many foreign opinions sit beneath it.
+
+    Args:
+        prim: The prim to check.
+
+    Returns:
+        True if every `def` for the prim is foreign.
     """
     if prim is None or not prim.IsValid():
         return False
@@ -164,9 +211,16 @@ def is_composed_in(prim: Usd.Prim) -> bool:
 
 
 def composed_in_from(prim: Usd.Prim) -> Sdf.Layer | None:
-    """The layer a composed-in prim's strongest `def` comes from, or None when the prim is
-    defined locally (or not at all). The layer a UI names when it says where a locked node
-    came from, and the one is_composed_in is really asking about.
+    """The layer a composed-in prim's strongest `def` comes from.
+
+    The layer a UI names when it says where a locked node came from, and the one
+    is_composed_in is really asking about.
+
+    Args:
+        prim: The prim to check.
+
+    Returns:
+        The layer, or None when the prim is defined locally (or not at all).
     """
     if prim is None or not prim.IsValid():
         return None
@@ -195,22 +249,30 @@ def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
     file, the same discipline USD has for every other kind of content. A user who wants
     to edit a foreign file directly says so by making it the stage's edit target; the
     override then lands there of its own accord, and this predicate does not need to know.
+
+    Args:
+        layer: The layer to check.
+        stage: The stage it is on.
+
+    Returns:
+        True for a file-backed layer other than the root layer.
     """
     return not layer.anonymous and layer != stage.GetRootLayer()
 
 
 def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
-    """Return the layer to update attr in: the one holding its strongest existing
-    property spec, or -- when that spec is composed in from somewhere the chunk system
-    does not write -- the host's edit target, where the override belongs. None only when
-    the attr has no spec anywhere yet.
+    """The layer to update an existing attribute in.
+
+    That is the layer holding its strongest existing property spec, or -- when that spec is
+    composed in from somewhere the chunk system does not write -- the host's edit target,
+    where the override belongs.
 
     Use this to update an attribute that already exists (value, connections, a rename),
     rather than re-resolving "the current Edit Target" on every change -- a chunk's own
-    bookkeeping attr can now live in whatever layer was active when it was first
-    authored (get_bookkeeping_layer), and Edit Target may have moved on to somewhere
-    else by the time it's edited again. Always writing new edits back to the attr's own
-    existing home avoids splitting one attribute's opinions across multiple layers.
+    bookkeeping attr lives in whatever layer was active when it was first authored
+    (get_bookkeeping_layer), and Edit Target may have moved on to somewhere else by the
+    time it's edited again. Always writing new edits back to the attr's own existing home
+    avoids splitting one attribute's opinions across multiple layers.
 
     Two kinds of strongest spec are not a home, and answer host_edit_layer instead:
 
@@ -219,6 +281,12 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     - one whose path is not the attr's stage path: reached through a reference or
       payload, so the spec's layer is not even in the local layer stack and
       Usd.EditContext on it raises "not in the local LayerStack".
+
+    Args:
+        attr: The attribute to update.
+
+    Returns:
+        The layer, or None only when the attr has no spec anywhere yet.
     """
     stack = attr.GetPropertyStack(Usd.TimeCode.Default())
     if not stack:
@@ -231,21 +299,23 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
 
 
 def chunk_internal_layer_ids() -> set:
-    """Identifiers of layers owned by the chunk graph itself -- every per-graph and
-    per-chunk procedural layer, wherever they're currently sublayered (session layer
-    by default, or an Edit-Target-chosen real layer if one is active).
+    """Identifiers of layers owned by the chunk graph itself.
 
-    These are implementation details managed and Clear()ed by the chunk execution
-    system; utility chunks that let a user pick a layer (e.g. edit-target or export
-    pickers) should exclude them.
+    That is every per-graph and per-chunk procedural layer, wherever it is currently
+    sublayered (the session layer by default, or an Edit-Target-chosen real layer if one is
+    active). These are implementation details managed and Clear()ed by the chunk execution
+    system; utility chunks that let a user pick a layer (e.g. edit-target or export pickers)
+    should exclude them.
 
-    Reads ChunkLayerManager's own incrementally-maintained internal_layer_ids set
-    (same source of truth as chunk_registry.is_chunk_internal_layer) instead of
-    deriving it by walking every tracked layer's live subLayerPaths -- a callback
-    that fires per stage edit, once per live Create Layer/Edit Target/Export USD
-    chunk (see those modules' listen_globally refresh handlers), doing a full
-    tree-walk here on top of that fan-out made chunk deletion cost scale with the
-    total number of live chunks, not just the ones being deleted.
+    Reads ChunkLayerManager's own incrementally-maintained internal_layer_ids set (same
+    source of truth as chunk_registry.is_chunk_internal_layer) instead of deriving it by
+    walking every tracked layer's live subLayerPaths. This is called per stage edit, once per
+    live Create Layer/Edit Target/Export USD chunk (see those modules' listen_globally
+    refresh handlers), so a full tree-walk here would make chunk deletion cost scale with
+    the total number of live chunks, not just the ones being deleted.
+
+    Returns:
+        The layer identifiers, empty before the layer manager is initialized.
     """
     lm = chunk_registry.ChunkLayerManager()
     if not lm.initialized:
@@ -256,8 +326,15 @@ def chunk_internal_layer_ids() -> set:
 def find_collection(stage: Usd.Stage, name: str):
     """Find a UsdCollectionAPI named `name` anywhere on the stage, or None.
 
-    Collections are looked up by name across the whole stage (no namespacing),
-    matching Houdini's %collectionName resolution in primpattern fields.
+    Collections are looked up by name across the whole stage (no namespacing), matching
+    Houdini's %collectionName resolution in primpattern fields.
+
+    Args:
+        stage: The stage to search.
+        name: The collection name.
+
+    Returns:
+        The first collection with that name, or None.
     """
     for prim in stage.Traverse():
         for coll in Usd.CollectionAPI.GetAllCollections(prim):
@@ -279,18 +356,20 @@ def resolve_prim_paths(stage, location_str):
     """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
     Glob rules (Houdini-style):
-      *   matches any characters within one path component (no slash crossing)
-      **  matches any characters across any number of path components
-      ?   matches one character within one path component
 
-    /geo/*   → direct children of /geo only
-    /geo/**  → everything recursively under /geo
-    /**      → every prim on the stage
-    mesh*    → root-level prims whose name starts with "mesh" (/ prepended)
+    - ``*`` matches any characters within one path component (no slash crossing)
+    - ``**`` matches any characters across any number of path components
+    - ``?`` matches one character within one path component
 
-    %name    → every prim in the UsdCollectionAPI named "name" (see find_collection),
-               however it was authored (explicit includes/excludes, expansion rule, or
-               a membership expression) -- resolved via the collection's own query.
+    For example:
+
+    - ``/geo/*`` -- direct children of /geo only
+    - ``/geo/**`` -- everything recursively under /geo
+    - ``/**`` -- every prim on the stage
+    - ``mesh*`` -- root-level prims whose name starts with "mesh" (/ prepended)
+    - ``%name`` -- every prim in the UsdCollectionAPI named "name" (see find_collection),
+      however it was authored (explicit includes/excludes, expansion rule, or a membership
+      expression) -- resolved via the collection's own query.
 
     A glob may follow a variant selection: /asset{color=red}/**/*Body* matches under
     /asset with "red" selected, and every match comes back carrying the selection --
@@ -298,6 +377,13 @@ def resolve_prim_paths(stage, location_str):
     (author_in_variant_context). The pattern is matched with the variant selected, since
     a prim that only exists in "red" is not on the stage until "red" is; the selection
     is put back afterwards. A glob cannot precede a selection: /a*{x=1}/b has no anchor.
+
+    Args:
+        stage: The stage to resolve against.
+        location_str: The paths, patterns and collection refs.
+
+    Returns:
+        The resolved prim paths.
     """
     def _to_re(pattern):
         parts = []
@@ -362,6 +448,7 @@ def parse_expression(text: str) -> list[tuple[str, str]]:
 
 
 def has_expression(text: str) -> bool:
+    """Whether `text` contains a @Node.param@ reference."""
     return bool(_EXPR_RE.search(text))
 
 
@@ -447,6 +534,10 @@ def store_expression_text(attr: Usd.Attribute, raw: str) -> None:
     rewrite it on rename). Every other type stores the *resolved* value -- a Float input
     must read back as a number for anything downstream in USD -- so the text goes to
     customData under EXPR_TEXT_KEY instead.
+
+    Args:
+        attr: The attribute the expression drives.
+        raw: The expression text.
     """
     if attr.GetTypeName() == Sdf.ValueTypeNames.String:
         attr.Set(raw)
@@ -455,11 +546,17 @@ def store_expression_text(attr: Usd.Attribute, raw: str) -> None:
 
 
 def read_expression_text(attr: Usd.Attribute) -> str | None:
-    """Return the expression text authored on attr, from whichever place it was kept.
+    """The expression text authored on attr, from whichever place it was kept.
 
     Accepts either form. A @Node.param@ wire always comes with connections on the attr;
     a ${VAR} stage expression never does, since there is no other param to point at. So
     the two never arrive together and one reader serves both call sites.
+
+    Args:
+        attr: The attribute to read.
+
+    Returns:
+        The expression text, or None if the attr holds none.
     """
     if attr.GetTypeName() == Sdf.ValueTypeNames.String:
         val = attr.Get(0)
@@ -469,12 +566,18 @@ def read_expression_text(attr: Usd.Attribute) -> str | None:
 
 
 def is_expression_text(value) -> bool:
-    """True if value is a @Node.param@ wire, whose text must be preserved verbatim rather
-    than stored as the typed value it resolves to.
+    """Whether value is a @Node.param@ wire, whose text must be kept verbatim.
 
-    A ${VAR} does not need this and no longer counts: it only ever sits in an asset path,
+    Such text is preserved as written rather than stored as the typed value it resolves to.
+    A ${VAR} does not need this and does not count: it only ever sits in an asset path,
     which is a string param, so its text IS its stored value -- and usd_chunks never
     resolves it in the first place. USD does, during composition.
+
+    Args:
+        value: A param value.
+
+    Returns:
+        True for a string holding a @Node.param@ reference.
     """
     return isinstance(value, str) and has_expression(value)
 
@@ -499,6 +602,10 @@ def store_lofted_label(attr: Usd.Attribute, label: str) -> None:
     _restore_lofted_params reads this back and, if present, uses it verbatim instead of
     re-deriving the generated "{Chunk}: {label}" default -- a custom name is exactly what
     it has to override.
+
+    Args:
+        attr: The lofted param's attribute.
+        label: The user's label.
     """
     attr.SetCustomDataByKey(LOFTED_LABEL_KEY, label)
 
@@ -630,14 +737,19 @@ def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
 
 
 def get_unique_path(stage, prim_path):
-    """Return prim_path if unused on stage, else a unique variant with a numeric suffix.
-
-    Also accepts a ChunkParamBase in place of a string.  If the param's raw value is an
-    expression the resolved path is returned as-is -- expressions define an explicit derived
-    path, so uniqueness bumping would be wrong.
+    """prim_path if it is unused on the stage, else a unique variant with a numeric suffix.
 
     When a param is passed, the chunk's procedural layer is cleared of the old prim spec
     before checking uniqueness, so previous executions don't inflate the suffix counter.
+
+    Args:
+        stage: The stage to check.
+        prim_path: A path, or a ChunkParamBase holding one. If the param's raw value is an
+            expression the resolved path is returned as-is -- expressions define an explicit
+            derived path, so uniqueness bumping would be wrong.
+
+    Returns:
+        A prim path free on the stage.
     """
     raw_value = getattr(prim_path, 'raw_value', None)
     if raw_value is not None:
@@ -679,21 +791,27 @@ def get_unique_path(stage, prim_path):
 
 
 def split_variant_path(path_str: str) -> tuple[str, str, list[tuple[str, str, str]]]:
-    """Return (anchor_path, target_path, [(anchor_prim, variantSet, variant), ...]).
+    """Split a path with variant selections into its anchor, target and selections.
 
-    anchor_path: first prim before any {} (the outermost anchor)
-    target_path: full prim path with all variant selections stripped
-    selections:  per-selection tuple including the prim that owns each variant set
+    For example::
 
-    /myprim{LOD=high}/geom
-        → ('/myprim', '/myprim/geom', [('/myprim', 'LOD', 'high')])
+        /myprim{LOD=high}/geom
+            -> ('/myprim', '/myprim/geom', [('/myprim', 'LOD', 'high')])
 
-    /myprim{LOD=high}/geom/asset{season=summer}
-        → ('/myprim', '/myprim/geom/asset',
-           [('/myprim', 'LOD', 'high'), ('/myprim/geom/asset', 'season', 'summer')])
+        /myprim{LOD=high}/geom/asset{season=summer}
+            -> ('/myprim', '/myprim/geom/asset',
+                [('/myprim', 'LOD', 'high'), ('/myprim/geom/asset', 'season', 'summer')])
 
-    /myprim
-        → ('/myprim', '/myprim', [])
+        /myprim
+            -> ('/myprim', '/myprim', [])
+
+    Args:
+        path_str: A prim path, optionally with {set=variant} selections at any level.
+
+    Returns:
+        (anchor_path, target_path, selections): the first prim before any {} (the outermost
+        anchor); the full prim path with all variant selections stripped; and one
+        (anchor prim, variant set, variant) tuple per selection.
     """
     selections = []
     accumulated = ''
@@ -782,16 +900,16 @@ def wire_shader_input(
 
 
 def iter_prim_targets(stage, param):
-    """Yield target_path for every prim/pattern/collection resolved from `param`
-    (a LineEdit-like param with .resolve_paths()), each already inside
-    author_in_variant_context.
+    """Every prim resolved from `param`, each yielded inside author_in_variant_context.
 
-    Replaces the repeated:
+    Replaces the repeated::
+
         for path_str in param.resolve_paths():
             with author_in_variant_context(stage, path_str) as target_path:
                 ...
 
-    with:
+    with::
+
         for target_path in iter_prim_targets(stage, param):
             ...
 
@@ -799,9 +917,16 @@ def iter_prim_targets(stage, param):
     the generator is suspended at its yield: `list(iter_prim_targets(...))` walks every
     path and leaves every context, so anything authored to those paths afterwards lands
     outside the variant. Reading a prim after the loop is fine; binding, defining or
-    setting on it is not -- that is how Bind Material put "/asset{color=red}/geo" bindings
-    on /asset/geo for every colour. A caller that has to collect first re-enters with
+    setting on it is not -- that would put "/asset{color=red}/geo" bindings on /asset/geo
+    for every colour. A caller that has to collect first re-enters with
     author_in_variant_context per path string when it writes.
+
+    Args:
+        stage: The stage to author on.
+        param: A LineEdit-like param with .resolve_paths().
+
+    Yields:
+        Each target path, with its variant selections stripped.
     """
     for path_str in param.resolve_paths():
         with author_in_variant_context(stage, path_str) as target_path:
@@ -827,7 +952,14 @@ def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform")
     already holds a `Scope`, or an `over` carrying a typeName, would otherwise be left as
     it is and the caller would get back a root it cannot transform.
 
-    Returns the prim at `path`.
+    Args:
+        stage: The stage to author on.
+        path: The prim to define.
+        type_name: The type for the prim at `path`.
+        ancestor_type: The type for ancestors that have none.
+
+    Returns:
+        The prim at `path`.
     """
     sdf_path = Sdf.Path(str(path))
     prim = None
@@ -855,13 +987,19 @@ def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform")
 
 @contextmanager
 def author_in_variant_context(stage, path_str):
-    """Context manager that enters any variant edit contexts encoded in path_str.
+    """Enter every variant edit context encoded in path_str, at any level of the hierarchy.
 
-    Yields target_path (variant specs stripped) inside the appropriate edit contexts.
-    Supports variant selections at multiple levels of the path hierarchy.
+    For example::
 
-    with author_in_variant_context(stage, '/prim{LOD=high}/geom/asset{season=summer}') as t:
-        stage.DefinePrim(t, 'Xform')  # authored inside both variant contexts
+        with author_in_variant_context(stage, '/prim{LOD=high}/geom/asset{season=summer}') as t:
+            stage.DefinePrim(t, 'Xform')  # authored inside both variant contexts
+
+    Args:
+        stage: The stage to author on.
+        path_str: A prim path, optionally with {set=variant} selections.
+
+    Yields:
+        The target path with its variant selections stripped, inside the edit contexts.
     """
     _, target_path, var_selections = split_variant_path(path_str)
     with author_in_variant_selections(stage, var_selections):
@@ -887,10 +1025,9 @@ _ACTIVE_VARIANT_SCOPES: dict = {}
 
 @contextmanager
 def author_in_variant_selections(stage, var_selections):
-    """The lower half of author_in_variant_context, split out for a caller that already
-    holds a parsed selections list -- (anchor_prim_path, vs_name, variant) tuples, as
-    split_variant_path returns them -- rather than a path string to parse.
+    """Enter already-parsed variant selections; the lower half of author_in_variant_context.
 
+    For a caller that holds a parsed selections list rather than a path string to parse.
     A param bound to a real prim's attribute while a variant was selected (show_attribute,
     called from inside author_in_variant_context) is the case that needs this directly: it
     remembers the selections active when it was built, and re-enters them here on every
@@ -901,6 +1038,14 @@ def author_in_variant_selections(stage, var_selections):
 
     Re-entrant: a scope already open (_ACTIVE_VARIANT_SCOPES) is left alone rather than
     entered twice, which would nest the variant inside itself and send the write nowhere.
+
+    Args:
+        stage: The stage to author on.
+        var_selections: (anchor_prim_path, variant set, variant) tuples, as
+            split_variant_path returns them.
+
+    Yields:
+        None, once every selection's edit context is entered.
     """
     edit_layer = get_edit_layer(stage)
     edit_target = Usd.EditTarget(edit_layer)
@@ -955,9 +1100,11 @@ def author_in_variant_selections(stage, var_selections):
 
 
 def edit_context_for(stage, var_selections, fallback_layer=None):
-    """The one edit context for authoring an attribute's value: inside var_selections if
-    given (re-entering the recorded variant via author_in_variant_selections), otherwise
-    fallback_layer -- or the ambient edit target if fallback_layer is None.
+    """The one edit context for authoring an attribute's value.
+
+    That is inside var_selections if given (re-entering the recorded variant via
+    author_in_variant_selections), otherwise fallback_layer -- or the ambient edit target if
+    fallback_layer is None.
 
     var_selections cannot be resolved from the attribute alone the way get_attr_home_layer
     resolves a plain layer: composition only shows the CURRENTLY selected variant's specs,
@@ -974,6 +1121,15 @@ def edit_context_for(stage, var_selections, fallback_layer=None):
     _write_driven_attrs, _author_driven_connections, ChunkVectorBase.data_changed,
     chunk_stage._push_driven_values) -- collapsing them into one call is what keeps a future
     write site's fallback from quietly drifting from the others'.
+
+    Args:
+        stage: The stage to author on.
+        var_selections: Recorded variant selections, or None.
+        fallback_layer: The layer to author into outside a variant, or None for the ambient
+            edit target.
+
+    Returns:
+        A context manager to author inside.
     """
     if var_selections:
         return author_in_variant_selections(stage, var_selections)
@@ -1083,6 +1239,12 @@ def existing_xform_op_name(node):
 
     For asking "does this chunk own an op" while building someone else's order -- minting
     on that question would give an op to every chunk that was merely looked at.
+
+    Args:
+        node: The chunk.
+
+    Returns:
+        The op name, or None.
     """
     suffix = getattr(node, "_xform_op_suffix", None)
     if suffix:
@@ -1098,7 +1260,7 @@ def existing_xform_op_name(node):
 
 
 def xform_op_name(node) -> str:
-    """The xformOp suffix this chunk owns: readable, unique, and stable across renames.
+    """The xformOp name this chunk owns: readable, unique, and stable across renames.
 
     If every chunk authored the same `xformOp:transform`, two chunks placing one prim would
     compete for one slot and USD would discard the loser. Owning a distinctly named op each
@@ -1108,14 +1270,20 @@ def xform_op_name(node) -> str:
     generated once, recorded on the chunk's prim, and never regenerated, so renaming a
     chunk does not orphan the op it already authored. The readable prefix is there because
     the point of all this is to select a prim, look at its ops, and see which chunk each one
-    belongs to -- `xformOp:transform:a3f2c1` answers nothing at a glance.
+    belongs to -- `xformOp:transform:a3f2c1` answers nothing at a glance::
 
         xformOp:transform:Transform1_a3f2c1
 
     The prefix is taken from the chunk's name at first use and deliberately not kept in
-    sync afterwards. Renaming the op would be possible -- unlike before, a chunk owns its
-    attribute outright and nobody else writes it -- but it rewrites the file for a cosmetic
-    gain, and anything that needs the true mapping should read XFORM_OP_ID_ATTR.
+    sync afterwards. Renaming the op would be possible -- a chunk owns its attribute
+    outright and nobody else writes it -- but it rewrites the file for a cosmetic gain, and
+    anything that needs the true mapping should read XFORM_OP_ID_ATTR.
+
+    Args:
+        node: The chunk.
+
+    Returns:
+        The op name, minted on first use.
     """
     return _XFORM_OP_PREFIX + _stable_suffix(node)
 
