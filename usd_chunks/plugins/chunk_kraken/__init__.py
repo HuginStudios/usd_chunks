@@ -1,6 +1,8 @@
 """Plugin implementation for Hugins' inhouse Kraken toolset"""
 from __future__ import annotations
 
+from typing_extensions import override
+
 from pxr import Tf
 from kraken.plugin import KrakenPluginContainer
 from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
@@ -28,15 +30,18 @@ class KrakenScene(chunk_core.SceneSender):
         reg = chunk_registry.ChunkRegistry()
         reg.reload_modules()
 
+    @override
     def get_stage(self):
         return self.kraken_scene.stage
 
+    @override
     def get_selected_prims(self):
         if not self.kraken_scene or not self.kraken_scene.stage:
             return []
 
         return [self.kraken_scene.stage.GetPrimAtPath(x) for x in self.kraken_scene.selected_prims]
 
+    @override
     def get_selected_property(self):
         return None
 

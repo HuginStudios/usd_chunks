@@ -6,6 +6,8 @@ Usage:
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import filecmp
 import os
 import subprocess
@@ -40,6 +42,7 @@ class HeadlessScene(chunk_core.SceneSender):
         super().__init__()
         self._stage = stage
 
+    @override
     def get_stage(self):
         return self._stage
 

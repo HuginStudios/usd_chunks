@@ -23,6 +23,8 @@ connects but does not yet write the expression.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 import sys
 import time
@@ -97,9 +99,11 @@ class _Scene(SceneSender):
         super().__init__()
         self._stage = stage
 
+    @override
     def get_stage(self):
         return self._stage
 
+    @override
     def get_selected_prims(self):
         return []
 

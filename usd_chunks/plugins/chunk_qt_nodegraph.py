@@ -7,6 +7,8 @@ Edges follow inputs:chunk connections between prims.
 
 from __future__ import annotations
 
+from typing_extensions import override
+
 import os
 import re
 import time
@@ -1267,6 +1269,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     # ------------------------------------------------------------------
     # QGraphicsItem interface
 
+    @override
     def boundingRect(self) -> QtCore.QRectF:
         if self._is_dot:
             pad = _PORT_RADIUS
@@ -1293,6 +1296,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 return True
         return False
 
+    @override
     def paint(self, painter: QtGui.QPainter, option, widget=None):
         # The chunk may already be deleted while this node awaits its deferred removal
         # (see ChunkGraphScene._on_chunk_deleted); painting reads live prim attributes,
@@ -1428,6 +1432,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 QtCore.QPointF(_NODE_WIDTH, self._outputs_start_y),
             )
 
+    @override
     def mouseDoubleClickEvent(self, event):
         # A recomposition (mute/unmute) can expire this node's prim before the graph
         # rebuilds; touching it then raises. Bail rather than crash the event handler.
@@ -1477,6 +1482,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         else:
             super().mouseDoubleClickEvent(event)
 
+    @override
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             scene = self.scene()
@@ -1525,6 +1531,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 return
         super().mousePressEvent(event)
 
+    @override
     def mouseMoveEvent(self, event):
         if self._drag_active:
             delta = event.pos() - self._drag_start
@@ -1572,6 +1579,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if isinstance(scene, ChunkGraphScene) and scene.views():
                 scene.views()[0]._shake_disconnect_node(self)
 
+    @override
     def mouseReleaseEvent(self, event):
         if self._drag_active:
             self._drag_active = False
@@ -1666,6 +1674,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             view._author_connection(my_out, b_in)
             return
 
+    @override
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
             scene = self.scene()
@@ -1884,6 +1893,7 @@ class ChunkEdgeItem(QtWidgets.QGraphicsPathItem):
         path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
         self.setPath(path)
 
+    @override
     def boundingRect(self) -> QtCore.QRectF:
         rect = super().boundingRect()
         if self._expression:
@@ -1895,6 +1905,7 @@ class ChunkEdgeItem(QtWidgets.QGraphicsPathItem):
             rect = rect.united(QtCore.QRectF(mid.x() - r, mid.y() - r, r * 2, r * 2))
         return rect
 
+    @override
     def paint(self, painter: QtGui.QPainter, option, widget=None):
         super().paint(painter, option, widget)
         if not self._expression:
@@ -1952,6 +1963,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._show_param_edges = show
         self._build_edges()
 
+    @override
     def invalidate(self):
         # Mark that a rebuild is needed WITHOUT clobbering _built_context. The scene's own
         # notice-driven rebuild reads _built_context; nulling it to the sentinel here caused
@@ -2563,6 +2575,7 @@ class _ProxyKeyRouter(QtCore.QObject):
         QtWidgets.QComboBox,
     )
 
+    @override
     def eventFilter(self, _obj, event) -> bool:
         # Read defensively: if a filter ever outlives its wrapper's __dict__, degrade to a
         # no-op rather than raising AttributeError inside Qt's dispatch. uninstall() is
@@ -2944,6 +2957,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if isinstance(graph_scene, ChunkGraphScene):
             graph_scene.set_show_param_edges(checked)
 
+    @override
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
@@ -2967,6 +2981,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
             breadcrumb.raise_()
 
+    @override
     def hideEvent(self, event: QtGui.QHideEvent):
         super().hideEvent(event)
         # Fires when a dived-into ChunkGroup's page stops being the current one in its
@@ -2974,6 +2989,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # it doesn't destroy it) -- see _ProxyKeyRouter.uninstall's docstring.
         self._proxy_key_router.uninstall()
 
+    @override
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
         self._proxy_key_router.install()
@@ -3034,6 +3050,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             spacing *= 2
         return spacing
 
+    @override
     def drawBackground(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
         # super() fills with setBackgroundBrush's flat color; dots paint on top of that.
         super().drawBackground(painter, rect)
@@ -3053,6 +3070,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         painter.drawPoints(points)
         painter.restore()
 
+    @override
     def drawForeground(self, painter: QtGui.QPainter, rect) -> None:
         super().drawForeground(painter, rect)
         painter.save()
@@ -3081,9 +3099,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         painter.drawText(QtCore.QRect(x, y, w, h), QtCore.Qt.AlignCenter, text)
         painter.restore()
 
+    @override
     def sizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(200, 200)
 
+    @override
     def minimumSizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(0, 0)
 
@@ -3704,6 +3724,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Zoom
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         factor = 1.08 if event.angleDelta().y() > 0 else 1 / 1.08
         self.scale(factor, factor)
@@ -3797,6 +3818,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             w = w.parent()
         return None
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         # The mouse's side buttons retrace where you have been, the way they do in a
         # browser: dive into a group, press back, and you are out again. Handled here
@@ -3873,6 +3895,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         else:
             super().mousePressEvent(event)
 
+    @override
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
         if self._drag_src_port is not None:
             self._update_wire_drag(self.mapToScene(event.pos()))
@@ -3888,6 +3911,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         else:
             super().mouseMoveEvent(event)
 
+    @override
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent):
         if self._drag_src_port is not None and event.button() == QtCore.Qt.LeftButton:
             self._finish_wire_drag(self.mapToScene(event.pos()))
@@ -3937,6 +3961,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._frontend = QtGraphFrontend(self, docker)
         return self._frontend
 
+    @override
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Tab:
             self._open_tab_menu()
@@ -4914,18 +4939,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _droppable_paths(self, event) -> list[str]:
         return droppable_paths(event)
 
+    @override
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
         if self._droppable_paths(event):
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
+    @override
     def dragMoveEvent(self, event: QtGui.QDragMoveEvent):
         if self._droppable_paths(event):
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
 
+    @override
     def dropEvent(self, event: QtGui.QDropEvent):
         paths = self._droppable_paths(event)
         if not paths:
@@ -5189,6 +5217,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if view_exists:
             self._recook_active_view()
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
         scene_pos = self.mapToScene(event.pos())
         for item in self.scene().items(scene_pos):

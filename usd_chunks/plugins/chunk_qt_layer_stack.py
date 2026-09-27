@@ -17,6 +17,8 @@ a later one -- so reading top-to-bottom is reading strongest-to-weakest.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Usd, Sdf, Pcp, Tf
 
@@ -96,6 +98,7 @@ class _UsdHighlighter(QtGui.QSyntaxHighlighter):
         cm.setForeground(QtGui.QColor("#6a6a6a"))
         self._rules.append((QtCore.QRegularExpression(r"#[^\n]*"), cm))
 
+    @override
     def highlightBlock(self, text):
         for rx, fmt in self._rules:
             it = rx.globalMatch(text)
@@ -237,6 +240,7 @@ class LayerStackPanel(QtWidgets.QWidget):
         self._follow_selection = on
         self.refresh()
 
+    @override
     def closeEvent(self, event):
         # Drop the Tf listeners so we don't fire into a dead widget.
         for lst in self._listeners:

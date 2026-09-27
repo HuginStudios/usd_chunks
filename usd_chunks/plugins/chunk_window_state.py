@@ -19,6 +19,8 @@ why :func:`chunk_qt.build_chunk_docker` names its dock.
 
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 from PySide6 import QtCore, QtWidgets
@@ -78,6 +80,7 @@ class _SaveOnClose(QtCore.QObject):
         if (app := QtWidgets.QApplication.instance()) is not None:
             app.aboutToQuit.connect(self._save)
 
+    @override
     def eventFilter(self, obj, event) -> bool:
         # getattr, not self._window: Qt keeps calling this during teardown, after Python has
         # already emptied the instance's __dict__, and an AttributeError raised from inside

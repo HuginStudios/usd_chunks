@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from typing_extensions import override
 import inspect
 import os
 import weakref
@@ -93,9 +95,11 @@ class EditableTabBar(QtWidgets.QTabBar):
         self._editor.editingFinished.connect(self.handleEditingFinished)
         self._editor.installEventFilter(self)
 
+    @override
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         idx = self.tabAt(event.pos())
         if idx < 0:
@@ -117,6 +121,7 @@ class EditableTabBar(QtWidgets.QTabBar):
         elif res == disable_action:
             self.request_toggle_disable.emit(idx)
 
+    @override
     def eventFilter(self, widget, event):
         if (
             event.type() == QtCore.QEvent.Type.MouseButtonPress
@@ -127,6 +132,7 @@ class EditableTabBar(QtWidgets.QTabBar):
 
         return super().eventFilter(widget, event)
 
+    @override
     def mouseDoubleClickEvent(self, event):
         index = self.tabAt(event.pos())
         if index > 0:
@@ -262,6 +268,7 @@ class _EmptyPanelTabRouter(QtCore.QObject):
         if (app := QtWidgets.QApplication.instance()) is not None:
             app.removeEventFilter(self)
 
+    @override
     def eventFilter(self, _obj, event) -> bool:
         if (tab_widget := self._tab_widget()) is None:
             self.uninstall()
@@ -389,18 +396,21 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             return []
         return droppable_paths(event)
 
+    @override
     def dragEnterEvent(self, event):
         if self._empty_panel_drop_paths(event):
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
+    @override
     def dragMoveEvent(self, event):
         if self._empty_panel_drop_paths(event):
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
 
+    @override
     def dropEvent(self, event):
         paths = self._empty_panel_drop_paths(event)
         if not paths:
@@ -459,13 +469,16 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             self._tabPosition = QtWidgets.QTabWidget.TabPosition.North
         self.setTabPosition(self._tabPosition)
 
+    @override
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         self.update_tab_position()
         return super().resizeEvent(event)
 
+    @override
     def tabPosition(self) -> QtWidgets.QTabWidget.TabPosition:
         return self._tabPosition
 
+    @override
     def contextMenuEvent(self, event):
         entry = FilterableChunkMenu().select_module(event.globalPos())
         if not entry:
@@ -910,6 +923,7 @@ class ChunkModuleLoader(QtWidgets.QDialog):
 
         self.content.model().dataChanged.connect(self.handle_data_change)
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not (item := self.content.currentItem()):
             return

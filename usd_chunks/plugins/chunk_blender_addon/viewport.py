@@ -21,6 +21,8 @@ that, not the message, is the signal.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 import traceback
 
@@ -312,6 +314,7 @@ class USDCHUNKS_OT_toggle_hydra_view(bpy.types.Operator):
     bl_idname = "usd_chunks.toggle_hydra_view"
     bl_label = "Hydra Stage View"
 
+    @override
     def execute(self, context):
         if hydra_view_enabled():
             disable_hydra_view()
@@ -330,6 +333,7 @@ class USDCHUNKS_OT_set_draw_mode(bpy.types.Operator):
 
     mode: bpy.props.EnumProperty(items=[(k, k, "") for k in _DRAW_MODE_ATTRS])
 
+    @override
     def execute(self, context):
         _state["draw_mode"] = self.mode
         _redraw()
@@ -344,6 +348,7 @@ class USDCHUNKS_OT_toggle_lighting(bpy.types.Operator):
     bl_idname = "usd_chunks.toggle_lighting"
     bl_label = "Toggle Lighting"
 
+    @override
     def execute(self, context):
         _state["lighting"] = not _state["lighting"]
         _redraw()
@@ -366,9 +371,11 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     @classmethod
+    @override
     def poll(cls, context):
         return _state["picking"] and hydra_view_enabled()
 
+    @override
     def invoke(self, context, event):
         rv3d = getattr(context, "region_data", None)
         region = getattr(context, "region", None)
@@ -399,6 +406,7 @@ class USDCHUNKS_OT_toggle_picking(bpy.types.Operator):
     bl_idname = "usd_chunks.toggle_picking"
     bl_label = "Toggle Picking"
 
+    @override
     def execute(self, context):
         _state["picking"] = not _state["picking"]
         return {"FINISHED"}
@@ -435,6 +443,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
 
     plugin: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         _state["renderer"] = self.plugin
         engine = _state.get("engine")
@@ -452,6 +461,7 @@ class USDCHUNKS_MT_renderer(bpy.types.Menu):
     bl_idname = "USDCHUNKS_MT_renderer"
     bl_label = "Renderer"
 
+    @override
     def draw(self, context):
         layout = self.layout
         plugins = _available_renderers()
@@ -474,6 +484,7 @@ class USDCHUNKS_PT_hydra_view(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "USDChunks"
 
+    @override
     def draw(self, context):
         layout = self.layout
         on = hydra_view_enabled()

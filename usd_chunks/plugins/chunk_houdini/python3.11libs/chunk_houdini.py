@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from typing_extensions import override
 from usd_chunks import chunk, chunk_registry, chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
@@ -14,6 +16,7 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
         self.node = lopnode
         self.chunk: chunk.Chunk | None = None
 
+    @override
     def get_stage(self) -> Usd.Stage:
         if not self.node:
             raise AttributeError("No valid node. Could not get stage")

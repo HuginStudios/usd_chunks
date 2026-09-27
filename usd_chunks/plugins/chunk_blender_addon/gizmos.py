@@ -22,6 +22,8 @@ Hydra-drawn prim is not a Blender object and cannot be in `context.selected_obje
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 import math
 
@@ -407,6 +409,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
     )
 
     @classmethod
+    @override
     def poll(cls, context):
         # Only with the live view up and a prim picked. Anything else and this keymap item
         # stands aside, so G is Blender's own grab as always.
@@ -416,6 +419,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
             return False
         return _picked_prim(viewport.active_stage()) is not None
 
+    @override
     def invoke(self, context, event):
         from bpy_extras import view3d_utils
 
@@ -461,6 +465,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         return view3d_utils.region_2d_to_location_3d(
             self._region, self._rv3d, mouse, self._pivot)
 
+    @override
     def modal(self, context, event):
         if event.type in {"X", "Y", "Z"} and event.value == "PRESS":
             # Pressing the same axis again releases it, the way Blender's second press

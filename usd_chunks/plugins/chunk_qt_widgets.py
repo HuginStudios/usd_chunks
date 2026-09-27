@@ -1,6 +1,7 @@
 from __future__ import annotations
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Any, Generic
+from typing_extensions import override
 
 from pxr import Sdf, Usd
 
@@ -166,6 +167,7 @@ class SyntaxHighlighter(QtGui.QSyntaxHighlighter):
         super().__init__(parent)
         self._hl = chunk_highlighter
 
+    @override
     def highlightBlock(self, text):
         for start, end, style in self._hl.match_text(text):
             fmt = QtGui.QTextCharFormat()
@@ -199,6 +201,7 @@ class _FineDragSlider(QtWidgets.QSlider):
         # setValue()'s integer rounding instead of eventually adding up.
         self._drag_value = 0.0
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if (
             event.button() == QtCore.Qt.MouseButton.LeftButton
@@ -212,6 +215,7 @@ class _FineDragSlider(QtWidgets.QSlider):
         self._fine_dragging = False
         super().mousePressEvent(event)
 
+    @override
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if not self._fine_dragging:
             super().mouseMoveEvent(event)
@@ -226,6 +230,7 @@ class _FineDragSlider(QtWidgets.QSlider):
         self.setValue(round(self._drag_value))
         event.accept()
 
+    @override
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         if self._fine_dragging:
             self._fine_dragging = False
@@ -355,6 +360,7 @@ class NumberField(QtWidgets.QLineEdit):
 
     # -- keys ----------------------------------------------------------------------------
 
+    @override
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         key = event.key()
         steps = {
@@ -382,6 +388,7 @@ class NumberField(QtWidgets.QLineEdit):
             new = round(new, self._decimals)
         self.setValue(new)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
         # Same as the slider beside it: the wheel scrolls the panel, it does not edit.
         event.ignore()
@@ -427,6 +434,7 @@ class SpinSlider(QtWidgets.QWidget):
     def setOrientation(self, orient):
         self.slider.setOrientation(orient)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
@@ -448,6 +456,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         max_int = int(max_val * self._step) if max_val is not None else 100 * self._step
         self.setRange(min_int, max_int)
 
+    @override
     def handle_param_changed(self, notice, sender):
         # A range that moves after the widget exists -- a Wedge row's Min/Max edited once
         # its slider is lofted -- would otherwise leave the slider spanning the old one.
@@ -455,9 +464,11 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
             self._apply_range()
         super().handle_param_changed(notice, sender)
 
+    @override
     def get_value(self):
         return self.value() / self._step
 
+    @override
     def set_value(self, value):
         if isinstance(value, str):
             value = self.param.value
@@ -468,12 +479,14 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
             self.slider.setValue(int_val)
             self.spin_box.setValue(int_val / self._step)
 
+    @override
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
         is_horizontal = ChunkFlags.LayoutFlags.HORIZONTAL == layout_flags
         orient = QtCore.Qt.Orientation.Horizontal if is_horizontal else QtCore.Qt.Orientation.Vertical
 
         self.setOrientation(orient)
 
+    @override
     def value_changed(self, value: int | float | None = None):
         if not self.param or value is None:
             return
@@ -485,9 +498,11 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
             result = int(result)
         super().value_changed(result)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -514,9 +529,11 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
 
+    @override
     def get_value(self):
         return self.value()
 
+    @override
     def set_value(self, value):
         if isinstance(value, str):
             value = self.param.value
@@ -525,12 +542,15 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         with QtCore.QSignalBlocker(self):
             self.setValue(value)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -557,9 +577,11 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
 
+    @override
     def get_value(self):
         return self.value()
 
+    @override
     def set_value(self, value):
         if isinstance(value, str):
             value = self.param.value
@@ -568,12 +590,15 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         with QtCore.QSignalBlocker(self):
             self.setValue(value)
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -583,18 +608,23 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
         super().__init__(param)
         self.setup_chunk_widget()
 
+    @override
     def get_value(self):
         return self.text()
 
+    @override
     def set_value(self, value):
         return self.set_label(value)
 
+    @override
     def set_label(self, text):
         return self.setText(text)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -636,6 +666,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         # row's proxy widget gets created) -- apply current state explicitly, once, now.
         self.update_from_state()
 
+    @override
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
         if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
             self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
@@ -689,6 +720,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         paths = self.scene_prim_paths()
         return bool(scene and paths and scene.select_prims(paths))
 
+    @override
     def eventFilter(self, watched, event):
         if watched is self.text:
             if (event.type() == QtCore.QEvent.Type.MouseButtonPress
@@ -710,18 +742,23 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
                 return True
         return super().eventFilter(watched, event)
 
+    @override
     def get_value(self):
         return self.text.text()
 
+    @override
     def set_value(self, value):
         return self.text.setText(str(value))
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
+    @override
     def update_from_state(self):
         # Base ChunkParamWidgetBase.update_from_state is a no-op stub with no default
         # implementation -- without this override, DISABLED never actually renders as
@@ -763,21 +800,26 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         self.setLayout(self.main_layout)
         self.setup_chunk_widget()
 
+    @override
     def focusOutEvent(self, event: QtGui.QFocusEvent) -> None:
         self.value_changed(self.get_value())
         return super().focusOutEvent(event)
 
+    @override
     def get_value(self):
         return self.text.document().toPlainText()
 
+    @override
     def set_value(self, value):
         if value != self.get_value():
             with QtCore.QSignalBlocker(self.text):
                 self.text.setPlainText(str(value))
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -821,15 +863,19 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
             self.set_value(file)
             self.ValueChanged.emit(file)
 
+    @override
     def get_value(self):
         return self.text.text()
 
+    @override
     def set_value(self, value):
         return self.text.setText(str(value))
 
+    @override
     def set_icon(self, icon: str):
         self.button.setIcon(QtGui.QIcon(icon))
 
+    @override
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
         if ChunkFlags.LayoutFlags.VERTICAL == layout_flags:
             self.main_layout = QtWidgets.QVBoxLayout()
@@ -842,9 +888,11 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
 
         self.setLayout(self.main_layout)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -878,9 +926,11 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
             if val:
                 self.set_value(val)
 
+    @override
     def get_value(self):
         return self.currentText()
 
+    @override
     def set_value(self, value):
         if isinstance(value, str) and chunk_utils.has_expression(value):
             # setup_chunk_widget()/handle_param_changed() (ChunkParamWidgetBase) pass
@@ -901,6 +951,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
                 self.addItem(value)
             self.setCurrentIndex(index)
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() != QtCore.Qt.LeftButton:
             super().mousePressEvent(event)
@@ -931,12 +982,15 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
     def _menu_item_chosen(self, action) -> None:
         self.setCurrentText(action.text())
 
+    @override
     def wheelEvent(self, event: QtGui.QWheelEvent):
         event.ignore()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -948,9 +1002,11 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
 
         self.toggled.connect(self.value_changed)
 
+    @override
     def get_value(self):
         return self.isChecked()
 
+    @override
     def set_value(self, value: bool):
         if isinstance(value, str):
             value = self.param.value
@@ -959,9 +1015,11 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
         with QtCore.QSignalBlocker(self):
             self.setChecked(value)
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -972,9 +1030,11 @@ class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushB
         self.setup_chunk_widget()
         self.clicked.connect(self.value_changed)
 
+    @override
     def set_label(self, text):
         self.setText(text)
 
+    @override
     def set_icon(self, icon: str):
         qicon = QtGui.QIcon(icon)
         self.setIcon(qicon)
@@ -984,9 +1044,11 @@ class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushB
         if self.param:
             self.param.click()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -1002,9 +1064,11 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
 
         self.setup_chunk_widget()
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
@@ -1031,9 +1095,11 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             f"border-radius: 3px;"
         )
 
+    @override
     def get_value(self):
         return self.param.value
 
+    @override
     def set_value(self, value):
         if value is None:
             return
@@ -1044,12 +1110,15 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
                 max(0.0, min(1.0, float(value[2]))),
             ))
 
+    @override
     def set_hidden(self, val: bool):
         self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.setEnabled(val)
 
+    @override
     def update_from_state(self):
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
         is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
@@ -1212,6 +1281,7 @@ class LabeledWidget(QtWidgets.QWidget):
     def tooltip_pos(self):
         return QtGui.QCursor.pos() + QtCore.QPoint(16, 8)
 
+    @override
     def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if obj is self.label:
             if event.type() == QtCore.QEvent.Type.Enter:
@@ -1320,23 +1390,27 @@ class LabeledWidget(QtWidgets.QWidget):
             self.label.style().polish(self.label)
         self.label.setToolTip(str(raw) if expr else "")
 
+    @override
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self.should_show_tooltip():
             event.accept()
         return super().mouseMoveEvent(event)
 
+    @override
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:
         if self.should_show_tooltip() and not self._label_hovered:
             self._hover_timer().start(600)
             event.accept()
         return super().enterEvent(event)
 
+    @override
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         if self._show_timer is not None:
             self._show_timer.stop()
         self.hide_tooltip()
         return super().leaveEvent(event)
 
+    @override
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not isinstance(self.widget, ChunkParamWidgetBase):
             event.ignore()
@@ -1491,6 +1565,7 @@ class ContainerWidget(
         cfg = getattr(self.group, 'get_config', lambda: None)()
         return not (cfg and getattr(cfg, 'module', None))
 
+    @override
     def build_collapsable(self):
         if self._is_context_tab():
             # Plain tab contexts are scrollable containers for all child chunks.
@@ -1568,6 +1643,7 @@ class ContainerWidget(
             f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
         )
 
+    @override
     def supports_widget(self, widget: Any) -> bool:
         return isinstance(widget, QtWidgets.QWidget)
 
@@ -1601,12 +1677,14 @@ class ContainerWidget(
         else:
             self.content_layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
+    @override
     def get_widget_factory(self) -> chunk_widget_api.ChunkWidgetFactoryBase:
         if factory := self.group.widget_factory:
             return factory
         else:
             return ChunkQTWidgetFactory()
 
+    @override
     def update_from_layout(self):
         if ChunkFlags.LayoutFlags.HORIZONTAL == self.group.layout:
             self.content_layout.setDirection(QtWidgets.QBoxLayout.Direction.LeftToRight)
@@ -1614,6 +1692,7 @@ class ContainerWidget(
             self.content_layout.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom)
         return super().update_from_layout()
 
+    @override
     def update_from_flags(self):
         if self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
             # Enables animatiable collapsing of the group
@@ -1647,6 +1726,7 @@ class ContainerWidget(
             self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
             self.list_expand_button.clicked.connect(self.list_expand)
 
+    @override
     def update_label(self, text: str):
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
             self.minimize_button.setText(text)
@@ -1657,21 +1737,26 @@ class ContainerWidget(
 
         self.group.size += 1
 
+    @override
     def set_hidden(self, val: bool):
         # See LabeledWidget._sync_hidden: asking for the state it is already in is not free
         # during construction, and update_from_state asks for it once per container.
         if val != self.isHidden():
             self.setHidden(val)
 
+    @override
     def set_enabled(self, val: bool):
         self.content.setEnabled(val)
 
+    @override
     def set_selected(self, val: bool):
         pass
 
+    @override
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         event.accept()
 
+    @override
     def update_from_state(self):
         super().update_from_state()
 
@@ -1681,6 +1766,7 @@ class ContainerWidget(
             if self.is_collapsed():
                 self.content.setFixedHeight(0)
 
+    @override
     def set_expanded(self, checked):
         arrow_type = QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
         direction = (
@@ -1717,6 +1803,7 @@ class ContainerWidget(
                 self._button_sheet = sheet
                 self.minimize_button.setStyleSheet(sheet)
 
+    @override
     def delete_self(self):
         try:
             self.deleteLater()
@@ -1729,6 +1816,7 @@ class ContainerWidget(
             # C++ object already destroyed (e.g. by QGraphicsProxyWidget teardown)
             pass
 
+    @override
     def remove_widget(self, widget: QtWidgets.QWidget):
         try:
             count = self.content_layout.count()
@@ -1759,6 +1847,7 @@ class ContainerWidget(
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
 
+    @override
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
@@ -2247,11 +2336,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             sz.height(),
         )
 
+    @override
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._view_overlay:
             self._position_view_overlay()
 
+    @override
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
             if event.key() in (
@@ -2275,6 +2366,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         """True only when shown as a node in a parent context (not as the tab context widget itself)."""
         return self._is_group_chunk() and not getattr(self, '_is_tab_context_widget', False)
 
+    @override
     def build_collapsable(self):
         super().build_collapsable()
 
@@ -2375,6 +2467,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self.content.hide()
                 self.content.setMaximumHeight(0)
 
+    @override
     def add_widget(self, widget: QtWidgets.QWidget, label=None):
         if self._is_group_chunk_node() and not isinstance(widget, ChunkParamWidgetBase):
             # Shown as a node: suppress all non-lofted widgets.
@@ -2434,6 +2527,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             return
         super()._build_param_widgets(group)
 
+    @override
     def animation_finished(self):
         super().animation_finished()
         if self._is_context_tab() and not self.is_collapsed():
@@ -2442,6 +2536,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(16777215)
 
+    @override
     def update_from_state(self):
         if self._is_group_chunk_node():
             # Skip super() -- it would start the collapse animation which calls
@@ -2543,6 +2638,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             p = p.parent()
         return None
 
+    @override
     def contextMenuEvent(self, event):
         if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             event.ignore()
@@ -2569,6 +2665,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 return config.category
         return chunk.DefaultConfig().category
 
+    @override
     def set_selected(self, val: bool):
         selected = bool(
             val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk())
@@ -2595,6 +2692,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
         return super().set_selected(val)
 
+    @override
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if (watched is getattr(self, 'minimize_button', None)
                 and event.type() == QtCore.QEvent.Type.MouseButtonDblClick
@@ -2818,6 +2916,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             # text is what makes it measure again after the list changes size.
             self._results_action.setText(f"{len(ranked or ())}:{self.results.height()}")
 
+    @override
     def eventFilter(self, obj, event):
         if obj is self.filter_widget:
             if event.type() == event.Type.KeyPress:

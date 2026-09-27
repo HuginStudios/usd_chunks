@@ -28,6 +28,8 @@ extra of the package rather than a dependency.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 import bpy
@@ -60,6 +62,7 @@ class BlenderScene(SceneSender):
 
     # -- the two that actually matter -------------------------------------
 
+    @override
     def get_stage(self):
         return self._stage
 
@@ -84,11 +87,13 @@ class BlenderScene(SceneSender):
                 prims.append(prim)
         return prims
 
+    @override
     def get_selected_property(self):
         return None
 
     # -- viewer questions, answered where Blender can ---------------------
 
+    @override
     def get_active_camera(self):
         camera = bpy.context.scene.camera if bpy.context.scene else None
         if camera is None:
@@ -98,6 +103,7 @@ class BlenderScene(SceneSender):
         gf.transform = Gf.Matrix4d(*[v for row in matrix.transposed() for v in row])
         return gf
 
+    @override
     def get_viewport_renderer(self) -> str:
         scene = bpy.context.scene
         return str(scene.render.engine) if scene else ""
@@ -108,9 +114,11 @@ class BlenderScene(SceneSender):
         """
         return None
 
+    @override
     def get_current_frame(self) -> float:
         return float(bpy.context.scene.frame_current) if bpy.context.scene else 0.0
 
+    @override
     def get_end_frame(self) -> float:
         return float(bpy.context.scene.frame_end) if bpy.context.scene else 0.0
 
@@ -265,10 +273,12 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
     filter_glob: bpy.props.StringProperty(default="*.usda;*.usd;*.usdc", options={"HIDDEN"})
 
+    @override
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
+    @override
     def execute(self, context):
         stage = Usd.Stage.Open(self.filepath)
         if stage is None:
@@ -291,6 +301,7 @@ class USDCHUNKS_OT_new_network(bpy.types.Operator):
     bl_label = "New Chunk Network"
     bl_options = {"REGISTER"}
 
+    @override
     def execute(self, context):
         tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
         _show_tree(context, tree)
@@ -306,6 +317,7 @@ class USDCHUNKS_OT_save_network(bpy.types.Operator):
     bl_label = "Save Chunk Network"
     bl_options = {"REGISTER"}
 
+    @override
     def execute(self, context):
         view = get_view()
         if view is None:
@@ -327,6 +339,7 @@ class USDCHUNKS_OT_auto_layout(bpy.types.Operator):
     bl_label = "Auto Layout"
     bl_options = {"REGISTER"}
 
+    @override
     def execute(self, context):
         view = get_view()
         if view is None:
@@ -345,6 +358,7 @@ class USDCHUNKS_OT_set_view_slot(bpy.types.Operator):
 
     slot: bpy.props.IntProperty(default=1, min=0, max=3)
 
+    @override
     def execute(self, context):
         view = get_view()
         if view is None:
@@ -362,11 +376,13 @@ class USDCHUNKS_OT_dive_into(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     @classmethod
+    @override
     def poll(cls, context):
         # Only in our own editor. This shares Tab with Blender's node.group_edit, and a
         # poll that said yes in a shader editor would hijack entering a shader group.
         return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
 
+    @override
     def execute(self, context):
         view = get_view()
         if view is None:
@@ -404,9 +420,11 @@ class USDCHUNKS_OT_publish_network(bpy.types.Operator):
     filter_glob: bpy.props.StringProperty(default="*.usda;*.usd;*.usdc", options={"HIDDEN"})
 
     @classmethod
+    @override
     def poll(cls, context):
         return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
 
+    @override
     def invoke(self, context, event):
         chunk = _selected_chunk(predicate=chunk_stage.is_chunkgroup)
         if chunk is None:
@@ -416,6 +434,7 @@ class USDCHUNKS_OT_publish_network(bpy.types.Operator):
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
+    @override
     def execute(self, context):
         chunk = _selected_chunk(predicate=chunk_stage.is_chunkgroup)
         if chunk is None or not self.filepath:
@@ -440,9 +459,11 @@ class USDCHUNKS_OT_localise_network(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     @classmethod
+    @override
     def poll(cls, context):
         return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
 
+    @override
     def execute(self, context):
         chunk = _selected_chunk(predicate=chunk_stage.is_localisable)
         if chunk is None:
@@ -483,9 +504,11 @@ class USDCHUNKS_OT_dive_out(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     @classmethod
+    @override
     def poll(cls, context):
         return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
 
+    @override
     def execute(self, context):
         view = get_view()
         if view is None:
@@ -514,12 +537,14 @@ class _ChunkTreeOperator(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     @classmethod
+    @override
     def poll(cls, context):
         return getattr(context.space_data, "tree_type", "") == bg.TREE_ID
 
     def run(self, context, view) -> None:
         raise NotImplementedError
 
+    @override
     def execute(self, context):
         view = get_view()
         if view is None:
@@ -538,6 +563,7 @@ class USDCHUNKS_OT_delete(_ChunkTreeOperator):
     bl_idname = "usd_chunks.delete"
     bl_label = "Delete Chunks"
 
+    @override
     def run(self, context, view):
         view.delete_selected()
 
@@ -548,6 +574,7 @@ class USDCHUNKS_OT_duplicate(_ChunkTreeOperator):
     bl_idname = "usd_chunks.duplicate"
     bl_label = "Duplicate Chunks"
 
+    @override
     def run(self, context, view):
         view.duplicate_selection()
 
@@ -558,6 +585,7 @@ class USDCHUNKS_OT_copy(_ChunkTreeOperator):
     bl_idname = "usd_chunks.copy"
     bl_label = "Copy Chunks"
 
+    @override
     def run(self, context, view):
         view.copy_selection()
 
@@ -568,6 +596,7 @@ class USDCHUNKS_OT_cut(_ChunkTreeOperator):
     bl_idname = "usd_chunks.cut"
     bl_label = "Cut Chunks"
 
+    @override
     def run(self, context, view):
         view.cut_selection()
 
@@ -578,6 +607,7 @@ class USDCHUNKS_OT_paste(_ChunkTreeOperator):
     bl_idname = "usd_chunks.paste"
     bl_label = "Paste Chunks"
 
+    @override
     def run(self, context, view):
         cursor = getattr(context.space_data, "cursor_location", None)
         x, y = (cursor[0] / bg._SCALE, cursor[1] / bg._SCALE) if cursor else (0.0, 0.0)
@@ -590,6 +620,7 @@ class USDCHUNKS_OT_toggle_disable(_ChunkTreeOperator):
     bl_idname = "usd_chunks.toggle_disable"
     bl_label = "Toggle Disable"
 
+    @override
     def run(self, context, view):
         view.toggle_disable_selected()
 
@@ -600,6 +631,7 @@ class USDCHUNKS_OT_collapse(_ChunkTreeOperator):
     bl_idname = "usd_chunks.collapse"
     bl_label = "Collapse Chunks"
 
+    @override
     def run(self, context, view):
         view.collapse_selected_or_all()
 
@@ -610,6 +642,7 @@ class USDCHUNKS_OT_group(_ChunkTreeOperator):
     bl_idname = "usd_chunks.group"
     bl_label = "Group Into Chunkgroup"
 
+    @override
     def run(self, context, view):
         view.group_selection()
 
@@ -620,6 +653,7 @@ class USDCHUNKS_OT_create_view(_ChunkTreeOperator):
     bl_idname = "usd_chunks.create_view"
     bl_label = "Create View"
 
+    @override
     def run(self, context, view):
         view.create_view_node()
 
@@ -634,10 +668,12 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
     bl_category = "USDChunks"
 
     @classmethod
+    @override
     def poll(cls, context):
         space = context.space_data
         return getattr(space, "tree_type", "") == bg.TREE_ID
 
+    @override
     def draw(self, context):
         layout = self.layout
         tree = _active_tree()

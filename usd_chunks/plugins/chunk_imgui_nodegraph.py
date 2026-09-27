@@ -19,6 +19,8 @@ speaks integer ids, not prim paths), and the sixteen contract verbs.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import contextlib
 import inspect
 import logging
@@ -86,12 +88,15 @@ class _Scene(SceneSender):
         super().__init__()
         self._stage = stage
 
+    @override
     def get_stage(self):
         return self._stage
 
+    @override
     def get_selected_prims(self):
         return []
 
+    @override
     def should_install_package(self, package):
         return False
 

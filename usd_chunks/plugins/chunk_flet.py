@@ -16,6 +16,8 @@ to the param there would be re-entered by the notice that write produces.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 import flet as ft
@@ -93,6 +95,7 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     # -- param -> widget ---------------------------------------------------
 
+    @override
     def set_value(self, value):
         if self.control is None:
             return
@@ -109,32 +112,39 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
     def apply_value(self, value):
         self.control.value = value
 
+    @override
     def get_value(self):
         return None if self.control is None else self.control.value
 
+    @override
     def set_label(self, text: str):
         self.label_control.value = text or ""
         self.label_control.visible = bool(text)
         self._update(self.label_control)
 
+    @override
     def set_icon(self, icon: str):
         # Flet takes icon names, not paths, and a chunk's icon is a path. Ignored rather
         # than guessed at: showing the wrong glyph is worse than showing none.
         pass
 
+    @override
     def set_param_layout(self, layout_flags):
         pass
 
+    @override
     def set_hidden(self, val: bool):
         if self.control is not None:
             self.control.visible = not val
             self._update()
 
+    @override
     def set_enabled(self, val: bool):
         if self.control is not None:
             self.control.disabled = not val
             self._update()
 
+    @override
     def update_from_state(self):
         state = getattr(self.param, "state", None)
         if state is None:
@@ -204,6 +214,7 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
 class FletSliderWidget(FletParamWidget):
     CONTROL_H = 26.0
+    @override
     def build(self):
         param = self.param
         self.readout = ft.Text("", size=10, color="#cab46a", width=52,
@@ -217,6 +228,7 @@ class FletSliderWidget(FletParamWidget):
         # dragging it is not the same control.
         self.control = ft.Row([self.slider, self.readout], spacing=4, tight=True)
 
+    @override
     def apply_value(self, value):
         try:
             self.slider.value = float(value)
@@ -228,9 +240,11 @@ class FletSliderWidget(FletParamWidget):
         self.readout.value = ("%d" if getattr(self.param, "is_int", False) else "%.3f") % (
             self.slider.value)
 
+    @override
     def get_value(self):
         return self.slider.value
 
+    @override
     def read_event(self, event):
         value = float(event.control.value)
         return int(round(value)) if getattr(self.param, "is_int", False) else value
@@ -247,6 +261,7 @@ class FletFileWidget(FletParamWidget):
 
     CONTROL_H = 30.0
 
+    @override
     def build(self):
         self.field = self._typing(ft.TextField(
             dense=True, on_change=self.on_changed, expand=True, text_size=11,
@@ -291,12 +306,14 @@ class FletFileWidget(FletParamWidget):
         if path:
             self.param.value = path
 
+    @override
     def apply_value(self, value):
         self.field.value = "" if value is None else str(value)
 
 
 class FletTextWidget(FletParamWidget):
     CONTROL_H = 30.0
+    @override
     def build(self):
         self.control = self._typing(ft.TextField(
             dense=True, on_change=self.on_changed, text_size=11,
@@ -304,12 +321,14 @@ class FletTextWidget(FletParamWidget):
             filled=True, fill_color="#202020", border_color="#404040",
             focused_border_color="#cab46a", border_radius=3, height=30))
 
+    @override
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
 
 
 class FletMultilineTextWidget(FletTextWidget):
     CONTROL_H = 76.0
+    @override
     def build(self):
         self.control = self._typing(ft.TextField(
             multiline=True, min_lines=3, dense=True, on_change=self.on_changed,
@@ -320,18 +339,22 @@ class FletMultilineTextWidget(FletTextWidget):
 
 class FletCheckboxWidget(FletParamWidget):
     CONTROL_H = 26.0
+    @override
     def build(self):
         self.control = ft.Checkbox(on_change=self.on_changed)
 
+    @override
     def apply_value(self, value):
         self.control.value = bool(value)
 
+    @override
     def read_event(self, event):
         return bool(event.control.value)
 
 
 class FletMenuWidget(FletParamWidget):
     CONTROL_H = 34.0
+    @override
     def build(self):
         items = [ft.dropdown.Option(str(i)) for i in getattr(self.param, "menu_items", [])]
         # on_select, not on_change: Flet 0.80's Dropdown has no on_change at all and
@@ -343,6 +366,7 @@ class FletMenuWidget(FletParamWidget):
             filled=True, fill_color="#202020", border_color="#404040",
             border_radius=3, content_padding=ft.Padding.symmetric(vertical=4, horizontal=8)))
 
+    @override
     def apply_value(self, value):
         self.control.value = None if value is None else str(value)
 
@@ -350,16 +374,20 @@ class FletMenuWidget(FletParamWidget):
 class FletButtonWidget(FletParamWidget):
     CONTROL_H = 34.0
     HAS_LABEL = False
+    @override
     def build(self):
         self.control = ft.ElevatedButton(content=self.param.get_label() or self.param.name,
                                          on_click=self.on_clicked)
 
+    @override
     def apply_value(self, value):
         pass
 
+    @override
     def get_value(self):
         return None
 
+    @override
     def set_label(self, text: str):
         # A button carries its label on itself rather than above it.
         self.control.content = text or self.param.name
@@ -371,6 +399,7 @@ class FletButtonWidget(FletParamWidget):
         # value change, so toggling it is what invokes them.
         self.param.value = not bool(self.param.value)
 
+    @override
     def as_row(self) -> ft.Control:
         return self.control
 
@@ -379,6 +408,7 @@ class FletColorWidget(FletParamWidget):
     """No native colour picker in Flet, so: a swatch plus editable "r, g, b"."""
     CONTROL_H = 30.0
 
+    @override
     def build(self):
         self.swatch = ft.Container(width=22, height=22, border_radius=3,
                                    bgcolor="#808080")
@@ -386,6 +416,7 @@ class FletColorWidget(FletParamWidget):
             ft.TextField(dense=True, on_change=self.on_changed, expand=True))
         self.control = ft.Row([self.swatch, self.field], spacing=6, tight=True)
 
+    @override
     def apply_value(self, value):
         try:
             red, green, blue = (float(c) for c in list(value)[:3])
@@ -396,9 +427,11 @@ class FletColorWidget(FletParamWidget):
         channels = (max(0, min(255, int(c * 255))) for c in (red, green, blue))
         self.swatch.bgcolor = "#" + "".join(f"{c:02x}" for c in channels)
 
+    @override
     def get_value(self):
         return self.read_text(self.field.value)
 
+    @override
     def read_event(self, event):
         return self.read_text(event.control.value)
 
@@ -414,18 +447,23 @@ class FletColorWidget(FletParamWidget):
 class FletSeparatorWidget(FletParamWidget):
     CONTROL_H = 8.0
     HAS_LABEL = False
+    @override
     def build(self):
         self.control = ft.Divider(height=1, color="#4a4a4a")
 
+    @override
     def apply_value(self, value):
         pass
 
+    @override
     def get_value(self):
         return None
 
+    @override
     def set_label(self, text: str):
         self.label_control.visible = False
 
+    @override
     def as_row(self) -> ft.Control:
         return self.control
 
@@ -433,12 +471,15 @@ class FletSeparatorWidget(FletParamWidget):
 class FletLabelWidget(FletParamWidget):
     CONTROL_H = 16.0
     HAS_LABEL = False
+    @override
     def build(self):
         self.control = ft.Text("", size=11, color="#cccccc")
 
+    @override
     def apply_value(self, value):
         self.control.value = "" if value is None else str(value)
 
+    @override
     def as_row(self) -> ft.Control:
         return self.control
 
@@ -466,6 +507,7 @@ class ChunkFletWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.COLOR_PICKER: FletColorWidget,
     }
 
+    @override
     def create_widget(self, param: chunk.ChunkParamBase):
         widget_class = self.get_map().get(param.evaluate_type())
         if widget_class is None:

@@ -37,6 +37,8 @@ frontend and the conformance test both guard the import.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 import bpy
@@ -554,6 +556,7 @@ class BlenderParamWidget(chunk_widget_api.ChunkParamWidgetBase):
         super().__init__(param, *args, **kwargs)
         self._node = node
 
+    @override
     def get_value(self):
         if self._node is None:
             return self.param.raw_value

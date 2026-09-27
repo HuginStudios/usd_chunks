@@ -38,6 +38,8 @@ type and cannot be handed to it -- which is why `usd-core` is an optional extra.
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 import re
 
@@ -320,6 +322,7 @@ class UsdChunksSocket(bpy.types.NodeSocket):
 
     port_type: bpy.props.StringProperty(default="exec")
 
+    @override
     def draw(self, context, layout, node, text):
         param = socket_param(self, node)
         if socket_draws_value(self, param):
@@ -341,6 +344,7 @@ class UsdChunksSocket(bpy.types.NodeSocket):
         # layout rather than a necessary part of it.
         layout.label(text=(param.label or text) if param is not None else text)
 
+    @override
     def draw_color(self, context, node):
         return _PORT_COLOURS.get(self.port_type, _DEFAULT_COLOUR)
 
@@ -361,6 +365,7 @@ class UsdChunksNodeBase(bpy.types.Node):
     chunk_path: bpy.props.StringProperty(name="Chunk", default="")
 
     @classmethod
+    @override
     def poll(cls, tree):
         return tree.bl_idname == TREE_ID
 
@@ -388,6 +393,7 @@ class UsdChunksNodeBase(bpy.types.Node):
         """
         self.chunk_path = ""
 
+    @override
     def draw_buttons(self, context, layout):
         chunk = self.get_chunk()
         if chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
@@ -412,6 +418,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -440,6 +447,7 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -473,6 +481,7 @@ class USDCHUNKS_OT_revert_override(bpy.types.Operator):
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -501,6 +510,7 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
     list_name: bpy.props.StringProperty()
     delta: bpy.props.IntProperty(default=1)
 
+    @override
     def execute(self, context):
         tree = getattr(context.space_data, "edit_tree", None)
         node = tree.nodes.get(self.node_path) if tree else None
@@ -1482,9 +1492,11 @@ class USDCHUNKS_OT_add_node(bpy.types.Operator):
     entry_index: bpy.props.IntProperty(default=-1)
 
     @classmethod
+    @override
     def poll(cls, context):
         return getattr(getattr(context, "space_data", None), "tree_type", "") == TREE_ID
 
+    @override
     def execute(self, context):
         view = active_view()
         if view is None:

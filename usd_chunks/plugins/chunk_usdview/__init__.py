@@ -4,6 +4,8 @@ This module provides a framework for dynamically loading and managing custom UI 
 """
 from __future__ import annotations
 
+from typing_extensions import override
+
 import logging
 
 from pxr import Tf, Usd, Gf, Sdf, UsdGeom
@@ -90,20 +92,25 @@ class UsdviewScene(chunk_core.SceneSender):
 
         super().__init__()
 
+    @override
     def get_current_frame(self) -> float:
         return self.usdviewAPI.dataModel.currentFrame
 
+    @override
     def get_end_frame(self) -> float:
         return self.usdviewAPI.dataModel.frameRangeEnd
 
+    @override
     def get_start_frame(self) -> float:
         return self.usdviewAPI.dataModel.frameRangeBegin
 
+    @override
     def set_current_frame(self, frame: float):
         appCtrl = self.usdviewAPI._UsdviewApi__appController
         appCtrl.setFrame(frame)
         QtCore.QCoreApplication.processEvents()
 
+    @override
     def set_end_frame(self, frame: float):
         stage = self.get_stage()
         if not stage:
@@ -116,6 +123,7 @@ class UsdviewScene(chunk_core.SceneSender):
             appCtrl.realEndTimeCode = frame
         appCtrl._UpdateTimeSamples()
 
+    @override
     def set_start_frame(self, frame: float):
         stage = self.get_stage()
         if not stage:
@@ -128,20 +136,25 @@ class UsdviewScene(chunk_core.SceneSender):
             appCtrl.realStartTimeCode = frame
         appCtrl._UpdateTimeSamples()
 
+    @override
     def should_install_package(self, package_name: str) -> bool:
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
+    @override
     def primSelectionChangedCallback(self, added, removed):
         if not added and not removed:
             return
         return super().primSelectionChangedCallback()
 
+    @override
     def get_stage(self) -> Usd.Stage:
         return self.usdviewAPI.stage  # type: ignore
 
+    @override
     def get_selected_prims(self) -> list[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
 
+    @override
     def select_prims(self, paths) -> bool:
         stage = self.get_stage()
         if not stage:
@@ -158,6 +171,7 @@ class UsdviewScene(chunk_core.SceneSender):
                 selection.addPrimPath(path)
         return True
 
+    @override
     def get_selected_property(self) -> Usd.Property:
         return self.usdviewAPI.property  # type: ignore
 
@@ -167,6 +181,7 @@ class UsdviewScene(chunk_core.SceneSender):
         except Exception:
             return None
 
+    @override
     def refresh_timeline(self, start: float, end: float) -> None:
         ctrl = self._get_ctrl()
         if ctrl:
@@ -181,6 +196,7 @@ class UsdviewScene(chunk_core.SceneSender):
         ctrl = self._get_ctrl()
         return getattr(ctrl, "_stageView", None) if ctrl else None
 
+    @override
     def get_viewport_renderer(self) -> str:
         view = self._get_stage_view()
         if view is None:
@@ -217,6 +233,7 @@ class UsdviewScene(chunk_core.SceneSender):
         app = self.usdviewAPI._UsdviewApi__appController
         return app._dataModel.viewSettings.freeCamera
 
+    @override
     def get_active_camera(self):
         free_cam = self._get_free_camera()
         if free_cam is None:
@@ -227,6 +244,7 @@ class UsdviewScene(chunk_core.SceneSender):
         app = self.usdviewAPI._UsdviewApi__appController
         app._dataModel.viewSettings.cameraPrim = prim
 
+    @override
     def set_viewport_camera(self, prim) -> None:
         # Before pointing the viewport at a prim, while the free camera is still the user's
         # own. From here on usdview rebuilds it from that prim on every navigation, so this is
@@ -449,6 +467,7 @@ class ChunksPluginContainer(PluginContainer):
 
         launch_chunks(plugCtx)
 
+    @override
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._openModuleSettingsCommand)
