@@ -88,4 +88,4 @@ if ATTRS_VERSION < (25, 4):  # type: ignore
 # a host is already running (usdview's, typed into its interpreter). Last, so everything
 # above is set up before the chunk model they pull in is imported.
 from usd_chunks.chunk_scene import current_scene  # noqa: E402
-from usd_chunks.hosts.script import Scene  # noqa: E402
+from usd_chunks.chunk_script import Scene  # noqa: E402
