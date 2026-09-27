@@ -24,7 +24,7 @@ def execute(node):
         values = [v.strip() for v in raw_values.split(",") if v.strip()]
         if not taxonomy or not values:
             continue
-        # Two rows naming the same taxonomy merge rather than the last one winning —
+        # Two rows naming the same taxonomy merge rather than the last one winning --
         # they both author the same semantics:labels:<taxonomy> attribute.
         existing = taxonomies.setdefault(taxonomy, [])
         existing.extend(v for v in values if v not in existing)

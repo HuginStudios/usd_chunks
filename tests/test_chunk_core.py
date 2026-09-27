@@ -281,7 +281,7 @@ def test_remove_chunk_with_layers():
 
 def test_loft_connection_not_reconstructed_as_expression():
     """A loft connection points UP to the param's own container (the group's interface attr).
-    _connect_param_attr must NOT rebuild it as a sibling expression @Container.attr@ — that made
+    _connect_param_attr must NOT rebuild it as a sibling expression @Container.attr@ -- that made
     an unresolvable ref ('Expression ref not found' spam) and briefly overwrote the forwarded
     value with the expression text. Sibling connections must still reconstruct as expressions."""
     from pxr import Usd, Sdf
@@ -393,7 +393,7 @@ def test_select_deselect_chunk():
 
 
 def test_state_change_does_not_reexecute_module():
-    """A pure state change (e.g. selecting a node) must not re-run the chunk's module — only
+    """A pure state change (e.g. selecting a node) must not re-run the chunk's module -- only
     data changes (a param value) should. Selection/collapse used to cascade into module.execute,
     so selecting a node re-authored its output."""
     stage = Usd.Stage.CreateInMemory()
@@ -488,7 +488,7 @@ def test_hiding_a_param_does_not_reexecute_module():
 
 
 def test_selecting_a_chunk_does_not_recook_downstream():
-    """A presentation state change must not travel along the exec chain either — selecting
+    """A presentation state change must not travel along the exec chain either -- selecting
     one node used to dirty every chunk downstream of it and re-cook the lot."""
     scene = _stage_scene()
 
@@ -532,8 +532,8 @@ def test_disabling_a_chunk_recooks_downstream():
 def test_module_does_not_execute_without_a_stage():
     """Every chunk module works through get_stage(), so a stage-less solve must not run one.
 
-    Hosts do go stageless for a window — usdview clears its stage before opening the next
-    file while still pumping the Qt event loop, clearing the prim selection in there — and a
+    Hosts do go stageless for a window -- usdview clears its stage before opening the next
+    file while still pumping the Qt event loop, clearing the prim selection in there -- and a
     param write from that churn used to reach the module and crash it on its first stage
     call ('NoneType' object has no attribute 'DefinePrim')."""
     scene = _DummyScene()  # get_stage() -> None

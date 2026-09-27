@@ -1,12 +1,12 @@
-"""Dear ImGui param widgets — the third toolkit, and the one that needs the least code.
+"""Dear ImGui param widgets -- the third toolkit, and the one that needs the least code.
 
 Immediate mode changes the shape of this layer completely. Qt and Flet both build a widget
 OBJECT per param, keep it alive, and register a notice callback so the widget updates when
-the param changes underneath it — `chunk_widget_api.ChunkParamWidgetBase` exists to carry
+the param changes underneath it -- `chunk_widget_api.ChunkParamWidgetBase` exists to carry
 exactly that. Here there is no object and no callback: every frame reads `param.value` and
 draws it, so a change made anywhere is on screen on the next frame by construction.
 
-That means this file does NOT implement ChunkWidgetFactoryBase. It is not an oversight —
+That means this file does NOT implement ChunkWidgetFactoryBase. It is not an oversight --
 the base class's whole contract is `set_value`/`get_value` plus a subscription, and an
 immediate-mode frontend has nothing to subscribe. What it shares with the other two is the
 thing that actually matters: params are dispatched on `ChunkFlags.ParamType`, so this file

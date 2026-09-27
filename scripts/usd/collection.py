@@ -19,7 +19,7 @@ def execute(node):
     if not name or not owner_path:
         return
 
-    # DefinePrim (not OverridePrim) so this shows up as a "defined" prim — a pure
+    # DefinePrim (not OverridePrim) so this shows up as a "defined" prim -- a pure
     # override with no other definer anywhere is skipped by the default stage
     # traversal predicate, which would make the collection invisible to
     # chunk_utils.find_collection's %name lookup.
@@ -31,7 +31,7 @@ def execute(node):
 
     expression = node.get_param("membership_expression").value
     if expression:
-        # Expression mode replaces includes/excludes rather than stacking with them —
+        # Expression mode replaces includes/excludes rather than stacking with them --
         # USD ORs expression membership with rel-target membership rather than ANDing,
         # so authoring both produces confusing results (an exclude rel target can be
         # pulled back in by an unrelated expression match).

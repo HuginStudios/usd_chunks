@@ -1,15 +1,15 @@
-"""Pure auto-layout math for the embedded node graph — no Qt/USD dependency, so it's directly
+"""Pure auto-layout math for the embedded node graph -- no Qt/USD dependency, so it's directly
 unit-testable without a real scene/stage. See ``plugins/chunk_qt_nodegraph.py`` for the Qt/USD
 glue: node sizing via ``ChunkNodeItem.boundingRect()``, position persistence via
 ``ChunkNodeItem._write_pos_to_usd()``, and connection data built by walking prim attributes
 (exec + typed, mirroring ``ChunkGraphScene._build_edges``).
 
 Ported from the removed ``scripts/node_graph/_graph_layout.py`` (recoverable at git branch
-``feat/node-graph``) — that file's backdrop/group-stacking half doesn't apply here (this
+``feat/node-graph``) -- that file's backdrop/group-stacking half doesn't apply here (this
 codebase's chunkgroups are subnets, not spatial containers), so this operates directly on
 individual nodes with no grouping concept at all: topological depth assigns X-columns, and
 within a column each node's target Y is the average Y of its already-placed upstream/downstream
-neighbors, pushed down only on collision — the same "target-then-push" strategy, applied to
+neighbors, pushed down only on collision -- the same "target-then-push" strategy, applied to
 nodes instead of node-groups.
 """
 
@@ -95,15 +95,15 @@ def layout_positions(
 ) -> dict[str, tuple[float, float]]:
     """Return {node_id: (x, y)} for every node in node_ids that ISN'T locked.
 
-    Locked nodes are never included in the result — callers must leave them exactly where
-    they are — but they still participate as fixed reference points for target-Y averaging
+    Locked nodes are never included in the result -- callers must leave them exactly where
+    they are -- but they still participate as fixed reference points for target-Y averaging
     (so a movable neighbor visually gravitates toward a locked node it's wired to) and as
     obstacles: a movable node is nudged down if its computed rect would overlap any locked
     node's real (unchanged) rect, checked as an actual 2D bounding-box test rather than a
     same-column-only approximation, since a locked node's real X may not line up with
     whichever column is currently being placed.
 
-    up_of / down_of must only contain edges where BOTH ends are in node_ids — callers building
+    up_of / down_of must only contain edges where BOTH ends are in node_ids -- callers building
     them from a "grow selection to its full connected subgraph" BFS closure already guarantee
     this, so this function doesn't need to filter external references itself.
     """
@@ -184,7 +184,7 @@ def layout_positions(
             _place_column(columns[ci], col_x[ci], cursor_y)
 
         # Re-place source nodes (no upstream at all, in the first column) toward their now-
-        # known downstream targets — the concrete mechanism behind "source nodes pulled close
+        # known downstream targets -- the concrete mechanism behind "source nodes pulled close
         # to their targets".
         source_col = sorted_cols[0]
         src_ids = [nid for nid in columns[source_col] if not up_of.get(nid)]
@@ -203,7 +203,7 @@ def layout_positions(
 
 def grow_to_connected_subgraph(seed_ids: list[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> set[str]:
     """BFS from seed_ids through every connection (up and down) in the FULL up_of/down_of maps
-    (which may reference ids outside seed_ids — that's the point) and return every node
+    (which may reference ids outside seed_ids -- that's the point) and return every node
     reached, including the seeds themselves."""
     visited: set[str] = set(seed_ids)
     frontier = list(seed_ids)

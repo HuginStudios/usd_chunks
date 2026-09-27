@@ -175,7 +175,7 @@ _OPS: dict = {
 
 def _clear_connection(param: chunk.ChunkParamBase) -> None:
     """Reset param to its default and drop any USD-level connection. A param hidden by
-    the current operation is no longer meaningful — keeping a stale connection around
+    the current operation is no longer meaningful -- keeping a stale connection around
     would silently reappear (with possibly wrong semantics) if the op is switched back."""
     if param is None:
         return
@@ -204,7 +204,7 @@ def _clear_matching_params(obj, target: str) -> None:
 def _clear_downstream_references(owner: chunk.Chunk, attr_name: str) -> None:
     """Find every OTHER chunk in the scene with a param currently wired to
     @owner.name.attr_name@ and clear it. Needed because switching this chunk's own
-    operation can make one of its two outputs (result vs result_value) inactive —
+    operation can make one of its two outputs (result vs result_value) inactive --
     execute() stops writing to it, so a downstream connection to it silently goes
     stale instead of erroring, and would reappear untouched if the op is switched
     back even though nothing recomputed it in the meantime."""

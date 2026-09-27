@@ -1,7 +1,7 @@
-"""Get Metadata chunk — reads metadata from a prim using structured UI widgets.
+"""Get Metadata chunk -- reads metadata from a prim using structured UI widgets.
 
 Dynamically populates the metadata dropdown from the prim's actual authored
-metadata keys. Supports all standard and custom metadata — whatever is on
+metadata keys. Supports all standard and custom metadata -- whatever is on
 the prim shows up in the menu.
 """
 
@@ -84,7 +84,7 @@ def _get_metadata_value(prim: Usd.Prim, key: str, custom_key: str = "") -> str:
             return "<not set>"
 
         else:
-            # Generic metadata access — works for any key
+            # Generic metadata access -- works for any key
             val = prim.GetMetadata(key)
             return str(val) if val is not None else "<not set>"
 
@@ -114,7 +114,7 @@ def execute(node):
     if not stage:
         return
 
-    # Get Metadata doesn't author anything — clear layer for cleanliness
+    # Get Metadata doesn't author anything -- clear layer for cleanliness
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
 

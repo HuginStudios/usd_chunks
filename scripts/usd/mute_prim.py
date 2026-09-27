@@ -1,8 +1,8 @@
-"""Mute Prim chunk — deactivates (bypasses) prims on the stage.
+"""Mute Prim chunk -- deactivates (bypasses) prims on the stage.
 
 Sets SetActive(false) on selected prims, effectively removing them from the
 composed stage without deleting the prim spec. This is the non-destructive
-"mute" or "bypass" — the prim data remains in its layers but is excluded
+"mute" or "bypass" -- the prim data remains in its layers but is excluded
 from traversal and rendering.
 
 To unmute, simply disable this chunk/node (D key) or disconnect the prims.
@@ -38,7 +38,7 @@ def execute(node):
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel — deactivate selected prims."""
+    """Callback for the chunk panel -- deactivate selected prims."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:

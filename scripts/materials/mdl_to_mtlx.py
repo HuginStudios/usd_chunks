@@ -1,4 +1,4 @@
-"""MDL to MaterialX — give MDL-shaded materials a portable surface.
+"""MDL to MaterialX -- give MDL-shaded materials a portable surface.
 
 Assets authored for Omniverse bind their looks through MDL (`OmniPBR.mdl`, `OmniGlass.mdl`)
 via `info:mdl:sourceAsset`. MDL is NVIDIA's, so every other renderer -- V-Ray, Storm,

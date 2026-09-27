@@ -1,4 +1,4 @@
-"""A Dear ImGui view of a chunk network — the third frontend over one engine.
+"""A Dear ImGui view of a chunk network -- the third frontend over one engine.
 
     python -m usd_chunks.plugins.chunk_imgui_nodegraph <network.usda> [context_prim_path]
 
@@ -8,8 +8,8 @@ retained scene. See docs/graph-frontends.md.
 
 What this frontend does NOT contain, compared with the Flet one, is the interesting part:
 
-- no `port_at` / `node_at` — imgui_node_editor owns hit-testing
-- no zoom, pan or canvas transform — the editor owns navigation
+- no `port_at` / `node_at` -- imgui_node_editor owns hit-testing
+- no zoom, pan or canvas transform -- the editor owns navigation
 - no curve maths for drawing wires or for splice detection
 - no widget classes, no notice callbacks, no focus tracker object; every frame re-reads the
   params, so a change made anywhere shows up on the next frame by construction

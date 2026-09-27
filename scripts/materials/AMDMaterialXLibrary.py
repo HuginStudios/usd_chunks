@@ -566,7 +566,7 @@ def _download_and_apply(node, title: str) -> str:
     # Children must be added to the CONTEXT *before* their param values are set.
     # Setting a value triggers an immediate self-execute (reference.execute /
     # bind_material.execute), which clears the stage's current edit-target layer
-    # on the assumption it owns a dedicated layer — a layer that add_param's
+    # on the assumption it owns a dedicated layer -- a layer that add_param's
     # CONTEXT branch is what creates. Setting values first leaves that Clear()
     # hitting whatever layer happens to be the edit target instead (e.g. the
     # parent's), wiping the child's own params before they're ever read back.
@@ -575,7 +575,7 @@ def _download_and_apply(node, title: str) -> str:
         ref_chunk = _create_child("reference", node)
     if ref_chunk:
         # file_path's file_changed callback auto-derives primpath_location from
-        # the filename, so set file_path first — otherwise that auto-suggestion
+        # the filename, so set file_path first -- otherwise that auto-suggestion
         # overwrites the explicit mat_path we set below.
         ref_chunk.get_param("file_path").value = mtlx_path
         ref_chunk.get_param("import_primpath").value = f"/MaterialX/Materials/{mtlx_mat_name}"
@@ -616,7 +616,7 @@ def _download_and_apply(node, title: str) -> str:
 
 def execute(node):
     """Re-applies the stored picked material, (re)creating the Reference and
-    BindMaterial children if they're missing — e.g. after a reload where the
+    BindMaterial children if they're missing -- e.g. after a reload where the
     USD prims exist but their backing Python child chunks weren't reattached.
     """
     title = node.get_param("picked_title").value

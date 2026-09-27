@@ -1,5 +1,5 @@
 """Tests for the Collection chunk and its %name reference token support in
-chunk_utils.resolve_prim_paths — the mechanism that makes collections a first-class,
+chunk_utils.resolve_prim_paths -- the mechanism that makes collections a first-class,
 reusable prim-targeting primitive across every other chunk's prim-pattern field.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
 def _exec(mod, node):
     """Mirror the real auto-execute chain (chunk_notice.py), which runs module.execute()
-    inside Usd.EditContext(stage, node.get_edit_context()) — each chunk's own anonymous
+    inside Usd.EditContext(stage, node.get_edit_context()) -- each chunk's own anonymous
     layer. Calling mod.execute(node) directly would target the ambient root edit target
     for every chunk, so two clearing chunks would stomp on each other's output."""
     stage = node.get_stage()
@@ -135,7 +135,7 @@ class TestCollectionTokenResolution:
         assert chunk_utils.resolve_prim_paths(stage, "%doesNotExist") == []
 
     def test_transform_consumes_collection_reference(self, scene):
-        """Integration: Transform's Prim Path field already calls resolve_paths() —
+        """Integration: Transform's Prim Path field already calls resolve_paths() --
         pointing it at a %name token must transform every collection member with zero
         changes to transform.py itself."""
         coll_chunk = _make_collection(self.mod, "Coll1")

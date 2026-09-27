@@ -1,10 +1,10 @@
-"""Get Property chunk — reads an attribute or relationship value from a prim.
+"""Get Property chunk -- reads an attribute or relationship value from a prim.
 
 Input is dot-notation: /Prim/Path.propertyName
 Supports attributes (returns resolved value at current time) and relationships
 (returns target path list).
 
-In the node graph this becomes a data source — the output port carries the
+In the node graph this becomes a data source -- the output port carries the
 property value that can be wired into downstream nodes.
 """
 
@@ -33,7 +33,7 @@ def _parse_property_path(path_str: str) -> tuple[str, str]:
     dot_pos = path_str.find(".", last_slash + 1)
 
     if dot_pos == -1:
-        # No property name — treat entire string as prim path
+        # No property name -- treat entire string as prim path
         return (path_str, "")
 
     return (path_str[:dot_pos], path_str[dot_pos + 1:])
@@ -70,7 +70,7 @@ def execute(node):
     if not stage:
         return
 
-    # Get Property doesn't author anything — it only reads.
+    # Get Property doesn't author anything -- it only reads.
     # Clear the chunk layer for cleanliness (idempotency).
     chunk_layer = stage.GetEditTarget().GetLayer()
     chunk_layer.Clear()
@@ -87,7 +87,7 @@ def execute(node):
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel — resolve and display the value."""
+    """Callback for the chunk panel -- resolve and display the value."""
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:

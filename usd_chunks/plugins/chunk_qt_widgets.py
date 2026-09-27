@@ -21,7 +21,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 _clean_description = chunk_registry.clean_description
 
 # Background tint for a tab's Params-page header panel (prim path field, lofted own-params,
-# filter bar) — distinct from the body's #333333 (CHUNK_STYLESHEET's default QFrame color).
+# filter bar) -- distinct from the body's #333333 (CHUNK_STYLESHEET's default QFrame color).
 _PARAMS_HEADER_BG = "#242424"
 
 
@@ -632,7 +632,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         # setup_chunk_widget() doesn't call update_from_state() and the reactive
         # ATTRIBUTE_CHANGED/state path isn't reliable for state set before this widget
         # existed (e.g. a ListGroup template's DISABLED state, already set when each
-        # row's proxy widget gets created) — apply current state explicitly, once, now.
+        # row's proxy widget gets created) -- apply current state explicitly, once, now.
         self.update_from_state()
 
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
@@ -723,7 +723,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
     def update_from_state(self):
         # Base ChunkParamWidgetBase.update_from_state is a no-op stub with no default
-        # implementation — without this override, DISABLED never actually renders as
+        # implementation -- without this override, DISABLED never actually renders as
         # disabled for a LineEdit (only reactively, and only if this were overridden).
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
         self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
@@ -808,7 +808,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         # ImGui frontends so all three honour the same pattern/extensions and the same
         # DIRECTORY and FILE_EXISTING flags. Only turning it into a QFileDialog is local.
         #
-        # FILE_EXISTING unset (the default) means the file need not exist yet — an
+        # FILE_EXISTING unset (the default) means the file need not exist yet -- an
         # output/destination picker like Export ChunkGroup's Output File. file_dial()
         # ignores create_new for directory=True anyway (always getExistingDirectory).
         spec = chunk_widget_api.file_dialog_spec(self.param)
@@ -866,7 +866,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         # clear()/addItems() make Qt auto-select (and emit currentTextChanged for) the
         # first item as the list goes from empty to populated. That signal is wired to
         # value_changed, which would write that transient first item straight into the
-        # param model — clobbering the real value — before set_value() below even runs.
+        # param model -- clobbering the real value -- before set_value() below even runs.
         with QtCore.QSignalBlocker(self):
             self.clear()
             if menu_items:
@@ -883,7 +883,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
     def set_value(self, value):
         if isinstance(value, str) and chunk_utils.has_expression(value):
             # setup_chunk_widget()/handle_param_changed() (ChunkParamWidgetBase) pass
-            # param.raw_value — for a node-graph-connected Menu that's the literal
+            # param.raw_value -- for a node-graph-connected Menu that's the literal
             # "@Node.param@" expression text, not a menu_items entry. Resolve it for
             # display; menu_items themselves are never expression strings.
             value = self.param.value
@@ -892,7 +892,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
             if index < 0 and value:
                 # A resolved connection value (e.g. a Create Layer chunk's Layer
                 # Name) is a plain name, not one of the raw identifiers/sentinels in
-                # menu_items — setCurrentText() would silently no-op on a
+                # menu_items -- setCurrentText() would silently no-op on a
                 # non-editable combo box, leaving the old selection on screen. Show
                 # it via a transient extra item instead; update_menu_items() clears
                 # and rebuilds the list from scratch on every refresh anyway.
@@ -1058,8 +1058,8 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
         """A real top-level window to hang the colour dialog off.
 
         On the Params panel window() is the usdview window and everything is normal. On
-        the graph this widget is embedded in a QGraphicsProxyWidget — reparented to None
-        and flagged WA_DontShowOnScreen — so window() returns the swatch itself, and a
+        the graph this widget is embedded in a QGraphicsProxyWidget -- reparented to None
+        and flagged WA_DontShowOnScreen -- so window() returns the swatch itself, and a
         dialog parented to a widget that is never shown on screen comes up blank and
         mis-sized. Fall back to whatever window is actually active.
         """
@@ -1119,7 +1119,7 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         widget: ChunkParamWidgetBase = widget_class(param)
 
         # A widget with no parent is a top-level window, so anything that makes it visible
-        # before it reaches a layout shows a real window on screen — which is what a chunk
+        # before it reaches a layout shows a real window on screen -- which is what a chunk
         # built at runtime does, one flash per param. Suppressed here and cleared in
         # ContainerWidget.add_widget once the LabeledWidget has parented it, the same
         # guard the node graph and delete_self already use.
@@ -1162,7 +1162,7 @@ class LabeledWidget(QtWidgets.QWidget):
             )
 
         # Hiding a param only hides its inner widget (see ChunkParamWidgetBase.set_hidden /
-        # ChunkContainerWidgetBase.set_hidden) — this row (label + widget) must react to the
+        # ChunkContainerWidgetBase.set_hidden) -- this row (label + widget) must react to the
         # same state directly, driven by the model's own state, not Qt's Hide/Show events:
         # a hidden child that un-hides while its parent (this row) is still hidden never
         # actually becomes visible on screen, so Qt never fires a QEvent.Show for it,
@@ -1475,8 +1475,8 @@ class ContainerWidget(
         self._anim_target_h: int | None = None  # content height, measured per animation
         self._depth = 0
         super().__init__(group, parent=parent)
-        # When Qt destroys this widget — e.g. the node graph rebuild calls deleteLater on the
-        # embedded ChunkWidget without going through delete_self — revoke our notice
+        # When Qt destroys this widget -- e.g. the node graph rebuild calls deleteLater on the
+        # embedded ChunkWidget without going through delete_self -- revoke our notice
         # subscriptions. Otherwise a later notice (a rename firing _name_changed → update_label,
         # a state change, …) invokes a method on the deleted C++ object and crashes. Safe post-
         # delete: _disconnect_callbacks only touches Python NoticeConnections.
@@ -1487,7 +1487,7 @@ class ContainerWidget(
         if not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             return False
         if getattr(self, '_is_tab_context_widget', False):
-            return True  # explicitly opened as a tab — always use scroll area
+            return True  # explicitly opened as a tab -- always use scroll area
         cfg = getattr(self.group, 'get_config', lambda: None)()
         return not (cfg and getattr(cfg, 'module', None))
 
@@ -1555,7 +1555,7 @@ class ContainerWidget(
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
         bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
-        # Two setStyleSheet calls per container, each re-polishing its whole subtree —
+        # Two setStyleSheet calls per container, each re-polishing its whole subtree --
         # collectively the single most expensive thing in building a chunk. The colour only
         # depends on nesting depth, so re-applying the same one repaints for nothing.
         if bg == getattr(self, "_group_bg", None):
@@ -1721,7 +1721,7 @@ class ContainerWidget(
         try:
             self.deleteLater()
             # A visible widget reparented to no parent becomes a real top-level window and
-            # Qt shows it immediately, before deleteLater() actually runs — set this first
+            # Qt shows it immediately, before deleteLater() actually runs -- set this first
             # or a still-visible widget flashes a native window on its way out.
             self.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
             self.setParent(None)
@@ -1744,7 +1744,7 @@ class ContainerWidget(
                     # LabeledWidget stays a child of this container, keeping a strong ref
                     # to the param widget -> chunk, so the chunk never GCs and its layer's
                     # weakref.finalize (which removes the layer) never fires.
-                    # removeItem() only drops layout management — iw is still a visible
+                    # removeItem() only drops layout management -- iw is still a visible
                     # child of self, so reparenting it to none would flash a real top-level
                     # window unless suppressed first.
                     iw.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
@@ -1754,7 +1754,7 @@ class ContainerWidget(
         except RuntimeError:
             # This container's own C++ layout/widget was already torn down (e.g. the whole
             # ChunkWidget was deleted via _group_deleted while a sibling's PARAM_REMOVED was
-            # still propagating here during a tab-delete cascade). Nothing to remove — the
+            # still propagating here during a tab-delete cascade). Nothing to remove -- the
             # parent teardown handles the children. Swallowing this lets the cascade finish
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
@@ -1763,7 +1763,7 @@ class ContainerWidget(
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
         labeled = LabeledWidget(widget, self)
-        # Now parented, so showing it can no longer produce a top-level window — lift the
+        # Now parented, so showing it can no longer produce a top-level window -- lift the
         # suppression create_widget put on it.
         widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
         widget.installEventFilter(self)
@@ -1816,8 +1816,8 @@ class ViewSlotState(QtCore.QObject):
     """
 
     slot_changed = QtCore.Signal(int)   # 0 = off, 1–3 = active slot
-    create_view_for = QtCore.Signal(str)  # prim path — handled by ChunkGraphView
-    pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) — a Pin/Unpin menu toggle
+    create_view_for = QtCore.Signal(str)  # prim path -- handled by ChunkGraphView
+    pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) -- a Pin/Unpin menu toggle
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2030,7 +2030,7 @@ class ViewSlotState(QtCore.QObject):
 
 class ParamsFilterBar(QtWidgets.QWidget):
     """Per-tab filter bar shown at the top of a context's Params page: a pin-filter toggle plus
-    a fuzzy search box with a Name/Type/Both scope combobox — two independent, AND'd filters
+    a fuzzy search box with a Name/Type/Both scope combobox -- two independent, AND'd filters
     over the same Params page (see chunk_stage.chunk_matches_search /
     ChunkWidget._is_hidden_by_params_filter).
     """
@@ -2141,7 +2141,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._reconcile_all_children()
 
     def _on_search_changed(self, query: str, scope: str) -> None:
-        """The filter bar's search box or a scope chip changed for this tab — live, on every
+        """The filter bar's search box or a scope chip changed for this tab -- live, on every
         keystroke, same as the create-menu's FilterableChunkMenu search. Can change visibility
         for every chunk in the tab at once."""
         chunk_stage.set_search_query(self.group, query)
@@ -2151,7 +2151,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     def _on_pin_changed(self, target_chunk: chunk.ChunkBase, pinned: bool) -> None:
         """A chunk's pin state was toggled from the shared menu (graph or Params surface).
 
-        Only the tab-context widget owning target_chunk's Params page reacts — every other
+        Only the tab-context widget owning target_chunk's Params page reacts -- every other
         ChunkWidget either has no _view_state set (never connected) or belongs to a different
         tab's ViewSlotState instance. Reconciles rather than trusting `pinned` directly: if this
         tab's pin filter is currently OFF, the chunk should stay visible either way.
@@ -2174,7 +2174,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _reconcile_all_children(self) -> None:
         """Re-apply the current filter state to every direct child chunk of this tab context.
-        Call after a filter-bar change (e.g. the pin-filter toggle) — unlike a single chunk's
+        Call after a filter-bar change (e.g. the pin-filter toggle) -- unlike a single chunk's
         pin toggle, that can change visibility for many chunks in the tab at once."""
         if not self._is_tab_context_widget:
             return
@@ -2309,10 +2309,10 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._lofted_container.setVisible(False)
 
             if self._is_tab_context_widget:
-                # A distinct "toolbar" panel — prim path, a context's own lofted top-level
-                # params (e.g. scripts/core/chunkgroup.py's "doc" Description TextEdit — the
+                # A distinct "toolbar" panel -- prim path, a context's own lofted top-level
+                # params (e.g. scripts/core/chunkgroup.py's "doc" Description TextEdit -- the
                 # pre-existing description for a chunkgroup; empty/invisible for a plain tab,
-                # which has no own params), and the filter bar — visually separated from the
+                # which has no own params), and the filter bar -- visually separated from the
                 # chunk list below by a tinted background + embossed edge, not just a plain line.
                 self._header_container = QtWidgets.QFrame(self)
                 self._header_container.setObjectName("ParamsHeader")
@@ -2323,7 +2323,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 header_layout.setContentsMargins(0, 0, 0, 0)
                 header_layout.setSpacing(0)
 
-                # Both are plain QWidgets with no background of their own — set explicitly
+                # Both are plain QWidgets with no background of their own -- set explicitly
                 # rather than relying on transparency showing the panel's tint through, which
                 # isn't reliable across Qt styles/palettes. WA_StyledBackground is needed too:
                 # a bare QWidget's default paintEvent doesn't consult its own stylesheet for
@@ -2346,7 +2346,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self.__layout__.insertWidget(2, self._header_container)
                 next_idx = 3
 
-                # A plain QFrame HLine would be invisible here — CHUNK_STYLESHEET sets
+                # A plain QFrame HLine would be invisible here -- CHUNK_STYLESHEET sets
                 # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
                 # painting relies on. An explicit gradient bar instead gives it a clearly visible
                 # embossed edge (dark top lip fading to a bright bottom highlight).
@@ -2389,9 +2389,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _is_hidden_by_params_filter(self, group_chunk) -> bool:
         """True if group_chunk should be hidden from THIS tab's Params page under the current
-        combined filter state — the pin filter AND the search box, two independent filters
+        combined filter state -- the pin filter AND the search box, two independent filters
         that both have to pass for a chunk to show. Only meaningful when self is the
-        tab-context widget — a context's own direct children are the only things this filter
+        tab-context widget -- a context's own direct children are the only things this filter
         applies to, never nested groups within a chunk's own UI."""
         if not self._is_tab_context_widget:
             return False
@@ -2408,7 +2408,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _add_group_layout(self, group):
         if self._is_group_chunk_node():
-            # Don't create orphan Qt child widgets — they render at (0,0) as overlays.
+            # Don't create orphan Qt child widgets -- they render at (0,0) as overlays.
             return None
         if (isinstance(group, chunk.ChunkBase)
                 and group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
@@ -2439,7 +2439,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def update_from_state(self):
         if self._is_group_chunk_node():
-            # Skip super() — it would start the collapse animation which calls
+            # Skip super() -- it would start the collapse animation which calls
             # content.setFixedHeight and inflates the node's reported size.
             # Drive everything directly with blocked signals so toggled() never fires.
             expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
@@ -2570,7 +2570,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         )
 
         # setStyleSheet re-polishes the whole subtree beneath the widget and cost ~10ms a
-        # call — 112 of them, 1.7s, easily the most expensive thing in building a chunk.
+        # call -- 112 of them, 1.7s, easily the most expensive thing in building a chunk.
         # Every nested group is its own ChunkWidget, but Qt stylesheets cascade, so only
         # the outermost needs to apply CHUNK_STYLESHEET, and
         # the selection border rides a dynamic property resolved by that one sheet.
@@ -2594,7 +2594,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if (watched is getattr(self, 'minimize_button', None)
                 and event.type() == QtCore.QEvent.Type.MouseButtonDblClick
                 and self._is_group_chunk()):
-            # Double-click on the header of a ChunkGroup — dive into its tab.
+            # Double-click on the header of a ChunkGroup -- dive into its tab.
             parent = self.parent()
             while parent is not None:
                 if callable(getattr(parent, '_on_dive_into', None)):

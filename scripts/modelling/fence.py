@@ -1,4 +1,4 @@
-"""Fence chunk — builds a parametric picket/rail fence as a single mesh.
+"""Fence chunk -- builds a parametric picket/rail fence as a single mesh.
 
 The run is a polyline: either a straight length along +X, or the points of a
 Path Prim (a curve, points, or mesh you feed in) so the fence follows a shape
@@ -52,7 +52,7 @@ def _normalized(v):
 
 
 class _Frame:
-    """A right-handed (u, v, w) frame anchored at a point — u along the fence,
+    """A right-handed (u, v, w) frame anchored at a point -- u along the fence,
     v up, w through the fence's thickness."""
 
     def __init__(self, origin, u, v):
@@ -82,7 +82,7 @@ def _add_box(data, frame, a0, a1, b0, b1, c0, c1):
 
 
 def _add_frustum(data, frame, a0, a1, b0, b1, c0, c1, inset):
-    """A box whose top rect is pulled in by *inset* on each side — the dog-ear cut."""
+    """A box whose top rect is pulled in by *inset* on each side -- the dog-ear cut."""
     if a1 - a0 < 1e-9 or b1 - b0 < 1e-9:
         return
     inset = min(inset, (a1 - a0) * 0.5 - 1e-6)

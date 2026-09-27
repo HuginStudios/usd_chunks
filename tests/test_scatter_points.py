@@ -295,7 +295,7 @@ def _plate(stage, path="/plate", half=20.0, height=0.0):
 
 
 def _crayon(stage, path="/crayon", length=10.0, thickness=1.0):
-    """A box that is long in X and thin in Y/Z — a crayon lying down."""
+    """A box that is long in X and thin in Y/Z -- a crayon lying down."""
     hl, ht = length * 0.5, thickness * 0.5
     mesh = UsdGeom.Mesh.Define(stage, path)
     pts = [
@@ -315,7 +315,7 @@ def _instancer(stage):
 
 
 def test_prototype_mix_is_an_exact_quota() -> None:
-    """A row's Mix % has to mean an exact count, not a probability — 25% of 100 is 25."""
+    """A row's Mix % has to mean an exact count, not a probability -- 25% of 100 is 25."""
     stage, mod, scatter = _bootstrap()
     _plate(stage)
     UsdGeom.Cube.Define(stage, "/proto_a")
@@ -529,7 +529,7 @@ def test_editing_a_prototype_row_recooks_on_its_own() -> None:
 
 
 def test_stack_can_lay_prototypes_down_along_the_rows() -> None:
-    """Lay Along Rows turns the long axis into the row direction — a woodpile, not a cup."""
+    """Lay Along Rows turns the long axis into the row direction -- a woodpile, not a cup."""
     from pxr import Gf
 
     stage, mod, scatter = _bootstrap()

@@ -11,7 +11,7 @@ _INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
 def _refresh_after_layer(owner, notice, sender):
     """Rebuild the after-layer menu from the current parent layer's sublayers.
 
-    Registered with listen_globally=True — safe with any number of Create Layer
+    Registered with listen_globally=True -- safe with any number of Create Layer
     instances since NoticeConnection now shares one real Tf.Notice.RegisterGlobally()
     per alias across all of them (see chunk_notice._register_global).
     """
@@ -24,7 +24,7 @@ def _refresh_after_layer(owner, notice, sender):
         # ANY stage content change -- including another Create Layer's own subLayerPaths
         # write, or recook_for_view's own layer reorder. The after_menu.value write below
         # reactively re-triggers THIS chunk's own execute() (chunk_notice.py's DAG solve),
-        # which must not happen for a blocked chunk (not part of the active view's tree —
+        # which must not happen for a blocked chunk (not part of the active view's tree --
         # e.g. not yet wired in, or genuinely hidden). Without this guard, a still-blocked
         # Create Layer could get dragged into a cascade of extra premature executes
         # triggered by its SIBLINGS' unrelated edits, each one reinserting it into
@@ -60,7 +60,7 @@ def _refresh_after_layer(owner, notice, sender):
     after_menu = _chunk.get_param("after_layer")
     if after_menu is None:
         # Deleting this chunk tears its params down, but the layer-stack edits that teardown
-        # makes are themselves stage content changes — so this global handler still fires for
+        # makes are themselves stage content changes -- so this global handler still fires for
         # the half-dismantled chunk. Nothing left to refresh.
         return
     after_menu.menu_items = after_items
@@ -174,7 +174,7 @@ def execute(node):
     current parent layer's subLayerPaths per the current insert settings.
 
     The parent is chunk_utils.get_edit_layer(stage): the session layer by default,
-    or whichever layer an upstream Edit Target chunk has explicitly pointed at — so
+    or whichever layer an upstream Edit Target chunk has explicitly pointed at -- so
     a Create Layer downstream of an Edit Target nests its new layer inside that
     target instead of always sublayering directly under the session layer.
 
@@ -183,7 +183,7 @@ def execute(node):
     stored id is overwritten, matching the regenerate-on-load behavior other
     procedural chunks rely on.
 
-    The anon layer's tag (Layer Name) is user-facing — it's what shows up for this
+    The anon layer's tag (Layer Name) is user-facing -- it's what shows up for this
     layer in e.g. Export USD's layer picker, or an Edit Target chunk's dropdown. Sdf
     identifiers are immutable once created, so renaming means creating a fresh anon
     layer under the new tag and transferring the old one's content across before
@@ -192,7 +192,7 @@ def execute(node):
     # menu_items/value assignments in _refresh_after_layer, and the id_param/name_param/
     # parent_param writes below, can reactively re-trigger this same chunk's execute()
     # before this call returns. We must NOT suppress that reactivity at the notice
-    # level (e.g. via set_blocked()) — that also blocks the notice the node-graph
+    # level (e.g. via set_blocked()) -- that also blocks the notice the node-graph
     # widget needs to know it should repaint, silently breaking the UI. Guard the
     # reentrant *call* directly instead, so widgets still refresh normally.
     if getattr(node, "_create_layer_executing", False):
@@ -220,7 +220,7 @@ def execute(node):
 
         parent_layer = chunk_utils.get_edit_layer(stage, node)
         if parent_layer.identifier in (layer.identifier, previous_id):
-            # The current edit target is this very layer — either its new identity, or
+            # The current edit target is this very layer -- either its new identity, or
             # (mid-rename) its about-to-be-replaced previous one, e.g. because a
             # downstream Edit Target chunk had already locked onto it. Nesting the new
             # layer inside either would corrupt the layer stack (self-reference, or
@@ -230,7 +230,7 @@ def execute(node):
         previous_parent_id = parent_param.value or None
         if previous_parent_id and previous_parent_id != parent_layer.identifier:
             # The effective edit target changed since the last run (e.g. an upstream
-            # Edit Target's selection changed, or one was added later) — drop the stale
+            # Edit Target's selection changed, or one was added later) -- drop the stale
             # entry from the OLD parent so the layer doesn't end up sublayered twice.
             if old_parent := Sdf.Layer.Find(previous_parent_id):
                 old_paths = [p for p in old_parent.subLayerPaths if p not in (previous_id, layer.identifier)]

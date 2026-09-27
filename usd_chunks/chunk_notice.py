@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 _usd_write_active: bool = False
 _loading_stage = None  # Set during load_chunks so callbacks can access the stage during file open
 
-# Set while ChunkLayerManager is rearranging its OWN layers — the per-chunk procedural layers
+# Set while ChunkLayerManager is rearranging its OWN layers -- the per-chunk procedural layers
 # and the graph layers that group them. Layer stack changes normally invalidate Edit Target
 # resolution (a marker only counts while the layer it names is composed), but these layers can
 # never be what a marker names: the Edit Target picker excludes them by construction, and they
@@ -60,7 +60,7 @@ _loading_stage = None  # Set during load_chunks so callbacks can access the stag
 _internal_layer_write_active: bool = False
 
 # The chunk whose module.execute() is currently running, or None. Execution-scoped (set and
-# cleared around each execute() call below), NOT persistent config — it only answers "who is
+# cleared around each execute() call below), NOT persistent config -- it only answers "who is
 # authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
@@ -172,8 +172,8 @@ class ChunkNoticeAlias(IntEnum):
 
 
 # Notices that must be delivered even from a blocked chunk. Blocking (view-driven: the chunk is
-# dormant/hidden) suppresses data/execution notices, but STRUCTURAL edits — adding/removing
-# child chunks, load/delete — must still work so you can edit inside a group that isn't wired to
+# dormant/hidden) suppresses data/execution notices, but STRUCTURAL edits -- adding/removing
+# child chunks, load/delete -- must still work so you can edit inside a group that isn't wired to
 # an active view (a blocked group otherwise swallows its children's PARAM_ADDED, so their prims
 # never get created). Execution is still gated separately (execute()/callback muted-layer guards).
 _STRUCTURAL_ALIASES = frozenset({
@@ -613,7 +613,7 @@ class DagNode:
         Clearing only this node's own dicts leaves each peer still pointing back here, so a
         disconnected node stays reachable as somebody else's input or output. That was
         invisible while chunk-level edges were rarely populated, but request_delete calls
-        this on any node with outputs — a stale reverse link there resurrects the deleted
+        this on any node with outputs -- a stale reverse link there resurrects the deleted
         chunk as a live dependency of its former successor.
         """
         # Snapshot before mutating: the peer loops write to dicts these views come from, and
@@ -1271,15 +1271,15 @@ class ChunkNoticePropagator:
                 # case. load_chunks's own later, correctly-ordered explicit .execute() call
                 # (after every chunk's layer is properly registered) still runs normally.
                 not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
-                # A blocked chunk (view-driven: not in the active view's tree — e.g. connected to
+                # A blocked chunk (view-driven: not in the active view's tree -- e.g. connected to
                 # an inactive view) must never run its module, whatever triggered the solve. recook
                 # unblocks the active view's tree before executing it, so cooking is unaffected.
-                # A chunk being deleted must not run its module — teardown notices can land
+                # A chunk being deleted must not run its module -- teardown notices can land
                 # back here after its params are already detached (see request_delete).
                 # With no stage there is nothing for a module to author into: every chunk module
                 # works through get_stage(), so running one stage-less is never useful and
                 # crashes on the first stage call. The host can genuinely have no stage for a
-                # window — usdview clears its stage before opening the next file while still
+                # window -- usdview clears its stage before opening the next file while still
                 # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
                 # window, can reach here.
                 if (callable(getattr(module, 'execute', None)) and stage is not None
@@ -1320,7 +1320,7 @@ class ChunkNoticePropagator:
                                 else:
                                     raise
                         else:
-                            # No edit layer of its own — author into the stage's current target.
+                            # No edit layer of its own -- author into the stage's current target.
                             module.execute(prop)
                     finally:
                         # Restored, not cleared: a cook can be reached from inside a guarded
@@ -1589,7 +1589,7 @@ class _GlobalDispatch:
 
     `callback` must be kept here: Tf.Notice.RegisterGlobally only holds a *weak*
     reference to the Python callable, so a functools.partial passed in without a
-    surviving strong reference elsewhere gets garbage-collected almost immediately —
+    surviving strong reference elsewhere gets garbage-collected almost immediately --
     the registration then silently goes dead (Tf logs "expired python callback" and
     never calls it again). Keeping it as an attribute here ties its lifetime to
     `listener`, which is what we actually want.
@@ -1607,7 +1607,7 @@ class _SharedGlobalListener:
     """Stand-in for NoticeConnection._listener when it shares a _GlobalDispatch.
 
     Revoke() (called by NoticeConnection.disconnect()) must only drop this one
-    connection from the shared subscriber set — never the underlying Tf listener,
+    connection from the shared subscriber set -- never the underlying Tf listener,
     since other connections for the same alias may still be alive and depend on it.
     """
 
@@ -1621,7 +1621,7 @@ class _SharedGlobalListener:
         self._dispatch.subscribers.discard(self._connection)
 
 
-# One entry per alias, for the lifetime of the process — never torn down, same as the
+# One entry per alias, for the lifetime of the process -- never torn down, same as the
 # infrastructure singletons (ChunkLayerManager, ChunkStageSync) that already register
 # real Usd notices exactly once and keep them alive forever.
 _global_dispatches: dict[ChunkNoticeAlias, _GlobalDispatch] = {}
@@ -1639,7 +1639,7 @@ def _register_global(alias: ChunkNoticeAlias, notice_type, connection: NoticeCon
     """Ensure exactly one Tf.Notice.RegisterGlobally() exists for `alias`, and add
     `connection` as one of its subscribers.
 
-    Each NoticeConnection must not call Tf.Notice.RegisterGlobally() itself — harmless for rarely-fired custom
+    Each NoticeConnection must not call Tf.Notice.RegisterGlobally() itself -- harmless for rarely-fired custom
     notices (e.g. CAMERA_CHANGED), but for the notices backed by real Usd.Notice types
     (STAGE_CONTENTS_CHANGED, STAGE_CHANGED, OBJECT_CHANGED, STAGE_EDIT_TARGET_CHANGED)
     two or more independent registrations reliably hang the interpreter on shutdown.
@@ -1824,7 +1824,7 @@ class NoticeConnection:
                 if stage and ctx and context:
                     # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
                     # from the local layer stack, so entering an EditContext on it raises
-                    # ("not in the local LayerStack"). A dormant chunk must not author anyway —
+                    # ("not in the local LayerStack"). A dormant chunk must not author anyway --
                     # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
                     if stage.IsLayerMuted(ctx.identifier):
                         return

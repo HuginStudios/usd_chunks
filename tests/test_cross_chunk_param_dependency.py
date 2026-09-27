@@ -1,7 +1,7 @@
 """Param-level dependencies that cross a chunk boundary.
 
-A DagNode edge between two params is in-memory only — ChunkStageSync._on_dependency_added
-authors inputs:chunk for ChunkBase pairs and returns early for anything else — so an edge
+A DagNode edge between two params is in-memory only -- ChunkStageSync._on_dependency_added
+authors inputs:chunk for ChunkBase pairs and returns early for anything else -- so an edge
 between params of two different chunks is never written to USD and is gone after a reload.
 Inside one chunk that edge is the right mechanism (it is what set_function reads, and it can
 drive attributes no expression can reach); across chunks an expression is, so add_dependency
@@ -90,7 +90,7 @@ def test_cross_chunk_dependency_warns(scene, caplog) -> None:
 
 
 def test_cross_chunk_dependency_still_connects(scene, caplog) -> None:
-    """A warning, not a refusal — existing in-memory behaviour is unchanged."""
+    """A warning, not a refusal -- existing in-memory behaviour is unchanged."""
     src, dst = _two_chunks(scene)
     q = dst.get_param("q")
 
@@ -102,7 +102,7 @@ def test_cross_chunk_dependency_still_connects(scene, caplog) -> None:
 
 
 def test_same_chunk_dependency_is_silent(scene, caplog) -> None:
-    """The in-chunk case is the supported one — it must not warn."""
+    """The in-chunk case is the supported one -- it must not warn."""
     c = _mk("solo")
     c.add_param(chunk.Slider("a", default_value=0.0))
     c.add_param(chunk.Slider("b", default_value=0.0))
@@ -115,7 +115,7 @@ def test_same_chunk_dependency_is_silent(scene, caplog) -> None:
 
 
 def test_unowned_param_is_silent(caplog) -> None:
-    """A param not yet added to anything has no chunk to compare — never warn on that."""
+    """A param not yet added to anything has no chunk to compare -- never warn on that."""
     a = chunk.Slider("a", default_value=0.0)
     b = chunk.Slider("b", default_value=0.0)
 
@@ -159,7 +159,7 @@ def test_connect_value_across_chunks_tracks_source(scene) -> None:
 
 
 def test_connect_value_within_a_chunk_is_unchanged(scene) -> None:
-    """Same chunk keeps the DagNode path — no expression, no USD connection."""
+    """Same chunk keeps the DagNode path -- no expression, no USD connection."""
     c = _mk("solo")
     c.add_param(chunk.Slider("a", default_value=0.0))
     c.add_param(chunk.Slider("b", default_value=0.0))
@@ -182,8 +182,8 @@ def test_connect_value_keeps_its_type_check(scene) -> None:
 
 
 def test_nested_param_is_still_nameable(scene) -> None:
-    """A param inside a group is reachable as @src.inner@ — get_param finds it by name,
-    which is the same lookup expression resolution uses — so it redirects like any other."""
+    """A param inside a group is reachable as @src.inner@ -- get_param finds it by name,
+    which is the same lookup expression resolution uses -- so it redirects like any other."""
     src = _mk("src")
     grp = chunk.Group("grp")
     src.add_param(grp)
@@ -201,8 +201,8 @@ def test_nested_param_is_still_nameable(scene) -> None:
 
 
 def test_unnameable_param_falls_back_to_the_dependency(scene, caplog) -> None:
-    """When no @Node.param@ can address the source — its bare name resolves to a different
-    param, so the reference would silently point at the wrong one — connect_value keeps the
+    """When no @Node.param@ can address the source -- its bare name resolves to a different
+    param, so the reference would silently point at the wrong one -- connect_value keeps the
     in-memory edge and lets the warning stand rather than authoring a wrong expression."""
     src, dst = _two_chunks(scene)
     q = dst.get_param("q")

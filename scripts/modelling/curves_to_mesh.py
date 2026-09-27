@@ -1,9 +1,9 @@
-"""Curves to Mesh chunk — sweeps a tube along a BasisCurves and gives it UVs.
+"""Curves to Mesh chunk -- sweeps a tube along a BasisCurves and gives it UVs.
 
 Why this exists: **a curve cannot carry a texture in most renderers.** Measured across the
 three delegates in this bundle, rendering the same `BasisCurves` with and without a
 `primvars:st` and comparing the images: Storm honours curve UVs, V-Ray and Cycles return
-pixel-identical renders — they ignore them entirely. So a material bound to a curve shows its
+pixel-identical renders -- they ignore them entirely. So a material bound to a curve shows its
 base colour and nothing else, which is exactly what was reported of the Vine chunk.
 
 A `Mesh` with `primvars:st` textures everywhere, V-Ray included (verified the same way). So
@@ -15,7 +15,7 @@ each grow their own sweep. It is also the shape Vine already commits to: it publ
 for Scatter Points to instance leaves rather than generating leaves itself.
 
 **The centreline is evaluated, not guessed.** Vine's Smooth form writes a cubic B-spline, and a
-B-spline does not pass through its control points — laying a tube on the CVs would leave the
+B-spline does not pass through its control points -- laying a tube on the CVs would leave the
 mesh visibly off the curve it came from. `_centreline` evaluates the basis, so the tube sits
 where the curve is drawn.
 
@@ -54,7 +54,7 @@ _UV_PER_STRAND = "Per Strand"
 _UV_BY_LENGTH = "By Length"
 _UV_MODES = [_UV_PROPORTIONAL, _UV_PER_STRAND, _UV_BY_LENGTH]
 
-#: Below this a segment is a duplicated point, not a direction — vine pins its ends by
+#: Below this a segment is a duplicated point, not a direction -- vine pins its ends by
 #: tripling them, so every strand it writes has a few of these.
 _EPSILON = 1e-9
 

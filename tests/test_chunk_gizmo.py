@@ -43,7 +43,7 @@ def _transform_chunk(name: str = "Transform", target: str = "/World/Cube") -> ch
         flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.PRIM_SELECTION,
     ))
     # A PRIM_SELECTION param takes its value from the scene selection at construction, which
-    # is empty here — so default_value alone leaves it blank, exactly as it would in a real
+    # is empty here -- so default_value alone leaves it blank, exactly as it would in a real
     # session before the user picks a prim.
     c.get_param("primpath_location").value = target
     grp = chunk.Group("translate_grp", "Translate")

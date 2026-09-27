@@ -117,7 +117,7 @@ class TestBindMaterial:
         mat_path = "/materials/Gold"
         prim_path = "/geo/mesh"
 
-        # Define material and prim in the session layer — always in the composed
+        # Define material and prim in the session layer -- always in the composed
         # stack but never the root-layer edit target, so execute's layer.Clear()
         # leaves them intact.
         with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -170,13 +170,13 @@ class TestBindMaterial:
 
 
 # ---------------------------------------------------------------------------
-# AMDMaterialXLibrary — load-only (no network calls)
+# AMDMaterialXLibrary -- load-only (no network calls)
 # main() creates a MaterialGridWidget so it requires a running QApplication.
 # ---------------------------------------------------------------------------
 
 class TestAMDMaterialXLibrary:
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
@@ -214,7 +214,7 @@ class TestAMDMaterialXLibrary:
 
 
 # ---------------------------------------------------------------------------
-# AMDMaterialXLibrary — child chunk creation (Reference / BindMaterial)
+# AMDMaterialXLibrary -- child chunk creation (Reference / BindMaterial)
 #
 # Reproduces the real-app wiring: a CONTEXT chunk attached to a live stage via
 # chunk_stage.initialize() (ChunkLayerManager + ChunkStageSync), then
@@ -253,7 +253,7 @@ def _chunk_path(name: str) -> str:
 
 class TestAMDMaterialXLibraryChildCreation:
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
@@ -340,7 +340,7 @@ class TestAMDMaterialXLibraryChildCreation:
         AMD's execute() runs inside a Usd.EditContext targeting AMD's own
         anonymous layer so that its USD output lands there. When add_param()
         creates child chunk prims via ChunkStageSync._define_prim() during
-        that context, those prims must still be routed to the session layer —
+        that context, those prims must still be routed to the session layer --
         otherwise they live in AMD's anon layer, which is Clear()ed on every
         execute() run, and they are never saved to disk.
         """
@@ -612,7 +612,7 @@ class TestAMDMaterialXCaching:
     """
 
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """main() builds Qt widgets."""
 
     def setup_method(self):
@@ -682,7 +682,7 @@ class TestAMDMaterialXAsyncApply:
     """
 
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """main() builds Qt widgets."""
 
     def setup_method(self):

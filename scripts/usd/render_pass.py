@@ -1,4 +1,4 @@
-"""Render Pass chunk — creates a UsdRender.Pass prim: one step of a render, pointing at
+"""Render Pass chunk -- creates a UsdRender.Pass prim: one step of a render, pointing at
 the settings that describe it.
 
 A pass is the layer above settings. Where a RenderSettings prim says how to render, a

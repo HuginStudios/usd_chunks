@@ -1569,7 +1569,7 @@ def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
     Target or exports, and never somewhere a chunk's bookkeeping may be hand-moved.
 
     Answered from the identifiers ChunkLayerManager records as it creates them, so it costs
-    a set lookup. The alternative — deriving it by walking every tracked layer's sublayers —
+    a set lookup. The alternative -- deriving it by walking every tracked layer's sublayers --
     has to be redone against live subLayerPaths every time it is asked, which is once per
     reconcile pass and one pass per wire, and the layer stack grows with the graph.
 
@@ -1591,7 +1591,7 @@ def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
     tracked layer is freed while its identifier is still listed here, a later anon layer can
     be handed the same address and produce a byte-identical identifier. subLayerPaths is a
     list editor that rejects duplicates outright, so assigning such a list raises rather than
-    edits, and the delete never completes. Collapsing them is the only legal state anyway —
+    edits, and the delete never completes. Collapsing them is the only legal state anyway --
     two entries could never have named two different live layers at once.
     """
     seen: set = set()
@@ -1643,15 +1643,15 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         )
 
         self.chunk_layers: dict[core.ChunkHash, Sdf.Layer] = {}
-        # Keyed by (graph_id, target_layer_identifier) — a graph's chunks get split into a
+        # Keyed by (graph_id, target_layer_identifier) -- a graph's chunks get split into a
         # separate sibling group per Edit Target they're actually authored against, since a
         # single graph_layer can only ever be a sublayer of one target at a time.
         self.graph_layers: dict[tuple, Sdf.Layer] = {}
-        # Which real layer each graph_layer entry is currently sublayered under — needed to
+        # Which real layer each graph_layer entry is currently sublayered under -- needed to
         # detect and reparent when the resolved Edit Target changes between calls.
         self._graph_layer_target: dict[tuple, Sdf.Layer] = {}
         # Which real layer each individual chunk's content currently resolves against (same
-        # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) — lets
+        # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) -- lets
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
         # content nests in (see scripts/core/export_usd.py's per-layer export mode).
         self._chunk_target: dict[core.ChunkHash, Sdf.Layer] = {}
@@ -1660,7 +1660,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # and it is asked several times per chunk per cook, nearly always with nothing moved.
         self._chunk_graph_key: dict[core.ChunkHash, tuple] = {}
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
-        # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
+        # notice fired by the teardown itself can't resurrect one -- see _chunk_deleted.
         self._retired_chunks: set = set()
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
@@ -1679,7 +1679,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """Return the singleton to its pre-initialize state, dropping every layer
         mapping. Used when switching stages (reload, tests) so state from the old
         stage's stack doesn't leak into the new one. Keeps this class the single
-        owner of its private field list — callers must not clear fields directly.
+        owner of its private field list -- callers must not clear fields directly.
         """
         self.initialized = False
         self.stage = None
@@ -1748,8 +1748,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return self.chunk_layers.get(c)
 
     def get_chunk_target(self, c: core.ChunkHash) -> Sdf.Layer | None:
-        """Return the real layer this chunk's content last resolved against — the session
-        layer by default, or an Edit-Target-chosen layer — as tracked by get_or_create_layer.
+        """Return the real layer this chunk's content last resolved against -- the session
+        layer by default, or an Edit-Target-chosen layer -- as tracked by get_or_create_layer.
 
         Used by export tooling to group a chunk's own bookkeeping prim (always in the
         session layer) with whichever real layer its driven content actually nests in.
@@ -1779,7 +1779,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not self.stage:
             return
 
-        # A deleted chunk never gets a layer back — see _chunk_deleted for why re-creating
+        # A deleted chunk never gets a layer back -- see _chunk_deleted for why re-creating
         # one mid-teardown is what corrupts the graph layer's sublayer list.
         if c.get_hash() in self._retired_chunks:
             return
@@ -1797,9 +1797,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 return ctx_layer
 
         # Resolve where this chunk's content should nest: the user's chosen Edit Target,
-        # or the session layer by default — the same resolution chunk-prim redirect
+        # or the session layer by default -- the same resolution chunk-prim redirect
         # opinions already follow (chunk_utils.get_edit_layer). CONTEXT chunks (Tab-like
-        # containers) are structural scaffolding, not content — they always stay pinned
+        # containers) are structural scaffolding, not content -- they always stay pinned
         # to the session layer regardless of Edit Target, same as chunk-prim bookkeeping;
         # only a regular content-producing chunk's own driven data should move.
         # Local import: chunk_utils imports this module at module scope, so importing it
@@ -1826,13 +1826,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # same method (via ChunkStageSync._on_contents_changed -> load_chunks, the same
         # reentrancy class documented on _chunk_deleted's own guard below) for a sibling chunk
         # targeting the same graph_key, before this call's own bookkeeping/insert has settled
-        # — seen live in CI as a genuine, if intermittent, "Duplicate item ... not allowed for
+        # -- seen live in CI as a genuine, if intermittent, "Duplicate item ... not allowed for
         # field 'subLayers'" Sdf error on the exact same graph layer being inserted twice.
         prev_w = chunk_notice._usd_write_active
         prev_internal = chunk_notice._internal_layer_write_active
         chunk_notice._usd_write_active = True
         # Everything sublayered below is a graph layer or a chunk's own procedural layer, so
-        # none of it can change which Edit Target a chunk resolves to — see the flag's own
+        # none of it can change which Edit Target a chunk resolves to -- see the flag's own
         # comment. Set alongside _usd_write_active because the Edit Target memo is dropped
         # ahead of that flag's bail-out, deliberately: an ordinary suppressed sublayer edit
         # still moves a real layer in or out of the stack, and this one does not.
@@ -1844,9 +1844,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 self.graph_layers[graph_key] = parent
                 self._graph_layer_target[graph_key] = target
                 # Insert at the top so this graph's layers win over other sublayers already on
-                # the target — e.g. an RBD bake must beat the prim's existing xformOp:transform.
+                # the target -- e.g. an RBD bake must beat the prim's existing xformOp:transform.
                 # Checked rather than unconditional: a freshly minted anon layer's identifier
-                # can still collide with one already sitting in target.subLayerPaths — e.g. a
+                # can still collide with one already sitting in target.subLayerPaths -- e.g. a
                 # stale reference left over from before a reload (anon identifiers are reused
                 # once the process's underlying slot is freed), which USD's Sdf list editor
                 # rejects outright as a duplicate ("Duplicate item ... not allowed for field
@@ -1857,7 +1857,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 prev_target = self._graph_layer_target.get(graph_key)
                 if prev_target and prev_target.identifier != target.identifier:
                     # The resolved Edit Target changed since this graph layer was created (e.g.
-                    # an upstream Edit Target chunk's selection changed) — reparent rather than
+                    # an upstream Edit Target chunk's selection changed) -- reparent rather than
                     # leave it sublayered under a now-stale target.
                     if parent.identifier in prev_target.subLayerPaths:
                         prev_target.subLayerPaths.remove(parent.identifier)
@@ -1885,14 +1885,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
             # If a chunk connection changed after the chunk layer was created, the layer may have been
             # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
-            # Only inspect pl for emptiness right after we've just removed its child above — never as
+            # Only inspect pl for emptiness right after we've just removed its child above -- never as
             # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
             # momentarily empty while it's still being constructed (its own first leaf not yet added).
             #
             # Looks only at the graph layers' own direct sublayers, not the whole composed
             # hierarchy iter_chunk_layers() walks. A chunk leaf layer is only ever inserted as a
             # direct sublayer of a graph layer (add_layer), so those are the only pairs that could
-            # ever match here — the deeper levels of that walk are a chunk layer's own imports
+            # ever match here -- the deeper levels of that walk are a chunk layer's own imports
             # (a Sublayer chunk's files), which are never this layer. The full walk resolves every
             # sublayer path through Sdf.Find on every call, and this runs on every single
             # get_edit_context: it was ~30% of the cost of opening a saved graph.
@@ -2052,7 +2052,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         tracked, regardless of which real layer (session, or an Edit-Target-chosen
         sublayer) each graph layer is actually attached under.
         """
-        # Don't pre-mark g_layer as visited here — _iter_sublayers does that itself as
+        # Don't pre-mark g_layer as visited here -- _iter_sublayers does that itself as
         # its first action, and would otherwise immediately bail (thinking it's already
         # walked) before ever descending into g_layer's own chunk leaf layers.
         visited: set = set()
@@ -2064,8 +2064,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _on_chunk_deleted_notice(self, notice, sender):
         # Remove the chunk's edit layer immediately on delete. The layer is normally freed by
-        # a GC finalizer (add_layer), but a lingering reference — a node/widget or a reference
-        # cycle — can defer collection, leaving the layer and any baked edits (e.g. an RBD
+        # a GC finalizer (add_layer), but a lingering reference -- a node/widget or a reference
+        # cycle -- can defer collection, leaving the layer and any baked edits (e.g. an RBD
         # sim's time samples) composed into the scene. Idempotent with the finalizer.
         get_hash = getattr(sender, "get_hash", None)
         if callable(get_hash):
@@ -2074,7 +2074,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def _chunk_deleted(self, chunk_hash):
         # Retire the chunk before touching any layer. The subLayerPaths edits below fire
         # StageContentsChanged, and a chunk script listening for it (create_layer's and
-        # edit_target's menu-refresh callbacks) re-executes off that notice — landing back in
+        # edit_target's menu-refresh callbacks) re-executes off that notice -- landing back in
         # get_or_create_layer, which would hand this same chunk a BRAND NEW anon layer to
         # replace the one being torn down and sublayer it right back in. Every delete then
         # feeds the next: the leftovers pile up under the graph layer until two of them are
@@ -2139,6 +2139,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.stage.MuteLayer(layer.identifier)
         elif self.is_muted(c) and not c.is_blocked():
             # Only un-mute a disable-muted layer. A view-driven block also mutes the layer, and
-            # this handler runs on EVERY state change (incl. selection) — without the is_blocked
+            # this handler runs on EVERY state change (incl. selection) -- without the is_blocked
             # guard, selecting an out-of-view node would un-mute it and show its output.
             self.stage.UnmuteLayer(layer.identifier)

@@ -45,7 +45,7 @@ def _line(n=8, length=7.0):
 
 
 def _arc(n=24, radius=5.0):
-    """A quarter turn in XY — a curve with real curvature for the frame to cope with."""
+    """A quarter turn in XY -- a curve with real curvature for the frame to cope with."""
     t = np.linspace(0.0, math.pi / 2.0, n)
     return np.stack([np.cos(t) * radius, np.sin(t) * radius, np.zeros(n)], axis=1)
 

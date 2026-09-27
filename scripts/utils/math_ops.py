@@ -87,7 +87,7 @@ _OPS: dict = {
 
 def _clear_connection(param: chunk.ChunkParamBase) -> None:
     """Reset param to its default and drop any USD-level connection. A param hidden by
-    the current operation is no longer meaningful — keeping a stale connection around
+    the current operation is no longer meaningful -- keeping a stale connection around
     would silently reappear (with possibly wrong semantics) if the op is switched back."""
     if param is None:
         return

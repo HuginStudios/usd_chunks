@@ -2,12 +2,12 @@
 
 Two tiers, because the cost of a large graph is not where you would first look for it:
 
-* **Scheduler tier** — 1000 bare propagators wired into a chain, exercising
+* **Scheduler tier** -- 1000 bare propagators wired into a chain, exercising
   `chunk_scheduler` alone (dirty propagation, Kahn sort, solve, depth). No USD, no Qt.
   This is the part people assume is the bottleneck. It is not: it is linear and finishes
   a 1000-node chain in tens of milliseconds.
 
-* **Full-stack tier** — 1000 real `dot` chunks (the cheapest module there is: its
+* **Full-stack tier** -- 1000 real `dot` chunks (the cheapest module there is: its
   `execute` clears its own layer and returns) created through the registry and wired
   through `add_dependency`, so every structural change drags the real USD bookkeeping
   behind it. This is where the time goes, and it does not go there linearly.
@@ -52,7 +52,7 @@ SCALE_TESTS_ENABLED = os.environ.get("USD_CHUNKS_SCALE") == "1"
 
 
 class _ChainNode(ChunkNoticePropagator):
-    """A propagator with nothing but a name — the scheduler tier's unit of work."""
+    """A propagator with nothing but a name -- the scheduler tier's unit of work."""
 
     def __init__(self, name: str):
         super().__init__()
@@ -185,7 +185,7 @@ def reload_chunk_graph(count: int, directory: str) -> list[tuple[str, float]]:
     registry.initialize(fresh, "scale-bench")
     chunk_registry.ChunkLayerManager().initialize(stage)
 
-    # chunk_stage.initialize is what loads the file — it runs load_chunks against the sync's
+    # chunk_stage.initialize is what loads the file -- it runs load_chunks against the sync's
     # own path bookkeeping. Calling load_chunks again afterwards with a fresh set does not
     # measure a second open, it builds a duplicate of every chunk already there.
     load, _ = _time(lambda: chunk_usd_init(stage, fresh))
@@ -205,7 +205,7 @@ def test_scheduler_solves_1000_connected_nodes():
 
     Guards the scheduler against a regression back to the per-path recursive walk it
     replaced, which went exponential on shapes this size. The threshold is deliberately
-    loose — it is there to catch an algorithmic regression, not to police milliseconds on
+    loose -- it is there to catch an algorithmic regression, not to police milliseconds on
     a busy CI box.
     """
     phases = scheduler_phases(NODE_COUNT)
@@ -218,7 +218,7 @@ def _best_of(fn: Callable[[], object], runs: int = 3) -> float:
     """Seconds for the fastest of runs calls to fn.
 
     Noise on a busy machine only ever adds time, never subtracts it, so the fastest
-    sample is the one closest to what the code actually costs — a single timing measures
+    sample is the one closest to what the code actually costs -- a single timing measures
     the box as much as the code.
     """
     return min(_time(fn)[0] for _ in range(runs))
@@ -257,7 +257,7 @@ def test_chunk_graph_builds_1000_connected_nodes():
 
     Guards the fix that made this reachable at all: `reconcile_edit_targets` used to re-run
     over every chunk in the scene on every single wire, making the wiring phase cubic in the
-    node count — 4+ hours at this size. Scoped to the chunks downstream of the new edge it is
+    node count -- 4+ hours at this size. Scoped to the chunks downstream of the new edge it is
     quadratic and measured in seconds.
 
     The threshold is several times the measured time, so it fails on a return to cubic
@@ -277,7 +277,7 @@ def _sweep(counts: list[int], builder: Callable[[int], list[tuple[str, float]]],
     """Run builder at each count and print a phase table plus the fitted growth exponent.
 
     The exponent is a straight log-log slope between the smallest and largest run: 1.0 is
-    linear, 2.0 quadratic, 3.0 cubic. It is the number worth reading — it says whether a
+    linear, 2.0 quadratic, 3.0 cubic. It is the number worth reading -- it says whether a
     phase will survive being asked for ten times as many nodes.
     """
     print(f"\n=== {title} ===")

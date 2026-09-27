@@ -1,10 +1,10 @@
-"""CAD Import chunk — a STEP or IGES assembly read straight into the stage as USD.
+"""CAD Import chunk -- a STEP or IGES assembly read straight into the stage as USD.
 
 The geometry half is OpenCASCADE (`cadquery-ocp`, the OCCT kernel as a binary wheel), read
 through **XCAF** rather than the plain shape reader. That distinction is the whole point of
 this chunk: `STEPControl_Reader` hands back one anonymous blob of B-rep, while
 `STEPCAFControl_Reader` fills a document that still knows the assembly tree, the part names,
-the per-part and per-face colours, and — crucially — *which components are the same part
+the per-part and per-face colours, and -- crucially -- *which components are the same part
 placed twice*. Conversion is the commodity; the structure is what is worth having.
 
 So the four things a converter usually throws away all survive here:
@@ -22,12 +22,12 @@ So the four things a converter usually throws away all survive here:
   different positions and rotations, so their points differ and the digest separates them.
   Catching those needs rigid-transform matching (a rotation-invariant signature, then Kabsch
   against a candidate, then folding the recovered transform into the placement) and is not
-  implemented — on a file exported that way, expect one prototype per occurrence. Note also
+  implemented -- on a file exported that way, expect one prototype per occurrence. Note also
   that direct material binding does not compose inside an instanceable prim: bind through a
   `UsdCollection` (the `collection` chunk) when you need per-instance materials.
 * **Colour, as something you can bind to.** STEP carries a colour per face, not a material.
   Faces are grouped by colour into `GeomSubset`s in the `materialBind` family, so the
-  colours become the handles a material library binds against — the shiny-black region of a
+  colours become the handles a material library binds against -- the shiny-black region of a
   part is already a subset waiting for a MaterialX surface. `displayColor` is authored too
   (constant when the part is one colour, `uniform` when it is not) so it looks right before
   anyone binds anything.
@@ -43,7 +43,7 @@ So the four things a converter usually throws away all survive here:
 
 **Points are deliberately not welded across face boundaries.** Each B-rep face contributes
 its own vertices, so a renderer computing normals averages them *within* a face and creases
-*between* faces. That is exactly the CAD look — smooth cylinders, sharp edges — for free,
+*between* faces. That is exactly the CAD look -- smooth cylinders, sharp edges -- for free,
 with no authored normals to go stale. `subdivisionScheme` is set to `none` for the same
 reason: the default would round every hard edge off.
 
@@ -118,7 +118,7 @@ _GF = (
 #: because it is the same XCAF reader underneath.
 _EXTENSIONS = [".step", ".stp", ".STEP", ".STP", ".iges", ".igs", ".IGES", ".IGS"]
 
-#: Tessellated scenes, keyed by the chunk layer's identifier. See `_fingerprint` — only the
+#: Tessellated scenes, keyed by the chunk layer's identifier. See `_fingerprint` -- only the
 #: file and the meshing params are in the key, so the cheap params re-author without
 #: re-meshing.
 _CACHE: dict = {}
@@ -202,14 +202,14 @@ def _label_name(label) -> str:
 
 
 def _label_entry(label) -> str:
-    """The label's `0:1:1:3`-style document path — a stable identity for a prototype."""
+    """The label's `0:1:1:3`-style document path -- a stable identity for a prototype."""
     entry = TCollection_AsciiString()
     TDF_Tool.Entry_s(label, entry)
     return entry.ToCString()
 
 
 def _shape_color(color_tool, shape) -> tuple | None:
-    """The colour attached to a `TopoDS_Shape` — a solid, a face, or a whole part."""
+    """The colour attached to a `TopoDS_Shape` -- a solid, a face, or a whole part."""
     col = Quantity_Color()
     for ctype in _COLOR_TYPES:
         if color_tool.GetColor(shape, ctype, col):
@@ -235,7 +235,7 @@ def _coloured_faces(color_tool, shape, fallback):
     """Yield every face of *shape* with the colour that applies to it.
 
     STEP hangs colour wherever the exporting CAD package felt like it, and on a real
-    assembly that is usually the **solid**, not the face — which is why looking only at
+    assembly that is usually the **solid**, not the face -- which is why looking only at
     faces finds nothing on a file that plainly has a dozen colours in it. So solids are
     walked first and each one's colour becomes the fallback for its own faces, with a face's
     own colour still winning where it has one. The second pass picks up faces that belong to
@@ -298,8 +298,8 @@ def _open_document(path: str):
         reader = IGESCAFControl_Reader()
     else:
         reader = STEPCAFControl_Reader()
-        # Metres out, whatever the file declares in, so everything downstream — the absolute
-        # deflection included — is in one known unit. This has to come *after* the reader is
+        # Metres out, whatever the file declares in, so everything downstream -- the absolute
+        # deflection included -- is in one known unit. This has to come *after* the reader is
         # constructed: the static does not exist until the STEP reader's class initialises,
         # and setting it before returns False and silently leaves the default of millimetres.
         Interface_Static.SetCVal_s("xstep.cascade.unit", "M")
@@ -548,7 +548,7 @@ def prototype_scope(stage, path: Sdf.Path):
 
 
 def _author_proto(stage, path: Sdf.Path, proto: _Proto, scale: float, texture_size: float = 0.0) -> None:
-    """One Xform holding one Mesh — the shared half of every placement.
+    """One Xform holding one Mesh -- the shared half of every placement.
 
     An ordinary `def`, not a `class`. A class prim is the traditional way to hold something
     meant only to be referenced, but everything beneath one is abstract, and abstract prims
@@ -619,7 +619,7 @@ def _author_node(stage, parent: Sdf.Path, node: _Node, proto_paths: list, settin
         prim.GetReferences().AddInternalReference(proto_paths[node.proto])
         counters["parts"] += 1
         # Instancing only earns its keep where the part is placed more than once, and it
-        # costs the ability to override anything inside — including the per-placement colour
+        # costs the ability to override anything inside -- including the per-placement colour
         # a component label may carry.
         shared = counters["uses"][node.proto] > 1
         if settings_instanceable and shared and node.color is None:

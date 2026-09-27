@@ -1,5 +1,5 @@
-"""Tests that set_variant.py and variant.py — the two variant-authoring chunks that edit
-EXISTING/overridable prims rather than define a single new one — apply across every prim
+"""Tests that set_variant.py and variant.py -- the two variant-authoring chunks that edit
+EXISTING/overridable prims rather than define a single new one -- apply across every prim
 matched by a Houdini-style glob or %name collection reference, not just one literal path.
 """
 from __future__ import annotations
@@ -94,12 +94,12 @@ class TestSetVariantPatternTargeting:
         return c
 
     def test_set_variant_applies_selection_to_every_matched_prim(self, scene):
-        # Author the LOD variant set (no selection yet) directly in the session layer —
+        # Author the LOD variant set (no selection yet) directly in the session layer --
         # deliberately not via the Add Variants chunk, so this test isn't entangled with
         # cross-chunk layer-strength ordering (unrelated to what's being verified here:
         # that Set Variant loops over every prim matched by its own pattern). Leaving the
         # selection unset avoids relying on the chunk layer out-competing a stronger,
-        # pre-existing selection opinion elsewhere in the layer stack — the session layer
+        # pre-existing selection opinion elsewhere in the layer stack -- the session layer
         # is always stronger than a chunk's own anonymous layer, same as the root layer
         # outranks its sublayers, so this test only asserts what the chunk itself authors.
         stage = scene.get_stage()

@@ -6,7 +6,7 @@ import pytest
 from usd_chunks.chunk_registry import ChunkLayerManager
 
 # Qt widget tests (test_chunk_pin.py, test_filter_bar.py, ...) instantiate real
-# ChunkWidget/QMainWindow objects via the qapp fixture below — without forcing Qt's
+# ChunkWidget/QMainWindow objects via the qapp fixture below -- without forcing Qt's
 # built-in offscreen platform plugin first, each one flashes a real, visible window on
 # screen for the duration of the test run. Must be set before QApplication is ever
 # constructed (Qt reads QT_QPA_PLATFORM at that point), so set it at import time here

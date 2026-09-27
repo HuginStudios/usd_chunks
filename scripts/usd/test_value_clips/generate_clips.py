@@ -15,7 +15,7 @@ import os
 CLIP_DIR = os.path.join(os.path.dirname(__file__), "clips")
 NUM_FRAMES = 10
 
-# Base cube points — bottom 4, then top 4
+# Base cube points -- bottom 4, then top 4
 BOTTOM_Y = -0.5
 START_TOP_Y = 0.5
 END_TOP_Y = 3.0

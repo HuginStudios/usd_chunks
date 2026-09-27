@@ -1,4 +1,4 @@
-"""Reset Transform chunk — clears authored transform ops on the selected prim(s).
+"""Reset Transform chunk -- clears authored transform ops on the selected prim(s).
 
 Requires: pxr (OpenUSD), usd_chunks.
 """

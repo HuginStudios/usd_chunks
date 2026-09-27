@@ -1,4 +1,4 @@
-"""Vine chunk — grows climbing vines across a painted region of a mesh.
+"""Vine chunk -- grows climbing vines across a painted region of a mesh.
 
 Pairs with Scatter Brush. Paint where you want vines, wire the brush's **Density Field** into
 this chunk's, and a vine network grows there and nowhere else. Wire the brush's **Painted
@@ -11,19 +11,19 @@ of **attractors**; every growing node steps toward the average direction of the 
 consider it their nearest node, and an attractor is consumed once a node comes within the kill
 distance. That is why painting is the whole interface: the paint *is* the attractor cloud, so
 the vines fill exactly what was painted, branch where the region forks, and stop when it is
-covered — none of which a "grow N metres of vine" parameter can do.
+covered -- none of which a "grow N metres of vine" parameter can do.
 
 Three forces are added to that pull, after Luft's *An Ivy Generator* (2007), which is the other
 half of the pedigree here: **momentum** (a vine does not turn on the spot), **climb** (an
 up-vector standing in for phototropism), and **wander**. Every direction is then flattened into
 the surface's tangent plane and the new node re-projected onto the mesh, which is this chunk's
-one departure from both papers — an ivy that leaves the wall is a different tool.
+one departure from both papers -- an ivy that leaves the wall is a different tool.
 
 Output is two prims under one Scope:
 
-* ``Curves`` — a ``BasisCurves`` of the vines, tapered by the pipe model (a fork is thicker
+* ``Curves`` -- a ``BasisCurves`` of the vines, tapered by the pipe model (a fork is thicker
   than either branch leaving it), ready to render with a curve shader.
-* ``Leaves`` — a ``Points`` cloud with a surface normal per point, which is deliberately the
+* ``Leaves`` -- a ``Points`` cloud with a surface normal per point, which is deliberately the
   same shape a Scatter Brush publishes. Wire it into a **Scatter Points** chunk's *Painted
   Points* input and its prototypes are instanced along the vine, laid flat on the wall. Leaf
   geometry is somebody's asset, not something to generate.
@@ -58,8 +58,8 @@ _FORMS = ["Smooth", "Linear"]
 #: This sits where a vine stops looking like a random walk and still goes where it is sent.
 _MOMENTUM = 0.6
 
-#: Pipe-model exponent. Two is da Vinci's rule — a branch's cross-section equals the sum of its
-#: children's — which is the thinnest-looking of the usual choices and the right end for a vine,
+#: Pipe-model exponent. Two is da Vinci's rule -- a branch's cross-section equals the sum of its
+#: children's -- which is the thinnest-looking of the usual choices and the right end for a vine,
 #: whose whole character is that it barely thickens.
 _PIPE_EXPONENT = 2.0
 
@@ -86,8 +86,8 @@ class _Surface:
     Python object per face costs more than every query it goes on to answer.
 
     The weights are held *per corner* rather than per face so the edge of a stroke can be
-    interpolated. Per face would put the boundary on face lines — the blocky edge the brush's
-    own docstring warns about — and a vine, unlike a scattered instance, follows that edge
+    interpolated. Per face would put the boundary on face lines -- the blocky edge the brush's
+    own docstring warns about -- and a vine, unlike a scattered instance, follows that edge
     visibly along its whole length.
     """
 
@@ -113,7 +113,7 @@ class _Surface:
     def painted(self):
         """Only the triangles the paint reaches, as a new surface.
 
-        Everything downstream — sampling, the projection grid, the bounds Auto Step measures —
+        Everything downstream -- sampling, the projection grid, the bounds Auto Step measures --
         then works on the painted region rather than on the whole asset. On a rock with one
         patch painted that is the difference between queries against 680k triangles and queries
         against a few hundred.
@@ -135,7 +135,7 @@ class _Surface:
         return low, high
 
     def diagonal(self):
-        """The diagonal of those bounds — what Auto Step is measured against."""
+        """The diagonal of those bounds -- what Auto Step is measured against."""
         found = self.bounds()
         return float(np.linalg.norm(found[1] - found[0])) if found else 0.0
 
@@ -150,7 +150,7 @@ def _world_points(prim, points):
 def _fan_triangulate(counts, indices):
     """Fan-triangulate every face at once: three index arrays, or None when there are no faces.
 
-    The fan a per-face loop would walk — (v0, vi, vi+1) for i in 1..count-2 — as index
+    The fan a per-face loop would walk -- (v0, vi, vi+1) for i in 1..count-2 -- as index
     arithmetic, so USD's flat face buffers are never unpacked one face at a time.
     """
     if not len(counts):
@@ -172,7 +172,7 @@ def _vertex_weights(prim, count, primvar_name):
 
     All-ones for the *unwired* case: a Vine with nothing connected grows over the surface it was
     pointed at, which is what a chunk with no brush attached should visibly do. A
-    wired-but-unpainted brush is the other case entirely — the primvar exists and is zero, and
+    wired-but-unpainted brush is the other case entirely -- the primvar exists and is zero, and
     nothing grows. That difference is the whole reason the field is a wire rather than a
     convention, and Scatter Points draws the same line.
     """
@@ -200,12 +200,12 @@ def _face_outward(mesh, prim, normals, fan, point_count):
     """Point the winding normals the way the mesh says its outside is. Edits `normals` in place.
 
     Which side of a face is "out" decides which way a vine is lifted, and a vine lifted the
-    wrong way is *inside* the wall — measured on a sphere wound inwards, the tube sat a full
+    wrong way is *inside* the wall -- measured on a sphere wound inwards, the tube sat a full
     radius under the surface and drew as nothing. A cross product cannot tell on its own: it
     reports the winding, and the winding is only outward by convention.
 
-    So the two things USD does say are used. `orientation` is normative — leftHanded means the
-    winding runs the other way — and authored normals are the artist saying it outright, which
+    So the two things USD does say are used. `orientation` is normative -- leftHanded means the
+    winding runs the other way -- and authored normals are the artist saying it outright, which
     beats any convention. Only vertex-length normals are read; face-varying ones would have to
     be unpacked through the same fan and are not worth it to answer a yes/no question.
 
@@ -229,7 +229,7 @@ def _collect_surface(prim, primvar_name):
     """Every mesh under `prim` as one world-space triangle set, carrying the paint per corner.
 
     A hierarchy, not a mesh: what a user picks as "the surface" is almost never a single Mesh,
-    and the brush already learned that lesson the hard way — see its `_paint_meshes`.
+    and the brush already learned that lesson the hard way -- see its `_paint_meshes`.
     """
     if not prim or not prim.IsValid():
         return _Surface.empty()
@@ -279,7 +279,7 @@ def _sample(surface, count, rng, weighted):
     """`count` points scattered over the surface: positions, normals, weights, triangle ids.
 
     `weighted` picks triangles in proportion to area *and* paint, which is what attractors want;
-    without it the choice is area alone, which is what the projection set wants — it has to
+    without it the choice is area alone, which is what the projection set wants -- it has to
     cover the region evenly however faintly a part of it was painted.
     """
     if count <= 0 or not len(surface):
@@ -294,7 +294,7 @@ def _sample(surface, count, rng, weighted):
     idx = rng.choice(len(surface), size=int(count), p=strength / total)
     u = rng.random(len(idx))
     v = rng.random(len(idx))
-    # Fold the far half of the unit square back over the diagonal — the standard uniform
+    # Fold the far half of the unit square back over the diagonal -- the standard uniform
     # barycentric sample, and one array pass rather than a rejection loop.
     fold = (u + v) > 1.0
     u[fold] = 1.0 - u[fold]
@@ -316,7 +316,7 @@ def _no_samples():
     )
 
 
-#: Cell ids are packed into one integer — `(x * S + y) * S + z` — so a cell groups with
+#: Cell ids are packed into one integer -- `(x * S + y) * S + z` -- so a cell groups with
 #: np.unique and looks up without a tuple being built per query. The packing is linear, so a
 #: neighbour's id is this cell's plus a constant.
 _KEY_STRIDE = 1 << 20
@@ -340,7 +340,7 @@ class _PointGrid:
     """Nearest-point lookup over a uniform cell hash.
 
     Every node the growth places has to be put back onto the mesh, and doing that against the
-    whole triangle set is O(faces) per node — on a scan, the entire cook. So the surface is
+    whole triangle set is O(faces) per node -- on a scan, the entire cook. So the surface is
     sampled once, the samples are bucketed here, and a projection asks this for the handful of
     samples nearby and then does exact triangle maths on only their faces.
     """
@@ -396,7 +396,7 @@ def _closest_on_triangles(point, v0, v1, v2):
     Shapes broadcast, which is what lets a whole growth iteration be answered in one call. One
     point against M triangles is `(3,)` and `(M, 3)`; Q points against K candidates each is
     `(Q, 1, 3)` and `(Q, K, 3)`. Per-call numpy overhead was 310us against a median of 21
-    triangles — the arithmetic was never the cost, the three thousand calls were.
+    triangles -- the arithmetic was never the cost, the three thousand calls were.
     """
     ab = v1 - v0
     ac = v2 - v0
@@ -452,7 +452,7 @@ class _Projector:
     Two stages, because neither alone is affordable. The grid narrows tens of thousands of
     triangles down to the few whose neighbourhood the point is in; `_closest_on_triangles` then
     answers exactly for those, so the result is a genuine closest point rather than the nearest
-    sample. A node landing where no sample is — off the edge of the paint, usually — is left
+    sample. A node landing where no sample is -- off the edge of the paint, usually -- is left
     where it is and reports no normal, and the growth reads that as "stop".
     """
 
@@ -482,7 +482,7 @@ class _Projector:
         """Put a whole batch back on the skin: (positions, normals, found).
 
         One call per growth iteration instead of one per node. The arithmetic was never the
-        cost — a median query tests 21 triangles — but at 310us of numpy call overhead apiece,
+        cost -- a median query tests 21 triangles -- but at 310us of numpy call overhead apiece,
         three thousand of them were most of the cook.
 
         Rows are padded out to the widest candidate list by repeating a candidate that is
@@ -539,7 +539,7 @@ class _Nodes:
     The three vectors live in one growing (N, 3) buffer each rather than in a list of little
     arrays, so a whole iteration's worth of nodes can be read and written by fancy indexing.
     `nodes.position[some_indices]` was `np.asarray([nodes.position[i] for i in ...])`, once per
-    iteration over every attractor still pulling — a list comprehension in the hot loop.
+    iteration over every attractor still pulling -- a list comprehension in the hot loop.
     `position`, `normal` and `direction` are views of the filled part, so indexed writes into
     them (the lift does one) land in the buffer.
     """
@@ -610,7 +610,7 @@ def _tangent(direction, normal, rng):
 
     A direction pointing straight into or out of the wall has no tangent, which happens on a
     root whose only pull is the climb vector and whose wall faces up. Rather than stall, it
-    picks a tangent at random — one vine out of a hundred starts in an arbitrary direction,
+    picks a tangent at random -- one vine out of a hundred starts in an arbitrary direction,
     which is indistinguishable from wander.
     """
     if normal is not None:
@@ -652,8 +652,8 @@ def _choose_roots(points, up, count, spacing):
     """Which attractors vines start from when nobody painted the roots by hand.
 
     Lowest first, then spread: a vine that starts at the bottom of what was painted and climbs
-    is the picture people have of ivy, and starting them all in one corner — which picking at
-    random cheerfully does — reads as one vine, not five. Spacing is relaxed rather than
+    is the picture people have of ivy, and starting them all in one corner -- which picking at
+    random cheerfully does -- reads as one vine, not five. Spacing is relaxed rather than
     enforced, so a narrow painted strip still gets the roots it was asked for.
 
     Indices, not positions, so the caller can take the normal it already sampled alongside each
@@ -685,7 +685,7 @@ def _grow(roots, attractors, projector, settings, rng):
 
     The nearest-node bookkeeping is kept incrementally rather than recomputed. Attractors never
     move and nodes are only ever added, so the distance from every attractor to the handful of
-    nodes born this iteration is the only thing that can change the answer — an (A, new) matrix
+    nodes born this iteration is the only thing that can change the answer -- an (A, new) matrix
     per iteration instead of an (A, N) one, which is what makes a few thousand of each a second
     rather than a minute.
     """
@@ -782,7 +782,7 @@ def _prune(nodes, min_length):
 
     Raw colonization is hairy. Every node that briefly had an attractor to itself sprouts a
     two-point stub, and on the wall this was first run against, half of the 245 branches were
-    two or three points long — which draws as fuzz on a vine rather than as a vine.
+    two or three points long -- which draws as fuzz on a vine rather than as a vine.
 
     A branch's *continuation* is never pruned however short it gets, so a vine still tapers to
     a tip; it is only the side shoots that have to earn their place. Pruning cascades, because a
@@ -855,7 +855,7 @@ def _subtree_depth(nodes, kids):
     """How many nodes the longest chain below each node runs to.
 
     Bottom-up in one reversed pass, which works only because a node's index always exceeds its
-    parent's — see `_Nodes`.
+    parent's -- see `_Nodes`.
     """
     depth = [1] * len(nodes)
     for index in range(len(nodes) - 1, -1, -1):
@@ -867,7 +867,7 @@ def _subtree_depth(nodes, kids):
 def _strands(nodes):
     """The skeleton as a list of index chains, one per curve.
 
-    At a fork the longest child continues the strand and the others start their own — the usual
+    At a fork the longest child continues the strand and the others start their own -- the usual
     decomposition, and the one that matters here: continuing into the *first* child instead
     breaks a vine into stubs wherever a side shoot happens to have been created first, and a
     curve renderer draws every break.
@@ -898,7 +898,7 @@ def _radii(nodes, base, tip):
     """A radius per node: the pipe model's *profile*, stretched to fit Thickness and Taper.
 
     The pipe model on its own gives a shape, not a size. A vine only thickens where it forks, so
-    a chain of a hundred nodes carrying two branches comes out barely wider than its own tip —
+    a chain of a hundred nodes carrying two branches comes out barely wider than its own tip --
     which meant Thickness, read as an absolute width and clamped to, did nothing at all on most
     vines. It sat at a figure the growth never reached.
 
@@ -931,7 +931,7 @@ def _smooth_nodes(nodes, strands, passes):
     because the correction it applies is a fraction of the step and has nothing to do with how
     fat the tube is.
 
-    A fork node belongs to two strands — it ends one and begins the next — but `_smooth` pins
+    A fork node belongs to two strands -- it ends one and begins the next -- but `_smooth` pins
     the ends it is given, so the second pass over it never moves it.
     """
     if passes <= 0:
@@ -976,7 +976,7 @@ def _pin(points, widths):
     """Repeat both ends so a cubic B-spline actually reaches them.
 
     A B-spline stays inside its hull, so an unpinned vine starts and stops a segment short of
-    where it grew — most visible at the root, which lifts off the ground. Tripling the end
+    where it grew -- most visible at the root, which lifts off the ground. Tripling the end
     control points is the standard fix and costs four vertices a curve.
     """
     points = np.concatenate((points[:1], points[:1], points, points[-1:], points[-1:]))
@@ -992,8 +992,8 @@ def _pin(points, widths):
 def _leaf_points(strands, positions, normals, radii, spacing):
     """Points along the vines at a fixed arc-length spacing, with the surface normal at each.
 
-    Deliberately the same shape a Scatter Brush's Painted Points output has — position plus
-    normal — so a Scatter Points chunk instances leaves along a vine with the code it already
+    Deliberately the same shape a Scatter Brush's Painted Points output has -- position plus
+    normal -- so a Scatter Points chunk instances leaves along a vine with the code it already
     has, rather than this chunk growing leaf geometry nobody asked it for.
 
     Offset outward by the local radius so a leaf sits *on* the vine instead of inside it.
@@ -1035,7 +1035,7 @@ def _settings(node, surface):
 
     So the growth distances (influence, kill) are multiples of Step, which is the space
     colonization papers' own convention and genuinely is about resolution; and every visible
-    size — width, lift off the wall, leaf spacing — hangs off Thickness, which is a share of
+    size -- width, lift off the wall, leaf spacing -- hangs off Thickness, which is a share of
     the painted region. Changing Step now changes how smoothly a vine curves and nothing else.
     """
     def number(name):
@@ -1051,7 +1051,7 @@ def _settings(node, surface):
     step = max(step, 1e-6)
 
     # A percentage of the painted region, so it means the same on a doorway and on a cliff
-    # face. One percent is a 5cm stem across a 5m wall — a mature ivy, and legible in a
+    # face. One percent is a 5cm stem across a 5m wall -- a mature ivy, and legible in a
     # viewport, which the botanically honest figure is not.
     base_width = max(region * number("thickness") / 100.0, 1e-9)
 
@@ -1081,7 +1081,7 @@ def _painted_roots(stage, points_path, projector):
     """Roots the brush placed by hand, projected onto the surface.
 
     A dab lands on the skin already, but the brush records where the *cursor* hit and this
-    chunk's idea of the surface is a sampled reconstruction of it — so they are reconciled here
+    chunk's idea of the surface is a sampled reconstruction of it -- so they are reconciled here
     rather than trusted to agree. A dab outside the painted region has nowhere to grow and is
     dropped, which is the same rule the growth itself follows.
     """
@@ -1106,7 +1106,7 @@ def _attractor_count(surface, settings):
 
     Derived from its area and the kill distance rather than typed: an attractor's only job is to
     be consumed, so the number that matters is how many fit in the region at the spacing the
-    kill distance sets. Density then scales that — a quarter of the natural figure leaves gaps
+    kill distance sets. Density then scales that -- a quarter of the natural figure leaves gaps
     between the vines, four times it packs them.
     """
     area = float((surface.area * (surface.w0 + surface.w1 + surface.w2) / 3.0).sum())
@@ -1198,7 +1198,7 @@ def execute(node):
     if not roots:
         # Spread across the painted region, not merely out of each other's reach. Spacing them
         # by the influence radius put all eight roots of a boulder in its lowest few
-        # centimetres, and a vine cannot jump from there to the far side of the paint — so one
+        # centimetres, and a vine cannot jump from there to the far side of the paint -- so one
         # half grew and the other stayed bare. Sharing the region out between them is what
         # "five vines" is asking for.
         spread = max(settings["influence"], surface.diagonal() / (settings["roots"] + 1))
@@ -1216,7 +1216,7 @@ def execute(node):
         _bail(node, stage, layer, where, "nothing grew — try a larger Influence or more Density")
         return
 
-    # Smooth, put back on the surface, then lift — in that order, so every control point ends
+    # Smooth, put back on the surface, then lift -- in that order, so every control point ends
     # up exactly its own radius off the skin. Widths come first because the lift is measured in
     # radii; see `_lift`.
     radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
@@ -1250,7 +1250,7 @@ def _bail(node, stage, layer, where, message):
 
     Empty, but present. A cook that authored nothing left the Vine Curves and Leaf Points
     outputs pointing at prims that did not exist, so anything wired downstream resolved to
-    nothing at all rather than to an empty result — and un-painting a surface would break the
+    nothing at all rather than to an empty result -- and un-painting a surface would break the
     graph below it rather than emptying it.
     """
     with Usd.EditContext(stage, layer):
@@ -1306,7 +1306,7 @@ def _author_leaves(stage, path, leaves, settings, node):
     """The leaf cloud, in the shape Scatter Points already reads.
 
     Authored even when it is empty, so the Leaf Points output resolves to a real prim the moment
-    the chunk exists — the same reason the brush publishes its points path before anything has
+    the chunk exists -- the same reason the brush publishes its points path before anything has
     been painted. Wiring an output is how you decide to use it; it cannot require having used it.
     """
     points, normals = leaves
@@ -1363,7 +1363,7 @@ _GF = (
 def _sync_params(node):
     """Hide the controls that cannot affect the result as things are wired.
 
-    A control that does nothing is worse than an absent one — it invites you to reach for it
+    A control that does nothing is worse than an absent one -- it invites you to reach for it
     when something looks wrong. Scatter Points hides its distribution settings the moment a
     painted cloud is wired in, for the same reason and by the same rule.
     """
@@ -1712,7 +1712,7 @@ def main():
 
 
 def _collapsed(group):
-    """Collapse a group by default — the chunk is tall, and growth is what people reach for."""
+    """Collapse a group by default -- the chunk is tall, and growth is what people reach for."""
     group.set_state(chunk.ChunkFlags.State.COLLAPSED)
     return group
 

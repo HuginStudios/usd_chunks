@@ -1,4 +1,4 @@
-"""Wedge — one network, N variants, reproducible from the file.
+"""Wedge -- one network, N variants, reproducible from the file.
 
 A chunk network produces one result. A wedge turns it into a family of them: each row of
 the Ranges list lofts an OUTPUT param -- a *range* -- and cooking at `current_index` picks

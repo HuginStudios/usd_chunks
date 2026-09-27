@@ -54,7 +54,7 @@ def _resolve_clip_path(stage: Usd.Stage, path_str: str) -> str:
         cleaned = cleaned[5:]
         while cleaned.startswith("/") and len(cleaned) > 1 and cleaned[1] == "/":
             cleaned = cleaned[1:]
-        # On Windows, file:///C:/... becomes /C:/... — strip leading /
+        # On Windows, file:///C:/... becomes /C:/... -- strip leading /
         if len(cleaned) > 2 and cleaned[0] == "/" and cleaned[2] == ":":
             cleaned = cleaned[1:]
 

@@ -1,4 +1,4 @@
-"""URDF to USD — a robot described in ROS, authored as UsdPhysics.
+"""URDF to USD -- a robot described in ROS, authored as UsdPhysics.
 
 URDF is how nearly every robot is actually distributed: the LeRobot SO-101, every ROS arm,
 most of what a robotics team already owns. USD is where it has to end up to be composed,

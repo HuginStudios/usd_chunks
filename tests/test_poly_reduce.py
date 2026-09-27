@@ -1,8 +1,8 @@
 """Poly Reduce: the parts a reducer is actually judged on.
 
 Getting a triangle count down is the easy half. What separates a usable reducer from a
-destructive one is what survives the collapse — the silhouette, the UV layout, the
-material assignment — and whether running it twice does the same thing as running it once.
+destructive one is what survives the collapse -- the silhouette, the UV layout, the
+material assignment -- and whether running it twice does the same thing as running it once.
 Those are what these pin.
 """
 
@@ -189,7 +189,7 @@ def test_planar_only_flattens_a_flat_sheet_and_leaves_a_curved_one_alone() -> No
 
 @needs_simplify
 def test_locking_the_boundary_keeps_the_outline_where_it_was() -> None:
-    """An open sheet — a leaf card, a piece of cloth — reduced without this can lose its
+    """An open sheet -- a leaf card, a piece of cloth -- reduced without this can lose its
     silhouette from the edges inward, which reads as the asset shrinking."""
     points, counts, indices = _grid(40, lambda x, y: 0.2 * np.sin(4 * x))
     triangles, corners, _ = pr.fan_triangulate(counts, indices)
@@ -205,8 +205,8 @@ def test_locking_the_boundary_keeps_the_outline_where_it_was() -> None:
 @needs_simplify
 def test_a_weld_key_stops_collapses_from_crossing_it() -> None:
     """The single mechanism behind both UV-seam and material preservation: corners on
-    opposite sides of a key boundary become separate vertices, so no edge — and therefore
-    no collapse — ever spans them."""
+    opposite sides of a key boundary become separate vertices, so no edge -- and therefore
+    no collapse -- ever spans them."""
     points, counts, indices = _grid(30)
     triangles, corners, _ = pr.fan_triangulate(counts, indices)
     # Split the sheet down the middle: every corner is labelled by which half its own face
@@ -269,7 +269,7 @@ def test_cooking_twice_reduces_the_same_input_twice_not_the_previous_result(wire
 
 @needs_simplify
 def test_disabling_the_chunk_gives_the_full_resolution_mesh_back(wired) -> None:
-    """The reduction lives in the chunk's own layer and nowhere else — that is what makes
+    """The reduction lives in the chunk's own layer and nowhere else -- that is what makes
     it a non-destructive modelling op rather than an export step."""
     stage, make = wired
     points, counts, indices = _grid(30)
@@ -287,7 +287,7 @@ def test_disabling_the_chunk_gives_the_full_resolution_mesh_back(wired) -> None:
 @needs_simplify
 def test_uvs_survive_the_reduction_with_their_seam_intact(wired) -> None:
     """A faceVarying `st` comes back as a vertex primvar of the right length, and both
-    sides of a hard seam are still represented — a reducer that welded across the seam
+    sides of a hard seam are still represented -- a reducer that welded across the seam
     would leave only one of them, and the texture would smear across the join."""
     stage, make = wired
     points, counts, indices = _grid(30)
@@ -318,7 +318,7 @@ def test_uvs_survive_the_reduction_with_their_seam_intact(wired) -> None:
 @needs_simplify
 def test_geom_subsets_still_partition_the_reduced_faces(wired) -> None:
     """Materials are assigned per face. Reduce a two-material mesh without rewriting the
-    subsets and every face index points at a different triangle than it used to — the
+    subsets and every face index points at a different triangle than it used to -- the
     materials end up scattered across the asset."""
     stage, make = wired
     points, counts, indices = _grid(30)
@@ -351,7 +351,7 @@ def test_geom_subsets_still_partition_the_reduced_faces(wired) -> None:
 def test_what_cannot_survive_the_new_topology_is_blocked_rather_than_left_stale(wired) -> None:
     """A uniform primvar is one value per face and authored normals describe the old
     surface. Leaving either behind gives an array whose length no longer matches the
-    mesh — which renderers handle by ignoring the mesh, or by crashing."""
+    mesh -- which renderers handle by ignoring the mesh, or by crashing."""
     stage, make = wired
     points, counts, indices = _grid(30)
     mesh = _define_mesh(stage, "/Mesh", points, counts, indices)
@@ -477,7 +477,7 @@ def test_labelling_components_separately_partitions_rows_the_same_way() -> None:
 
 def test_a_key_too_wide_to_pack_falls_back_instead_of_wrapping_around() -> None:
     """Packing labels into one int64 is what makes the weld fast. Silently overflowing it
-    would merge unrelated corners — vertices welded across a seam they should never cross."""
+    would merge unrelated corners -- vertices welded across a seam they should never cross."""
     wide = np.array([0, 1 << 40, 2 << 40], dtype=np.int64)
 
     assert pr._pack_key([wide, wide, wide]) is None
@@ -495,7 +495,7 @@ def test_the_derived_mapping_agrees_with_the_decimation_it_describes() -> None:
     reduced vertex the decimator actually produced. It is derived from the collapse pairs
     rather than obtained from the library, because the library's own replay helper deletes
     isolated points one at a time in a Python loop and goes quadratic (see
-    `collapse_mapping`) — this pins that the cheap derivation is also the correct one."""
+    `collapse_mapping`) -- this pins that the cheap derivation is also the correct one."""
     points, counts, indices = _sphere(30, 30)
     triangles, corners, _ = pr.fan_triangulate(counts, indices)
 
@@ -540,7 +540,7 @@ def _live_module():
     """The module copy the registry actually loaded and calls `execute` on.
 
     Importing `scripts.modelling.poly_reduce` gives a *second*, independent copy under a
-    different `sys.modules` key — with its own `_LAST_COOK` — so a test about cook state
+    different `sys.modules` key -- with its own `_LAST_COOK` -- so a test about cook state
     has to reach the registry's one.
     """
     return chunk_registry.ChunkRegistry().get_chunk_module("poly_reduce").module
@@ -548,7 +548,7 @@ def _live_module():
 
 @needs_simplify
 def test_an_unchanged_recook_does_not_redo_the_reduction(wired) -> None:
-    """The graph re-runs a chunk's execute far more often than its inputs change — a view
+    """The graph re-runs a chunk's execute far more often than its inputs change -- a view
     switch, a new node, a fresh wire all trigger a view-driven recook of the whole upstream
     tree. Live-reported as usdview freezing on unrelated edits, because a 4M-triangle
     reduction is 40s and was being redone every time. Proven here by tampering with the
@@ -573,7 +573,7 @@ def test_an_unchanged_recook_does_not_redo_the_reduction(wired) -> None:
 
 @needs_simplify
 def test_a_changed_setting_still_recooks(wired) -> None:
-    """The other half of the same guard — skipping work must never outlive the reason for
+    """The other half of the same guard -- skipping work must never outlive the reason for
     skipping it."""
     stage, make = wired
     points, counts, indices = _grid(30)
@@ -658,7 +658,7 @@ def test_a_cook_never_publishes_subsets_that_outrun_the_topology(wired) -> None:
         Geom subset index 2107245 is larger than number of faces (1044205), removing.
 
     Every `Set()` publishes its own change notice, so writing the new topology first and
-    the rewritten subset indices last left a window where the two disagreed — and a subset
+    the rewritten subset indices last left a window where the two disagreed -- and a subset
     indexing past the face list is not stale, it is invalid, so Hydra discards it. The
     final state was always right, which is why it only ever showed up as noise. Watching
     every intermediate state is the only way to catch it."""
@@ -689,7 +689,7 @@ def test_a_cook_never_publishes_subsets_that_outrun_the_topology(wired) -> None:
 @needs_simplify
 def test_a_mesh_whose_subsets_cannot_be_rewritten_is_left_alone(monkeypatch) -> None:
     """The permanent version of the same fault. If the collapse history ever fails to
-    resolve, the subsets cannot be remapped — and authoring the reduced topology anyway
+    resolve, the subsets cannot be remapped -- and authoring the reduced topology anyway
     would leave them out of range for good. Not reducing is the lesser failure: visibly
     un-reduced beats quietly missing its materials."""
     stage = Usd.Stage.CreateInMemory()
@@ -713,7 +713,7 @@ def test_a_mesh_whose_subsets_cannot_be_rewritten_is_left_alone(monkeypatch) -> 
 def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
     """The skip-a-recook check is almost entirely the cost of checksumming the geometry,
     and almost every time it confirms nothing moved. VtArray is copy-on-write, so an
-    unchanged attribute hands back the same buffer — a matching address is proof enough,
+    unchanged attribute hands back the same buffer -- a matching address is proof enough,
     and holding the array we signed is what keeps that sound (nothing else can be allocated
     at an address we still own)."""
     stage = Usd.Stage.CreateInMemory()
@@ -731,5 +731,5 @@ def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
     attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(moved, dtype=np.float32)))
     third: dict = {}
 
-    # Same length, same dtype, different contents — the signature has to move with them.
+    # Same length, same dtype, different contents -- the signature has to move with them.
     assert pr._checksum(attr.Get(), first, third) != signature

@@ -1,5 +1,5 @@
 """
-usdchunks CLI — headless execution of chunk networks serialized as .usda files.
+usdchunks CLI -- headless execution of chunk networks serialized as .usda files.
 
 Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]
@@ -426,7 +426,7 @@ def cmd_run(args):
         recook_focus(stage, scene, None, view)
 
     # The solve has settled, so anything the network declared as an output on disk (an
-    # Export USD chunk, ...) gets written now — before --export/--printout report on the
+    # Export USD chunk, ...) gets written now -- before --export/--printout report on the
     # composed stage.
     # Ordered from the stage's own connections, not DagNode depth: a param port wired in
     # the node graph authors an expression rather than an add_dependency edge, so depth

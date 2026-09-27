@@ -1,4 +1,4 @@
-"""Render chunk — the ROP. Renders the live stage in process via Hydra, using the
+"""Render chunk -- the ROP. Renders the live stage in process via Hydra, using the
 UsdRender.Settings prim a Render Settings chunk authored.
 
 Rendering happens in commit(), not execute(): execute is the cook, re-run constantly
@@ -10,7 +10,7 @@ In process rather than shelling out to usdrecord: the stage is rendered as compo
 there is no flattened temp file to stage, no relative asset paths to break, and no
 dependency on a script being found and launchable on PATH.
 
-Requires: pxr (OpenUSD) with UsdAppUtils and UsdImagingGL — a full USD build. The
+Requires: pxr (OpenUSD) with UsdAppUtils and UsdImagingGL -- a full USD build. The
 usd-core wheels ship neither, so rendering is unavailable there.
 """
 
@@ -582,8 +582,8 @@ def _build_argv(node, prefix, scene_path, output_image):
 
 
 def _render_command(node, output_image):
-    """Render by shelling out, for renderers with their own entry point — husk, a
-    V-Ray standalone — and when delegate crashes need to stay out of this process."""
+    """Render by shelling out, for renderers with their own entry point -- husk, a
+    V-Ray standalone -- and when delegate crashes need to stay out of this process."""
     stage = node.get_stage()
     command = node.get_param("render_command").value or "usdrecord"
     prefix = _resolve_command(command)
@@ -822,7 +822,7 @@ def main():
 
 
 def execute(node):
-    """The cook authors nothing — rendering happens in commit()."""
+    """The cook authors nothing -- rendering happens in commit()."""
     return
 
 
