@@ -17,8 +17,8 @@ from usd_chunks import chunk_registry, chunk_stage
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-#: The compatibility shim itself.
-_SHIM = "usd_chunks/plugins/chunk_usd.py"
+#: Where the old name is kept importable -- the alias table names it, by design.
+_SHIM = "usd_chunks/_moved.py"
 
 _PREDICATES = ["is_view_chunk", "is_group_chunk", "is_chunkgroup", "is_merge_chunk", "is_edit_target_chunk"]
 
