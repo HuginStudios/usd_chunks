@@ -11,7 +11,7 @@ _INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
 def _refresh_after_layer(owner, notice, sender):
     """Rebuild the after-layer menu from the current parent layer's sublayers.
 
-    Registered with listen_globally=True -- safe with any number of Create Layer
+    Registered with listen_globally=True -- safe with any number of Layer
     instances since NoticeConnection now shares one real Tf.Notice.RegisterGlobally()
     per alias across all of them (see chunk_notice._register_global).
     """
@@ -20,13 +20,13 @@ def _refresh_after_layer(owner, notice, sender):
     if not stage:
         return
     if _chunk.is_blocked():
-        # This is listen_globally=True, so it fires for EVERY Create Layer instance on
-        # ANY stage content change -- including another Create Layer's own subLayerPaths
+        # This is listen_globally=True, so it fires for EVERY Layer instance on
+        # ANY stage content change -- including another Layer's own subLayerPaths
         # write, or recook_for_view's own layer reorder. The after_menu.value write below
         # reactively re-triggers THIS chunk's own execute() (chunk_notice.py's DAG solve),
         # which must not happen for a blocked chunk (not part of the active view's tree --
         # e.g. not yet wired in, or genuinely hidden). Without this guard, a still-blocked
-        # Create Layer could get dragged into a cascade of extra premature executes
+        # Layer could get dragged into a cascade of extra premature executes
         # triggered by its SIBLINGS' unrelated edits, each one reinserting it into
         # subLayerPaths and scrambling "closer to view wins" into "whichever cascade call
         # happened to land last".
@@ -40,7 +40,7 @@ def _refresh_after_layer(owner, notice, sender):
     if insert_mode_param.value != "After Layer":
         # after_layer is hidden/unused in every other mode (_update_visibility). Refreshing
         # it anyway writes menu_items -- a plain attrs field whose content is "the current
-        # subLayerPaths list", which differs on essentially every sibling Create Layer's
+        # subLayerPaths list", which differs on essentially every sibling Layer's
         # edit -- and that write unconditionally re-triggers THIS chunk's own execute() as
         # a side effect (chunk_core.py value_changed -> self.execute()), regardless of
         # whether anything about THIS chunk actually changed. Live-confirmed: this alone
@@ -50,7 +50,7 @@ def _refresh_after_layer(owner, notice, sender):
         # during a build) -- whichever cascade call happens to land last wins the strongest
         # position, an accident of notice dispatch order having nothing to do with graph
         # position. That scrambled order then freezes in place, since nothing re-executes a
-        # Create Layer chunk in response to exec topology changing once it's wired to a view.
+        # Layer chunk in response to exec topology changing once it's wired to a view.
         return
 
     internal_ids = chunk_utils.chunk_internal_layer_ids()
@@ -96,7 +96,7 @@ def _view_ranked_index(node, stage, paths: list) -> int | None:
     """Where this chunk's layer belongs among `paths`, ranked by exec-chain proximity to
     the active downstream view.
 
-    Applies REGARDLESS of Insert mode: two Create Layer chunks that ARE comparable
+    Applies REGARDLESS of Insert mode: two Layer chunks that ARE comparable
     (reachable from a common view) landing in the wrong relative order isn't something
     Prepend/Index/After Layer should be able to override -- "closer to the view wins" is
     a project-wide invariant (recook_for_view enforces it for its own ChunkLayerManager-
@@ -104,10 +104,10 @@ def _view_ranked_index(node, stage, paths: list) -> int | None:
     returns None -- see execute()'s fallback.
 
     Ranks this chunk's own CONTAINER (its immediate context -- typically a ChunkGroup, or
-    this chunk itself if it has none) as one atomic unit against sibling Create Layer
+    this chunk itself if it has none) as one atomic unit against sibling Layer
     chunks' containers, using the nearest reachable downstream view's exec-upstream
     order. Ranking the container rather than the chunk itself is what makes two
-    ChunkGroups (each owning an independent Create Layer) compare correctly as wholes.
+    ChunkGroups (each owning an independent Layer) compare correctly as wholes.
 
     Returns None -- defer entirely to Insert mode -- whenever there's no view to rank
     against yet (e.g. right after a fresh paste, before anything is wired in) or this
@@ -139,12 +139,12 @@ def _view_ranked_index(node, stage, paths: list) -> int | None:
         return None
     my_rank = cook_list.index(ranking_unit)
 
-    # Map each existing sublayer identifier back to whichever OTHER Create Layer chunk (if
+    # Map each existing sublayer identifier back to whichever OTHER Layer chunk (if
     # any) produced it, so its own container can be ranked the same way.
     id_to_chunk = {}
     for c in scene.get_chunks():
         cfg = c.get_config()
-        if not cfg or cfg.module != "create_layer":
+        if not cfg or cfg.module != "layer":
             continue
         lid = c.get_param("_new_layer_id")
         if lid and lid.value:
@@ -175,7 +175,7 @@ def execute(node):
 
     The parent is chunk_utils.get_edit_layer(stage): the session layer by default,
     or whichever layer an upstream Edit Target chunk has explicitly pointed at -- so
-    a Create Layer downstream of an Edit Target nests its new layer inside that
+    a Layer downstream of an Edit Target nests its new layer inside that
     target instead of always sublayering directly under the session layer.
 
     Anon layers don't survive a stage reload, so the stored identifier can go
@@ -274,7 +274,7 @@ def execute(node):
 
 
 def main():
-    createLayerChunk = chunk.Chunk("Create Layer")
+    layerChunk = chunk.Chunk("Layer")
 
     layer_name = chunk.LineEdit(
         "layer_name", "Layer Name",
@@ -315,7 +315,7 @@ def main():
     parent_layer_id = chunk.LineEdit("_parent_layer_id", flags=chunk.ChunkFlags.ParamFlags.TRANSIENT)
     parent_layer_id.set_state(chunk.ChunkFlags.State.HIDDEN)
 
-    createLayerChunk.add_params([
+    layerChunk.add_params([
         layer_name,
         insert_mode,
         insert_index,
@@ -325,25 +325,25 @@ def main():
         parent_layer_id,
     ])
 
-    _update_visibility(createLayerChunk)
+    _update_visibility(layerChunk)
 
-    createLayerChunk.add_callback(
+    layerChunk.add_callback(
         _refresh_after_layer,
         notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
         listen_globally=True,
         send_on_create=True,
     )
 
-    return createLayerChunk
+    return layerChunk
 
 
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_LAYER,
         description="""
-        Create Layer chunk — authors a fresh anonymous layer and sublayers it into the
+        Layer chunk — authors a fresh anonymous layer and sublayers it into the
         session layer, or into whichever layer an upstream Edit Target chunk has
-        explicitly pointed at — so chaining Create Layer → Edit Target → Create Layer
+        explicitly pointed at — so chaining Layer → Edit Target → Layer
         nests each new layer inside the previous one instead of stacking them all as
         siblings under the session layer. Purely about creating/positioning the layer;
         use an Edit Target chunk downstream to actually redirect authoring into it.

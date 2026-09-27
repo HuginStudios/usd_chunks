@@ -163,7 +163,7 @@ def _make_nodes(graph, module="transform", n=1):
 
 
 def test_import_as_chunks_does_not_duplicate_create_layer_side_effect(graph, tmp_path) -> None:
-    """Regression: reported live -- importing a chunkgroup containing a Create Layer chunk
+    """Regression: reported live -- importing a chunkgroup containing a Layer chunk
     (layer_name 'asd') produced TWO orphaned 'asd' anon layers in addition to the source's
     own, instead of exactly one new, cleanly-nested layer for the imported copy. Root cause
     (two independent premature-execute sites, both now fixed):
@@ -179,7 +179,7 @@ def test_import_as_chunks_does_not_duplicate_create_layer_side_effect(graph, tmp
     Both are fixed by blocking (which chunk_notice.py's dispatch checks before running a
     module's real execute()) BEFORE any value gets applied, not just before add_chunk."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
@@ -203,7 +203,7 @@ def test_import_as_chunks_does_not_duplicate_create_layer_side_effect(graph, tmp
     assert len(new_paths) == 1
     imported = gv.scene()._nodes[new_paths.pop()].chunk
 
-    # A create_layer chunk that never gets a real, legitimate execute (still blocked --
+    # A layer chunk that never gets a real, legitimate execute (still blocked --
     # target context already had a view by this point, from cl's own auto-view) must add NO
     # new "asd" layer at all; one that does execute for real must add exactly one. Either
     # way, no orphaned extras from the import process itself -- the two premature-execute
@@ -214,10 +214,10 @@ def test_import_as_chunks_does_not_duplicate_create_layer_side_effect(graph, tmp
 
 
 def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_path) -> None:
-    """Regression: reported live -- importing a Create Layer chunk with insert_mode="Index"
+    """Regression: reported live -- importing a Layer chunk with insert_mode="Index"
     restored the value correctly (visible in the field) but the Index spinbox widget itself
     stayed missing, because insert_mode's own add_callback handler (which unhides
-    insert_index -- chunks/usd/create_layer.py's _insert_mode_changed, registered on
+    insert_index -- chunks/usd/layer.py's _insert_mode_changed, registered on
     ChunkNoticeAlias.VALUE_CHANGED) never got a chance to run: the fix for the duplicate-layer
     bug above used set_blocked(True) during value restoration, which chunk_notice.py's
     value_changed() also treats as "suppress every per-param notice", not just the reserved
@@ -225,7 +225,7 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     which only gates the reserved hook -- insert_index must end up NOT hidden once the import
     settles, matching what typing "Index" into a live, already-created chunk would do."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
@@ -488,7 +488,7 @@ def test_import_as_reference_authors_even_with_an_active_view(graph, tmp_path) -
     """Mirrors test_import_as_sublayer_writes_sublayer_paths_even_with_an_active_view:
     Reference's real work runs on the reserved execute() hook, which a blocked chunk skips
     entirely -- so if _import_as_reference blocked the chunk before setting file_path (the
-    way _materialize_at does for Create Layer), the reference would just never get
+    way _materialize_at does for Layer), the reference would just never get
     authored at all. It must stay unblocked while setting the value, then only get
     blocked+muted afterward, as a side effect of the view recook that hides it for being
     unconnected."""

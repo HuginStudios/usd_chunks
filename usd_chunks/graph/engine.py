@@ -715,7 +715,7 @@ def iter_copyable_params(chunk: core.ChunkCommon):
     """`iter_connectable_params`, minus anything flagged State.HIDDEN.
 
     A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
-    see or set directly -- e.g. chunks/usd/create_layer.py's _new_layer_id/_layer_name_used/
+    see or set directly -- e.g. chunks/usd/layer.py's _new_layer_id/_layer_name_used/
     _parent_layer_id, which cache identifiers for the anon Sdf.Layer *that specific chunk
     instance* created. Copying those verbatim onto a pasted chunk hands it the ORIGINAL
     instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
@@ -723,7 +723,7 @@ def iter_copyable_params(chunk: core.ChunkCommon):
     adopts and reuses the original's real layer object instead of creating an independent one
     of its own -- the two nodes end up secretly sharing state. Any chunk module using a
     HIDDEN param the same way has the identical hazard, so the exclusion lives at this
-    shared, module-agnostic level rather than as a create_layer-specific special case.
+    shared, module-agnostic level rather than as a layer-specific special case.
 
     Deliberately a separate generator from `iter_connectable_params` itself (used elsewhere
     for port placement) rather than changing what that one yields -- copy/paste is the only
@@ -1270,7 +1270,7 @@ class GraphFrontend(Protocol):
 #: new frontend is missing instead of failing on the first absent name.
 GRAPH_FRONTEND_METHODS = (
     "set_selection", "selected_chunks",
-    "delete_selected", "toggle_disable_selected",
+    "delete_selected", "toggle_disable_selected", "collapse_selected_or_all",
     "copy_selection", "cut_selection", "paste_at", "duplicate_selection",
     "group_selection", "create_chunk",
     "can_dive", "dive_into", "dive_out",
@@ -1669,6 +1669,39 @@ def toggle_disabled(chunks) -> int:
         else:
             chunk.set_state(ChunkFlags.State.DISABLED)
     return len(chunks)
+
+
+def collapse_or_expand(chunks, selected) -> int:
+    """Collapse the selected chunks, or all of them when nothing is selected -- Qt's C.
+
+    One direction for the lot: if anything in the set is still expanded they all collapse,
+    and only a set that is already entirely collapsed expands again. Toggling each node on
+    its own would turn a mixed graph into the negative of itself.
+
+    Subnets are left alone -- a collapsed chunkgroup hides the control that expands it --
+    and so are views, which have no body, and are what happens to be selected after a
+    graph auto-creates one: counting one made a bare C read the graph as already collapsed.
+
+    Args:
+        chunks: The chunks of the graph being shown.
+        selected: The selected ones among them.
+
+    Returns:
+        How many chunks were touched.
+    """
+    nodes = [c for c in chunks
+             if not chunk_stage.is_subnet(c) and not chunk_stage.is_view_chunk(c)]
+    chosen = {id(c) for c in selected}
+    targets = [c for c in nodes if id(c) in chosen] or nodes
+    if not targets:
+        return 0
+    collapse = any(not c.has_state(ChunkFlags.State.COLLAPSED) for c in targets)
+    for chunk in targets:
+        if collapse:
+            chunk.set_state(ChunkFlags.State.COLLAPSED)
+        else:
+            chunk.unset_state(ChunkFlags.State.COLLAPSED)
+    return len(targets)
 
 
 def write_position(prim: Usd.Prim | None, x: float, y: float, owner=None) -> None:

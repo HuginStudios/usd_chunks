@@ -267,4 +267,5 @@ def test_resolve_returns_every_chunk_that_touched_the_prim() -> None:
     makes the upstream-editing problem look like a bug: two transform chunks in one chain
     would draw two identical handles in the same place, and picking between them is a
     selection question the host is already answering."""
-    assert "host filters" in chunk_gizmo.resolve_gizmos.__doc__
+    # Whitespace collapsed: the phrase is free to wrap onto a new line in the docstring.
+    assert "host filters" in " ".join(chunk_gizmo.resolve_gizmos.__doc__.split())

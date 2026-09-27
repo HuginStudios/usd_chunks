@@ -272,12 +272,12 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
 
 
 def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
-    """Regression: reported live -- a fresh Create Layer node showed two extra ports well
+    """Regression: reported live -- a fresh Layer node showed two extra ports well
     below the node's own body, disconnected from anything drawn.
 
     _place_param_ports's rewrite for the collapsed-group case (see the other tests in
     this file) accidentally dropped the widget.isVisible() check for every OTHER param --
-    Create Layer's Index field (insert_index) is HIDDEN by default (only shown once
+    Layer's Index field (insert_index) is HIDDEN by default (only shown once
     Insert == "Index"), is not inside any group at all, so _nearest_collapsed_group finds
     nothing for it, and it fell straight into the "just use the widget's own position"
     branch. Qt stops laying out a hidden widget, so that position is stale/meaningless
@@ -286,7 +286,7 @@ def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
     nearest visible ContainerWidget ancestor (skipping entirely if there isn't one, as a
     top-level hidden param like this has none), same as it did before that rewrite."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     chunk = _mk(mod, scene)
     qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()
@@ -307,7 +307,7 @@ def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
 
 
 def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> None:
-    """Regression: reported live -- switching Create Layer's Insert from Append to Index
+    """Regression: reported live -- switching Layer's Insert from Append to Index
     (showing the Index field) and back to Append (hiding it again) left the Index port
     on screen until something unrelated (deselecting the node) forced a fresh layout
     pass. Showing it worked fine; only re-hiding didn't update promptly.
@@ -320,7 +320,7 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
     layout change -- which, like the group-collapse case, does not reliably happen for a
     widget disappearing specifically."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     chunk = _mk(mod, scene)
     qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()

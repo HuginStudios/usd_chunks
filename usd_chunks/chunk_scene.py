@@ -17,11 +17,12 @@ gone, because chunk_core cannot import this module without a cycle.
 from __future__ import annotations
 
 import contextlib
+import re
 import logging
 import weakref
 from abc import abstractmethod
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from pxr import Gf, Usd, UsdGeom
@@ -30,6 +31,7 @@ from usd_chunks import chunk_notice, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
+    ChunkParamBase,
     ChunkHash,
     NameSyncedContainer,
     is_inst,
@@ -63,6 +65,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._current_context: weakref.ReferenceType[ChunkBase] | None = None
         self._selected_chunks: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
         self._stage_replaced_listeners: list = []
+        # Scripting: scene.create, and the `with chunk:` blocks open around it.
+        self._creator: Creator | None = None
+        self._scopes: list = []
+        self._upstream: list[ChunkBase | None] = []
 
     @property
     def current_context(self) -> ChunkBase | None:
@@ -723,6 +729,117 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """The scene's own notices carry no alias."""
         return chunk_notice.ChunkNoticeAlias.NONE
 
+    # -- Scripting ------------------------------------------------------------------
+    # The same calls in any host: a script run headless (usd_chunks.Scene) and a line typed
+    # into usdview's interpreter (usd_chunks.current_scene()) build chunks the same way, and
+    # in a host with a graph they land in the network it is showing -- the frontend keeps
+    # current_context on it.
+
+    def __enter__(self) -> SceneSender:
+        """`with scene:` -- a host's scene is borrowed, so leaving the block keeps it."""
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    @property
+    def create(self) -> Creator:
+        """One function per chunk module and per menu variant: `scene.create.cube(...)`."""
+        if self._creator is None:
+            self._creator = Creator(self)
+        return self._creator
+
+    def add(self, chunk_type: str, *inputs: ChunkBase, **kwargs) -> ChunkBase:
+        """`scene.create.<chunk_type>(...)` with the type as a string, for types picked at
+        runtime."""
+        return getattr(self.create, chunk_type)(*inputs, **kwargs)
+
+    def place(
+        self,
+        new: ChunkBase,
+        inputs: Iterable[ChunkBase] = (),
+        name: str | None = None,
+        **params,
+    ) -> ChunkBase:
+        """Add a created chunk to the scene, wire it and set its params.
+
+        Args:
+            new: The chunk, fresh from its module or a menu entry.
+            inputs: The chunks wired into its input port -- the exec edge, so it runs
+                after them. None given, the innermost `with` chunk, if there is one.
+            name: The node's name; the module's own when omitted.
+            **params: See `set`.
+        """
+        if name:
+            new.name = name
+        # Plain values before the add, so the chunk's first cook -- the one add_chunk
+        # triggers -- already sees them, rather than cooking the defaults and then once more
+        # per param. Values only, no cook, under the same guard MenuEntry.create sets for
+        # its presets. A wire waits until after: connecting a param authors on the chunk's
+        # prim, which does not exist until the chunk is in the scene.
+        values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
+        wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
+        prev = getattr(new, "_executing", False)
+        new._executing = True
+        try:
+            self.set(new, **values)
+        finally:
+            new._executing = prev
+        self.add_chunk(new)
+        inputs = list(inputs)
+        if not inputs and self._upstream and self._upstream[-1] is not None:
+            inputs = [self._upstream[-1]]
+        for i in inputs:
+            new.add_dependency(i)
+        self.set(new, **wires)
+        return new
+
+    def set(self, target: ChunkBase, **params) -> None:
+        """Set a chunk's params by name.
+
+        A plain value is assigned. A param (`other.get_param("prim_path")`) connects this
+        one to it, so it follows that value from then on and the wire is saved with the
+        network.
+        """
+        for name, value in params.items():
+            param = target.get_param(name)
+            if param is None:
+                raise KeyError(f"{target.name} has no param {name!r}")
+            if isinstance(value, ChunkParamBase):
+                param.connect_value(value)
+            else:
+                param.value = value
+
+    def cook(self) -> None:
+        """Run every chunk, upstream first.
+
+        Setting a value already reruns what it affects, so this is only needed for chunks
+        whose work lives solely in their module's execute(), such as Light, which do
+        nothing until they are run.
+        """
+        execute_roots(self.get_chunks())
+
+    def enter_chunk(self, target: ChunkBase) -> None:
+        """`with target:` -- a chunkgroup takes what is created inside as its children;
+        any other chunk runs before it."""
+        cfg = target.get_config()
+        if cfg and cfg.module == CHUNKGROUP_MODULE:
+            scope = self.creating_in(target)
+            scope.__enter__()
+            # A chunk inside the group runs after nothing outside it: exec wires stay
+            # within one context, as the graph draws them.
+            self._scopes.append((scope, None))
+        else:
+            self._scopes.append((None, target))
+        self._upstream.append(self._scopes[-1][1])
+
+    def exit_chunk(self, target: ChunkBase) -> None:
+        """Leave the `with target:` block."""
+        scope, _ = self._scopes.pop()
+        self._upstream.pop()
+        if scope is not None:
+            scope.__exit__(None, None, None)
+
     # Optional DCC capability with a no-op default so hosts that don't support
     # it still work; usdview overrides it (ctrl+click on a prim path field).
     def select_prims(self, paths) -> bool:
@@ -743,3 +860,101 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # it still work; usdview overrides it (used by the RBD solver after baking).
     def refresh_timeline(self, start: float, end: float) -> None:
         """Update the host timeline range."""
+
+
+def current_scene() -> SceneSender | None:
+    """The live scene -- usdview's inside usdview, a script's Scene in a script."""
+    registry = chunk_registry.ChunkRegistry()
+    return registry.scene if registry.initialized else None
+
+
+class Creator:
+    """`scene.create`: one function per chunk module and per menu variant.
+
+    A module is found by its file name (`transform`, `edit_target`); a variant by its menu
+    label in snake_case ("Dome Light" -> `dome_light`). A module name wins over a variant
+    label, and a label two variants share is left out rather than guessed at.
+
+    Each function takes its input chunks positionally -- what is wired into its input
+    port -- then `name=` for the node's name and params by keyword; see SceneSender.place
+    and SceneSender.set.
+    """
+
+    def __init__(self, scene: SceneSender):
+        self._scene = scene
+        self._variants: dict[str, chunk_registry.MenuEntry | None] | None = None
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        entry = self._entry(name)
+
+        def create(*inputs: ChunkBase, name: str | None = None, **params):
+            # A module's main() may return helpers alongside its chunk; the first is the one
+            # the params are for, the rest go into the scene beside it.
+            primary, *extra = entry.create()
+            placed = self._scene.place(primary, inputs, name, **params)
+            for c in extra:
+                self._scene.add_chunk(c)
+            return placed
+
+        create.__name__ = name
+        create.__doc__ = entry.tooltip or None
+        return create
+
+    def __dir__(self):
+        registry = chunk_registry.ChunkRegistry()
+        modules = {m.module_name.split(".")[-1] for m in registry.get_chunk_modules()}
+        return sorted(modules | {k for k, v in self._variant_entries().items() if v is not None})
+
+    def _entry(self, name: str) -> chunk_registry.MenuEntry:
+        if module := chunk_registry.ChunkRegistry().get_chunk_module(name):
+            return chunk_registry.MenuEntry(
+                module=module, namespace=(name,),
+                tooltip=chunk_registry.clean_description(module.config.description),
+            )
+        variants = self._variant_entries()
+        if name not in variants:
+            raise AttributeError(f"No chunk module or variant called {name!r} -- is USD_CHUNK_DIRS set?")
+        if variants[name] is None:
+            raise AttributeError(
+                f"{name!r} names more than one variant; create its module and set the "
+                f"params that pick it instead"
+            )
+        return variants[name]
+
+    def _variant_entries(self) -> dict[str, chunk_registry.MenuEntry | None]:
+        # Built on first use only: a catalog-driven module can declare hundreds of variants,
+        # and a script that only makes modules should not pay for listing them.
+        if self._variants is None:
+            self._variants = {}
+            for entry in chunk_registry.ChunkRegistry().get_menu_entries(sort_result=False):
+                if entry.presets is None:
+                    continue
+                key = _script_name(entry.label)
+                self._variants[key] = None if key in self._variants else entry
+        return self._variants
+
+
+def _script_name(label: str) -> str:
+    """A menu label as a Python name: "Dome Light" -> "dome_light"."""
+    return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
+
+
+def all_chunks(chunks) -> list[ChunkBase]:
+    """Every chunk inside the given ones, groups excluded, at any depth."""
+    found = []
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        found.extend(all_chunks(sub) if sub else [c])
+    return found
+
+
+def execute_roots(chunks) -> None:
+    """Call execute() on every root node (no dependencies), recursing into groups."""
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        if sub:
+            execute_roots(sub)
+        elif not c.get_dependencies():
+            c.execute()

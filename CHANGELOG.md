@@ -11,6 +11,15 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `from usd_chunks import Scene` builds and runs chunk networks from a plain script:
+  `scene.create.<chunk>()` for every chunk module and menu variant (`scene.create.cube()`,
+  `scene.create.rect_light()`), input chunks passed positionally, and `with chunk:` to
+  nest into a chunkgroup or run after any other chunk -- so `with
+  scene.create.edit_target(...)` authors what is inside into that layer. `save()` writes
+  the network, `export()` the plain-USD result. Examples in `examples/scripts/`.
+  The same calls work on any host's scene: `usd_chunks.current_scene()` inside usdview
+  builds into the network the graph is showing.
+- Mesh has one menu entry per shape: Cube, Grid, Tube and Ground.
 - Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
   own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors
   left in the queue by whoever drew last, and a click did nothing but print a traceback.
@@ -62,6 +71,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** the Create Layer and Add Mesh chunks are now Layer (`chunks/usd/layer.py`)
+  and Mesh (`chunks/modelling/mesh.py`). A saved network records a chunk's module name, so
+  one using either will not load them, and Edit Target's follow entry is now
+  "(Follow Upstream Layer)".
 - `usd_chunks/plugins/` is split by what each file is. Toolkit frontends moved to
   `usd_chunks.frontends.{qt,flet,imgui,blender}` (`chunk_qt` -> `frontends.qt.factory`,
   `chunk_qt_nodegraph` -> `frontends.qt.nodegraph`, and so on), host entry points to

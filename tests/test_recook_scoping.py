@@ -314,7 +314,7 @@ def test_a_value_set_while_blocked_is_not_lost_once_unblocked(qapp) -> None:
     qapp.processEvents()
     # A creation alone deliberately does not force a recook (see the test above this one) --
     # blocked stays at its unset default until SOME recook runs, same as it would once any
-    # other, unrelated change in the live session (e.g. wiring up Create Layer/Edit Target)
+    # other, unrelated change in the live session (e.g. wiring up Layer/Edit Target)
     # triggers one and iterates every chunk, this stray one included.
     chunk_stage.recook_for_view(stage, scene, gv._graph_context(), view)
     qapp.processEvents()

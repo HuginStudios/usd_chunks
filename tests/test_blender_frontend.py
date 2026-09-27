@@ -610,10 +610,10 @@ def _add(view, module_name):
 
 
 def test_a_hidden_groups_params_are_hidden_with_it(view):
-    """add_mesh keeps cube, tube and grid groups and shows the one its menu names. The
+    """mesh keeps cube, tube and grid groups and shows the one its menu names. The
     params inside carry no HIDDEN bit of their own, so reading only theirs drew every
     group's fields at once and the Mesh Type menu visibly did nothing."""
-    node = _add(view, "add_mesh")
+    node = _add(view, "mesh")
     chunk = node.get_chunk()
     shown = [p.name for p in chunk_blender.iter_drawable(chunk)]
     assert shown == ["prim_path", "mesh_type"], shown
@@ -629,7 +629,7 @@ def test_a_hidden_groups_params_are_hidden_with_it(view):
 def test_the_write_guard_is_released_after_a_mirror(view):
     """sync_to_node takes the guard per param and must give it back: a leaked entry
     silently blocks every later edit of that param from the node."""
-    _add(view, "add_mesh")
+    _add(view, "mesh")
     assert not chunk_blender._writing
 
 

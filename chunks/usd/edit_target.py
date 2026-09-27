@@ -5,25 +5,25 @@ from usd_chunks import chunk, chunk_notice, chunk_utils
 from usd_chunks import chunk_stage
 
 # Selecting this instead of a specific layer identifier follows whatever layer the
-# upstream Create Layer chunk (found via the exec-chain dependency already wiring the
+# upstream Layer chunk (found via the exec-chain dependency already wiring the
 # two nodes together) currently owns -- so a rename downstream of it (which swaps in a
 # new Sdf identifier) doesn't require coming back to manually re-pick the dropdown.
-_FOLLOW_UPSTREAM = "(Follow Upstream Create Layer)"
+_FOLLOW_UPSTREAM = "(Follow Upstream Layer)"
 
 
 def _find_upstream_create_layer(chunk_obj):
     """Return the nearest upstream chunk that owns a _new_layer_id param (i.e. a
-    Create Layer chunk), found via the exec-chain dependency graph -- the same
+    Layer chunk), found via the exec-chain dependency graph -- the same
     connection that already sequences the two nodes -- or None if there isn't one.
 
     Exec edges only, which is why this asks chunk_stage.exec_dependencies rather than
     chunk_obj.get_dependencies(): the Python DAG also mirrors param wires, and a param
     wire means a value flows, not that one chunk precedes another. Following one here
-    would let a Create Layer wired for some unrelated param silently decide where every
+    would let a Layer wired for some unrelated param silently decide where every
     downstream chunk authors -- and get_dependencies() returns both kinds in no
     particular order, so with both present it would be a coin toss which won.
 
-    A Create Layer whose Layer Name port *is* wired into this chunk needs no walk at
+    A Layer whose Layer Name port *is* wired into this chunk needs no walk at
     all: the param already holds the layer name, which is what _resolve_layer resolves.
     """
     for dep in chunk_stage.exec_dependencies(chunk_obj):
@@ -35,7 +35,7 @@ def _find_upstream_create_layer(chunk_obj):
 def _resolve_layer(stage, selection):
     """Resolve `selection` to a layer that's actually part of stage's current layer
     stack -- normally a plain display name (the dropdown-picked/stored case, and also
-    what a node-graph connection to a Create Layer chunk's Layer Name port feeds in
+    what a node-graph connection to a Layer chunk's Layer Name port feeds in
     live), matched via GetDisplayName() so it keeps resolving correctly across a
     rename *and* across a save/reload (unlike a raw Sdf identifier -- see below).
     Falls back to an exact identifier match for the rare item with no display name
@@ -55,7 +55,7 @@ def _resolve_layer(stage, selection):
     live layer of that exact identifier, since anon layers never survive a save/reload
     (a fresh random hex address every time). Extract its tag ("anon:<hex>:<tag>" ->
     "<tag>") and match on that too, so an old save still resolves once the layer with
-    that name exists again (e.g. a downstream Create Layer chunk recreating it,
+    that name exists again (e.g. a downstream Layer chunk recreating it,
     possibly later in the same load if it executes after this chunk).
     """
     tag = selection.rsplit(":", 1)[-1] if selection.startswith("anon:") else selection
@@ -77,7 +77,7 @@ def _refresh_edit_target(owner, notice, sender):
     if not stage:
         return
     if _chunk.is_blocked():
-        # Same reasoning as create_layer.py's _refresh_after_layer: this is
+        # Same reasoning as layer.py's _refresh_after_layer: this is
         # listen_globally=True, so it fires for EVERY Edit Target instance on ANY
         # stage content change. A blocked chunk (not reachable from any view yet, or
         # genuinely hidden) can't usefully act on a fresh menu -- skip the work below
@@ -88,14 +88,14 @@ def _refresh_edit_target(owner, notice, sender):
     session_id = stage.GetSessionLayer().identifier
 
     # includeSessionLayers=True so sublayers authored under the session layer (e.g.
-    # by a Create Layer chunk) are included too; the session layer itself is
+    # by a Layer chunk) are included too; the session layer itself is
     # represented by the friendly "Session Layer" entry instead of its raw identifier.
     #
     # Listed (and stored, once picked) by display name, not raw Sdf identifier: an
     # anon: identifier's hex address is regenerated every time that layer is recreated
-    # (a fresh session, or a downstream Create Layer chunk re-running on reload) -- an
+    # (a fresh session, or a downstream Layer chunk re-running on reload) -- an
     # exact identifier saved to disk can never resolve again, whereas the display name
-    # (the tag a Create Layer chunk gave it) is stable across all of that, and
+    # (the tag a Layer chunk gave it) is stable across all of that, and
     # _resolve_layer already matches on it. Falls back to the identifier only for a
     # layer with no display name at all (e.g. an anonymous root layer).
     target_items = ["Session Layer"] + [
@@ -117,14 +117,14 @@ def _refresh_edit_target(owner, notice, sender):
     # changes that re-fire this same notice (feedback churn).
     if list(getattr(target_menu, "menu_items", [])) != target_items:
         target_menu.menu_items = target_items
-    # A connected value (e.g. a Create Layer chunk's Layer Name wired straight in)
+    # A connected value (e.g. a Layer chunk's Layer Name wired straight in)
     # is a plain name, not one of these menu items/sentinels -- don't stomp it.
     prop = target_menu.get_usd_prop()
     is_connected = bool(prop and prop.GetConnections())
     if not is_connected and target_menu.value not in target_items:
         # Not literally one of the current menu items -- but it may still be a stale
         # anon: identifier that _resolve_layer can match by tag (e.g. a downstream
-        # Create Layer chunk that hasn't (re-)created its layer yet at this exact
+        # Layer chunk that hasn't (re-)created its layer yet at this exact
         # moment during load, but will later in the same load). Only actually give up
         # and reset to the default once it's genuinely unresolvable -- resetting
         # unconditionally here would permanently overwrite the stored selection with
@@ -192,7 +192,7 @@ def main():
         "edit_target", "Edit Target",
         menu_items=["Session Layer"], default_value="Session Layer",
         tooltip="The layer to make the stage's current edit target. Kept in sync "
-        "automatically as the stage's layer stack changes. If a Create Layer chunk "
+        "automatically as the stage's layer stack changes. If a Layer chunk "
         "feeds this one directly, \"" + _FOLLOW_UPSTREAM + "\" appears — pick it to "
         "track that chunk's layer live, so renaming it there doesn't require coming "
         "back to re-pick this dropdown.",
@@ -217,12 +217,12 @@ def config():
         Edit Target dropdown as a chunk.
 
         Edit Target lists Session Layer, the root layer, and any sublayer — including
-        one authored by a Create Layer chunk elsewhere in the graph — and refreshes
+        one authored by a Layer chunk elsewhere in the graph — and refreshes
         itself automatically whenever the stage's layer stack changes, so there's no
         manual refresh step.
 
-        When a Create Layer chunk feeds this one via the exec chain, an extra
-        "(Follow Upstream Create Layer)" entry appears. Unlike picking that chunk's
+        When a Layer chunk feeds this one via the exec chain, an extra
+        "(Follow Upstream Layer)" entry appears. Unlike picking that chunk's
         layer by its (frozen) identifier, this tracks whatever layer it currently
         owns — so renaming it later doesn't leave this dropdown pointed at a stale,
         dead identifier that has to be manually re-picked.

@@ -2203,7 +2203,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _chunk_deleted(self, chunk_hash):
         # Retire the chunk before touching any layer. The subLayerPaths edits below fire
-        # StageContentsChanged, and a chunk script listening for it (create_layer's and
+        # StageContentsChanged, and a chunk script listening for it (layer's and
         # edit_target's menu-refresh callbacks) re-executes off that notice -- landing back in
         # get_or_create_layer, which would hand this same chunk a BRAND NEW anon layer to
         # replace the one being torn down and sublayer it right back in. Every delete then

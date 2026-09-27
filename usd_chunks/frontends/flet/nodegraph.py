@@ -889,6 +889,18 @@ class GraphView:
         self.reload()
         self.refresh(bodies=True)
 
+    def collapse_selected_or_all(self):
+        """Collapse the selection, or the whole graph when nothing is selected -- Qt's C."""
+        shown = [c for p, c in self.chunks.items() if p in self.prims]
+        count = chunk_graph.collapse_or_expand(shown, self.selected_chunks())
+        if not count:
+            self.status = "nothing to collapse"
+            return self.refresh()
+        self.stage.GetRootLayer().Save()
+        self.status = f"collapsed or expanded {count}"
+        self.reload()
+        self.refresh(bodies=True)
+
     def frame(self, paths):
         """Fit `paths` in the viewport -- Qt's F.
 

@@ -153,12 +153,12 @@ class TestExportUsdCommit:
     """Export USD's commit() and its Export button must be the same implementation."""
 
     def setup_method(self):
-        self.create_mod = importlib.import_module("chunks.usd.create_layer")
+        self.create_mod = importlib.import_module("chunks.usd.layer")
         self.export_mod = importlib.import_module("chunks.core.export_usd")
 
     def _network(self, tmp_path, out_name="out"):
         scene, stage = _setup_stage()
-        shot = _make(scene, self.create_mod, "create_layer")
+        shot = _make(scene, self.create_mod, "layer")
         shot.get_param("layer_name").value = "shot"
         shot.execute()
 

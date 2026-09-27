@@ -1,4 +1,4 @@
-"""Regression: reloading a saved multi-chunk scene (Sublayer -> Transform -> Create Layer ->
+"""Regression: reloading a saved multi-chunk scene (Sublayer -> Transform -> Layer ->
 Edit Target -> Scatter Points) re-executed the last chunk in the chain several times more than
 necessary. Root cause: load_chunks' "recreate each existing named top-level context" phase
 (scene.add_context, run before chunk_notice._loading_stage is ever set) can itself trigger
@@ -55,7 +55,7 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
 
     sub = _make(scene, "sublayer")
     tr = _make(scene, "transform")
-    cl = _make(scene, "create_layer")
+    cl = _make(scene, "layer")
     et = _make(scene, "edit_target")
     sc = _make(scene, "scatter_points")
 
@@ -65,8 +65,8 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
     sc.add_dependency(et)
 
     et_menu = et.get_param("edit_target")
-    if et_menu is not None and "(Follow Upstream Create Layer)" in (et_menu.menu_items or []):
-        et_menu.value = "(Follow Upstream Create Layer)"
+    if et_menu is not None and "(Follow Upstream Layer)" in (et_menu.menu_items or []):
+        et_menu.value = "(Follow Upstream Layer)"
 
     path = str(tmp_path / "chain.usda")
     export_chunks(scene, path)

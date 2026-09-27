@@ -44,7 +44,7 @@ def _set_items(menu, items) -> None:
     real choice replaces it.
 
     Only assigned when something changed: menu_items is a plain field, and writing it
-    re-triggers this chunk's execute() whether or not anything differs (see create_layer).
+    re-triggers this chunk's execute() whether or not anything differs (see layer).
     """
     current = menu.value or ""
     items = list(items)

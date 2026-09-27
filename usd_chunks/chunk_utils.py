@@ -236,7 +236,7 @@ def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
     composition -- a sequence network sublayered into a shot, a store chunkgroup
     referenced in, a scene file a Sublayer chunk pulled in -- and belongs to whoever
     wrote that file. Everything the chunk system makes for itself is anonymous (the
-    session layer, graph and per-chunk procedural layers, Create Layer's layers), and the
+    session layer, graph and per-chunk procedural layers, Layer's layers), and the
     root layer is the file the user opened to edit, so those two tests are the whole rule.
 
     What "must not rewrite" buys: a shot that composes a sequence tweaks it with sparse
@@ -305,7 +305,7 @@ def chunk_internal_layer_ids() -> set:
     Reads ChunkLayerManager's own incrementally-maintained internal_layer_ids set (same
     source of truth as chunk_registry.is_chunk_internal_layer) instead of deriving it by
     walking every tracked layer's live subLayerPaths. This is called per stage edit, once per
-    live Create Layer/Edit Target/Export USD chunk (see those modules' listen_globally
+    live Layer/Edit Target/Export USD chunk (see those modules' listen_globally
     refresh handlers), so a full tree-walk here would make chunk deletion cost scale with
     the total number of live chunks, not just the ones being deleted.
 

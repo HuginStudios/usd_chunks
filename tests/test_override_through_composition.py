@@ -194,13 +194,13 @@ class TestTheOverrideFollowsTheHostEditTarget:
         assert stage.GetAttributeAtPath(f"{transform_path}.{_TX}").Get() == _SHOT_VALUE
 
     def test_a_shot_edit_target_chunk_upstream_does_not_capture_it(self, composed_shot):
-        """Pinned on purpose: wiring a shot-made Create Layer -> Edit Target above the
+        """Pinned on purpose: wiring a shot-made Layer -> Edit Target above the
         sequence's Transform does not redirect its overrides into that layer. The
         sequence chunk's Edit Target chain is the sequence's; shot overrides follow the
         host. And the wire's reconcile pass must not carry the override out of the shot
         file afterwards either."""
         _, stage, scene, seq_layer, _, transform_path = composed_shot
-        create = _add(scene, "create_layer")
+        create = _add(scene, "layer")
         create.get_param("layer_name").value = "layout"
         create.execute()
         layout = Sdf.Layer.Find(create.get_param("_new_layer_id").value)
@@ -277,6 +277,6 @@ class TestKnowingAndRevertingAnOverride:
 
     def test_a_shot_made_chunks_value_is_never_an_override(self, composed_shot):
         _, _, scene, _, _, _ = composed_shot
-        create = _add(scene, "create_layer")
+        create = _add(scene, "layer")
         create.get_param("layer_name").value = "mine"
         assert param_override_source(create.get_param("layer_name")) is None

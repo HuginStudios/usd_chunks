@@ -1140,7 +1140,7 @@ class TestRenderRop:
         _var, _product, _settings = _render_network(scene)
         mod, rop = self._rop(scene)
 
-        rop.get_param("renderer").value = "Embree"
+        rop.get_param("renderer").value = "Storm"
         rop.get_param("output_image").value = str(tmp_path / "beauty.####.png")
         rop.get_param("frames").value = "1:4"
         rop.get_param("image_width").value = 512
@@ -1160,7 +1160,7 @@ class TestRenderRop:
 
         argv = captured["argv"]
         assert argv[0] == "usdrecord"
-        assert argv[argv.index("--renderer") + 1] == "Embree"
+        assert argv[argv.index("--renderer") + 1] == "Storm"
         assert argv[argv.index("--frames") + 1] == "1:4"
         assert argv[argv.index("--imageWidth") + 1] == "512"
         assert "--complexity" in argv and "high" in argv

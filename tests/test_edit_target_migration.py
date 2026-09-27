@@ -71,7 +71,7 @@ def _reachable_layers(root: Sdf.Layer) -> set[str]:
 
 class TestEditTargetMigration:
     def setup_method(self):
-        self.create_mod = importlib.import_module("chunks.usd.create_layer")
+        self.create_mod = importlib.import_module("chunks.usd.layer")
         self.edit_mod = importlib.import_module("chunks.usd.edit_target")
         self.prim_mod = importlib.import_module("chunks.usd.prim")
         self._scenes = []
@@ -79,7 +79,7 @@ class TestEditTargetMigration:
     def teardown_method(self):
         """Delete each scene's chunks instead of just dropping the reference to the scene.
 
-        create_layer and edit_target both register their refresh handlers with
+        layer and edit_target both register their refresh handlers with
         listen_globally=True, and a chunk left alive keeps answering those notices -- on
         whatever stage is current, since ChunkBase.get_stage() resolves the live one rather
         than the stage the chunk was built on. Left to leak, one test's chunks go on
@@ -107,7 +107,7 @@ class TestEditTargetMigration:
 
     def _create_layer(self, scene, name, module_name=None):
         # module_name is what gets written to the prim as info:chunkType. The reload test
-        # passes the real "create_layer" so the registry can rebuild a working chunk from it
+        # passes the real "layer" so the registry can rebuild a working chunk from it
         # and the layer this authors exists again on the other side of a reload; the rest
         # pass nothing and get a per-layer stand-in, which no module backs -- they only care
         # about where edits land, and a name the registry can't resolve keeps their chunks
@@ -181,14 +181,14 @@ class TestEditTargetMigration:
         """
         export_cg = importlib.import_module("chunks.core.export_chunkgroup")
         scene, stage = self._setup()
-        # CreateLayer(A) -> EditTarget(->A) -> CreateLayer(B) -> EditTarget(->B) -> Prim.
-        # Real module names (create_layer/edit_target/prim) so the registry can rebuild the
+        # Layer(A) -> EditTarget(->A) -> Layer(B) -> EditTarget(->B) -> Prim.
+        # Real module names (layer/edit_target/prim) so the registry can rebuild the
         # chunks from info:chunkType on reload.
-        self._create_layer(scene, "A", "create_layer")
+        self._create_layer(scene, "A", "layer")
         et_a = _make(scene, self.edit_mod, "edit_target")
         et_a.get_param("edit_target").value = "A"
         et_a.execute()
-        self._create_layer(scene, "B", "create_layer")
+        self._create_layer(scene, "B", "layer")
         et_b = _make(scene, self.edit_mod, "edit_target")
         et_b.get_param("edit_target").value = "B"
         et_b.execute()
@@ -219,14 +219,14 @@ class TestEditTargetMigration:
         }
         assert et_values == {"A", "B"}  # both selections survived, not reset to Session Layer
 
-        # Regression companion to the selection check above: Create Layer's OWN params
+        # Regression companion to the selection check above: Layer's OWN params
         # (layer_name in particular) must also survive, and there must be exactly one
-        # layer per Create Layer chunk -- not a second, orphaned one falling back to the
+        # layer per Layer chunk -- not a second, orphaned one falling back to the
         # chunk's default name because layer_name came back empty (live-reported: the
-        # Layer Stack panel showing a duplicate "CreateLayer" entry alongside the correctly
+        # Layer Stack panel showing a duplicate "Layer" entry alongside the correctly
         # named "A"/"B" layers after a reload).
         create_layer_chunks = [
-            c for c in chunks2 if (c.get_config() and c.get_config().module) == "create_layer"
+            c for c in chunks2 if (c.get_config() and c.get_config().module) == "layer"
         ]
         assert {c.get_param("layer_name").value for c in create_layer_chunks} == {"A", "B"}
         for name in ("A", "B"):
@@ -240,7 +240,7 @@ class TestEditTargetMigration:
             }
             assert len(matches) == 1, f"expected exactly one layer named {name!r}, found {matches}"
         assert not any(
-            lyr.GetDisplayName() == "CreateLayer"
+            lyr.GetDisplayName() == "Layer"
             for lyr in stage2.GetLayerStack(includeSessionLayers=True)
         ), "no orphaned layer should fall back to the chunk's default name"
 
@@ -343,11 +343,11 @@ class TestEditTargetMigration:
 
 
 class TestFollowUpstreamUsesExecEdgesOnly:
-    """Which Create Layer "Follow Upstream" means is decided by the exec chain alone.
+    """Which Layer "Follow Upstream" means is decided by the exec chain alone.
 
     reconcile_dag_dependencies mirrors param wires into the Python DAG as well, so
     chunk.get_dependencies() no longer answers "what precedes me". A param wire means a
-    value flows; letting one pick the Create Layer would silently change where every
+    value flows; letting one pick the Layer would silently change where every
     downstream chunk authors, on a signal the user never meant as ordering.
     """
 
@@ -369,7 +369,7 @@ class TestFollowUpstreamUsesExecEdgesOnly:
         return scene, stage
 
     def _pair(self, scene):
-        """A Create Layer stand-in and an Edit Target stand-in, deliberately NOT chained.
+        """A Layer stand-in and an Edit Target stand-in, deliberately NOT chained.
 
         Bare chunks rather than the real modules: this pins the topology question, and a
         stand-in keeps unrelated notices from re-running module code.

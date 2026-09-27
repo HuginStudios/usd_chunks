@@ -201,7 +201,7 @@ def resolve_key(chunk, key: str):
 def is_hidden(param) -> bool:
     """Whether `param` is hidden, itself or through any group above it.
 
-    A chunk hides a whole Group at once (add_mesh keeps cube, tube and grid groups and
+    A chunk hides a whole Group at once (mesh keeps cube, tube and grid groups and
     shows the one its menu names) and the params inside carry no bit of their own. Read
     only the param's, as this did, and all three groups' fields drew at once -- eighteen
     of them -- and the menu visibly did nothing.

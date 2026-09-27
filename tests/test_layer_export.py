@@ -1,7 +1,7 @@
-"""Tests for CreateLayer/Edit Target layer nesting and Export USD's Export All Layers.
+"""Tests for Layer/Edit Target layer nesting and Export USD's Export All Layers.
 
-Builds a shot layer via Create Layer, points Edit Target at it, then creates
-light/fx/layout sublayers (also via Create Layer) while that Edit Target is
+Builds a shot layer via Layer, points Edit Target at it, then creates
+light/fx/layout sublayers (also via Layer) while that Edit Target is
 active -- they should nest directly under the shot layer, not the session
 layer. Export All Layers should then write session/shot/light/fx/layout each
 to their own file, with shot.usda's subLayerPaths rewritten to the sibling
@@ -66,7 +66,7 @@ def _setup_stage():
 
 class TestCreateLayerNestingAndExport:
     def setup_method(self):
-        self.create_mod = _load("chunks.usd.create_layer")
+        self.create_mod = _load("chunks.usd.layer")
         self.edit_mod = _load("chunks.usd.edit_target")
         self.export_mod = _load("chunks.core.export_usd")
 
@@ -108,13 +108,13 @@ class TestCreateLayerNestingAndExport:
 
     def test_refresh_after_layer_skips_unless_in_after_layer_mode(self):
         """_refresh_after_layer is registered listen_globally=True, so it fires for
-        EVERY Create Layer instance on ANY stage change -- including an unrelated
+        EVERY Layer instance on ANY stage change -- including an unrelated
         sibling's own edits. Its menu_items write used to run unconditionally, which
         reactively re-triggered this chunk's own execute() as a side effect of that
         unrelated activity, regardless of whether "after_layer" (hidden/unused outside
         "After Layer" mode) was even relevant. That cascade -- confirmed live -- turned
         one clean recook pass into hundreds of spurious re-executions across just a
-        few sibling Create Layer chunks, scrambling Prepend/Append/Index ordering by
+        few sibling Layer chunks, scrambling Prepend/Append/Index ordering by
         making the "winner" depend on notice-dispatch timing instead of graph position.
         Guard: it must now no-op entirely unless insert_mode is actually "After Layer"."""
         scene, stage = _setup_stage()

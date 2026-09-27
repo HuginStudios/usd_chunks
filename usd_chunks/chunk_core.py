@@ -3277,6 +3277,15 @@ class ChunkBase(ChunkGroupBase):
             private=True,
         )
 
+    def __enter__(self) -> Self:
+        """`with chunk:` -- where chunks created inside the block go is the scene's to say
+        (see SceneSender.enter_chunk)."""
+        self.get_scene().enter_chunk(self)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.get_scene().exit_chunk(self)
+
     @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         # Sanitize each path segment so prim_path stays a valid USD path, but leave None

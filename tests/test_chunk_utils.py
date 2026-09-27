@@ -164,7 +164,7 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
 
     That walk used to run inside _refresh_edit_target/_refresh_after_layer/export_usd's
     row refresh -- each registered listen_globally=True, so it re-ran once per live
-    Create Layer/Edit Target/Export USD chunk on every single stage edit. A chunk delete
+    Layer/Edit Target/Export USD chunk on every single stage edit. A chunk delete
     fires several such edits, so tearing down N chunks paid for this walk O(N) times per
     edit -- superlinear in the number of chunks still alive, not just the ones being
     deleted (confirmed live: an autouse test fixture that cleaned up every chunk after
@@ -177,7 +177,7 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
     documented as order-sensitive via leaked global listeners, and inserting a test
     there was observed to make an unrelated, later test in the same file flaky.
     """
-    create_mod = importlib.import_module("chunks.usd.create_layer")
+    create_mod = importlib.import_module("chunks.usd.layer")
     edit_mod = importlib.import_module("chunks.usd.edit_target")
 
     scene = _DummyChunkScene()
@@ -188,7 +188,7 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
 
     try:
         cl = create_mod.main()
-        cl._config = ChunkConfig(module="create_layer")
+        cl._config = ChunkConfig(module="layer")
         cl._module = create_mod
         scene.add_chunk(cl)
         cl.get_param("layer_name").value = "layerA"

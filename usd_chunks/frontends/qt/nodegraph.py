@@ -456,7 +456,7 @@ def _build_clip_node_from_prim(prim: Usd.Prim, rel_pos: tuple[float, float]) -> 
     Blocked BEFORE _load_wire_inputs restores any values: ChunkBase.get_stage() always
     returns the real, live global stage regardless of whether THIS instance was ever added
     to any scene, so a module with real side-effecting reactive code (e.g.
-    chunks/usd/create_layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
+    chunks/usd/layer.py's execute() authoring a genuine anon Sdf.Layer the instant its
     layer_name value changes) runs for real even on a throwaway, never-added chunk -- live
     confirmed as an orphaned duplicate layer appearing after a drag-and-drop import.
     """
@@ -691,7 +691,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._param_removed_conn = NoticeConnection(
             self._on_param_added, ChunkNoticeAlias.PARAM_REMOVED, chunk
         )
-        # A param's own HIDDEN state toggling (e.g. Create Layer's Index field, shown only
+        # A param's own HIDDEN state toggling (e.g. Layer's Index field, shown only
         # for Insert == "Index") needs the same rebuild PARAM_ADDED gets, or the port stays
         # on the node until something unrelated forces a fresh layout pass. Unlike a
         # group's own collapse animation (toggle_anim.finished, connected in create_proxy),
@@ -1201,7 +1201,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                     local = widget.mapTo(chunk_widget, QtCore.QPoint(0, widget.height() // 2))
             else:
                 # Hidden for a reason that has nothing to do with a collapsed group (e.g.
-                # a param's own HIDDEN state, like Create Layer's Index field only showing
+                # a param's own HIDDEN state, like Layer's Index field only showing
                 # for Insert == "Index") -- Qt stops laying it out once hidden, so its own
                 # position is stale/meaningless rather than just off-screen, and using it
                 # anyway is what put a port floating below the node entirely, disconnected
@@ -2635,7 +2635,7 @@ class _ProxyKeyRouter(QtCore.QObject):
         # this method reads self._active.focusWidget() instead of trusting QApplication's
         # own idea of focus. The _INPUT_TYPES check above only catches the case where native
         # focus DOES happen to agree; check the proxy's own logical focus target too, so a
-        # digit/Ctrl+C/etc typed into e.g. Create Layer's "Layer Name" field isn't stolen by
+        # digit/Ctrl+C/etc typed into e.g. Layer's "Layer Name" field isn't stolen by
         # the ungated blocks below before it ever reaches that fallback.
         active_focus = self._active.focusWidget() if self._active is not None else None
         typing_in_proxy = isinstance(active_focus, self._INPUT_TYPES)
@@ -2724,7 +2724,7 @@ class _ProxyKeyRouter(QtCore.QObject):
         # via this router; the view-slot keys were never added to it, so they're the one
         # shortcut still riding the fragile native-focus path. Also gated on
         # `not typing_in_proxy` -- these ARE digits, so without that guard this swallowed
-        # every "1"/"2"/"3" typed into e.g. Create Layer's "Layer Name" field.
+        # every "1"/"2"/"3" typed into e.g. Layer's "Layer Name" field.
         if not typing_in_proxy and event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
@@ -3333,14 +3333,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # Guard against a premature REAL module execute -- NOT via set_blocked(),
                 # which also suppresses per-param VALUE_CHANGED notices entirely (chunk_notice.py's
                 # value_changed: "if self.is_blocked() ... return"). That collateral damage was
-                # live-confirmed: a restored Create Layer insert_mode="Index" left the Index
+                # live-confirmed: a restored Layer insert_mode="Index" left the Index
                 # spinbox widget missing, because insert_mode's own add_callback handler (which
                 # unhides it) never got to run while blocked -- toggling the menu away and back
                 # was the only way to make it reappear. _executing is a narrower, more accurate
                 # tool for THIS specific hazard: chunk_notice.py's reserved-execute dispatch
                 # checks it (`not getattr(prop, '_executing', False)`) but value_changed's
                 # per-param notice path does not, so holding it through value application AND
-                # add_chunk suppresses ONLY the real module.execute() call -- e.g. Create Layer
+                # add_chunk suppresses ONLY the real module.execute() call -- e.g. Layer
                 # authoring a genuine anon Sdf.Layer the instant layer_name changes, which
                 # ChunkBase.get_stage() lets happen even before this chunk is added to any scene
                 # -- while ordinary reactive UI callbacks (visibility toggles, menu refreshes)
@@ -3452,7 +3452,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # _executing only suppresses chunk_notice.py's reserved module.execute()
                 # dispatch. ChunkBase.get_stage() always returns the real live stage
                 # regardless of scene membership, so a module with real side-effecting
-                # reactive code (e.g. Create Layer authoring an anon layer under whatever's
+                # reactive code (e.g. Layer authoring an anon layer under whatever's
                 # upstream *right now*) can run for real the INSTANT _apply_param_values
                 # sets its value below -- well before add_chunk, so guarding any later than
                 # this doesn't prevent it (live-confirmed: an orphaned layer nothing ever
@@ -5075,7 +5075,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         meaning Sublayer's own add_callback handler (which is what actually authors
         subLayerPaths) would simply never run, and the dropped path would sit in the field
         with no effect. That blocking is right for a chunk
-        with real, parent-resolution-dependent side effects (e.g. Create Layer -- see
+        with real, parent-resolution-dependent side effects (e.g. Layer -- see
         _materialize_at), but Sublayer's callback only ever writes into its OWN
         already-established edit layer, so there's no equivalent hazard here to guard
         against.
