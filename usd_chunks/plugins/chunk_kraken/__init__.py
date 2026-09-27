@@ -1,4 +1,4 @@
-"""Plugin implementation for Hugins' inhouse Kraken toolset"""
+"""The Kraken host plugin: chunks inside Hugin's in-house Kraken toolset."""
 from __future__ import annotations
 
 from typing_extensions import override
@@ -13,9 +13,7 @@ from usd_chunks import chunk_stage
 
 
 class KrakenScene(chunk_core.SceneSender):
-    """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
-    TODO: Make this abstract and move implementation to a UsdView related location
-    """
+    """The SceneSender for Kraken: the stage and selection come from Kraken's scene manager."""
 
     def __init__(self, kraken_scene: SceneManager):
         self.selection_listener = Tf.Notice.RegisterGlobally(PrimSelectionNotice, self.primSelectionChangedCallback)
@@ -25,6 +23,12 @@ class KrakenScene(chunk_core.SceneSender):
         super().__init__()
 
     def stage_loaded(self, notice, sender=None):
+        """Reload every chunk module against a stage Kraken just loaded.
+
+        Args:
+            notice: The stage-loaded notice.
+            sender: The sender.
+        """
         chunk_stage.ChunkLayerManager().clear_all_layers()
         chunk_stage.ChunkLayerManager().stage = notice.stage
         reg = chunk_registry.ChunkRegistry()
@@ -47,10 +51,13 @@ class KrakenScene(chunk_core.SceneSender):
 
 
 def launch_chunks(scene: SceneManager) -> None:
-    """Launch the UI Creator plugin.
+    """Start the chunk system on Kraken's stage.
 
     Args:
-        usdviewApi: The Usdview API instance to use for module creation.
+        scene: Kraken's scene manager.
+
+    Raises:
+        AttributeError: The scene has no stage yet.
     """
     # The order of these does not matter. We can initialize the QT widgets before the ChunkRegistry since
     # the QT widget subscribes to the CHUNK_LOADED notice, and will add chunks when that notice is received.
@@ -64,15 +71,19 @@ def launch_chunks(scene: SceneManager) -> None:
 
 
 class ChunksPluginContainer(KrakenPluginContainer):
+    """Registers the chunk panel and menu commands with Kraken."""
     def reloadChunks(self):
+        """Reload every chunk module."""
         reg = chunk_registry.ChunkRegistry()
         reg.reload_modules()
 
     def openModuleSettings(self):
+        """Open the chunk module loader dialog."""
         dial = chunk_qt.ChunkModuleLoader(SceneManager().main_window)
         dial.show()
 
     def saveLayers(self):
+        """Export each chunk's layer to a file."""
         reg = chunk_stage.ChunkLayerManager()
         for i in reg.chunk_layers.keys():
             layer = reg.get_layer(i)
@@ -87,17 +98,17 @@ class ChunksPluginContainer(KrakenPluginContainer):
 
     def saveChunkGroup(self):
         """Export the current chunk graph as one clean, portable USD layer.
+
         See chunk_qt.save_chunkgroup_dialog.
         """
         chunk_qt.save_chunkgroup_dialog()
 
 
     def load(self, scene) -> None:
-        """Register the UI Creator plugin with the plugin registry.
+        """Add the Chunks menu commands to Kraken.
 
         Args:
-            plugRegistry: The plugin registry to register the UI Creator plugin with.
-            usdviewApi: The Usdview API instance to use for module creation.
+            scene: Kraken's scene manager.
         """
         self.add_command_plugin("Chunks", "Reload Chunks", self.reloadChunks)
         self.add_command_plugin("Chunks", "Modules", self.openModuleSettings)
@@ -106,6 +117,12 @@ class ChunksPluginContainer(KrakenPluginContainer):
         self.add_command_plugin("Chunks", "Save ChunkGroup", self.saveChunkGroup)
 
     def configure(self, scene, window) -> None:
+        """Build the chunk dock in Kraken's window and start the chunk system for the scene.
+
+        Args:
+            scene: Kraken's scene.
+            window: Kraken's main window.
+        """
         chunk_qt.build_chunk_docker(window)
 
         launch_chunks(scene)

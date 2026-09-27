@@ -52,9 +52,7 @@ def _set_clip_overrides(free_cam, clip):
 
 
 class UsdviewScene(chunk_core.SceneSender):
-    """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
-    TODO: Make this abstract and move implementation to a UsdView related location
-    """
+    """The SceneSender for usdview: the stage, selection, camera and renderer come from usdview."""
 
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
@@ -209,15 +207,16 @@ class UsdviewScene(chunk_core.SceneSender):
     def set_viewport_renderer_settings(self, settings) -> None:
         """Hand settings to the delegate usdview is drawing with.
 
-        StageView.SetRendererSetting is the same call usdview's own Hydra Settings menu
-        makes, so this reaches the delegate exactly where the built-in UI does -- and
-        the two do overwrite each other, last write winning, since there is only one
-        delegate between them.
+        StageView.SetRendererSetting is the same call usdview's own Hydra Settings menu makes,
+        so this reaches the delegate exactly where the built-in UI does -- and the two do
+        overwrite each other, last write winning, since there is only one delegate between them.
 
-        Each call redraws the viewport, so the mapping handed in is expected to hold
-        only what actually changed. One bad setting is skipped rather than abandoning
-        the rest: keys come from what a delegate said it accepts, but a value can still
-        be one it refuses.
+        Each call redraws the viewport, so the mapping handed in is expected to hold only what
+        actually changed. One bad setting is skipped rather than abandoning the rest: keys come
+        from what a delegate said it accepts, but a value can still be one it refuses.
+
+        Args:
+            settings: {setting name: value}.
         """
         view = self._get_stage_view()
         if view is None:
@@ -391,15 +390,19 @@ def launch_chunks(usdviewApi) -> None:
 
 
 class ChunksPluginContainer(PluginContainer):
+    """Registers the Chunks menu commands with usdview."""
     def openModuleSettings(self, usdviewApi):
+        """Open the chunk module loader dialog."""
         dial = chunk_qt.ChunkModuleLoader(usdviewApi.qMainWindow)
         dial.show()
 
     def reloadChunks(self, usdviewApi):
+        """Reload every chunk module."""
         reg = chunk_registry.ChunkRegistry()
         reg.reload_modules()
 
     def saveLayers(self, usdviewApi):
+        """Export each chunk's layer into a chosen directory."""
         reg = chunk_stage.ChunkLayerManager()
         # flt = "*.usda *.usd *.usdc"
         if not (path := chunk_qt.file_dial(directory=True)):
@@ -408,18 +411,27 @@ class ChunksPluginContainer(PluginContainer):
         reg.save_layers(path)
 
     def saveScene(self, usdviewApi):
-        """The "nice save flow" -- the chunk graph plus correct up-axis/units.
+        """Save the chunk graph with the stage's up-axis and units.
+
         See chunk_qt.save_scene_dialog.
+
+        Args:
+            usdviewApi: The usdview API object.
         """
         chunk_qt.save_scene_dialog()
 
     def saveChunkGroup(self, usdviewApi):
         """Export the current chunk graph as one clean, portable USD layer.
+
         See chunk_qt.save_chunkgroup_dialog.
+
+        Args:
+            usdviewApi: The usdview API object.
         """
         chunk_qt.save_chunkgroup_dialog()
 
     def importChunk(self, usdviewApi):
+        """Import a chunk module file chosen in a file dialog."""
         reg = chunk_registry.ChunkRegistry()
 
         flt = "*" + chunk_registry.PY_MODULE_EXT

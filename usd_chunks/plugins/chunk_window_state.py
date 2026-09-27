@@ -117,6 +117,9 @@ def install(window: QtWidgets.QMainWindow) -> None:
 
     Nothing saved yet is the ordinary first-run case and does nothing, leaving whatever
     usdview and `build_chunk_docker` decided.
+
+    Args:
+        window: The host's main window.
     """
     if window is None:
         return

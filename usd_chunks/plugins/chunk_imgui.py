@@ -116,10 +116,17 @@ def _is_numeric(param) -> bool:
 
 
 def draw_param(param, width: float = 150.0) -> bool:
-    """Draw one param as a labelled row. Returns True if the user changed it.
+    """Draw one param as a labelled row.
 
     The imgui label is always `##something`: the visible text is drawn by _label on the
     left, and the `##` form keeps the widget's identity without printing it again.
+
+    Args:
+        param: The param to draw.
+        width: The widget width, in pixels.
+
+    Returns:
+        True if the user changed the value.
     """
     kind = param.evaluate_type()
     name = param.get_label() or param.name
@@ -220,11 +227,16 @@ def _inline_group(group, children, width: float) -> None:
 
 
 def draw_params(chunk_obj, width: float = 150.0, depth: int = 0) -> None:
-    """Every visible param of a chunk, groups kept as groups.
+    """Draw every visible param of a chunk, groups kept as groups.
 
-    Flattening was the first version and it is what made a Transform node fifteen rows
-    tall. A group whose children are all plain numbers becomes one inline row; any other
-    group becomes a titled block.
+    A group whose children are all plain numbers becomes one inline row; any other group
+    becomes a titled block. Flattening every group instead would make a Transform node
+    fifteen rows tall.
+
+    Args:
+        chunk_obj: The chunk or group to draw.
+        width: The widget width, in pixels.
+        depth: How deeply nested this group is.
     """
     for param in _visible_children(chunk_obj):
         if not hasattr(param, "get_my_params"):
@@ -259,8 +271,14 @@ def draw_params_child(param, width: float, depth: int) -> None:
 def visible_params(chunk_obj):
     """Every visible leaf param, groups flattened.
 
-    Kept because the graph frontend's tests use it to assert what is drawable; the drawing
-    itself goes through draw_params, which does NOT flatten.
+    The graph frontend's tests use it to assert what is drawable; the drawing itself goes
+    through draw_params, which does NOT flatten.
+
+    Args:
+        chunk_obj: The chunk or group to walk.
+
+    Returns:
+        The leaf params.
     """
     out = []
     for param in _visible_children(chunk_obj):
@@ -277,5 +295,8 @@ def is_editing() -> bool:
     The equivalent of Flet's FocusTracker, and a single call rather than a class: ImGui
     already knows, because it owns every widget. Same purpose -- a graph shortcut must not
     fire while a text field is being typed into.
+
+    Returns:
+        Whether a widget is being edited.
     """
     return imgui.is_any_item_active() or imgui.get_io().want_text_input

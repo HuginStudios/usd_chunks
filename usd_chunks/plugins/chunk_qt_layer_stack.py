@@ -69,8 +69,9 @@ def _short_id(layer):
 
 
 class _UsdHighlighter(QtGui.QSyntaxHighlighter):
-    """Lightweight USD-text colouring for the inspect dialog (keywords / types /
-    strings / comments). Intentionally rough -- this is a read-only inspector.
+    """Lightweight USD-text colouring for the inspect dialog: keywords, types, strings, comments.
+
+    Intentionally rough -- this is a read-only inspector.
     """
 
     def __init__(self, doc):
@@ -272,6 +273,7 @@ class LayerStackPanel(QtWidgets.QWidget):
 
     # -------------------------------------------------------------- rendering
     def refresh(self):
+        """Rebuild both trees from the current stage."""
         stage = self._get_stage()
         self.layer_tree.clear()
         self.prim_tree.clear()
@@ -482,8 +484,13 @@ class LayerStackPanel(QtWidgets.QWidget):
 
 
 def open_window(api):
-    """Create (or raise) the Layer Stack window. Returns the window so the caller
-    can keep a reference alive.
+    """Create and raise the Layer Stack window.
+
+    Args:
+        api: The usdview API object.
+
+    Returns:
+        The window, so the caller can keep a reference alive.
     """
     parent = getattr(api, "qMainWindow", None)
     win = LayerStackPanel(api, parent=parent)
