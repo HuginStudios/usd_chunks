@@ -1,8 +1,9 @@
-"""The frontends/hosts split: toolkit frontends under usd_chunks.frontends, host entry points
-under usd_chunks.hosts, the CLI at usd_chunks.cli.
+"""Where modules live, and the old names that still import.
 
-The old ``usd_chunks.plugins.*`` names keep working for code written before the move, and
-nothing in this repository uses them any more.
+Toolkit frontends are under usd_chunks.frontends, host entry points under usd_chunks.hosts,
+the CLI at usd_chunks.cli; the graph engine, gizmos and store seam are subpackages of the
+core. Every old name in usd_chunks._moved.MOVED keeps importing as an alias, and nothing in
+this repository uses one any more.
 """
 from __future__ import annotations
 
@@ -14,46 +15,64 @@ import sys
 
 import pytest
 
+from usd_chunks import _moved
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-#: Old name under usd_chunks.plugins -> the module it now aliases. Only the modules that
-#: import without a toolkit are checked for identity here; the rest are covered by the
-#: static check below.
-_HEADLESS_SHIMS = {
-    "usdchunks_cli": "usd_chunks.cli",
-}
+#: Old names whose new module imports without a UI toolkit, so identity can be checked here.
+_HEADLESS = sorted(
+    (old, new) for old, new in _moved.MOVED.items()
+    if not new.startswith("usd_chunks.frontends."))
 
 
-@pytest.mark.parametrize("old, new", sorted(_HEADLESS_SHIMS.items()))
-def test_the_old_import_path_is_the_same_module(old, new):
-    assert importlib.import_module(f"usd_chunks.plugins.{old}") is importlib.import_module(new)
+@pytest.mark.parametrize("new", sorted(set(_moved.MOVED.values())))
+def test_every_alias_names_a_module_that_exists(new):
+    path = REPO / (new.replace(".", "/") + ".py")
+    assert path.is_file(), f"{new} is an alias target but has no file"
 
 
-def test_every_shim_names_a_module_that_exists():
-    for shim in (REPO / "usd_chunks" / "plugins").glob("*.py"):
-        if shim.name in ("__init__.py", "chunk_usd.py"):
-            continue
-        target = re.search(r'import_module\("([\w.]+)"\)', shim.read_text(encoding="utf-8"))
-        assert target, f"{shim.name} is not an alias shim"
-        path = REPO / (target[1].replace(".", "/") + ".py")
-        assert path.is_file(), f"{shim.name} aliases {target[1]}, which does not exist"
+@pytest.mark.parametrize("old, new", _HEADLESS)
+def test_the_old_name_is_the_same_module(old, new):
+    moved = importlib.import_module(new)
+    assert importlib.import_module(old) is moved
+    assert moved.__spec__.name == new
 
 
-def test_nothing_here_imports_the_old_path():
+def test_from_import_of_an_old_name():
+    from usd_chunks.plugins import usdchunks_cli
+    from usd_chunks import chunk_graph
+
+    assert usdchunks_cli is importlib.import_module("usd_chunks.cli")
+    assert chunk_graph is importlib.import_module("usd_chunks.graph.engine")
+
+
+def test_no_old_name_is_still_a_file():
+    for old in _moved.MOVED:
+        path = REPO / (old.replace(".", "/") + ".py")
+        assert not path.exists(), f"{path} shadows the alias for {old}"
+
+
+def test_nothing_here_imports_an_old_name():
+    old_names = "|".join(re.escape(old) for old in _moved.MOVED)
+    leaves = "|".join(old.rsplit(".", 1)[1] for old in _moved.MOVED if old.count(".") == 1)
+    dotted = re.compile(rf"\b({old_names})\b(?![\"'.\w])|\b({old_names})\.")
+    from_import = re.compile(rf"^\s*from usd_chunks import [^#\n]*\b({leaves})\b", re.M)
     offenders = []
-    for folder in ("usd_chunks", "scripts", "tests"):
+    for folder in ("usd_chunks", "chunks", "tests"):
         for path in (REPO / folder).rglob("*.py"):
             rel = path.relative_to(REPO).as_posix()
-            if rel.startswith("usd_chunks/plugins/") or rel in (
-                    "tests/test_package_layout.py", "tests/test_chunk_stage_module.py"):
+            if rel in ("usd_chunks/_moved.py", "tests/test_package_layout.py",
+                       "tests/test_chunk_stage_module.py"):
                 continue
             text = path.read_text(encoding="utf-8-sig", errors="replace")
-            if re.search(r"usd_chunks\.plugins\b", text):
+            code = "\n".join(line for line in text.splitlines()
+                             if "import" in line or "import_module" in line or "setattr" in line)
+            if dotted.search(code) or from_import.search(text):
                 offenders.append(rel)
-    assert not offenders, f"import from usd_chunks.frontends / .hosts / .cli instead in: {offenders}"
+    assert not offenders, f"import the new module name instead in: {offenders}"
 
 
-def test_the_old_cli_path_still_runs_as_main():
+def test_the_old_cli_name_still_runs_as_main():
     proc = subprocess.run([sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "--help"],
                           cwd=str(REPO), capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr

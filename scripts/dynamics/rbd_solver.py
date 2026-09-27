@@ -16,7 +16,8 @@ from collections.abc import Generator
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
+from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_stage
 
 try:

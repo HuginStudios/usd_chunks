@@ -1,6 +1,6 @@
 # Writing a graph frontend
 
-The node graph is split in two. **The engine** (`usd_chunks.chunk_graph`) decides
+The node graph is split in two. **The engine** (`usd_chunks.graph.engine`) decides
 *what happens to the graph*; **a frontend** decides *what appears on screen* and how input
 arrives. The engine imports no toolkit — a test asserts that in a subprocess — so a
 frontend can be written for any of them.
@@ -31,7 +31,7 @@ Everything in this list already works and must not be reimplemented.
 - `contexts(stage)` / `default_context(stage)` — which graphs a file holds, and which one
   to open. A file whose top level holds one chunkgroup is asking to be opened *inside* it;
   reading at `CHUNKS_ROOT` shows one node and none of the work.
-- [`PortRef`][usd_chunks.chunk_graph.PortRef], `iter_ports`, `param_port_type`,
+- [`PortRef`][usd_chunks.graph.engine.PortRef], `iter_ports`, `param_port_type`,
   `sdf_to_port_type` — ports and their typing.
 - `node_position` / `graph_position` / `write_position` — see *Coordinates* below.
 
@@ -68,7 +68,7 @@ shipped without it once and looked correct while doing nothing.
 
 ## What you must implement
 
-[`GraphFrontend`][usd_chunks.chunk_graph.GraphFrontend] names sixteen verbs:
+[`GraphFrontend`][usd_chunks.graph.engine.GraphFrontend] names sixteen verbs:
 
 ```
 set_selection      selected_chunks

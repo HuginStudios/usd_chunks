@@ -25,7 +25,8 @@ import weakref
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdSkel, Vt
 
-from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import get_chunk_prim_path
 

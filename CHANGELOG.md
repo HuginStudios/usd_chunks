@@ -65,8 +65,12 @@ This file starts with the first release; development before that is in the commi
 - `usd_chunks/plugins/` is split by what each file is. Toolkit frontends moved to
   `usd_chunks.frontends.{qt,flet,imgui,blender}` (`chunk_qt` -> `frontends.qt.factory`,
   `chunk_qt_nodegraph` -> `frontends.qt.nodegraph`, and so on), host entry points to
-  `usd_chunks.hosts.{usdview,kraken,houdini}`, and the CLI to `usd_chunks.cli`. The old
-  module paths still import, as aliases. **Host directories moved with no alias**: point
+  `usd_chunks.hosts.{usdview,kraken,houdini}`, and the CLI to `usd_chunks.cli`. The core's
+  graph, gizmo and store modules are subpackages now: `chunk_graph` -> `graph.engine`,
+  `chunk_graph_layout` -> `graph.layout`, `chunk_gizmo` -> `gizmo.runtime`,
+  `chunk_gizmo_types` -> `gizmo.types`, `pin` -> `store.pin`, `stores` ->
+  `store.providers` (the `usd_chunks.stores` entry-point group keeps its name). Every old
+  module name still imports, as an alias of the same module (see `usd_chunks._moved`). **Host directories moved with no alias**: point
   `PXR_PLUGINPATH_NAME` at `usd_chunks/hosts/usdview` (or `kraken`) and `HOUDINI_PATH` at
   `usd_chunks/hosts/houdini`; `usdchunks plugin-path --host <host>` prints the new path.
   The standalone graphs run as `python -m usd_chunks.frontends.flet.nodegraph` and

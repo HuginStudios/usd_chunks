@@ -28,6 +28,12 @@ except ImportError as _exc:  # pragma: no cover - depends on the install, not th
         "  Standalone: pip install 'usd-chunks[standalone]'"
     ) from _exc
 
+# Old module names (usd_chunks.plugins.*, chunk_graph, chunk_gizmo, ...) keep importing as
+# aliases of where those modules live now. Stdlib only, so it costs nothing here.
+from usd_chunks import _moved
+
+_moved.install()
+
 try:
     __version__ = version("usd_chunks")
 except PackageNotFoundError:

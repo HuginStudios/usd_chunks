@@ -3,7 +3,8 @@ import os
 import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_notice, chunk_stage, chunk_utils
+from usd_chunks.gizmo import runtime as chunk_gizmo
 
 #: The legacy shared transform op, from before each chunk owned a named one. Still read, so
 #: a camera saved in that form keeps its placement.

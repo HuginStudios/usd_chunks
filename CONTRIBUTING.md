@@ -98,10 +98,13 @@ rather than adding to it, so each hook here runs its `.git/hooks` counterpart fi
   the USD stage: sync, wiring, view-driven cooking), `chunk.py` (the public API that chunk
   authors import).
 - `usd_chunks/frontends/` — one subpackage per UI toolkit (`qt/`, `flet/`, `imgui/`,
-  `blender/`), each with a widget `factory.py` and a `nodegraph.py` over `chunk_graph.py`.
+  `blender/`), each with a widget `factory.py` and a `nodegraph.py` over `graph/engine.py`.
 - `usd_chunks/hosts/` — per-application entry points: `usdview/`, `kraken/`, `houdini/`.
 - `usd_chunks/cli.py` — the headless `usdchunks` command.
-- `usd_chunks/plugins/` — aliases for the pre-split import paths; new code does not use it.
+- `usd_chunks/graph/`, `usd_chunks/gizmo/`, `usd_chunks/store/` — the graph engine and
+  layout, the gizmo declaration and runtime, and the store seam with `usdchunks pin`.
+- Old module names (`usd_chunks.plugins.*`, `chunk_graph`, ...) still import through
+  `usd_chunks/_moved.py`; new code uses the new names.
 - `tests/` — run with `USD_CHUNK_DIRS=scripts`.
 - `scripts/` — example chunks, used heavily as test fixtures.
 

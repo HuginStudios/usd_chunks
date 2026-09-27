@@ -130,7 +130,7 @@ def test_a_selection_limits_it_to_those_nodes(graph) -> None:
 
 def test_ctrl_c_still_copies(graph) -> None:
     """The bare key had to share with an existing shortcut, so pin that it still copies."""
-    from usd_chunks import chunk_graph
+    from usd_chunks.graph import engine as chunk_graph
 
     qapp, view, chunks = graph
     chunks[0].set_state(ChunkFlags.State.SELECTED)
@@ -212,7 +212,7 @@ def test_the_key_is_left_alone_when_the_cursor_is_elsewhere(graph) -> None:
 
 
 def test_ctrl_c_is_not_swallowed_by_the_bare_c_fallback(over_the_graph) -> None:
-    from usd_chunks import chunk_graph
+    from usd_chunks.graph import engine as chunk_graph
 
     qapp, view, router, chunks = over_the_graph
     chunks[0].set_state(ChunkFlags.State.SELECTED)

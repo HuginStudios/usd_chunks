@@ -283,7 +283,7 @@ def cmd_validate(args):
 
 
 def cmd_pin(args):
-    from usd_chunks import pin as pinmod
+    from usd_chunks.store import pin as pinmod
 
     if args.list:
         try:

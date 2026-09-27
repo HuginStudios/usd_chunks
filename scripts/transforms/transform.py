@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pxr import Gf, Sdf, Usd, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_utils
+from usd_chunks.gizmo import runtime as chunk_gizmo
 
 #: The point this chunk rotates and scales about, in the target prim's own object space --
 #: the space this chunk's op takes as input, since an appended op is the innermost one.

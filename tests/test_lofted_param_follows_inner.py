@@ -6,7 +6,7 @@ the bridge existed in one direction only: loft_param_to_context forwards the gro
 param down into the inner one and nothing carries a change the other way.
 
 The gizmo is only the way it was noticed. It writes `param.value = item` on the inner
-param (chunk_gizmo.py, "writing the param is what dirties the chunk and propagates
+param (gizmo/runtime.py, "writing the param is what dirties the chunk and propagates
 downstream"), so this is the same gap for anything that writes an inner param -- a script,
 another chunk, a reload.
 """
@@ -147,7 +147,7 @@ def test_a_real_gizmo_drag_reaches_the_group(lofted):
     """
     from pxr import Gf
 
-    from usd_chunks import chunk_gizmo
+    from usd_chunks.gizmo import runtime as chunk_gizmo
 
     inner, group = lofted["inner"], lofted["group"]
 

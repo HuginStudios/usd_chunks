@@ -22,7 +22,7 @@ physics with every chunk byte-identical. ``provision_venv`` is the npm-ci half:
 it installs those exact versions into a venv, with system site packages on, so
 the host's OpenUSD and Qt stay visible while pip's share is pinned.
 
-The store-facing work goes through the plugin seam (usd_chunks.stores); this
+The store-facing work goes through the plugin seam (usd_chunks.store.providers); this
 module never imports any marketplace. pxr is imported lazily so the pure
 resolve/materialize logic stays importable (and testable) without USD.
 """
@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable
 
-from usd_chunks.stores import StoreProvider, discovered_stores, resolve_across_stores
+from usd_chunks.store.providers import StoreProvider, discovered_stores, resolve_across_stores
 from usd_chunks import chunk_naming
 
 #: Layer-level key holding the flat lock: {chunkType: "store:version"}.

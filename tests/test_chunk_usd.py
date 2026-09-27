@@ -2299,7 +2299,7 @@ def test_loft_translate_from_whole_chunk_transform_does_not_break_gizmos() -> No
     "a transform handle drives 9 params ... got 1" from inside a context-menu callback.
     """
     import weakref
-    from usd_chunks import chunk_gizmo
+    from usd_chunks.gizmo import runtime as chunk_gizmo
 
     stage = Usd.Stage.CreateInMemory()
 

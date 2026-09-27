@@ -47,7 +47,7 @@ from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.frontends.blender import factory as chunk_blender
-from usd_chunks import chunk_graph
+from usd_chunks.graph import engine as chunk_graph
 from usd_chunks import chunk_stage
 from usd_chunks import chunk_utils
 

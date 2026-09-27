@@ -17,7 +17,8 @@ import types
 import pytest
 from pxr import Gf
 
-from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
 

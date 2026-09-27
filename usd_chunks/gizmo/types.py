@@ -2,11 +2,11 @@
 
 Deliberately a leaf. It imports nothing from usd_chunks, because both sides of the
 gizmo boundary need this vocabulary and neither should have to drag in the other:
-chunk.py validates a `gizmo=` kwarg at param construction, and chunk_gizmo.py resolves
+chunk.py validates a `gizmo=` kwarg at param construction, and gizmo/runtime.py resolves
 a declaration against a live stage at runtime.
 
 The runtime half -- anchors, placement, stroke handling, the ui:gizmo: attribute
-names -- lives in chunk_gizmo.py. This file is only the record and the token sets.
+names -- lives in gizmo/runtime.py. This file is only the record and the token sets.
 """
 from __future__ import annotations
 

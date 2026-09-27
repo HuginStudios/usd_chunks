@@ -11,7 +11,8 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry
+from usd_chunks import chunk, chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, GizmoBase, SceneSender
 from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,

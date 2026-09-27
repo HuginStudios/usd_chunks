@@ -22,7 +22,7 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 import inspect  # noqa: E402
 
 
-from usd_chunks import chunk_graph  # noqa: E402
+from usd_chunks.graph import engine as chunk_graph  # noqa: E402
 from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
 
 

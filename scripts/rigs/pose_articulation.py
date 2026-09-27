@@ -25,7 +25,7 @@ import math
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from usd_chunks import chunk
-from usd_chunks import chunk_gizmo
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_utils

@@ -29,7 +29,7 @@ import bpy
 from mathutils import Matrix, Vector
 from pxr import Gf, UsdGeom
 
-from usd_chunks import chunk_gizmo
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.frontends.blender.addon import viewport
 

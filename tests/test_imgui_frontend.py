@@ -16,7 +16,7 @@ pytest.importorskip("imgui_bundle", reason="imgui-bundle is an optional extra")
 
 from graph_fixtures import chunk_prims, content_nodes, make_network  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
-from usd_chunks import chunk_graph  # noqa: E402
+from usd_chunks.graph import engine as chunk_graph  # noqa: E402
 from usd_chunks.frontends.imgui.nodegraph import ImGuiGraphView  # noqa: E402
 
 

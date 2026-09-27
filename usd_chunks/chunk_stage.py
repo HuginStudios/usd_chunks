@@ -15,7 +15,7 @@ from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
-from usd_chunks import chunk_gizmo
+from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils

@@ -22,7 +22,7 @@ from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_registry
-from usd_chunks import chunk_graph
+from usd_chunks.graph import engine as chunk_graph
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
@@ -2347,7 +2347,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
     # Auto-layout (L key)
 
     def layout_nodes(self, seed_paths: list[str] | None = None) -> None:
-        """Auto-layout -- see chunk_graph_layout.py for the algorithm itself.
+        """Auto-layout -- see usd_chunks/graph/layout.py for the algorithm itself.
 
         seed_paths: prim paths to grow into their full connected subgraph before laying out
         (the "Layout Selected" case). None lays out every node currently in this context.
