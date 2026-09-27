@@ -26,12 +26,9 @@ _PREFERRED = ("color3", "float", "vector3", "color4", "vector2")
 _SHADER_LEAF = "shader"
 
 # Whether page groups start folded. A surface shader carries 40-odd inputs across nine
-# pages and is unusable expanded, so this stays on. It used to cost ~1.3s of a 4s create
-# (2.65s off against 3.99s on, measured 2026-08-08) -- all of it the re-cook each
-# set_state(COLLAPSED) triggered, ~3,100 extra attribute writes interleaved with the widget
-# build. Now that only DISABLED dirties a chunk it is free: 2.51-2.61s collapsed against
-# 2.60s expanded, at identical Qt call counts *and* identical per-call cost. Kept as a
-# switch because it is the cleanest A/B for anything that makes building groups expensive.
+# pages and is unusable expanded, so this stays on. Folding is free: only DISABLED dirties
+# a chunk, so set_state(COLLAPSED) triggers no re-cook. Kept as a switch because it is the
+# cleanest A/B for anything that makes building groups expensive.
 _COLLAPSE_PAGES = True
 
 # Output attr types that deliberately differ from the shader's declared type, so that an

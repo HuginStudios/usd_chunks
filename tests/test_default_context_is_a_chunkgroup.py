@@ -169,7 +169,7 @@ def test_peeking_at_the_root_never_creates_one(scene):
 
 
 def test_the_chunks_root_is_a_scope_not_a_chunk(scene):
-    """/chunks is "bara ett scope" (Dan) -- like /lights or /render.
+    """/chunks is just a scope -- like /lights or /render.
 
     It was authored with the Chunk typename, the same as the chunks hanging under it, so
     the scope looked like a chunk prim to anything reading the stage back.

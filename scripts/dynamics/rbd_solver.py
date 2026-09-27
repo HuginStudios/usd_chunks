@@ -144,9 +144,8 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     Falls back to a box collider when None.
 
     *geometry* is an already-extracted (verts, tris) for *cprim*, in world space -- exactly
-    what _collider_triangles returns, and exactly what this used to re-derive for itself.
-    The caller reads the collider once and hands the result to whichever collider this run
-    ends up building.
+    what _collider_triangles returns. The caller reads the collider once and hands the
+    result to whichever collider this run ends up building.
     """
     if _np is None:
         return None
@@ -186,10 +185,9 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     # cell empty wherever no vertex happens to land in it, and the nearest-cell fill below
     # then borrows whatever height was nearest -- for a big flat low-poly slab (a tabletop:
     # all its vertices around the perimeter/details, none across the middle) the nearest
-    # sampled height is the slab's own UNDERSIDE, so the collider grew a several-unit-deep
-    # phantom trench straight through the middle of the table. Live-reported as an apple
-    # landing correctly and then sinking half-way into a dining table as it rolled: it was
-    # rolling into that trench. Rasterising each triangle across the cells it actually
+    # sampled height is the slab's own UNDERSIDE, so the collider would grow a
+    # several-unit-deep phantom trench straight through the middle of the table, and
+    # anything rolling across it would sink into that trench. Rasterising each triangle across the cells it actually
     # covers gives the real surface height there instead.
     #
     # Only triangles big enough to OWN a cell need this. A cell takes its height from the
@@ -420,13 +418,13 @@ def _add_colliders(
 
     No collision prims â†’ infinite ground plane. Otherwise each prim becomes, by mode:
 
-    * ``Mesh`` â€” one thin convex prism per triangle (see _add_triangle_soup): exact for
+    * ``Mesh`` — one thin convex prism per triangle (see _add_triangle_soup): exact for
       any shape, concave or thin-walled, and the only option that lets a body go *inside*
       a cup or a bottle. Animated colliders get the same thing on a mocap body.
-    * ``Heightfield`` â€” a 2.5D elevation grid: cheap for terrain and huge meshes, but only
+    * ``Heightfield`` — a 2.5D elevation grid: cheap for terrain and huge meshes, but only
       one surface height per cell, so walls become cliffs.
-    * ``Box`` â€” the collider's bounding box.
-    * ``Auto`` (default) â€” Mesh while the collider's triangle count fits *tri_budget*,
+    * ``Box`` — the collider's bounding box.
+    * ``Auto`` (default) — Mesh while the collider's triangle count fits *tri_budget*,
       else Heightfield, else Box.
 
     *dyn_radius* sizes the heightfield cell-size cap to the dynamic body. *geometry* is
@@ -458,7 +456,7 @@ def _add_colliders(
         pg.condim = 3
         return mocap_col_names
 
-    # Catch-all ground plane at the lowest point of the colliders â€” the "table"
+    # Catch-all ground plane at the lowest point of the colliders — the "table"
     # the bowl sits on. An infinite plane is a rock-solid (non-singular) contact,
     # so it reliably catches anything a collider ejects AND any body that
     # rolls/spills off the rim, instead of letting it fall forever.
@@ -774,21 +772,21 @@ def _sim_prim_gen_mj(
     turb_seed: int = 0,
     settle_only: bool = False,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
-    """MuJoCo rigid body simulation â€” yields frame index, returns all_mats.
+    """MuJoCo rigid body simulation — yields frame index, returns all_mats.
 
     Uses MjSpec to build the scene programmatically from USD mesh data (no file I/O).
     Concave static colliders use heightfields (see _build_heightfield); this
     build of MuJoCo has no generic mesh-SDF collider.
-    MuJoCo quaternions are [w,x,y,z] matching USD â€” no reordering needed.
+    MuJoCo quaternions are [w,x,y,z] matching USD — no reordering needed.
     """
     # --- body frame, geometry extent ---
     # The MuJoCo body frame goes on the GEOMETRY, not on the prim's transform origin. A prim
-    # from a production asset routinely has its points authored far from that origin (the
-    # kitchen set's crayon: 230 units away, in shared model space), and a free joint that far
+    # from a production asset routinely has its points authored far from that origin
+    # (hundreds of units away, in shared model space), and a free joint that far
     # from the mass it carries turns every contact impulse into a huge angular one -- the body
     # is launched across the scene on first touch. Placing the frame on the geometry also
     # makes the box/sphere colliders land on the mesh instead of beside it, and gives a tight
-    # box for a rotated prim (the old world-AABB half-extents grew with rotation).
+    # box for a rotated prim (world-AABB half-extents would grow with rotation).
     bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
     local_rng = bbox_cache.ComputeUntransformedBound(prim).ComputeAlignedRange()
     world_xf = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
@@ -815,7 +813,7 @@ def _sim_prim_gen_mj(
     rest_mat.SetRotate(world_rot_quat)
     rest_mat.SetTranslateOnly(body_centre)
     rest_inv = rest_mat.GetInverse()
-    # The prim's world transform without scale â€” the writer re-applies the prim's own scale,
+    # The prim's world transform without scale — the writer re-applies the prim's own scale,
     # so carrying it here as well would square it.
     prim_world_rest = world_xf.RemoveScaleShear()
 
@@ -926,7 +924,7 @@ def _sim_prim_gen_mj(
         hull_ma = spec.add_mesh()
         hull_ma.name = "hull_dyn"
         hull_ma.uservert = mesh_pts.flatten()
-        # MuJoCo builds a convex hull internally from the vertex cloud â€”
+        # MuJoCo builds a convex hull internally from the vertex cloud —
         # maxhullvert caps the output vertex count for the collision hull.
         hull_ma.maxhullvert = max(hull_max_verts, 64) if hull_max_verts > 0 else 1024
         if collision_margin != 0.0:
@@ -994,7 +992,7 @@ def _sim_prim_gen_mj(
 
         # Sample state before stepping (frame N shows where the body was at the start of step N)
         pos = data.xpos[bid]
-        qmj = data.xquat[bid]  # [w, x, y, z] â€” same convention as USD, no reordering needed
+        qmj = data.xquat[bid]  # [w, x, y, z] — same convention as USD, no reordering needed
 
         body_now = Gf.Matrix4d()
         body_now.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
@@ -1003,7 +1001,7 @@ def _sim_prim_gen_mj(
         # transform is its rest pose carried by the body's rigid motion since frame 0:
         #   W(t) = W(0) . B(0)^-1 . B(t)
         # This is exact wherever the prim's origin happens to be relative to its points, and
-        # collapses to plain B(t) when they coincide (which is what the old code assumed).
+        # collapses to plain B(t) when they coincide.
         world_mat = prim_world_rest * rest_inv * body_now
         all_mats.append(world_mat)
 
@@ -1040,9 +1038,9 @@ def _bake_scale(prim: Usd.Prim, xform_cache) -> tuple:
     The bake converts a world-space result into local space with parent_world_inv, which
     divides out every ancestor's scale -- and the simulation result is rotation and
     translation only, so nothing puts that back. Reading the LOCAL scale compensates for the
-    wrong thing: a mesh under a parent scaled by 100 has a local scale of 1, so nothing was
-    re-applied and the baked op came out at 0.01, exactly the 1/100 the parent contributes.
-    Reported as the apple shrinking on Run Simulation.
+    wrong thing: a mesh under a parent scaled by 100 has a local scale of 1, so nothing
+    would be re-applied and the baked op would come out at 0.01, exactly the 1/100 the
+    parent contributes.
 
     It only ever worked because of where it was tested. A prim at the ROOT has the same
     local and world scale, so the two coincide and the mistake is invisible -- which is
@@ -1111,13 +1109,10 @@ def _write_prim_results(
     # Bake into THIS chunk's own named op, and derive the order the same way every other
     # transform-authoring chunk does.
     #
-    # This used to author the plain xformOp:transform and hard-set the order to just that.
-    # Under the old scheme that was merely the usual strongest-layer-wins; under the current
-    # one it is worse, because the solver sits downstream and so its one-item list outranks
-    # everyone else's -- excluding an upstream Transform's op from the order entirely. The
-    # op stayed on the prim, typed and valued, and was never read, so placing a chair with a
-    # Transform stopped working the moment a simulation existed. Reported as the chair
-    # jumping the instant the Transform was nudged.
+    # Authoring the plain xformOp:transform and hard-setting the order to just that would
+    # be wrong: the solver sits downstream, so its one-item list would outrank everyone
+    # else's and exclude an upstream Transform's op from the order entirely -- placing a
+    # prim with a Transform would stop working the moment a simulation existed.
     op_name = chunk_utils.xform_op_name(node) if node is not None else "xformOp:transform"
     with Usd.EditContext(stage, layer):
         order = (
@@ -1134,11 +1129,9 @@ def _write_prim_results(
             xf_attr = prim.CreateAttribute(op_name, Sdf.ValueTypeNames.Matrix4d)
         # Bake this chunk's SHARE, not the absolute placement.
         #
-        # _local() gives where the body should end up in its parent's space. That used to be
-        # the whole answer, because the bake replaced the prim's op stack. It composes on top
-        # of the upstream ops now, so writing the absolute value in applies whatever placed
-        # the body a second time -- reported as the chair jumping away the moment Run
-        # Simulation was pressed, with a Transform upstream of the solver.
+        # _local() gives where the body should end up in its parent's space. The bake
+        # composes on top of the upstream ops, so writing that absolute value in would apply
+        # whatever placed the body (a Transform upstream of the solver, say) a second time.
         #
         # Same conversion the gizmo write-back does, for the same reason: an absolute answer
         # arriving at something that contributes a share has to have the share divided out.
@@ -1436,7 +1429,7 @@ def simulate_mujoco_instancer(
     same collider stack as the single-prim path (concave heightfield + backstop
     for a bowl, else a ground plane). *shape_type* picks the per-instance collider:
     "Sphere" (fast, most stable in dense piles), "Box", or "Convex Hull" (accurate,
-    heavier â€” the shared prototype hull is built once and reused per distinct
+    heavier — the shared prototype hull is built once and reused per distinct
     scale). A sphere is rotationally symmetric, so the rotation offset and each
     instance's own orientation only influence the physics for Box / Convex Hull.
     """
@@ -1460,14 +1453,14 @@ def simulate_mujoco_instancer(
     world_xf = xform_cache.GetLocalToWorldTransform(prim)
     world_inv = world_xf.GetInverse()
     # Instancer orientations are in instancer-local space; convert to/from world
-    # with the instancer's own rotation (scale stripped â€” see note in simulate_mujoco).
+    # with the instancer's own rotation (scale stripped — see note in simulate_mujoco).
     inst_rot = world_xf.RemoveScaleShear().ExtractRotation()
     inst_rot_inv = inst_rot.GetInverse()
 
     # Each prototype's UNSCALED bound (extents + centre), measured once per prototype.
     # The scatter tool clears the prototype's transform and bakes the real scale into
     # per-instance scales, so the collider must multiply the proto extent by each
-    # instance's scale â€” otherwise the spheres are ~100x too small and the instances
+    # instance's scale — otherwise the spheres are ~100x too small and the instances
     # clip straight through everything.
     #
     # Per PROTOTYPE, not just the first one: a scatter of mixed assets (the usual case --
@@ -1483,9 +1476,9 @@ def simulate_mujoco_instancer(
         if proto_prim:
             # Local, NOT world: the instancer's world transform (e.g. a Transform node feeding it)
             # is already applied to the body positions via world_xf. Using ComputeWorldBound here
-            # would double-count it in the collider centre/extent â€” offsetting and rescaling the
-            # collision geometry away from the visible instance. Identical to the old result when
-            # the instancer is untransformed.
+            # would double-count it in the collider centre/extent — offsetting and rescaling the
+            # collision geometry away from the visible instance. The two agree when the
+            # instancer is untransformed.
             rng = bbox_cache.ComputeLocalBound(proto_prim).ComputeAlignedRange()
             if not rng.IsEmpty():
                 ext = rng.GetMax() - rng.GetMin()
@@ -3014,23 +3007,21 @@ def _only_presentation_changed(sender) -> bool:
     that breadth is that it also hears the changes `propagate_dirty` already decided were
     presentation only, and re-bakes a simulation for each one.
 
-    Reported live: with Auto Simulate on and a Scatter Brush upstream, touching the brush re-ran
-    MuJoCo repeatedly. A watch on propagate_dirty showed *every* propagation routed as
-    presentation and not one as a data change -- so nothing was dirtying the chain at all, and
-    the solver was re-baking off this notice instead.
+    With Auto Simulate on and a Scatter Brush upstream, every brush stroke propagates as a
+    presentation change, not a data change -- so nothing dirties the chain, and without this
+    check the solver would re-bake off this notice on every stroke.
 
     Asked of the framework rather than answered here, so the DISABLED carve-out keeps working:
     disabling a chunk is a state change, but it decides whether that chunk cooks, and is
     therefore a real simulation input. DagNode.only_presentation_changed reads back the
-    verdict chunk_scheduler recorded when the change was propagated; this used to re-ask each
-    sender's is_presentation_change(), which re-reads an old_value/value pair that has since
-    moved on.
+    verdict chunk_scheduler recorded when the change was propagated, rather than re-asking
+    each sender's is_presentation_change(), which would re-read an old_value/value pair that
+    has since moved on.
 
     Only meaningful *inside* the notice. `_changes` is cleared in a `finally` once the whole
     solve finishes (chunk_scheduler.solve), and the notices fire during it -- so this reads a
-    populated record here and an empty one anywhere else. An earlier attempt was reverted for
-    exactly that reason: its test asked afterwards, saw nothing, and could not tell the fix
-    from its absence.
+    populated record here and an empty one anywhere else, so a test must ask from inside
+    the notice too.
     """
     try:
         # Nothing recorded reads as False, i.e. assume it mattered: a missed re-run is a
@@ -3083,9 +3074,8 @@ def main() -> chunk.Chunk:
         )
     )
 
-    # One Run button, at the top. There used to be a second identical one at the bottom of
-    # the node purely so it stayed reachable past the param list; the sections below are
-    # collapsed now, so the list is short enough not to need it.
+    # One Run button, at the top. The sections below start collapsed, so the param list is
+    # short enough not to need a second one at the bottom.
     run_btn = chunk.Button(
         "run_sim", "Run Simulation", tooltip="Simulate and bake the animation onto the target prim."
     )
@@ -3231,10 +3221,7 @@ def main() -> chunk.Chunk:
             "Collision Shape",
             menu_items=["Convex Hull", "Sphere", "Box"],
             # Convex Hull is what you almost always want: it is the shape the body actually
-            # looks like. Sphere used to be the default because it was the only one that
-            # stayed put on a heightfield collider -- which turned out to be a defect in how
-            # those colliders were built (a phantom trench through low-poly geometry), not a
-            # property of the hull.
+            # looks like.
             default_value="Convex Hull",
             tooltip="Collision shape for the dynamic body: Convex Hull (accurate, matches "
             "the mesh), Sphere (fastest, most forgiving in dense piles), or Box.",
@@ -3314,9 +3301,7 @@ def main() -> chunk.Chunk:
     chunk_api.add_param(physics_grp)
 
     # ------------------------------------------------------------------
-    # Initial State -- where it starts and how hard it is thrown. Replaces the old Offsets
-    # group (six loose spinboxes) and Velocity group (two text fields you had to type
-    # space-separated numbers into).
+    # Initial State -- where it starts and how hard it is thrown.
     init_grp = _section("InitialState", "Initial State")
     # No position or rotation offset here any more, and no gizmo on this chunk. Transform
     # chunks compose, so an upstream Transform does that job -- and having it in two places

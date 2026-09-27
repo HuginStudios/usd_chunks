@@ -160,10 +160,9 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
 
     def update(self) -> None:
         """Blender's own hook for "this tree's topology changed" -- a link or node added
-        or removed. Without this, a wire the user just dragged authored nothing: no USD
+        or removed. Without this, a wire the user just dragged would author nothing: no USD
         .connect, no @Node.attr@ expression text, so the destination param's displayed
-        value never followed the wire it now visually has -- reported as "doesn't trigger
-        on connection, still empty".
+        value would never follow the wire it visually has.
 
         Blender's update() does not say what changed -- and it is not only topology:
         Blender also calls it for every node PROPERTY change, so it runs on each tick of a
@@ -841,10 +840,9 @@ class BlenderGraphView:
         # Blender owns dragging, so a moved node's new position lives ONLY in
         # node.location until something writes it back -- and _rebuild_tree below
         # unconditionally clears and recreates every node from USD. Without this, any
-        # drag done since the last reload was silently discarded the next time anything
-        # triggered one: Shift+A, a view-slot change, even a recook. Reported as "I moved
-        # a node and dropping a new one put everything back". Pulled against the OLD
-        # self.prims/tree, i.e. exactly the nodes about to be thrown away.
+        # drag done since the last reload would be silently discarded the next time
+        # anything triggered one: Shift+A, a view-slot change, even a recook. Pulled
+        # against the OLD self.prims/tree, i.e. exactly the nodes about to be thrown away.
         self.pull_positions_from_tree()
         # Selection too, for the same reason: Blender owns clicking and box-select, so
         # the editor's selection is only in node.select until it is read -- and the
@@ -1176,9 +1174,8 @@ class BlenderGraphView:
         Synchronous, like Flet and unlike Qt: Blender builds nodes immediately, so there is
         no deferred-proxy window to wire around.
 
-        Wiring is chunk_graph.rewire_pasted. The version that lived here built PortRefs by
-        hand and typed every one of them PORT_EXEC, which silently dropped every copied
-        param wire; the engine reads the real ports off the stage instead.
+        Wiring is chunk_graph.rewire_pasted, which reads the real port types off the stage
+        so copied param wires survive alongside exec wires.
         """
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
         edges = chunk_graph.edge_clipboard if edges is None else edges
@@ -1250,10 +1247,9 @@ class BlenderGraphView:
         # scene's default chunkgroup, which is not the graph being shown when a brand-new
         # network opens at CHUNKS_ROOT -- so follow the chunk to where it actually landed,
         # or Shift+A appears to do nothing at all on a new network. Doing it after a first
-        # rebuild also meant `reload` ran once at the old context, and the view it creates
-        # records its slot on the CONTEXT prim: the slot was stamped on /chunks while the
-        # view itself lived in /chunks/ChunkGroup, so the graph had a view node and still
-        # cooked nothing.
+        # rebuild would also run `reload` once at the old context, and the view it creates
+        # records its slot on the CONTEXT prim: the slot would land on /chunks while the
+        # view itself lives in /chunks/ChunkGroup, and the graph would cook nothing.
         landed = made[0].rsplit("/", 1)[0]
         if landed != self.context:
             self.context = landed

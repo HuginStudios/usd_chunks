@@ -368,7 +368,7 @@ def _active_view(stage, scene):
 
     None means the file predates views or never set one, and the caller falls back to
     cooking everything, because silently producing nothing for every existing recipe would
-    be worse than the inconsistency this fixes.
+    be worse than cooking too much.
     """
     everything = list(_all_chunks(scene.get_chunks()))
     views = [c for c in everything if is_view_chunk(c)]
@@ -712,8 +712,8 @@ def main():
     run_parser.add_argument(
         "--all",
         action="store_true",
-        help="Cook every network in the file, not just the one the active view reaches. "
-             "The old behaviour, for a file whose side branches are meant to run",
+        help="Cook every network in the file, not just the one the active view reaches, "
+             "for a file whose side branches are meant to run",
     )
 
     info_parser = sub.add_parser(

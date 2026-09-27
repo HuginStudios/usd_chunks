@@ -113,8 +113,8 @@ class ChunkEnvVar(Generic[_T]):
             # Preserve order: env-provided dirs first (they take precedence on
             # duplicate module names -- first registered wins, see
             # ChunkRegistry.register_module), then defaults. Dedupe keeping the
-            # first occurrence rather than collapsing to a set (which dropped
-            # ordering, so precedence was previously non-deterministic).
+            # first occurrence rather than collapsing to a set, which would drop
+            # ordering and make precedence non-deterministic.
             ordered: list = []
             for x in res + default:
                 if x and x not in ordered:
@@ -280,12 +280,10 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=_NO_WINDOW_FLAGS
         )
 
-        # Only cache what pip actually installed. These packages used to be added to the
-        # cache the moment the user approved the dialog, before pip ran and without ever
-        # checking its return code -- so a failed install (an embedded interpreter shipping
-        # no pip, no network, a bad package name) was remembered as a success. Every later
-        # run then short-circuited on package_in_cache: the install was never retried, the
-        # user was never prompted again, and the chunk errored on creation forever.
+        # Only cache what pip actually installed, after checking its return code. A failed
+        # install (an embedded interpreter shipping no pip, no network, a bad package name)
+        # remembered as a success would short-circuit package_in_cache forever: never
+        # retried, never prompted again, and the chunk erroring on every creation.
         if proc.returncode != 0:
             output = (proc.stdout or b"").decode(errors="replace").strip()
             logger.error(
@@ -342,13 +340,10 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
     def package_in_cache(self, package):
         """Whether `package` -- a requirement, range and all -- is satisfied by the cache.
 
-        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". This used to go
-        through package_info, which splits on "==" alone: a ranged requirement came back
-        with the whole string as its name, which no cache entry is ever keyed by, so every
-        chunk declaring a range missed the cache on every load -- two `pip list` subprocesses
-        each time, two thirds of a second, and a warning that numpy was not installed next
-        to a numpy that was. Blender loads every module at once to generate its node
-        classes, so that was most of the pause on the first open of a network.
+        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". package_info splits
+        on "==" alone, so a ranged requirement would come back with the whole string as its
+        name, which no cache entry is ever keyed by -- every chunk declaring a range would
+        miss the cache on every load, costing two `pip list` subprocesses each time.
         """
         if not self.initialized:
             return False
@@ -634,8 +629,7 @@ def _satisfies(version, specifier: str) -> bool:
 
     None is a version this manager could not determine after an install it made itself,
     and counts as meeting anything -- the alternative is re-installing on every load. A
-    version or specifier packaging cannot parse falls back to the literal "==" match this
-    used to be.
+    version or specifier packaging cannot parse falls back to a literal "==" match.
     """
     if version is None or not specifier or SpecifierSet is None:
         return True
@@ -907,11 +901,11 @@ class ChunkModule:
 
     def load(self) -> Sequence[core.ChunkBase]:
         """
-        Loads the module. This ensures that the module is properly created. If Already loaded, it's preffered to
+        Loads the module. This ensures that the module is properly created. If Already loaded, it's preferred to
         call create() directly, to skip some initialization stuff that should only be called once
 
         Returns:
-            bool: True if loaded successfully, Fale otherwise
+            bool: True if loaded successfully, False otherwise
         """
         if not self._pre_load():
             logger.warning(f"Could not load module {self.module}")
@@ -1238,7 +1232,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
     Attributes:
         registered_directories (Set[str]) : A set of directories we have searched
         registered_modules (Dict[str, ChunkModule]) : A mapping between module names and modules
-        scene (SceneSender) : An instance of the SceneSender for accesing the scene
+        scene (SceneSender) : An instance of the SceneSender for accessing the scene
         plugin (str) : A string identifier of the currently loaded plugin
     """
 
@@ -1372,7 +1366,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
         """
-        Register a ChunkModule. This will wnsure that the module is kept alive and accessible
+        Register a ChunkModule. This will ensure that the module is kept alive and accessible
 
         Args:
             module (ChunkModule): The module to add to the registry
@@ -1381,10 +1375,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             ChunkModule | None: The registered module, or None if failed
         """
         if not module.has_main():
-            logger.info(f"Skipping {module.module_name}. Module is has no main function defined")
+            logger.info(f"Skipping {module.module_name}. Module has no main function defined")
             return
         if not module.has_config():
-            logger.info(f"Skipping {module.module_name}. Module is has no config function defined")
+            logger.info(f"Skipping {module.module_name}. Module has no config function defined")
             return
         if not module.module:
             logger.info(f"Skipping {module.module_name}. Module has no valid python source module")
@@ -2034,17 +2028,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         """Adopt the stage whose edit target moved -- but only when there is none yet.
 
-        This listens globally, so it hears every stage in the process. It used to adopt
-        whichever one spoke last, which is right for the one case it exists for -- chunks
-        loaded before the host had a stage -- and wrong for every other: a second stage
-        in the same process (a test authoring an asset into a file it just exported,
-        a tool opening a scratch stage) changed its edit target, this manager switched
-        to it, and the next get_or_create_layer -- reached from any chunk's global
-        stage-change callback through get_edit_context -- sublayered every chunk's layer
-        under THAT stage's session. The chunks' opinions then composed over the foreign
-        stage: a variant selection authored by a Set Variant chunk overrode the one the
-        other stage had just set, and its variant edit context wrote into the wrong
-        variant. A stage the host replaces reaches this manager through initialize()
+        This listens globally, so it hears every stage in the process, and it adopts one
+        only when it has none -- the case it exists for is chunks loaded before the host
+        had a stage. Adopting whichever stage spoke last would be wrong for every other
+        case: a second stage in the same process (a test exporting an asset, a tool
+        opening a scratch stage) would pull every chunk's layer under THAT stage's session,
+        and the chunks' opinions would compose over a stage they were never meant for.
+        A stage the host replaces reaches this manager through initialize()
         (chunk_stage.reload_for_stage), so an occupied slot never needs a notice to move.
         """
         stage = notice.GetStage()

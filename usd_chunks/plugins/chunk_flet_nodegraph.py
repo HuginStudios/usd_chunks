@@ -231,10 +231,8 @@ class GraphView:
     def _xy(self, event) -> tuple[float, float]:
         """A pointer event's position in layout space.
 
-        Flet 0.80 reports a pointer as an Offset on `local_position`. This file used to
-        read `event.local_x`, which does not exist on any of these event classes -- so
-        every handler raised AttributeError on the first click and none of the graph
-        interaction worked at all. Reading the source made it look implemented.
+        Flet 0.80 reports a pointer as an Offset on `local_position`; `event.local_x` does
+        not exist on any of these event classes.
 
         The zoom/pan inverse lives here too, so there is exactly one place where a screen
         point becomes a layout point.
@@ -288,8 +286,8 @@ class GraphView:
     def port_at(self, x: float, y: float):
         """Nearest port within the grab radius.
 
-        Only nodes whose rect the point could plausibly belong to are scanned: a click
-        used to measure every port on every node, on every press and every drag frame.
+        Only nodes whose rect the point could plausibly belong to are scanned, rather than
+        every port on every node on every press and every drag frame.
         """
         best, best_distance = None, GRAB_R
         for path in self.prims:
@@ -357,8 +355,7 @@ class GraphView:
         x, y = self._xy(event)
         port = self.port_at(x, y)
         if port is None:
-            # Qt opens its chunk menu here. Flet used to do nothing on empty space, which
-            # left no way to create a node at all.
+            # Qt opens its chunk menu here too; without it there is no way to create a node.
             return self.open_create_menu(x, y)
         change = chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
         if change.edges_dirty:
@@ -673,8 +670,8 @@ class GraphView:
 
         Keyed on is_chunkgroup, not on the CONTEXT flag. Both a chunkgroup and a
         chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material`
-        as an implementation detail) carry CONTEXT, so the flag cannot tell them apart --
-        which is exactly why diving into the AMD node used to be offered and should not be.
+        as an implementation detail) carry CONTEXT, so the flag cannot tell them apart, and
+        only the chunkgroup may be dived into.
         """
         return chunk_graph.can_dive(self.chunks, path)
 
@@ -794,8 +791,8 @@ class GraphView:
         self.set_active_slot(slot)
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open, as Qt has always done. Without one, nothing
-        cooks -- a network would look right and do nothing."""
+        """Give the context a view on open. Without one, nothing cooks -- a network would
+        look right and do nothing."""
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, self.chunks.get(self.context))
         if slot is None:

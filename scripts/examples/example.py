@@ -117,7 +117,7 @@ def primSelCallback(owner: chunk.LineEdit, notice: chunk_notice.InputChangedNoti
 
 def main():
 
-    # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
+    # Create the actual chunk - this is in practice just a chunk.Group with some additional behaviour
     myChunk = chunk.Chunk("Hello World")
 
     # Add a callback. With no arguments, the callback will be called whenever the chunk or any of its children is changed
@@ -131,7 +131,7 @@ def main():
     # A simple callback. This is called whenever anything on the checkbox is changed
     #     checkbox.add_callback(paramChanged)
 
-    # A more excplicit callback. Only triggers paramChanged when checkbox.value changes
+    # A more explicit callback. Only triggers paramChanged when checkbox.value changes
     #     checkbox.add_callback(paramValueChanged, sender=checkbox.get_attribute_sender("value"))
 
     # A float slider
@@ -172,7 +172,7 @@ def main():
 
     # In order to add the same param multiple times to a chunk, use clone(). This will copy the param and its
     # attributes. Connections / callbacks will not be copied.
-    # In order to retrive the new instances of the slider, you'll need to retrive it from the group as such:
+    # In order to retrieve the new instances of the slider, you'll need to retrieve it from the group as such:
     #    slider = sliderGroup.getParam("slider1")
     # Duplicate param names will be suffixed with an index. First instance of a param will not be suffixed.
     # This results in these params on the group:
@@ -218,11 +218,11 @@ def main():
     # By default, the menu enforces its value to exist in the menu_items list, so menu.value = "hello3" would fail
     # validation and revert to default value of menu_items[0]
 
-    # A seperator holds no value, is just there for the UI.
+    # A separator holds no value, is just there for the UI.
     sep = chunk.Separator(layout=usd_chunks.chunk_flags.ChunkFlags.LayoutFlags.HORIZONTAL)
     myChunk.add_param(sep)
 
-    # A label - Not directly modifyable in the UI
+    # A label - Not directly modifiable in the UI
     label = chunk.Label("label")
     myChunk.add_param(label)
 

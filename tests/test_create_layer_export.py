@@ -518,8 +518,8 @@ class TestCreateLayerNestingAndExport:
             return names
 
         # Chunk bookkeeping and the /chunks Scope that holds it, and nothing else --
-        # no baked content. The scope is authored as a Scope now (it is "bara ett
-        # scope", not a chunk prim) and export carries that typename across.
+        # no baked content. The scope is authored as a Scope (it is just a
+        # scope, not a chunk prim) and export carries that typename across.
         assert _collect_type_names(out.pseudoRoot) == {"Chunk", "Scope"}
 
     def test_export_flatten_based_on_settings_adds_marked_recipes(self, tmp_path):
@@ -589,6 +589,6 @@ class TestCreateLayerNestingAndExport:
             return names
 
         # Chunk bookkeeping and the /chunks Scope that holds it, and nothing else --
-        # no baked content. The scope is authored as a Scope now (it is "bara ett
-        # scope", not a chunk prim) and export carries that typename across.
+        # no baked content. The scope is authored as a Scope (it is just a
+        # scope, not a chunk prim) and export carries that typename across.
         assert _collect_type_names(out.pseudoRoot) == {"Chunk", "Scope"}

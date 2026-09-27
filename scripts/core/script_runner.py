@@ -312,9 +312,9 @@ def _on_change(owner, notice, sender):
     chunk_obj = owner.get_chunk()
     if chunk_obj is None:
         return
-    # Not in a scene yet: a paste sets every param before adding the chunk, and each set
-    # ran the whole script -- twice per pasted Materials node, 60 s of grouping the
-    # kitchen layout. It cooks once it is in place, like everything else.
+    # Not in a scene yet: a paste sets every param before adding the chunk, and running
+    # the whole script on each set would be pure waste. It cooks once it is in place, like
+    # everything else.
     scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
     if scene is None or not any(c is chunk_obj for c in scene.get_chunks()):
         return

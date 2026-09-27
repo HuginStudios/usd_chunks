@@ -47,8 +47,8 @@ _CHUNK_PRIM_TYPENAME = chunk_naming.CHUNK_PRIM_TYPENAME
 # predicate therefore never saw a disabled chunk at all -- it was in the file, with
 # active=false recording why, and simply vanished on reopen.
 _LOAD_INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
-# /chunks is "bara ett scope" (Dan) -- like /lights or /render. Nothing lives at it: the
-# default chunkgroup sits under it, and everything else under that. Typing it Chunk made the
+# /chunks is just a scope -- like /lights or /render. Nothing lives at it: the default
+# chunkgroup sits under it, and everything else under that. Typing it Chunk would make the
 # scope look like a chunk prim to anything reading the stage back.
 _CHUNKS_ROOT_TYPENAME = chunk_naming.CHUNKS_ROOT_TYPENAME
 _CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
@@ -114,9 +114,9 @@ def creating_at(pos: "tuple[float, float] | None", pin: "bool | None" = None):
 
     The two globals above are how a caller passes a position and a pin preference down
     into _define_prim, which is several frames below and has no argument for either.
-    Every caller used to save both, assign, and restore in a try/finally -- nine copies
-    of that between the two frontends, each an opportunity to forget the restore and
-    leave every later chunk landing at someone else's mouse position.
+    Doing that save/assign/restore by hand in every caller would mean one try/finally per
+    call site, each an opportunity to forget the restore and leave every later chunk
+    landing at someone else's mouse position.
 
     Nesting works: the previous values come back rather than being cleared, so grouping
     (which creates a group, then materializes chunks inside it) does not lose the outer
@@ -588,12 +588,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
             # Tidy up the chunks root once its last chunk goes -- an empty /chunks prim is
             # bookkeeping nobody wants left behind. ONLY that root, though: a chunk inside a
-            # chunkgroup has the GROUP as its root, so this used to delete the group's own
-            # prim as soon as its last child went. An empty group is still a group, and it
-            # vanishing took the wiring with it -- deleting a wired group deletes its
-            # contents first, and the last of those pulled the group's prim out from under
-            # heal_exec_chain_on_delete, which then bailed on its IsValid() guard and left a
-            # downstream view connected to a prim that no longer existed.
+            # chunkgroup has the GROUP as its root, and an empty group is still a group.
+            # Deleting a wired group deletes its contents first; if the last of those took
+            # the group's prim with it, heal_exec_chain_on_delete would bail on its IsValid()
+            # guard and leave a downstream view connected to a prim that no longer exists.
             root_sdf = Sdf.Path(chunk_root)
             root_prim = self._stage.GetPrimAtPath(root_sdf)
             if chunk_root == _CHUNKS_ROOT and root_prim.IsValid() and not any(
@@ -619,12 +617,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         CHUNKGROUP is not: it nests by prim path, as a context in its own right, so the
         cascade never reached it and neither did anything downstream of CHUNK_DELETED.
 
-        The visible symptom was the group's own prim removal taking the whole subtree's
-        prim specs with it while the inner chunks stayed alive in Python, still owning
-        their layers, still sublayered into the graph. Delete a chunkgroup containing
-        chunkgroup/prim and /prim was still authored and still composed afterwards, with
-        nothing left on the graph to remove it -- it only *looked* gone when a recook
-        happened to mute it.
+        Without that, removing the group's prim takes the whole subtree's prim specs with
+        it while the inner chunks stay alive in Python, still owning their layers and still
+        sublayered into the graph: their content stays authored and composed, with nothing
+        left on the graph to remove it.
 
         Deleting each nested group is enough to reach the leaves, since its own params
         cascade normally from there. Snapshot first: request_delete mutates the scene's
@@ -680,11 +676,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if authored_active == disabled:
             # Mark this as our own write. Without the guard the resulting ObjectsChanged is
             # read back as if a user had deactivated the prim on the stage, and the mirror in
-            # _on_objects_changed answers by rewriting the chunk's state -- which is how
-            # disabling a chunkgroup ended up clearing the group's OWN disabled flag. With
-            # the flag gone, re-enabling was a no-op: the group never saw a DISABLED->enabled
-            # transition, so it never told its children to come back (live-reported: the
-            # chunks inside stayed dead until you dived in and selected them).
+            # _on_objects_changed answers by rewriting the chunk's state -- disabling a
+            # chunkgroup would clear the group's OWN disabled flag. Re-enabling would then be
+            # a no-op: the group would never see a DISABLED->enabled transition, so it would
+            # never tell its children to come back.
             prev_w = chunk_notice._usd_write_active
             chunk_notice._usd_write_active = True
             try:
@@ -785,10 +780,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 continue
             # This chunk's OWN activation, not the composed one. Deactivating a chunkgroup
             # deactivates its descendants too, and that is inherited -- nothing is authored
-            # on the children. Reading prim.IsActive() here made every inner chunk latch a
-            # DISABLED state it never had, and re-enabling the group then reactivated only
-            # the group's prim: each inner chunk wrote its own active=false straight back
-            # from that latched state, so the contents stayed dead (live-reported).
+            # on the children. Reading prim.IsActive() here would make every inner chunk
+            # latch a DISABLED state it never had, and re-enabling the group would then
+            # reactivate only the group's prim: each inner chunk would write its own
+            # active=false straight back from that latched state.
             #
             # A chunk that really is disabled has active=false authored on its own prim --
             # that is what _on_state_changed writes -- so this still sees a genuine deactivate,
@@ -805,8 +800,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
         A chunk that arrived by composition can leave the same way: the sequence file drops
         it and the layer reloads, or the host's arc is cleared. Nothing authored it here,
-        so nothing here deletes it -- its prim just stops being on the stage, and the
-        object used to linger, muted, until its next cook authored a fresh prim of its own
+        so nothing here deletes it -- its prim just stops being on the stage. Left alone,
+        the object would linger, muted, until its next cook authored a fresh prim of its own
         at whatever path it then resolved to.
 
         Only a chunk inside a hosted subtree -- under a prim carrying a reference or
@@ -870,9 +865,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         Confirmed live -- a real Ctrl+Z reports `<chunk>.inputs:translate_grp:tz` as
         resynced, with nothing in the info-only set.
 
-        Only params of this scene's chunks, and never a list group's rows -- the same set
-        the old walk (_iter_chunk_params / _iter_chunk_vectors over scene.get_chunks())
-        visited. Rows store as one array on the group's template attr, so a row bound to a
+        Only params of this scene's chunks, and never a list group's rows. Rows store as one array on the group's template attr, so a row bound to a
         path of its own is not something this mirror knows how to read back. The scene's
         chunk set is built only once a bound param is actually hit.
         """
@@ -917,11 +910,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         touched_prims = set()
         for path in all_changed:
             # A property path is "<prim>.<attr>"; prim paths contain no dot at all. Matching
-            # the attribute name (rather than the old endswith(".inputs:chunk")) is what lets
-            # a merge's numbered slots through — inputs:chunk1 does NOT end with
-            # ".inputs:chunk", so before this every branch past the first authored USD, drew
-            # an edge and cooked in the right order while its Python DAG edge was never
-            # created: no INPUT_CHANGED, so editing that branch never recooked the merge.
+            # the attribute name (rather than endswith(".inputs:chunk")) is what lets a
+            # merge's numbered slots through -- inputs:chunk1 does NOT end with
+            # ".inputs:chunk", and without its Python DAG edge editing that branch would
+            # never recook the merge.
             prim_path, sep, attr_name = path.partition(".")
             if not sep or not attr_name.startswith(_INPUTS_PREFIX):
                 continue
@@ -1094,13 +1086,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         (export_chunks), so a param that never gets an attr is a param that does not survive
         a save.
 
-        Reported as a Camera not keeping where it was put: fly the viewport, tick Lock to
-        Free Camera, untick it to freeze the shot. Unticking is what hands the flown
-        placement into the transform params (camera.py's `_adopt_existing_transform`), and it
-        happens during a cook -- so the live camera was right, the file carried no placement
-        at all, and reopening put it back at the origin. Every chunk that renames its own
-        prim path mid-cook when the one it wanted was taken (camera, light, the render_*
-        chunks) was losing that the same way.
+        For example, unticking a Camera's Lock to Free Camera hands the flown placement into
+        the transform params (camera.py's `_adopt_existing_transform`) during a cook -- the
+        live camera would be right while the file carried no placement at all. Every chunk
+        that renames its own prim path mid-cook when the one it wanted was taken (camera,
+        light, the render_* chunks) depends on this the same way.
 
         So a chunk writing its own params while it executes is recorded. Anything else
         arriving mid-write still isn't -- including one chunk reaching into another's params
@@ -1219,9 +1209,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         An attribute is named by the whole path to its param -- inputs:group:param -- so a
         rename at any depth has to rename the attribute, and a group's rename renames every
         attribute under it. The params then have to be pointed at their new attributes: a
-        param writes its value to the attribute it was bound to, so leaving the binding on
-        the old name meant every later edit went nowhere and the next save wrote back the
-        value from before the rename.
+        param writes its value to the attribute it was bound to, so a binding left on the
+        old name would send every later edit nowhere, and the next save would write back
+        the value from before the rename.
         """
         if not (self.initialized and self._stage):
             return
@@ -1501,14 +1491,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if real_attr_path and real_attr_path != str(attr.GetPath()):
             if old_attr := self._stage.GetAttributeAtPath(Sdf.Path(real_attr_path)):
                 if old_attr.IsValid():
-                    # Through _drive_from_storage, not hand-rolled: that version is missing
-                    # the muted-layer guard _push_driven_values has (USD raises rather than
-                    # no-ops authoring into a muted layer) and, same as the scalar path in
-                    # _sync_param_input/_sync_chunk_inputs, never threaded var_selections
-                    # through to connect_usd_attr -- so a Vector param show_attribute bound
+                    # Through _drive_from_storage, not hand-rolled: it carries the
+                    # muted-layer guard _push_driven_values has (USD raises rather than
+                    # no-ops authoring into a muted layer) and threads var_selections
+                    # through to connect_usd_attr, so a Vector param show_attribute bound
                     # inside a variant (displayColor, extent, a Vec3f xformOp on a
-                    # variant-scoped prim) leaked its edits outside the variant the same way
-                    # the scalar case did before this fix.
+                    # variant-scoped prim) keeps its edits inside that variant.
                     self._drive_from_storage(vector, old_attr)
                     # See _sync_param_input's matching comment: vector._var_selections
                     # described old_attr, not `attr` (this chunk's own storage attr) that
@@ -2035,9 +2023,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     # invalidate THIS prim's own Usd.Prim handle if it composes through
                     # the same layer subtree, even though the underlying prim spec itself
                     # is untouched. Re-fetch by path rather than continuing to hold (and
-                    # eventually deref) a dead handle -- live-reproduced building a 3rd
-                    # chained Create Layer/Edit Target pair, which crashed here instead of
-                    # in the caller a few lines away.
+                    # eventually deref) a dead handle -- chaining several Create Layer /
+                    # Edit Target pairs does exactly this.
                     prim = self._stage.GetPrimAtPath(Sdf.Path(target_path))
 
             for path, param in _iter_chunk_params(chunk):
@@ -2242,8 +2229,7 @@ def is_chunkgroup(chunk: "core.ChunkBase") -> bool:
     A chunkgroup is defined in USD and is a subnet you navigate into; a chunk is defined in
     python, and one that owns children (AMDMaterialXLibrary creating `reference` and
     `bind_material`) is reusing them as an implementation detail, not exposing a subnet to
-    edit. Both carry GroupFlags.CONTEXT, so CONTEXT cannot tell them apart — which is why
-    diving into the AMD node used to be offered at all.
+    edit. Both carry GroupFlags.CONTEXT, so CONTEXT alone cannot tell them apart.
 
     Navigation, and the UI that advertises it, keys on this. Containment and cooking key on
     is_group_chunk, so a chunk-in-chunk keeps hiding its children and running their code.
@@ -2678,15 +2664,14 @@ def set_chunks_muted(stage: "Usd.Stage", to_mute, to_unmute) -> "tuple[set, set]
 
     Every stage.MuteLayer / UnmuteLayer is a composition change, and composition changes
     are reported to everything watching the stage as a resync of `/` -- the whole stage,
-    re-read. One per chunk is how this used to work, so a single shot change in a
-    shot-gated graph cost five full-stage resyncs in the steady state and over a hundred
-    and fifty on the first switch, each one telling Hydra that every prim it holds may have
-    changed.
+    re-read. One per chunk would make a single shot change in a shot-gated graph cost
+    several full-stage resyncs, and far more on the first switch, each one telling Hydra
+    that every prim it holds may have changed.
 
     A live viewport is where that lands: the renderer repopulates again and again for one
     logical change, and the prim browser walks a stage that is being recomposed underneath
-    it. Live-reported as a light that did not appear in V-Ray until the renderer was
-    switched away and back -- which is simply a repopulate done once, cleanly.
+    it -- a renderer can even miss content entirely until it is switched away and back,
+    which is simply a repopulate done once, cleanly.
 
     MuteAndUnmuteLayers does both lists in one operation, so the stage recomposes once and
     watchers get one resync however many branches the gate moved.
@@ -2771,7 +2756,7 @@ def gate_to_branches(node: "core.ChunkBase", live: "set[int]") -> "tuple[set, se
             keep |= exec_upstream(inputs[i])
 
     # Collected rather than applied one at a time: every mute is a full-stage recomposition,
-    # so a gate that moves six branches used to make six of them. set_chunks_muted does the
+    # so a gate that moves six branches would make six of them. set_chunks_muted does the
     # lot in one.
     to_mute = []
     for slot, dep in enumerate(inputs):
@@ -3228,17 +3213,13 @@ def get_upstream_stage(stage: "Usd.Stage", scene: "core.SceneSender", chunk: "co
                 # A muted layer is one the real stage is currently showing nothing of: its
                 # chunk is dormant -- blocked (outside the active view's cook set, e.g. just
                 # disconnected) or explicitly disabled. Rebuilding the composition from raw
-                # subLayerPaths resurrected it here, so a dormant chunk's stale content kept
-                # driving everyone else's reads while being invisible everywhere else.
+                # subLayerPaths would resurrect it here, so a dormant chunk's stale content
+                # would keep driving everyone else's reads while invisible everywhere else.
                 #
-                # That got WORSE the moment a chunk was disconnected, which is backwards:
-                # while it was still wired downstream the exclusion above already covered it,
-                # and cutting it loose is what let it back in. Live-reported: shaking a Prune
-                # node off a Sublayer -> Transform -> Scatter -> Prune -> View chain brought
-                # the apple back on the real stage, but Scatter still read it through Prune's
-                # orphaned "active = false" -- so Scatter found no surface geometry at all and
-                # fell back to scattering around the origin, looking like the Transform
-                # feeding it had silently stopped being applied.
+                # Disconnecting is exactly when this matters: while a chunk is still wired
+                # downstream the exclusion above already covers it, and cutting it loose is
+                # what would let it back in. A Prune shaken off a chain, say, must not leave
+                # its orphaned "active = false" hiding geometry from the chunks it fed.
                 continue
             layer_ids.append(ident)
     scratch_root = Sdf.Layer.CreateAnonymous()
@@ -3560,8 +3541,7 @@ def nearest_upstream_edit_layer(stage: "Usd.Stage", prim: "Usd.Prim") -> "Sdf.La
     by the nearest Edit Target chunk reachable by walking the exec chain (inputs:chunk)
     upstream from prim, or the session layer if there is no upstream Edit Target.
 
-    A pure function of graph topology — this is what replaces the old global
-    ChunkStageSync._user_edit_layer state. prim's own marker is deliberately skipped (an
+    A pure function of graph topology, never of which chunk ran last. prim's own marker is deliberately skipped (an
     Edit Target chunk defines the target for everything *downstream* of it, not for its own
     bookkeeping — that follows whatever is upstream of it, or the session layer).
 
@@ -3681,11 +3661,11 @@ def _migratable_layers(stage: "Usd.Stage") -> "list[Sdf.Layer]":
     Foreign layers (chunk_utils.is_foreign_layer) are left out as well, from the other
     side: a sublayered sequence file is not somewhere a chunk's bookkeeping may be moved
     FROM. Migration moves a spec by deleting the original, and with the sequence in the
-    list, opening a shot consolidated every sequence chunk into the session layer and
-    gutted the sequence in the Sdf layer cache -- the same damage protect_root_layer
-    guards the root against, for a layer the shot did not even own. A chunk whose only
-    spec is foreign then simply has nothing to migrate; the shot's overrides on it, which
-    live in owned layers, still consolidate as before.
+    list, opening a shot would consolidate every sequence chunk into the session layer and
+    gut the sequence in the Sdf layer cache -- the same damage protect_root_layer guards
+    the root against, for a layer the shot does not even own. A chunk whose only spec is
+    foreign simply has nothing to migrate; the shot's overrides on it, which live in owned
+    layers, still consolidate.
     """
     return [
         layer for layer in stage.GetLayerStack(includeSessionLayers=True)
@@ -3866,12 +3846,9 @@ def connect_exec(
     Deliberately does NOT also trigger a recook the way _author_connection does for a
     live drag-to-connect: figuring out which view (if any) is safe to recook through from
     inside a headless caller, without touching mute/block state anywhere it doesn't have
-    full information about, turned out to be its own source of bugs (muting unrelated
-    scene content, or the chunk just wired itself, depending on what existed nearby at the
-    time). Simpler and safer to just author the connection correctly here and let the
-    caller's own next real recook (a view switch, another wire, diving into the context)
-    pick it up -- which it will, now that the connection and the layer-ranking logic
-    downstream of it are both correct.
+    full information about, risks muting unrelated scene content, or the chunk just wired
+    itself. Simpler and safer to author the connection correctly here and let the caller's
+    own next real recook (a view switch, another wire, diving into the context) pick it up.
 
     Returns the authored inputs:chunk attribute, or None if either prim couldn't be
     resolved.
@@ -4325,9 +4302,8 @@ def recook_for_view(
             if c in cook_set:
                 # Cooked at its turn in the loop below, not here. Here is before any of
                 # the context's own chunks have been revealed and cooked, so a group cooked
-                # now read a stage its upstream was not on yet -- the kitchen layout's
-                # Materials script, moved into a group, found none of the appliances and
-                # converted 0 of 86 materials.
+                # now would read a stage its upstream is not on yet, and a chunk inside it
+                # would find none of the prims it acts on.
                 deferred_groups.add(id(c))
             else:
                 recook_for_view(stage, scene, c, None)
@@ -4401,11 +4377,8 @@ def recook_for_view(
     # A ranked group's own children are ranked by a completely separate, incomparable
     # numbering scheme -- their own inner recook's cook_list -- so from THIS call's
     # perspective they're simply invisible descendants, not competitors for a tier of
-    # their own. Left alone they just sit wherever they were first inserted instead of
-    # ranking anywhere near the group that actually produced them (live-reported: AMD
-    # MaterialX Library correctly outranked its unrelated Transform/Sublayer siblings
-    # once wired into the view, but its own Reference/BindMaterial children stayed
-    # stuck at the bottom). Give every descendant of a ranked group the group's own
+    # their own. Left alone they would sit wherever they were first inserted instead of
+    # ranking anywhere near the group that actually produced them. Give every descendant of a ranked group the group's own
     # rank tier, strictly above the group's own layer within that tier (a group's
     # actual produced content should win over its own generic bookkeeping, and a plain
     # equal rank would leave that ambiguous -- tie-broken arbitrarily by whatever the
@@ -4440,9 +4413,7 @@ def _group_output_driver(stage: "Usd.Stage", scene: "core.SceneSender", group: "
         # heal clears the connection when the deleted node had no predecessor
         # to inherit). Taken literally it means the group cooks nothing at all:
         # its contents go blocked and muted, it stops feeding everything
-        # downstream of it, and there is no sign of why. Live-reported as a
-        # chunkgroup's Duplicate Prim being invisible from the group wired after
-        # it, with the copy simply absent from the stage.
+        # downstream of it, and there is no sign of why.
         #
         # Fall through to the exec-tail fallback below, which is the same
         # question ("what is the end of this group's chain") asked of a group
@@ -4478,8 +4449,8 @@ def _reorder_graph_layers_by_rank(graph_layers: "Iterable[Sdf.Layer]", ident_ran
     context, whose ident_rank knows nothing about those children at all. A global sort
     keyed on ident_rank.get(ident, -1) shoves every ident a given call doesn't recognize
     to the single weakest position, silently destroying a more specific call's ordering
-    underneath it (live-reported: a chunkgroup's own content ranked weaker than its
-    unrelated siblings in the same tab).
+    underneath it -- a chunkgroup's own content would rank weaker than its unrelated
+    siblings in the same tab.
 
     Only reposition idents this call actually has a rank for, among the slots they
     collectively occupy -- everything else (including a nested group's own children)
@@ -4506,12 +4477,10 @@ def _reorder_sublayers(layer: "Sdf.Layer", ident_rank: dict) -> None:
 def _reorder_graph_layers_in_targets(lm: "ChunkLayerManager", ident_rank: dict) -> None:
     """Order the graph layers themselves by the strongest chunk each one holds.
 
-    Ranking chunks only within their own graph layer left the graph layers in the order
-    they were made, newest on top. A graph layer is one DAG component, and a chunk that
-    builds its own children (AMD MaterialX Library) puts them in a component of their own
-    -- so the four material libraries in the kitchen layout sat above the tab's graph layer
-    and outranked AddMesh, the last chunk before the view (live-reported from the Layer
-    Stack window).
+    Ranking chunks only within their own graph layer would leave the graph layers in the
+    order they were made, newest on top. A graph layer is one DAG component, and a chunk
+    that builds its own children (AMD MaterialX Library) puts them in a component of their
+    own -- which would then outrank the last chunk before the view.
 
     By the strongest member because a graph layer moves as a whole: one holding both the
     chunk next to the view and one far up the chain cannot be split around another, and
@@ -4570,20 +4539,16 @@ def recook_focus(
         # everything outside the group) means those inner chunks execute against a stage
         # where their target prims simply don't exist, so they author nothing -- and
         # since a chunk's execute() Clear()s its own layer first, whatever it authored
-        # last time is destroyed in the process. Live-reported: diving into the AMD node
-        # dropped the applied material, and diving back out never brought it back
-        # (nothing re-executes BindMaterial once its params haven't changed).
+        # last time is destroyed in the process, and nothing re-executes it on the way
+        # back out once its params haven't changed.
         #
-        # Muting the group's upstream was never the point of this pass anyway -- it
+        # Muting the group's upstream is not the point of this pass anyway -- it
         # exists to stop the parent tab's active view and UNRELATED sibling branches
         # bleeding through, and the group's own upstream is neither.
         # Every ANCESTOR's upstream, not just the focused group's. A group nested inside
         # another is fed by its parent's chain: focusing it, the parent's own upstream --
-        # the Sublayer bringing the scene onto the stage two levels up -- fell outside this
-        # set and was muted, so the inner chunks cooked against a stage their targets were
-        # not on and the viewport went empty. Reported as content coming and going
-        # depending on which level you were looking at; it reproduces with the nesting
-        # built by hand, so it is not about how the groups were made.
+        # the Sublayer bringing the scene onto the stage two levels up -- must stay in this
+        # set, or the inner chunks cook against a stage their targets are not on.
         upstream_keep: set = set()
         by_path = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
         node: "core.ChunkBase | None" = context
@@ -4600,12 +4565,11 @@ def recook_focus(
             node = by_path.get(parent_path)
         # An upstream GROUP authors nothing of its own -- all of its content lives in its
         # children's layers -- so keeping only the group's own (empty) layer keeps nothing at
-        # all. Live-reported: wire chunkgroup A -> chunkgroup B, dive into B, and A's prims
-        # are gone from the stage, so B's inner chunks cook against a stage their input isn't
-        # on. It looked like a group could only reach another group's stage through a data
-        # wire, because lofting/connecting the group's Description authors a connection from
-        # the group prim DOWN to an inner chunk -- which is exactly what put those inner
-        # chunks into view_cook_list' node-level answer in the first place.
+        # all: with chunkgroup A -> chunkgroup B, diving into B would drop A's prims from
+        # the stage, so B's inner chunks would cook against a stage their input isn't on.
+        # A data wire hides this, because lofting/connecting the group's Description
+        # authors a connection from the group prim DOWN to an inner chunk, which puts those
+        # inner chunks into view_cook_list's node-level answer.
         keep_prefixes = tuple(u + "/" for u in upstream_keep)
         for c in scene.get_chunks():
             if is_view_chunk(c):
@@ -4637,8 +4601,7 @@ def _exec_consumers(stage: "Usd.Stage") -> "dict[str, set[str]]":
 
     Every slot: a chunk feeding a merge's slot 2 is as consumed as one feeding slot 0, and
     calling it a tail would wire a view to the middle of a live branch. One traversal,
-    shared by exec_downstream and exec_tails -- each used to walk the stage itself, the
-    downstream walk once per level.
+    shared by exec_downstream and exec_tails.
     """
     consumers: "dict[str, set[str]]" = {}
     for prim in stage.Traverse():
@@ -5199,11 +5162,10 @@ def _load_chunks(
     context_prims = []
     for prim in (stage.Traverse(_LOAD_INCLUDE_INACTIVE) if prims is None else prims):
         # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
-        # It used to be typed Chunk and so came through this filter as a "context prim";
-        # typing it Scope made the loader skip it, and with the saved container
-        # unrecognised every chunk fell through to the root-layer branch and was rehomed
-        # under a fresh tab named after the file. Prim paths moved on every reload, so
-        # anything addressing a path -- a binding, a sublayer target -- stopped resolving.
+        # It is typed Scope, so it must be recognised here explicitly: with the saved
+        # container unrecognised every chunk would fall through to the root-layer branch
+        # and be rehomed under a fresh tab named after the file, moving prim paths on every
+        # reload and breaking anything that addresses a path (a binding, a sublayer target).
         is_chunks_scope = (
             str(prim.GetPath()) == _CHUNKS_ROOT
             and prim.GetTypeName() == _CHUNKS_ROOT_TYPENAME
@@ -5265,8 +5227,7 @@ def _load_chunks(
             if loaded_prim_paths is not None:
                 loaded_prim_paths.add(prim_path)
             if prim_path == _CHUNKS_ROOT:
-                # A scope holds chunks without being a context itself ("/chunks det är
-                # bara ett scope"). Recording the path is still what routes its children
+                # A scope holds chunks without being a context itself. Recording the path is still what routes its children
                 # to _EXISTING_CONTEXT, so they keep their saved home instead of being
                 # wrapped in a tab named after the file -- we just do not mint a context
                 # for the scope to be that home.
@@ -5371,33 +5332,26 @@ def _load_chunks(
                             # own worth restoring, but one that ALSO has a real backing module
                             # (e.g. AMD MaterialX Library, which uses CONTEXT purely for its
                             # collapsible/embedded-widget node styling) can carry a full set of
-                            # its own inputs: attrs, and those were silently dropped here --
-                            # every param reverted to its default on reload, live-reported as
-                            # "settings don't get saved" even though the file correctly held
-                            # them (confirmed: inputs:picked_title etc. were present in the
-                            # saved layer the whole time; only the read-back on load was
-                            # missing).
+                            # its own inputs: attrs, which must be read back here or every
+                            # param reverts to its default on reload.
                             _load_wire_inputs(prim, c)
                             _restore_disabled_state(prim, c)
                             _restore_collapsed_state(prim, c)
                             c.prim_path = str(prim.GetPath())
                             object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
                             if ancestor_group is not None:
-                                # A chunkgroup inside another chunkgroup. Every CONTEXT chunk
-                                # used to go to scene.add_chunk regardless, which is the scene
-                                # ROOT -- so a nested group came back as a SIBLING of the group
-                                # it was saved in, lost the name collision with it, and was
-                                # renamed, taking its contents to a different address and
-                                # leaving its parent empty.
+                                # A chunkgroup inside another chunkgroup. scene.add_chunk
+                                # is the scene ROOT, so a nested group must not go there:
+                                # it would come back as a SIBLING of the group it was saved
+                                # in, lose the name collision with it, and be renamed,
+                                # taking its contents to a different address.
                                 #
-                                # Cook order went with it: a group's inner chunks cook in
-                                # prim-path depth order, so an upstream Sublayer runs before a
-                                # BindMaterial nested deeper that reads what it brings onto the
-                                # stage. Flattened to siblings at one depth, the sort had
-                                # nothing left to order by and a reopened scene kept its
-                                # original material.
+                                # Cook order depends on it too: a group's inner chunks cook
+                                # in prim-path depth order, so an upstream Sublayer runs
+                                # before a BindMaterial nested deeper that reads what it
+                                # brings onto the stage.
                                 #
-                                # The save side was never wrong -- the file holds the nesting.
+                                # The file holds the nesting; this is what reads it back.
                                 #
                                 # _parent_context is what _on_param_added derives a group's
                                 # prim root from; without it the group falls back to the
@@ -5473,16 +5427,13 @@ def _load_chunks(
                 # exec edges. A container never lands in `deferred` though — it takes the
                 # CONTEXT branch above (or was recreated as a context before this loop) and
                 # is registered in group_chunk_by_path instead — so a map built from
-                # `deferred` alone resolved every edge with a group at either end to None
-                # and dropped it, in BOTH directions.
+                # `deferred` alone would resolve every edge with a group at either end to
+                # None and drop it, in BOTH directions.
                 #
-                # The Python DAG is what carries a change downstream, so the gap meant dirt
-                # died at the group: on a reopened file nothing downstream of a chunkgroup
-                # ever re-ran. Live-reported as a Stage Expression Switch behind a render
-                # group that never gated its light when the shot changed, and as "the same
-                # setup in a fresh scene works" — wiring a group up interactively goes
-                # through reconcile_dag_dependencies, which reads the live scene and has
-                # always seen groups.
+                # The Python DAG is what carries a change downstream, so such a gap would
+                # stop dirt at the group: on a reopened file nothing downstream of a
+                # chunkgroup would ever re-run. (Wiring a group interactively goes through
+                # reconcile_dag_dependencies, which reads the live scene and sees groups.)
                 chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
                 chunk_by_path.update(group_chunk_by_path)
                 chunks_with_dependencies: set[int] = set()
@@ -5515,7 +5466,7 @@ def _load_chunks(
                 # but the referenced chunk may not have been registered yet at that point
                 # in this same loop — resolution fails and no listener gets attached, so
                 # later edits to the referenced chunk never notify this param/widget even
-                # though a fresh .value read is correct. Now that every chunk in this batch
+                # though a fresh .value read is correct. Once every chunk in this batch
                 # is registered and every lofted value restored, retry once for anything
                 # still empty. This runs after _restore_lofted_params so a lofted param
                 # carrying an expression is covered by the same retry.
@@ -5558,11 +5509,8 @@ def _load_chunks(
                 # layer wouldn't exist until the execute loop below -- by which point the
                 # re-sort pass has already run and can never include it. The layer then
                 # never gets spliced into the stage even though get_or_create_layer() is
-                # called there too (live-reported as a saved scene's Sublayer coming back
-                # empty on reload; only reliably worked before because a stray premature
-                # notify from that same ProxyParam path happened to create/splice it in
-                # ahead of time as a side effect -- see ProxyParam.__setattr__'s "value"
-                # case). get_or_create_layer() is idempotent, so this is a no-op for every
+                # called there too, and a saved Sublayer comes back empty on reload.
+                # get_or_create_layer() is idempotent, so this is a no-op for every
                 # chunk that already got one the normal way.
                 if lm.initialized:
                     for _, c in deferred:
@@ -5614,11 +5562,9 @@ def _load_chunks(
                 # upstream -- only the GROUP itself is wired into the outer chain -- so the
                 # DAG imposes no order between them and the outer chunks whose content they
                 # act on. In `deferred` order a group's inner root could therefore cook
-                # first, against a stage that did not yet hold what it needs. Live-reported:
-                # reopening a saved scene ran an AMD MaterialX Library's inner BindMaterial
-                # before the Sublayer feeding the group had brought the mesh onto the stage,
-                # so it found no target, authored nothing, and never ran again -- the file
-                # opened with the original material still bound. Prim-path depth is exactly
+                # first, against a stage that did not yet hold what it needs -- an inner
+                # BindMaterial running before the Sublayer feeding the group has brought the
+                # mesh onto the stage finds no target and authors nothing. Prim-path depth is exactly
                 # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
                 # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
                 # chunks at the same depth keep their existing relative order.
@@ -5736,9 +5682,8 @@ def export_chunks(scene: "core.SceneSender", path: "str | Path") -> None:
     prim specs and nothing else, and those two are not prim data: they are stage
     metadata, resolved only from a stage's own root/session layer and never composed up
     from anything underneath. Without an opinion of its own the exported file falls back
-    to USD's global default — reported live as a Z-up, centimetre scene that reopened
-    Y-up in metres, with every chunk-authored prim lying on its side at a hundredth of
-    its size.
+    to USD's global default: a Z-up, centimetre scene would reopen Y-up in metres, with
+    every chunk-authored prim lying on its side at a hundredth of its size.
 
     Chunks that arrive by composition -- a sequence network sublayered into this file, or
     referenced in under a chunkgroup -- are not this file's to write out. Only the layers
@@ -6111,9 +6056,9 @@ def _reload_cached_layer(path: "str | Path") -> None:
 
     Sdf keeps one layer per path for the whole process, and Export writes the file without
     touching it. So saving over a file already open in this session -- most often the very
-    scene being worked on -- left the old contents cached: reopening it, dropping it back
-    into the graph, or anything else that goes through FindOrOpen got the scene as it was
-    BEFORE the save, and a later Save() of that layer would have written the old contents
+    scene being worked on -- would leave the old contents cached: reopening it, dropping it
+    back into the graph, or anything else that goes through FindOrOpen would get the scene
+    as it was BEFORE the save, and a later Save() of that layer would write the old contents
     back over the new file.
 
     When the file is the live stage's own root layer, the reload is a composition no-op for
@@ -6135,10 +6080,8 @@ def _carry_ancestor_specs(flat: "Sdf.Layer", dst: "Sdf.Layer", prim_path: "Sdf.P
     """Give an exported chunk's ancestors the typename AND specifier they have on the stage.
 
     Only chunk prims are copied across; their ancestors are conjured by
-    Sdf.CreatePrimInLayer, which makes a bare `over` with no typename. The /chunks scope
-    used to survive anyway, by accident: it was itself typed Chunk, so it was in the copy
-    set and came across as a full def. Typing it Scope took it out of that set and left
-    only the over.
+    Sdf.CreatePrimInLayer, which makes a bare `over` with no typename. The /chunks scope is
+    typed Scope, not Chunk, so it is not in the copy set and would arrive as only that over.
 
     An over is not IsDefined(), and Usd.Stage.Traverse() prunes at an undefined prim --
     taking the whole chunk subtree with it. So an exported file loaded back as an empty
@@ -6662,11 +6605,9 @@ def _rebuild_runtime_params(prim: "Usd.Prim", chunk: "core.ChunkBase") -> None:
         name = attr.GetName()
         if not name.startswith(_INPUTS_PREFIX):
             continue
-        # inputs:chunk is the EXEC input, not a param. Rebuilding it as one gave the
-        # reloaded chunk a stray "chunk" dropdown, and -- worse -- turned its exec wire into
-        # a param connection, so the graph drew the chain into it as an expression edge.
-        # Live-reported after a save/reopen: the wire was still there and still worked, but
-        # came back marked Exp.
+        # inputs:chunk is the EXEC input, not a param. Rebuilding it as one would give the
+        # reloaded chunk a stray "chunk" dropdown, and -- worse -- turn its exec wire into a
+        # param connection, drawn by the graph as an expression edge.
         if is_exec_input_name(name):
             continue
         *group_names, param_name = name[len(_INPUTS_PREFIX):].split(":")
@@ -6766,12 +6707,12 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: "core.ChunkBase") -> None:
                 # the value once it is.
                 #
                 # Through connect_usd_attr, not a hand-rolled append + _author_driven_connections:
-                # that bypassed _driven_var_selections, so a param bound inside a variant
-                # (show_attribute) lost its variant scope on this reload path specifically --
-                # _connect_param_attr above left param._var_selections alone (its var_selections
-                # defaults to None, "don't touch"), but the driven connection this authors would
-                # otherwise be written outside the variant regardless, leaking into every variant
-                # the same way the direct write path did before this fix.
+                # only connect_usd_attr honours _driven_var_selections, so a param bound inside a
+                # variant (show_attribute) keeps its variant scope on this reload path.
+                # _connect_param_attr above leaves param._var_selections alone (its
+                # var_selections defaults to None, "don't touch"), but the driven connection
+                # this authors would otherwise be written outside the variant, leaking into
+                # every variant.
                 if real_attr := stage.GetAttributeAtPath(Sdf.Path(existing)):
                     param.connect_usd_attr(real_attr, var_selections=getattr(param, "_var_selections", ()))
                 # As in _sync_param_input: param._var_selections described `existing` (the

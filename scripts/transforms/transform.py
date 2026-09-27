@@ -22,11 +22,10 @@ def _rescale_translate_range(node, stage):
     """Keep the translate sliders' range at a constant ~10m-equivalent span regardless of
     the stage's declared scale, instead of a flat -1000..1000 in raw stage units. That flat
     range only felt right by accident for a centimeters-scale stage (metersPerUnit=0.01,
-    USD's own default when unauthored -- 10 / 0.01 = 1000, exactly the old constant); a
-    meters-scale stage (metersPerUnit=1) got the same +-1000 range applied to a scene where
-    objects are typically single-digit units across, so a small drag (or typing "5") could
-    move something many times its own size -- reported live as translate "flying away" and
-    being unusably coarse to fine-tune."""
+    USD's own default when unauthored -- 10 / 0.01 = 1000); a meters-scale stage
+    (metersPerUnit=1) would get the same +-1000 range applied to a scene where objects are
+    typically single-digit units across, so a small drag (or typing "5") could move
+    something many times its own size."""
     meters_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
     if not meters_per_unit:
         return
@@ -124,11 +123,11 @@ def execute(node):
         over = stage.OverridePrim(target_path)
         xformable = UsdGeom.Xformable(over)
 
-        # This chunk's own op, not the shared xformOp:transform every chunk used to write.
-        # Two chunks placing one prim were competing for one attribute, and USD settles that
-        # by picking the strongest layer and discarding the rest -- which is why a Transform
-        # and an Offset Transform on the same prim used to annihilate each other rather than
-        # compose. Owning a named op each, they compose.
+        # This chunk's own op, not a shared xformOp:transform. Two chunks placing one prim
+        # would compete for one attribute, and USD settles that by picking the strongest
+        # layer and discarding the rest -- a Transform and an Offset Transform on the same
+        # prim would annihilate each other rather than compose. Owning a named op each,
+        # they compose.
         op_name = chunk_utils.xform_op_name(node)
 
         # Built from the exec chain, not from what happens to be composed at this instant.
@@ -167,12 +166,9 @@ def gizmo_changed(node, gizmo, value):
     everything upstream of it -- the asset's ops, and any chunk before it in the chain -- so
     writing the dragged matrix in raw would apply that upstream placement twice.
 
-    This replaces the old seeding step, and is why that step is gone. Because the op used to
-    REPLACE the prim's transform, a newly created chunk had to be pre-loaded with the prim's
-    current placement or the object jumped to the origin the moment you grabbed it -- and
-    only the auto-created path did that, so the same node behaved differently depending on
-    whether it was dragged into existence or added by hand. Composing needs no seeding: an
-    untouched chunk contributes identity and moves nothing.
+    No seeding is needed: the op composes on top of the prim's transform rather than
+    replacing it, so an untouched chunk contributes identity and moves nothing, and a node
+    behaves the same whether it was dragged into existence or added by hand.
     """
     if gizmo != "transform":
         return False

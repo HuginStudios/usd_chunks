@@ -71,8 +71,7 @@ class BlenderScene(SceneSender):
 
         NOT Blender's own object selection: a USD prim shown by the live draw handler
         (viewport.py) has no Blender object at all to select in the first place, so that
-        road really is a dead end (which is what this docstring used to be about, before
-        viewport picking existed) -- this instead reads
+        road is a dead end -- this instead reads
         chunk_blender_nodegraph.get_picked_prim_paths(), written by viewport.py's
         USDCHUNKS_OT_pick_prim from its own UsdImagingGL.Engine.TestIntersection call.
         """
@@ -189,13 +188,13 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
 # and overriding NODE_HT_header.draw wholesale risks fighting Blender's own View/Select/
 # Add/Node menus across versions. That widget calls bpy.ops.node.new_node_tree(), which
 # knows nothing about USD: it leaves a blank tree with no stage, no scene, no view behind
-# it -- reported as "it doesn't seem to execute" (the Add menu comes from the registry,
-# which only a real _open_stage populates), and switching away and back "loses" the
-# ORIGINAL network's connections because active_view() is a single global and now points
-# at this second, empty view instead.
+# it -- nothing executes (the Add menu comes from the registry, which only a real
+# _open_stage populates), and switching away and back "loses" the ORIGINAL network's
+# connections because active_view() is a single global and would point at this second,
+# empty view instead.
 #
-# Tried bpy.msgbus.subscribe_rna on SpaceNodeEditor.node_tree first -- it did not fire
-# reliably, because a msgbus callback runs with whatever bpy.context Blender happens to
+# bpy.msgbus.subscribe_rna on SpaceNodeEditor.node_tree does not fire reliably for this,
+# because a msgbus callback runs with whatever bpy.context Blender happens to
 # have at notification time, which is not guaranteed to be the node editor whose property
 # actually changed. A timer callback's context has the same problem, so this does not
 # trust bpy.context.space_data either -- it scans every NODE_EDITOR area directly, the way
@@ -239,12 +238,11 @@ def _show_tree(context, tree) -> None:
     """Pin the node editor to `tree`.
 
     `space_data.edit_tree` (what `_active_tree` reads) is read-only -- it is derived from
-    `node_tree` plus any node-group diving depth. Without this, New/Open created or opened
-    a tree that nothing on screen ever pointed at: the editor kept showing whatever tree
-    (or nothing) it already had pinned, `_active_tree`'s fallback picked among however many
-    ChunkNetwork trees exist in the file by iteration order, and a graph could be built
-    into a tree the user was not looking at -- reported as "the grid is there but there are
-    no nodes on it".
+    `node_tree` plus any node-group diving depth. Without this, New/Open would create or
+    open a tree that nothing on screen points at: the editor would keep showing whatever
+    tree (or nothing) it already had pinned, `_active_tree`'s fallback would pick among
+    ChunkNetwork trees by iteration order, and a graph could be built into a tree the user
+    is not looking at.
     """
     space = getattr(context, "space_data", None)
     if space is not None and hasattr(space, "node_tree"):

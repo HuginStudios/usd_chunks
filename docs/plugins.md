@@ -4,7 +4,7 @@ Plugins refer to implementations of usd_chunks for specific applications. For ex
 
 # Implementing a UI plugin
 
-Although the chunks works as-is with USD, a major benefit of the chunks are that they can easily be represented in graphically. The initial idea of the library was to have a simple way for users to create plugin for Usdview, without having to create actual plugins. The chunks themselves are, simply put, containers of data with connections to and from said data. Any modification to the data will send a notice, and any listner may react to the notices. This makes implementing a ui framework on top of the chunks straight-forward, as the ui framework just need to implement the widget logic and listen to some notices.
+Although the chunks works as-is with USD, a major benefit of the chunks are that they can easily be represented in graphically. The initial idea of the library was to have a simple way for users to create plugin for Usdview, without having to create actual plugins. The chunks themselves are, simply put, containers of data with connections to and from said data. Any modification to the data will send a notice, and any listener may react to the notices. This makes implementing a ui framework on top of the chunks straight-forward, as the ui framework just need to implement the widget logic and listen to some notices.
 
 There are some chunk-specifics though that will need to be considered when implementing an external ui framework.
 
@@ -48,7 +48,7 @@ the **setup_chunk_widget()** function is implemented by [ChunkParamWidgetBase][u
 
 The get_* and set_* functions of a ChunkParamWidgetBase should set/get the value of the ui widget only. Any changes to the value of the widget should trigger **value_changed()** of ChunkParamWidgetBase. The **value_changed()** function is concrete and responsible for setting the value back to the actual parameter.
 
-The handle to the chunk param is a weakref.ref() object, meaning it may be set to None in case the param has beed deleted. Hence, it's adviced to check if the param is None prior to doing anything with it. 
+The handle to the chunk param is a weakref.ref() object, meaning it may be set to None in case the param has been deleted. Hence, it's advised to check if the param is None prior to doing anything with it. 
 
 ### ChunkWidgetFactoryBase
 A ui implementation may want to create a subclass of [ChunkWidgetFactoryBase][usd_chunks.chunk_widget_api.ChunkWidgetFactoryBase] for mapping various params to their respective ui widgets. An example from chunk_qt:
@@ -108,9 +108,9 @@ All chunk objects (chunks, groups, params) are dynamic, meaning they may be crea
 Similarly to the ChunkParamWidget, group widget classes can subclass the abstract [ChunkContainerWidgetBase][usd_chunks.chunk_core.ChunkContainerWidgetBase] class which provides default implementations for much of the chunk->widget communication. However, any ui library specific functionality need be implemented by the ui plugin. See the chunk_qt ContainerWidget for an example.
 
 ## CHUNK_LOADED
-A ui implementation may listen to the creation of chunks using the CHUNK_LOADED notice. When recieved, the ui implementation should create the chunk and all its parameters. 
+A ui implementation may listen to the creation of chunks using the CHUNK_LOADED notice. When received, the ui implementation should create the chunk and all its parameters. 
 
-The ChunkWidgetDocker of the chunk_qt plugin listen to this notice, and will create the chunk widgets whenever the notice is recieved. A similar implementation may be relevant in other ui plugins as well.
+The ChunkWidgetDocker of the chunk_qt plugin listen to this notice, and will create the chunk widgets whenever the notice is received. A similar implementation may be relevant in other ui plugins as well.
 
 
 # Application plugins
