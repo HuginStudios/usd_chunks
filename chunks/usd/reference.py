@@ -74,7 +74,8 @@ def execute(node):
             ref = Sdf.Reference(reference_path)
 
     prim_type = node.get_param("prim_type").value or "Xform"
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim or not prim.IsDefined():
             prim = stage.DefinePrim(target_path, prim_type)
@@ -122,6 +123,6 @@ def config():
         the network, as with a chunkgroup. Tweaks are overrides in the current file; the
         referenced network file is never written to.
 
-        Import is also variant-context-aware via author_in_variant_context, so the
+        Import is also variant-context-aware via author_in_variant_contexts, so the
         reference is authored inside any active variant selection on the stage.
         """)

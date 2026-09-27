@@ -591,7 +591,7 @@ def _author_shader(node, stage, sdef, prim_path, shader_path) -> None:
 
     bind_param = node.get_param("bind_to")
     if bind_param and bind_param.value:
-        for target_path in chunk_utils.iter_prim_targets(stage, bind_param):
+        for target_path in chunk_utils.author_in_variant_contexts(stage, bind_param):
             prim = stage.GetPrimAtPath(target_path)
             if prim and prim.IsValid():
                 UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)

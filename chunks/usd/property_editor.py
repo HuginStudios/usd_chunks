@@ -25,25 +25,21 @@ def build(myChunk: chunk.Chunk, notice, sender):
     if not stage:
         return
 
-    # resolve_paths(), not get_prims(): a selection inside a variant comes back as
-    # /asset{color=red}/geo, and Usd.Stage.GetPrimAtPath doesn't understand that syntax
-    # (it's a chunk_utils-only DSL) -- get_prims() would resolve it to nothing and the
-    # panel would silently show no attributes at all.
-    for path_str in ppParm.resolve_paths():
-        # Enters the stage's active variant selection for the path (a no-op for a plain
-        # one), so both the attribute defaults read below and target_path itself resolve
-        # against the intended variant rather than whatever selection happened to already
-        # be active.
-        with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
-            prim = stage.GetPrimAtPath(target_path)
-            if not prim.IsValid():
-                continue
-            _, _, var_selections = chunk_utils.split_variant_path(path_str)
-            prim_grp = chunk.Group(prim.GetName())
-            dynGrp.add_param(prim_grp)
-            # var_selections is recorded on every generated param, so a later edit from its
-            # slider/menu re-enters this same variant instead of authoring outside it.
-            chunk.show_attribute(prim, prim_grp, collapse_non_inputs=True, var_selections=var_selections)
+    # Not get_prims(): a selection inside a variant comes back as /asset{color=red}/geo,
+    # which Usd.Stage.GetPrimAtPath doesn't understand (it's a chunk_utils-only DSL), so
+    # get_prims() would resolve it to nothing and the panel would silently show no
+    # attributes at all. The loop yields /asset/geo with "red" selected, so the attribute
+    # defaults read below resolve against the intended variant.
+    for target_path in chunk_utils.author_in_variant_contexts(stage, ppParm):
+        prim = stage.GetPrimAtPath(target_path)
+        if not prim.IsValid():
+            continue
+        prim_grp = chunk.Group(prim.GetName())
+        dynGrp.add_param(prim_grp)
+        # Called inside the loop, so show_attribute records the variant it is in on every
+        # generated param, and a later edit from its slider/menu re-enters it instead of
+        # authoring outside it.
+        chunk.show_attribute(prim, prim_grp, collapse_non_inputs=True)
 
 
 def main():

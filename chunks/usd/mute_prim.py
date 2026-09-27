@@ -30,7 +30,7 @@ def execute(node):
     if not primpath_param.value:
         return
 
-    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             prim = stage.OverridePrim(target_path)

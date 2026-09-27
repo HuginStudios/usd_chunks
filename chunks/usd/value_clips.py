@@ -246,7 +246,7 @@ def execute(node):
         return
 
     covered = []
-    for target_path in chunk_utils.iter_prim_targets(stage, primpath_param):
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.OverridePrim(target_path)
         clips = Usd.ClipsAPI(prim)
         names = []

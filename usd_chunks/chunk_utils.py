@@ -894,38 +894,77 @@ def wire_shader_input(
     return False
 
 
-def iter_prim_targets(stage, param):
-    """Every prim resolved from `param`, each yielded inside author_in_variant_context.
+def author_in_variant_contexts(stage, param, unique=False):
+    """Every prim path resolved from `param`, each yielded inside its variant edit context.
 
-    Replaces the repeated::
+    The one way a chunk authors to the prims its path param names, whether it creates one
+    prim or modifies many::
 
-        for path_str in param.resolve_paths():
-            with author_in_variant_context(stage, path_str) as target_path:
-                ...
+        for path in author_in_variant_contexts(stage, primpath_param, unique=True):
+            stage.DefinePrim(path, "Camera")
 
-    with::
-
-        for target_path in iter_prim_targets(stage, param):
-            ...
+    A value of /asset{color=red}/geo yields /asset/geo with the "red" variant's edit
+    context open, so everything the loop body authors under /asset lands inside that
+    variant. Authoring elsewhere passes through unchanged. A path with no selections
+    yields as-is, in the ordinary edit target.
 
     Author inside the loop body, never after it. The variant context is open only while
-    the generator is suspended at its yield: `list(iter_prim_targets(...))` walks every
-    path and leaves every context, so anything authored to those paths afterwards lands
-    outside the variant. Reading a prim after the loop is fine; binding, defining or
+    the generator is suspended at its yield: `list(author_in_variant_contexts(...))` walks
+    every path and leaves every context, so anything authored to those paths afterwards
+    lands outside the variant. Reading a prim after the loop is fine; binding, defining or
     setting on it is not -- that would put "/asset{color=red}/geo" bindings on /asset/geo
-    for every colour. A caller that has to collect first re-enters with
-    author_in_variant_context per path string when it writes.
+    for every colour. A caller that only needs the paths, not the authoring scope, uses
+    param.resolve_paths() with split_variant_path instead.
 
     Args:
         stage: The stage to author on.
         param: A LineEdit-like param with .resolve_paths().
+        unique: Claim a free path first, for a chunk that creates its prim. Applies only to
+            a single literal path with no variant selections, outside a load: the value is
+            bumped through get_unique_path (which also clears the chunk's anonymous layer,
+            so its own previous prim does not count as taken) and written back to the
+            param, since the value is what tells two chunks of the same kind apart in a
+            saved scene. A variant path, list, glob, collection or expression is left as it
+            is, and so is every value while a load restores the path it saved.
 
     Yields:
         Each target path, with its variant selections stripped.
     """
+    if unique:
+        _claim_unique_path(stage, param)
     for path_str in param.resolve_paths():
         with author_in_variant_context(stage, path_str) as target_path:
             yield target_path
+
+
+def target_paths(param):
+    """Every prim path resolved from `param`, variant selections stripped, for reading.
+
+    The read-only counterpart of author_in_variant_contexts: no edit context is entered, so
+    nothing authored with these paths lands inside a variant. For a chunk that only looks
+    at its targets -- a pivot, a relationship's target list, the surface being painted.
+
+    Args:
+        param: A LineEdit-like param with .resolve_paths().
+
+    Returns:
+        The resolved paths, each with its {set=variant} selections removed, in order and
+        without duplicates -- two variants of one prim strip to the same path, and a
+        relationship should not target it twice.
+    """
+    return list(dict.fromkeys(split_variant_path(path_str)[1] for path_str in param.resolve_paths()))
+
+
+def _claim_unique_path(stage, param):
+    """Bump a create chunk's single literal path to a free one and record it on the param."""
+    value = (param.value or "").strip()
+    if not value or chunk_notice._loading_stage:
+        return
+    if re.search(r"[\s,*?%{]", value):
+        return
+    unique_path = get_unique_path(stage, param)
+    if unique_path and unique_path != param.value:
+        param.value = unique_path
 
 
 def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform"):
@@ -1019,7 +1058,7 @@ _ACTIVE_VARIANT_SCOPES: dict = {}
 
 
 @contextmanager
-def author_in_variant_selections(stage, var_selections):
+def author_in_variant_selections(stage, var_selections, layer=None):
     """Enter already-parsed variant selections; the lower half of author_in_variant_context.
 
     For a caller that holds a parsed selections list rather than a path string to parse.
@@ -1038,11 +1077,22 @@ def author_in_variant_selections(stage, var_selections):
         stage: The stage to author on.
         var_selections: (anchor_prim_path, variant set, variant) tuples, as
             split_variant_path returns them.
+        layer: The layer the variant's content is authored into -- the chunk's own layer
+            for a chunk's edit, since a chunk's edits and results always go there. Used
+            only when no variant scope is open on this stage yet; once one is, the new
+            scopes compose on it, which is already built on the right layer. None builds
+            on whichever edit target is active, which inside a cook is the chunk's layer
+            already -- it is a UI edit, made outside any cook, that needs it passed, or
+            the write lands in the stage's edit target (the user's file) instead.
 
     Yields:
         None, once every selection's edit context is entered.
     """
     edit_layer = get_edit_layer(stage)
+    # Only the outermost scope is built on `layer`: one already open means an enclosing
+    # author_in_variant_* call chose its layer, and resetting the target to a plain one
+    # here would drop that enclosing variant.
+    base_layer = layer if not any(key[0] == id(stage) for key in _ACTIVE_VARIANT_SCOPES) else None
     edit_target = Usd.EditTarget(edit_layer)
 
     with ExitStack() as stack:
@@ -1090,16 +1140,58 @@ def author_in_variant_selections(stage, var_selections):
             # drop the scope -- so a nested re-entry still sees it open until we are out.
             stack.callback(_ACTIVE_VARIANT_SCOPES.pop, scope, None)
             stack.callback(_restore)
-            stack.enter_context(vset.GetVariantEditContext())
+            if base_layer is not None:
+                stack.enter_context(Usd.EditContext(stage, vset.GetVariantEditTarget(base_layer)))
+                base_layer = None
+            else:
+                stack.enter_context(vset.GetVariantEditContext())
         yield
+
+
+def open_variant_selections(stage, prim_path):
+    """The variant scopes open right now that `prim_path` is authored inside, outermost first.
+
+    For code that records where a prim was authored so a later edit can go back there --
+    show_attribute's generated params -- without being handed the path string it came from.
+    Called inside author_in_variant_contexts' loop it returns exactly the selections that
+    loop entered for this prim; outside any scope it returns [].
+
+    Args:
+        stage: The stage the scopes were opened on.
+        prim_path: The prim, with its variant selections stripped.
+
+    Returns:
+        (anchor_prim_path, variant set, variant) tuples, as split_variant_path returns them.
+    """
+    path = Sdf.Path(str(prim_path))
+    # Insertion order is entry order, and scopes are entered outermost first -- the order
+    # author_in_variant_selections needs to re-enter them.
+    return [
+        (anchor, vs_name, variant)
+        for (stage_id, anchor, vs_name), variant in _ACTIVE_VARIANT_SCOPES.items()
+        if stage_id == id(stage) and path.HasPrefix(Sdf.Path(anchor))
+    ]
+
+
+def chunk_write_layer(stage, owner):
+    """The chunk layer `owner`'s edits go into, or None when it has none or it is muted.
+
+    A chunk's edits and results always go into its own layer, variant or not. None (USD
+    refuses to target a muted layer) leaves the caller on the ambient edit target, as
+    before there was a layer to pass.
+    """
+    layer = owner.get_edit_context() if owner is not None else None
+    if layer is None or stage.IsLayerMuted(layer.identifier):
+        return None
+    return layer
 
 
 def edit_context_for(stage, var_selections, fallback_layer=None):
     """The one edit context for authoring an attribute's value.
 
-    That is inside var_selections if given (re-entering the recorded variant via
-    author_in_variant_selections), otherwise fallback_layer -- or the ambient edit target if
-    fallback_layer is None.
+    That is fallback_layer -- or the ambient edit target if it is None -- and, if
+    var_selections are given, inside the recorded variant of that same layer (re-entered
+    via author_in_variant_selections).
 
     var_selections cannot be resolved from the attribute alone the way get_attr_home_layer
     resolves a plain layer: composition only shows the CURRENTLY selected variant's specs,
@@ -1120,14 +1212,15 @@ def edit_context_for(stage, var_selections, fallback_layer=None):
     Args:
         stage: The stage to author on.
         var_selections: Recorded variant selections, or None.
-        fallback_layer: The layer to author into outside a variant, or None for the ambient
-            edit target.
+        fallback_layer: The layer to author into, inside a variant or not, or None for the
+            ambient edit target. For a chunk's edit this is the chunk's own layer: a chunk's
+            edits and results always go there, variant or not.
 
     Returns:
         A context manager to author inside.
     """
     if var_selections:
-        return author_in_variant_selections(stage, var_selections)
+        return author_in_variant_selections(stage, var_selections, fallback_layer)
     if fallback_layer is None:
         return nullcontext()
     return Usd.EditContext(stage, fallback_layer)

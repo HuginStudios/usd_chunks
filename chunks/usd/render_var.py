@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pxr import Sdf, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_utils
 
 
 # color4f is what V-Ray asks for on every one of its render elements, whatever the
@@ -120,18 +120,8 @@ def execute(node):
     if not raw_path:
         return
 
-    _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections and not chunk_notice._loading_stage:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
-        # Recorded as a value, not left as a local. This is the only thing telling this
-        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
-        # values -- without it two cameras reopened both claiming /cameras/camera1 and
-        # authored over one prim. Guarded so a path that did not move is not written back
-        # on every cook.
-        if raw_path != node.get_param("primpath_location").value:
-            node.get_param("primpath_location").value = raw_path
-
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
         render_var = UsdRender.Var.Define(stage, Sdf.Path(target_path))
         if not render_var:
             return
@@ -140,10 +130,6 @@ def execute(node):
         render_var.CreateSourceNameAttr().Set(node.get_param("source_name").value)
         render_var.CreateSourceTypeAttr().Set(node.get_param("source_type").value)
         _author_driver_params(node, render_var.GetPrim())
-
-        authored = render_var.GetPrim().GetPath().pathString
-        if not var_selections and authored != target_path:
-            node.get_param("primpath_location").value = authored
 
 
 def config():

@@ -94,26 +94,14 @@ def execute(node):
 
     chunk_layer.Clear()
 
-    _, _, var_selections = chunk_utils.split_variant_path(raw_path)
-    if not var_selections:
-        raw_path = chunk_utils.get_unique_path(stage, raw_path)
-        # Recorded as a value, not left as a local. This is the only thing telling this
-        # chunk apart from another of the same kind, and a saved scene carries chunk-prim
-        # values -- without it two cameras reopened both claiming /cameras/camera1 and
-        # authored over one prim. Guarded so a path that did not move is not written back
-        # on every cook.
-        if raw_path != node.get_param("primpath_location").value:
-            node.get_param("primpath_location").value = raw_path
-
-    node._last_light_path = raw_path
-
-    with chunk_utils.author_in_variant_context(stage, raw_path) as target_path:
+    primpath_param = node.get_param("primpath_location")
+    for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
+        # After the claim, which may have moved the path -- the cache above compares the
+        # value the next cook starts with, and that is the claimed one.
+        node._last_light_path = primpath_param.value
         prim = stage.DefinePrim(target_path, light_type)
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
-        if not var_selections and prim.GetPath().pathString != target_path:
-            node.get_param("primpath_location").value = prim.GetPath().pathString
-            node._last_light_path = prim.GetPath().pathString
 
         # Re-fetch by path rather than reusing the handle from DefinePrim. Applying an API
         # schema above resyncs the prim, and a resync EXPIRES the handle -- reading an

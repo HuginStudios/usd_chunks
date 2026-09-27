@@ -125,7 +125,7 @@ def test_resolve_dedup_preserves_order():
     assert sorted(result) == ["/World/a", "/World/b", "/World/c"]
 
 
-# --- iter_prim_targets -----------------------------------------------------
+# --- author_in_variant_contexts / target_paths ------------------------------
 
 
 class _StubParam:
@@ -136,10 +136,80 @@ class _StubParam:
         return self._paths
 
 
-def test_iter_prim_targets_yields_resolved_paths():
+class _PathParam:
+    """A LineEdit stand-in whose paths resolve from its value, like the real one."""
+
+    def __init__(self, stage, value):
+        self._stage = stage
+        self.value = value
+
+    @property
+    def raw_value(self):
+        return self.value
+
+    def resolve_paths(self):
+        return CU.resolve_prim_paths(self._stage, self.value)
+
+
+def _variant_stage():
+    stage = _stage("/asset")
+    vset = stage.GetPrimAtPath("/asset").GetVariantSets().AddVariantSet("lod")
+    vset.AddVariant("high")
+    vset.AddVariant("low")
+    vset.SetVariantSelection("low")
+    return stage
+
+
+def test_author_in_variant_contexts_yields_resolved_paths():
     stage = _stage("/World/a", "/World/b")
     param = _StubParam(["/World/a", "/World/b"])
-    assert list(CU.iter_prim_targets(stage, param)) == ["/World/a", "/World/b"]
+    assert list(CU.author_in_variant_contexts(stage, param)) == ["/World/a", "/World/b"]
+
+
+def test_author_in_variant_contexts_authors_inside_the_variant():
+    """A {set=variant} path yields the stripped path with that variant's edit context open."""
+    stage = _variant_stage()
+    param = _StubParam(["/asset{lod=high}/geo"])
+    for path in CU.author_in_variant_contexts(stage, param):
+        assert path == "/asset/geo"
+        stage.DefinePrim(path, "Xform")
+
+    layer = stage.GetRootLayer()
+    assert layer.GetPrimAtPath("/asset{lod=high}geo")
+    assert not layer.GetPrimAtPath("/asset/geo")
+    # The selection it had to set to author is put back afterwards.
+    assert stage.GetPrimAtPath("/asset").GetVariantSets().GetVariantSelection("lod") == "low"
+
+
+def test_target_paths_strips_selections_without_entering_a_context():
+    stage = _variant_stage()
+    param = _StubParam(["/asset{lod=high}/geo", "/other"])
+    assert CU.target_paths(param) == ["/asset/geo", "/other"]
+
+
+def test_target_paths_drops_paths_that_strip_to_the_same_prim():
+    """Two variants of one prim are one relationship target, first occurrence kept."""
+    param = _StubParam(["/b", "/asset{lod=high}/geo", "/asset{lod=low}/geo", "/a"])
+    assert CU.target_paths(param) == ["/b", "/asset/geo", "/a"]
+
+
+def test_unique_claims_a_free_path_and_writes_it_back():
+    stage = _stage("/World/cam")
+    stage.GetPrimAtPath("/World/cam").SetTypeName("Camera")
+    param = _PathParam(stage, "/World/cam")
+    assert list(CU.author_in_variant_contexts(stage, param, unique=True)) == ["/World/cam1"]
+    assert param.value == "/World/cam1"
+
+
+def test_unique_leaves_variant_paths_and_lists_alone():
+    """Uniqueness would test a variant path against whatever variant is selected now, and a
+    list or glob names existing targets -- neither is a path this chunk is claiming."""
+    stage = _variant_stage()
+    stage.DefinePrim("/asset/geo", "Xform")
+    for value in ("/asset{lod=high}/geo", "/asset/geo, /asset", "/asset/*"):
+        param = _PathParam(stage, value)
+        list(CU.author_in_variant_contexts(stage, param, unique=True))
+        assert param.value == value
 
 
 # --- chunk_internal_layer_ids -----------------------------------------------

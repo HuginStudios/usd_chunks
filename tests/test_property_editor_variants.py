@@ -122,14 +122,55 @@ def test_a_plain_non_variant_prim_is_unaffected(scene):
     assert stage.GetPrimAtPath("/loose").GetAttribute(_ATTR).Get() == pytest.approx(7.0)
 
 
+def test_a_prim_only_in_one_variant_takes_the_edit_in_the_chunks_layer(scene):
+    """A prim that exists only inside red is not on the stage while blue is selected, which
+    it is again as soon as the build restores the selection. Every write path looked the
+    attribute up before re-entering red, found nothing, and dropped the edit -- a Light at
+    /asset{look=b}/key reset to intensity 1 on every edit. The edit also has to land in the
+    chunk's own layer, not the stage's edit target: a chunk's edits always go there."""
+    stage = scene.get_stage()
+    vset = stage.GetPrimAtPath("/asset").GetVariantSets().GetVariantSet("color")
+    vset.SetVariantSelection("red")
+    with vset.GetVariantEditContext():
+        only = UsdGeom.Xform.Define(stage, "/asset/only_red").GetPrim()
+        only.CreateAttribute(_ATTR, Sdf.ValueTypeNames.Float).Set(5.0)
+    vset.SetVariantSelection("blue")
+
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("property_editor")
+    node = (mod.create() if mod.loaded else mod.load())[0]
+    scene.add_chunk(node)
+    node.get_param("prim").value = "/asset{color=red}/only_red"
+
+    dyn_grp = node.get_param("dyn_grp", chunk.is_group)
+    only_grp = next(g for g in dyn_grp.get_my_params() if g.name == "only_red")
+    only_grp.get_param(_ATTR).value = 8.0
+
+    assert not stage.GetPrimAtPath("/asset/only_red").IsValid(), "blue has no such prim"
+    vset.SetVariantSelection("red")
+    assert stage.GetPrimAtPath("/asset/only_red").GetAttribute(_ATTR).Get() == pytest.approx(8.0)
+
+    spec_path = "/asset{color=red}only_red." + _ATTR
+    root_spec = stage.GetRootLayer().GetAttributeAtPath(spec_path)
+    assert root_spec.default == pytest.approx(5.0), "the stage's edit target is left alone"
+    chunk_spec = node.get_edit_context().GetAttributeAtPath(spec_path)
+    assert chunk_spec and chunk_spec.default == pytest.approx(8.0), "the edit is in the chunk's layer"
+
+
 def test_the_variant_scope_survives_a_save_and_reopen(scene, tmp_path):
     """_restore_dynamic_params (chunk_stage.py) re-promotes a reloaded param's direct
     real-attr binding into one its chunk storage attr drives -- by hand, not through
     connect_usd_attr -- so it used to skip _driven_var_selections and re-author the
     connection outside the variant on reload, even though the live edit (the test above)
-    stayed correctly scoped in the same session."""
+    stayed correctly scoped in the same session.
+
+    The chunk is made through the registry, so it saves as "property_editor" and reopens by
+    re-running its module. Built from main() alone it saves as "runtime", which reopens
+    without its attribute params -- this passed that way only while the live edit leaked
+    into the root layer, which the hand-copy of /asset below then carried across. A chunk's
+    edits go into its own layer, so the reopened chunk has to put 9.0 back itself."""
     stage = scene.get_stage()
-    node = property_editor.main()
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("property_editor")
+    node = (mod.create() if mod.loaded else mod.load())[0]
     scene.add_chunk(node)
     node.get_param("prim").value = "/asset{color=red}/geo"
     node.get_param("dyn_grp", chunk.is_group)

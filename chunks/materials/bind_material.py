@@ -32,11 +32,11 @@ def execute(node):
     if not UsdShade.Material(stage.GetPrimAtPath(mat_path)):
         return
     # The path STRINGS, variant selections and all -- not the stripped target paths
-    # iter_prim_targets yields. That generator yields from inside the variant edit context
-    # and leaves it as soon as the next path is pulled, so collecting its results into a
-    # list and binding afterwards authored every binding OUTSIDE the variant: a Prim Path of
-    # "/asset{color=red}/geo" put the binding on /asset/geo for every colour. Each path is
-    # re-entered below, at the moment its binding is written.
+    # author_in_variant_contexts yields. That generator yields from inside the variant
+    # edit context and leaves it as soon as the next path is pulled, so collecting its
+    # results into a list and binding afterwards authored every binding OUTSIDE the
+    # variant: a Prim Path of "/asset{color=red}/geo" put the binding on /asset/geo for
+    # every colour. Each path is re-entered below, at the moment its binding is written.
     #
     # Definedness is checked inside the context too: a prim that only exists in the
     # selected variant is not defined until that variant is selected.

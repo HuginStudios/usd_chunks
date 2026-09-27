@@ -2,9 +2,9 @@
 
 A Prim Path of "/asset{color=red}/geo" means: bind on /asset/geo, inside the "red" variant
 of /asset's "color" set. It was binding on /asset/geo for every colour. execute() collected
-iter_prim_targets into a list before binding, and that generator holds the variant edit
-context open only while it is suspended at its yield -- so by the time anything was
-authored, every context had been left.
+author_in_variant_contexts into a list before binding, and that generator holds the
+variant edit context open only while it is suspended at its yield -- so by the time
+anything was authored, every context had been left.
 """
 from __future__ import annotations
 

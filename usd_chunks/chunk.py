@@ -707,7 +707,7 @@ def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | Non
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
 
 
-def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=()):
+def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=None):
     """Populate a group with typed editable params for all attributes and relationships on a prim.
 
     This is the shared utility for dynamically building attribute editor UIs.
@@ -724,14 +724,20 @@ def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=
             was resolved (split_variant_path / author_in_variant_context), if any. Recorded
             on each generated attribute param so a later edit re-enters the same variant
             (author_in_variant_selections) instead of authoring outside it -- see
-            ChunkUsdAttributeSupport.data_changed. Pass () for a prim reached outside any
-            variant context, which is the ordinary case and costs nothing extra.
+            ChunkUsdAttributeSupport.data_changed. None, the default, takes whichever
+            variant scopes are open around `prim` right now
+            (chunk_utils.open_variant_selections), so a call inside
+            author_in_variant_contexts' loop records its variant without being told. Pass
+            () to record none.
     """
     if not prim or not prim.IsValid():
         # Clean existing params: no prim means nothing to show.
         for grp in target_group.get_my_params():
             grp.request_delete()
         return
+
+    if var_selections is None:
+        var_selections = chunk_utils.open_variant_selections(prim.GetStage(), prim.GetPath())
 
     # Read the prim FIRST, and build every param, before touching target_group at all.
     #
