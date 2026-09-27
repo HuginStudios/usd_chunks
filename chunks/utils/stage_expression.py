@@ -126,13 +126,6 @@ def _record(node, names) -> None:
 
 def execute(node):
     stage = node.get_stage()
-    if stage is None:
-        return
-    if edit_layer := node.get_edit_context():
-        # A Stage Expression authors layer metadata, never prims. Clearing is still right:
-        # a chunk retyped into one must not keep contributing whatever it authored before.
-        edit_layer.Clear()
-
     mine = dict(declared_variables(node))
 
     # Start from what is already in the session layer rather than from scratch, so two

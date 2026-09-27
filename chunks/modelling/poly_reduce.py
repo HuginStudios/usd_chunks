@@ -728,12 +728,14 @@ def _author(stage, plan: _Plan) -> None:
 
 
 class _CookRecord(NamedTuple):
-    """What the last cook of one chunk saw: its fingerprint, and the arrays it signed
-    (address -> (array, signature)) so the next one can recognise them without re-reading.
+    """What the last cook of one chunk saw: its fingerprint, the arrays it signed
+    (address -> (array, signature)) so the next one can recognise them without re-reading,
+    and the plans it decided on, which a cook on the same fingerprint authors again.
     """
 
     fingerprint: tuple
     arrays: dict
+    plans: list
 
 
 # Keyed by the chunk's own layer identifier. See `_fingerprint` for why this exists.
@@ -779,12 +781,13 @@ def _checksum(values, previous: dict, current: dict):
 def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
     """Everything this chunk's output depends on, cheaply.
 
-    The graph re-runs a chunk far more often than its inputs actually change: switching the
-    active view, adding a node, wiring one up all trigger a view-driven recook of the whole
-    upstream tree. That is fine for a chunk that costs a millisecond and unusable for one
-    that costs forty seconds -- a 4M-triangle reduction was re-running on every unrelated
-    edit in the graph. Comparing this against the last cook's makes those re-runs cost a
-    few array checksums instead (~0.4s on that same mesh) rather than the whole decimation.
+    The graph re-runs a chunk more often than its inputs actually change: every cook
+    upstream re-runs it, including one that leaves its mesh exactly as it was (a Transform
+    upstream moving the mesh's parent, say). That is fine for a chunk that costs a
+    millisecond and unusable for one that costs forty seconds -- a 4M-triangle reduction.
+    Comparing this against the last cook's makes those re-runs cost a few array checksums
+    (~0.4s on that same mesh) plus authoring the plans already made, rather than the whole
+    decimation.
 
     It signs the geometry, every primvar and every subset -- not just the point count --
     because an upstream chunk editing a mesh in place is exactly the case that *must* still
@@ -881,8 +884,6 @@ def execute(node: chunk.Chunk) -> None:
     Reactive: any param change, or an upstream chunk's edit to the mesh, re-runs this.
     """
     stage = node.get_stage()
-    if not stage:
-        return
 
     _sync_mode_params(node)
 
@@ -911,7 +912,6 @@ def execute(node: chunk.Chunk) -> None:
 
     paths = node.get_param("prim_path").resolve_paths()
     if not paths:
-        _clear_layer(layer)
         _report(node, [], "pick a mesh to reduce")
         return
 
@@ -927,17 +927,15 @@ def execute(node: chunk.Chunk) -> None:
     previous = _LAST_COOK.get(layer.identifier)
     signed: dict = {}
     fingerprint = _fingerprint(targets, settings, previous.arrays if previous else {}, signed)
-    record = _CookRecord(fingerprint, signed)
-    if previous is not None and previous.fingerprint == fingerprint and not layer.empty:
-        # Same inputs, same settings, and the result of last time is still in our layer.
-        # The refreshed record drops the previous generation's array references.
-        _LAST_COOK[layer.identifier] = record
-        return
+    if previous is not None and previous.fingerprint == fingerprint:
+        # Same inputs, same settings: last cook's decimation still holds. The layer was
+        # cleared for this cook like any other, so the plans are authored again below.
+        plans = previous.plans
+    else:
+        plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
+    # The refreshed record drops the previous generation's array references.
+    record = _CookRecord(fingerprint, signed, plans)
 
-    plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
-
-    # Only now, with every mesh decided, does the old output go away.
-    _clear_layer(layer)
     with Usd.EditContext(stage, layer):
         for plan in plans:
             _author(stage, plan)
@@ -948,11 +946,6 @@ def execute(node: chunk.Chunk) -> None:
         _LAST_COOK.clear()
     _LAST_COOK[layer.identifier] = record
     _report(node, plans)
-
-
-def _clear_layer(layer) -> None:
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
 
 
 _PF = chunk.ChunkFlags.ParamFlags

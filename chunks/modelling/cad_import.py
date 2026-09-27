@@ -695,14 +695,10 @@ def file_changed(owner, notice, sender):
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
 
     layer = node.get_edit_context()
     if not layer:
         return
-    if manager := chunk.get_layer_manager():
-        manager.clear_layer(layer.identifier)
 
     is_f = chunk.is_param_t(float)
     is_b = chunk.is_param_t(bool)

@@ -95,11 +95,6 @@ def _copy_prim_recursive(stage: Usd.Stage, source: Usd.Prim, dest_path: str):
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     source_param = node.get_param("source_prim")
     dest_param = node.get_param("dest_path")
@@ -127,17 +122,17 @@ def execute(node):
     # aimed at the copy) pointing at a prim that no longer exists.
     #
     # Re-authoring over the baked result is safe: the copy goes onto this chunk's own layer,
-    # which it clears at the top of every cook, so a reopen reproduces the same prim rather
-    # than accumulating another one.
+    # which the framework clears before every cook, so a reopen reproduces the same prim
+    # rather than accumulating another one.
     dest_path = dest_param.value.strip() if dest_param.value else ""
     if not dest_path:
         dest_path = _generate_dest_path(stage, source_path)
         dest_param.value = dest_path
     else:
-        # The param, not its value: given a param, get_unique_path clears this chunk's own
-        # layer before looking, so the copy it made last cook does not read as a collision
-        # and walk the suffix up on every execute.
-        dest_path = chunk_utils.get_unique_path(stage, dest_param)
+        # The copy made last cook does not read as a collision and walk the suffix up on
+        # every execute: the framework cleared this chunk's layer before the cook. The
+        # param, not its value, so an expression comes back resolved.
+        dest_path = chunk_utils.get_unique_path(stage, dest_param, own_layer=node.get_edit_context())
         # Never write back over an expression. get_unique_path resolves one to its current
         # value, so assigning that would replace the wire with the path it happened to
         # produce, and the connection is gone. Same guard prim.py uses.

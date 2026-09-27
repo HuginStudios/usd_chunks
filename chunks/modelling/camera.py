@@ -3,7 +3,7 @@ import os
 import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_notice, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_utils
 from usd_chunks.gizmo import runtime as chunk_gizmo
 
 #: The legacy shared transform op, from before each chunk owned a named one. Still read, so
@@ -13,6 +13,11 @@ _LEGACY_OP = "xformOp:transform"
 #: Set while `lock_to_freecam` owns the transform, so the first cook after it comes off knows
 #: to take the flown position back into the params instead of authoring stale ones over it.
 _FREECAM_OWNED = "_freecam_owned"
+
+#: The placement the freecam last gave this camera while locked. Kept on the chunk rather
+#: than read back off the prim: the framework clears the camera's layer before every cook, so
+#: the prim only holds what the cook itself authors.
+_FLOWN_MATRIX = "_flown_matrix"
 
 
 def _download_camera_types_cache(camera_cache):
@@ -93,7 +98,9 @@ def _apply_freecam_transform(owner, notice, sender):
     # Through this chunk's own op, not MakeMatrixXform(). That resets xformOpOrder to a lone
     # `xformOp:transform`, which would wipe the named op the cook authors -- so unticking the
     # lock left the camera holding a transform from one system and an order naming the other.
-    _author_matrix(_chunk, stage, prim, _with_local_scale(_chunk, gf_cam.transform))
+    matrix = _with_local_scale(_chunk, gf_cam.transform)
+    setattr(_chunk, _FLOWN_MATRIX, matrix)
+    _author_matrix(_chunk, stage, prim, matrix)
     if not prim.GetAttribute("focusDistance").Get():
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
     # The camera just moved; the focus plane follows the point, not the camera.
@@ -362,7 +369,11 @@ def _adopt_existing_transform(node, prim, force=False):
             break
     if matrix is None:
         return
+    _seed_transform_params(node, matrix)
 
+
+def _seed_transform_params(node, matrix):
+    """Set the transform params to `matrix`."""
     # decompose is the exact inverse of _camera_matrix, so the seeded params recompose to
     # the transform we just read rather than to something subtly rotated.
     parts = chunk_gizmo.decompose(matrix)
@@ -383,11 +394,17 @@ def _author_camera_transform(node, stage):
     That is what makes cross-chunk gizmo drivers unnecessary rather than merely unused: the
     handle drives params that belong to the chunk it is declared on.
     """
+    primpath_param = node.get_param("primpath_location")
     if node.get_param("lock_to_freecam").value:
         # The freecam owns the transform while the lock is on, and re-authors it on every
         # CAMERA_CHANGED. Writing params here would be silently overwritten a frame later,
-        # which is worse than not writing them.
+        # which is worse than not writing them. The placement it gave is authored again,
+        # though: this cook started from a cleared layer, and a focal-length edit while
+        # locked would otherwise drop the camera back to the origin.
         setattr(node, _FREECAM_OWNED, True)
+        if (flown := getattr(node, _FLOWN_MATRIX, None)) is not None:
+            for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
+                _author_matrix(node, stage, stage.OverridePrim(target_path), flown)
         return
 
     # Edge-triggered, not level-triggered: this is the first cook since the lock came off, so
@@ -396,8 +413,12 @@ def _author_camera_transform(node, stage):
     handing_back = getattr(node, _FREECAM_OWNED, False)
     if handing_back:
         setattr(node, _FREECAM_OWNED, False)
+        # The flight lives on the chunk, not the prim -- see _FLOWN_MATRIX.
+        if (flown := getattr(node, _FLOWN_MATRIX, None)) is not None:
+            _seed_transform_params(node, flown)
+            setattr(node, _FLOWN_MATRIX, None)
+            handing_back = False
 
-    primpath_param = node.get_param("primpath_location")
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
@@ -520,41 +541,9 @@ def main():
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    raw_path = node.get_param("primpath_location").value
-
-    # The path-unchanged guard skips only re-creating the prim -- get_unique_path would
-    # otherwise rename the camera on every cook. The transform below has to be re-authored
-    # whenever its params change, which is exactly the case where the path has *not* moved.
-    chunk_layer = stage.GetEditTarget().GetLayer()
-
-    # Gated off: leave the cook for when the branch comes back. A muted layer composes as
-    # nothing, so the DefinePrim below hands back an invalid prim and every connect_usd_attr
-    # binds to nothing -- and the cache would then say this path is already done, so the
-    # camera would never be rebuilt and would keep its schema defaults (focal length 50, not
-    # the 24 sitting in the chunk prim) for the life of the scene. Found on the Light chunk,
-    # which has the same shape; a per-shot camera on a gated branch is the same story.
-    if chunk_layer and stage.IsLayerMuted(chunk_layer.identifier):
-        return
-
-    # The cache is only true while the params it bound are still bound -- see above. Not
-    # during a load: the restore of this chunk's saved values is what does the binding, and
-    # rebuilding underneath it wipes what it is half way through filling in.
-    if (raw_path == getattr(node, '_last_camera_path', None)
-            and (chunk_notice._loading_stage or chunk_stage.params_are_bound(node))):
-        _author_camera_transform(node, stage)
-        _refocus(node)
-        return
-
-    chunk_layer.Clear()
 
     primpath_param = node.get_param("primpath_location")
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
-        # After the claim, which may have moved the path -- the cache above compares the
-        # value the next cook starts with, and that is the claimed one.
-        node._last_camera_path = primpath_param.value
         prim = stage.DefinePrim(target_path, "Camera")
 
         node.get_param("focalLength").connect_usd_attr(prim.GetAttribute("focalLength"))
@@ -569,7 +558,7 @@ def execute(node):
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
 
-    # After the prim exists, and after the Clear above -- authoring it earlier would be wiped.
+    # After the prim exists: the transform is authored onto it.
     _author_camera_transform(node, stage)
     _refocus(node)
 

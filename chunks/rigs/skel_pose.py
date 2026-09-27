@@ -332,9 +332,6 @@ def _execute(node) -> None:
     layer = node.get_edit_context()
     if layer is None:
         return
-    # Cleared first, so a pose is absolute rather than cumulative: the edit written last
-    # cook is this layer's only content, and the next one replaces it.
-    layer.Clear()
 
     rig = _rig(node)
     if rig is None:

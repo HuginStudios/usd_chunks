@@ -4311,16 +4311,24 @@ def recook_for_view(
     context: core.ChunkBase | None,
     view_chunk: core.ChunkBase | None,
     _synthetic_tail: bool = False,
+    _force: bool = False,
 ) -> None:
     """Apply view-driven execution for one context.
 
-    With a view_chunk: cook only its upstream tree (roots-first); every other non-view
+    With a view_chunk: reveal only its upstream tree (roots-first); every other non-view
     chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None (no active
     view): block + mute everything -- nothing cooks until a view is activated.
 
     Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
     param changes (see ChunkBase.value_changed) -- so being outside the active view's tree
     means "does not execute", live.
+
+    Of the revealed tree, only the chunks that are stale (chunk_notice.is_cook_stale) cook.
+    Muting keeps a layer's content, so a chunk that already cooked on its current inputs
+    comes back with that result, and running it again would redo the same work -- for an
+    import that parses a mesh file, on every view switch and every wire. A chunk that cooks
+    reaches everything downstream of it through the DAG while those are still muted, which
+    marks them stale in turn, so a change upstream still recooks the whole chain below it.
 
     Args:
         stage: The stage.
@@ -4331,6 +4339,9 @@ def recook_for_view(
             view chunk (see the is_group_chunk branch). Real view chunks are markers excluded
             from their own cook_list by view_cook_list, but a synthetic tail is real content
             that must cook too, so it's appended back in rather than excluded.
+        _force: Cook every revealed chunk, stale or not. Set for the inside of a group
+            that is itself stale: a change reached the group, and its inner chunks read
+            what it brings in.
     """
     lm = chunk_registry.ChunkLayerManager()
     disabled = ChunkFlags.State.DISABLED
@@ -4450,11 +4461,22 @@ def recook_for_view(
         if is_group_chunk(c):
             if id(c) in deferred_groups:
                 inner_view, synthetic = _group_output_driver(stage, scene, c)
-                recook_for_view(stage, scene, c, inner_view, _synthetic_tail=synthetic)
+                recook_for_view(
+                    stage, scene, c, inner_view, _synthetic_tail=synthetic,
+                    _force=_force or chunk_notice.is_cook_stale(c),
+                )
+                c._cook_stale = False
             continue
         if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
-            c.execute()
+            if not callable(getattr(getattr(c, "_module", None), "execute", None)):
+                # Nothing to cook -- a chunk that works through callbacks (Property Editor).
+                # Nothing ever clears its stale mark either, so executing it would push a
+                # DAG solve to everything downstream on every recook. Whatever a change
+                # upstream of it means for those, their own marks already say.
+                c._cook_stale = False
+            elif _force or chunk_notice.is_cook_stale(c):
+                c.execute()
 
     if not cook_list:
         return

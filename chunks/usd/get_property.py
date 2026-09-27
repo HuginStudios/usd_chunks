@@ -67,13 +67,6 @@ def _resolve_value(stage: Usd.Stage, prim_path: str, prop_name: str) -> str:
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    # Get Property doesn't author anything -- it only reads.
-    # Clear the chunk layer for cleanliness (idempotency).
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     path_str = node.get_param("property_path").value or ""
     prim_path, prop_name = _parse_property_path(path_str)

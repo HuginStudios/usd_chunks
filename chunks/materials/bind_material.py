@@ -5,30 +5,25 @@ from usd_chunks import chunk, chunk_utils
 
 def execute(node):
     stage = node.get_stage()
-    layer = stage.GetEditTarget().GetLayer()
 
     mat_path = node.get_param("material_path").value
     prim_path_param = node.get_param("primpath_location")
 
     if not mat_path or not prim_path_param.value:
-        # The user actually emptied a field -- that IS an instruction to unbind.
-        layer.Clear()
+        # The user actually emptied a field -- that IS an instruction to unbind, and the
+        # layer the framework cleared for this cook already holds no binding.
         return
 
-    # Check resolvability BEFORE clearing. Clearing first and only then bailing out when
-    # the material or the target prim cannot be found would silently destroy a perfectly
-    # good binding whenever this runs at a moment when the stage does not hold them. That
-    # is not a rare edge: view-driven execution deliberately mutes and
-    # unmutes layers one at a time while recooking (chunk_stage.recook_for_view), so the mesh
-    # a binding targets, or the material itself, is routinely absent for part of a recook.
-    # Nothing re-runs this chunk once the stage settles -- its own params never changed --
-    # so the loss would be permanent. Params pointing at something unresolvable right now is a transient
-    # (or user-error) state, not an instruction to throw away the last good result.
+    # Nothing to bind to right now, so author nothing. This used to be the delicate case:
+    # view-driven execution (chunk_stage.recook_for_view) mutes and unmutes layers one at a
+    # time, so the mesh a binding targets, or the material itself, is routinely absent for
+    # part of a recook -- and a recook re-ran every chunk, destroying a good binding each
+    # time. It now re-runs only a stale chunk, so a binding that landed is left alone, and
+    # the cook a change asks for is the one that meets this.
     #
-    # IsDefined(), not IsValid(): the binding this chunk authored last time is an `over` on
-    # the target, and an over-only prim still reads as a valid prim. So IsValid() stays true
-    # purely because of our OWN leftover opinion, even once the layer that actually defines
-    # the mesh is muted -- which is precisely the case this guard exists to catch.
+    # IsDefined(), not IsValid(): some other layer's `over` on the target (a Transform's,
+    # say) still reads as a valid prim once the layer that actually defines the mesh is
+    # muted.
     if not UsdShade.Material(stage.GetPrimAtPath(mat_path)):
         return
     # The path STRINGS, variant selections and all -- not the stripped target paths
@@ -48,14 +43,7 @@ def execute(node):
     if not path_strs:
         return
 
-    layer.Clear()
-
-    # Re-resolve AFTER the Clear, and keep paths (not prim handles) across it: clearing the
-    # layer resyncs the stage, which expires every Usd.Prim taken before it -- using one
-    # afterwards raises "expired prim".
     material = UsdShade.Material(stage.GetPrimAtPath(mat_path))
-    if not material:
-        return
     for path_str in path_strs:
         with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
             prim = stage.GetPrimAtPath(target_path)

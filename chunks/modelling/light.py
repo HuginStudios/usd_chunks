@@ -3,7 +3,7 @@ import logging
 
 from pxr import UsdGeom
 
-from usd_chunks import chunk, chunk_notice, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_utils
 
 # Parented under "usd_chunks" rather than left at the bare module name: a chunk module is
 # imported under its own file name, so getLogger(__name__) lands outside the package tree.
@@ -57,48 +57,10 @@ def main():
 
 def execute(node):
     stage = node.get_stage()
-    raw_path = node.get_param("primpath_location").value
     light_type = node.get_param("light_type").value
-
-    chunk_layer = stage.GetEditTarget().GetLayer()
-
-    # Gated off: leave the cook for when the branch comes back.
-    #
-    # A muted layer contributes nothing to composition, so DefinePrim below hands back an
-    # INVALID prim -- and show_attribute clears this chunk's params and returns when it gets
-    # one. The params would survive (they are restored from the chunk prim), but the
-    # binding between them and the light's attributes would not: with nothing bound,
-    # push_chunk_values has nothing to push when the gate re-opens, and the cache set here
-    # would then say the cook is already done. Live-found on demo scene 10, where a light
-    # on a shot-gated branch rendered at intensity 1 -- its schema default -- on every shot
-    # that switched it on, with the real 68 sitting in the chunk prim the whole time.
-    if chunk_layer and stage.IsLayerMuted(chunk_layer.identifier):
-        return
-
-    # The cache says "this type is already at this path, nothing to redo" -- true only
-    # while the params it built are still bound to that prim's attributes. A cook that ran
-    # against a muted layer built none, and without the binding half of this test the cache
-    # kept claiming the work was done long after the gate re-opened, so the light drove
-    # nothing for the life of the scene.
-    #
-    # Not during a load, though: the restore of this chunk's saved values is what does the
-    # binding, and it is still in flight. Re-running show_attribute underneath it clears the
-    # params it is half way through filling in. The cook that matters here is the one after
-    # the gate re-opens, which is long past loading.
-    if (light_type == getattr(node, '_last_light_type', None)
-            and raw_path == getattr(node, '_last_light_path', None)
-            and (chunk_notice._loading_stage or chunk_stage.params_are_bound(node))):
-        return
-
-    node._last_light_type = light_type
-
-    chunk_layer.Clear()
 
     primpath_param = node.get_param("primpath_location")
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
-        # After the claim, which may have moved the path -- the cache above compares the
-        # value the next cook starts with, and that is the claimed one.
-        node._last_light_path = primpath_param.value
         prim = stage.DefinePrim(target_path, light_type)
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)

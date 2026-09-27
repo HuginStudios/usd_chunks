@@ -22,11 +22,6 @@ _PRUNE_KEY = "usd_chunks:pruned"
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     primpath_param = node.get_param("prim_path")
 

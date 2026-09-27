@@ -200,8 +200,6 @@ def execute(node):
     node._create_layer_executing = True
     try:
         stage = node.get_stage()
-        if not stage:
-            return
 
         id_param = node.get_param("_new_layer_id")
         name_param = node.get_param("_layer_name_used")

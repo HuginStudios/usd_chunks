@@ -17,18 +17,11 @@ _OUTPUTS = [
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
 
     shader_path = node.get_param("primpath_location").value
 
     if not shader_path:
         return
-
-    # Clear and recreate only when the shader location changes -- same pattern as camera.py.
-    if shader_path != getattr(node, '_last_shader_path', None):
-        node._last_shader_path = shader_path
-        stage.GetEditTarget().GetLayer().Clear()
 
     tex = UsdShade.Shader.Define(stage, shader_path)
     tex.CreateIdAttr("UsdUVTexture")

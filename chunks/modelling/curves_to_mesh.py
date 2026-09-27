@@ -407,11 +407,6 @@ def _author(stage, path: str, built, source_prim) -> None:
 
 def execute(node) -> None:
     stage = node.get_stage()
-    if not stage:
-        return
-    layer = node.get_edit_context()
-    if not layer:
-        return
 
     is_f = chunk.is_param_t(float)
     is_i = chunk.is_param_t(int)
@@ -424,7 +419,6 @@ def execute(node) -> None:
 
     paths = node.get_param("curves_prim").resolve_paths()
     if not paths:
-        layer.Clear()
         node.get_param("readout").value = "pick a BasisCurves to sweep"
         return
 
@@ -438,7 +432,6 @@ def execute(node) -> None:
         for curve in _curve_prims(upstream.GetPrimAtPath(path), recurse)
     ]
     if not sources:
-        layer.Clear()
         node.get_param("readout").value = "no BasisCurves under that prim"
         return
 
@@ -456,7 +449,6 @@ def execute(node) -> None:
             all_strands.extend(strands)
             first = first or source
 
-    layer.Clear()
     built = build_mesh(all_strands, kind, basis, sides, per_segment,
                        uv_mode, tiles_along, width_scale, tiles_around)
     if built is None:

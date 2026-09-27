@@ -465,11 +465,6 @@ def _nodedef_changed(owner, _notice, _sender):
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     sdef = _shader_def(node)
     if sdef is None:
@@ -498,18 +493,19 @@ def execute(node):
     # composing would carry a suffix earned at the old location into a nested slot that
     # was free -- an image landing on <material>/image1 with no image beside it.
     #
-    # Passing the param (rather than its value) is what lets a re-cook keep its path:
-    # get_unique_path clears this chunk's own procedural layer first, so it does not
-    # collide with its own prim from last time and walk the suffix up on every execute.
+    # A re-cook keeps its path: the framework cleared this chunk's layer before the cook, so
+    # it does not collide with its own prim from last time and walk the suffix up on every
+    # execute.
     #
     # A variant path is taken as given: uniquifying would test the path against whatever
     # variant is selected now, not the one being authored into (same as camera.py).
     if var_selections:
         prim_path = home_target
     elif root:
-        prim_path = chunk_utils.get_unique_path(stage, f"{root}/{Sdf.Path(home).name}")
+        prim_path = chunk_utils.get_unique_path(
+            stage, f"{root}/{Sdf.Path(home).name}", own_layer=node.get_edit_context())
     else:
-        prim_path = chunk_utils.get_unique_path(stage, path_param)
+        prim_path = chunk_utils.get_unique_path(stage, path_param, own_layer=node.get_edit_context())
 
     if not prim_path or not Sdf.Path.IsValidPathString(prim_path):
         return

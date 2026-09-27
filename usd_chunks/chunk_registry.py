@@ -1294,7 +1294,7 @@ class MenuEntry:
                 # Values only, no cook. Setting a param runs the chunk's module, and here
                 # the chunk is not in any context yet: it cooked into a layer the stage
                 # had not adopted, and when the real cook came on CHUNK_LOADED a module
-                # that remembers what it last authored (light.py's _last_light_type)
+                # that remembered what it last authored (light.py's since-removed _last_light_type)
                 # saw nothing new and returned -- a "Dome Light" entry created the chunk
                 # with the right menu value and no prim. Same guard the Qt paste path
                 # sets before applying copied values (_paste_guard_sets): execute()
@@ -2091,6 +2091,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self.chunk_layers[h] = layer
         target_layer.subLayerPaths.insert(index, layer.identifier)
+        # An empty layer holds no result, so the chunk must cook before recook_for_view can
+        # count on its layer. Covers a load and reload_all, which make every layer afresh
+        # for chunk objects that may have cooked into the old ones.
+        chunk_notice.mark_cook_stale(c)
 
         # We must make sure to delete the layer of the chunk AFTER all other notices are sent.
         # For this reason, we can't rely on callbacks. Instead we can register a finalizer, so we delete

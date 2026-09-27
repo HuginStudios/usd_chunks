@@ -44,11 +44,6 @@ logger = logging.getLogger(__name__)
 
 
 def execute(node):
-    if edit_layer := node.get_edit_context():
-        # Same as Merge: a Switch has no result of its own, but a chunk retyped into one
-        # must not keep contributing whatever it authored before.
-        edit_layer.Clear()
-
     inputs = chunk_stage.exec_dependencies(node)
     if not inputs:
         return

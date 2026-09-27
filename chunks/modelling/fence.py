@@ -289,8 +289,6 @@ def execute(node):
     say) must not leak into what this fence is built from.
     """
     stage = node.get_stage()
-    if not stage:
-        return
 
     is_f = chunk.is_param_t(float)
     is_i = chunk.is_param_t(int)
@@ -299,12 +297,6 @@ def execute(node):
 
     path_paths = node.get_param("path_prim").resolve_paths()
     up_is_z = UsdGeom.GetStageUpAxis(stage).upper() != "Y"
-
-    layer = node.get_edit_context()
-    if not layer:
-        return
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
 
     points = []
     if path_paths:

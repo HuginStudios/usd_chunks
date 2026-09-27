@@ -72,8 +72,6 @@ def _refresh_menu(owner, notice=None, _sender=None):
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
     path = node.get_param("camera").value or ""
     if not path:
         return

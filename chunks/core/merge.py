@@ -8,12 +8,7 @@ def execute(node):
     their layers in the same graph layer, which is what lets recook_for_view order them
     against each other at all. Composition is entirely a side effect of that wiring, so
     there is no merged result to write here.
-
-    The layer is still cleared rather than left alone, so a Merge that once had content
-    (e.g. a chunk retyped into one) can't keep contributing a stale opinion.
     """
-    if edit_layer := node.get_edit_context():
-        edit_layer.Clear()
 
 
 def main():

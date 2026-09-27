@@ -717,7 +717,8 @@ def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=
     Args:
         prim: The Usd.Prim whose attributes to display.
         target_group: A ChunkGroupBase to populate with params. Existing children
-            are cleared before populating.
+            are cleared before populating -- unless this group was last populated from
+            the same attributes, in which case they are kept and re-authored.
         collapse_non_inputs: If True, namespace groups other than 'inputs' start
             collapsed. Keeps the UI tidy for prims with many attributes.
         var_selections: The (anchor_prim_path, vs_name, variant) tuples active when `prim`
@@ -734,10 +735,32 @@ def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=
         # Clean existing params: no prim means nothing to show.
         for grp in target_group.get_my_params():
             grp.request_delete()
+        target_group._shown_signature = None
         return
 
     if var_selections is None:
         var_selections = chunk_utils.open_variant_selections(prim.GetStage(), prim.GetPath())
+
+    # The same attributes as last time, and every param still bound: keep the params.
+    #
+    # A chunk that shows its own prim (Light) calls this on every cook, and every edit to
+    # one of these params is a cook -- rebuilding here deleted and recreated every param and
+    # its widget on each tick of a slider, the one being dragged included. A param binds to
+    # its attribute by path, so an unchanged signature means each existing param is already
+    # bound to the right place. What the cook's cleared layer lost is only what they
+    # authored -- the driven connection and value of a param that was edited -- and the
+    # framework authors those again after the cook (ChunkBase.reauthor_driven_attrs). An
+    # untouched param authors nothing and reads the schema fallback, the same as before.
+    try:
+        signature = _shown_signature(prim, var_selections, collapse_non_inputs)
+    except RuntimeError:
+        logger.debug("show_attribute: %s went away while it was being read; leaving this "
+                     "chunk's params alone for the next cook", prim.GetPath())
+        return
+    if (signature == getattr(target_group, "_shown_signature", None)
+            and target_group.get_my_params()
+            and _shown_params_bound(target_group, str(prim.GetPath()))):
+        return
 
     # Read the prim FIRST, and build every param, before touching target_group at all.
     #
@@ -791,6 +814,37 @@ def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=
             groups[ns] = tgt_grp
 
         tgt_grp.add_param(param)
+
+    target_group._shown_signature = signature
+
+
+def _shown_signature(prim, var_selections, collapse_non_inputs) -> tuple:
+    """What show_attribute builds from a prim: every attribute by path and type, every
+    relationship, and the variant scopes they were read in. Two calls with the same one
+    would build the same params.
+    """
+    return (
+        tuple(var_selections),
+        collapse_non_inputs,
+        tuple((str(attr.GetPath()), str(attr.GetTypeName())) for attr in prim.GetAttributes()),
+        tuple(str(rel.GetPath()) for rel in prim.GetRelationships()),
+    )
+
+
+def _shown_params_bound(target_group, prim_path: str) -> bool:
+    """Whether every param show_attribute built still reaches its attribute on prim_path --
+    bound to it directly, or driving it from the chunk prim once edited. One that reaches
+    neither drives nothing, and only a rebuild binds it again.
+    """
+    prefix = prim_path + "."
+    for _, param in target_group.iter_hierarchy():
+        if not isinstance(param, ChunkUsdAttributeSupport) or isinstance(param, ChunkGroupBase):
+            continue
+        if getattr(param, "_driven_attr_paths", None):
+            continue
+        if not (param._param_attr_path or "").startswith(prefix):
+            return False
+    return True
 
 
 def get_chunk_registry() -> ChunkRegistry | None:

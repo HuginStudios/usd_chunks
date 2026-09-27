@@ -432,11 +432,6 @@ def main():
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     raw_path = node.get_param("primpath_location").value
     if not raw_path:

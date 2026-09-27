@@ -158,8 +158,6 @@ def execute(node):
     node._edit_target_executing = True
     try:
         stage = node.get_stage()
-        if not stage:
-            return
 
         selection = node.get_param("edit_target").value
         if selection == _FOLLOW_UPSTREAM:

@@ -3121,10 +3121,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         A bulk file load calls build() once per chunk, synchronously, in the same call
         stack (see load_chunks' _add_prim_mods -- each restored chunk fires its own
         CHUNK_LOADED, which ChunkWidgetDocker._loaded_module_callback turns straight into a
-        build() call while the Graph tab is active). recook_for_view re-executes its whole
-        cook set every time it runs, not just what changed (see _recook_active_view's
-        docstring), so one timer per call would re-run the entire upstream chain N times for
-        an N-chunk load. The calls share one timer instead.
+        build() call while the Graph tab is active). recook_for_view mutes and reveals its
+        whole cook set every time it runs, and cooks whatever is stale at the time, so one
+        timer per call would do that pass N times for an N-chunk load, cooking chunks
+        mid-load. The calls share one timer instead.
 
         Only this recook is debounced, not build() itself: scene.build() above (the actual
         node/proxy-widget creation) stays fully synchronous, since several callers -- both
@@ -4671,11 +4671,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         execute() it triggers would author, fire ObjectsChanged, and loop.
 
         changed_chunks: the specific chunk(s) a caller knows triggered this call (e.g. the
-        node just created/deleted/(dis)connected). recook_for_view re-*executes* its whole
-        cook set every time it runs (not just chunks that actually changed -- see its own
+        node just created/deleted/(dis)connected). recook_for_view mutes and reveals its whole
+        cook set every time it runs (it only re-executes the stale chunks -- see its own
         docstring), so calling it unconditionally on every structural edit anywhere in the
-        graph would re-run unrelated upstream chunks and re-dim every blocked chunk for no
-        reason. When changed_chunks is given and none of them are the
+        graph would recompose the stage and re-dim every blocked chunk for no reason. When changed_chunks is given and none of them are the
         view or already reachable from it, the edit provably can't change what the view cooks
         (cook-set membership is exactly graph reachability from the view), so it's skipped.
         Omit changed_chunks (the default) to always recook -- used for genuinely

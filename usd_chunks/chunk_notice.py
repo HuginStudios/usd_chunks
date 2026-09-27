@@ -63,6 +63,31 @@ _internal_layer_write_active: bool = False
 _executing_chunk = None
 
 
+def is_cook_stale(chunk) -> bool:
+    """Whether a chunk's layer may not hold the result of its current inputs.
+
+    A chunk goes stale when a change reaches it and its module does not run -- it was
+    blocked outside the active view, its layer was muted, or it had no layer to author into
+    yet -- and when its layer is created, which is empty. A cook that runs clears it.
+    chunk_stage.recook_for_view reads this to re-run only the chunks that need it: a chunk
+    that is not stale still has its last result in its layer, muted or not.
+
+    A chunk that has never cooked is stale.
+
+    Args:
+        chunk: The chunk.
+
+    Returns:
+        True if the chunk needs to cook.
+    """
+    return getattr(chunk, "_cook_stale", True)
+
+
+def mark_cook_stale(chunk) -> None:
+    """Record that a chunk's layer no longer holds the result of its inputs. See is_cook_stale."""
+    chunk._cook_stale = True
+
+
 _T = TypeVar("_T")
 Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
 
@@ -1319,6 +1344,12 @@ class ChunkNoticePropagator:
             # STATE_CHANGED, so testing the alias would call it a data change and re-cook.
             state_only = n.only_presentation_changed()
             if not state_only and (module := getattr(prop, '_module', None)):
+                # Stale until the module actually runs below. Every reason this dispatch has
+                # for not running it -- blocked, muted, no layer yet, no stage -- leaves the
+                # layer holding a result the change never reached, and recook_for_view cooks
+                # a chunk again on exactly that. A chunk with no execute() (a chunkgroup)
+                # stays stale, which tells recook_for_view its inside needs cooking.
+                mark_cook_stale(prop)
                 stage = prop.get_stage()
                 ctx = prop.get_edit_context()
                 # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
@@ -1362,7 +1393,20 @@ class ChunkNoticePropagator:
                         if ctx:
                             try:
                                 with Usd.EditContext(stage, ctx):
+                                    # A cook starts from an empty layer, so a module
+                                    # authors its whole result every time and never reads
+                                    # its own last one back. Anonymous only: that is a
+                                    # layer this chunk alone owns and rebuilds on load.
+                                    # A chunk in a context with a file layer is handed
+                                    # that file layer, shared and the user's own.
+                                    if ctx.anonymous:
+                                        ctx.Clear()
                                     module.execute(prop)
+                                    # What a param drives is its own state, not the cook's
+                                    # output -- see ChunkBase.reauthor_driven_attrs.
+                                    if ctx.anonymous and (reauthor := getattr(prop, "reauthor_driven_attrs", None)):
+                                        reauthor()
+                                prop._cook_stale = False
                             except Tf.ErrorException:
                                 # The layer left the stage's local layer stack between the
                                 # check above and here. It can: a cook reached from inside
@@ -1388,6 +1432,7 @@ class ChunkNoticePropagator:
                         else:
                             # No edit layer of its own -- author into the stage's current target.
                             module.execute(prop)
+                            prop._cook_stale = False
                     finally:
                         # Restored, not cleared: a cook can be reached from inside a guarded
                         # write (a rename triggers one), and clearing outright unsuppressed

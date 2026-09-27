@@ -232,11 +232,6 @@ def _set_stage_frame_range(stage: Usd.Stage, start_frame: float, end_frame: floa
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     primpath_param = node.get_param("target_prim")
     if not primpath_param.value:

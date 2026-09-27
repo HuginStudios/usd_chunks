@@ -4,8 +4,6 @@ from usd_chunks import chunk, chunk_utils
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
 
     primpath_param = node.get_param("primpath_location")
     prim_type = node.get_param("prim_type").value

@@ -8,15 +8,16 @@ go away. Wire this upstream of Scatter Points so its cook can see the field.
 Its own chunk rather than a mode on Scatter Points, so one painted field can feed several
 scatters and Scatter Points stays what its docstring says it is: placement only.
 
-**The paint IS this chunk's output**, held in its own layer rather than rebuilt from params on
-every cook -- which is why `execute` deliberately does not clear that layer. A per-vertex array
-is not a slider, and reconstructing it from one would mean inventing a param type to hold a
-few thousand floats.
+**The paint is state this chunk holds**, not something rebuilt from params: a per-vertex
+array is not a slider, and reconstructing it from one would mean inventing a param type to
+hold a few thousand floats. It is kept on the chunk (`_FIELD`, `_POINTS`), a stroke updates it
+and authors it as it goes, and `execute` authors all of it again -- the framework clears this
+chunk's layer before every cook, as it does every chunk's, so the layer is only ever the
+output of the paint, never where the paint is kept.
 
-That makes this the one chunk whose output cannot be recomputed from its params, and a saved
-scene is chunk prims and nothing else -- so the field is *also* recorded on this chunk's own
-prim, sparsely, and put back by `execute` when a reopened scene arrives with the surface bare.
-See `_PAINT_MESHES`. The layer itself does not round-trip.
+A saved scene is chunk prims and nothing else, so the field is *also* recorded on this chunk's
+own prim, sparsely, and is where `execute` starts from when a reopened scene has no paint in
+memory yet. See `_PAINT_MESHES`. The layer itself does not round-trip.
 
 Requires: pxr (OpenUSD), usd_chunks, numpy (a stroke touches every vertex -- see `_stamp`).
 """
@@ -90,6 +91,13 @@ _STROKE_CACHE = "_stroke_cache"
 #: and recooking for it is a stall with nothing to show.
 _STROKE_TOUCHED = "_stroke_touched"
 
+#: The painted field, `{mesh path: weights}`, and the placed points, `(points, normals,
+#: widths)`. The paint itself, held on the chunk -- see the module docstring. A stroke's
+#: working weights are these same arrays, so a cook in the middle of a stroke authors the
+#: stroke as far as it has got.
+_FIELD = "_painted_field"
+_POINTS = "_painted_points"
+
 
 def _cached_targets(node, prim):
     """`_paint_targets`, held for the duration of a stroke.
@@ -130,7 +138,7 @@ def _stroke_state(node, mesh_prim, count):
     key = str(mesh_prim.GetPath())
     state = states.get(key)
     if state is None:
-        weights = _current_weights(mesh_prim, count)
+        weights = _held_weights(node, mesh_prim, count)
         show = node.get_param("show_paint")
         if show and show.value:
             attr = UsdGeom.Gprim(mesh_prim).GetDisplayColorAttr()
@@ -253,6 +261,14 @@ def _current_weights(prim, count):
     return np.zeros(count, dtype=np.float64)
 
 
+def _held_weights(node, mesh_prim, count):
+    """The weights this chunk holds for one mesh, or what is on the stage when it holds none."""
+    held = getattr(node, _FIELD, {}).get(str(mesh_prim.GetPath()))
+    if held is not None and len(held) == count:
+        return held
+    return _current_weights(mesh_prim, count)
+
+
 _DISPLAY_COLOR = "primvars:displayColor"
 
 #: Used where the surface has no colour of its own to blend from.
@@ -269,7 +285,11 @@ def _paint_colour(node):
 
 
 def _write_weights(node, stage, prim, weights, colours=None):
-    """Author the field into this chunk's own layer, as an over on the surface."""
+    """Hold the field for one mesh, and author it into this chunk's own layer, as an over on
+    the surface."""
+    if not hasattr(node, _FIELD):
+        setattr(node, _FIELD, {})
+    getattr(node, _FIELD)[str(prim.GetPath())] = weights
     layer = node.get_edit_context()
     context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
     with context:
@@ -602,6 +622,9 @@ def _points_path(node):
 
 def _current_points(node, stage):
     """The points placed so far: position, surface normal and the size each was painted at."""
+    held = getattr(node, _POINTS, None)
+    if held is not None:
+        return [list(part) for part in held]
     path = _points_path(node)
     prim = stage.GetPrimAtPath(path) if path else None
     if not prim or not prim.IsValid():
@@ -640,17 +663,20 @@ def _write_points(node, stage, points, normals=None, widths=None):
     if published is not None and published.value != str(path):
         published.value = str(path)
 
+    if widths is None:
+        widths = [_dab_width(node)] * len(points)
+    if normals is None:
+        normals = [Gf.Vec3f(0, 0, 1)] * len(points)
+    setattr(node, _POINTS, (list(points), list(normals), [float(w) for w in widths]))
+
     layer = node.get_edit_context()
     context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
     with context:
         cloud = UsdGeom.Points.Define(stage, path)
         cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
-        if normals is not None:
-            cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
+        cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
         # The size each point was painted at, kept with the point. Deriving it from the
         # current radius resized everything already placed whenever the slider moved.
-        if widths is None:
-            widths = [_dab_width(node)] * len(points)
         cloud.CreateWidthsAttr().Set(Vt.FloatArray([float(w) for w in widths]))
         UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
         cloud.GetDisplayColorAttr().Set(
@@ -886,11 +912,12 @@ def _recorded_paint(node, stage):
 
 
 def execute(node):
-    """Publish the output paths, and put the paint back after a reload.
+    """Publish the output paths, and author the paint this chunk holds.
 
-    Otherwise deliberately almost nothing. The painted field is this chunk's output and
-    already lives in its layer, so there is nothing to re-author from params -- and clearing
-    the layer the way most chunks do would erase the paint on the next slider nudge.
+    The framework cleared this chunk's layer before the cook, so everything the paint puts on
+    the stage -- the field, its tint, the placed points -- is authored again here from what
+    the chunk holds (see the module docstring). After a reopen it holds nothing yet, and
+    starts from what was recorded on the chunk prim.
     """
     # Published whether or not anything has been painted, so the port has a value to carry
     # from the moment the chunk exists. It only appeared on the first write before, which
@@ -901,27 +928,35 @@ def execute(node):
     if path is not None and published is not None and published.value != str(path):
         published.value = str(path)
 
+    stage = node.get_stage()
+    held_points = getattr(node, _POINTS, None)
+    if held_points is not None and stage is not None:
+        _write_points(node, stage, *held_points)
+        _show_points(node, stage)
+
     prim, stage = _surface_prim(node)
     if prim is None:
         return
 
-    # After a reload this chunk's layer is empty, so the field it holds is simply not there
-    # yet; what was recorded on the chunk prim is put back. In a live session the primvar is
-    # already present and this does nothing, which is what keeps it out of the way of a
-    # stroke in progress.
-    saved = _recorded_paint(node, stage)
+    held = getattr(node, _FIELD, {})
+    # Only read when the chunk holds nothing for a mesh -- a reopened scene. Live, the held
+    # field is newer than the recorded one: it is recorded when a stroke ends, and a cook can
+    # land in the middle of one.
+    saved = None
 
     # Written whether or not anything was painted, so a scatter downstream resolves something
     # rather than nothing the moment the two are wired together. Per mesh, because the surface
     # a user picks is a hierarchy far more often than it is a single Mesh.
     for mesh_prim, count in _paint_meshes(prim):
-        if UsdGeom.PrimvarsAPI(mesh_prim).GetPrimvar(DENSITY_PRIMVAR):
-            continue
-        weights = saved.get(str(mesh_prim.GetPath()))
-        if weights is None:
-            weights = np.zeros(count, dtype=np.float64)
-        elif len(weights) != count:
-            weights = np.resize(weights, count)
+        weights = held.get(str(mesh_prim.GetPath()))
+        if weights is None or len(weights) != count:
+            if saved is None:
+                saved = _recorded_paint(node, stage)
+            weights = saved.get(str(mesh_prim.GetPath()))
+            if weights is None:
+                weights = np.zeros(count, dtype=np.float64)
+            elif len(weights) != count:
+                weights = np.resize(weights, count)
         _write_weights(node, stage, mesh_prim, weights)
 
 

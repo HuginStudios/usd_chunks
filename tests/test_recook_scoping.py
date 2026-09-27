@@ -111,18 +111,17 @@ def test_unrelated_chunk_create_and_delete_do_not_recook(qapp) -> None:
     docker, scene, reg, stage, gv, scatter, view, _pump = _setup(qapp)
     transform_mod = reg.get_chunk_module("transform")
 
-    # The module object the reactive dispatch actually calls execute() on -- not
-    # importlib.import_module("chunks.modelling.scatter_points"), which can resolve to a different
-    # module object than the registry's own plugin-loaded one.
-    real_scatter_module = reg.get_chunk_module("scatter_points").module
+    # Counts recooks rather than scatter's executions. A recook only executes stale chunks
+    # now, so scatter would not cook here even if a recook ran -- counting it would pass
+    # whatever the scoping did.
     call_count = {"n": 0}
-    orig_execute = real_scatter_module.execute
+    orig_recook = chunk_stage.recook_for_view
 
-    def traced_execute(node):
+    def traced_recook(*args, **kwargs):
         call_count["n"] += 1
-        return orig_execute(node)
+        return orig_recook(*args, **kwargs)
 
-    real_scatter_module.execute = traced_execute
+    chunk_stage.recook_for_view = traced_recook
     try:
         # Create a totally unrelated, disconnected chunk -- not wired to anything.
         stray = _mk(transform_mod, scene)
@@ -148,7 +147,7 @@ def test_unrelated_chunk_create_and_delete_do_not_recook(qapp) -> None:
         )
         assert gv._view_state.active_slot, "the view itself must still be intact after this delete"
     finally:
-        real_scatter_module.execute = orig_execute
+        chunk_stage.recook_for_view = orig_recook
 
 
 def test_unrelated_chunk_removed_via_right_click_menu_does_not_recook(qapp) -> None:
@@ -165,15 +164,17 @@ def test_unrelated_chunk_removed_via_right_click_menu_does_not_recook(qapp) -> N
     docker, scene, reg, stage, gv, scatter, view, _pump = _setup(qapp)
     transform_mod = reg.get_chunk_module("transform")
 
-    real_scatter_module = reg.get_chunk_module("scatter_points").module
+    # Counts recooks rather than scatter's executions. A recook only executes stale chunks
+    # now, so scatter would not cook here even if a recook ran -- counting it would pass
+    # whatever the scoping did.
     call_count = {"n": 0}
-    orig_execute = real_scatter_module.execute
+    orig_recook = chunk_stage.recook_for_view
 
-    def traced_execute(node):
+    def traced_recook(*args, **kwargs):
         call_count["n"] += 1
-        return orig_execute(node)
+        return orig_recook(*args, **kwargs)
 
-    real_scatter_module.execute = traced_execute
+    chunk_stage.recook_for_view = traced_recook
     try:
         stray = _mk(transform_mod, scene)
         qapp.processEvents()
@@ -192,7 +193,7 @@ def test_unrelated_chunk_removed_via_right_click_menu_does_not_recook(qapp) -> N
         )
         assert gv._view_state.active_slot, "the view itself must still be intact after this delete"
     finally:
-        real_scatter_module.execute = orig_execute
+        chunk_stage.recook_for_view = orig_recook
 
 
 def test_relevant_chunk_delete_still_recooks(qapp) -> None:
@@ -211,15 +212,18 @@ def test_relevant_chunk_delete_still_recooks(qapp) -> None:
     gv._recook_active_view()
     _pump(0.5)
 
-    real_scatter_module = reg.get_chunk_module("scatter_points").module
+    # Counts recooks, not scatter's executions: scatter sits upstream of the deleted
+    # Transform, so its output is unchanged and a recook rightly reveals it without cooking
+    # it again (recook_for_view only executes stale chunks). The recook itself is what the
+    # scoping optimization must not swallow.
     call_count = {"n": 0}
-    orig_execute = real_scatter_module.execute
+    orig_recook = chunk_stage.recook_for_view
 
-    def traced_execute(node):
+    def traced_recook(*args, **kwargs):
         call_count["n"] += 1
-        return orig_execute(node)
+        return orig_recook(*args, **kwargs)
 
-    real_scatter_module.execute = traced_execute
+    chunk_stage.recook_for_view = traced_recook
     try:
         assert not transform.is_blocked(), "setup must leave transform genuinely cooking"
         # _recook_active_view() above leaves the VIEW chunk selected (its own bookkeeping) --
@@ -234,7 +238,7 @@ def test_relevant_chunk_delete_still_recooks(qapp) -> None:
             "recook -- the unrelated-change optimization must not suppress this"
         )
     finally:
-        real_scatter_module.execute = orig_execute
+        chunk_stage.recook_for_view = orig_recook
 
 
 def test_bulk_chunk_creation_burst_recooks_once(qapp) -> None:
