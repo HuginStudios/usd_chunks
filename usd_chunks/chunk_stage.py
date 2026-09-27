@@ -1086,13 +1086,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         (export_chunks), so a param that never gets an attr is a param that does not survive
         a save.
 
-        Reported as a Camera not keeping where it was put: fly the viewport, tick Lock to
-        Free Camera, untick it to freeze the shot. Unticking is what hands the flown
-        placement into the transform params (camera.py's `_adopt_existing_transform`), and it
-        happens during a cook -- so the live camera was right, the file carried no placement
-        at all, and reopening put it back at the origin. Every chunk that renames its own
-        prim path mid-cook when the one it wanted was taken (camera, light, the render_*
-        chunks) was losing that the same way.
+        For example, unticking a Camera's Lock to Free Camera hands the flown placement into
+        the transform params (camera.py's `_adopt_existing_transform`) during a cook -- the
+        live camera would be right while the file carried no placement at all. Every chunk
+        that renames its own prim path mid-cook when the one it wanted was taken (camera,
+        light, the render_* chunks) depends on this the same way.
 
         So a chunk writing its own params while it executes is recorded. Anything else
         arriving mid-write still isn't -- including one chunk reaching into another's params
@@ -2666,10 +2664,9 @@ def set_chunks_muted(stage: "Usd.Stage", to_mute, to_unmute) -> "tuple[set, set]
 
     Every stage.MuteLayer / UnmuteLayer is a composition change, and composition changes
     are reported to everything watching the stage as a resync of `/` -- the whole stage,
-    re-read. One per chunk is how this used to work, so a single shot change in a
-    shot-gated graph cost five full-stage resyncs in the steady state and over a hundred
-    and fifty on the first switch, each one telling Hydra that every prim it holds may have
-    changed.
+    re-read. One per chunk would make a single shot change in a shot-gated graph cost
+    several full-stage resyncs, and far more on the first switch, each one telling Hydra
+    that every prim it holds may have changed.
 
     A live viewport is where that lands: the renderer repopulates again and again for one
     logical change, and the prim browser walks a stage that is being recomposed underneath

@@ -366,11 +366,11 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
     decimator numbers the survivors in original-index order, which `np.searchsorted` over
     the sorted survivors reproduces.
 
-    This used to call the library's `replay_simplification`, which returns the same answer
+    Not the library's `replay_simplification`, which returns the same answer
     — but gets there via `np.delete` inside a Python loop over the isolated points it has
     to clean up. On a mesh made of thousands of disconnected cards (a tree's twigs, say)
-    that list is enormous and the loop goes quadratic: 0.4s of decimation turned into
-    **698 seconds** on a 505k-triangle fir tree. Deriving it here is exact, and free.
+    that list is enormous and the loop goes quadratic -- sub-second decimation becomes
+    minutes. Deriving it here is exact, and free.
 
     Returns None if the derivation disagrees with what the decimator actually produced;
     attributes are then dropped rather than scattered onto the wrong vertices.
@@ -657,7 +657,7 @@ def _author(stage, plan: _Plan) -> None:
 
         Geom subset index 2107245 is larger than number of faces (1044205), removing.
 
-    — thousands of times, live-reported on a fir tree. Every `Set()` publishes its own
+    -- thousands of times on a dense mesh. Every `Set()` publishes its own
     change notice, so writing points first and subsets last guaranteed a window where the
     two disagreed. Batching the value writes into one `Sdf.ChangeBlock` closes it.
 

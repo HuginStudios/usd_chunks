@@ -1407,10 +1407,9 @@ def write_position(prim: "Usd.Prim | None", x: float, y: float, owner=None) -> N
     Authors through the attr's own existing home layer, or owner's bookkeeping layer for a
     first-time write -- never bare, which relies on the stage's ambient Edit Target. That
     target moves as chunks are created and edited, so a position pulled from the canvas
-    right after another node was authored landed in THAT node's layer instead of each
-    node's own -- reported as "drop a new node and the others jump back to (0, 0)", because
-    the misdirected writes lived in a procedural layer that then got cleared and
-    regenerated. Mirrors chunk_qt_nodegraph._write_pos_to_usd and the view-node position
+    right after another node was authored would land in THAT node's layer instead of each
+    node's own -- a procedural layer that then gets cleared and regenerated, snapping the
+    other nodes back to (0, 0). Mirrors chunk_qt_nodegraph._write_pos_to_usd and the view-node position
     write in ensure_view_slot, both of which already do this.
     """
     if prim is None or not prim.IsValid():

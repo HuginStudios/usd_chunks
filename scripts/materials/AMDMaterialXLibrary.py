@@ -30,11 +30,10 @@ THUMB_SIZE = 85
 PAGE_SIZE = 10
 THUMB_DIR_NAME = "thumbs"
 
-# Thumbnails go through one session and a bounded pool. Each tile used to start its own
-# daemon thread running a bare requests.get: a fresh SSL context, a DNS lookup and a TCP
-# handshake per thumbnail, hundreds of threads at once on a scene load, all contending for
-# the GIL with the main thread that is trying to cook the graph. Measured on a four-node
-# scene: ~530 threads and ~80s of load time, with the actual chunk work under 10s.
+# Thumbnails go through one session and a bounded pool. A thread and a bare requests.get
+# per tile would mean a fresh SSL context, a DNS lookup and a TCP handshake per thumbnail,
+# and hundreds of threads at once on a scene load, all contending for the GIL with the
+# main thread that is trying to cook the graph.
 _thumb_http = requests.Session()
 _thumb_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gpuopen-thumb")
 _thumb_futures: dict[str, Future] = {}  # render_id → in-flight fetch, shared by all nodes
@@ -116,7 +115,7 @@ class _ThumbnailLoader(QtCore.QObject):
             self.loaded.emit(render_id, _thumbnail_cache[render_id])
             return
         # One fetch per render_id however many nodes want it: several library nodes in
-        # one scene all show the same first page, and used to each download it.
+        # one scene all show the same first page.
         with _thumb_lock:
             fut = _thumb_futures.get(render_id)
             if fut is None:
@@ -130,7 +129,7 @@ class _ThumbnailLoader(QtCore.QObject):
             if data:
                 _thumbnail_cache[render_id] = data
                 # Emitted from the pool thread; the receiver lives on the main thread so
-                # Qt queues the delivery, same as the old per-thread emit did.
+                # Qt queues the delivery.
                 self.loaded.emit(render_id, data)
 
         fut.add_done_callback(_done)
@@ -333,9 +332,9 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
         global _all_materials
         _all_materials = materials
         # Restore the previously picked selection by pinning it to the front of the first
-        # page. It used to scroll-load page after page until the picked tile turned up --
-        # "Gun Metal" sits at index 213 of the catalog, so restoring it built 220 tiles and
-        # fetched 220 thumbnails, for every node, on every scene open.
+        # page, rather than scroll-loading page after page until the picked tile turns up
+        # -- a material deep in the catalog would otherwise build and fetch hundreds of
+        # tiles, for every node, on every scene open.
         c = self.param.get_chunk()
         pt = c.get_param("picked_title") if c else None
         self._do_search(pin=pt.value if pt else "")
@@ -503,12 +502,11 @@ def _fetch_package(title: str, resolution: str, cache_dir: str) -> "tuple[str | 
 
     # Reuse an already-extracted package before touching the network. _download_and_apply is
     # a reactive hook: it re-runs on every scene load and on every recook (diving into the
-    # node and back out is two), and it used to do a package-metadata lookup plus a full zip
-    # download every single time, re-extracting a package already sitting in the cache dir.
-    # That was ~3.5s of pure SSL/socket time on a measured 4.2s scene load, and the same cost
-    # again on each dive. The extracted directory is named after the resolution (the package
-    # label starts with it, see _pick_package), so a cache hit here still honours a
-    # resolution change -- that just misses and falls through to the download.
+    # node and back out is two), so a package-metadata lookup plus a full zip download
+    # every time would dominate scene load and every dive. The extracted directory is named
+    # after the resolution (the package label starts with it, see _pick_package), so a cache
+    # hit here still honours a resolution change -- that just misses and falls through to
+    # the download.
     mtlx_path = _cached_mtlx(cache_dir, title, resolution)
     if mtlx_path:
         return mtlx_path, mat, None

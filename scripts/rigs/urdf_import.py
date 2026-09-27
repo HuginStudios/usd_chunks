@@ -271,10 +271,9 @@ def read_stl(path):
     if 84 + count * 50 == len(data):
         # One structured read of the whole buffer instead of a Python loop over each facet
         # (3 struct.unpack_from calls + 3 Gf.Vec3f constructions per triangle): a real
-        # robot's meshes are routinely a few hundred thousand faces each, and that loop was
-        # measured taking the better part of a second per file -- the dominant cost in
-        # "importing a robot is really heavy". Bit-identical output, ~45x faster on a
-        # 54k-face mesh measured against the old per-triangle loop.
+        # robot's meshes are routinely a few hundred thousand faces each, and a per-facet
+        # loop would dominate import time. The structured read is bit-identical and
+        # roughly 45x faster.
         facets = np.frombuffer(data, dtype=_STL_FACET_DTYPE, count=count, offset=84)
         points = Vt.Vec3fArray.FromNumpy(facets["vertices"].reshape(-1, 3))
     else:
@@ -577,10 +576,9 @@ def execute(node):
                 # this re-import -- is still in effect at this point, so Add*Op folds that
                 # layer's leftover "xformOp:transform" into the freshly-cleared import
                 # layer's own order. The link ends up composing translate*orient*transform,
-                # applying its own rest pose AND a stale pose override on top -- live-reported
-                # as a link's translation reading right after a Scale change while a pose was
-                # applied. Explicit CreateAttribute + SetXformOpOrder authors exactly these
-                # two ops, ignoring whatever a stronger layer currently has in effect.
+                # applying its own rest pose AND a stale pose override on top. Explicit
+                # CreateAttribute + SetXformOpOrder authors exactly these two ops, ignoring
+                # whatever a stronger layer currently has in effect.
                 xform = UsdGeom.Xformable(prim)
                 translate_attr = prim.CreateAttribute(
                     "xformOp:translate", Sdf.ValueTypeNames.Double3, custom=False)

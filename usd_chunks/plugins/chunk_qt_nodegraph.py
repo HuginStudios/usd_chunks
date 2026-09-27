@@ -305,11 +305,10 @@ def _author_raw_connection(
             sdf_type = Sdf.ValueTypeNames.Token
         else:
             # Type the new attribute from the destination PARAM, not from the fact that a
-            # wire is arriving at it. Every non-exec attribute used to be created as String
-            # here, so duplicating a group holding a Transform whose tx had never been
-            # authored gave it an inputs:tx of type String -- and an attribute's type is
-            # fixed once created, so every later numeric write raised "expected 'string',
-            # got 'double'" for the life of the scene.
+            # wire is arriving at it. Creating every non-exec attribute as String would give
+            # a never-authored numeric param (a Transform's tx, say) an inputs:tx of type
+            # String -- and an attribute's type is fixed once created, so every later numeric
+            # write would raise for the life of the scene.
             param_path = dst_attr_suffix
             if param_path.startswith(chunk_stage._INPUTS_PREFIX):
                 param_path = param_path[len(chunk_stage._INPUTS_PREFIX):]
@@ -1601,11 +1600,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         """If this node was dropped on top of an EXEC wire A->B, splice it in as A->self->B.
 
         Exec only. A data wire means "this param takes its value from that one", and a node
-        dropped across one has no business rewriting it -- but the splice used to take
-        whichever wire it happened to overlap, so moving a node anywhere near a param
-        connection silently re-pointed it at the newcomer. On a busy graph, where exec and
-        data wires run through the same space, that made dropping a node onto the exec
-        chain a coin toss.
+        dropped across one has no business rewriting it. On a busy graph, where exec and
+        data wires run through the same space, splicing into whichever wire a node happens
+        to overlap would silently re-point param connections at the newcomer.
 
         Splicing a data wire is not merely riskier, it is a different operation: A -> B
         carries A's value to B, and A -> self -> B only reproduces that if self forwards it
@@ -3397,9 +3394,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             #
             # Hold the generic auto-view off until that wiring lands. Until it does, every
             # pasted chunk still looks like an unwired exec tail, and _ensure_default_view
-            # takes tails[0] -- the FIRST node of the chain rather than its end. Reported as
-            # the view landing on the first pasted node instead of the last, and "sometimes"
-            # because it is a race with an 80ms timer.
+            # would take tails[0] -- the FIRST node of the chain rather than its end, racing
+            # an 80ms timer.
             self._suppress_default_view = True
             QtCore.QTimer.singleShot(
                 80, self,
@@ -4335,10 +4331,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """Wire two ports, then redraw and recook.
 
         The authoring itself lives in chunk_graph, so this view and the Flet one perform
-        the same operation rather than two implementations that agree until one of them is
-        fixed. They had already drifted: disconnect was made to work without a live chunk
-        session, and connect learned to survive a param that refuses an expression, and
-        neither reached the copy that used to live here.
+        the same operation rather than two implementations that agree only until one of
+        them is fixed.
         """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
@@ -4662,7 +4656,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         reason. When changed_chunks is given and none of them are the
         view or already reachable from it, the edit provably can't change what the view cooks
         (cook-set membership is exactly graph reachability from the view), so it's skipped.
-        Omit changed_chunks (the default) to always recook, as before — used for genuinely
+        Omit changed_chunks (the default) to always recook -- used for genuinely
         graph-wide triggers like a view switch.
         """
         # This is always reachable through a deferred QTimer.singleShot (build()'s own

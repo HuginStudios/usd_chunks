@@ -1167,10 +1167,9 @@ def _stable_suffix(node) -> str:
 def _mint_suffix(node, prim, stage) -> str:
     """Mint a suffix from what the chunk *is*, not from when it happened to run.
 
-    This used to be uuid4: unique, but arbitrary. Building the same network twice minted two
-    different ids, so a pipeline that regenerates its scene authored differently-named ops
-    on every run -- `xformOp:transform:SimDrop_3ab48045` one time and `SimDrop_1b9f959b` the
-    next, over identical transforms. Nothing downstream can hold an opinion on an attribute
+    Deterministic, not uuid4: a random id would mint different names each time the same
+    network is built, so a pipeline that regenerates its scene would author
+    differently-named ops on every run over identical transforms. Nothing downstream can hold an opinion on an attribute
     whose name is re-rolled each run, which is exactly what a re-runnable pipeline needs to
     be able to do.
 

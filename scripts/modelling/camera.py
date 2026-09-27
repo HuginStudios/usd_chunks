@@ -4,8 +4,8 @@ import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_notice, chunk_stage, chunk_utils
 
-#: The shared op every chunk used to write, and what the freecam lock wrote until this chunk
-#: owned a named one. Still read, so a camera saved before the change keeps its placement.
+#: The legacy shared transform op, from before each chunk owned a named one. Still read, so
+#: a camera saved in that form keeps its placement.
 _LEGACY_OP = "xformOp:transform"
 
 #: Set while `lock_to_freecam` owns the transform, so the first cook after it comes off knows
@@ -133,7 +133,7 @@ def _author_matrix(node, stage, prim, matrix):
     **Authored outright**, not through `AddTransformOp()` / `GetOrderedXformOps()`. Both trust
     `xformOpOrder`, and that can name an op no layer defines with a type -- ordinary leftover
     state after a chunk is deleted and re-added, since the order and the attribute live in
-    different layers and go away independently. Reproduced on a camera prim: 25.08 skips the
+    different layers and go away independently. On a camera prim, USD 25.08 skips the
     untyped op, hands back an empty list, and `AddTransformOp()` then raises because the name
     *is* already in the order. 25.05 fails differently and also fails.
     """
@@ -335,10 +335,9 @@ def _adopt_existing_transform(node, prim, force=False):
 
     `force` is the exception, and it is the whole reason this takes an argument: while the
     lock is on the freecam *is* the authority, so on the tick the lock comes off there is no
-    "real edit" to protect -- the params are stale by definition. Reported as: move the camera
-    with the gizmo, lock, fly somewhere, unlock, and the camera jumps back to where the gizmo
-    left it. The defaults-only guard was silently discarding the flight for any camera that
-    had ever been touched.
+    "real edit" to protect -- the params are stale by definition. Without it, the
+    defaults-only guard would discard the flight for any camera that had ever been touched,
+    and unlocking would snap the camera back to where the gizmo left it.
     """
     if not force and any(
         node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS
@@ -525,11 +524,9 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
 
-    # The path-unchanged guard used to skip the whole function. It still skips re-creating
-    # the prim -- get_unique_path would otherwise rename the camera on every cook -- but the
-    # transform below has to be re-authored whenever its params change, and that is exactly
-    # the case where the path has *not* moved. Leaving the early return in place made the
-    # transform handle appear to do nothing at all.
+    # The path-unchanged guard skips only re-creating the prim -- get_unique_path would
+    # otherwise rename the camera on every cook. The transform below has to be re-authored
+    # whenever its params change, which is exactly the case where the path has *not* moved.
     chunk_layer = stage.GetEditTarget().GetLayer()
 
     # Gated off: leave the cook for when the branch comes back. A muted layer composes as

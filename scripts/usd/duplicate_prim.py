@@ -121,14 +121,10 @@ def execute(node):
     # already steps around anything occupying the stage, so a suggestion never collides.
     #
     # A destination that is already set is an instruction, not a suggestion, and is left
-    # exactly as it is. There used to be a second pass here that re-generated the path
-    # whenever a prim already stood at it -- which read as collision handling but fired
-    # hardest on this chunk's own output. Saving bakes the copy into the file, so on reopen
-    # FlowerPotA_5_copy1 genuinely is on the stage, the check called that a collision, and
-    # the destination was renamed to the still-free FlowerPotA_5_copy. The saved value was
-    # replaced before anything downstream could look at it: a Transform aimed at _copy1 was
-    # left pointing at a prim that no longer existed, silently doing nothing, and the copy
-    # sat unmoved on top of its original. Reopening the same file twice moved it again.
+    # exactly as it is -- even when a prim already stands at it. Saving bakes the copy into
+    # the file, so on reopen the copy genuinely is on the stage; treating that as a
+    # collision and renaming the destination would leave anything downstream (a Transform
+    # aimed at the copy) pointing at a prim that no longer exists.
     #
     # Re-authoring over the baked result is safe: the copy goes onto this chunk's own layer,
     # which it clears at the top of every cook, so a reopen reproduces the same prim rather

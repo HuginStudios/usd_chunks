@@ -284,18 +284,16 @@ class UsdviewScene(chunk_core.SceneSender):
         `FreeCamera.FromGfCamera()` -- copying that prim's focal length and aperture. With
         `lock_to_freecam` re-asserting the prim after every move, that happens on every
         navigation, so the user's navigation lens is repainted with the chunk camera's each
-        time. Reported as the camera's settings "transferring to the free camera": a 50mm on a
-        13.3mm aperture turned the free camera into a 15-degree telephoto to fly around in.
+        time -- a 50mm on a 13.3mm aperture makes the free camera a 15-degree telephoto.
 
         Which way to go is decided by whether a prim of ours is being viewed. If none is, this
         free camera is the user's and its lens is the thing worth remembering. If one is, the
         rebuild is a consequence of our own snapping, and the copied lens is left exactly as
         usdview made it.
 
-        Left, not undone. This used to put the user's lens back on every rebuild, and that
-        is what made the lock pop: with the prim at 50mm and the user's free camera at 60
-        degrees, every navigation started by zooming out to the user's lens, and every
-        pause ended 150ms later with the snap zooming back in to the prim's. While the lock
+        Left, not undone. Putting the user's lens back on every rebuild would make the lock
+        pop: every navigation would start by zooming out to the user's lens, and every pause
+        would end with a snap back in to the prim's. While the lock
         holds, the free camera IS the chunk camera being flown -- seeing its lens is the
         point -- so the two must agree, and the copy usdview makes is the agreement. The
         user's own lens comes back once, on the first rebuild after release_viewport_camera.
@@ -337,8 +335,8 @@ class UsdviewScene(chunk_core.SceneSender):
             return
         self._camera_snap_timer.stop()
         self._snap_prim = None
-        # Unconditional, where this used to wait on a remembered fov: the prim's clipping was
-        # put on by us, so even a user whose lens was never learned needs it taken off again.
+        # Unconditional, not waiting on a remembered fov: the prim's clipping was put on by us,
+        # so even a user whose lens was never learned needs it taken off again.
         # A fov never learned is still left alone -- see _reconcile_free_camera_lens.
         self._restore_lens = True
 

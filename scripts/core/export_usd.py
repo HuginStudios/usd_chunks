@@ -147,10 +147,9 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
 
     Internal layers (graph_layer / per-chunk procedural layers) are pure implementation
     detail with no meaning outside this session, so they were never meant to be their own
-    output file — but since the Edit-Target reparenting work, a chunk's own real driven
-    content (e.g. an actual DiskLight prim) can live nested *inside* one, so simply
-    dropping the reference (the old behavior) silently discarded real content along with
-    it. Sibling references to other layers being exported for real (light.usda, etc.) are
+    output file -- but a chunk's own real driven content (e.g. an actual DiskLight prim)
+    can live nested *inside* one, so simply dropping the reference would silently discard
+    real content along with it. Sibling references to other layers being exported for real (light.usda, etc.) are
     untouched here — those get rewritten to the sibling filename separately, not inlined.
     """
     remaining = []

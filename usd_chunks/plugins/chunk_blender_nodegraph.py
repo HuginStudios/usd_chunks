@@ -159,10 +159,9 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
 
     def update(self) -> None:
         """Blender's own hook for "this tree's topology changed" -- a link or node added
-        or removed. Without this, a wire the user just dragged authored nothing: no USD
+        or removed. Without this, a wire the user just dragged would author nothing: no USD
         .connect, no @Node.attr@ expression text, so the destination param's displayed
-        value never followed the wire it now visually has -- reported as "doesn't trigger
-        on connection, still empty".
+        value would never follow the wire it visually has.
 
         Blender's update() does not say what changed -- and it is not only topology:
         Blender also calls it for every node PROPERTY change, so it runs on each tick of a

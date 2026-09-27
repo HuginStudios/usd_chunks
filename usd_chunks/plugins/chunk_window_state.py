@@ -5,7 +5,7 @@ keeps splitter sizes, column visibility and view settings, and nothing about how
 window was or where it sat -- so every launch opens at whatever size Qt picks, with the
 Chunks dock at the fixed width :func:`chunk_qt.build_chunk_docker` asks for. On a large
 monitor that is a small window with a narrow node graph in it, resized by hand before any
-work can start, every single session. Reported as exactly that.
+work can start, every single session.
 
 Kept in ``QSettings`` rather than added to usdview's own state file: that file is keyed by
 usdview's ``SETTINGS_VERSION`` and rewritten wholesale by its ``ConfigManager``, so an entry

@@ -16,8 +16,7 @@ few thousand floats.
 That makes this the one chunk whose output cannot be recomputed from its params, and a saved
 scene is chunk prims and nothing else -- so the field is *also* recorded on this chunk's own
 prim, sparsely, and put back by `execute` when a reopened scene arrives with the surface bare.
-See `_PAINT_MESHES`. Claiming the layer itself round-tripped is what this docstring used to
-say, and it was not true: paint a surface, save, reopen, and it was gone.
+See `_PAINT_MESHES`. The layer itself does not round-trip.
 
 Requires: pxr (OpenUSD), usd_chunks, numpy (a stroke touches every vertex -- see `_stamp`).
 """
@@ -161,10 +160,9 @@ def _stroke_started(owner, notice, sender):
 def _stroke_finished(owner, notice, sender):
     """Recook the chain once, when the brush comes up.
 
-    Painting writes USD rather than params, so nothing downstream ever noticed -- reported as
-    instances not updating until some unrelated slider was nudged. Dirtying per *tick* would
-    be the other extreme: a scatter recooking on every mouse-move is the sticky drag that was
-    also reported. Once, on release, is what a paint tool should do.
+    Painting writes USD rather than params, so nothing downstream would notice on its own.
+    Dirtying per *tick* would be the other extreme: a scatter recooking on every mouse-move
+    makes the drag sticky. Once, on release, is what a paint tool should do.
     """
     _drop_stroke_cache(owner)
     if not getattr(owner, _STROKE_TOUCHED, True):
@@ -195,11 +193,9 @@ def _paint_meshes(prim):
     """Every mesh under `prim` that has points, with how many it has.
 
     A hierarchy, not a mesh. What a user picks as "the surface" is almost never a single
-    Mesh -- `KitchenTable_1` is an Xform whose meshes are children, and that is the ordinary
-    shape of any real asset. Reading points off the picked prim itself found none and painted
-    nothing, silently, while the hit test walked the descendants perfectly happily and
-    reported 2392 triangles. The two disagreeing about what "the surface" means is exactly
-    the bug that produced.
+    Mesh -- a table is typically an Xform whose meshes are children, and that is the
+    ordinary shape of any real asset. Painting and hit-testing must agree about what "the
+    surface" means, so both walk the descendants.
 
     Separate from `_paint_targets` because most callers only need to know how long the weight
     array is. `execute` runs on every cook, and transforming a third of a million vertices to
@@ -290,9 +286,8 @@ def _write_weights(node, stage, prim, weights, colours=None):
 def _write_tint(node, stage, over, weights, colours=None):
     """Colour the surface by weight, so a stroke is visible the moment it lands.
 
-    Reported live: "the paint doesn't give away at all that I have hit it". The field was
-    invisible until instances appeared downstream, and invisible entirely before a scatter was
-    wired up.
+    Without it, the field is invisible until instances appear downstream, and invisible
+    entirely before a scatter is wired up -- painting gives no feedback that it hit.
 
     **Blended from the surface's own colour, not painted over it.** Authoring a flat colour on
     every vertex -- which is what this did first -- greys out the whole model to show a stroke
@@ -350,8 +345,8 @@ def _remove_our_tint(node, over):
 
     `attr.Clear()` clears the current edit target -- which is only *our* layer when the chunk
     has one. Without one it is whatever the stage is pointed at, so unticking Show Paint
-    deleted the surface's own displayColor instead of ours, and the original never came back.
-    Reported as not being able to get the original look back.
+    would delete the surface's own displayColor instead of ours, and the original would
+    never come back.
 
     So the spec is removed from this chunk's layer by name, and a chunk with no layer of its
     own does nothing at all: never having authored a tint, it has none to withdraw.
@@ -508,7 +503,7 @@ def _stamp(points, centres, radius, strength, mode, weights):
     even start brushing" that was reported.
 
     Dabs are still applied one after another, so a vertex caught by two of them in the same
-    tick is blended twice, in order, exactly as before.
+    tick is blended twice, in order.
     """
     radius_sq = radius * radius
     moved = None
@@ -629,8 +624,8 @@ def _dab_width(node):
     """How big a point placed *now* should be drawn, from the radius at this moment.
 
     Recorded per point rather than applied to all of them. Deriving every width from the
-    current radius meant changing it resized every point already placed -- reported as the
-    points growing when the slider moved -- and rebuilt the whole array to do it. Per point,
+    current radius would mean changing it resizes every point already placed, and rebuilds
+    the whole array to do it. Per point,
     the slider only ever describes the next dab, and painting at several sizes is free.
     """
     return max(float(node.get_param("radius").value or 1.0) * 0.25, 1e-4)
@@ -735,9 +730,8 @@ def _set_everywhere(node, value):
         # clearing does anything.
         if value == 0.0:
             _write_points(node, stage, [], [], [])
-        # After the change, not before. Bumping first recooked the chain while the points were
-        # still there, so the first Clear emptied the cloud and left every instance standing --
-        # reported as having to press Clear twice.
+        # After the change, not before. Bumping first would recook the chain while the points
+        # are still there, so Clear would empty the cloud and leave every instance standing.
         _bump_strokes(node, reset=(value == 0.0))
         return
     if prim is None:
@@ -788,9 +782,6 @@ def _fill_paint(owner, notice, sender):
 
 
 #: Where the paint is kept so it survives a save, on the chunk's own prim.
-#:
-#: Reported: paint a surface, save the scene, reopen, and the paint is gone -- with the
-#: chunk, its stroke count and everything downstream of it still there.
 #:
 #: A saved scene is chunk prims and nothing else, on the premise that reopening re-runs every
 #: chunk and so regenerates whatever it is responsible for (see chunk_stage.save_scene). Every
@@ -957,8 +948,7 @@ def main():
     # node graph draws as a connectable socket -- the same shape Scatter Points already uses to
     # hand its instancer to the RBD Solver.
     # The two outputs, together: one per mode, and only one carries anything at a time.
-    # Adjacent because they are the same decision seen twice -- reading them apart was
-    # reported as the layout feeling off.
+    # Adjacent because they are the same decision seen twice.
     chunk_api.add_param(chunk.LineEdit(
         "density_name", "Density Field",
         default_value=DENSITY_PRIMVAR,
@@ -1038,8 +1028,8 @@ def main():
 
     # Nothing downstream computes from these. They steer a *stroke*, which happens outside any
     # cook -- execute() never reads them, and what a scatter sees is the painted field, not the
-    # settings that produced it. Without this, dragging Radius recooked the whole chain on
-    # every tick, reported as the brush being unusably sticky.
+    # settings that produced it. Without this, dragging Radius would recook the whole chain
+    # on every tick.
     for param in (radius, strength, mode, colour, show):
         param.presentation_only = True
 

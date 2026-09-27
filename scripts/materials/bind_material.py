@@ -14,15 +14,14 @@ def execute(node):
         layer.Clear()
         return
 
-    # Check resolvability BEFORE clearing. This used to Clear() first and only then bail
-    # out when the material or the target prim could not be found -- which silently
-    # destroyed a perfectly good binding whenever this ran at a moment when the stage did
-    # not hold them. That is not a rare edge: view-driven execution deliberately mutes and
+    # Check resolvability BEFORE clearing. Clearing first and only then bailing out when
+    # the material or the target prim cannot be found would silently destroy a perfectly
+    # good binding whenever this runs at a moment when the stage does not hold them. That
+    # is not a rare edge: view-driven execution deliberately mutes and
     # unmutes layers one at a time while recooking (chunk_stage.recook_for_view), so the mesh
     # a binding targets, or the material itself, is routinely absent for part of a recook.
     # Nothing re-runs this chunk once the stage settles -- its own params never changed --
-    # so the loss was permanent, and looked like the applied material randomly reverting to
-    # the original one. Params pointing at something unresolvable right now is a transient
+    # so the loss would be permanent. Params pointing at something unresolvable right now is a transient
     # (or user-error) state, not an instruction to throw away the last good result.
     #
     # IsDefined(), not IsValid(): the binding this chunk authored last time is an `over` on

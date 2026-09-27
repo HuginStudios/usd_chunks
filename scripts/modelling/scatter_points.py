@@ -75,8 +75,7 @@ class _TriangleSoup:
     objects: the geometry arrives from USD as flat buffers, and turning those into Python
     objects to do float arithmetic on one at a time is the whole expense. Sampling two
     hundred points off it then cost another twenty, re-walking the same list to add up
-    areas. Wired to a Scatter Brush, whose every stroke recooks, that was the reported
-    five-minute freeze.
+    areas -- and wired to a Scatter Brush, every stroke recooks.
 
     So nothing is ever materialised. Positions, areas, bounds, the slope filter and the
     bucket grids are each one array expression, and the same asset now collects in 0.13s
@@ -188,9 +187,9 @@ def _world_points(prim, points):
 def _fan_triangulate(counts, indices):
     """Fan-triangulate every face at once: three index arrays, or None if there are no faces.
 
-    The same fan the per-face loop walked -- (v0, vi, vi+1) for i in 1..count-2 -- as index
+    The fan a per-face loop would walk -- (v0, vi, vi+1) for i in 1..count-2 -- as index
     arithmetic, so USD's flat face buffers are never unpacked a face at a time. Faces with
-    fewer than three vertices contribute nothing, as before.
+    fewer than three vertices contribute nothing.
     """
     if not len(counts):
         return None
@@ -253,7 +252,7 @@ def _collect_triangles(prim):
         ],
         dtype=np.float64,
     )
-    # (v0, v1, v2) and (v0, v2, v3), the same two triangles as before.
+    # (v0, v1, v2) and (v0, v2, v3).
     return _TriangleSoup(
         corners[[0, 0]],
         corners[[1, 2]],
@@ -270,7 +269,7 @@ def _triangle_bounds(triangles):
 def _slope_ok(normal, world_up, max_slope_deg):
     """True if the face is within max_slope_deg of facing world up.
 
-    90 = every upward-facing face (the old default); 0 = only perfectly flat;
+    90 = every upward-facing face; 0 = only perfectly flat;
     180 = every face (e.g. wrap a sphere).
 
     One triangle at a time. The cook filters a whole soup through
@@ -548,9 +547,9 @@ _SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope")
 def _update_sampling_params(owner) -> None:
     """Hide the distribution controls while the positions are being handed to us.
 
-    Reported live: with Painted Points connected, Auto Spacing, Spacing, Max Count and Seed
-    all still sat there doing nothing. A control that cannot affect the result is worse than
-    an absent one -- it invites you to reach for it when something looks wrong.
+    With Painted Points connected, Auto Spacing, Spacing, Max Count and Seed cannot affect
+    the result. A control that cannot affect the result is worse than an absent one -- it
+    invites you to reach for it when something looks wrong.
     """
     placed = bool(owner.get_param("points_prim") and owner.get_param("points_prim").value)
     for name in _SAMPLING_ONLY:
@@ -1241,7 +1240,7 @@ def _stack_sites(triangles, up_idx, world_up, cfg, rng):
         # something to pack against. The answer is not a cleverer sampler -- it is to stack the
         # block in mid-air, tilt it, move it over the cup with a Transform and let the RBD
         # solver drop it in. This makes that possible without modelling a throwaway plane to
-        # stack on. An empty target used to yield nothing at all, so no scene loses behaviour.
+        # stack on.
         per_level = max(1, -(-cfg["free_count"] // max(1, cfg["levels"])))
         side = max(1, math.ceil(math.sqrt(per_level)))
         lo_a, hi_a = -(side - 1) * pitch_a * 0.5, (side - 1) * pitch_a * 0.5

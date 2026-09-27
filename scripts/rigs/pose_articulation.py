@@ -186,11 +186,10 @@ def _outermost(prims):
     moving it as well applies the rotation to it twice. A link with no moved ancestor gets
     nothing for free and has to be moved itself.
 
-    This used to ask a narrower question -- "is this a direct child of the articulation
-    root" -- which is true of everything urdf_import authors, because it deliberately
-    authors moving links flat. It is not true of a scene: a room full of appliances puts
-    each one under its own Xform, so every posable link is a grandchild of the root and the
-    old test rejected all of them. 48 joints, sliders for every one, and nothing moved.
+    Not the narrower "is this a direct child of the articulation root", which is true of
+    everything urdf_import authors, because it deliberately authors moving links flat. It
+    is not true of a scene: a room full of appliances puts each one under its own Xform, so
+    every posable link is a grandchild of the root.
     """
     paths = {prim.GetPath() for prim in prims}
     keep = []
@@ -219,13 +218,10 @@ def _upstream_of(node, prim):
     bake, say) if that chunk's layer currently outranks this one's, which it legitimately
     does, being closer to the view.
 
-    apply_pose used to treat GetLocalTransformation() as the rest pose to build its own
-    absolute answer from. Once something downstream also writes to the same prim, that read
-    is contaminated: a downstream bake gets folded in as if it were part of the rest pose,
-    and stays folded in even after this chunk's own next re-cook discards its own stale
-    contribution, because the downstream one is untouched. Live-reported: posing a joint
-    after running the RBD Solver corrupted the whole arm's placement, worse with every
-    further pose change, fixed only by forcing a full recook.
+    GetLocalTransformation() is not the rest pose. Once something downstream also writes to
+    the same prim, that read is contaminated: a downstream bake would be folded in as if it
+    were part of the rest pose, and stay folded in even after this chunk's own next re-cook
+    discards its own stale contribution, compounding with every further pose change.
 
     Reads only the ops chunk_gizmo.xform_op_order places before this chunk's own -- the
     same graph-derived order every other transform-authoring chunk in this codebase already
@@ -252,12 +248,11 @@ def _set_local(prim, matrix, upstream, node):
     `matrix` is where the prim's local transform needs to end up; `upstream` is what the
     ops before this chunk's own already contribute (see _upstream_of). Writing `matrix`
     itself as this chunk's own op applies upstream's contribution a second time the moment
-    it composes rather than replaces it -- the same mistake already fixed for the RBD
-    Solver's own bake (see chunk_gizmo.xform_op_order's docstring: "the shared op is what
-    let the solver evict everyone else"). Dividing upstream back out, and owning a uniquely
-    named op via chunk_utils.xform_op_name rather than the bare "xformOp:transform" every
-    chunk used to fight over, is what lets a downstream chunk (an RBD Solver bake) coexist
-    with this one instead of silently excluding it from the order or being excluded by it.
+    it composes rather than replaces it (see chunk_gizmo.xform_op_order's docstring).
+    Dividing upstream back out, and owning a uniquely named op via
+    chunk_utils.xform_op_name rather than a shared "xformOp:transform", is what lets a
+    downstream chunk (an RBD Solver bake) coexist with this one instead of silently
+    excluding it from the order or being excluded by it.
     """
     my_op = chunk_utils.xform_op_name(node)
     xform = UsdGeom.Xformable(prim)

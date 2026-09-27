@@ -823,10 +823,10 @@ def _prune(nodes, min_length):
 def _lift(nodes, radii, factor):
     """Float each node off the skin by a multiple of *its own* radius.
 
-    Reported: turning Thickness up sent the vines flying off the mesh. Lift was one distance
-    for the whole network, taken from the base width — so a tip a quarter as thick as the trunk
-    was pushed out four times further than it needed, and every increase in Thickness translated
-    the entire vine away from the surface instead of fattening it in place.
+    Lift is per node, not one distance for the whole network: taken from the base width, a tip
+    a quarter as thick as the trunk would be pushed out four times further than it needs, and
+    every increase in Thickness would translate the entire vine away from the surface instead
+    of fattening it in place.
 
     Per node, `factor` is what the vine *rests* at rather than how far away it sits: at 1.0 the
     tube is exactly tangent to the wall whatever it is carrying, so Thickness only ever changes
@@ -1030,9 +1030,8 @@ def _settings(node, surface):
 
     **Two units, not one.** How far apart the growth's decisions are (Step) and how thick the
     result is (Thickness) are different questions, and measuring the second in multiples of the
-    first made a finer vine a thinner one. At the default resolution that put a stem at a
-    five-hundredth of the object it grew on — one pixel on screen, and a quarter of a pixel at
-    the tips. Reported as the chunk cooking and producing nothing you could see.
+    first would make a finer vine a thinner one -- at the default resolution, a stem at a
+    five-hundredth of the object it grows on, around one pixel on screen.
 
     So the growth distances (influence, kill) are multiples of Step, which is the space
     colonization papers' own convention and genuinely is about resolution; and every visible

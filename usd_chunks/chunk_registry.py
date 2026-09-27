@@ -340,13 +340,10 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
     def package_in_cache(self, package):
         """Whether `package` -- a requirement, range and all -- is satisfied by the cache.
 
-        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". This used to go
-        through package_info, which splits on "==" alone: a ranged requirement came back
-        with the whole string as its name, which no cache entry is ever keyed by, so every
-        chunk declaring a range missed the cache on every load -- two `pip list` subprocesses
-        each time, two thirds of a second, and a warning that numpy was not installed next
-        to a numpy that was. Blender loads every module at once to generate its node
-        classes, so that was most of the pause on the first open of a network.
+        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". package_info splits
+        on "==" alone, so a ranged requirement would come back with the whole string as its
+        name, which no cache entry is ever keyed by -- every chunk declaring a range would
+        miss the cache on every load, costing two `pip list` subprocesses each time.
         """
         if not self.initialized:
             return False

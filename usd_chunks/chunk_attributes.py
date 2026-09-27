@@ -259,11 +259,11 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # A param can declare that nothing downstream computes from its value. Rare, and
             # it has to be earned: the value must genuinely not reach the chunk's cook.
             #
-            # The Scatter Brush is the case that asked for it. Its radius, strength and mode
-            # steer a *stroke*, which happens outside any cook -- `execute` never reads them,
-            # and what downstream sees is the painted field, not the settings that produced
-            # it. Dirtying the chain for them made dragging Radius recook the scatter on every
-            # tick, reported as the brush being unusably sticky.
+            # The Scatter Brush is the example. Its radius, strength and mode steer a
+            # *stroke*, which happens outside any cook -- `execute` never reads them, and what
+            # downstream sees is the painted field, not the settings that produced it.
+            # Dirtying the chain for them would make dragging Radius recook the scatter on
+            # every tick.
             #
             # The change still solves and still sends its notice, so callbacks and the UI are
             # unaffected; only the dirtying of readers is skipped.
