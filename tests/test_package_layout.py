@@ -79,7 +79,7 @@ def test_the_old_cli_name_still_runs_as_main():
     assert "usdchunks" in proc.stdout
 
 
-@pytest.mark.parametrize("host", ["usdview", "kraken", "houdini"])
+@pytest.mark.parametrize("host", ["usdview"])
 def test_plugin_path_resolves_every_host(host):
     proc = subprocess.run([sys.executable, "-m", "usd_chunks.cli", "plugin-path", "--host", host],
                           cwd=str(REPO), capture_output=True, text=True)

@@ -75,11 +75,3 @@ namespaces = false
 [tool.setuptools.package-data]
 "usd_chunks" = ["resources/icons/*.png"]
 "usd_chunks.hosts.usdview" = ["plugInfo.json"]
-"usd_chunks.hosts.kraken" = ["plugInfo.json"]
-# houdini is a HOUDINI_PATH package directory, not an importable python package,
-# so its contents ship as data of the parent package.
-"usd_chunks.hosts" = [
-    "houdini/packages/*.json",
-    "houdini/toolbar/*.shelf",
-    "houdini/python3.11libs/*.py",
-]

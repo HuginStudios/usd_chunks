@@ -852,7 +852,7 @@ def main():
         formatter_class=RawDescriptionHelpFormatter,
     )
     plugin_path_parser.add_argument(
-        "--host", choices=["usdview", "kraken", "houdini"], default="usdview", help="Which host integration (default: usdview)"
+        "--host", choices=["usdview"], default="usdview", help="Which host integration (default: usdview)"
     )
 
     args = parser.parse_args()
