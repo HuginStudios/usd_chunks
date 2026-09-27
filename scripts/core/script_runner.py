@@ -170,7 +170,8 @@ def _watch(chunk_obj, path):
 
 def _ensure_timer():
     """One timer for every script file. Without a Qt application there is nothing to
-    drive it, and the file is still read fresh on every cook."""
+    drive it, and the file is still read fresh on every cook.
+    """
     global _timer
     if _timer is not None:
         return
@@ -308,7 +309,8 @@ def execute(node):
 def _on_change(owner, notice, sender):
     """Callback for the chunk panel -- run the script when used outside the node graph,
     where the reserved `execute` hook isn't reached (a chunk not part of an active view's
-    upstream tree is blocked from the generic exec dispatch)."""
+    upstream tree is blocked from the generic exec dispatch).
+    """
     chunk_obj = owner.get_chunk()
     if chunk_obj is None:
         return

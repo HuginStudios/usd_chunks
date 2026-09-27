@@ -27,7 +27,6 @@ def toggle_vis(owner: chunk.ChunkParamBase, notice, sender):
 
 def clear_vis(owner: chunk.ChunkParamBase, notice, sender):
     """Clear the visibility set in the stage"""
-
     stage = owner.get_stage()
     if not stage:
         return

@@ -39,15 +39,15 @@ ParamT = TypeVar("ParamT")
 
 
 class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
-    """Base class for a chunk param widget. Any ui element associated to a chunk or parameter should subclass from this.
-    This class acts as an bridge between this toolkit and the UI library.
+    """Base class for a chunk param widget, the bridge between a param and a UI toolkit.
 
-    Creating a custom widget should subclass
-    the relevant UI widget as well as this class, such as:
-    ```
-        class myWidget(QtWidgets.QPushButton, ChunkParamWidget)
-    ```
-    The subclass should override the relevant methods from this class
+    Any UI element associated with a chunk or parameter should subclass this. A custom
+    widget subclasses the relevant toolkit widget as well as this class::
+
+        class MyWidget(QtWidgets.QPushButton, ChunkParamWidgetBase):
+            ...
+
+    and overrides the relevant methods from this class.
     """
 
     def __init__(self, param: ParamT, *args, **kwargs):
@@ -69,23 +69,26 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @property
     def param(self) -> ParamT:
+        """The param this widget shows.
+
+        Raises:
+            ReferenceError: The param has been garbage collected.
+        """
         if param := self._param():
             return param
         raise ReferenceError("reference to param is dead! :'(")
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        """The alias this widget's notices go out under: WIDGET_CHANGED."""
         return chunk_notice.ChunkNoticeAlias.WIDGET_CHANGED
 
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: ChunkParamBase):
-        """
-        callback for handling changes to the parameter. Currently implements changes to
-        value, name, label and icon attributes
+        """Update the widget when its param's value, name, label or icon changes.
 
         Args:
             notice (chunk_notice.ChunkNotice): The notice sent for the change
             sender (ChunkParamBase): The sender
         """
-
         attrname = notice.data.name
         value = notice.data.value
         if attrname == "value":
@@ -106,10 +109,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         self.send_self(data=notice.data)
 
     def setup_chunk_widget(self):
-        """
-        Called when initializing the widget. Sets the value and label on this object to represent the values of the chunk object
-        """
-
+        """Initialize the widget's value and label from the param."""
         value = self.param.raw_value
         label = self.param.get_label()
 
@@ -124,8 +124,7 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_value(self) -> Any:
-        """
-        Need to be implemented in a subcclass and return the value of the widget.
+        """Need to be implemented in a subcclass and return the value of the widget.
 
         Returns:
             Any: The value of the widget
@@ -134,9 +133,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_value(self, value: Any):
-        """
-        Need to be implemented in a subclass. This should only set the value of the widget,
-        not modify the chunk object as that would result in an infinite loop
+        """Show a value in the widget. Implemented by a subclass.
+
+        This should only set the value of the widget, not modify the chunk object, as that would
+        result in an infinite loop.
 
         Args:
             value (Any): The new value of the widget
@@ -145,9 +145,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_label(self, text: str):
-        """
-        Need to be implemented in a subclass. This should only set the label of the widget,
-        not modify the chunk object as that would result in an infinite loop
+        """Show a label on the widget. Implemented by a subclass.
+
+        This should only set the label of the widget, not modify the chunk object, as that would
+        result in an infinite loop.
 
         Args:
             text (str): The new label of the widget
@@ -156,9 +157,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_icon(self, icon: str):
-        """
-        Need to be implemented in a subclass. This should only set the icon of the widget,
-        not modify the chunk object as that would result in an infinite loop
+        """Show an icon on the widget. Implemented by a subclass.
+
+        This should only set the icon of the widget, not modify the chunk object, as that would
+        result in an infinite loop.
 
         Args:
             icon (str): A path to an image file which should be used as icon for this widget
@@ -167,8 +169,9 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_param_layout(self, layout_flags: ChunkFlags.LayoutFlags):
-        """
-        Implement the different LayoutFlags here. This can be ignored if the widget does not support the layout flags
+        """Apply the param's LayoutFlags to the widget.
+
+        This can be ignored if the widget does not support the layout flags.
 
         Args:
             layout_flags (ChunkFlags.LayoutFlags): The LayoutFlags of the parameter which the widget should respect
@@ -177,48 +180,45 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_hidden(self, val: bool):
-        """
-        Set the ui widget hidden based on the value of val
+        """Hide or show the widget.
 
         Args:
             val (bool): Whether to hide or show the widget
 
         Raises:
-            NotImplementedError: _description_
+            NotImplementedError: A subclass does not implement it.
         """
         raise NotImplementedError
 
     @abstractmethod
     def set_enabled(self, val: bool):
-        """
-        Set the ui widget enabled or disabled based on value of val
+        """Enable or disable the widget.
 
         Args:
             val (bool): Whether to enable or disable the widget
 
         Raises:
-            NotImplementedError: _description_
+            NotImplementedError: A subclass does not implement it.
         """
         raise NotImplementedError
 
     @abstractmethod
     def update_from_state(self):
-        """
-        Called when state of the group has changed
-        """
+        """Apply the param's HIDDEN and DISABLED state, and its OUTPUT flag, to the widget."""
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
         is_output = self.param.has_flag(ChunkFlags.ParamFlags.OUTPUT)
         self.set_enabled(not is_output and not self.param.has_state(ChunkFlags.State.DISABLED))
 
     def value_changed(self, value: Any | None = None):
-        """
-        Called whenever the value of the widget changed, and forwards the new value to self.set_value.
-        This will also update param.value
+        """Forward a value the user entered in the widget to the param.
+
+        Ignored while the param is solving its own attributes, so a value it just pushed to the
+        widget does not come straight back.
 
         Args:
-            value (Optional[Any], optional): The new value set on the widget. Defaults to None.
+            value (Any, optional): The new value set on the widget. Defaults to None, which
+                reads the widget's current value.
         """
-
         if self.param is not None:
             if self.param._solving_attributes:
                 return
@@ -229,41 +229,38 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
 
 
 class ChunkWidgetFactoryBase(Protocol):
-    """
-    A ChunkWidgetFactory exists to handle the creation of widgets from chunk objects. This is
-    implemented for any specific UI library and should map between chunk objects and ChunkParamWidget's.
-    This can also be used to create a custom mapping for custom widget, extending the base library.
-    See chunk_qt.ChunkQTWidgetFactory in plugins/ for an implementation.
+    """Creates widgets for chunk params, for one UI toolkit.
+
+    Each toolkit implements a factory that maps between chunk objects and
+    ChunkParamWidgetBase subclasses. The mapping can be extended with custom widgets. See
+    chunk_qt.ChunkQTWidgetFactory in plugins/ for an implementation.
 
     Attributes:
-        widget_map (dict[ChunkFlags.ParamType, type[ChunkParamWidget]]): This attribute holds the mapping between chunk
-            object types and its corresponding widget.
+        widget_map (dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]): This attribute
+            holds the mapping between chunk object types and their corresponding widget.
     """
 
     widget_map: dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]
 
     def get_map(self) -> dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]:
-        """
-        Return the widget_map of the factory
+        """Return the widget_map of the factory.
 
         Returns:
-            Dict[ChunkFlags.ParamType, type[ChunkParamWidget]]: The widget_map
+            dict[ChunkFlags.ParamType, type[ChunkParamWidgetBase]]: The widget_map
         """
         return self.widget_map
 
     def add_mapping(self, key: ChunkFlags.ParamType, widget_type: type[ChunkParamWidgetBase]):
-        """
-        Add a mapping from key to widget_type
+        """Add a mapping from key to widget_type.
 
         Args:
             key (ChunkFlags.ParamType): The ParamType to map from
-            widget_type (type[ChunkParamWidget]): The widget class to map to
+            widget_type (type[ChunkParamWidgetBase]): The widget class to map to
         """
         self.widget_map[key] = widget_type
 
     def has_mapping(self, key: ChunkFlags.ParamType) -> bool:
-        """
-        Check if a mapping for key exists
+        """Check if a mapping for key exists.
 
         Args:
             key (ChunkFlags.ParamType): The key to check for
@@ -275,17 +272,16 @@ class ChunkWidgetFactoryBase(Protocol):
 
     @abstractmethod
     def create_widget(self, param: ChunkParamBase) -> ChunkParamWidgetBase | None:
-        """
-        A subclass should implement this and create a new widget from the param
+        """Create a new widget for a param. Implemented by a subclass.
 
         Args:
             param (ChunkParamBase): The param we want to represent in the UI
 
         Raises:
-            NotImplementedError: Base implementation throw, as to make sure this is properly implemented in a subclass
+            NotImplementedError: A subclass does not implement it.
 
         Returns:
-            Any: The UI library widget. I.e QtWidget for Qt
+            Any: The UI library widget, e.g. a QWidget for Qt
         """
         raise NotImplementedError
 
@@ -319,8 +315,14 @@ def file_dialog_spec(param) -> FileDialogSpec:
     """Read a FileBrowser param's own settings into a FileDialogSpec.
 
     `pattern` defaults to "*", and each extension is appended to it -- so pattern "*" with
-    extensions [".usda", ".usdc"] means ("*.usda", "*.usdc"). That is the shape Qt has
-    always built; it is written down here so the other frontends cannot drift from it.
+    extensions [".usda", ".usdc"] means ("*.usda", "*.usdc"). That is the shape Qt builds;
+    it is defined here so every frontend builds the same one.
+
+    Args:
+        param: The FileBrowser param.
+
+    Returns:
+        The dialog spec.
     """
     pattern = getattr(param, "pattern", "") or "*"
     extensions = list(getattr(param, "extensions", None) or [])

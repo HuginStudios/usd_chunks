@@ -977,7 +977,8 @@ class BlenderGraphView:
         """Whether this view is the one open. The connections are global and outlive a
         view that was replaced (opening another network makes a new one), and a replaced
         view answering notices for chunks it no longer shows -- id() reuse makes that
-        possible -- would rebuild a tree nobody is looking at."""
+        possible -- would rebuild a tree nobody is looking at.
+        """
         return active_view() is self
 
     def _mark_dirty(self, sender) -> None:
@@ -995,7 +996,8 @@ class BlenderGraphView:
 
     def _on_params_changed(self, notice, sender) -> None:
         """A param was lofted onto or removed from a chunk: its PORTS changed, and sockets
-        are only made in _rebuild_tree_body -- so this is a rebuild, not a re-sync."""
+        are only made in _rebuild_tree_body -- so this is a rebuild, not a re-sync.
+        """
         self._request_reload_for(sender)
 
     def _on_chunk_deleted(self, notice, sender) -> None:
@@ -1096,7 +1098,8 @@ class BlenderGraphView:
 
     def pull_selection_from_tree(self) -> None:
         """Adopt Blender's own selection. Blender owns the box-select and click handling,
-        so the frontend follows the editor rather than the other way round."""
+        so the frontend follows the editor rather than the other way round.
+        """
         if self.tree is None:
             return
         self.set_selection({n.name for n in self.tree.nodes if n.select})
@@ -1196,7 +1199,8 @@ class BlenderGraphView:
 
     def duplicate_selection(self) -> None:
         """Copy and paste at an offset without touching the clipboard, so duplicating never
-        clobbers what was last explicitly copied."""
+        clobbers what was last explicitly copied.
+        """
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to duplicate"
@@ -1262,7 +1266,8 @@ class BlenderGraphView:
 
     def can_dive(self, path: str) -> bool:
         """Keyed on is_subnet, never on the CONTEXT flag: a chunk-in-chunk carries
-        CONTEXT too and is an implementation detail, not a subnet."""
+        CONTEXT too and is an implementation detail, not a subnet.
+        """
         return chunk_graph.can_dive(self.chunks, path)
 
     def dive_into(self, path: str) -> None:

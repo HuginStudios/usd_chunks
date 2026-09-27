@@ -707,7 +707,8 @@ class _NearestWeight:
 
     def sample(self, point, normal=None):
         """The painted weight nearest `point`, in 0..1. `normal` is unused but is part of the
-        hook's signature -- a future falloff-by-facing would want it."""
+        hook's signature -- a future falloff-by-facing would want it.
+        """
         # The point can land nearer a vertex in an adjacent cell than one in its own, and an
         # empty cell is ordinary on a coarse mesh, so the neighbours are always searched.
         nearby = self._nearby(int(self._keys(np.asarray([point[0], point[1], point[2]]))))

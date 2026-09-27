@@ -104,7 +104,8 @@ class BlenderScene(SceneSender):
 
     def set_viewport_renderer_settings(self, settings) -> None:
         """Not applicable: Blender's render engines are not Hydra delegates taking USD
-        render settings. Ignored rather than raised so a render chunk can still cook."""
+        render settings. Ignored rather than raised so a render chunk can still cook.
+        """
         return None
 
     def get_current_frame(self) -> float:
@@ -202,7 +203,8 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
 
 def _uninitialized_chunk_trees() -> list:
     """Every ChunkNetwork tree currently shown in a node editor that _open_stage has never
-    touched -- i.e. created by Blender's own "+ New" rather than one of our operators."""
+    touched -- i.e. created by Blender's own "+ New" rather than one of our operators.
+    """
     found = []
     for window in getattr(bpy.context.window_manager, "windows", ()):
         for area in window.screen.areas:
@@ -458,7 +460,8 @@ class USDCHUNKS_OT_localise_network(bpy.types.Operator):
 def _selected_chunk(predicate):
     """The one selected chunk the predicate accepts, or -- when nothing selected fits --
     the graph's single candidate. Same "do not make me select the only thing there"
-    courtesy dive_into already extends, and both verbs act on exactly one chunk."""
+    courtesy dive_into already extends, and both verbs act on exactly one chunk.
+    """
     view = get_view()
     if view is None:
         return None
@@ -505,7 +508,8 @@ class USDCHUNKS_OT_dive_out(bpy.types.Operator):
 
 class _ChunkTreeOperator(bpy.types.Operator):
     """Shared shape: only in a chunk tree, only with a view, selection read from the
-    editor first because Blender owns clicking and box-select."""
+    editor first because Blender owns clicking and box-select.
+    """
 
     bl_options = {"REGISTER"}
 
@@ -734,7 +738,8 @@ def _register_keymap() -> None:
     """Bind _KEYS in the add-on keyconfig, which Blender consults before its defaults --
     so inside a chunk tree these win over node.delete, node.duplicate_move and the rest,
     and everywhere else those operators' poll fails and the key falls through to what it
-    always did."""
+    always did.
+    """
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc is None:
         return  # background mode: no key configs, nothing to bind to

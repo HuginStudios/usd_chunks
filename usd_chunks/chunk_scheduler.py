@@ -1,5 +1,4 @@
-"""
-The chunk_scheduler module owns the *solve* of the chunk DAG.
+"""The chunk_scheduler module owns the *solve* of the chunk DAG.
 
 `chunk_notice.DagNode` stores the topology and nothing else: inputs (dependencies),
 outputs (dependants) and a single owner. This module answers the questions that used
@@ -61,8 +60,7 @@ if TYPE_CHECKING:
 
 
 class CircularDependencyError(RecursionError):
-    """
-    Raised when the DAG is not acyclic.
+    """Raised when the DAG is not acyclic.
 
     Subclasses RecursionError because that is what the previous recursive dirty
     propagation raised, so existing ``except RecursionError`` handlers keep working.
@@ -82,8 +80,7 @@ atexit.register(_depth_cache.clear)
 
 
 def topology_changed(*nodes: DagNode):
-    """
-    Invalidate everything derived from the graph shape.
+    """Invalidate everything derived from the graph shape.
 
     Called by DagNode whenever an input, output or owner connection changes.
 
@@ -111,8 +108,7 @@ def topology_changed(*nodes: DagNode):
 
 
 def downstream(node: DagNode) -> list[DagNode]:
-    """
-    The nodes that must solve *after* node: its dependants, then its owner.
+    """The nodes that must solve *after* node: its dependants, then its owner.
 
     Reaches into DagNode._connections rather than going through get_outputs() /
     get_owner_node(): this is the innermost loop of every dirty propagation, and those
@@ -134,8 +130,7 @@ def downstream(node: DagNode) -> list[DagNode]:
 
 
 def downstream_closure(seed: DagNode) -> dict[DagNode, None]:
-    """
-    Every node reachable downstream of seed, seed included.
+    """Every node reachable downstream of seed, seed included.
 
     A dict rather than a set so the order is stable: the sort below seeds its queue from
     this collection, and a set would make the result depend on object addresses.
@@ -161,21 +156,20 @@ def downstream_closure(seed: DagNode) -> dict[DagNode, None]:
 
 
 def dirty_component(seed: DagNode) -> dict[DagNode, None]:
-    """
-    Every dirty node connected to seed along a path of dirty nodes, walking dependants
-    and owners downstream *and* dependencies upstream.
+    """Every dirty node connected to `seed` along a path of dirty nodes, in both directions.
 
-    The upstream half is what stops a node running ahead of a dependency that has not
-    solved yet: a node downstream of seed may have a second, dirty dependency on a branch
-    seed knows nothing about, and that branch has to be pulled into the same sort rather
-    than left behind. Clean nodes end the walk, which is what confines a solve to the
-    part of the graph that actually changed.
+    The walk follows dependants and owners downstream *and* dependencies upstream. The
+    upstream half is what stops a node running ahead of a dependency that has not solved yet:
+    a node downstream of seed may have a second, dirty dependency on a branch seed knows
+    nothing about, and that branch has to be pulled into the same sort rather than left
+    behind. Clean nodes end the walk, which is what confines a solve to the part of the graph
+    that actually changed.
 
     Args:
-        seed (DagNode): The node the solve was requested for
+        seed: The node the solve was requested for.
 
     Returns:
-        Dict[DagNode, None]: The dirty component, in discovery order
+        The dirty component, in discovery order.
     """
     found: dict[DagNode, None] = {seed: None}
     pending = [seed]
@@ -199,8 +193,7 @@ def dirty_component(seed: DagNode) -> dict[DagNode, None]:
 
 
 def topo_order(nodes: dict[DagNode, None]) -> list[DagNode]:
-    """
-    Kahn topological sort of the subgraph induced by nodes.
+    """Kahn topological sort of the subgraph induced by nodes.
 
     Only edges with both ends inside nodes are counted, so the result is a valid order
     for solving that subgraph on its own. Cycle detection is free: a cyclic subgraph
@@ -241,8 +234,7 @@ def topo_order(nodes: dict[DagNode, None]) -> list[DagNode]:
 
 
 def propagate_presentation(seed: DagNode):
-    """
-    Mark only the ownership chain above seed dirty, for a change nothing computes from.
+    """Mark only the ownership chain above seed dirty, for a change nothing computes from.
 
     A presentation change (hiding a param, folding a group open, selecting a node) still
     has to reach the UI, and the UI hangs off the owners: a group's data_changed spreads
@@ -287,8 +279,7 @@ def propagate_presentation(seed: DagNode):
 
 
 def propagate_dirty(seed: DagNode):
-    """
-    Mark seed and everything downstream of it dirty, recording why.
+    """Mark seed and everything downstream of it dirty, recording why.
 
     Each dirtied node is told which of its dependencies changed (INPUT_CHANGED, plus the
     node it came from). An owner additionally inherits the change reasons already
@@ -343,8 +334,7 @@ def propagate_dirty(seed: DagNode):
 
 
 def solve(seed: DagNode) -> Generator[DagNode, None, None]:
-    """
-    Solve seed and everything that depends on it, in dependency order.
+    """Solve seed and everything that depends on it, in dependency order.
 
     Yields each node as it is marked clean so the caller can run its side effects
     (data_changed / send_self / the chunk module) before the next node runs. Nodes are
@@ -387,8 +377,7 @@ def solve(seed: DagNode) -> Generator[DagNode, None, None]:
 
 
 def get_depth(node: DagNode) -> int:
-    """
-    The length of the longest dependency chain ending at node.
+    """The length of the longest dependency chain ending at node.
 
     This is the sort key the layer manager orders chunk sublayers by: a chunk that
     depends on another must end up with the stronger layer. Ownership counts without
@@ -418,8 +407,7 @@ def get_depth(node: DagNode) -> int:
 
 
 def _upstream(node: DagNode) -> list[tuple[int, DagNode]]:
-    """
-    What node's depth is measured against, each paired with what it adds.
+    """What node's depth is measured against, each paired with what it adds.
 
     A dependency adds one level. Ownership adds none: an owner is only ever pulled down
     to the level of the deepest thing it owns, so that a chunk wired to another chunk
@@ -440,8 +428,7 @@ def _upstream(node: DagNode) -> list[tuple[int, DagNode]]:
 
 
 def _depth(root: DagNode) -> int:
-    """
-    Body of get_depth(), as an explicit post-order walk.
+    """Body of get_depth(), as an explicit post-order walk.
 
     Iterative rather than recursive because the walk is only bounded by how deep the
     user's graph goes, and a param chain in a large scene is free to be deeper than
@@ -484,8 +471,7 @@ def _depth(root: DagNode) -> int:
 
 
 def commit_order(chunks: Iterable[ChunkBase]) -> list[ChunkBase]:
-    """
-    Order chunks so that every chunk comes after everything it depends on.
+    """Order chunks so that every chunk comes after everything it depends on.
 
     Sorted by get_depth rather than run through topo_order, because a chunk can depend on
     another without there being any edge between the two *chunks*: a param-level
@@ -518,8 +504,7 @@ def commit_all(
     chunks: Iterable[ChunkBase],
     order: Callable[[list[ChunkBase]], list[ChunkBase]] | None = None,
 ) -> list[ChunkBase]:
-    """
-    Run the reserved `commit(node)` hook of every chunk module that defines one.
+    """Run the reserved `commit(node)` hook of every chunk module that defines one.
 
     Called once, by whoever drove the solve (the CLI's `run`), after that solve has
     settled -- not from inside the notice propagation loop the way `execute` is

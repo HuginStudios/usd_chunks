@@ -357,8 +357,13 @@ def authored_value(prop: RenderSettingProp, value):
     renderer only described as an int: there the param holds a readable label and the
     attribute -- and the delegate -- want the number behind it.
 
-    Returns None for a label that is not one of the options, which a caller skips rather
-    than authoring something the renderer would reject.
+    Args:
+        prop: The render setting.
+        value: The param's current value.
+
+    Returns:
+        The value to author, or None for a label that is not one of the options, which a
+        caller skips rather than authoring something the renderer would reject.
     """
     if not prop.option_values:
         return value
@@ -599,6 +604,12 @@ def def_for_plugin(plugin_id: str) -> RenderSettingsDef | None:
 
     Used to send one renderer's settings without sending every renderer's: a delegate
     redraws for each setting it is handed and discards the namespaces it does not own.
+
+    Args:
+        plugin_id: The Hydra renderer plugin id.
+
+    Returns:
+        The matching def, or None.
     """
     for definition in iter_render_settings_defs():
         if definition.key == f"delegate:{plugin_id}":
@@ -770,9 +781,13 @@ def group_props(props) -> OrderedDict[str, Any]:
     that is still too big to read is split again on the next segment, up to a few levels
     deep. Anything left over lands in General, which sorts last.
 
-    Returns an ordered mapping of group name to either a list of settings or a nested
-    mapping of the same shape, so a caller renders it by recursing rather than by
-    knowing any renderer's layout.
+    Args:
+        props: The render settings.
+
+    Returns:
+        An ordered mapping of group name to either a list of settings or a nested mapping of
+        the same shape, so a caller renders it by recursing rather than by knowing any
+        renderer's layout.
     """
     return _tree([(p, p.attr_name.partition(":")[2] or p.attr_name) for p in props], 0)
 
@@ -782,6 +797,12 @@ def param_for_setting(prop: RenderSettingProp):
 
     Delegates to shader_defs.param_for_prop rather than repeating its Sdf-type-to-param
     table: a render setting and a shader input are the same problem once normalised.
+
+    Args:
+        prop: The render setting.
+
+    Returns:
+        The param, or None.
     """
     return shader_defs.param_for_prop(
         shader_defs.ShaderProp(

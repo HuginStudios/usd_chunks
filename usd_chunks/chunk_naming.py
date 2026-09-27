@@ -74,6 +74,12 @@ def iter_exec_inputs(prim: Usd.Prim) -> list:
     Sorted by the PARSED index, never by name: GetAttributes() is alphabetical, which puts
     inputs:chunk10 before inputs:chunk2. Slot order decides which branch's opinion wins, so
     a string sort would silently mis-rank a merge with ten or more inputs.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        The exec input attributes, in slot order.
     """
     if not (prim and prim.IsValid()):
         return []

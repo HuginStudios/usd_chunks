@@ -44,7 +44,8 @@ def execute(node: chunk.Chunk) -> None:
     bulk-restoring its param values, so a reloaded Set Display Color actually re-authors
     displayColor instead of leaving the target prim uncoloured (its real work lives in
     _run, an add_callback handler, which load's value-restore deliberately does not
-    trigger)."""
+    trigger).
+    """
     _run(node, None, None)
 
 

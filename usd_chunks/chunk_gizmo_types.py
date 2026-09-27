@@ -55,9 +55,16 @@ def check_gizmo_sugar(owner: str, gizmo_type: str, scalar: bool) -> None:
     belongs on a scalar param, a manipulator type sends a vector so it belongs on a Vector
     or a param group.
 
-    Raises at param construction -- i.e. at chunk load -- rather than when a handle is first
-    resolved. `gizmo="translate"` on a Slider would otherwise silently bind one axis, which
-    looks like a broken handle rather than a broken declaration.
+    Args:
+        owner: Name of the param, for the error message.
+        gizmo_type: The `gizmo=` value.
+        scalar: Whether the param holds a single number.
+
+    Raises:
+        ValueError: The type does not fit the param. Raised at param construction -- i.e. at
+            chunk load -- rather than when a handle is first resolved. `gizmo="translate"` on
+            a Slider would otherwise silently bind one axis, which looks like a broken handle
+            rather than a broken declaration.
     """
     allowed = GIZMO_SHAPE_TYPES if scalar else GIZMO_MANIPULATOR_TYPES
     if gizmo_type not in allowed:
@@ -113,6 +120,12 @@ class GizmoBase:
     size: float | None = None
 
     def __attrs_post_init__(self) -> None:
+        """Validate the declaration at construction, so a bad one fails at chunk load.
+
+        Raises:
+            ValueError: The type is unknown, the driver is missing or not a list of param paths,
+                or a transform handle does not drive exactly nine params.
+        """
         if self.type not in GIZMO_TYPES:
             raise ValueError(
                 f"Gizmo {self.name!r}: unknown type {self.type!r}. Known types: {sorted(GIZMO_TYPES)}"

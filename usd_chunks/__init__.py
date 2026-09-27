@@ -1,3 +1,9 @@
+"""usd_chunks: interactive UI panels ("chunks") for OpenUSD, built from plain Python modules.
+
+Importing the package checks that the OpenUSD bindings are importable, sets up the
+``usd_chunks`` logger (its level comes from ``USD_CHUNK_LOG_LEVEL``), and checks the attrs
+version.
+"""
 from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 import os
@@ -51,7 +57,7 @@ formatter = logging.Formatter("%(levelname)s: %(asctime)s - %(name)s: %(message)
 ch.setFormatter(formatter)
 _logger.addHandler(ch)
 
-# Attempt to import nesessary deps. If not found, use the installed packages from .venv
+# Attempt to import necessary deps. If not found, use the installed packages from .venv
 try:
     import attrs  # noqa: F401
     import typing_extensions  # noqa: F401

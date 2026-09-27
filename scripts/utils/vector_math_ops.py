@@ -176,7 +176,8 @@ _OPS: dict = {
 def _clear_connection(param: chunk.ChunkParamBase) -> None:
     """Reset param to its default and drop any USD-level connection. A param hidden by
     the current operation is no longer meaningful -- keeping a stale connection around
-    would silently reappear (with possibly wrong semantics) if the op is switched back."""
+    would silently reappear (with possibly wrong semantics) if the op is switched back.
+    """
     if param is None:
         return
     raw = getattr(param, "raw_value", None)
@@ -189,7 +190,8 @@ def _clear_connection(param: chunk.ChunkParamBase) -> None:
 
 def _clear_matching_params(obj, target: str) -> None:
     """Recursively walk obj's params (into groups/vectors) and clear any whose raw_value
-    references target (an "@OwnerName.attrName@" token)."""
+    references target (an "@OwnerName.attrName@" token).
+    """
     get_children = getattr(obj, "get_my_params", None)
     if not callable(get_children):
         return
@@ -207,7 +209,8 @@ def _clear_downstream_references(owner: chunk.Chunk, attr_name: str) -> None:
     operation can make one of its two outputs (result vs result_value) inactive --
     execute() stops writing to it, so a downstream connection to it silently goes
     stale instead of erroring, and would reappear untouched if the op is switched
-    back even though nothing recomputed it in the meantime."""
+    back even though nothing recomputed it in the meantime.
+    """
     scene = chunk_registry.ChunkRegistry().scene
     if not scene:
         return

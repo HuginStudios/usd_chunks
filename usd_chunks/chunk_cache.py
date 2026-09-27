@@ -24,6 +24,12 @@ def compute_checksum(obj: str) -> int:
 
     Used to key the cache file to the interpreter that wrote it -- two Pythons on one
     machine have different site-packages and must not share a cache.
+
+    Args:
+        obj: The string to checksum.
+
+    Returns:
+        The checksum.
     """
     return zlib.adler32(obj.encode())
 
@@ -34,6 +40,12 @@ def read_package_cache(file: str | Path) -> dict[str, set[str]]:
     Anything unexpected -- missing, truncated, or not the expected shape -- is treated as
     "no cache". The caller rebuilds from `pip list`, so a bad file costs one subprocess call
     and nothing else.
+
+    Args:
+        file: The cache file.
+
+    Returns:
+        {package: installed versions}.
     """
     path = Path(file)
     if not path.exists():

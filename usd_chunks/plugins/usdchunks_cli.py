@@ -1,5 +1,4 @@
-"""
-usdchunks CLI -- headless execution of chunk networks serialized as .usda files.
+"""usdchunks CLI -- headless execution of chunk networks serialized as .usda files.
 
 Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]

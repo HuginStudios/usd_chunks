@@ -356,7 +356,7 @@ def reduce_triangles(
 
 
 def collapse_mapping(triangles, collapses, n_points, n_reduced):
-    """welded vertex -> reduced vertex, derived straight from the collapse history.
+    """Welded vertex -> reduced vertex, derived straight from the collapse history.
 
     `collapses[i] = [i0, i1]` says vertex `i1` was merged into `i0`. Each vertex can only
     be collapsed away once, so the pairs form a forest and resolving every chain to its
@@ -367,7 +367,7 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
     the sorted survivors reproduces.
 
     Not the library's `replay_simplification`, which returns the same answer
- -- but gets there via `np.delete` inside a Python loop over the isolated points it has
+    -- but gets there via `np.delete` inside a Python loop over the isolated points it has
     to clean up. On a mesh made of thousands of disconnected cards (a tree's twigs, say)
     that list is enormous and the loop goes quadratic -- sub-second decimation becomes
     minutes. Deriving it here is exact, and free.
@@ -729,7 +729,8 @@ def _author(stage, plan: _Plan) -> None:
 
 class _CookRecord(NamedTuple):
     """What the last cook of one chunk saw: its fingerprint, and the arrays it signed
-    (address -> (array, signature)) so the next one can recognise them without re-reading."""
+    (address -> (array, signature)) so the next one can recognise them without re-reading.
+    """
 
     fingerprint: tuple
     arrays: dict
@@ -827,7 +828,8 @@ def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
 
 def _compact(count: int) -> str:
     """1_044_205 -> "1.04M". The readout sits in a fixed-width node header, and a full
-    "4,176,819 → 1,044,205 triangles (25.0%)" is simply cut off mid-word there."""
+    "4,176,819 → 1,044,205 triangles (25.0%)" is simply cut off mid-word there.
+    """
     if count >= 1_000_000:
         return f"{count / 1_000_000:.2f}M"
     if count >= 10_000:

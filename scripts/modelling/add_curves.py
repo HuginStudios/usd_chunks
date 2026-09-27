@@ -6,8 +6,7 @@ import numpy as np
 
 
 def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces=None):
-    """
-    Create hair primitives on a target UsdPrim. Choose what faces to apply the hair to
+    """Create hair primitives on a target UsdPrim. Choose what faces to apply the hair to
     for testing face indexes.
     """
     counts = target.GetFaceVertexCountsAttr().Get()

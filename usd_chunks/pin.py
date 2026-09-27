@@ -49,6 +49,7 @@ CHUNKGROUP_SENTINEL = "chunkgroup"
 
 
 class PinError(RuntimeError):
+    """A scene cannot be pinned: it failed to open, or its chunks disagree on a version."""
     pass
 
 
@@ -75,6 +76,7 @@ class MaterializedPin:
 
 @dataclass
 class PinResult:
+    """The outcome of pinning a scene: what was laid down, and anything that went wrong."""
     scene: Path
     pin_dir: Path
     materialized: list[MaterializedPin] = field(default_factory=list)
@@ -89,9 +91,11 @@ class PinResult:
 
     @property
     def ok(self) -> bool:
+        """Whether the pin completed with no problems."""
         return not self.problems
 
     def lock(self) -> dict[str, str]:
+        """The flat lock this result records, as {chunkType: "store:version"}."""
         return {m.chunk_type: f"{m.store}:{m.version}" for m in self.materialized}
 
 
@@ -104,10 +108,17 @@ def resolve_pins(
 ) -> tuple[list[PinEntry], list[str]]:
     """Turn {chunkType: spec} into resolved (store, version, source) entries.
 
-    A chunkType already in ``existing`` (the recorded lock) is *reused* -- its
-    exact store:version is re-provided, not re-resolved (restore semantics).
-    Anything else is resolved across the registered stores by spec, first hit
-    wins. Returns (entries, problems); a chunk no store carries is a problem.
+    A chunkType already in `existing` (the recorded lock) is *reused* -- its exact
+    store:version is re-provided, not re-resolved (restore semantics). Anything else is
+    resolved across the registered stores by spec, first hit wins.
+
+    Args:
+        specs: {chunkType: version spec}, from `collect_specs`.
+        existing: The recorded lock, {chunkType: "store:version"}.
+        stores: A fixed set of stores; None uses the registered ones.
+
+    Returns:
+        (entries, problems); a chunk no store carries is a problem.
     """
     stores = list(discovered_stores() if stores is None else stores)
     by_name = {s.name: s for s in stores}
@@ -153,8 +164,11 @@ def _find_in_dir(pin_dir: Path, chunk_type: str) -> Path | None:
 
 
 def _link_or_copy(src: Path, dst: Path, copy: bool) -> str:
-    """Place src at dst as a symlink (default) or a copy. Falls back to copy if
-    the platform refuses symlinks (Windows without developer mode/admin)."""
+    """Place src at dst as a symlink (default) or a copy.
+
+    Falls back to a copy if the platform refuses symlinks (Windows without developer mode or
+    admin).
+    """
     if dst.is_symlink() or dst.exists():
         dst.unlink()
     if not copy:
@@ -172,9 +186,17 @@ def materialize(
 ) -> tuple[list[MaterializedPin], list[str]]:
     """Lay resolved entries into the flat pin folder as ``<chunkType><ext>``.
 
-    An entry whose store couldn't provide a source is only OK if the impl is
-    already present in the pin folder (a ``--copy`` bundle that travelled with
-    the scene); otherwise it is a problem.
+    An entry whose store couldn't provide a source is only OK if the impl is already present
+    in the pin folder (a ``--copy`` bundle that travelled with the scene); otherwise it is a
+    problem.
+
+    Args:
+        entries: Resolved entries, from `resolve_pins`.
+        pin_dir: The pin folder.
+        copy: Copy the impls instead of symlinking them.
+
+    Returns:
+        (materialized pins, problems).
     """
     pin_dir.mkdir(parents=True, exist_ok=True)
     out: list[MaterializedPin] = []
@@ -200,11 +222,18 @@ def materialize(
 # --- USD I/O (lazy pxr) -------------------------------------------------------
 
 def collect_specs(stage) -> dict[str, str | None]:
-    """{chunkType: info:chunkVersion spec} for every Chunk prim in the composed
-    stage (the container 'chunkgroup' sentinel excluded). Read-only.
+    """The version spec every Chunk prim in the composed stage asks for. Read-only.
 
-    Multiple prims of the same chunkType must agree on a spec; a genuine
-    conflict (two different non-None specs) raises PinError.
+    The container 'chunkgroup' sentinel is excluded.
+
+    Args:
+        stage: The composed stage.
+
+    Returns:
+        {chunkType: info:chunkVersion spec}.
+
+    Raises:
+        PinError: Two prims of the same chunkType ask for different non-None specs.
     """
     specs: dict[str, str | None] = {}
     conflicts: dict[str, set] = {}
@@ -246,8 +275,17 @@ def read_lock(layer) -> dict[str, str]:
 def read_scene_lock(scene_path) -> dict[str, str]:
     """The recorded {chunkType: 'store:version'} lock on a scene's root layer.
 
-    Read-only and cheap: opens just the layer (no stage composition), so `pin
-    --list` can report what a shot is frozen to without touching any store.
+    Read-only and cheap: opens just the layer (no stage composition), so `pin --list` can
+    report what a shot is frozen to without touching any store.
+
+    Args:
+        scene_path: The scene file.
+
+    Returns:
+        The lock, empty if none is recorded.
+
+    Raises:
+        PinError: The layer cannot be opened.
     """
     from pxr import Sdf
 
@@ -269,6 +307,12 @@ def collect_packages(chunk_types: Iterable[str]) -> dict[str, str]:
     pins say which chunk code produced this, and these say what that code was standing on.
     A pin without them reproduces the recipe and not the result -- mujoco is the case that
     matters, where a solver change moves physics with every chunk byte-identical.
+
+    Args:
+        chunk_types: The chunk types in the scene.
+
+    Returns:
+        {package: installed version}.
     """
     from usd_chunks import chunk_registry
 
@@ -294,6 +338,12 @@ def hash_file(path) -> str | None:
 
     Whole bytes, not the whitespace-stripped main() digest ChunkModule keeps for its cache:
     that one deliberately ignores formatting, and integrity has to notice everything.
+
+    Args:
+        path: The file to hash.
+
+    Returns:
+        The digest, or None.
     """
     import hashlib
 
@@ -313,6 +363,12 @@ def collect_hashes(materialized: Iterable[MaterializedPin]) -> dict[str, str]:
     edit a pinned chunk by hand and it is still 1.2.0, producing different results with an
     identical lock. Fetch by version, verify by hash -- npm records both, so does Cargo, and
     for this reason.
+
+    Args:
+        materialized: The pins laid down, from `materialize`.
+
+    Returns:
+        {chunkType: digest}, skipping files that cannot be read.
     """
     hashes: dict[str, str] = {}
     for pin_entry in materialized:
@@ -346,8 +402,15 @@ def verify_hashes(materialized: Iterable[MaterializedPin], recorded: dict[str, s
     catches a store republishing different content under one version, and a --copy bundle
     tampered with in transit.
 
-    A chunk with no recorded hash is not a failure -- it was pinned before hashes existed,
-    and refusing to restore an older lock would be worse than the gap it closes.
+    A chunk with no recorded hash is not a failure -- it was pinned before hashes were
+    recorded, and refusing to restore an older lock would be worse than the gap it closes.
+
+    Args:
+        materialized: The pins laid down, from `materialize`.
+        recorded: {chunkType: digest} from the lock.
+
+    Returns:
+        One problem message per mismatched or unreadable impl.
     """
     problems = []
     for pin_entry in materialized:
@@ -375,11 +438,15 @@ def read_packages(layer) -> dict[str, str]:
 
 
 def write_packages(layer, packages: dict[str, str]) -> None:
-    """Set the package lock on a layer's customLayerData. Caller Saves.
+    """Set the package lock on a layer's customLayerData. The caller saves.
 
     A separate key from the impl pins rather than nested inside them: read_lock's contract
     is a flat {chunkType: 'store:version'}, and widening it would break every reader for the
     sake of avoiding one more key.
+
+    Args:
+        layer: The layer to write to.
+        packages: {package: version}; nothing is written when empty.
     """
     if not packages:
         return
@@ -389,8 +456,14 @@ def write_packages(layer, packages: dict[str, str]) -> None:
 
 
 def write_lock(layer, lock: dict[str, str]) -> None:
-    """Set the flat pin lock on a layer's customLayerData (one write, layer
-    level, ignored by composition). Caller Saves."""
+    """Set the flat pin lock on a layer's customLayerData. The caller saves.
+
+    One write, at layer level, and ignored by composition.
+
+    Args:
+        layer: The layer to write to.
+        lock: {chunkType: "store:version"}.
+    """
     cld = dict(layer.customLayerData) if layer.customLayerData else {}
     cld[PINS_KEY] = dict(lock)
     layer.customLayerData = cld
@@ -399,8 +472,10 @@ def write_lock(layer, lock: dict[str, str]) -> None:
 def _write_wrapper(scene_path: Path, lock: dict[str, str], pin_dir: Path,
                    packages: dict[str, str] | None = None,
                    hashes: dict[str, str] | None = None):
-    """A thin layer that sublayers the (immutable) scene and carries the lock,
-    written into the pin folder so the source is never touched. Render this."""
+    """Write a thin layer that sublayers the (immutable) scene and carries the lock.
+
+    It goes into the pin folder so the source is never touched; this is the file to render.
+    """
     from pxr import Sdf
 
     pin_dir.mkdir(parents=True, exist_ok=True)
@@ -417,8 +492,11 @@ def _write_wrapper(scene_path: Path, lock: dict[str, str], pin_dir: Path,
 def _record_lock(scene_path: Path, entry_layer, lock: dict[str, str], pin_dir: Path, wrapper: bool,
                  packages: dict[str, str] | None = None,
                  hashes: dict[str, str] | None = None):
-    """Write the lock onto the entry layer in place, or into a wrapper layer if
-    the entry layer is read-only (or --wrapper was forced). Returns (path, mode)."""
+    """Write the lock onto the entry layer in place, or into a wrapper layer.
+
+    A wrapper is used when the entry layer is read-only, or when --wrapper forces one.
+    Returns (path, mode).
+    """
     if not wrapper:
         try:
             write_lock(entry_layer, lock)
@@ -452,8 +530,14 @@ def provision_venv(packages: dict[str, str], venv_dir, system_site_packages: boo
     the ranges again would let the versions drift, which is the thing the lock exists to
     stop.
 
-    Returns (python, installed, problems). Nothing is installed and no venv is made when the
-    lock is empty -- a scene whose chunks need no packages needs no environment.
+    Args:
+        packages: {package: exact version}.
+        venv_dir: Where to create the venv.
+        system_site_packages: Let the venv see the host's packages; see above.
+
+    Returns:
+        (python, installed, problems). Nothing is installed and no venv is made when the lock
+        is empty -- a scene whose chunks need no packages needs no environment.
     """
     import subprocess
     import venv as venv_module
@@ -490,12 +574,27 @@ def pin(
     wrapper: bool = False,
     stores: Iterable[StoreProvider] | None = None,
 ) -> PinResult:
-    """Pin (or restore) a chunk network. See module docstring.
+    """Pin (or restore) a chunk network. See the module docstring.
 
-    Opens the stage read-only, resolves each chunk (reusing any recorded lock),
-    materializes the exact impls into ``pin_dir`` (default ``./pin``), and -- only
-    if everything resolved -- records the lock. A partial resolve writes nothing
-    and surfaces the problems, so a pin is all-or-nothing (npm-ci strict).
+    Opens the stage read-only, resolves each chunk (reusing any recorded lock), materializes
+    the exact impls into `pin_dir`, and -- only if everything resolved -- records the lock. A
+    partial resolve writes nothing and surfaces the problems, so a pin is all-or-nothing
+    (npm-ci strict).
+
+    Args:
+        scene_path: The scene to pin.
+        pin_dir: The pin folder; defaults to ``./pin``.
+        copy: Copy impls into the pin folder instead of symlinking them.
+        wrapper: Always record the lock in a wrapper layer in `pin_dir`. Without it the lock
+            goes onto the scene's own root layer, falling back to a wrapper only when that
+            layer is read-only.
+        stores: A fixed set of stores; None uses the registered ones.
+
+    Returns:
+        What was pinned, and any problems.
+
+    Raises:
+        PinError: The scene cannot be opened.
     """
     from pxr import Usd
 

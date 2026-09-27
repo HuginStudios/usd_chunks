@@ -147,7 +147,8 @@ def _stroke_state(node, mesh_prim, count):
 
 def _drop_stroke_cache(node):
     """Let the geometry be re-read. Called when a stroke ends, and whenever anything that
-    could move the surface changes."""
+    could move the surface changes.
+    """
     if hasattr(node, _STROKE_CACHE):
         delattr(node, _STROKE_CACHE)
 

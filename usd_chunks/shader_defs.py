@@ -1,11 +1,10 @@
-"""
-Shader definitions read from USD's shader registry (Sdr), normalised into a small
-frontend-agnostic model that chunks can turn into params.
+"""Shader definitions read from USD's shader registry (Sdr), normalised for chunks.
 
-One provider serves every renderer that publishes definitions to Sdr -- MaterialX
-(``mtlx``), V-Ray (``vray``), RenderMan (``args``), OSL (``OSL``) -- because the only
-thing that differs between them is the source type string and how the resulting
-``UsdShade.Shader`` is identified in USD. Nothing here imports Qt.
+The model is small and frontend-agnostic, and chunks turn it into params. One provider
+serves every renderer that publishes definitions to Sdr -- MaterialX (``mtlx``), V-Ray
+(``vray``), RenderMan (``args``), OSL (``OSL``) -- because the only thing that differs
+between them is the source type string and how the resulting ``UsdShade.Shader`` is
+identified in USD. Nothing here imports Qt.
 
 ``` py
 for d in iter_shader_defs("mtlx"):

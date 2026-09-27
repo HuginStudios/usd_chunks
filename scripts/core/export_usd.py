@@ -17,7 +17,8 @@ from usd_chunks.chunk_stage import get_chunk_prim_path
 
 def _discover_export_layers(stage):
     """Return [(name, layer), ...] for every real layer Export All Layers would write,
-    excluding Session Layer -- it's handled separately and always holds full bookkeeping."""
+    excluding Session Layer -- it's handled separately and always holds full bookkeeping.
+    """
     internal_ids = chunk_utils.chunk_internal_layer_ids()
     session_layer = stage.GetSessionLayer()
     layers = []
@@ -136,7 +137,8 @@ def _read_procedural_layer_names(_chunk) -> set:
 
 def _read_export_disabled_layer_names(_chunk) -> set:
     """Layer names whose "Export" checkbox is unchecked -- these are skipped entirely
-    by Export All Layers, not just baked differently."""
+    by Export All Layers, not just baked differently.
+    """
     return _unchecked_layer_names(_chunk, "export_enabled")
 
 
@@ -214,7 +216,8 @@ def _baked_chunk_prim_paths(_chunk, stage) -> list:
     Layers to Export is checked (Bake chunk outputs; off by default) -- used by "Based on
     Settings" to strip those chunks' bookkeeping from a full flatten, leaving
     Procedural-marked chunks' bookkeeping in place (it's already there, wherever that
-    chunk's Edit Target put it -- see chunk_utils.get_bookkeeping_layer)."""
+    chunk's Edit Target put it -- see chunk_utils.get_bookkeeping_layer).
+    """
     procedural_names = _read_procedural_layer_names(_chunk)
     layer_name_by_id = {layer.identifier: name for name, layer in _discover_export_layers(stage)}
     scene = chunk_registry.ChunkRegistry().scene
@@ -398,14 +401,16 @@ def commit(node):
 def export_all(owner, notice, sender):
     """Export button callback -- delegates to commit(), the same entry point
     `usdchunks run` uses, so pressing Export produces exactly the file the headless
-    path would write."""
+    path would write.
+    """
     commit(owner.get_chunk())
 
 
 def _update_export_visibility(owner):
     """Toggle Output File/Mode (flatten path) vs Output Directory/Format (per-layer
     path) to match the Flatten into one file checkbox. Layers to Export stays visible
-    either way -- Based on Settings (flatten) and per-layer Procedural both read it."""
+    either way -- Based on Settings (flatten) and per-layer Procedural both read it.
+    """
     flatten = owner.get_param("flatten", chunk.is_param_t(bool)).value
 
     def _set_hidden(name, hidden):
@@ -429,7 +434,8 @@ def _flatten_changed(owner, notice, sender):
 def _bake_all_changed(owner, notice, sender):
     """Set every row's Bake chunk outputs checkbox to the Bake all switch's value.
     Rows created later inherit it too -- _refresh_layer_rows seeds new rows from the
-    switch rather than a hardcoded default."""
+    switch rather than a hardcoded default.
+    """
     _chunk = owner.get_chunk()
     rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup)) if _chunk else None
     if rows is None:

@@ -1,16 +1,13 @@
-"""Pure auto-layout math for the embedded node graph -- no Qt/USD dependency, so it's directly
-unit-testable without a real scene/stage. See ``plugins/chunk_qt_nodegraph.py`` for the Qt/USD
-glue: node sizing via ``ChunkNodeItem.boundingRect()``, position persistence via
-``ChunkNodeItem._write_pos_to_usd()``, and connection data built by walking prim attributes
-(exec + typed, mirroring ``ChunkGraphScene._build_edges``).
+"""Pure auto-layout math for the node graphs, with no Qt or USD dependency.
 
-Ported from the removed ``scripts/node_graph/_graph_layout.py`` (recoverable at git branch
-``feat/node-graph``) -- that file's backdrop/group-stacking half doesn't apply here (this
-codebase's chunkgroups are subnets, not spatial containers), so this operates directly on
-individual nodes with no grouping concept at all: topological depth assigns X-columns, and
-within a column each node's target Y is the average Y of its already-placed upstream/downstream
-neighbors, pushed down only on collision -- the same "target-then-push" strategy, applied to
-nodes instead of node-groups.
+That keeps it unit-testable without a real scene or stage. The frontends supply the rest:
+node sizes, position persistence, and the connection data (exec and typed alike), which
+`chunk_graph.layout_graph` assembles before calling in here.
+
+Topological depth assigns X-columns, and within a column each node's target Y is the
+average Y of its already-placed upstream and downstream neighbours, pushed down only on
+collision. Chunkgroups are subnets, not spatial containers, so the layout works on
+individual nodes with no grouping concept at all.
 """
 
 from __future__ import annotations
@@ -93,7 +90,7 @@ def layout_positions(
     up_of: AdjacencyMap,
     down_of: AdjacencyMap,
 ) -> dict[str, tuple[float, float]]:
-    """Return {node_id: (x, y)} for every node in node_ids that ISN'T locked.
+    """Compute new positions for every node in `node_ids` that is not locked.
 
     Locked nodes are never included in the result -- callers must leave them exactly where
     they are -- but they still participate as fixed reference points for target-Y averaging
@@ -103,9 +100,19 @@ def layout_positions(
     same-column-only approximation, since a locked node's real X may not line up with
     whichever column is currently being placed.
 
-    up_of / down_of must only contain edges where BOTH ends are in node_ids -- callers building
-    them from a "grow selection to its full connected subgraph" BFS closure already guarantee
-    this, so this function doesn't need to filter external references itself.
+    Args:
+        node_ids: The nodes to lay out.
+        size_of: Takes a node id and returns its (width, height).
+        is_locked: Takes a node id and returns whether it must stay put.
+        current_pos: Takes a node id and returns its current (x, y).
+        up_of: Upstream neighbours of each node. Must only contain edges where BOTH ends are
+            in node_ids -- callers building them from a "grow selection to its full connected
+            subgraph" BFS closure already guarantee this, so this function doesn't filter
+            external references itself.
+        down_of: Downstream neighbours of each node, under the same rule as `up_of`.
+
+    Returns:
+        {node_id: (x, y)} for every movable node.
     """
     if not node_ids:
         return {}
@@ -202,9 +209,19 @@ def layout_positions(
 
 
 def grow_to_connected_subgraph(seed_ids: list[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> set[str]:
-    """BFS from seed_ids through every connection (up and down) in the FULL up_of/down_of maps
-    (which may reference ids outside seed_ids -- that's the point) and return every node
-    reached, including the seeds themselves."""
+    """Every node reachable from the seeds through any connection, up or down.
+
+    The maps are the FULL adjacency and may reference ids outside `seed_ids` -- that is the
+    point: this is how "layout selected" finds everything the selection is wired to.
+
+    Args:
+        seed_ids: The nodes to start from.
+        up_of: Upstream neighbours of each node.
+        down_of: Downstream neighbours of each node.
+
+    Returns:
+        Every node reached, the seeds included.
+    """
     visited: set[str] = set(seed_ids)
     frontier = list(seed_ids)
     while frontier:

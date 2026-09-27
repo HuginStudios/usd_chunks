@@ -235,7 +235,8 @@ def bake_character_override(character, character_path):
 def write_character_override(character, out_dir):
     """A standalone override file, for a character regenerated often enough (a DCC
     re-export) that baking the binding into it directly means reauthoring by hand each
-    time. Reference the character, then sublayer this over it."""
+    time. Reference the character, then sublayer this over it.
+    """
     skeleton, anim_path = _anim_target(character)
     if skeleton is None:
         return None

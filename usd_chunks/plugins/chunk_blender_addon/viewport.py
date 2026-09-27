@@ -338,7 +338,8 @@ class USDCHUNKS_OT_set_draw_mode(bpy.types.Operator):
 
 class USDCHUNKS_OT_toggle_lighting(bpy.types.Operator):
     """RenderParams.enableLighting -- off draws flat display colour only, no shading at
-    all, which is Storm's own default and reads as broken until toggled once."""
+    all, which is Storm's own default and reads as broken until toggled once.
+    """
 
     bl_idname = "usd_chunks.toggle_lighting"
     bl_label = "Toggle Lighting"

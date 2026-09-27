@@ -130,8 +130,7 @@ _SELF_STYLING = "_chunk_styles_self"
 
 
 def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
-    """
-    Give widget CHUNK_STYLESHEET, unless something above it already covers it.
+    """Give widget CHUNK_STYLESHEET, unless something above it already covers it.
 
     What matters is that exactly *one* widget per tree carries the sheet. Qt merges every
     ancestor sheet into each descendant's style resolution, so a second copy further down
@@ -186,7 +185,8 @@ class _FineDragSlider(QtWidgets.QSlider):
     default drag jumps the value straight to whatever range-to-pixel position is under
     the cursor -- fine at full speed, but too coarse to hit a precise value in a wide
     range squeezed into a narrow widget. Only Ctrl+drag is affected; a plain drag keeps
-    Qt's normal behavior untouched (including click-to-jump on press)."""
+    Qt's normal behavior untouched (including click-to-jump on press).
+    """
 
     _FINE_SENSITIVITY = 0.1
 
@@ -305,7 +305,8 @@ class NumberField(QtWidgets.QLineEdit):
     def setValue(self, value) -> None:
         """Show `value`, keeping the caret on the same place value when the text changes
         shape (9.9 -> 10.0 gains a digit on the left), so holding Up keeps stepping the
-        digit that was chosen. Emits valueChanged when the value actually changed."""
+        digit that was chosen. Emits valueChanged when the value actually changed.
+        """
         value = float(value) if self._is_float else int(round(value))
         offset = self.cursorPosition() - self._point_at(self.text())
         changed = value != self._value
@@ -1458,8 +1459,7 @@ class ChunkArea(QtWidgets.QScrollArea):
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QFrame
 ):
-    """
-    Chunk is a base class for creating UI components.
+    """Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
     """
 
@@ -1835,7 +1835,8 @@ class ViewSlotState(QtCore.QObject):
     def _exec_menu(self, menu: QtWidgets.QMenu, pos: QtCore.QPoint):
         """Thin, overridable seam around QMenu.exec() -- PySide6 doesn't allow monkeypatching
         QMenu.exec itself (it's a bound virtual slot, not a plain Python attribute), so tests
-        stub this plain instance method instead of driving a real modal popup."""
+        stub this plain instance method instead of driving a real modal popup.
+        """
         return menu.exec(pos)
 
     def _run_menu_action_on(self, conn, meth, targets) -> None:
@@ -2088,8 +2089,7 @@ class ParamsFilterBar(QtWidgets.QWidget):
 
 
 class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
-    """
-    Chunk is a base class for creating UI components.
+    """Chunk is a base class for creating UI components.
     It provides a structure for initializing the API and creating UI Chunks.
     """
 
@@ -2136,14 +2136,16 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _on_pin_filter_toggled(self, enabled: bool) -> None:
         """The filter bar's pin-filter checkbox changed for this tab. Unlike a single chunk's
-        pin toggle, this can change visibility for every chunk in the tab at once."""
+        pin toggle, this can change visibility for every chunk in the tab at once.
+        """
         chunk_stage.set_pin_filter_enabled(self.group, enabled)
         self._reconcile_all_children()
 
     def _on_search_changed(self, query: str, scope: str) -> None:
         """The filter bar's search box or a scope chip changed for this tab -- live, on every
         keystroke, same as the create-menu's FilterableChunkMenu search. Can change visibility
-        for every chunk in the tab at once."""
+        for every chunk in the tab at once.
+        """
         chunk_stage.set_search_query(self.group, query)
         chunk_stage.set_search_scope(self.group, scope)
         self._reconcile_all_children()
@@ -2164,7 +2166,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         """Show or hide target_chunk in this tab's Params page to match the current combined
         filter state (right now just the pin filter; issue #06 adds search on top). Used both
         for a single chunk's pin toggle and, looped over every child, for a filter-bar change
-        that can affect many chunks in the tab at once."""
+        that can affect many chunks in the tab at once.
+        """
         hidden = self._is_hidden_by_params_filter(target_chunk)
         shown = target_chunk.get_hash() in self.group_widgets
         if hidden and shown:
@@ -2175,7 +2178,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     def _reconcile_all_children(self) -> None:
         """Re-apply the current filter state to every direct child chunk of this tab context.
         Call after a filter-bar change (e.g. the pin-filter toggle) -- unlike a single chunk's
-        pin toggle, that can change visibility for many chunks in the tab at once."""
+        pin toggle, that can change visibility for many chunks in the tab at once.
+        """
         if not self._is_tab_context_widget:
             return
         for child in self.group.get_my_params():
@@ -2392,7 +2396,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         combined filter state -- the pin filter AND the search box, two independent filters
         that both have to pass for a chunk to show. Only meaningful when self is the
         tab-context widget -- a context's own direct children are the only things this filter
-        applies to, never nested groups within a chunk's own UI."""
+        applies to, never nested groups within a chunk's own UI.
+        """
         if not self._is_tab_context_widget:
             return False
         if not isinstance(group_chunk, chunk.ChunkBase):
@@ -3069,7 +3074,7 @@ class ChunkContextBreadcrumb(QtWidgets.QWidget):
 
 
 def context_ancestry(ctx) -> list:
-    """ctx and everything it is nested inside, outermost first.
+    """Ctx and everything it is nested inside, outermost first.
 
     Walks _parent_context, which is what actually records the nesting -- get_context()
     returns self for a context chunk and so says nothing about where it sits. Guarded

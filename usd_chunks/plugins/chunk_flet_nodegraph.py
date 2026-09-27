@@ -243,17 +243,20 @@ class GraphView:
 
     def _layout_to_usd(self, x: float, y: float) -> tuple[float, float]:
         """Layout point -> the coordinates USD stores. Undoes the origin shift and the
-        Y-up flip together; every write of a node position goes through here."""
+        Y-up flip together; every write of a node position goes through here.
+        """
         return (x + self.origin[0], -(y + self.origin[1]))
 
     def _to_screen(self, x: float, y: float) -> tuple[float, float]:
         """Layout point -> screen point. The inverse of _xy, for anyone who has a node
-        position and needs to know where to aim a pointer at it."""
+        position and needs to know where to aim a pointer at it.
+        """
         return (x * self.zoom + self.pan[0], y * self.zoom + self.pan[1])
 
     def _delta(self, event) -> tuple[float, float]:
         """A drag delta in layout space -- a 10px drag moves a node 10px at zoom 1, and
-        20 layout units at zoom 0.5, which is what keeps the node under the cursor."""
+        20 layout units at zoom 0.5, which is what keeps the node under the cursor.
+        """
         delta = event.local_delta
         return (delta.x / self.zoom, delta.y / self.zoom)
 
@@ -497,7 +500,8 @@ class GraphView:
 
     def duplicate_selection(self):
         """Copy and paste in one step at a fixed offset, leaving the clipboard alone -- so
-        duplicating never clobbers whatever was last explicitly copied."""
+        duplicating never clobbers whatever was last explicitly copied.
+        """
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to duplicate"
@@ -792,7 +796,8 @@ class GraphView:
 
     def _ensure_view(self) -> None:
         """Give the context a view on open. Without one, nothing cooks -- a network would
-        look right and do nothing."""
+        look right and do nothing.
+        """
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, self.chunks.get(self.context))
         if slot is None:
@@ -1110,7 +1115,8 @@ class GraphView:
     def _header_colour(self, path: str, prim) -> str:
         """A node's header colour. The active view gets the reserved accent, an inactive
         view a dimmed one -- which of the three is driving execution is the single most
-        useful thing the graph can tell you at a glance."""
+        useful thing the graph can tell you at a glance.
+        """
         if chunk_graph.is_disabled(prim):
             return "#242424"
         if self.can_dive(path):
@@ -1183,7 +1189,8 @@ class GraphView:
 
     def breadcrumb(self) -> str:
         """Where you are, and how deep. Diving with nothing to show for it on screen is
-        how you get lost in a nested graph."""
+        how you get lost in a nested graph.
+        """
         if not self.context or self.context == chunk_graph.CHUNKS_ROOT:
             return self.context or chunk_graph.CHUNKS_ROOT
         parts = [p for p in self.context.split("/") if p]

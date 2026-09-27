@@ -94,6 +94,12 @@ def iter_connectable_params(obj: core.ChunkCommon):
     """Every param that can carry a wire, recursing into groups.
 
     A vector yields as ONE param: its components are not individually connectable.
+
+    Args:
+        obj: The chunk or group to walk.
+
+    Yields:
+        Each connectable param, in the order the chunk declares them.
     """
     for param in obj.get_my_params():
         if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser,
@@ -156,10 +162,10 @@ class PortRef:
         to the chunk. `name` is the last segment and is right for a label; it is wrong for
         a lookup, which is why both exist.
 
-        Qt is inconsistent about this today -- its connect path uses the last segment while
-        its disconnect path uses the dotted form -- so one of the two is wrong for a
-        grouped param. Preserved rather than silently changed here: unifying the two call
-        sites is the job, and altering what either one resolves to is a separate decision.
+        Qt is inconsistent about this: its connect path uses the last segment while its
+        disconnect path uses the dotted form, so one of the two is wrong for a grouped param.
+        Unifying the two call sites is the fix; changing what either one resolves to is a
+        separate decision.
         """
         suffix = self.attr_path.split(".", 1)[-1]
         for prefix in ("inputs:", "outputs:"):
@@ -169,6 +175,7 @@ class PortRef:
 
     @property
     def is_exec(self) -> bool:
+        """Whether this is an exec port rather than a typed param port."""
         suffix = self.attr_path.split(".", 1)[-1]
         return chunk_naming.is_exec_input_name(suffix) or suffix == EXEC_OUTPUT
 
@@ -189,18 +196,27 @@ class EdgeRef:
 
     @property
     def src_node_path(self) -> str:
+        """Prim path of the node the wire comes from."""
         return self.src_attr_path.split(".", 1)[0]
 
     @property
     def dst_node_path(self) -> str:
+        """Prim path of the node the wire goes into."""
         return self.dst_attr_path.split(".", 1)[0]
 
 
 def resolve_graph_nodes(stage: Usd.Stage, root_path: str = CHUNKS_ROOT) -> list[Usd.Prim]:
-    """The chunk prims that are nodes of the graph rooted at root_path.
+    """The chunk prims that are nodes of the graph rooted at `root_path`.
 
     Inactive prims are included: a disabled chunk stays on the graph, greyed, rather than
     vanishing and taking its wires with it.
+
+    Args:
+        stage: The stage to read.
+        root_path: Prim path of the context whose direct children are the nodes.
+
+    Returns:
+        The Chunk-typed children of `root_path`, or an empty list if it does not exist.
     """
     root = stage.GetPrimAtPath(Sdf.Path(root_path))
     if not root or not root.IsValid():
@@ -215,6 +231,13 @@ def iter_ports(prim: Usd.Prim, chunk=None) -> list[PortRef]:
     Works from the prim alone. A chunk object, when given, is the better source for param
     typing because it knows the param CLASS -- a Menu and a LineEdit are both strings in
     USD but only the chunk knows which is which.
+
+    Args:
+        prim: The node's chunk prim.
+        chunk: The live chunk object for the prim, if there is one.
+
+    Returns:
+        The node's ports, exec pair first.
     """
     if not prim or not prim.IsValid():
         return []
@@ -265,8 +288,15 @@ def build_edges(prims: dict[str, Usd.Prim], chunks: dict | None = None,
                 show_param_edges: bool = True) -> list[EdgeRef]:
     """Every wire between the given nodes, read off USD.
 
-    `prims` maps prim path to prim, so a connection pointing outside the set (a node in
-    another context, or one already deleted) is dropped rather than drawn into nothing.
+    Args:
+        prims: Maps prim path to prim. A connection pointing outside this set (a node in
+            another context, or one already deleted) is dropped rather than drawn into
+            nothing.
+        chunks: Maps prim path to live chunk, used to type param ports.
+        show_param_edges: False returns exec wires only.
+
+    Returns:
+        One EdgeRef per wire.
     """
     chunks = chunks or {}
     edges: list[EdgeRef] = []
@@ -322,6 +352,7 @@ DEFAULT_NODE_SIZE = (200.0, 90.0)
 
 
 def node_position(prim: Usd.Prim, default: tuple[float, float] = (0.0, 0.0)) -> tuple[float, float]:
+    """The node position USD stores for a prim, or `default` if none is authored."""
     attr = prim.GetAttribute(POS_ATTR)
     value = attr.Get() if attr and attr.HasAuthoredValue() else None
     return (float(value[0]), float(value[1])) if value is not None else default
@@ -330,10 +361,14 @@ def node_position(prim: Usd.Prim, default: tuple[float, float] = (0.0, 0.0)) -> 
 def graph_position(prim: Usd.Prim | None) -> tuple[float, float]:
     """A prim's node position in CANVAS space: USD is Y-up, a canvas is Y-down.
 
-    node_position returns what USD stores; this returns what a graph draws. Both frontends
-    flip, so the flip is defined once here rather than twice, differently -- which is
-    exactly what had happened (Qt flipped, Flet did not, and the same file rendered
-    mirrored between them).
+    node_position returns what USD stores; this returns what a graph draws. The flip is
+    defined once here so that every canvas frontend renders the same file the same way up.
+
+    Args:
+        prim: The node's chunk prim.
+
+    Returns:
+        (x, y) with Y pointing down, or (0, 0) for a missing prim.
     """
     if prim is None or not prim.IsValid():
         return (0.0, 0.0)
@@ -342,16 +377,19 @@ def graph_position(prim: Usd.Prim | None) -> tuple[float, float]:
 
 
 def node_size(prim: Usd.Prim, default: tuple[float, float] = DEFAULT_NODE_SIZE) -> tuple[float, float]:
+    """The node size USD stores for a prim, or `default` if none is authored."""
     attr = prim.GetAttribute(SIZE_ATTR)
     value = attr.Get() if attr and attr.HasAuthoredValue() else None
     return (float(value[0]), float(value[1])) if value is not None else default
 
 
 def node_label(prim: Usd.Prim) -> str:
+    """The text a node's header shows: the prim name."""
     return prim.GetName()
 
 
 def node_kind(prim: Usd.Prim) -> str:
+    """The chunk module a node was made from, or "" if the prim does not say."""
     attr = prim.GetAttribute("info:chunkType")
     return str(attr.Get()) if attr and attr.Get() else ""
 
@@ -364,8 +402,16 @@ def is_disabled(prim: Usd.Prim) -> bool:
 def read_graph(stage: Usd.Stage, root_path: str = CHUNKS_ROOT, chunks: dict | None = None):
     """Everything a view needs to draw one context: nodes, their ports, and the wires.
 
-    Returns (prims_by_path, {path: [PortRef]}, [EdgeRef]). A frontend calls this and then
-    only draws -- no USD walking, no port typing, no connection rules of its own.
+    A frontend calls this and then only draws -- no USD walking, no port typing, no
+    connection rules of its own.
+
+    Args:
+        stage: The stage to read.
+        root_path: Prim path of the context to read.
+        chunks: Maps prim path to live chunk, used to type param ports.
+
+    Returns:
+        (prims_by_path, {path: [PortRef]}, [EdgeRef]).
     """
     prims = {str(p.GetPath()): p for p in resolve_graph_nodes(stage, root_path)}
     chunks = chunks or {}
@@ -379,11 +425,16 @@ def contexts(stage: Usd.Stage) -> list[str]:
     A chunkgroup is both a node in its parent's graph and a graph of its own, so a file has
     several of these and they nest.
 
-    Seeded with CHUNKS_ROOT plus any Chunk prim sitting directly at the stage's own root: a
-    tab context's prim_path can be authored anywhere, and one set to a root-level path (say
-    "/Tab1") puts every chunk under it with NO /chunks intermediate at all -- CHUNKS_ROOT
-    alone as the only seed then finds nothing to BFS from, so contexts() (and everything
-    built on it, default_context included) never discovers that tab or anything in it.
+    The search is seeded with CHUNKS_ROOT plus any Chunk prim sitting directly at the
+    stage's root. A tab context's prim_path can be authored anywhere, and one set to a
+    root-level path (say "/Tab1") puts every chunk under it with no /chunks intermediate at
+    all; seeding from CHUNKS_ROOT alone would never discover that tab or anything in it.
+
+    Args:
+        stage: The stage to search.
+
+    Returns:
+        Context prim paths, outermost first.
     """
     root_level = [str(p.GetPath())
                   for p in stage.GetPseudoRoot().GetFilteredChildren(INCLUDE_INACTIVE)
@@ -407,6 +458,12 @@ def default_context(stage: Usd.Stage) -> str:
     this the moment it opens a file it did not author: `add_chunk` routes a context-less
     chunk into the scene's default chunkgroup, so a network read back at CHUNKS_ROOT shows
     one group and none of the work.
+
+    Args:
+        stage: The stage being opened.
+
+    Returns:
+        Prim path of the context to show first.
     """
     available = contexts(stage)
     context = available[0] if available else CHUNKS_ROOT
@@ -419,13 +476,20 @@ def default_context(stage: Usd.Stage) -> str:
 
 
 def can_connect(a: PortRef, b: PortRef) -> bool:
-    """Is a wire between these two legal?
+    """Whether a wire between these two ports is legal.
 
     The types must match exactly, one end must be an input and the other an output, and
     they cannot belong to the same node. Exact rather than convertible: an int into a float
-    port looks harmless and the param system would coerce it, but the Qt view has always
-    refused it, and an engine that is more permissive than the frontend it was extracted
-    from would let a second frontend author graphs the first one considers invalid.
+    port looks harmless and the param system would coerce it, but the Qt view refuses it,
+    and an engine more permissive than any frontend would let one frontend author graphs
+    another considers invalid.
+
+    Args:
+        a: One end of the proposed wire.
+        b: The other end, in either order.
+
+    Returns:
+        True if the two may be wired together.
     """
     if a.port_type != b.port_type:
         return False
@@ -458,6 +522,7 @@ class GraphChange:
     expression_error: str = ""
 
     def __post_init__(self):
+        """Give each instance its own empty `touched_nodes` set."""
         if self.touched_nodes is None:
             self.touched_nodes = set()
 
@@ -503,6 +568,11 @@ def set_param_visibly(chunk_obj, param, value) -> None:
     that from running the module: set_blocked suppresses per-param VALUE_CHANGED notices as
     well as execution, while _executing suppresses only chunk_notice's reserved
     module.execute() dispatch.
+
+    Args:
+        chunk_obj: The chunk that owns `param`.
+        param: The param to set.
+        value: The new value.
     """
     # getattr, not a bare call: in Qt this only ever saw a real ChunkBase, but connect()
     # is handed whatever the caller's chunk dict holds. An object that cannot be blocked
@@ -522,10 +592,20 @@ def set_param_visibly(chunk_obj, param, value) -> None:
 
 
 def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None) -> GraphChange | None:
-    """Wire two ports. Returns None if the pair is not connectable.
+    """Wire two ports.
 
     Order does not matter: whichever end is the input becomes the destination, since a USD
     connection is owned by the consumer.
+
+    Args:
+        stage: The stage to author on.
+        a: One end of the wire.
+        b: The other end.
+        chunks: Maps prim path to live chunk; a param wire also authors an expression on
+            the destination chunk.
+
+    Returns:
+        What changed, or None if the pair is not connectable.
     """
     if not can_connect(a, b):
         return None
@@ -590,9 +670,18 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     Detaching a node from the middle of an exec chain rewires its successor to its
     predecessor, so removing one node does not sever everything downstream of it.
 
-    heal=False cuts just the one wire. That is what dragging a wire off an input means:
-    healing there took A -> B -> View, rewired View to A and left B dangling, so the wire
-    the user pulled off looked like it had jumped onto the next node down the chain.
+    Args:
+        stage: The stage to author on.
+        port: The port whose connections are cleared.
+        prims: Maps prim path to prim for the nodes in view.
+        chunks: Maps prim path to live chunk.
+        heal: False cuts just the one wire. That is what dragging a wire off an input
+            means: healing there would take A -> B -> View, rewire View to A and leave B
+            dangling, so the wire the user pulled off would look like it had jumped onto
+            the next node down the chain.
+
+    Returns:
+        What changed.
     """
     chunks = chunks or {}
     touched = {port.node_path}
@@ -639,14 +728,20 @@ def iter_copyable_params(chunk: core.ChunkCommon):
     instance's cached identifier; since that layer is still alive (Sdf.Layer.Find succeeds
     process-wide, not scoped to this chunk), the pasted chunk's own next execute() silently
     adopts and reuses the original's real layer object instead of creating an independent one
-    of its own -- the two nodes end up secretly sharing state. Not scoped to
-    scripts/usd/create_layer.py specifically -- any chunk module using a HIDDEN param the same way
-    has the identical hazard, so the exclusion lives at this shared, module-agnostic level
-    rather than as a create_layer-specific special case.
+    of its own -- the two nodes end up secretly sharing state. Any chunk module using a
+    HIDDEN param the same way has the identical hazard, so the exclusion lives at this
+    shared, module-agnostic level rather than as a create_layer-specific special case.
 
     Deliberately a separate generator from `iter_connectable_params` itself (used elsewhere
     for port placement) rather than changing what that one yields -- copy/paste is the only
-    caller that needs this narrower set."""
+    caller that needs this narrower set.
+
+    Args:
+        chunk: The chunk or group to walk.
+
+    Yields:
+        Each param whose value a copy carries over.
+    """
     for param in iter_connectable_params(chunk):
         if param.has_state(ChunkFlags.State.HIDDEN):
             continue
@@ -678,6 +773,39 @@ def iter_chunk_param_paths(chunk: core.ChunkCommon, prefix: str = ""):
 # ---------------------------------------------------------------------------
 
 class ClipboardNode:
+    """One copied chunk, as the clipboard stores it.
+
+    Args:
+        module_name: The chunk module to recreate it from.
+        values: Param values in `iter_copyable_params` order.
+        rel_pos: Position relative to the copied selection's top-left corner.
+        children: A copied ChunkGroup's nested chunks.
+        child_edges: The wiring between `children`.
+        list_sizes: (param path, row count) for each of the chunk's list groups.
+        lofts: (child index, inner attribute) for each param a group publishes.
+        name: The name the chunk had.
+
+    Attributes:
+        module_name: The chunk module to recreate it from.
+        name: The name the chunk had. A paste keeps it (made unique by add_chunk if it is
+            still taken), so moving nodes into a group does not turn "Materials" back into
+            "Python".
+        values: Param values in `iter_copyable_params` order.
+        list_sizes: How many rows each of the chunk's list groups held. Values alone are not
+            enough: a freshly created chunk starts with zero rows, so there is nothing for
+            the positional zip to pair them against and every row is silently dropped.
+        rel_pos: Position relative to the copied selection's top-left corner.
+        children: Only non-empty for a ChunkGroup: its nested sub-chunks, so copying,
+            duplicating or cutting a group takes its whole contents along instead of
+            pasting an empty group. A child's rel_pos is relative to the *group's own
+            children's* top-left, not the top-level selection's.
+        child_edges: The wiring between `children`.
+        lofts: Params this group publishes on its own interface, as (child index, the inner
+            attribute lofted). A loft is not a wire between two children, so it is not a
+            ClipboardEdge: it points UP from a child to the group itself, and the copy has to
+            re-loft rather than re-connect -- the pasted group has no such param until
+            something lofts one.
+    """
     __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes",
                  "lofts", "name")
 
@@ -690,35 +818,29 @@ class ClipboardNode:
         name: str = "",
     ):
         self.module_name = module_name
-        # The name the chunk had. A paste keeps it (made unique by add_chunk if it is still
-        # taken), so moving nodes into a group does not turn "Materials" back into "Python".
         self.name = name
         self.values = values
-        # How many rows each of the chunk's list groups held. Values alone are not enough:
-        # a freshly created chunk starts with zero rows, so there is nothing for the
-        # positional zip to pair them against and every row is silently dropped.
         self.list_sizes = list_sizes or []
-        self.rel_pos = rel_pos  # position relative to the copied selection's top-left corner
-        # Only non-empty for a ChunkGroup: its nested sub-chunks and the wiring between them,
-        # so copying/duplicating/cutting a group recursively takes its whole contents along
-        # instead of pasting an empty group. rel_pos for a child is relative to the *group's
-        # own children's* top-left, not the top-level selection's.
+        self.rel_pos = rel_pos
         self.children: list[ClipboardNode] = children or []
         self.child_edges: list[ClipboardEdge] = child_edges or []
-        # Params this group publishes on its own interface, as (child index, the inner
-        # attribute lofted). A loft is not a wire between two children, so it is not a
-        # ClipboardEdge: it points UP from a child to the group itself, and the copy has to
-        # re-loft rather than re-connect -- the pasted group has no such param until
-        # something lofts one.
         self.lofts: list[tuple[int, str]] = lofts or []
 
 
 class ClipboardEdge:
-    """A wire between two copied nodes, referenced by index into the node clipboard rather
-    than by prim path (paths don't exist yet at copy time for a not-yet-pasted node, and
-    change on every paste anyway). src_attr/dst_attr are ChunkPortItem-suffix form
-    ("outputs:chunk"/"inputs:tx", ...), not raw Sdf connection-target form -- see
-    `iter_prim_connections`."""
+    """A wire between two copied nodes, referenced by index into the node clipboard.
+
+    Indices rather than prim paths: a not-yet-pasted node has no path at copy time, and
+    paths change on every paste anyway.
+
+    Args:
+        src_index: Clipboard index of the node the wire comes from.
+        src_attr: Source attribute in ChunkPortItem-suffix form ("outputs:chunk",
+            "outputs:tx", ...), not raw Sdf connection-target form -- see
+            `iter_prim_connections`.
+        dst_index: Clipboard index of the node the wire goes into.
+        dst_attr: Destination attribute, in the same suffix form ("inputs:tx", ...).
+    """
 
     __slots__ = ("src_index", "src_attr", "dst_index", "dst_attr")
 
@@ -730,13 +852,21 @@ class ClipboardEdge:
 
 
 def iter_prim_connections(prim: Usd.Prim):
-    """Yield (dst_attr_suffix, src_prim_path, src_attr_suffix) for every real inputs:*
-    connection on this prim, in ChunkPortItem.attr_path suffix form for BOTH ends (e.g. dst
-    "inputs:tx", src "outputs:tx") -- independent of the "Show param connections" view toggle
-    (unlike ChunkGraphScene._build_edges, which only builds what's currently drawn), since
+    """Every real `inputs:*` connection on a prim, in ChunkPortItem suffix form for both ends.
+
+    Independent of the "Show param connections" view toggle (unlike
+    ChunkGraphScene._build_edges, which only builds what is currently drawn), since
     copy/paste needs every real connection, not just the visible ones. Takes a bare Usd.Prim
     rather than a ChunkNodeItem so it also works for a ChunkGroup's children, which have no
-    live Qt node at all unless someone has dived into that group."""
+    live Qt node at all unless someone has dived into that group.
+
+    Args:
+        prim: The chunk prim to read.
+
+    Yields:
+        (dst_attr_suffix, src_prim_path, src_attr_suffix), e.g. ("inputs:tx", "/a/b",
+        "outputs:tx").
+    """
     if not prim.IsValid():
         return
     for attr in prim.GetAttributes():
@@ -764,15 +894,26 @@ def iter_prim_connections(prim: Usd.Prim):
 
 
 def iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage):
-    """Yield the direct children of a ChunkGroup -- both plain leaf chunks (found via
-    get_context(), which walks the real Python ownership chain) and nested sub-groups (which
-    get_context() can NEVER find this way: it returns self for any CONTEXT-flagged chunk --
-    see ChunkGraphScene._rebuild_nodes's own "c is not context" guard for the same quirk --
-    and a sub-group is always added as a top-level scene entry, never actually owned by its
-    structural parent). Mirrors _rebuild_nodes's own combined lookup (get_context() equality
-    plus a get_context_for_prim_path() scan of the group's own USD children) exactly, so a
-    ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
-    not content worth duplicating, matching the top-level selection's own exclusion."""
+    """The direct children of a ChunkGroup: leaf chunks and nested sub-groups alike.
+
+    Leaf chunks are found via get_context(), which walks the real Python ownership chain.
+    Nested sub-groups need a second lookup: get_context() returns self for any
+    CONTEXT-flagged chunk (see ChunkGraphScene._rebuild_nodes's own "c is not context"
+    guard), and a sub-group is always added as a top-level scene entry, never actually owned
+    by its structural parent. This mirrors _rebuild_nodes's combined lookup --
+    get_context() equality plus a get_context_for_prim_path() scan of the group's USD
+    children -- so a ChunkGroup nested inside another ChunkGroup is still found. View chunks
+    are excluded: they are not content worth duplicating, matching the top-level
+    selection's own exclusion.
+
+    Args:
+        chunk: The ChunkGroup.
+        scene_sender: The scene the group lives in.
+        stage: The stage holding the group's prim.
+
+    Returns:
+        The group's direct children.
+    """
     by_path: dict[str, core.ChunkBase] = {
         chunk_stage.get_chunk_prim_path(c): c
         for c in scene_sender.get_chunks()
@@ -793,10 +934,21 @@ def iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, s
 def snapshot_chunk_node(
     chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: tuple[float, float]
 ) -> ClipboardNode | None:
-    """Build a ClipboardNode for `chunk` at rel_pos, recursing into its own children (and
-    their internal wiring) if it's a ChunkGroup -- shared by the top-level selection snapshot
-    and by each recursive level of group contents. Returns None for a chunk with no module
-    (nothing to recreate it from -- e.g. a bare exec 'dot')."""
+    """Build a ClipboardNode for `chunk`, recursing into its children if it is a ChunkGroup.
+
+    Shared by the top-level selection snapshot and by each recursive level of group
+    contents.
+
+    Args:
+        chunk: The chunk to snapshot.
+        scene_sender: The scene the chunk lives in.
+        stage: The stage holding the chunk's prim.
+        rel_pos: The chunk's position relative to the selection's top-left.
+
+    Returns:
+        The snapshot, or None for a chunk with no module (nothing to recreate it from --
+        e.g. a bare exec 'dot').
+    """
     cfg = chunk.get_config()
     module_name = cfg.module if cfg else None
     if not module_name:
@@ -863,9 +1015,15 @@ def snapshot_list_sizes(chunk: core.ChunkCommon) -> list[tuple[str, int]]:
     """How many rows each list group on `chunk` holds, keyed by param path.
 
     A list group's rows are created at runtime, so a pasted chunk has none of them and the
-    positional value snapshot has nothing to land on -- copying a Sublayer with a path set
-    produced one with an empty list and no path, and the same for every other chunk built
-    on a list group.
+    positional value snapshot has nothing to land on -- a copied Sublayer would come out
+    with an empty list and no path, and the same for every other chunk built on a list
+    group.
+
+    Args:
+        chunk: The chunk to read.
+
+    Returns:
+        (param path, row count) for each list group.
     """
     sizes: list[tuple[str, int]] = []
     for path, param in iter_chunk_param_paths(chunk):
@@ -892,6 +1050,10 @@ def apply_name(chunk: core.ChunkCommon, item: ClipboardNode) -> None:
 
     Before, not after: add_chunk is what makes a taken name unique, and renaming an added
     chunk is a rename of its prim.
+
+    Args:
+        chunk: The freshly created chunk.
+        item: The clipboard entry it was made from.
     """
     name = getattr(item, "name", "")
     if name and chunk.name != name:
@@ -899,14 +1061,31 @@ def apply_name(chunk: core.ChunkCommon, item: ClipboardNode) -> None:
 
 
 def snapshot_param_values(chunk: core.ChunkCommon) -> list:
-    """Positional snapshot of every copyable param's value, in `iter_copyable_params`
-    order. Two instances of the same chunk module build their param tree in the same code
-    order, so a plain positional zip (see `apply_param_values`) is enough to pair them back
-    up -- no param-path bookkeeping needed."""
+    """Positional snapshot of every copyable param's value, in `iter_copyable_params` order.
+
+    Two instances of the same chunk module build their param tree in the same code order,
+    so a plain positional zip (see `apply_param_values`) is enough to pair them back up --
+    no param-path bookkeeping needed.
+
+    Args:
+        chunk: The chunk to read.
+
+    Returns:
+        The values, in walk order.
+    """
     return [p.value for p in iter_copyable_params(chunk)]
 
 
 def apply_param_values(chunk: core.ChunkCommon, values: list) -> None:
+    """Set a snapshot's values back onto a chunk, pairing them by position.
+
+    A value that cannot be re-applied as-is (e.g. a stale expression string for a wire that
+    was not copied with it) leaves that param at its default rather than aborting the paste.
+
+    Args:
+        chunk: The chunk to write to.
+        values: Values from `snapshot_param_values` on a chunk of the same module.
+    """
     for param, value in zip(iter_copyable_params(chunk), values):
         try:
             param.value = value
@@ -971,6 +1150,10 @@ class GraphFrontend(Protocol):
         Must mirror onto each chunk's ChunkFlags.State.SELECTED bit: the shared operations
         read the bit, not a frontend attribute, so a selection kept privately is invisible
         to them.
+
+        Args:
+            paths: Prim paths of the nodes to select.
+            add: True adds to the current selection instead of replacing it.
         """
 
     def selected_chunks(self) -> list:
@@ -1009,6 +1192,12 @@ class GraphFrontend(Protocol):
 
         Wires with both ends in the clipboard are recreated between the new nodes; a wire
         with only one end copied is dropped rather than reattached to the original.
+
+        Args:
+            x: Layout x of the paste's top-left.
+            y: Layout y of the paste's top-left.
+            nodes: Clipboard nodes to paste; None pastes the shared clipboard.
+            edges: Clipboard edges to recreate; None uses the shared clipboard.
         """
 
     def duplicate_selection(self) -> None:
@@ -1026,6 +1215,11 @@ class GraphFrontend(Protocol):
 
         Takes an entry rather than a module name so variants work, and takes no menu: how
         the user picks the entry is the frontend's business.
+
+        Args:
+            entry: The menu entry to create.
+            x: Layout x of the new node.
+            y: Layout y of the new node.
         """
 
     # -- navigation --------------------------------------------------------
@@ -1035,6 +1229,12 @@ class GraphFrontend(Protocol):
 
         Must key on chunk_stage.is_chunkgroup, not on the CONTEXT flag: a chunk-in-chunk
         carries CONTEXT too and is an implementation detail, not a subnet.
+
+        Args:
+            path: Prim path of the node.
+
+        Returns:
+            True if the node can be dived into.
         """
 
     def dive_into(self, path: str) -> None:
@@ -1043,6 +1243,9 @@ class GraphFrontend(Protocol):
         Whatever this does, creating a chunk afterwards must land INSIDE the group --
         add_chunk parents to the scene's current context, which navigating does not set by
         itself.
+
+        Args:
+            path: Prim path of the chunkgroup.
         """
 
     def dive_out(self) -> None:
@@ -1059,6 +1262,9 @@ class GraphFrontend(Protocol):
         Must go through chunk_stage.recook_for_view -- a highlight is not a view switch --
         and must persist to chunk:activeView on the context prim, clearing rather than
         writing a 0, so the choice survives a save and is seen by other frontends.
+
+        Args:
+            slot: The view slot to activate, or 0 for none.
         """
 
     # -- viewport ----------------------------------------------------------
@@ -1097,18 +1303,24 @@ GRAPH_FRONTEND_METHODS = (
 
 
 def exec_boundary(stage: Usd.Stage, inside: set[str]) -> tuple[list[str], list[tuple[str, str]]]:
-    """(feeds, consumers) -- the exec wires crossing into and out of `inside`.
+    """The exec wires crossing into and out of `inside`.
 
-    A feed is a source prim path. A consumer is (prim path, exec input name): the slot
-    matters, because a merge fed by the selection through inputs:chunk1 must get its
-    replacement in inputs:chunk1, not in inputs:chunk where another branch already is.
+    A consumer's input slot matters: a merge fed by the selection through inputs:chunk1
+    must get its replacement in inputs:chunk1, not in inputs:chunk where another branch
+    already is.
 
-    Read this BEFORE removing anything. Deleting a selection heals the exec chain closed
-    as it goes, so afterwards nothing records what used to attach where, and a group put
-    in its place has nothing to reconnect to.
+    Read this BEFORE removing anything. Deleting a selection heals the exec chain closed as
+    it goes, so afterwards nothing records what used to attach where, and a group put in its
+    place has nothing to reconnect to.
 
-    Order is preserved and duplicates dropped: the first wire found wins, so re-wiring is
-    deterministic rather than set-ordered.
+    Args:
+        stage: The stage to read.
+        inside: Prim paths of the selection.
+
+    Returns:
+        (feeds, consumers). A feed is a source prim path; a consumer is (prim path, exec
+        input name). Order is preserved and duplicates dropped: the first wire found wins,
+        so re-wiring is deterministic rather than set-ordered.
     """
     feeds: list[str] = []
     consumers: list[tuple[str, str]] = []
@@ -1134,6 +1346,13 @@ def attach_group(stage: Usd.Stage, scene, group_path: str, feeds: list[str],
 
     Every feed goes onto the group's one exec input, stacked rather than each replacing the
     last. Every consumer gets the group in the same slot the selection fed.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the group lives in.
+        group_path: Prim path of the new group.
+        feeds: Source prim paths, from `exec_boundary`.
+        consumers: (prim path, exec input name) pairs, from `exec_boundary`.
     """
     for source in feeds:
         chunk_stage.connect_exec(stage, scene, source, group_path, append=True)
@@ -1143,10 +1362,7 @@ def attach_group(stage: Usd.Stage, scene, group_path: str, feeds: list[str],
 
 def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
                        selected: set[str]):
-    """(clipboard nodes, clipboard edges) for `selected`.
-
-    Positions come back relative to the selection's top-left, so a paste lands as a shape
-    rather than at whatever absolute coordinates the originals had.
+    """Snapshot the selected nodes and the wires between them for the clipboard.
 
     A wire with only one end selected is DROPPED, not recreated against the original
     outside node. Copying half a chain and having the copy silently wire itself into the
@@ -1154,6 +1370,19 @@ def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
 
     View chunks are excluded: they are per-context slot machinery, not content, and a
     second view in a slot that already has one is meaningless.
+
+    Args:
+        chunks: Maps prim path to live chunk.
+        prims: Maps prim path to prim.
+        positions: Maps prim path to node position.
+        scene: The scene the chunks live in.
+        stage: The stage holding their prims.
+        selected: Prim paths of the selection.
+
+    Returns:
+        (clipboard nodes, clipboard edges). Positions are relative to the selection's
+        top-left, so a paste lands as a shape rather than at whatever absolute coordinates
+        the originals had.
     """
     chosen = [p for p in selected if p in prims and p in positions]
     chosen = [p for p in chosen
@@ -1189,10 +1418,16 @@ def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
 
 
 def delete_chunks(chunks) -> int:
-    """Delete these chunks, returning how many were asked for.
+    """Delete these chunks.
 
     request_delete heals the exec chain closed as it removes each one, so callers that
     need to know what was attached must read exec_boundary first.
+
+    Args:
+        chunks: The chunks to delete.
+
+    Returns:
+        How many chunks were asked for.
     """
     chunks = list(chunks)
     for chunk in chunks:
@@ -1201,12 +1436,18 @@ def delete_chunks(chunks) -> int:
 
 
 def layout_adjacency(prims: dict) -> tuple[dict, dict]:
-    """(up_of, down_of) keyed by prim path, from EVERY connection on these prims.
+    """Upstream and downstream neighbours of each node, from EVERY connection on these prims.
 
     Exec and typed data alike, and independent of whether a frontend is currently drawing
     param wires: a layout should account for every real connection, not only the ones
-    visible. Both maps are scoped to `prims`, which is what chunk_graph_layout requires of
-    its callers.
+    visible.
+
+    Args:
+        prims: Maps prim path to prim.
+
+    Returns:
+        (up_of, down_of), keyed by prim path and scoped to `prims`, which is what
+        chunk_graph_layout requires of its callers.
     """
     up_of: dict = {}
     down_of: dict = {}
@@ -1226,7 +1467,7 @@ def layout_adjacency(prims: dict) -> tuple[dict, dict]:
 
 
 def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) -> dict:
-    """Auto-layout. Returns {prim path: (x, y)} for the nodes that should move.
+    """Compute an auto-layout for the graph, or for a selection and what it connects to.
 
     The computation only: growing a selection to its connected subgraph, scoping the
     adjacency to what is being laid out, and running chunk_graph_layout. APPLYING the
@@ -1234,15 +1475,19 @@ def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) 
     setPos on an item, Flet writes its positions dict, and ImGui hands the coordinates to
     the node editor.
 
-    All three had their own 44-line copy of everything above that line.
+    Args:
+        prims: Maps prim path to prim.
+        size_of: Takes a prim path and returns the node's (width, height); only a frontend
+            knows how big a node ended up.
+        current_pos: Takes a prim path and returns the node's current (x, y).
+        seeds: Narrows the pass to those nodes and everything connected to them -- "layout
+            selected". None lays out everything.
+        is_locked: Takes a prim path and returns whether the node must not move. Defaults to
+            "nothing is locked": Qt pins nodes whose prim comes from a referenced layer, and
+            the other frontends have no such concept yet.
 
-    size_of / current_pos / is_locked are callables taking a prim path, because only a
-    frontend knows how big a node ended up. is_locked defaults to "nothing is locked": Qt
-    pins nodes whose prim comes from a referenced layer, and the other two have no such
-    concept yet.
-
-    seeds narrows the pass to those nodes and everything connected to them -- "layout
-    selected". None lays out everything.
+    Returns:
+        {prim path: (x, y)} for the nodes that should move.
     """
     up_of, down_of = layout_adjacency(prims)
     if seeds:
@@ -1267,8 +1512,13 @@ def nest_target(chunk):
 
     add_chunk parents to the scene's current context, which navigating into a group does
     not set -- so without this a node created inside a group silently lands outside it.
-    Pushing and restoring is SceneSender.creating_in's job; this only answers WHICH, which
-    is the half every frontend had written for itself.
+    Pushing and restoring is SceneSender.creating_in's job; this only answers which.
+
+    Args:
+        chunk: The chunk of the context being shown, or None at the top level.
+
+    Returns:
+        `chunk` if it is a group, else None.
     """
     if chunk is not None and chunk_stage.is_group_chunk(chunk):
         return chunk
@@ -1281,6 +1531,9 @@ def menu_entries() -> list:
     Discovery walks the filesystem and imports arbitrary chunk modules, so it can fail for
     environmental reasons; a frontend should show an empty menu rather than die. Narrowed
     from bare Exception so a bug in menu building still surfaces.
+
+    Returns:
+        The menu entries, or an empty list if discovery failed.
     """
     try:
         return chunk_registry.ChunkRegistry().get_menu_entries()
@@ -1290,16 +1543,22 @@ def menu_entries() -> list:
 
 
 def materialize(scene, nodes, to_usd) -> dict:
-    """Create clipboard nodes through `scene`. Returns {clipboard index: chunk}.
-
-    to_usd(rel_x, rel_y) converts a clipboard entry's relative position into the
-    coordinates USD stores -- the one part that genuinely differs, because each frontend
-    has its own canvas origin and Y convention.
+    """Create clipboard nodes through `scene`.
 
     Qt does NOT use this. Its paste defers wiring through a QTimer because its ports
     arrive in deferred proxy batches, guards a window with chunk._executing, and blocks
     pasted chunks when the context has an active view. Those steps are the difference, so
-    it keeps its own; the two synchronous frontends had the same 20 lines twice.
+    it keeps its own.
+
+    Args:
+        scene: The scene to add the chunks to.
+        nodes: The clipboard nodes.
+        to_usd: to_usd(rel_x, rel_y) converts a clipboard entry's relative position into
+            the coordinates USD stores -- the one part that genuinely differs, because each
+            frontend has its own canvas origin and Y convention.
+
+    Returns:
+        {clipboard index: chunk} for each node that was created.
     """
     registry = chunk_registry.ChunkRegistry()
     made = {}
@@ -1339,7 +1598,7 @@ def materialize(scene, nodes, to_usd) -> dict:
 
 
 def apply_selection(chunks: dict, paths, current=None, add: bool = False) -> set[str]:
-    """Mirror a selection onto the chunks' SELECTED bit. Returns the resulting path set.
+    """Mirror a selection onto the chunks' SELECTED bit.
 
     The bit rather than a frontend attribute: the shared operations ask the chunks what is
     selected instead of being handed a list by whichever frontend happened to call them, so
@@ -1347,6 +1606,15 @@ def apply_selection(chunks: dict, paths, current=None, add: bool = False) -> set
 
     Presentation only -- chunk_scheduler.propagate_presentation -- so selecting cooks
     nothing.
+
+    Args:
+        chunks: Maps prim path to live chunk.
+        paths: Prim paths to select.
+        current: The current selection, used when `add` is True.
+        add: True adds to `current` instead of replacing it.
+
+    Returns:
+        The resulting set of selected paths.
     """
     paths = set(paths)
     if add and current:
@@ -1372,10 +1640,17 @@ def chunks_for(chunks: dict, paths) -> list:
 
 
 def copy_to_clipboard(nodes, edges) -> int:
-    """Put a snapshot on the shared clipboard. Returns how many nodes were copied.
+    """Put a snapshot on the shared clipboard.
 
     The engine's own lists, assigned into rather than rebound, so a selection copied in one
     frontend can be pasted in another -- all four read these same two objects.
+
+    Args:
+        nodes: Clipboard nodes, from `snapshot_selection`.
+        edges: Clipboard edges, from `snapshot_selection`.
+
+    Returns:
+        How many nodes were copied.
     """
     node_clipboard[:] = list(nodes)
     edge_clipboard[:] = list(edges)
@@ -1383,10 +1658,16 @@ def copy_to_clipboard(nodes, edges) -> int:
 
 
 def toggle_disabled(chunks) -> int:
-    """Flip DISABLED on each of these chunks. Returns how many were touched.
+    """Flip DISABLED on each of these chunks.
 
     A disabled chunk stays on the graph, drawn greyed -- hiding it would lose the shape of
     the network the user is reasoning about.
+
+    Args:
+        chunks: The chunks to toggle.
+
+    Returns:
+        How many chunks were touched.
     """
     chunks = list(chunks)
     for chunk in chunks:
@@ -1400,17 +1681,22 @@ def toggle_disabled(chunks) -> int:
 def write_position(prim: Usd.Prim | None, x: float, y: float, owner=None) -> None:
     """Persist a node position, in the coordinates USD stores.
 
-    The counterpart of graph_position, which was here on its own -- so three frontends each
-    hand-rolled the CreateAttribute call. The conversion stays with the caller, since a
-    canvas knows its own origin and Y sign; the authoring does not.
+    The counterpart of graph_position. The conversion stays with the caller, since a canvas
+    knows its own origin and Y sign; the authoring does not.
 
     Authors through the attr's own existing home layer, or owner's bookkeeping layer for a
     first-time write -- never bare, which relies on the stage's ambient Edit Target. That
     target moves as chunks are created and edited, so a position pulled from the canvas
     right after another node was authored would land in THAT node's layer instead of each
     node's own -- a procedural layer that then gets cleared and regenerated, snapping the
-    other nodes back to (0, 0). Mirrors chunk_qt_nodegraph._write_pos_to_usd and the view-node position
-    write in ensure_view_slot, both of which already do this.
+    other nodes back to (0, 0). chunk_qt_nodegraph._write_pos_to_usd and the view-node
+    position write in ensure_view_slot follow the same rule.
+
+    Args:
+        prim: The node's chunk prim.
+        x: USD x.
+        y: USD y.
+        owner: The chunk whose bookkeeping layer takes a first-time write.
     """
     if prim is None or not prim.IsValid():
         return
@@ -1430,6 +1716,13 @@ def selection_origin(positions: dict, paths) -> tuple[float, float] | None:
     Where a duplicate should land is this plus an offset, and the offset's *direction* is a
     canvas convention -- Y-down in Qt and Flet, Y-up in Blender -- so it stays with the
     caller.
+
+    Args:
+        positions: Maps prim path to node position.
+        paths: Prim paths of the nodes.
+
+    Returns:
+        (min x, min y), or None.
     """
     chosen = [p for p in paths if p in positions]
     if not chosen:
@@ -1439,17 +1732,24 @@ def selection_origin(positions: dict, paths) -> tuple[float, float] | None:
 
 
 def rewire_pasted(stage: Usd.Stage, created: dict, edges, chunks: dict | None = None) -> int:
-    """Re-create the copied wires among freshly pasted chunks. Returns how many were made.
+    """Re-create the copied wires among freshly pasted chunks.
 
     Ports are read off the stage rather than out of a frontend's cache, so this works
-    before a reload -- which is what let the three copies of it differ: two looked wires up
-    in their own port dict and had to rebuild it first, and the third built PortRefs by
-    hand and hardcoded them as exec, quietly dropping every typed param wire.
+    before a reload, and typed param wires are recreated as well as exec ones.
 
     The pasted chunks are merged into `chunks` before connecting. `connect` resolves the
     destination's bookkeeping layer and authors its expression through that dict, and the
     destination of a pasted wire is by definition a chunk that did not exist when the
     caller built it.
+
+    Args:
+        stage: The stage to author on.
+        created: {clipboard index: chunk}, from `materialize`.
+        edges: The clipboard edges.
+        chunks: Maps prim path to live chunk for the nodes already in view.
+
+    Returns:
+        How many wires were made.
     """
     merged = dict(chunks or {})
     ports: dict = {}
@@ -1476,10 +1776,23 @@ def rewire_pasted(stage: Usd.Stage, created: dict, edges, chunks: dict | None = 
 
 def paste_nodes(scene, stage: Usd.Stage, nodes, edges, to_usd, nest=None,
                 chunks: dict | None = None) -> dict:
-    """Materialize clipboard nodes and re-wire them. Returns {clipboard index: chunk}.
+    """Materialize clipboard nodes and re-wire them.
 
-    Qt does NOT use this, for the reasons materialize records. The caller still owns
+    Qt does NOT use this, for the reasons `materialize` records. The caller still owns
     saving, refreshing its chunk dict, reloading and selecting what landed.
+
+    Args:
+        scene: The scene to add the chunks to.
+        stage: The stage to author on.
+        nodes: The clipboard nodes.
+        edges: The clipboard edges.
+        to_usd: Converts a relative clipboard position to USD coordinates; see
+            `materialize`.
+        nest: The context to create the chunks in, from `nest_target`.
+        chunks: Maps prim path to live chunk for the nodes already in view.
+
+    Returns:
+        {clipboard index: chunk} for each node that was created.
     """
     if not nodes or scene is None:
         return {}
@@ -1490,7 +1803,7 @@ def paste_nodes(scene, stage: Usd.Stage, nodes, edges, to_usd, nest=None,
 
 
 def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
-    """Create one menu entry's chunk(s) at a USD position. Returns (created, error).
+    """Create one menu entry's chunk(s) at a USD position.
 
     The sequence every frontend runs: set the position hook chunk_stage reads while a chunk
     is being added, add through the scene so the normal load path authors the prim, then
@@ -1499,7 +1812,16 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
 
     A chunk module is arbitrary user code, so this can fail in ways no frontend can
     anticipate -- but not in EVERY way: KeyboardInterrupt and SystemExit must still travel,
-    and catching bare Exception was hiding real bugs behind a status line.
+    and a bare Exception would hide real bugs behind a status line.
+
+    Args:
+        scene: The scene to add to.
+        entry: The menu entry to create.
+        usd_pos: Where the node goes, in USD coordinates.
+        nest: The context to create the chunks in, from `nest_target`.
+
+    Returns:
+        (created chunks, error message); the message is "" on success.
     """
     if scene is None:
         return [], "no chunk session; cannot create"
@@ -1518,9 +1840,6 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
                           positions: dict, selected, to_usd) -> tuple[str, int]:
     """Put the selection in a new chunkgroup that takes its place in the exec chain.
 
-    Returns (group prim path, how many nodes moved) -- ("", 0) when there was nothing to
-    do. The caller saves, refreshes its chunk dict and reloads.
-
     The sequence a user would otherwise do by hand: read the boundary, cut, make a group,
     paste inside it, then wire the group in where the selection used to be. The boundary is
     read BEFORE anything is removed, because deleting heals the exec chain closed as it
@@ -1528,7 +1847,20 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
 
     The chunks pasted inside are wired to each other with connect_exec directly rather than
     through ports: they are inside a group the caller is not showing, so they have no ports
-    there to look up.
+    there to look up. The caller saves, refreshes its chunk dict and reloads.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the chunks live in.
+        chunks: Maps prim path to live chunk.
+        prims: Maps prim path to prim.
+        positions: Maps prim path to node position.
+        selected: Prim paths of the selection.
+        to_usd: Converts a relative clipboard position to USD coordinates; see
+            `materialize`.
+
+    Returns:
+        (group prim path, how many nodes moved), or ("", 0) when there was nothing to do.
     """
     chosen = [p for p in selected if p in prims and p in positions]
     if not chosen or scene is None:
@@ -1583,11 +1915,18 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
 def can_dive(chunks: dict, path: str) -> bool:
     """Whether `path` is a subnet the user may navigate into.
 
-    Keyed on is_subnet, never on the CONTEXT flag. Both a chunkgroup and a
-    chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material` as
-    an implementation detail) carry CONTEXT, so the flag cannot tell them apart, and only
-    the chunkgroup may be dived into. A chunk
-    hosting a referenced network (chunk_stage.is_network_host) is a subnet too.
+    Keyed on is_subnet, never on the CONTEXT flag. Both a chunkgroup and a chunk-in-chunk
+    (AMDMaterialXLibrary, which creates `reference` and `bind_material` as an implementation
+    detail) carry CONTEXT, so the flag cannot tell them apart, and only the chunkgroup may be
+    dived into. A chunk hosting a referenced network (chunk_stage.is_network_host) is a
+    subnet too.
+
+    Args:
+        chunks: Maps prim path to live chunk.
+        path: Prim path of the node.
+
+    Returns:
+        True if the node can be dived into.
     """
     chunk = chunks.get(path)
     return chunk is not None and chunk_stage.is_subnet(chunk)
@@ -1599,6 +1938,13 @@ def parent_context(context: str, available) -> str | None:
     Walks up until it finds a path that actually holds chunks, rather than assuming the
     parent prim is a graph: a single rsplit lands on the group's own parent scope, which is
     a context only sometimes.
+
+    Args:
+        context: Prim path of the current context.
+        available: Every context path, from `contexts`.
+
+    Returns:
+        The enclosing context's prim path, or None.
     """
     if not context or context == CHUNKS_ROOT:
         return None
@@ -1669,12 +2015,19 @@ def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> int | Non
 
 
 def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | None:
-    """Create a view node wired to target_prim_path. Returns its slot, or None.
-
-    Returns the EXISTING slot rather than making a duplicate when a view is already wired
-    to that prim, so a caller can simply activate what comes back either way.
+    """Create a view node wired to `target_prim_path`.
 
     All USD and registry work -- no toolkit -- so every frontend creates views the same way.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene to add the view chunk to.
+        target_prim_path: Prim path of the node to view.
+
+    Returns:
+        The view's slot, or None if the target is missing or is itself a view. When a view
+        is already wired to that prim its EXISTING slot comes back rather than a duplicate
+        being made, so a caller can simply activate what it gets either way.
     """
     target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
     if not target.IsValid():
@@ -1737,8 +2090,16 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | Non
 def ensure_default_view(stage: Usd.Stage, scene, context) -> int | None:
     """Give this context a view if it has none, wired to the end of its exec chain.
 
-    Returns the slot to activate, or None if there was nothing to do. A context with no
-    view cooks nothing, so this is what makes a freshly opened network actually run.
+    A context with no view cooks nothing, so this is what makes a freshly opened network
+    actually run.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the context lives in.
+        context: The context's chunk.
+
+    Returns:
+        The slot to activate, or None if there was nothing to do.
     """
     if context_has_view(scene, context):
         return None
@@ -1762,6 +2123,13 @@ def read_active_slot(stage: Usd.Stage, context: str) -> int:
     Stored as chunk:activeView on the CONTEXT prim, which is where every frontend reads and
     writes -- so a file saved with slot 2 active opens on slot 2 in any of them. Slots are
     per context: a tab view and a group view can both be slot 1 without colliding.
+
+    Args:
+        stage: The stage to read.
+        context: Prim path of the context.
+
+    Returns:
+        The active slot, or 0.
     """
     prim = context_prim(stage, context)
     if prim is None:
@@ -1776,6 +2144,11 @@ def write_active_slot(stage: Usd.Stage, context: str, slot: int) -> None:
     Cleared rather than written as a 0: an authored 0 and an absent attribute would
     otherwise be two spellings of "no active view", and only one of them survives a
     composition arc.
+
+    Args:
+        stage: The stage to author on.
+        context: Prim path of the context.
+        slot: The active slot, or 0 for none.
     """
     prim = context_prim(stage, context)
     if prim is None:
@@ -1792,18 +2165,26 @@ def write_active_slot(stage: Usd.Stage, context: str, slot: int) -> None:
 
 def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
                        slot: int) -> tuple[bool, str]:
-    """Switch which view drives execution, and recook. Returns (changed, status).
+    """Switch which view drives execution, and recook.
 
     The cooking is chunk_stage.recook_for_view, the same call the Qt graph makes: it blocks
     and mutes everything outside the active view's upstream tree, so this is a real
     execution switch rather than a highlight.
 
-    The slot is resolved BEFORE anything is written. Writing first meant switching to an
-    empty slot persisted a slot with no view behind it -- the attribute said 3, nothing
-    cooked, and the file carried that state to the next open.
+    The slot is resolved BEFORE anything is written, so switching to an empty slot never
+    persists a slot with no view behind it.
 
-    `changed` is False only when nothing was written, so a caller knows whether it needs to
-    save. A recook that raises still counts as changed: the slot is authored by then.
+    Args:
+        stage: The stage to author on.
+        scene: The scene the context lives in.
+        context: Prim path of the context.
+        chunks: Maps prim path to live chunk.
+        slot: The slot to activate, or 0 for none.
+
+    Returns:
+        (changed, status). `changed` is False only when nothing was written, so a caller
+        knows whether it needs to save. A recook that raises still counts as changed: the
+        slot is authored by then.
     """
     if context_prim(stage, context) is None or scene is None:
         return False, "no context to switch views in"
@@ -1833,6 +2214,15 @@ def new_view_slot(stage: Usd.Stage, scene, context_chunk,
 
     Slot allocation is scoped to the container and a view already wired to the target is
     reused rather than duplicated -- see create_view_for.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the context lives in.
+        context_chunk: The context's chunk.
+        target_path: Prim path of the node to view, or None for the chain's tail.
+
+    Returns:
+        The view's slot, or None if nothing was created.
     """
     if scene is None:
         return None
@@ -1843,16 +2233,24 @@ def new_view_slot(stage: Usd.Stage, scene, context_chunk,
 
 def default_view_slot(stage: Usd.Stage, scene, context: str,
                       context_chunk) -> tuple[int | None, bool]:
-    """The view to give a context on open. Returns (slot, activate).
+    """The view to give a context on open.
 
-    slot is None when there is nothing to do; `activate` is False when the file already
-    records a slot. That second half is the rule three frontends each documented and
-    implemented separately: ensure_default_view returns the EXISTING slot when a view is
-    already wired to the tail, so activating it on every open reset whichever view the user
-    had chosen back to that one.
+    ensure_default_view returns the EXISTING slot when a view is already wired to the tail,
+    so a file that already records a slot must not have it activated again -- that would
+    reset whichever view the user had chosen.
 
     Without a view nothing cooks at all, so a network would open looking correct and do
-    nothing -- which is exactly how the non-Qt frontends each differed from Qt in turn.
+    nothing.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the context lives in.
+        context: Prim path of the context.
+        context_chunk: The context's chunk.
+
+    Returns:
+        (slot, activate). slot is None when there is nothing to do; `activate` is False when
+        the file already records a slot.
     """
     if scene is None:
         return None, False

@@ -189,7 +189,7 @@ def _param_name(joint: str, taken: set) -> str:
 
 
 def _wanted(node, rig: _Rig) -> dict:
-    """joint path -> param name, for every joint the patterns match."""
+    """Joint path -> param name, for every joint the patterns match."""
     param = node.get_param("joints")
     patterns = [p.strip() for p in re.split(r"[,\s]+", (param.value if param else "") or "") if p.strip()]
     if not patterns:

@@ -50,8 +50,7 @@ def _set_clip_overrides(free_cam, clip):
 
 
 class UsdviewScene(chunk_core.SceneSender):
-    """
-    This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
+    """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
     TODO: Make this abstract and move implementation to a UsdView related location
     """
 
@@ -392,12 +391,14 @@ class ChunksPluginContainer(PluginContainer):
 
     def saveScene(self, usdviewApi):
         """The "nice save flow" -- the chunk graph plus correct up-axis/units.
-        See chunk_qt.save_scene_dialog."""
+        See chunk_qt.save_scene_dialog.
+        """
         chunk_qt.save_scene_dialog()
 
     def saveChunkGroup(self, usdviewApi):
         """Export the current chunk graph as one clean, portable USD layer.
-        See chunk_qt.save_chunkgroup_dialog."""
+        See chunk_qt.save_chunkgroup_dialog.
+        """
         chunk_qt.save_chunkgroup_dialog()
 
     def importChunk(self, usdviewApi):

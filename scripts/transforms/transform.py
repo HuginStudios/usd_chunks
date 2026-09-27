@@ -26,7 +26,8 @@ def _rescale_translate_range(node, stage):
     USD's own default when unauthored -- 10 / 0.01 = 1000); a meters-scale stage
     (metersPerUnit=1) would get the same +-1000 range applied to a scene where objects are
     typically single-digit units across, so a small drag (or typing "5") could move
-    something many times its own size."""
+    something many times its own size.
+    """
     meters_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
     if not meters_per_unit:
         return

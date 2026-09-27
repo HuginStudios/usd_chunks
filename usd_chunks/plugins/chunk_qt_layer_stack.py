@@ -1,5 +1,4 @@
-"""
-Layer Stack Inspector -- a usdview window (Chunks ▸ Layer Stack).
+"""Layer Stack Inspector -- a usdview window (Chunks ▸ Layer Stack).
 
 Why this exists: usdview's built-in "Layer Stack" tab is *prim-scoped* -- it only
 lists the layers that have an opinion on the currently selected prim, so a freshly
@@ -69,7 +68,8 @@ def _short_id(layer):
 
 class _UsdHighlighter(QtGui.QSyntaxHighlighter):
     """Lightweight USD-text colouring for the inspect dialog (keywords / types /
-    strings / comments). Intentionally rough -- this is a read-only inspector."""
+    strings / comments). Intentionally rough -- this is a read-only inspector.
+    """
 
     def __init__(self, doc):
         super().__init__(doc)
@@ -479,7 +479,8 @@ class LayerStackPanel(QtWidgets.QWidget):
 
 def open_window(api):
     """Create (or raise) the Layer Stack window. Returns the window so the caller
-    can keep a reference alive."""
+    can keep a reference alive.
+    """
     parent = getattr(api, "qMainWindow", None)
     win = LayerStackPanel(api, parent=parent)
     win.show()

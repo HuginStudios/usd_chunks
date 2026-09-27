@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 def _force_phases(seed: int) -> tuple:
     """Six fixed phase offsets for the turbulence field, so a given Seed always gives the
-    same gusts -- a re-run has to reproduce the take you just approved."""
+    same gusts -- a re-run has to reproduce the take you just approved.
+    """
     rnd = random.Random(int(seed))
     return tuple(rnd.uniform(0.0, 2.0 * math.pi) for _ in range(6))
 
@@ -1494,7 +1495,8 @@ def simulate_mujoco_instancer(
 
     def _proto_index(idx: int) -> int:
         """Which prototype instance *idx* is. An out-of-range index falls back to 0 rather
-        than raising: a half-authored instancer is a state the graph passes through."""
+        than raising: a half-authored instancer is a state the graph passes through.
+        """
         if proto_indices is None or idx >= len(proto_indices):
             return 0
         pi = int(proto_indices[idx])
@@ -1868,7 +1870,8 @@ def reset(owner, notice, sender) -> None:
 
 def add_collision(owner, notice, sender) -> None:
     """Append the viewport-selected prim(s) to the collision list (comma-joined
-    so get_prims() picks them all up)."""
+    so get_prims() picks them all up).
+    """
     param = owner.get_chunk().get_param("collision_path")
     scene = chunk_registry.ChunkRegistry().scene
     if not scene:

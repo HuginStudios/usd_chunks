@@ -583,7 +583,8 @@ def _build_argv(node, prefix, scene_path, output_image):
 
 def _render_command(node, output_image):
     """Render by shelling out, for renderers with their own entry point -- husk, a
-    V-Ray standalone -- and when delegate crashes need to stay out of this process."""
+    V-Ray standalone -- and when delegate crashes need to stay out of this process.
+    """
     stage = node.get_stage()
     command = node.get_param("render_command").value or "usdrecord"
     prefix = _resolve_command(command)
