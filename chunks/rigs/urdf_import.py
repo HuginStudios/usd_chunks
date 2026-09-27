@@ -489,25 +489,10 @@ def execute(node):
     want_visual = bool(node.get_param("import_visual").value)
     want_collision = bool(node.get_param("import_collision").value)
 
-    # view-driven execution re-runs every chunk upstream of the active view on EVERY recook
-    # (chunk_stage.recook_for_view, no per-node dirty tracking yet -- see the framework's own
-    # "STILL TODO: finer dirty/cache" note). For most chunks that is cheap; this one parses
-    # STL meshes vertex-by-vertex in pure Python, so a 400k-face robot re-triangulates on
-    # every unrelated downstream change -- a Pose Articulation slider drag two chunks
-    # downstream, felt live as the whole graph stalling. None of that work depends on
-    # anything but this chunk's own params and the source file, so skip it entirely when
-    # neither has changed since the last cook.
-    signature = (file_path, os.path.getmtime(file_path), root_path, mesh_root, scale,
-                 approximation, want_visual, want_collision)
-    if getattr(node, "_urdf_signature", None) == signature:
-        return
-    node._urdf_signature = signature
-
     stage = node.get_stage()
     layer = node.get_edit_context()
     if layer is None:
         return
-    layer.Clear()
 
     with Usd.EditContext(stage, layer):
         try:

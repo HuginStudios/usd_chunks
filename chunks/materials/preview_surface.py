@@ -5,8 +5,6 @@ from usd_chunks import chunk, chunk_utils
 
 def execute(node):
     stage = node.get_stage()
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     mat_path = node.get_param("mat_path").value
     if not mat_path:

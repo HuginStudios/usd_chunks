@@ -2225,7 +2225,7 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
     try:
         chunk_stage.recook_for_view(stage, scene, context_chunk, view_chunk)
     except Exception as exc:  # noqa: BLE001
-        # Deliberately wide, and one of the few left that is: a recook executes every chunk
+        # Deliberately wide, and one of the few left that is: a recook executes the stale chunks
         # upstream of the view, which is arbitrary user code and can raise anything. Losing
         # the window because one chunk is broken would be worse than reporting it. Logged
         # as well as returned, or the traceback is gone for good.

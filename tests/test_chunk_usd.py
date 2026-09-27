@@ -1799,53 +1799,53 @@ def test_load_chunks_subchunk_in_group() -> None:
 
 
 # ---------------------------------------------------------------------------
-# get_unique_path: expression path clears stale anonymous layer prim
+# get_unique_path: a pure lookup that does not count the asking chunk's own prim
 # ---------------------------------------------------------------------------
 
-class _LayerChunk:
-    """Minimal chunk stub whose get_edit_context returns a controlled anonymous layer."""
-    def __init__(self, layer: Sdf.Layer) -> None:
-        self._layer = layer
-
-    def get_edit_context(self) -> Sdf.Layer:
-        return self._layer
-
-
 class _ExprParam:
-    """Minimal param stub with a pre-resolved expression value and a stale anonymous layer."""
-    def __init__(self, resolved_path: str, layer: Sdf.Layer) -> None:
+    """Minimal param stub holding an expression and its resolved value."""
+    def __init__(self, resolved_path: str) -> None:
         self.raw_value = "@A.primpath_location@/geo"
         self._resolved = resolved_path
-        self._chunk = _LayerChunk(layer)
 
     @property
     def value(self) -> str:
         return self._resolved
 
-    def get_chunk(self) -> _LayerChunk:
-        return self._chunk
 
+def test_get_unique_path_returns_an_expression_resolved_and_touches_no_layer() -> None:
+    """An expression defines an explicit path, so it comes back resolved, never bumped.
 
-def test_get_unique_path_clears_layer_on_expression() -> None:
-    """get_unique_path clears the chunk's anonymous layer even when raw_value is an expression.
-
-    Bug: previously the layer.Clear() call was guarded by the non-expression branch, so a stale
-    prim authored during a previous execution (e.g. /geo) would persist after the primpath_location
-    was changed to an expression like @A.primpath_location@/geo.
+    get_unique_path used to clear the asking chunk's layer as a side effect, so its own prim
+    from the last cook would not read as a collision. The framework now clears that layer
+    before every cook, so a lookup has no business editing anything.
     """
     stage = Usd.Stage.CreateInMemory()
+    layer = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(layer, Sdf.Path("/geo"))
 
-    # Stale anonymous layer simulating a prim left over from a previous execution
-    old_layer = Sdf.Layer.CreateAnonymous()
-    Sdf.CreatePrimInLayer(old_layer, Sdf.Path("/geo"))
-    assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is not None
+    assert get_unique_path(stage, _ExprParam("/prim/geo")) == "/prim/geo"
+    assert layer.GetPrimAtPath(Sdf.Path("/geo")) is not None, "a lookup must not clear anything"
 
-    param = _ExprParam("/prim/geo", old_layer)
 
-    result = get_unique_path(stage, param)
+def test_get_unique_path_does_not_count_the_chunks_own_prim() -> None:
+    """A layer the framework does not clear (a context's file layer) still holds the prim a
+    chunk made last cook. Counted as a collision, it would walk the suffix up every cook."""
+    stage = Usd.Stage.CreateInMemory()
+    own = stage.GetRootLayer()
+    stage.DefinePrim("/cameras/cam1", "Camera")
 
-    assert result == "/prim/geo"
-    assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is None  # stale prim was cleared
+    assert get_unique_path(stage, "/cameras/cam1") == "/cameras/cam2", "someone else's prim is taken"
+    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam1"
+
+    # Authored straight into the layer: DefinePrim over an already-defined prim of the same
+    # type authors nothing, so it would not give the other layer a spec at all.
+    other = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(other, Sdf.Path("/cameras/cam1")).specifier = Sdf.SpecifierDef
+    stage.GetSessionLayer().subLayerPaths.append(other.identifier)
+    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam2", (
+        "defined by another layer as well, it is a real collision"
+    )
 
 
 # ---------------------------------------------------------------------------

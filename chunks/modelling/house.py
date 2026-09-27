@@ -1352,11 +1352,6 @@ def _author_mesh(stage, path, mesh, color):
     )
 
 
-def _clear_layer(layer):
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
-
-
 def _report(node, s, windows, tiles):
     text = (
         f"{s['width']:.1f} x {s['depth']:.1f} m · {s['roof_style']} roof · "
@@ -1376,16 +1371,12 @@ def execute(node: chunk.Chunk) -> None:
     having one.
     """
     stage = node.get_stage()
-    if not stage:
-        return
     layer = node.get_edit_context()
     if not layer:
         return
 
     s = _settings(node)
     root_path = Sdf.Path((node.get_param("house_path").value or "").strip() or "/House")
-
-    _clear_layer(layer)
 
     axes = _axes(stage)
     meshes = {name: _Mesh(axes) for name in PART_NAMES}

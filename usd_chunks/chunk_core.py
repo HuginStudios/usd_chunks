@@ -3363,6 +3363,20 @@ class ChunkBase(ChunkGroupBase):
             return None
         return super().get_edit_context()
 
+    def reauthor_driven_attrs(self) -> None:
+        """Author again the connection and value of every param of this chunk that drives a
+        real prim attribute (connect_usd_attr).
+
+        Those live in the chunk's layer, but they are the params' state rather than what a
+        cook produced: a param is bound once -- by the module, by show_attribute, or on
+        being edited away from its default -- and stays bound whether or not the next cook
+        binds it again. The framework clears the layer before every cook, so it puts them
+        back after one. Only this chunk's own params: a chunk nested inside keeps its own.
+        """
+        for _, param in self.iter_hierarchy():
+            if getattr(param, "_driven_attr_paths", None) and param.get_chunk() is self:
+                param._author_driven_connections()
+
     @override
     def get_chunk(self) -> ChunkBase | None:
         return self
@@ -3382,6 +3396,7 @@ class ChunkBase(ChunkGroupBase):
             if lm.initialized:
                 if layer := lm.get_or_create_layer(param):
                     layer.Clear()
+                    chunk_notice.mark_cook_stale(param)
         res = super().add_param(param, force_unique)
         if do_context_setup:
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)

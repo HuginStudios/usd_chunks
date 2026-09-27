@@ -134,11 +134,6 @@ def _sync_variable_choices(node) -> None:
 
 
 def execute(node):
-    if edit_layer := node.get_edit_context():
-        # Like a Merge or a Switch, this authors nothing of its own -- but a chunk retyped
-        # into one must not keep contributing whatever it authored before.
-        edit_layer.Clear()
-
     _sync_variable_choices(node)
     index = chosen_input(node)
     _, muted = chunk_stage.gate_to_branches(node, {index})

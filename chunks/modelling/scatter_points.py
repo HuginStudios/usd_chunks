@@ -1398,8 +1398,6 @@ def execute(node):
     regardless of what triggered this execute().
     """
     stage = node.get_stage()
-    if not stage:
-        return
 
     is_f = chunk.is_param_t(float)
     is_i = chunk.is_param_t(int)
@@ -1443,8 +1441,6 @@ def execute(node):
     layer = node.get_edit_context()
     if not layer:
         return
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
 
     # Erase stale positions/orientations from other layers (e.g. a solver bake),
     # or their old N-item arrays win over scatter's new M-item arrays and break

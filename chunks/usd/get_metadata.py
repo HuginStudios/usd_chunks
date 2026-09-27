@@ -111,12 +111,6 @@ def _update_menu_items(chunk_obj, prim: Usd.Prim):
 
 def execute(node):
     stage = node.get_stage()
-    if not stage:
-        return
-
-    # Get Metadata doesn't author anything -- clear layer for cleanliness
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     primpath_param = node.get_param("prim_path")
     meta_key = node.get_param("metadata_key").value or "kind"

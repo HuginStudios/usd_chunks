@@ -731,32 +731,27 @@ def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
         session.ClearExpressionVariables()
 
 
-def get_unique_path(stage, prim_path):
+def get_unique_path(stage, prim_path, own_layer=None):
     """prim_path if it is unused on the stage, else a unique variant with a numeric suffix.
 
-    When a param is passed, the chunk's procedural layer is cleared of the old prim spec
-    before checking uniqueness, so previous executions don't inflate the suffix counter.
+    A pure lookup. A chunk's own prim from its last cook must not count against it, or the
+    suffix walks up on every cook. In a procedural chunk's layer it is already gone -- the
+    framework clears that layer before execute() -- but a layer the framework leaves alone
+    (a context's file layer) still holds it, which is what own_layer is for.
 
     Args:
         stage: The stage to check.
         prim_path: A path, or a ChunkParamBase holding one. If the param's raw value is an
             expression the resolved path is returned as-is -- expressions define an explicit
             derived path, so uniqueness bumping would be wrong.
+        own_layer: The layer the asking chunk authors into, if any. A prim that only this
+            layer defines is the chunk's own, not a collision.
 
     Returns:
         A prim path free on the stage.
     """
     raw_value = getattr(prim_path, 'raw_value', None)
     if raw_value is not None:
-        # Clear the chunk's procedural layer before resolving the path so stale prims
-        # from a previous execution are removed regardless of whether the new path
-        # comes from a literal value or an expression.
-        chunk = getattr(prim_path, 'get_chunk', lambda: None)()
-        if chunk is not None:
-            layer = chunk.get_edit_context()
-            if layer and layer.anonymous:
-                layer.Clear()
-
         if isinstance(raw_value, str) and has_expression(raw_value):
             resolved = getattr(prim_path, 'value', None)
             return str(resolved) if resolved is not None else ""
@@ -771,7 +766,14 @@ def get_unique_path(stage, prim_path):
 
     def _is_taken(path):
         prim = stage.GetPrimAtPath(path)
-        return prim.IsValid() and bool(prim.GetTypeName())
+        if not (prim.IsValid() and prim.GetTypeName()):
+            return False
+        if own_layer is None:
+            return True
+        return any(
+            spec.layer != own_layer and spec.specifier == Sdf.SpecifierDef
+            for spec in prim.GetPrimStack()
+        )
 
     if not _is_taken(prim_path):
         return prim_path
@@ -962,7 +964,15 @@ def _claim_unique_path(stage, param):
         return
     if re.search(r"[\s,*?%{]", value):
         return
-    unique_path = get_unique_path(stage, param)
+    # The chunk's own layer, not the stage's edit target: outside a cook that is the user's
+    # file, and everything in it would pass for this chunk's own. A chunk with no layer of its
+    # own (interactive) authors into the edit target, but only during its own cook is that
+    # where its last result is -- and without counting it, every cook would move it one along.
+    owner = getattr(param, "get_chunk", lambda: None)()
+    own_layer = owner.get_edit_context() if owner is not None else None
+    if own_layer is None and owner is not None and chunk_notice._executing_chunk is owner:
+        own_layer = stage.GetEditTarget().GetLayer()
+    unique_path = get_unique_path(stage, param, own_layer=own_layer)
     if unique_path and unique_path != param.value:
         param.value = unique_path
 

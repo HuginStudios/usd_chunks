@@ -3,8 +3,7 @@ from usd_chunks import chunk
 
 
 def execute(node):
-    stage = node.get_stage()
-    stage.GetEditTarget().GetLayer().Clear()
+    """A Dot authors nothing; it only reroutes a wire."""
 
 
 def main():

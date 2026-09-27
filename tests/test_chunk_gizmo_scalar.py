@@ -727,10 +727,22 @@ def _fly_freecam_to(camera_mod, chunk_obj, stage, path, translate):
     described a state the code could no longer produce, and failed for that instead of for a
     real regression. Migration from a genuine legacy op has its own test below.
     """
-    camera_mod._author_matrix(
-        chunk_obj, stage, stage.GetPrimAtPath(path),
-        Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate)),
-    )
+    matrix = Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate))
+    # Recorded on the chunk as well, as the real callback does: the framework clears the
+    # camera's layer before every cook, so the flight is kept on the chunk, not the prim.
+    setattr(chunk_obj, camera_mod._FLOWN_MATRIX, matrix)
+    camera_mod._author_matrix(chunk_obj, stage, stage.GetPrimAtPath(path), matrix)
+
+
+def _cook(camera_mod, node):
+    """Cook the way a session does: from a cleared layer.
+
+    execute() is called directly in these tests, so nothing else clears the layer the camera
+    authors into -- the stage's root here. The framework clears a chunk's layer before every
+    cook, and a test that skipped it would find last cook's prim in the way of this one.
+    """
+    node.get_stage().GetRootLayer().Clear()
+    camera_mod.execute(node)
 
 
 def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
@@ -744,16 +756,16 @@ def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     # The freecam flies the camera somewhere, exactly as _apply_freecam_transform does.
     c.get_param("lock_to_freecam").value = True
     path = c.get_param("primpath_location").value
     _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = False
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     # Re-fetch: prim handles expire across the layer.Clear() inside execute().
     matrix = UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation()
@@ -766,15 +778,15 @@ def test_unlocking_also_seeds_the_params_so_the_handle_picks_up_from_there() -> 
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = True
     path = c.get_param("primpath_location").value
     _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = False
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     assert c.get_param("tx").value == pytest.approx(100.0)
     assert c.get_param("tz").value == pytest.approx(-200.0)
@@ -801,12 +813,15 @@ def test_a_cook_survives_an_order_naming_an_op_nothing_defines() -> None:
     path = c.get_param("primpath_location").value
 
     # The leftover state, established explicitly rather than left to whatever the cook
-    # happened to author -- the op is *named* by the order and *defined* by nothing.
+    # happened to author -- the op is *named* by the order and *defined* by nothing. In a
+    # layer of its own, as it is in a session: the camera's own layer is cleared before every
+    # cook, so the order that outlives the attribute is always somebody else's.
     prim = stage.GetPrimAtPath(path)
     prim.RemoveProperty(camera_mod._LEGACY_OP)
-    UsdGeom.Xformable(prim).GetXformOpOrderAttr().Set([camera_mod._LEGACY_OP])
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        UsdGeom.Xformable(prim).GetXformOpOrderAttr().Set([camera_mod._LEGACY_OP])
 
-    camera_mod.execute(node)   # must not raise
+    _cook(camera_mod, node)   # must not raise
 
     assert c.get_param("primpath_location").value == path
 
@@ -820,6 +835,10 @@ def test_a_camera_saved_before_named_ops_keeps_its_placement() -> None:
     now write. That doubling is what turned a scale of 100 into 10000 in transform.py.
     """
     camera_mod, c, stage = _camera_chunk_and_stage()
+    # Only a layer the framework does not clear can still hold a legacy op when a cook starts
+    # -- a context's file layer. The stage's root stands in for it, and the chunk is told it
+    # is its own, as it would be.
+    c.get_edit_context = stage.GetRootLayer
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
     camera_mod.execute(node)
@@ -879,28 +898,28 @@ def test_unlocking_hands_back_the_flight_even_after_the_camera_was_moved() -> No
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
     path = c.get_param("primpath_location").value
 
     # A real edit first, which is what used to disable the handover.
     moved = Gf.Transform()
     moved.SetTranslation(Gf.Vec3d(3.0, 0.0, -4.0))
     chunk_gizmo.apply_bindings(c, "transform", moved.GetMatrix())
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = True
     _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = False
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     assert UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation()         .ExtractTranslation() == Gf.Vec3d(100.0, 50.0, -200.0)
     assert c.get_param("tx").value == pytest.approx(100.0), "the params have to agree too"
 
     # And it fires once per lock, not on every cook afterwards.
     c.get_param("tx").value = 7.0
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
     assert c.get_param("tx").value == pytest.approx(7.0)
 
 

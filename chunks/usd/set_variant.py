@@ -105,8 +105,6 @@ def _refresh_menus(owner, _notice=None, _sender=None):
 
 def execute(node):
     stage = node.get_stage()
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     primpath_param = node.get_param("primpath_location")
     vs_name   = node.get_param("variant_set").value or ""

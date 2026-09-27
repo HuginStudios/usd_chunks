@@ -11,8 +11,6 @@ _EXPANSION_RULES = {
 
 def execute(node):
     stage = node.get_stage()
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     name = node.get_param("collection_name").value
     owner_path = node.get_param("owner_path").value

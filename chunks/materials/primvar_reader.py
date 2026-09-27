@@ -35,8 +35,6 @@ _READER_ID = {
 
 def execute(node):
     stage = node.get_stage()
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     primpath_location     = node.get_param("primpath_location").value
     varname      = node.get_param("varname").value or "st"

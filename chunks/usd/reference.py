@@ -47,8 +47,6 @@ def execute(node):
         return
 
     stage = node.get_stage()
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     raw_path = node.get_param("primpath_location").value
     import_path = node.get_param("import_primpath").value

@@ -1133,8 +1133,6 @@ def _up_axis(stage):
 def execute(node):
     """Grow the vines. Reactive: any param change, or an upstream brush stroke, re-runs this."""
     stage = node.get_stage()
-    if not stage:
-        return
 
     _sync_params(node)
 
@@ -1147,8 +1145,6 @@ def execute(node):
              Sdf.Path(root_path).AppendChild(LEAVES_PRIM))
     _publish(node, "out_curves", str(where[1]))
     _publish(node, "out_leaves", str(where[2]))
-
-    _clear_layer(layer)
 
     paths = node.get_param("surface_prim").resolve_paths()
     if not paths:
@@ -1329,11 +1325,6 @@ def _set_extent(gprim, points, width):
     low = points.min(axis=0) - pad
     high = points.max(axis=0) + pad
     gprim.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*low), Gf.Vec3f(*high)]))
-
-
-def _clear_layer(layer):
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
 
 
 def _publish(node, name, value):

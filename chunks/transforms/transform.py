@@ -84,8 +84,6 @@ def pivot(node):
 
 def execute(node):
     stage = node.get_stage()
-    chunk_layer = stage.GetEditTarget().GetLayer()
-    chunk_layer.Clear()
 
     # Before the primpath guard below -- the slider range should be correct as soon as the
     # chunk exists, not only once a target prim is set.
