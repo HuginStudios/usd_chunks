@@ -67,16 +67,19 @@ class BlenderScene(SceneSender):
         return self._stage
 
     def set_stage(self, stage) -> None:
+        """Point the scene at a stage."""
         self._stage = stage
 
     def get_selected_prims(self):
         """The prim(s) last Ctrl+Click-picked in the live Hydra viewport.
 
         NOT Blender's own object selection: a USD prim shown by the live draw handler
-        (viewport.py) has no Blender object at all to select in the first place, so that
-        road is a dead end -- this instead reads
+        (viewport.py) has no Blender object at all to select, so this instead reads
         chunk_blender_nodegraph.get_picked_prim_paths(), written by viewport.py's
         USDCHUNKS_OT_pick_prim from its own UsdImagingGL.Engine.TestIntersection call.
+
+        Returns:
+            The picked prims.
         """
         if self._stage is None:
             return []
@@ -109,8 +112,12 @@ class BlenderScene(SceneSender):
         return str(scene.render.engine) if scene else ""
 
     def set_viewport_renderer_settings(self, settings) -> None:
-        """Not applicable: Blender's render engines are not Hydra delegates taking USD
-        render settings. Ignored rather than raised so a render chunk can still cook.
+        """Ignored: Blender's render engines are not Hydra delegates taking USD render settings.
+
+        Ignored rather than raised so a render chunk can still cook.
+
+        Args:
+            settings: The settings.
         """
         return None
 
@@ -128,6 +135,12 @@ class BlenderScene(SceneSender):
         Blender's interpreter is shared by every add-on and is replaced wholesale on
         upgrade, so a silent pip install is both invasive and lost. A chunk whose
         requirements are missing is skipped by the registry, which is the safe failure.
+
+        Args:
+            package_name: The package a chunk requires.
+
+        Returns:
+            Always False.
         """
         logger.info("usd_chunks: %s is required by a chunk but will not be auto-installed",
                     package_name)
@@ -141,6 +154,7 @@ _scene: BlenderScene | None = None
 
 
 def get_view():
+    """The graph view of the active chunk tree, or None."""
     return bg.active_view()
 
 
@@ -210,8 +224,9 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
 # viewport.py's _redraw() already does for VIEW_3D areas.
 
 def _uninitialized_chunk_trees() -> list:
-    """Every ChunkNetwork tree currently shown in a node editor that _open_stage has never
-    touched -- i.e. created by Blender's own "+ New" rather than one of our operators.
+    """Every ChunkNetwork tree shown in a node editor that _open_stage has never touched.
+
+    That is, one created by Blender's own "+ New" rather than one of our operators.
     """
     found = []
     for window in getattr(bpy.context.window_manager, "windows", ()):
@@ -479,9 +494,11 @@ class USDCHUNKS_OT_localise_network(bpy.types.Operator):
 
 
 def _selected_chunk(predicate):
-    """The one selected chunk the predicate accepts, or -- when nothing selected fits --
-    the graph's single candidate. Same "do not make me select the only thing there"
-    courtesy dive_into already extends, and both verbs act on exactly one chunk.
+    """The one selected chunk the predicate accepts, or the graph's single candidate.
+
+    The fallback applies when nothing selected fits: the same "do not make me select the
+    only thing there" courtesy dive_into already extends, and both verbs act on exactly one
+    chunk.
     """
     view = get_view()
     if view is None:
@@ -530,8 +547,10 @@ class USDCHUNKS_OT_dive_out(bpy.types.Operator):
 # ---------------------------------------------------------------------------
 
 class _ChunkTreeOperator(bpy.types.Operator):
-    """Shared shape: only in a chunk tree, only with a view, selection read from the
-    editor first because Blender owns clicking and box-select.
+    """Shared shape for the chunk tree operators.
+
+    Only in a chunk tree, only with a view, and with the selection read from the editor
+    first, because Blender owns clicking and box-select.
     """
 
     bl_options = {"REGISTER"}
@@ -771,10 +790,11 @@ _KEYS = (
 
 
 def _register_keymap() -> None:
-    """Bind _KEYS in the add-on keyconfig, which Blender consults before its defaults --
-    so inside a chunk tree these win over node.delete, node.duplicate_move and the rest,
-    and everywhere else those operators' poll fails and the key falls through to what it
-    always did.
+    """Bind _KEYS in the add-on keyconfig, which Blender consults before its defaults.
+
+    So inside a chunk tree these win over node.delete, node.duplicate_move and the rest, and
+    everywhere else those operators' poll fails and the key falls through to what it always
+    did.
     """
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc is None:
@@ -820,6 +840,7 @@ def _unregister_keymap() -> None:
 
 
 def register() -> None:
+    """Register the add-on: node graph, operators, tree properties, keymap, undo handlers, viewport, gizmos."""
     bg.register()
     for cls in _CLASSES:
         bg._register_once(cls)
@@ -844,6 +865,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    """Unregister everything register() added."""
     gizmos.unregister()
     viewport.unregister()
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):

@@ -58,16 +58,20 @@ def active_stage():
 
     Resolved every draw rather than captured: opening another network replaces the view,
     and a captured stage would leave the viewport showing the previous one.
+
+    Returns:
+        The stage, or None.
     """
     view = bg.active_view()
     return None if view is None else view.stage
 
 
 def _headlight(engine, rv3d) -> None:
-    """A camera-relative light, the same "Camera Light" usdview defaults to -- with
-    enableLighting on and no light authored anywhere on the stage, Storm has nothing to
+    """Set a camera-relative light, the "Camera Light" usdview defaults to.
+
+    With enableLighting on and no light authored anywhere on the stage, Storm has nothing to
     shade with at all and draws flat black. Recomputed every draw so it tracks navigation,
-    same as the camera state below it.
+    same as the camera state.
     """
     from pxr import Glf, Gf
 
@@ -88,13 +92,21 @@ def _headlight(engine, rv3d) -> None:
 
 
 def pick_matrix(ndc_x: float, ndc_y: float, dx: float, dy: float):
-    """The classic pick matrix: move the click point to the origin, then blow the small
-    window around it up to fill the whole [-1, 1] clip range.
+    """The classic pick matrix: the click point moved to the origin, its window blown up to fill clip space.
 
     Its own function because it is one of the two parts of picking that cannot be checked
     without a GL context, and both are better pinned by a test than trusted by eye.
     Post-multiplied onto the projection by the caller, because Gf uses row-vectors
     (v * M1 * M2 applies M1 first).
+
+    Args:
+        ndc_x: The click, in normalised device coordinates.
+        ndc_y: The click, in normalised device coordinates.
+        dx: The pick window's width, in NDC.
+        dy: The pick window's height, in NDC.
+
+    Returns:
+        The Gf.Matrix4d.
     """
     from pxr import Gf
     return (Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(-ndc_x, -ndc_y, 0.0))
@@ -112,6 +124,12 @@ def hit_path(result) -> str | None:
     The first element is the hit flag and is checked for falseness only when it is a bool:
     a build that returns the hit point there would have a Vec3d at the origin read as a
     miss, which is a hit dead centre of the near plane.
+
+    Args:
+        result: TestIntersection's return value.
+
+    Returns:
+        The prim path, or None.
     """
     from pxr import Sdf
     if not result:
@@ -127,8 +145,17 @@ def hit_path(result) -> str | None:
 def ray_from_region(region, rv3d, mouse_x, mouse_y):
     """The world-space ray under the cursor, as (origin, direction).
 
-    Blender's own view maths, no GL: this is what the bounds pick below rides on, and the
+    Blender's own view maths, no GL: this is what the bounds pick rides on, and the
     reason that pick keeps working on a driver where Hydra's does not.
+
+    Args:
+        region: The 3D view region.
+        rv3d: Its RegionView3D.
+        mouse_x: The cursor, in region pixels.
+        mouse_y: The cursor, in region pixels.
+
+    Returns:
+        (origin, direction).
     """
     from bpy_extras import view3d_utils
     coord = (mouse_x, mouse_y)
@@ -149,6 +176,15 @@ def pick_by_bounds(stage, origin, direction, time=None) -> str | None:
     ancestors would return the scene root for every click; the leaf is what the user
     pointed at, and a host that wants the prim above it walks up from there (which is what
     the gizmo module does, to find the one a chunk drives).
+
+    Args:
+        stage: The stage.
+        origin: The ray origin.
+        direction: The ray direction.
+        time: The time to compute bounds at; default time when None.
+
+    Returns:
+        The prim path, or None.
     """
     from pxr import Gf, Usd, UsdGeom
     if stage is None:
@@ -284,10 +320,12 @@ def _draw():
 
 
 def hydra_view_enabled() -> bool:
+    """Whether the Hydra view is drawing in the 3D viewport."""
     return _state["handle"] is not None
 
 
 def enable_hydra_view() -> None:
+    """Start drawing the chunk network's stage in the 3D viewport."""
     if _state["handle"] is None:
         _state["handle"] = bpy.types.SpaceView3D.draw_handler_add(
             _draw, (), "WINDOW", "POST_VIEW")
@@ -295,6 +333,7 @@ def enable_hydra_view() -> None:
 
 
 def disable_hydra_view() -> None:
+    """Stop drawing the stage and drop the Hydra engine."""
     if _state["handle"] is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_state["handle"], "WINDOW")
         _state.update(handle=None, engine=None, stage_id=None)
@@ -309,7 +348,7 @@ def _redraw() -> None:
 
 
 class USDCHUNKS_OT_toggle_hydra_view(bpy.types.Operator):
-    """Draw the chunk network's USD stage in this viewport with Hydra Storm"""
+    """Draw the chunk network's USD stage in this viewport with Hydra Storm."""
 
     bl_idname = "usd_chunks.toggle_hydra_view"
     bl_label = "Hydra Stage View"
@@ -341,8 +380,10 @@ class USDCHUNKS_OT_set_draw_mode(bpy.types.Operator):
 
 
 class USDCHUNKS_OT_toggle_lighting(bpy.types.Operator):
-    """RenderParams.enableLighting -- off draws flat display colour only, no shading at
-    all, which is Storm's own default and reads as broken until toggled once.
+    """Toggle RenderParams.enableLighting.
+
+    Off draws flat display colour only, no shading at all, which is Storm's own default and
+    reads as broken until toggled once.
     """
 
     bl_idname = "usd_chunks.toggle_lighting"
@@ -356,14 +397,14 @@ class USDCHUNKS_OT_toggle_lighting(bpy.types.Operator):
 
 
 class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
-    """Ctrl+Click in the viewport: pick the prim under the cursor from the live Hydra
-    stage -- this editor's counterpart of usdview's own viewport click-select.
+    """Ctrl+Click in the viewport: pick the prim under the cursor from the live Hydra stage.
 
-    Bound to Ctrl+LeftMouse rather than plain click (see the panel's Picking toggle): a
-    bare LEFTMOUSE keymap item would compete with Blender's own click-select, box-select
-    and tool interactions, all of which already own that button. Returns PASS_THROUGH
-    always, so Blender's normal handling of the same click still runs -- this only adds a
-    side effect, it never consumes the event.
+    This editor's counterpart of usdview's own viewport click-select. Bound to
+    Ctrl+LeftMouse rather than plain click (see the panel's Picking toggle): a bare
+    LEFTMOUSE keymap item would compete with Blender's own click-select, box-select and tool
+    interactions, all of which already own that button. Returns PASS_THROUGH always, so
+    Blender's normal handling of the same click still runs -- this only adds a side effect,
+    it never consumes the event.
     """
 
     bl_idname = "usd_chunks.pick_prim"
@@ -458,6 +499,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
 
 
 class USDCHUNKS_MT_renderer(bpy.types.Menu):
+    """The Hydra renderers the viewport can draw with."""
     bl_idname = "USDCHUNKS_MT_renderer"
     bl_label = "Renderer"
 
@@ -544,6 +586,7 @@ def _unregister_keymap() -> None:
 
 
 def register() -> None:
+    """Register the viewport operators, menu and keymap."""
     for cls in _CLASSES:
         try:
             bpy.utils.register_class(cls)
@@ -557,6 +600,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    """Stop the Hydra view and unregister everything register() added."""
     disable_hydra_view()
     _unregister_keymap()
     for cls in reversed(_CLASSES):

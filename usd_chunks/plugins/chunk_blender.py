@@ -155,7 +155,7 @@ def _range(param, cast):
 
 
 def list_row_of(param):
-    """(list group, row group) enclosing `param`, or None when it is not in a ListGroup.
+    """The list group and row group enclosing `param`, or None when it is not in a ListGroup.
 
     A row is a ChunkGroupBase directly under a ChunkListGroupBase; the param may sit a
     Vector or two below it. Walks owners up to the chunk, so nesting depth does not
@@ -163,6 +163,12 @@ def list_row_of(param):
     inner one, which is the row whose value is actually being edited. The chain
     alternates chunk objects with the NameSyncedContainers that hold them, so only the
     chunk objects count.
+
+    Args:
+        param: The param.
+
+    Returns:
+        (list group, row group), or None.
     """
     child, owner = param, param.get_owner()
     while owner is not None and not isinstance(owner, core.ChunkBase):
@@ -175,9 +181,16 @@ def list_row_of(param):
 
 
 def prop_key(param) -> str:
-    """The node property that holds `param`: its name, or `list.row.name` inside a
-    ListGroup row. RNA identifiers cannot carry a dot, which is fine -- a row key is
-    only ever an ID property.
+    """The node property that holds `param`: its name, or `list.row.name` inside a ListGroup row.
+
+    RNA identifiers cannot carry a dot, which is fine -- a row key is only ever an ID
+    property.
+
+    Args:
+        param: The param.
+
+    Returns:
+        The property key.
     """
     found = list_row_of(param)
     if found is None:
@@ -204,9 +217,14 @@ def is_hidden(param) -> bool:
     """Whether `param` is hidden, itself or through any group above it.
 
     A chunk hides a whole Group at once (add_mesh keeps cube, tube and grid groups and
-    shows the one its menu names) and the params inside carry no bit of their own. Read
-    only the param's, as this did, and all three groups' fields drew at once -- eighteen
-    of them -- and the menu visibly did nothing.
+    shows the one its menu names) and the params inside carry no bit of their own, so the
+    param's own bit alone would draw every group's fields at once.
+
+    Args:
+        param: The param.
+
+    Returns:
+        True if it or a group above it is hidden.
     """
     obj = param
     while obj is not None and not isinstance(obj, core.ChunkBase):
@@ -222,6 +240,12 @@ def property_for(param):
     None means "this param is not a property" rather than "unsupported": a Button is an
     operator and a Separator is a layout call, neither of which stores anything. The caller
     draws those directly.
+
+    Args:
+        param: The param.
+
+    Returns:
+        The bpy.props property, or None.
     """
     t = param.get_type()
     name = param.name
@@ -297,11 +321,17 @@ def property_for(param):
 
 
 def annotations_for(chunk) -> tuple[dict, list, list]:
-    """(rna properties, button param names, unmapped param names) for one chunk.
+    """The RNA properties, button param names and unmapped param names for one chunk.
 
-    Returned as three lists rather than one dict so the node class knows what to *draw*:
-    properties get `layout.prop`, buttons get `layout.operator`, and the rest are skipped
-    with a note.
+    Returned as three collections rather than one dict so the node class knows what to
+    *draw*: properties get `layout.prop`, buttons get `layout.operator`, and the rest are
+    skipped with a note.
+
+    Args:
+        chunk: The chunk.
+
+    Returns:
+        (rna properties, button param names, unmapped param names).
     """
     props: dict = {}
     buttons: list = []
@@ -324,23 +354,28 @@ def annotations_for(chunk) -> tuple[dict, list, list]:
 def iter_drawable(chunk, include_hidden: bool = False, _depth: int = 0):
     """The params of `chunk` that a node body should show, in author order, flattened.
 
-    `include_hidden` widens it to every param the chunk HAS, which is what registration and
-    value-mirroring want: a param hidden when the class is built (an ExportUSD output file,
-    which appears only once Flatten is ticked) is still a param, and skipping it there left
-    it with no RNA property at all -- so the moment it unhid, the node drew a port with a
-    name and no control. Drawing still filters hidden out; only these two callers do not.
-
     `get_my_params`, not `get_params`: the latter walks the nested ChainMap and would reach
     into params this chunk does not own.
 
     Containers are **recursed into, not skipped**. Anything without `get_type` is a Group,
     ListGroup or Vector rather than a value, and Blender has no nested-panel form inside a
     node body -- but their children are the actual params. Transform keeps tx/ty/tz in a
-    Vector, so skipping containers outright produced a node with ports for tz and no
-    control for it, and editing the node wrote nowhere.
+    Vector, and a node without controls for them would show ports for tz and write nowhere.
 
     Depth-limited because a malformed chunk can nest containers cyclically, and this runs
     during class registration where a hang looks like Blender freezing on startup.
+
+    Args:
+        chunk: The chunk or container.
+        include_hidden: Every param the chunk HAS, which is what registration and
+            value-mirroring want: a param hidden when the class is built (an ExportUSD
+            output file, which appears only once Flatten is ticked) is still a param, and it
+            needs its RNA property for the moment it unhides. Drawing still filters hidden
+            params out.
+        _depth: Recursion depth.
+
+    Yields:
+        Each drawable param.
     """
     if _depth > 4:
         return
@@ -363,6 +398,10 @@ def sync_to_node(node, chunk) -> None:
     callback, which would write straight back into the param -- harmless when the values
     already agree, but it cooks the chunk, and rebuilding a graph should not cook anything.
     So the guard is taken for the duration.
+
+    Args:
+        node: The Blender node.
+        chunk: The chunk it shows.
     """
     for param in iter_drawable(chunk, include_hidden=True):
         guard = id(param)
@@ -406,6 +445,10 @@ def sync_lofted(node, chunk) -> None:
     user typed in it. Draw is the only moment Blender reliably gives us, which makes this
     poll-on-draw rather than event-driven -- acceptable because it only touches params
     whose value actually differs.
+
+    Args:
+        node: The Blender node.
+        chunk: The chunk it shows.
     """
     for key in list(node.keys()):
         if key.startswith("_") or key in _RESERVED:
@@ -420,13 +463,21 @@ _RESERVED = frozenset({"chunk_path", "chunk_type"})
 
 
 def draw_param(node, layout, param, text: str | None = None) -> bool:
-    """Draw one param's control into `layout`. True if anything was drawn.
+    """Draw one param's control into `layout`.
 
-    Split out of `draw_params` because a param is drawn from two places now: the node body,
-    and -- for a param that also has an input socket -- the socket's own row, so the port
-    sits beside the control the way it does in Qt. Both need the same declared-property vs
-    lofted-ID-property fallback, and having it in one place is what keeps a lofted param
-    drawable on a socket at all.
+    A param is drawn from two places: the node body, and -- for a param that also has an
+    input socket -- the socket's own row, so the port sits beside the control the way it
+    does in Qt. Both need the same declared-property vs lofted-ID-property fallback, and
+    having it in one place is what keeps a lofted param drawable on a socket at all.
+
+    Args:
+        node: The Blender node.
+        layout: The layout to draw into.
+        param: The param.
+        text: The label, or None for the param's own.
+
+    Returns:
+        True if anything was drawn.
     """
     # OUTPUT is computed, so it is shown but not editable. active=False greys it the way
     # Blender greys any driven value, which reads correctly to a Blender user.
@@ -477,9 +528,13 @@ def draw_params(node, layout, chunk, skip=()) -> None:
     Buttons become operators carrying (node, param) rather than a bound callback: Blender
     dispatches a click to an operator class by name, so there is nowhere to hang a closure.
 
-    `skip` names params drawn elsewhere -- in practice, on their own input socket. Blender
-    draws outputs, then this, then inputs, and a socket can draw its param inline; a param
-    left in both places would appear twice.
+    Args:
+        node: The Blender node.
+        layout: The layout to draw into.
+        chunk: The chunk.
+        skip: Params drawn elsewhere -- in practice, on their own input socket. Blender
+            draws outputs, then this, then inputs, and a socket can draw its param inline;
+            a param left in both places would appear twice.
     """
     if chunk is None:
         layout.label(text="<no chunk>", icon="ERROR")
@@ -566,8 +621,13 @@ class BlenderParamWidget(chunk_widget_api.ChunkParamWidgetBase):
         return self._node.get(name, self.param.raw_value)
 
     def set_value(self, value):
-        """Only ever touches the node. Writing to the param here would be re-entered by
-        the notice that write produces -- the same loop `chunk_flet` documents.
+        """Show a value on the node. Only ever touches the node.
+
+        Writing to the param here would be re-entered by the notice that write produces -- the
+        same loop `chunk_flet` documents.
+
+        Args:
+            value: The value to show.
         """
         if self._node is None:
             return
@@ -598,14 +658,26 @@ class ChunkBlenderWidgetFactory:
         )}
 
     def get_map(self):
+        """The widget map."""
         return self.widget_map
 
     def add_mapping(self, key, widget_type):
+        """Map a ParamType to a widget class."""
         self.widget_map[key] = widget_type
 
     def has_mapping(self, key) -> bool:
+        """Whether a ParamType has a widget class."""
         return key in self.widget_map
 
     def create_widget(self, param, node=None):
+        """The widget for a param, bound to the node that draws it.
+
+        Args:
+            param: The param.
+            node: The Blender node.
+
+        Returns:
+            The widget.
+        """
         cls = self.widget_map.get(param.get_type(), BlenderParamWidget)
         return cls(param, node=node)
