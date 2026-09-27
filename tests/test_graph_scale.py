@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 import pytest
 from pxr import Usd
@@ -79,14 +79,14 @@ class _BenchScene(SceneSender):
         return []
 
 
-def _time(fn: Callable[[], object]) -> Tuple[float, object]:
+def _time(fn: Callable[[], object]) -> tuple[float, object]:
     """Run fn and return (seconds, result)."""
     start = time.perf_counter()
     result = fn()
     return time.perf_counter() - start, result
 
 
-def build_scheduler_chain(count: int) -> List[_ChainNode]:
+def build_scheduler_chain(count: int) -> list[_ChainNode]:
     """A linear chain of count propagators, each depending on the one before it."""
     nodes = [_ChainNode(f"n{i}") for i in range(count)]
     for previous, current in zip(nodes, nodes[1:]):
@@ -94,7 +94,7 @@ def build_scheduler_chain(count: int) -> List[_ChainNode]:
     return nodes
 
 
-def scheduler_phases(count: int) -> List[Tuple[str, float]]:
+def scheduler_phases(count: int) -> list[tuple[str, float]]:
     """Time each scheduler operation over a chain of count nodes."""
     build, nodes = _time(lambda: build_scheduler_chain(count))
     head = nodes[0].get_dag_node()
@@ -108,7 +108,7 @@ def scheduler_phases(count: int) -> List[Tuple[str, float]]:
     return [("build+wire", build), ("propagate_dirty", dirty), ("solve", solve), ("get_depth", depth)]
 
 
-def build_chunk_graph(count: int) -> List[Tuple[str, float]]:
+def build_chunk_graph(count: int) -> list[tuple[str, float]]:
     """Create count `dot` chunks on a fresh stage, chain them, and time each phase.
 
     `dot` is chosen because its module body does nothing but clear its own layer: whatever
@@ -134,7 +134,7 @@ def build_chunk_graph(count: int) -> List[Tuple[str, float]]:
     _ACTIVE["scene"] = scene
     _ACTIVE["stage"] = stage
 
-    def create() -> List:
+    def create() -> list:
         chunks = []
         for _ in range(count):
             created = module.create() if module.loaded else module.load()
@@ -164,7 +164,7 @@ def build_chunk_graph(count: int) -> List[Tuple[str, float]]:
     ]
 
 
-def reload_chunk_graph(count: int, directory: str) -> List[Tuple[str, float]]:
+def reload_chunk_graph(count: int, directory: str) -> list[tuple[str, float]]:
     """Build count chained chunks, export them, then time opening that file back up.
 
     A different cost to build_chunk_graph and the one that actually matters for a saved
@@ -269,11 +269,11 @@ def test_chunk_graph_builds_1000_connected_nodes():
     assert total < 600.0, f"1000-node chunk graph took {total:.1f}s: {_format(phases)}"
 
 
-def _format(phases: List[Tuple[str, float]]) -> str:
+def _format(phases: list[tuple[str, float]]) -> str:
     return ", ".join(f"{name}={seconds:.3f}s" for name, seconds in phases)
 
 
-def _sweep(counts: List[int], builder: Callable[[int], List[Tuple[str, float]]], title: str) -> None:
+def _sweep(counts: list[int], builder: Callable[[int], list[tuple[str, float]]], title: str) -> None:
     """Run builder at each count and print a phase table plus the fitted growth exponent.
 
     The exponent is a straight log-log slope between the smallest and largest run: 1.0 is

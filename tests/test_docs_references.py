@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import ast
 import importlib
-import io
 import re
 from pathlib import Path
 
@@ -38,7 +37,7 @@ def references():
     """(page, reference) for every mkdocstrings reference in the hand-written docs."""
     found = []
     for page in doc_pages():
-        text = io.open(page, encoding="utf-8").read()
+        text = open(page, encoding="utf-8").read()
         for ref in XREF.findall(text) + DIRECTIVE.findall(text):
             found.append((page.relative_to(REPO).as_posix(), ref))
     return found
@@ -54,7 +53,7 @@ def defined_in_source(module, name: str) -> bool:
     __getattr__, or something injected by a decorator -- is not documentable at that path,
     so hasattr() is the wrong question.
     """
-    tree = ast.parse(io.open(module.__file__, encoding="utf-8").read())
+    tree = ast.parse(open(module.__file__, encoding="utf-8").read())
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name == name:

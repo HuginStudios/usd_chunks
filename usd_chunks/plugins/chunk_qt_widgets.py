@@ -1,5 +1,6 @@
+from __future__ import annotations
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Optional, Generic
+from typing import Any, Generic
 
 from pxr import Sdf, Usd
 
@@ -472,7 +473,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
 
         self.setOrientation(orient)
 
-    def value_changed(self, value: Optional[int | float] = None):
+    def value_changed(self, value: int | float | None = None):
         if not self.param or value is None:
             return
         result = value / float(self._step)
@@ -656,7 +657,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
     SELECT_HINT = "Ctrl+click to select in the viewport"
 
-    def scene_prim_paths(self) -> "list[Sdf.Path]":
+    def scene_prim_paths(self) -> list[Sdf.Path]:
         """The prims this field names, if every entry in it is one that exists on the stage.
 
         Any field holding prim paths qualifies, not just PRIM_SELECTION ones: a Reference's
@@ -1151,9 +1152,9 @@ class LabeledWidget(QtWidgets.QWidget):
         # asking for one costs ~0.2ms even offscreen -- trivial per row, but a graph of
         # nodes builds one LabeledWidget per param, so a 49-node network paid for ~1300
         # tooltip windows at load, nearly all of which are never hovered.
-        self._value_tooltip: Optional[QtWidgets.QLabel] = None
-        self._tooltip_timer: Optional[QtCore.QTimer] = None
-        self._show_timer: Optional[QtCore.QTimer] = None
+        self._value_tooltip: QtWidgets.QLabel | None = None
+        self._tooltip_timer: QtCore.QTimer | None = None
+        self._show_timer: QtCore.QTimer | None = None
 
         if isinstance(self.widget, ChunkParamWidgetBase):
             self._listener = chunk_notice.NoticeConnection(
@@ -1471,7 +1472,7 @@ class ContainerWidget(
     ):
         self.animation_duration = 25
         self._animation_value = 0
-        self._anim_target_h: Optional[int] = None  # content height, measured per animation
+        self._anim_target_h: int | None = None  # content height, measured per animation
         self._depth = 0
         super().__init__(group, parent=parent)
         # When Qt destroys this widget — e.g. the node graph rebuild calls deleteLater on the
@@ -1878,7 +1879,7 @@ class ViewSlotState(QtCore.QObject):
 
     def show_chunk_menu(
         self,
-        grp: "chunk.ChunkBase",
+        grp: chunk.ChunkBase,
         prim_path: str,
         global_pos: QtCore.QPoint,
         graph_view=None,
@@ -1940,9 +1941,9 @@ class ViewSlotState(QtCore.QObject):
             duplicate_action = menu.addAction("Duplicate")
         menu.addSeparator()
 
-        stage: Optional[Usd.Stage] = grp.get_stage()
+        stage: Usd.Stage | None = grp.get_stage()
         is_view_chunk = False
-        existing_view_slot: Optional[int] = None
+        existing_view_slot: int | None = None
         if stage:
             prim = stage.GetPrimAtPath(prim_path)
             if prim.IsValid():
@@ -2114,15 +2115,15 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._is_tab_context_widget = is_tab_context
         # Node bodies style themselves after their reparent, not during construction.
         self._defer_stylesheet = for_proxy
-        self._view_state: Optional[ViewSlotState] = None
-        self._view_overlay: Optional[QtWidgets.QLabel] = None
+        self._view_state: ViewSlotState | None = None
+        self._view_overlay: QtWidgets.QLabel | None = None
         super().__init__(group, parent)
 
         self.installEventFilter(self)
         if is_tab_context:
             self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
-    def set_view_state(self, vs: "ViewSlotState") -> None:
+    def set_view_state(self, vs: ViewSlotState) -> None:
         if self._view_state is not None:
             self._view_state.slot_changed.disconnect(self._update_view_overlay)
             self._view_state.pin_changed.disconnect(self._on_pin_changed)
@@ -2147,7 +2148,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         chunk_stage.set_search_scope(self.group, scope)
         self._reconcile_all_children()
 
-    def _on_pin_changed(self, target_chunk: "chunk.ChunkBase", pinned: bool) -> None:
+    def _on_pin_changed(self, target_chunk: chunk.ChunkBase, pinned: bool) -> None:
         """A chunk's pin state was toggled from the shared menu (graph or Params surface).
 
         Only the tab-context widget owning target_chunk's Params page reacts — every other
@@ -2159,7 +2160,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             return
         self._reconcile_chunk_visibility(target_chunk)
 
-    def _reconcile_chunk_visibility(self, target_chunk: "chunk.ChunkBase") -> None:
+    def _reconcile_chunk_visibility(self, target_chunk: chunk.ChunkBase) -> None:
         """Show or hide target_chunk in this tab's Params page to match the current combined
         filter state (right now just the pin filter; issue #06 adds search on top). Used both
         for a single chunk's pin toggle and, looped over every child, for a filter-bar change
@@ -2181,7 +2182,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             if isinstance(child, chunk.ChunkBase):
                 self._reconcile_chunk_visibility(child)
 
-    def _show_chunk_widget(self, target_chunk: "chunk.ChunkBase") -> None:
+    def _show_chunk_widget(self, target_chunk: chunk.ChunkBase) -> None:
         if target_chunk.get_hash() in self.group_widgets:
             return  # already shown
         if chunk_stage.is_group_chunk(target_chunk):
@@ -2189,7 +2190,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         else:
             self._add_group_layout(target_chunk)
 
-    def _hide_chunk_widget(self, target_chunk: "chunk.ChunkBase") -> None:
+    def _hide_chunk_widget(self, target_chunk: chunk.ChunkBase) -> None:
         h = target_chunk.get_hash()
         w = self.group_widgets.get(h)
         if w is None:
@@ -2505,12 +2506,12 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _reorder_chunk_widget_after(
         self,
-        chunk_to_move: "chunk.ChunkBase",
-        after_chunk: "chunk.ChunkBase",
+        chunk_to_move: chunk.ChunkBase,
+        after_chunk: chunk.ChunkBase,
     ) -> None:
         """Move chunk_to_move's widget to appear immediately after after_chunk's widget."""
-        after_idx: Optional[int] = None
-        move_widget: Optional[QtWidgets.QWidget] = None
+        after_idx: int | None = None
+        move_widget: QtWidgets.QWidget | None = None
         for i in range(self.content_layout.count()):
             item = self.content_layout.itemAt(i)
             if not item:
@@ -2527,7 +2528,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if after_idx is not None and move_widget is not None:
             self.content_layout.insertWidget(after_idx + 1, move_widget)
 
-    def _find_view_state(self) -> "Optional[ViewSlotState]":
+    def _find_view_state(self) -> ViewSlotState | None:
         if self._view_state:
             return self._view_state
         p = self.parent()
@@ -2934,7 +2935,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
         return entry
 
 
-def file_dial(name_filter: Optional[str] = None, create_new=False, directory=False):
+def file_dial(name_filter: str | None = None, create_new=False, directory=False):
     if directory:
         return QtWidgets.QFileDialog.getExistingDirectory(None, "Open Directory", "")
 

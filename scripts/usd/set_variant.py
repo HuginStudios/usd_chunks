@@ -1,3 +1,4 @@
+from __future__ import annotations
 from usd_chunks import chunk, chunk_utils
 
 #: The Variant Selection entry that clears the selection instead of setting one.

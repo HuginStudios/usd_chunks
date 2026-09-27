@@ -1,3 +1,4 @@
+from __future__ import annotations
 import inspect
 import os
 import weakref
@@ -248,7 +249,7 @@ class _EmptyPanelTabRouter(QtCore.QObject):
     graph view and nothing listening for Tab. This filter covers exactly that gap.
     """
 
-    def __init__(self, tab_widget: "ChunkTabWidget"):
+    def __init__(self, tab_widget: ChunkTabWidget):
         super().__init__(tab_widget)
         # Weak, deliberately -- see _ProxyKeyRouter for why (installing on the
         # QApplication would otherwise pin the whole panel through this filter).
@@ -375,7 +376,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         if tab := self.get_chunk_context(idx):
             tab.group.name = name
 
-    def _empty_panel_drop_paths(self, event) -> "list[str]":
+    def _empty_panel_drop_paths(self, event) -> list[str]:
         """Droppable paths, but only while there is no graph view to handle them itself.
 
         Once a context tab exists its ChunkGraphView accepts drops directly and must keep
@@ -603,7 +604,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         # refs: a context can be deleted while it is still in the history, and holding it
         # alive to remember visiting it would leak every group the session ever entered.
         # Entries are (weakref-or-None), None meaning the root graph.
-        self._nav_history: "list[weakref.ReferenceType | None]" = []
+        self._nav_history: list[weakref.ReferenceType | None] = []
         self._nav_index: int = -1
         # Set while WE are the ones changing tab, so retracing does not itself get recorded.
         self._nav_replaying = False

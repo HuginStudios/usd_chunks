@@ -1360,7 +1360,7 @@ class BlenderGraphView:
                 self._write_position(node.name, node.location[0] / _SCALE,
                                      node.location[1] / _SCALE)
 
-    def _node_size(self, path: str) -> "tuple[float, float]":
+    def _node_size(self, path: str) -> tuple[float, float]:
         """A node's size in USD (layout) units.
 
         Blender's drawn size when it has one -- node.dimensions is filled in by the draw

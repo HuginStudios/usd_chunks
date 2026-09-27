@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import re
 import json
@@ -487,7 +488,7 @@ def _cached_mtlx(cache_dir: str, title: str, resolution: str) -> str | None:
     return None
 
 
-def _fetch_package(title: str, resolution: str, cache_dir: str) -> "tuple[str | None, dict | None, str | None]":
+def _fetch_package(title: str, resolution: str, cache_dir: str) -> tuple[str | None, dict | None, str | None]:
     """Make sure this material's package is on disk. Returns (mtlx_path, mat, error).
 
     Network and filesystem only -- deliberately touches no USD and no Qt, so it is safe to

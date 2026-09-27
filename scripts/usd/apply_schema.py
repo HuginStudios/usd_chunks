@@ -1,3 +1,4 @@
+from __future__ import annotations
 from usd_chunks import chunk
 
 from pxr import Usd, Tf

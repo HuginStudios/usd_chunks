@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.plugins import chunk_usdview

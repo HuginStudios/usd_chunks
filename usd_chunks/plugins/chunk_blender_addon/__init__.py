@@ -128,7 +128,7 @@ class BlenderScene(SceneSender):
 #: One scene and one view per Blender session. A second node tree re-points them rather
 #: than making a second set, because the chunk registry is a singleton keyed to one scene --
 #: two live scenes would have the registry answering for whichever initialised last.
-_scene: "BlenderScene | None" = None
+_scene: BlenderScene | None = None
 
 
 def get_view():

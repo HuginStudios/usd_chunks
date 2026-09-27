@@ -146,7 +146,7 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     #: Set by build_chunk_controls. None when a widget is built outside a view, in which
     #: case focus simply goes unreported -- there is no graph listening for it.
-    focus: "FocusTracker | None" = None
+    focus: FocusTracker | None = None
 
     def on_focus(self, _event):
         if self.focus is not None:
@@ -467,7 +467,7 @@ class ChunkFletWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         ChunkFlags.ParamType.COLOR_PICKER: FletColorWidget,
     }
 
-    def create_widget(self, param: "chunk.ChunkParamBase"):
+    def create_widget(self, param: chunk.ChunkParamBase):
         widget_class = self.get_map().get(param.evaluate_type())
         if widget_class is None:
             logger.warning("no Flet widget for param %r (%r)",
@@ -528,7 +528,7 @@ class FletGroupWidget:
 
 
 def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None,
-                         focus: "FocusTracker | None" = None):
+                         focus: FocusTracker | None = None):
     """Every param of a chunk as Flet controls, groups collapsible, nothing hidden.
 
     Returns (controls, widgets, offsets). The widgets come back because nothing else holds

@@ -21,7 +21,8 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from pxr import Sdr
 
@@ -136,8 +137,8 @@ class ShaderDef:
     role: str = ""
     category: str = ""
     help: str = ""
-    inputs: List[ShaderProp] = field(default_factory=list)
-    outputs: List[ShaderProp] = field(default_factory=list)
+    inputs: list[ShaderProp] = field(default_factory=list)
+    outputs: list[ShaderProp] = field(default_factory=list)
 
     @property
     def is_terminal(self) -> bool:
@@ -145,7 +146,7 @@ class ShaderDef:
         return self.context in ("surface", "displacement", "volume")
 
 
-def _prop_from_sdr(prop, is_output: bool) -> Optional[ShaderProp]:
+def _prop_from_sdr(prop, is_output: bool) -> ShaderProp | None:
     """Normalise one SdrShaderProperty; None when its type has no Sdf equivalent."""
     try:
         sdf_type = prop.GetTypeAsSdfType().GetSdfType()
@@ -170,8 +171,8 @@ def _prop_from_sdr(prop, is_output: bool) -> Optional[ShaderProp]:
 
 def _def_from_sdr(node) -> ShaderDef:
     """Normalise one SdrShaderNode into a ShaderDef."""
-    inputs: List[ShaderProp] = []
-    outputs: List[ShaderProp] = []
+    inputs: list[ShaderProp] = []
+    outputs: list[ShaderProp] = []
 
     for names, is_output, into in (
         (_first_attr(node, _NODE_METHODS["input_names"]) or (), False, inputs),
@@ -196,7 +197,7 @@ def _def_from_sdr(node) -> ShaderDef:
     )
 
 
-def available_source_types() -> List[str]:
+def available_source_types() -> list[str]:
     """Every shader source type this USD's registry can parse (e.g. ['mtlx', 'vray'])."""
     return [str(s) for s in (_first_attr(Sdr.Registry(), _REGISTRY_METHODS["source_types"]) or ())]
 
@@ -259,10 +260,10 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
 
 
 #: Started once per process; see warm_registry_in_background.
-_warm_thread: Optional[threading.Thread] = None
+_warm_thread: threading.Thread | None = None
 
 
-def warm_registry_in_background(source_type: str = "mtlx") -> Optional[threading.Thread]:
+def warm_registry_in_background(source_type: str = "mtlx") -> threading.Thread | None:
     """Build the shader registry on a worker thread, so the first menu does not wait for it.
 
     The first touch of Sdr.Registry() discovers every installed shader plugin -- ~2.7s in
@@ -310,7 +311,7 @@ def warm_registry_in_background(source_type: str = "mtlx") -> Optional[threading
     return _warm_thread
 
 
-def get_shader_def(name: str, source_type: str = "") -> Optional[ShaderDef]:
+def get_shader_def(name: str, source_type: str = "") -> ShaderDef | None:
     """Look up a single shader definition by registry name.
 
     Args:

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import json
 import http.client
@@ -29,7 +30,7 @@ def _get_camera_data():
     if not os.path.exists(camera_cache):
         data = _download_camera_types_cache(camera_cache)
     else:
-        with open(camera_cache, "r") as f:
+        with open(camera_cache) as f:
             data = json.loads(f.read())
     cameras = data.get("data")
     return cameras

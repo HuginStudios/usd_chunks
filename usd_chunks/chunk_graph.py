@@ -90,7 +90,7 @@ def sdf_to_port_type(sdf_type_name) -> str:
     return PORT_FLOAT
 
 
-def iter_connectable_params(obj: "core.ChunkCommon"):
+def iter_connectable_params(obj: core.ChunkCommon):
     """Every param that can carry a wire, recursing into groups.
 
     A vector yields as ONE param: its components are not individually connectable.
@@ -105,7 +105,7 @@ def iter_connectable_params(obj: "core.ChunkCommon"):
             yield from iter_connectable_params(param)
 
 
-def iter_all_vectors(obj: "core.ChunkCommon"):
+def iter_all_vectors(obj: core.ChunkCommon):
     """Every ChunkVectorBase under a chunk or group."""
     for param in obj.get_my_params():
         if isinstance(param, core.ChunkVectorBase):
@@ -327,7 +327,7 @@ def node_position(prim: Usd.Prim, default: tuple[float, float] = (0.0, 0.0)) -> 
     return (float(value[0]), float(value[1])) if value is not None else default
 
 
-def graph_position(prim: "Usd.Prim | None") -> tuple[float, float]:
+def graph_position(prim: Usd.Prim | None) -> tuple[float, float]:
     """A prim's node position in CANVAS space: USD is Y-up, a canvas is Y-down.
 
     node_position returns what USD stores; this returns what a graph draws. Both frontends
@@ -373,7 +373,7 @@ def read_graph(stage: Usd.Stage, root_path: str = CHUNKS_ROOT, chunks: dict | No
     return prims, ports, build_edges(prims, chunks)
 
 
-def contexts(stage: Usd.Stage) -> "list[str]":
+def contexts(stage: Usd.Stage) -> list[str]:
     """Every prim path holding Chunk prims, outermost first.
 
     A chunkgroup is both a node in its parent's graph and a graph of its own, so a file has
@@ -683,10 +683,10 @@ class ClipboardNode:
 
     def __init__(
         self, module_name: str, values: list, rel_pos: tuple[float, float],
-        children: "list[ClipboardNode] | None" = None,
-        child_edges: "list[ClipboardEdge] | None" = None,
-        list_sizes: "list[tuple[str, int]] | None" = None,
-        lofts: "list[tuple[int, str]] | None" = None,
+        children: list[ClipboardNode] | None = None,
+        child_edges: list[ClipboardEdge] | None = None,
+        list_sizes: list[tuple[str, int]] | None = None,
+        lofts: list[tuple[int, str]] | None = None,
         name: str = "",
     ):
         self.module_name = module_name
@@ -763,7 +763,7 @@ def iter_prim_connections(prim: Usd.Prim):
             yield attr_name, src_prim_path, src_attr_suffix
 
 
-def iter_group_children(chunk: "core.ChunkBase", scene_sender: core.SceneSender, stage: Usd.Stage):
+def iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage):
     """Yield the direct children of a ChunkGroup -- both plain leaf chunks (found via
     get_context(), which walks the real Python ownership chain) and nested sub-groups (which
     get_context() can NEVER find this way: it returns self for any CONTEXT-flagged chunk --
@@ -773,7 +773,7 @@ def iter_group_children(chunk: "core.ChunkBase", scene_sender: core.SceneSender,
     plus a get_context_for_prim_path() scan of the group's own USD children) exactly, so a
     ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
     not content worth duplicating, matching the top-level selection's own exclusion."""
-    by_path: dict[str, "core.ChunkBase"] = {
+    by_path: dict[str, core.ChunkBase] = {
         chunk_stage.get_chunk_prim_path(c): c
         for c in scene_sender.get_chunks()
         if c.get_context() == chunk and c is not chunk and not chunk_stage.is_view_chunk(c)
@@ -791,8 +791,8 @@ def iter_group_children(chunk: "core.ChunkBase", scene_sender: core.SceneSender,
 
 
 def snapshot_chunk_node(
-    chunk: "core.ChunkBase", scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: tuple[float, float]
-) -> "ClipboardNode | None":
+    chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: tuple[float, float]
+) -> ClipboardNode | None:
     """Build a ClipboardNode for `chunk` at rel_pos, recursing into its own children (and
     their internal wiring) if it's a ChunkGroup -- shared by the top-level selection snapshot
     and by each recursive level of group contents. Returns None for a chunk with no module
@@ -859,7 +859,7 @@ def snapshot_chunk_node(
     return clip_node
 
 
-def snapshot_list_sizes(chunk: core.ChunkCommon) -> "list[tuple[str, int]]":
+def snapshot_list_sizes(chunk: core.ChunkCommon) -> list[tuple[str, int]]:
     """How many rows each list group on `chunk` holds, keyed by param path.
 
     A list group's rows are created at runtime, so a pasted chunk has none of them and the
@@ -867,14 +867,14 @@ def snapshot_list_sizes(chunk: core.ChunkCommon) -> "list[tuple[str, int]]":
     produced one with an empty list and no path, and the same for every other chunk built
     on a list group.
     """
-    sizes: "list[tuple[str, int]]" = []
+    sizes: list[tuple[str, int]] = []
     for path, param in iter_chunk_param_paths(chunk):
         if isinstance(param, core.ChunkListGroupBase):
             sizes.append((path, param.size))
     return sizes
 
 
-def apply_list_sizes(chunk: core.ChunkCommon, sizes: "list[tuple[str, int]]") -> None:
+def apply_list_sizes(chunk: core.ChunkCommon, sizes: list[tuple[str, int]]) -> None:
     """Grow each list group back before any value is applied, so the rows exist to take them."""
     for path, size in sizes:
         param = chunk.get_param(path)
@@ -887,7 +887,7 @@ def apply_list_sizes(chunk: core.ChunkCommon, sizes: "list[tuple[str, int]]") ->
                 continue
 
 
-def apply_name(chunk: core.ChunkCommon, item: "ClipboardNode") -> None:
+def apply_name(chunk: core.ChunkCommon, item: ClipboardNode) -> None:
     """Give a pasted chunk the name it was copied with, before it is added to a scene.
 
     Before, not after: add_chunk is what makes a taken name unique, and renaming an added
@@ -1096,7 +1096,7 @@ GRAPH_FRONTEND_METHODS = (
 # ---------------------------------------------------------------------------
 
 
-def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], list[tuple[str, str]]]":
+def exec_boundary(stage: Usd.Stage, inside: set[str]) -> tuple[list[str], list[tuple[str, str]]]:
     """(feeds, consumers) -- the exec wires crossing into and out of `inside`.
 
     A feed is a source prim path. A consumer is (prim path, exec input name): the slot
@@ -1128,8 +1128,8 @@ def exec_boundary(stage: Usd.Stage, inside: "set[str]") -> "tuple[list[str], lis
     return feeds, consumers
 
 
-def attach_group(stage: Usd.Stage, scene, group_path: str, feeds: "list[str]",
-                 consumers: "list[tuple[str, str]]") -> None:
+def attach_group(stage: Usd.Stage, scene, group_path: str, feeds: list[str],
+                 consumers: list[tuple[str, str]]) -> None:
     """Wire a new group in where the selection it replaced used to be.
 
     Every feed goes onto the group's one exec input, stacked rather than each replacing the
@@ -1142,7 +1142,7 @@ def attach_group(stage: Usd.Stage, scene, group_path: str, feeds: "list[str]",
 
 
 def snapshot_selection(chunks: dict, prims: dict, positions: dict, scene, stage,
-                       selected: "set[str]"):
+                       selected: set[str]):
     """(clipboard nodes, clipboard edges) for `selected`.
 
     Positions come back relative to the selection's top-left, so a paste lands as a shape
@@ -1200,7 +1200,7 @@ def delete_chunks(chunks) -> int:
     return len(chunks)
 
 
-def layout_adjacency(prims: dict) -> "tuple[dict, dict]":
+def layout_adjacency(prims: dict) -> tuple[dict, dict]:
     """(up_of, down_of) keyed by prim path, from EVERY connection on these prims.
 
     Exec and typed data alike, and independent of whether a frontend is currently drawing
@@ -1338,7 +1338,7 @@ def materialize(scene, nodes, to_usd) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def apply_selection(chunks: dict, paths, current=None, add: bool = False) -> "set[str]":
+def apply_selection(chunks: dict, paths, current=None, add: bool = False) -> set[str]:
     """Mirror a selection onto the chunks' SELECTED bit. Returns the resulting path set.
 
     The bit rather than a frontend attribute: the shared operations ask the chunks what is
@@ -1397,7 +1397,7 @@ def toggle_disabled(chunks) -> int:
     return len(chunks)
 
 
-def write_position(prim: "Usd.Prim | None", x: float, y: float, owner=None) -> None:
+def write_position(prim: Usd.Prim | None, x: float, y: float, owner=None) -> None:
     """Persist a node position, in the coordinates USD stores.
 
     The counterpart of graph_position, which was here on its own -- so three frontends each
@@ -1424,7 +1424,7 @@ def write_position(prim: "Usd.Prim | None", x: float, y: float, owner=None) -> N
         attr.Set(Gf.Vec2f(float(x), float(y)))
 
 
-def selection_origin(positions: dict, paths) -> "tuple[float, float] | None":
+def selection_origin(positions: dict, paths) -> tuple[float, float] | None:
     """The top-left of these nodes, or None if none of them have a position.
 
     Where a duplicate should land is this plus an offset, and the offset's *direction* is a
@@ -1489,7 +1489,7 @@ def paste_nodes(scene, stage: Usd.Stage, nodes, edges, to_usd, nest=None,
     return made
 
 
-def create_from_entry(scene, entry, usd_pos, nest=None) -> "tuple[list, str]":
+def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     """Create one menu entry's chunk(s) at a USD position. Returns (created, error).
 
     The sequence every frontend runs: set the position hook chunk_stage reads while a chunk
@@ -1515,7 +1515,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> "tuple[list, str]":
 
 
 def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
-                          positions: dict, selected, to_usd) -> "tuple[str, int]":
+                          positions: dict, selected, to_usd) -> tuple[str, int]:
     """Put the selection in a new chunkgroup that takes its place in the exec chain.
 
     Returns (group prim path, how many nodes moved) -- ("", 0) when there was nothing to
@@ -1593,7 +1593,7 @@ def can_dive(chunks: dict, path: str) -> bool:
     return chunk is not None and chunk_stage.is_subnet(chunk)
 
 
-def parent_context(context: str, available) -> "str | None":
+def parent_context(context: str, available) -> str | None:
     """The context enclosing this one, or None at the top.
 
     Walks up until it finds a path that actually holds chunks, rather than assuming the
@@ -1635,7 +1635,7 @@ def context_has_view(scene, context) -> bool:
     )
 
 
-def _free_view_slot(stage: Usd.Stage, parent_path: str) -> "int | None":
+def _free_view_slot(stage: Usd.Stage, parent_path: str) -> int | None:
     """The lowest unused slot among this container's views.
 
     Scoped to the container, not the stage: each graph has its own slots 1-3. A global
@@ -1654,7 +1654,7 @@ def _free_view_slot(stage: Usd.Stage, parent_path: str) -> "int | None":
     return next((slot for slot in VIEW_SLOTS if slot not in used), None)
 
 
-def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> "int | None":
+def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> int | None:
     """The slot of a view already wired to this prim, if there is one."""
     for prim in stage.Traverse():
         if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
@@ -1668,7 +1668,7 @@ def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> "int | No
     return None
 
 
-def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> "int | None":
+def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | None:
     """Create a view node wired to target_prim_path. Returns its slot, or None.
 
     Returns the EXISTING slot rather than making a duplicate when a view is already wired
@@ -1734,7 +1734,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> "int | No
     return slot
 
 
-def ensure_default_view(stage: Usd.Stage, scene, context) -> "int | None":
+def ensure_default_view(stage: Usd.Stage, scene, context) -> int | None:
     """Give this context a view if it has none, wired to the end of its exec chain.
 
     Returns the slot to activate, or None if there was nothing to do. A context with no
@@ -1748,7 +1748,7 @@ def ensure_default_view(stage: Usd.Stage, scene, context) -> "int | None":
     return create_view_for(stage, scene, chunk_stage.get_chunk_prim_path(tails[0]))
 
 
-def context_prim(stage: Usd.Stage, context: str) -> "Usd.Prim | None":
+def context_prim(stage: Usd.Stage, context: str) -> Usd.Prim | None:
     """The prim a context's view state lives on, or None."""
     if not stage or not context:
         return None
@@ -1791,7 +1791,7 @@ def write_active_slot(stage: Usd.Stage, context: str, slot: int) -> None:
 
 
 def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
-                       slot: int) -> "tuple[bool, str]":
+                       slot: int) -> tuple[bool, str]:
     """Switch which view drives execution, and recook. Returns (changed, status).
 
     The cooking is chunk_stage.recook_for_view, the same call the Qt graph makes: it blocks
@@ -1828,7 +1828,7 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
 
 
 def new_view_slot(stage: Usd.Stage, scene, context_chunk,
-                  target_path: "str | None" = None) -> "int | None":
+                  target_path: str | None = None) -> int | None:
     """Wire a view to `target_path`, or to the end of the chain when it is None.
 
     Slot allocation is scoped to the container and a view already wired to the target is
@@ -1842,7 +1842,7 @@ def new_view_slot(stage: Usd.Stage, scene, context_chunk,
 
 
 def default_view_slot(stage: Usd.Stage, scene, context: str,
-                      context_chunk) -> "tuple[int | None, bool]":
+                      context_chunk) -> tuple[int | None, bool]:
     """The view to give a context on open. Returns (slot, activate).
 
     slot is None when there is nothing to do; `activate` is False when the file already

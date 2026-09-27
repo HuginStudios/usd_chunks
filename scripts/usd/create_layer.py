@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import Sdf
 
 from usd_chunks import chunk, chunk_utils
@@ -91,7 +92,7 @@ def _insert_mode_changed(owner, notice, sender):
         _refresh_after_layer(owner, notice, sender)
 
 
-def _view_ranked_index(node, stage, paths: "list") -> "int | None":
+def _view_ranked_index(node, stage, paths: list) -> int | None:
     """Where this chunk's layer belongs among `paths`, ranked by exec-chain proximity to
     the active downstream view.
 

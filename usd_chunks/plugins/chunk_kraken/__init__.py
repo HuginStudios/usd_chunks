@@ -1,6 +1,7 @@
 """
 Plugin implementation for Hugins' inhouse Kraken toolset
 """
+from __future__ import annotations
 
 from pxr import Tf
 from kraken.plugin import KrakenPluginContainer

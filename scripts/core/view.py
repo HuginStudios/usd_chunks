@@ -1,3 +1,4 @@
+from __future__ import annotations
 from usd_chunks import chunk
 from usd_chunks.chunk_core import ChunkConfig
 

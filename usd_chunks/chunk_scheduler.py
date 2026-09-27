@@ -42,10 +42,12 @@ runs each chunk module's reserved `commit(node)` hook once, in dependency order.
 solved -- `commit` is where a chunk writes to disk, which must happen once and only
 once the numbers it is writing have stopped moving.
 """
+from __future__ import annotations
 
 import atexit
 import weakref
-from typing import TYPE_CHECKING, Callable, Dict, Generator, Iterable, List, Tuple
+from collections.abc import Callable, Generator, Iterable
+from typing import TYPE_CHECKING
 
 # Imported as a module rather than by name: chunk_notice imports this module, so at the
 # time this line runs chunk_notice may still be halfway through its own import and have
@@ -71,7 +73,7 @@ class CircularDependencyError(RecursionError):
 # owner is set). Depths are cached against this value and recomputed after any change.
 _topology_epoch: int = 0
 _depth_epoch: int = -1
-_depth_cache: "weakref.WeakKeyDictionary[DagNode, int]" = weakref.WeakKeyDictionary()
+_depth_cache: weakref.WeakKeyDictionary[DagNode, int] = weakref.WeakKeyDictionary()
 
 # Dropped before the interpreter starts tearing modules down. This is the only global
 # holding weakrefs to graph nodes for an unbounded time, and letting those references die
@@ -79,7 +81,7 @@ _depth_cache: "weakref.WeakKeyDictionary[DagNode, int]" = weakref.WeakKeyDiction
 atexit.register(_depth_cache.clear)
 
 
-def topology_changed(*nodes: "DagNode"):
+def topology_changed(*nodes: DagNode):
     """
     Invalidate everything derived from the graph shape.
 
@@ -108,7 +110,7 @@ def topology_changed(*nodes: "DagNode"):
             _depth_cache.pop(stale, None)
 
 
-def downstream(node: "DagNode") -> List["DagNode"]:
+def downstream(node: DagNode) -> list[DagNode]:
     """
     The nodes that must solve *after* node: its dependants, then its owner.
 
@@ -131,7 +133,7 @@ def downstream(node: "DagNode") -> List["DagNode"]:
     return nodes
 
 
-def downstream_closure(seed: "DagNode") -> Dict["DagNode", None]:
+def downstream_closure(seed: DagNode) -> dict[DagNode, None]:
     """
     Every node reachable downstream of seed, seed included.
 
@@ -144,7 +146,7 @@ def downstream_closure(seed: "DagNode") -> Dict["DagNode", None]:
     Returns:
         Dict[DagNode, None]: The closure, in discovery order
     """
-    found: Dict["DagNode", None] = {seed: None}
+    found: dict[DagNode, None] = {seed: None}
     pending = [seed]
 
     head = 0
@@ -158,7 +160,7 @@ def downstream_closure(seed: "DagNode") -> Dict["DagNode", None]:
     return found
 
 
-def dirty_component(seed: "DagNode") -> Dict["DagNode", None]:
+def dirty_component(seed: DagNode) -> dict[DagNode, None]:
     """
     Every dirty node connected to seed along a path of dirty nodes, walking dependants
     and owners downstream *and* dependencies upstream.
@@ -175,7 +177,7 @@ def dirty_component(seed: "DagNode") -> Dict["DagNode", None]:
     Returns:
         Dict[DagNode, None]: The dirty component, in discovery order
     """
-    found: Dict["DagNode", None] = {seed: None}
+    found: dict[DagNode, None] = {seed: None}
     pending = [seed]
 
     head = 0
@@ -196,7 +198,7 @@ def dirty_component(seed: "DagNode") -> Dict["DagNode", None]:
     return found
 
 
-def topo_order(nodes: Dict["DagNode", None]) -> List["DagNode"]:
+def topo_order(nodes: dict[DagNode, None]) -> list[DagNode]:
     """
     Kahn topological sort of the subgraph induced by nodes.
 
@@ -213,7 +215,7 @@ def topo_order(nodes: Dict["DagNode", None]) -> List["DagNode"]:
     Returns:
         List[DagNode]: The nodes, every node preceded by all of its dependencies
     """
-    in_degree: Dict["DagNode", int] = dict.fromkeys(nodes, 0)
+    in_degree: dict[DagNode, int] = dict.fromkeys(nodes, 0)
 
     for node in nodes:
         for nxt in downstream(node):
@@ -238,7 +240,7 @@ def topo_order(nodes: Dict["DagNode", None]) -> List["DagNode"]:
     return order
 
 
-def propagate_presentation(seed: "DagNode"):
+def propagate_presentation(seed: DagNode):
     """
     Mark only the ownership chain above seed dirty, for a change nothing computes from.
 
@@ -256,7 +258,7 @@ def propagate_presentation(seed: "DagNode"):
     Args:
         seed (DagNode): The node that changed
     """
-    reasons: Dict[Tuple["chunk_notice.ChunkNoticeAlias", "DagNode"], bool] = dict(seed._changes)
+    reasons: dict[tuple[chunk_notice.ChunkNoticeAlias, DagNode], bool] = dict(seed._changes)
     if (prop := seed.propagator) is not None and (alias := prop.get_notice_alias()):
         # True is the verdict, not a placeholder: reaching here *is* the decision that this
         # change is presentation only, and DagNode.only_presentation_changed reads it back
@@ -284,7 +286,7 @@ def propagate_presentation(seed: "DagNode"):
         node = owner_node
 
 
-def propagate_dirty(seed: "DagNode"):
+def propagate_dirty(seed: DagNode):
     """
     Mark seed and everything downstream of it dirty, recording why.
 
@@ -340,7 +342,7 @@ def propagate_dirty(seed: "DagNode"):
             owner_node._changes[(alias, node)] = False
 
 
-def solve(seed: "DagNode") -> Generator["DagNode", None, None]:
+def solve(seed: DagNode) -> Generator[DagNode, None, None]:
     """
     Solve seed and everything that depends on it, in dependency order.
 
@@ -365,7 +367,7 @@ def solve(seed: "DagNode") -> Generator["DagNode", None, None]:
     if not seed.should_solve():
         return
 
-    solved: List["DagNode"] = []
+    solved: list[DagNode] = []
 
     try:
         for node in topo_order(dirty_component(seed)):
@@ -384,7 +386,7 @@ def solve(seed: "DagNode") -> Generator["DagNode", None, None]:
             node._index = 0
 
 
-def get_depth(node: "DagNode") -> int:
+def get_depth(node: DagNode) -> int:
     """
     The length of the longest dependency chain ending at node.
 
@@ -415,7 +417,7 @@ def get_depth(node: "DagNode") -> int:
     return _depth(node)
 
 
-def _upstream(node: "DagNode") -> List[Tuple[int, "DagNode"]]:
+def _upstream(node: DagNode) -> list[tuple[int, DagNode]]:
     """
     What node's depth is measured against, each paired with what it adds.
 
@@ -437,7 +439,7 @@ def _upstream(node: "DagNode") -> List[Tuple[int, "DagNode"]]:
     return nodes
 
 
-def _depth(root: "DagNode") -> int:
+def _depth(root: DagNode) -> int:
     """
     Body of get_depth(), as an explicit post-order walk.
 
@@ -454,7 +456,7 @@ def _depth(root: "DagNode") -> int:
     # Each entry is a node and whether its dependencies have been expanded yet: a node is
     # pushed once to schedule its dependencies and popped a second time to fold their
     # depths together.
-    stack: List[Tuple["DagNode", bool]] = [(root, False)]
+    stack: list[tuple[DagNode, bool]] = [(root, False)]
     # Guards against a cycle, which contributes no depth rather than looping forever.
     on_path: set = set()
 
@@ -481,7 +483,7 @@ def _depth(root: "DagNode") -> int:
     return _depth_cache.get(root, 0)
 
 
-def commit_order(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
+def commit_order(chunks: Iterable[ChunkBase]) -> list[ChunkBase]:
     """
     Order chunks so that every chunk comes after everything it depends on.
 
@@ -512,7 +514,10 @@ def commit_order(chunks: Iterable["ChunkBase"]) -> List["ChunkBase"]:
     return sorted(chunks, key=lambda c: get_depth(c.get_dag_node()))
 
 
-def commit_all(chunks: Iterable["ChunkBase"], order: "Callable[[List[ChunkBase]], List[ChunkBase]] | None" = None) -> List["ChunkBase"]:
+def commit_all(
+    chunks: Iterable[ChunkBase],
+    order: Callable[[list[ChunkBase]], list[ChunkBase]] | None = None,
+) -> list[ChunkBase]:
     """
     Run the reserved `commit(node)` hook of every chunk module that defines one.
 
@@ -541,7 +546,7 @@ def commit_all(chunks: Iterable["ChunkBase"], order: "Callable[[List[ChunkBase]]
     Returns:
         List[ChunkBase]: The chunks whose commit hook actually ran, in the order it ran
     """
-    committed: List["ChunkBase"] = []
+    committed: list[ChunkBase] = []
 
     for c in (order or commit_order)(list(chunks)):
         if c.is_blocked():

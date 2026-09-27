@@ -1,7 +1,7 @@
+from __future__ import annotations
 from usd_chunks import chunk, chunk_registry, chunk_core
 from usd_chunks.chunk_flags import ChunkFlags
 
-from typing import List, Optional
 
 from pxr import Usd
 import hou
@@ -12,7 +12,7 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
         super().__init__(*args, **kwargs)
 
         self.node = lopnode
-        self.chunk: Optional[chunk.Chunk] = None
+        self.chunk: chunk.Chunk | None = None
 
     def get_stage(self) -> Usd.Stage:
         if not self.node:
@@ -26,7 +26,7 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
 
         raise AttributeError("Could not get stage")
 
-    def get_selected_prims(self) -> List[Usd.Prim]:
+    def get_selected_prims(self) -> list[Usd.Prim]:
         """
         Get the selected prims in the scene
 
@@ -104,7 +104,7 @@ def parm_template_from_chunk_group(group: chunk_core.ChunkContainerBase):
 
 def handle_state_changed(owner: chunk.Chunk, notice, sender):
 
-    node: Optional[hou.LopNode] = owner.user_data.get("node")
+    node: hou.LopNode | None = owner.user_data.get("node")
     if not node:
         return
 

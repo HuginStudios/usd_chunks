@@ -1,3 +1,4 @@
+from __future__ import annotations
 import math
 
 from usd_chunks import chunk, chunk_utils
@@ -84,7 +85,7 @@ _OPS: dict = {
 }
 
 
-def _clear_connection(param: "chunk.ChunkParamBase") -> None:
+def _clear_connection(param: chunk.ChunkParamBase) -> None:
     """Reset param to its default and drop any USD-level connection. A param hidden by
     the current operation is no longer meaningful — keeping a stale connection around
     would silently reappear (with possibly wrong semantics) if the op is switched back."""
@@ -98,7 +99,7 @@ def _clear_connection(param: "chunk.ChunkParamBase") -> None:
         clear_attr_connections(attr)
 
 
-def _update_inputs(owner: "chunk.Chunk", operation: str) -> None:
+def _update_inputs(owner: chunk.Chunk, operation: str) -> None:
     labels = _OPS.get(operation, ((), None))[0]
     for i, name in enumerate(("a", "b", "c")):
         param = owner.get_param(name)
@@ -112,7 +113,7 @@ def _update_inputs(owner: "chunk.Chunk", operation: str) -> None:
             param.set_state(chunk.ChunkFlags.State.HIDDEN)
 
 
-def _operation_changed(owner: "chunk.Chunk", notice, sender: "chunk.ChunkParamBase"):
+def _operation_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     _update_inputs(owner, sender.value)
 
 

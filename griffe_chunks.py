@@ -1,6 +1,7 @@
 """
 This script is a griffe extension for adding __init__ function signatures to our attrs classes
 """
+from __future__ import annotations
 
 import griffe
 from inspect import isclass

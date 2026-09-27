@@ -1,5 +1,5 @@
+from __future__ import annotations
 from enum import IntFlag, IntEnum, auto
-from typing import List
 from pxr import Gf, Sdf
 
 
@@ -167,7 +167,7 @@ class ChunkFlags:
         COLOR_PICKER = VECTOR | (1 << 0)
 
     @staticmethod
-    def ParamTypeToTypes(t: ParamType) -> List[type]:
+    def ParamTypeToTypes(t: ParamType) -> list[type]:
         """Provides default values for ParamType enums. If t is a combination of multiple ParamTypes, returns all supported values
 
         Args:

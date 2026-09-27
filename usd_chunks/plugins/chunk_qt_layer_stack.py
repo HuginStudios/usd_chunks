@@ -16,6 +16,7 @@ the whole picture instead:
 Strength rule: session beats root, and within any layer an earlier sublayer beats
 a later one — so reading top-to-bottom is reading strongest-to-weakest.
 """
+from __future__ import annotations
 
 from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Usd, Sdf, Pcp, Tf

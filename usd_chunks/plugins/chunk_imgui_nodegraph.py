@@ -117,7 +117,7 @@ class _Ids:
             self._next += 1
         return self._to_int[key]
 
-    def key(self, value) -> "str | None":
+    def key(self, value) -> str | None:
         return self._to_key.get(int(value.id()) if hasattr(value, "id") else int(value))
 
 
@@ -599,7 +599,7 @@ class ImGuiGraphView:
 
     # -- layout ------------------------------------------------------------
 
-    def _node_size(self, path: str) -> "tuple[float, float]":
+    def _node_size(self, path: str) -> tuple[float, float]:
         """A node's real size once the editor has drawn it, else a nominal one.
 
         get_node_size returns zeroes for a node that has not been through a frame yet, so

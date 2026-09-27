@@ -328,7 +328,7 @@ def _collider_triangles(cprim: Usd.Prim, world: bool = True) -> tuple[list, list
 
 
 def _add_triangle_soup(
-    spec: "_mj.MjSpec",
+    spec: _mj.MjSpec,
     body,
     cprim: Usd.Prim,
     name: str,
@@ -401,7 +401,7 @@ def _add_triangle_soup(
 
 
 def _add_colliders(
-    spec: "_mj.MjSpec",
+    spec: _mj.MjSpec,
     collision_prims: list[Usd.Prim] | None,
     up_idx: int,
     friction: float,
@@ -610,7 +610,7 @@ def _add_colliders(
 #: Built collider specs, keyed by the collider geometry and the settings that shape it.
 #: Small on purpose -- a handful of entries covers "the artist is re-running the same
 #: scene", which is the whole point, and each entry holds a full MjSpec.
-_COLLIDER_SPEC_CACHE: "collections.OrderedDict[bytes, tuple]" = collections.OrderedDict()
+_COLLIDER_SPEC_CACHE: collections.OrderedDict[bytes, tuple] = collections.OrderedDict()
 _COLLIDER_SPEC_CACHE_MAX = 4
 
 
@@ -765,7 +765,7 @@ def _sim_prim_gen_mj(
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     floor_drop: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
@@ -1182,7 +1182,7 @@ def simulate_mujoco(
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
     floor_drop: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
@@ -1295,12 +1295,12 @@ def simulate_mujoco_articulated(
     ang_damping: float = 0.05,
     collision_margin: float = 0.0,
     node=None,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
-) -> "dict | None":
+) -> dict | None:
     """Run an articulated MuJoCo simulation and bake a transform per link.
 
     The counterpart of simulate_mujoco for an asset that is a mechanism rather than a
@@ -1416,7 +1416,7 @@ def simulate_mujoco_instancer(
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
     floor_drop: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
@@ -2367,22 +2367,22 @@ def _sim_articulated_gen_mj(
     solver_iters: int,
     lin_damping: float = 0.0,
     ang_damping: float = 0.05,
-    collision_prims: "list | None" = None,
+    collision_prims: list | None = None,
     hfield_res: int = 96,
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     floor_drop: float = 0.0,
     free_root: bool = True,
-    init_vel: "list | None" = None,
-    ang_vel: "list | None" = None,
+    init_vel: list | None = None,
+    ang_vel: list | None = None,
     collision_margin: float = 0.0,
-    wind: "tuple | list" = (0.0, 0.0, 0.0),
+    wind: tuple | list = (0.0, 0.0, 0.0),
     turbulence: float = 0.0,
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
-) -> Generator[int, None, "dict | None"]:
+) -> Generator[int, None, dict | None]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
 
     Bodies are nested to mirror the joint tree, in each link's own prim frame rather than
@@ -2484,7 +2484,7 @@ def build_articulated_spec(
     dt: float,
     up_idx: int,
     solver_iters: int,
-    collision_prims: "list | None" = None,
+    collision_prims: list | None = None,
     hfield_res: int = 96,
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import ast
 import hashlib
 import logging
@@ -159,7 +160,7 @@ def is_composed_in(prim: Usd.Prim) -> bool:
     return defined
 
 
-def composed_in_from(prim: Usd.Prim) -> "Sdf.Layer | None":
+def composed_in_from(prim: Usd.Prim) -> Sdf.Layer | None:
     """The layer a composed-in prim's strongest `def` comes from, or None when the prim is
     defined locally (or not at all). The layer a UI names when it says where a locked node
     came from, and the one is_composed_in is really asking about."""
@@ -372,7 +373,7 @@ _TEXT_TYPES = (
 )
 
 
-def attr_holds_text(attr: "Usd.Attribute") -> bool:
+def attr_holds_text(attr: Usd.Attribute) -> bool:
     """Whether a str can be Set() on attr: its type is String, Token or Asset."""
     return attr.GetTypeName() in _TEXT_TYPES
 
@@ -449,7 +450,7 @@ def store_expression_text(attr: Usd.Attribute, raw: str) -> None:
         attr.SetCustomDataByKey(EXPR_TEXT_KEY, raw)
 
 
-def read_expression_text(attr: Usd.Attribute) -> "str | None":
+def read_expression_text(attr: Usd.Attribute) -> str | None:
     """Return the expression text authored on attr, from whichever place it was kept.
 
     Accepts either form. A @Node.param@ wire always comes with connections on the attr;
@@ -498,7 +499,7 @@ def store_lofted_label(attr: Usd.Attribute, label: str) -> None:
     attr.SetCustomDataByKey(LOFTED_LABEL_KEY, label)
 
 
-def read_lofted_label(attr: Usd.Attribute) -> "str | None":
+def read_lofted_label(attr: Usd.Attribute) -> str | None:
     """The label a user gave a lofted param, or None if it still has its generated default."""
     val = attr.GetCustomDataByKey(LOFTED_LABEL_KEY)
     return val if isinstance(val, str) and val else None
@@ -1189,7 +1190,7 @@ def _mint_suffix(node, prim, stage) -> str:
     seed = str(prim.GetPath()) if prim is not None else readable
     taken = _recorded_suffixes(stage, prim)
     for salt in range(1000):
-        digest = hashlib.sha1(f"{seed}#{salt}".encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha1(f"{seed}#{salt}".encode()).hexdigest()[:8]
         candidate = f"{readable}_{digest}"
         if candidate not in taken:
             return candidate

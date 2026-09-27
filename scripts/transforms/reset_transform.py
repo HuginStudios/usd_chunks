@@ -2,6 +2,7 @@
 
 Requires: pxr (OpenUSD), usd_chunks.
 """
+from __future__ import annotations
 
 from pxr import UsdGeom
 from usd_chunks import chunk

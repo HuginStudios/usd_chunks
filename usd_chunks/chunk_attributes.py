@@ -18,7 +18,8 @@ from __future__ import annotations
 import copy
 import inspect
 import logging
-from typing import (Any, Callable, Dict, Generic, List, Optional,
+from collections.abc import Callable
+from typing import (Any, Generic, Optional,
                     TypeVar, TypedDict, Union, dataclass_transform, get_origin)
 
 import attrs
@@ -64,7 +65,7 @@ def get_attr_index(cls, data):
     return idx
 
 
-def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Attribute]):
+def add_validate_and_convert(cls: type[AttributesBase], fields: list[attrs.Attribute]):
     """Used as attrs.field_transformer for chunk attributes in order to sort the __init__ arguments to
     match pylance
     """
@@ -110,7 +111,7 @@ class AttributesMetaclass(type):
 
         setattr_override = attrs.setters.NO_OP
 
-        def _wrapped_setattr(inst: "AttributesBase", name, value):
+        def _wrapped_setattr(inst: AttributesBase, name, value):
             nonlocal res
 
             if name not in attributes:
@@ -191,7 +192,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         super().__init__()
         self.name: str = name
         self.alias: chunk_notice.ChunkNoticeAlias = alias
-        self.old_value: Optional[ValueT] = None
+        self.old_value: ValueT | None = None
 
         self.set_owner(owner)
 
@@ -368,7 +369,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
     """
 
-    _failed_converters: Dict[str, Any] = attrs.field(
+    _failed_converters: dict[str, Any] = attrs.field(
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
@@ -376,7 +377,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         ),
     )
 
-    _attr_senders: Dict[str, AttributeSender] = attrs.field(
+    _attr_senders: dict[str, AttributeSender] = attrs.field(
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
@@ -392,14 +393,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         ),
     )
 
-    _attrib_functions: Dict[str, Callable[[Self, AttributeSender], Any]] = attrs.field(
+    _attrib_functions: dict[str, Callable[[Self, AttributeSender], Any]] = attrs.field(
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
             copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False, serialize=True
         ),
     )
-    _logger: Optional[logging.Logger] = attrs.field(
+    _logger: logging.Logger | None = attrs.field(
         init=False,
         default=None,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
@@ -535,7 +536,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return copied
 
     @classmethod
-    def inspect_class(cls) -> "attrs.ClassProps":  # type: ignore
+    def inspect_class(cls) -> attrs.ClassProps:  # type: ignore
         """Wrapper around attrs.inspect. Can be used to debug the class attributes
 
         Returns:
@@ -634,7 +635,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         """
         self._attrib_functions[attrname] = method
 
-    def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> chunk_notice.ChunkNotice | None:
+    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
         if not self._solving_attributes:
             # Run any attribute functions before continuing. Since calling __setattr__ calls value_changed, we need to disable
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.

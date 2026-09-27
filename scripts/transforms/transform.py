@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_core, chunk_gizmo, chunk_utils
 

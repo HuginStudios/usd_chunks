@@ -52,12 +52,14 @@ a simple chunk with a button is as simple as:
 See [example](../example.md) for a more extensive example.
 
 """
+from __future__ import annotations
 
 from attr import Attribute as Attribute
 from attrs import field
 
 from enum import IntFlag, Enum
-from typing import Any, List, Optional, Sequence, TYPE_CHECKING, cast, TypeGuard, overload
+from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING, cast, TypeGuard, overload
 
 from pxr import Gf, Usd, Sdf
 
@@ -172,7 +174,7 @@ class Chunk(ChunkBase):
     flags: IntFlag = field(
         default=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED
     )
-    gizmo: Optional[str] = field(default=None)
+    gizmo: str | None = field(default=None)
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -196,7 +198,7 @@ class Group(ChunkGroupBase):
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
-    gizmo: Optional[str] = field(default=None)
+    gizmo: str | None = field(default=None)
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -218,7 +220,7 @@ class Vector(ChunkVectorBase):
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
-    gizmo: Optional[str] = field(default=None)
+    gizmo: str | None = field(default=None)
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -249,11 +251,11 @@ class Slider(ChunkParamBase[int | float]):
         is_int: Set whether this parameter should be an integer
     """
 
-    min_value: Optional[float | int] = field(default=None)
-    max_value: Optional[float | int] = field(default=None)
+    min_value: float | int | None = field(default=None)
+    max_value: float | int | None = field(default=None)
     is_int: bool = field(default=False)
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
-    gizmo: Optional[str] = field(default=None)
+    gizmo: str | None = field(default=None)
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -284,8 +286,8 @@ class Spinbox(ChunkParamBase[float | int]):
         is_int: Set whether this parameter should be an integer
     """
 
-    min_value: Optional[float | int] = field(default=None)
-    max_value: Optional[float | int] = field(default=None)
+    min_value: float | int | None = field(default=None)
+    max_value: float | int | None = field(default=None)
     is_int: bool = field(default=False)
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
@@ -339,7 +341,7 @@ class Menu(ChunkParamBase[str]):
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.STRING_MENU
 
-    def convert_attr(self, attr: "Attribute", val: Any) -> Any:
+    def convert_attr(self, attr: Attribute, val: Any) -> Any:
         if attr.name in ["default_value", "value"]:
             if self.menu_items and not self.dynamic_items and val is not None and val not in self.menu_items:
                 if isinstance(val, str) and chunk_utils.has_expression(val):
@@ -486,14 +488,14 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
-    extensions: List[str] = field(factory=list)
+    extensions: list[str] = field(factory=list)
     pattern: str = field(default="*")
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.FILE
 
-    def validate_attr(self, attr: "Attribute", val: Any) -> bool:
+    def validate_attr(self, attr: Attribute, val: Any) -> bool:
         if attr.name in ["value", "default_value"] and val:
             if self.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING):
                 self._validate_existing_path(attr, val)
@@ -531,7 +533,7 @@ class ColorPicker(ChunkParamBase[tuple]):
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
-    def convert_attr(self, attr: "Attribute", val: Any) -> Any:
+    def convert_attr(self, attr: Attribute, val: Any) -> Any:
         # A colour read back from USD arrives as Gf.Vec3f, which the tuple validator
         # rejects — so a ColorPicker bound to a chunk-prim Color3f attr would fail on the
         # value it had just written. Anything three-long and iterable is a colour here.
@@ -565,7 +567,7 @@ class Matrix(ChunkParamBase[Gf.Matrix4d]):
     every other param follows.
     """
 
-    def convert_attr(self, attr: "Attribute", val: Any) -> Any:
+    def convert_attr(self, attr: Attribute, val: Any) -> Any:
         # A matrix arriving from USD or from a sequence of sixteen numbers is still a
         # matrix; only reject what cannot be read as one. Without this, restoring a saved
         # value would have to be typed exactly right by every caller.
@@ -725,7 +727,7 @@ def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
     else:
         chunks = mod.create()
 
-    chunks = cast(List[Chunk], chunks)
+    chunks = cast(list[Chunk], chunks)
 
     if not anonymous:
         for c in chunks:

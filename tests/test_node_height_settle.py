@@ -9,6 +9,7 @@ ports and edges move with it.
 Settling is answered by the scene, not the node: measurements are event-driven, so a node
 that has simply not been re-measured yet is indistinguishable from one that has finished.
 """
+from __future__ import annotations
 import pytest
 from PySide6 import QtCore, QtWidgets
 

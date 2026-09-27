@@ -15,7 +15,6 @@ import logging
 import os
 import zlib
 from pathlib import Path
-from typing import Dict, Set
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,7 @@ def compute_checksum(obj: str) -> int:
     return zlib.adler32(obj.encode())
 
 
-def read_package_cache(file: str | Path) -> Dict[str, Set[str]]:
+def read_package_cache(file: str | Path) -> dict[str, set[str]]:
     """Read a cache file, or return an empty cache if it cannot be read.
 
     Anything unexpected -- missing, truncated, or not the expected shape -- is treated as
@@ -51,7 +50,7 @@ def read_package_cache(file: str | Path) -> Dict[str, Set[str]]:
         logger.debug(f"Ignoring package cache {path}: expected an object, got {type(raw).__name__}")
         return {}
 
-    cache: Dict[str, Set[str]] = {}
+    cache: dict[str, set[str]] = {}
     for name, versions in raw.items():
         if not isinstance(versions, list):
             return {}
@@ -59,7 +58,7 @@ def read_package_cache(file: str | Path) -> Dict[str, Set[str]]:
     return cache
 
 
-def write_package_cache(file: str | Path, cache: Dict[str, Set[str]]) -> None:
+def write_package_cache(file: str | Path, cache: dict[str, set[str]]) -> None:
     """Write the cache, creating the directory if it is not there yet."""
     path = Path(file)
     os.makedirs(path.parent, exist_ok=True)

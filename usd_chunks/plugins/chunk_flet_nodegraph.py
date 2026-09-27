@@ -690,7 +690,7 @@ class GraphView:
         self.reload()
         self.refresh(bodies=True)
 
-    def parent_context(self) -> "str | None":
+    def parent_context(self) -> str | None:
         """The context enclosing this one, or None at the top."""
         return chunk_graph.parent_context(self.context, self.available)
 

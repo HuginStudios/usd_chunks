@@ -1,3 +1,4 @@
+from __future__ import annotations
 from usd_chunks import chunk, chunk_core, chunk_notice
 
 from functools import wraps

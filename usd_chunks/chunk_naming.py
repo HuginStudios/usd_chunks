@@ -68,7 +68,7 @@ def exec_input_name(index: int) -> str:
     return EXEC_INPUT if index <= 0 else f"inputs:chunk{index}"
 
 
-def iter_exec_inputs(prim: "Usd.Prim") -> list:
+def iter_exec_inputs(prim: Usd.Prim) -> list:
     """A prim's exec inputs, ordered by slot -- strongest branch first.
 
     Sorted by the PARSED index, never by name: GetAttributes() is alphabetical, which puts

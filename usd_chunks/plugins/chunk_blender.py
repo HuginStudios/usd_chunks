@@ -293,7 +293,7 @@ def property_for(param):
     return None
 
 
-def annotations_for(chunk) -> "tuple[dict, list, list]":
+def annotations_for(chunk) -> tuple[dict, list, list]:
     """(rna properties, button param names, unmapped param names) for one chunk.
 
     Returned as three lists rather than one dict so the node class knows what to *draw*:
@@ -416,7 +416,7 @@ def sync_lofted(node, chunk) -> None:
 _RESERVED = frozenset({"chunk_path", "chunk_type"})
 
 
-def draw_param(node, layout, param, text: "str | None" = None) -> bool:
+def draw_param(node, layout, param, text: str | None = None) -> bool:
     """Draw one param's control into `layout`. True if anything was drawn.
 
     Split out of `draw_params` because a param is drawn from two places now: the node body,

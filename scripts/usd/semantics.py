@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pxr import UsdSemantics, Vt
 
 from usd_chunks import chunk, chunk_utils

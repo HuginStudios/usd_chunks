@@ -5,6 +5,7 @@ Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]
     usdchunks info my_setup.usda
 """
+from __future__ import annotations
 
 import filecmp
 import os

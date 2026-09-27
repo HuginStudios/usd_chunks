@@ -1,3 +1,4 @@
+from __future__ import annotations
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk
 from PySide6 import QtWidgets

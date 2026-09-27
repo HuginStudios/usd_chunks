@@ -99,7 +99,7 @@ def pick_matrix(ndc_x: float, ndc_y: float, dx: float, dy: float):
             * Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(1.0 / dx, 1.0 / dy, 1.0)))
 
 
-def hit_path(result) -> "str | None":
+def hit_path(result) -> str | None:
     """The prim path out of whatever TestIntersection returned, or None for a miss.
 
     Scanned rather than indexed: the out-params (hit point, normal, prim path, instancer
@@ -135,7 +135,7 @@ def ray_from_region(region, rv3d, mouse_x, mouse_y):
     return tuple(origin), tuple(direction)
 
 
-def pick_by_bounds(stage, origin, direction, time=None) -> "str | None":
+def pick_by_bounds(stage, origin, direction, time=None) -> str | None:
     """The nearest prim whose world bounding box the ray enters, or None.
 
     The fallback for when Hydra's own pick is unavailable -- which on some builds is
