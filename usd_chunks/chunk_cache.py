@@ -5,14 +5,7 @@ on it being right. `ChunkDependencyManager.update_cache` rebuilds it from the en
 whenever a lookup misses, so the correct response to a cache we cannot read is to throw it
 away, not to try harder.
 
-That matters because of what this used to be. The cache rode on the chunk serialiser, whose
-encoder falls back to pickle for anything it has no rule for -- and a `set` of version
-strings is exactly that. So a file named `..._chunk_package_cache.json` held, per package:
-
-    "absl-py": {"pickle": "gASVDQAAAAAAAACPlCiMBTIuNC4wlJAu\n"}
-
-base64 pickle, unpickled on every startup, to recover {"2.4.0"}. Sets are the only reason
-the plain encoder was not enough, and JSON lists carry sets perfectly well.
+The file is plain JSON: each package name maps to a list of installed versions.
 """
 
 from __future__ import annotations
@@ -39,10 +32,9 @@ def compute_checksum(obj: str) -> int:
 def read_package_cache(file: str | Path) -> Dict[str, Set[str]]:
     """Read a cache file, or return an empty cache if it cannot be read.
 
-    Anything unexpected -- missing, truncated, or written by the old pickle-bearing
-    format -- is treated as "no cache". The caller rebuilds from `pip list`, so a bad file
-    costs one subprocess call and nothing else. Notably this is what retires the old
-    format: it is never parsed, so its pickle payloads are never handed to pickle.
+    Anything unexpected -- missing, truncated, or not the expected shape -- is treated as
+    "no cache". The caller rebuilds from `pip list`, so a bad file costs one subprocess call
+    and nothing else.
     """
     path = Path(file)
     if not path.exists():
@@ -61,8 +53,6 @@ def read_package_cache(file: str | Path) -> Dict[str, Set[str]]:
 
     cache: Dict[str, Set[str]] = {}
     for name, versions in raw.items():
-        # A dict here is the old pickle-bearing shape. Skip it in silence rather than
-        # reaching into it -- the whole point is that this format is no longer decoded.
         if not isinstance(versions, list):
             return {}
         cache[name] = {v for v in versions if v is None or isinstance(v, str)}
