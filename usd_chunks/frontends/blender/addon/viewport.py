@@ -26,7 +26,7 @@ import traceback
 
 import bpy
 
-from usd_chunks.plugins import chunk_blender_nodegraph as bg
+from usd_chunks.frontends.blender import nodegraph as bg
 
 logger = logging.getLogger(__name__)
 

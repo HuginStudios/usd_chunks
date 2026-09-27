@@ -30,8 +30,8 @@ from mathutils import Matrix, Vector
 from pxr import Gf, UsdGeom
 
 from usd_chunks import chunk_gizmo
-from usd_chunks.plugins import chunk_blender_nodegraph as bg
-from usd_chunks.plugins.chunk_blender_addon import viewport
+from usd_chunks.frontends.blender import nodegraph as bg
+from usd_chunks.frontends.blender.addon import viewport
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _active_view():
     Imported here rather than at module scope: the add-on package imports this module in
     order to register it, so a module-scope import back into it is a cycle.
     """
-    from usd_chunks.plugins import chunk_blender_addon as addon
+    from usd_chunks.frontends.blender import addon
     return addon.get_view()
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui
 
-from usd_chunks.plugins.chunk_qt_widgets import _FineDragSlider
+from usd_chunks.frontends.qt.widgets import _FineDragSlider
 
 
 def _mouse_event(etype, pos, modifiers=QtCore.Qt.KeyboardModifier.NoModifier):

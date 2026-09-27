@@ -15,7 +15,7 @@ from PySide6.QtTest import QTest
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_qt_widgets import ChunkLineEditWidget
+from usd_chunks.frontends.qt.widgets import ChunkLineEditWidget
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 CTRL = QtCore.Qt.KeyboardModifier.ControlModifier
@@ -206,7 +206,7 @@ class _Selection:
 def usdview_scene():
     pytest.importorskip("pxr.Usdviewq", reason="usdview is not part of the usd-core wheel")
     from types import SimpleNamespace
-    from usd_chunks.plugins.chunk_usdview import UsdviewScene
+    from usd_chunks.hosts.usdview import UsdviewScene
 
     stage = Usd.Stage.CreateInMemory()
     stage.DefinePrim("/World/Kettle", "Xform")
@@ -244,7 +244,7 @@ def test_usdview_with_nothing_real_to_select_keeps_the_selection(usdview_scene):
 def test_ctrl_click_on_the_field_in_a_graph_node_selects_the_prim_not_the_node(qapp, scene):
     """The node claims ctrl+click on its own chrome to toggle node selection. On the field
     embedded in its body, the field has to get it -- and the node selection must not move."""
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     docker = ChunkWidgetDocker()
     docker.resize(900, 700)

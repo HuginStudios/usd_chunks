@@ -21,7 +21,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks import chunk_stage
-from usd_chunks.plugins.chunk_qt_nodegraph import _author_raw_connection
+from usd_chunks.frontends.qt.nodegraph import _author_raw_connection
 
 
 class _Scene(SceneSender):

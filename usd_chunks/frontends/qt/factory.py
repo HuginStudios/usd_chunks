@@ -12,7 +12,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 
 from usd_chunks import chunk_stage
 
-from usd_chunks.plugins.chunk_qt_widgets import (
+from usd_chunks.frontends.qt.widgets import (
     ChunkWidget,
     source_code_dial,
     FilterableChunkMenu,
@@ -26,7 +26,7 @@ from usd_chunks.plugins.chunk_qt_widgets import (
 # Re-exported, not used here: chunk_qt is the Qt entry point chunks and DCC plugins
 # import against, so the widget API stays reachable as chunk_qt.<Name> even though it
 # now lives in chunk_qt_widgets.
-from usd_chunks.plugins.chunk_qt_widgets import (
+from usd_chunks.frontends.qt.widgets import (
     CHUNK_STYLESHEET,  # noqa: F401
     SyntaxHighlighter,  # noqa: F401
     ChunkSliderWidget,  # noqa: F401
@@ -45,7 +45,7 @@ from usd_chunks.plugins.chunk_qt_widgets import (
     ContainerWidget,  # noqa: F401
     confirm_dial,  # noqa: F401
 )
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView, droppable_paths
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView, droppable_paths
 
 
 def save_chunkgroup_dialog(scene=None) -> None:

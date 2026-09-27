@@ -27,7 +27,7 @@ from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.plugins.chunk_qt_widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
+from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
 
 # The clipboard model and its snapshot helpers live in the engine now; these aliases keep
 # the rest of this file reading as it did, and keep the two frontends on one format.

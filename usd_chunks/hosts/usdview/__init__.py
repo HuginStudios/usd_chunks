@@ -12,7 +12,9 @@ from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
 from usd_chunks import chunk_registry, chunk_core, shader_defs
-from usd_chunks.plugins import chunk_qt, chunk_window_state, chunk_qt_layer_stack
+from usd_chunks.frontends.qt import factory as chunk_qt
+from usd_chunks.frontends.qt import window_state as chunk_window_state
+from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
 from usd_chunks import chunk_stage
 
 

@@ -21,7 +21,7 @@ import dataclasses  # noqa: E402
 import flet.canvas as cv  # noqa: E402
 
 from graph_fixtures import make_network  # noqa: E402
-from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
+from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
 
 
 
@@ -109,5 +109,5 @@ class TestBadge:
 
     def test_the_badge_matches_qt_radius(self):
         """Drift here is the failure mode: two frontends that disagree on a glyph."""
-        from usd_chunks.plugins import chunk_qt_nodegraph as qg
+        from usd_chunks.frontends.qt import nodegraph as qg
         assert fg.EXP_R == qg.ChunkEdgeItem._EXP_RADIUS

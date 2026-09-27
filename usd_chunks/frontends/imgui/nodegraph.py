@@ -1,6 +1,6 @@
 """A Dear ImGui view of a chunk network -- the third frontend over one engine.
 
-    python -m usd_chunks.plugins.chunk_imgui_nodegraph <network.usda> [context_prim_path]
+    python -m usd_chunks.frontends.imgui.nodegraph <network.usda> [context_prim_path]
 
 Written to test whether the engine is genuinely frontend-agnostic or merely Qt-and-Flet
 agnostic. ImGui is a different paradigm from both: immediate mode, no widget objects, no
@@ -30,7 +30,7 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_imgui
+from usd_chunks.frontends.imgui import factory as chunk_imgui
 from usd_chunks import chunk_graph
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
@@ -698,5 +698,5 @@ def main(network: str, context: str | None = None):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit(
-            "usage: python -m usd_chunks.plugins.chunk_imgui_nodegraph <network.usda>")
+            "usage: python -m usd_chunks.frontends.imgui.nodegraph <network.usda>")
     main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)

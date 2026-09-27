@@ -18,7 +18,7 @@ import pytest
 from PySide6 import QtCore, QtTest
 
 from usd_chunks import chunk
-from usd_chunks.plugins.chunk_qt_widgets import ChunkSliderWidget, NumberField, caret_step
+from usd_chunks.frontends.qt.widgets import ChunkSliderWidget, NumberField, caret_step
 
 
 # ---------------------------------------------------------------------------

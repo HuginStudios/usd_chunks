@@ -15,8 +15,8 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks import chunk_graph
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.frontends.qt import nodegraph
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 
@@ -231,7 +231,7 @@ class TestTheClipboardIsShared:
         # flet is an optional extra; the Qt half of this contract still has to be checked
         # without it, so the skip is per-test rather than on the module.
         pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.plugins import chunk_flet_nodegraph  # noqa: F401
+        from usd_chunks.frontends.flet import nodegraph as chunk_flet_nodegraph  # noqa: F401
         assert chunk_graph.node_clipboard is nodegraph._node_clipboard
 
     def test_a_qt_copy_is_visible_to_the_engine(self, frontend):

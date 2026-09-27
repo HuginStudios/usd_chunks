@@ -76,7 +76,7 @@ def _restore(stage, snap):
 
 
 def test_redo_brings_the_node_back(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

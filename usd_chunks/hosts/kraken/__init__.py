@@ -6,7 +6,7 @@ from kraken.plugin import KrakenPluginContainer
 from kraken.scene import SceneManager, PrimSelectionNotice, StageLoadedNotice
 
 from usd_chunks import chunk_registry, chunk_core
-from usd_chunks.plugins import chunk_qt
+from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks import chunk_stage
 
 

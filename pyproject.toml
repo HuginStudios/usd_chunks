@@ -45,7 +45,7 @@ standalone = ["usd-core"]
 # For hosts that do not already supply Qt. usdview and Houdini bring their own.
 ui = ["PySide6"]
 # The standalone graph frontends. Neither is imported unless you ask for its module by
-# name -- plugins/__init__.py imports nothing -- so a missing toolkit is not fatal to the
+# name -- frontends/__init__.py imports nothing -- so a missing toolkit is not fatal to the
 # rest of the package, but `usdchunks-flet`/`-imgui` need these.
 flet = ["flet>=0.28"]
 imgui = ["imgui-bundle>=1.6"]
@@ -66,7 +66,7 @@ docs = [
 ]
 
 [project.scripts]
-usdchunks = "usd_chunks.plugins.usdchunks_cli:main"
+usdchunks = "usd_chunks.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["usd_chunks*"]
@@ -74,12 +74,12 @@ namespaces = false
 
 [tool.setuptools.package-data]
 "usd_chunks" = ["resources/icons/*.png"]
-"usd_chunks.plugins.chunk_usdview" = ["plugInfo.json"]
-"usd_chunks.plugins.chunk_kraken" = ["plugInfo.json"]
-# chunk_houdini is a HOUDINI_PATH package directory, not an importable python package,
+"usd_chunks.hosts.usdview" = ["plugInfo.json"]
+"usd_chunks.hosts.kraken" = ["plugInfo.json"]
+# houdini is a HOUDINI_PATH package directory, not an importable python package,
 # so its contents ship as data of the parent package.
-"usd_chunks.plugins" = [
-    "chunk_houdini/packages/*.json",
-    "chunk_houdini/toolbar/*.shelf",
-    "chunk_houdini/python3.11libs/*.py",
+"usd_chunks.hosts" = [
+    "houdini/packages/*.json",
+    "houdini/toolbar/*.shelf",
+    "houdini/python3.11libs/*.py",
 ]

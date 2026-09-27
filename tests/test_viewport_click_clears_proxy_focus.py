@@ -43,7 +43,7 @@ def _mouse_press(pos=QtCore.QPointF(0, 0)):
 
 @pytest.fixture
 def graph(qapp):
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

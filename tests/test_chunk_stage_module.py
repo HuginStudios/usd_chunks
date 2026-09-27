@@ -50,7 +50,8 @@ def test_importing_core_loads_no_plugin():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")]))
     code = ("import sys, usd_chunks.chunk_stage; "
-            "print(sorted(m for m in sys.modules if m.startswith('usd_chunks.plugins')))")
+            "print(sorted(m for m in sys.modules "
+            "if m.startswith(('usd_chunks.plugins', 'usd_chunks.frontends', 'usd_chunks.hosts'))))")
     proc = subprocess.run([sys.executable, "-c", code], cwd=str(REPO), env=env,
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr

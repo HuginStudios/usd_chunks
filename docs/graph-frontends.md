@@ -7,7 +7,7 @@ frontend can be written for any of them.
 
 There are four today, deliberately different in shape:
 
-| | `chunk_qt_nodegraph` | `chunk_flet_nodegraph` | `chunk_imgui_nodegraph` | `chunk_blender_nodegraph` |
+| | `frontends.qt.nodegraph` | `frontends.flet.nodegraph` | `frontends.imgui.nodegraph` | `frontends.blender.nodegraph` |
 |---|---|---|---|---|
 | Drawing | `QGraphicsItem`s that place themselves | canvas primitives recomputed each refresh | redrawn every frame | **none** — Blender draws the tree |
 | Node bodies | real `ChunkWidget`s via proxy widgets | real Flet controls in a `Stack` | drawn inline per frame | RNA properties, on their input socket (rest via `draw_buttons`) |
@@ -133,7 +133,7 @@ bits", catch `AttributeError` and let everything else surface.
 
 **5. Keyboard shortcuts collide with text entry.** If your toolkit dispatches keys at the
 window level, a `Delete` meant for a text field will delete the selected node. Flet solves
-this with `chunk_flet.FocusTracker`: widgets report focus, and the graph checks before
+this with `frontends.flet.factory.FocusTracker`: widgets report focus, and the graph checks before
 acting. Qt does not need it because its widgets consume keys first, and Blender and ImGui
 do not because their editors own key routing.
 

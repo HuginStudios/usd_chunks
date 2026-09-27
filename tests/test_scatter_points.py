@@ -133,7 +133,7 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
     establish that ranking in the first place -- a hand-wired chunk graph with no view/recook
     activity doesn't reach the same layer-strength state (confirmed while investigating the
     equivalent recook_for_view bug earlier)."""
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

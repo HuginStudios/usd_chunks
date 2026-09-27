@@ -13,5 +13,5 @@
             ]
         }
     ],
-    "hpath": "${USD_CHUNKS_HOME}/plugins/chunk_houdini"
+    "hpath": "${USD_CHUNKS_HOME}/hosts/houdini"
 }

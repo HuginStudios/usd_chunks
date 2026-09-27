@@ -97,8 +97,11 @@ rather than adding to it, so each hook here runs its `.git/hooks` counterpart fi
   callbacks and the DAG), `chunk_registry.py` (discovery and loading), `chunk_stage.py` (the chunk graph on
   the USD stage: sync, wiring, view-driven cooking), `chunk.py` (the public API that chunk
   authors import).
-- `usd_chunks/plugins/` — everything that binds the core to a host: `chunk_qt*.py` (widgets and node graph), `chunk_usdview/`,
-  `chunk_houdini/`, `chunk_kraken/`, and `usdchunks_cli.py`.
+- `usd_chunks/frontends/` — one subpackage per UI toolkit (`qt/`, `flet/`, `imgui/`,
+  `blender/`), each with a widget `factory.py` and a `nodegraph.py` over `chunk_graph.py`.
+- `usd_chunks/hosts/` — per-application entry points: `usdview/`, `kraken/`, `houdini/`.
+- `usd_chunks/cli.py` — the headless `usdchunks` command.
+- `usd_chunks/plugins/` — aliases for the pre-split import paths; new code does not use it.
 - `tests/` — run with `USD_CHUNK_DIRS=scripts`.
 - `scripts/` — example chunks, used heavily as test fixtures.
 

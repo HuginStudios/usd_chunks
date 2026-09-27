@@ -1,6 +1,6 @@
 """A Flet view of a chunk network: draws it, and dispatches input into the engine.
 
-    python -m usd_chunks.plugins.chunk_flet_nodegraph <network.usda> [context_prim_path]
+    python -m usd_chunks.frontends.flet.nodegraph <network.usda> [context_prim_path]
 
     click a port          select it
     click a second port   connect, if chunk_graph says the pair is legal
@@ -34,7 +34,7 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_flet
+from usd_chunks.frontends.flet import factory as chunk_flet
 from usd_chunks import chunk_graph
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
@@ -1295,7 +1295,7 @@ def main(page: ft.Page, network: str, context: str | None = None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("usage: python -m usd_chunks.plugins.chunk_flet_nodegraph <network.usda>")
+        raise SystemExit("usage: python -m usd_chunks.frontends.flet.nodegraph <network.usda>")
     target = sys.argv[1]
     wanted = sys.argv[2] if len(sys.argv) > 2 else None
     ft.run(lambda page: main(page, target, wanted))

@@ -2739,7 +2739,7 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     path -- ChunkGraphView._activate_menu_view's view:slot attribute + _view_state.set_slot
     -- not just wiring the exec chain by hand)."""
     from usd_chunks.chunk_stage import get_chunk_prim_path, view_cook_list
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

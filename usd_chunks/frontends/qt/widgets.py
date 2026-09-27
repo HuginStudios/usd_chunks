@@ -1857,7 +1857,7 @@ class ViewSlotState(QtCore.QObject):
         name = getattr(meth, "__name__", None)
         is_delete = name == "remove"
         if is_delete:
-            from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+            from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
             ChunkGraphView.mark_pending_delete_relevance(list(targets))
 
         for target in targets:
@@ -2022,7 +2022,7 @@ class ViewSlotState(QtCore.QObject):
                 # ChunkGraphView._delete_selected() entirely (that's the Delete-key path).
                 # Capture relevance the same way, right before it runs -- see
                 # mark_pending_delete_relevance's docstring for why it can't be judged after.
-                from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+                from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
                 ChunkGraphView.mark_pending_delete_relevance([grp])
             conn.handle_callback(
                 chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False

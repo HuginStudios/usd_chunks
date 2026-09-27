@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt_widgets import _RESULT_DIVIDER, FilterableChunkMenu, _host_menu_highlight
+from usd_chunks.frontends.qt.widgets import _RESULT_DIVIDER, FilterableChunkMenu, _host_menu_highlight
 
 
 class _Scene(SceneSender):

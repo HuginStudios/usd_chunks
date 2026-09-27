@@ -23,7 +23,7 @@ from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import export_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
-from usd_chunks.plugins.usdchunks_cli import cmd_run
+from usd_chunks.cli import cmd_run
 
 
 class _DummyScene(SceneSender):
@@ -268,7 +268,7 @@ class TestCliRunCommits:
         # and replacing it left the child unable to import pxr at all.
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), os.environ.get("PYTHONPATH")]))
         proc = subprocess.run(
-            [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", str(net)],
+            [sys.executable, "-m", "usd_chunks.cli", "run", str(net)],
             cwd=str(repo_root),
             env=env,
             capture_output=True,

@@ -18,7 +18,7 @@ from usd_chunks.chunk_core import ChunkConfig, SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import export_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
-from usd_chunks.plugins.usdchunks_cli import cmd_run
+from usd_chunks.cli import cmd_run
 
 
 class _DummyScene(SceneSender):
@@ -446,7 +446,7 @@ class TestDelegateSettings:
         from usd_chunks.chunk_stage import load_chunks
         load_chunks(stage2, scene2)
 
-        from usd_chunks.plugins.usdchunks_cli import _all_chunks
+        from usd_chunks.cli import _all_chunks
 
         reloaded = next(
             (c for c in _all_chunks(scene2.get_chunks())

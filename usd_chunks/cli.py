@@ -346,7 +346,7 @@ def cmd_pin(args):
             print(f"{GREEN}Environment ready{RESET} -> {python}")
             print(f"Installed: {', '.join(installed)}")
             print("Run against it with:")
-            print(f"  {python} -m usd_chunks.plugins.usdchunks_cli run {args.usda}")
+            print(f"  {python} -m usd_chunks.cli run {args.usda}")
     print(f"Prepend to USD_CHUNK_DIRS:  {result.pin_dir}")
 
 
@@ -480,7 +480,7 @@ def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
     directory = _variant_dir(out, index)
     os.makedirs(directory, exist_ok=True)
     cmd = [
-        sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", usda,
+        sys.executable, "-m", "usd_chunks.cli", "run", usda,
         f"{wedge_name}.current_index={index}",
         "--export", os.path.join(directory, "variant.usda"),
     ]
@@ -647,8 +647,7 @@ def cmd_plugin_path(args):
     Resolved from the installed package rather than the source tree, so the printed path
     is correct whether usd_chunks was pip-installed or is being run from a checkout.
     """
-    host_dirs = {"usdview": "chunk_usdview", "kraken": "chunk_kraken", "houdini": "chunk_houdini"}
-    path = Path(files("usd_chunks.plugins")) / host_dirs[args.host]
+    path = Path(files("usd_chunks.hosts")) / args.host
     if not path.is_dir():
         print(f"{RED}plugin directory not found: {path}{RESET}", file=sys.stderr)
         sys.exit(1)

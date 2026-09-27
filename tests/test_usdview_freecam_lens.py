@@ -28,7 +28,7 @@ import pytest
 # skipping, taking the whole run down with it.
 pytest.importorskip("pxr.Usdviewq", reason="usdview is not part of the usd-core wheel")
 
-from usd_chunks.plugins.chunk_usdview import UsdviewScene  # noqa: E402
+from usd_chunks.hosts.usdview import UsdviewScene  # noqa: E402
 
 
 class _FreeCamera:

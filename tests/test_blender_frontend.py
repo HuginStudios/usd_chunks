@@ -45,11 +45,11 @@ from usd_chunks import chunk_registry  # noqa: E402
 from usd_chunks.chunk_core import ChunkConfig  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.chunk_scene import SceneSender  # noqa: E402
-from usd_chunks.plugins import chunk_blender  # noqa: E402
+from usd_chunks.frontends.blender import factory as chunk_blender  # noqa: E402
 from usd_chunks import chunk_graph  # noqa: E402
 from usd_chunks import chunk_stage  # noqa: E402
-from usd_chunks.plugins import chunk_blender_addon as addon  # noqa: E402
-from usd_chunks.plugins import chunk_blender_nodegraph as bg  # noqa: E402
+from usd_chunks.frontends.blender import addon  # noqa: E402
+from usd_chunks.frontends.blender import nodegraph as bg  # noqa: E402
 
 
 class _Scene(SceneSender):
@@ -816,8 +816,8 @@ def test_the_verbs_are_wired_to_operators_that_get_registered():
 # ---------------------------------------------------------------------------
 
 from usd_chunks import chunk_gizmo  # noqa: E402
-from usd_chunks.plugins.chunk_blender_addon import gizmos as gz  # noqa: E402
-from usd_chunks.plugins.chunk_blender_addon import viewport as vp  # noqa: E402
+from usd_chunks.frontends.blender.addon import gizmos as gz  # noqa: E402
+from usd_chunks.frontends.blender.addon import viewport as vp  # noqa: E402
 
 
 @pytest.fixture

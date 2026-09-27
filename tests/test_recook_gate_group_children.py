@@ -23,7 +23,7 @@ from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import (
     ChunkStageSync, connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
 
 class _DummyScene(SceneSender):

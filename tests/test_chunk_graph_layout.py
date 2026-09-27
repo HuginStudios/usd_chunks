@@ -213,7 +213,7 @@ def _wire_exec(stage: Usd.Stage, downstream_path: str, upstream_path: str) -> No
 
 
 def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+    from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -247,7 +247,7 @@ def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> 
 
 
 def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+    from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -276,7 +276,7 @@ def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
 
 
 def test_layout_nodes_never_moves_a_locked_node(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+    from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)

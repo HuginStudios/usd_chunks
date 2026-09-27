@@ -672,7 +672,7 @@ class TestTheHostNodeInTheQtGraph:
 
     @pytest.fixture
     def graph(self, qapp, network_file):
-        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+        from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
         stage, scene = _open(None)
         reference = _add(scene, "reference")
         graph_scene = ChunkGraphScene()
@@ -760,7 +760,7 @@ class TestLoftedParamsOnTheHost:
     def test_the_qt_node_grows_the_public_param_when_the_file_is_set(self, qapp, lofted_network):
         """The node's widget exists before the file is set -- the order a user does it in.
         The public param arrives through the same PARAM_ADDED a live loft uses."""
-        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
+        from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
         path, name = lofted_network
         stage, scene = _open(None)
         graph_scene = ChunkGraphScene()

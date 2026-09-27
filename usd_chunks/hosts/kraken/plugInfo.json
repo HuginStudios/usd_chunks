@@ -2,11 +2,11 @@
     "Plugins": [
         {
             "Type": "python",
-            "Name": "usd_chunks.plugins.chunk_usdview",
+            "Name": "usd_chunks.hosts.kraken",
             "Info": {
                 "Types": {
-                    "usd_chunks.plugins.chunk_usdview.ChunksPluginContainer": {
-                        "bases": ["pxr.Usdviewq.plugin.PluginContainer"],
+                    "usd_chunks.hosts.kraken.ChunksPluginContainer": {
+                        "bases": ["kraken.plugin.KrakenPluginContainer"],
                         "displayName": "Usd Chunks"
                     }
                 }

@@ -34,7 +34,7 @@ from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry, chunk_stage, chunk_utils
 from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
 _SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 for _dir in (_SCRIPTS / "utils", _SCRIPTS / "modelling"):

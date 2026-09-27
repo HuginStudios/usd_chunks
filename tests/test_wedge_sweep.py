@@ -88,7 +88,7 @@ def network(tmp_path):
 
 
 def _sweep(network, out, *extra):
-    cmd = [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "sweep",
+    cmd = [sys.executable, "-m", "usd_chunks.cli", "sweep",
            str(network), "--out", str(out), *extra]
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
 
@@ -384,7 +384,7 @@ def test_an_expression_onto_a_lofted_param_updates_live(network):
         "from usd_chunks.chunk_core import SceneSender;"
         "from usd_chunks.chunk_registry import ChunkLayerManager;"
         "from usd_chunks.chunk_stage import load_chunks;"
-        "from usd_chunks.plugins.usdchunks_cli import _all_chunks;"
+        "from usd_chunks.cli import _all_chunks;"
         "stage = Usd.Stage.Open(sys.argv[1]);"
         "S = type('S', (SceneSender,), {"
         "  'get_stage': lambda self: stage,"
