@@ -15,7 +15,7 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_graph
+from usd_chunks import chunk_graph
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -73,7 +73,7 @@ class TestNoToolkit:
         """
         source = (
             "import sys;"
-            "import usd_chunks.plugins.chunk_graph;"
+            "import usd_chunks.chunk_graph;"
             "leaked=sorted(m for m in sys.modules if 'PySide' in m or 'shiboken' in m);"
             "print(','.join(leaked))"
         )

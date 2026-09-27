@@ -30,7 +30,8 @@ from pxr import Usd
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
-from usd_chunks.plugins import chunk_graph, chunk_imgui
+from usd_chunks.plugins import chunk_imgui
+from usd_chunks import chunk_graph
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
 

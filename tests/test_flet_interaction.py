@@ -22,7 +22,7 @@ import flet as ft  # noqa: E402
 from graph_fixtures import content_nodes, make_network  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
-from usd_chunks.plugins import chunk_graph  # noqa: E402
+from usd_chunks import chunk_graph  # noqa: E402
 
 
 

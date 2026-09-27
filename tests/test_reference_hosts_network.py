@@ -19,7 +19,7 @@ from usd_chunks.chunk_stage import (
     ChunkStageSync, export_chunks, get_chunk_prim_path, initialize, is_group_chunk,
     is_network_host, is_subnet,
 )
-from usd_chunks.plugins import chunk_graph
+from usd_chunks import chunk_graph
 
 _TX = "inputs:translate_grp:tx"
 
@@ -397,7 +397,7 @@ class TestPublish:
     """Publish = write a group out and make it the host of that file: the inverse."""
 
     def _group_with_chunks(self, scene):
-        from usd_chunks.plugins import chunk_graph
+        from usd_chunks import chunk_graph
         a = _add(scene, "transform")
         b = _add(scene, "transform")
         b.add_dependency(a)
@@ -607,7 +607,7 @@ class TestOverridesBelongToTheHostNode:
         assert host.nameChildren["Transform"].attributes[_TX].default == 2.5
 
     def test_disabling_the_host_takes_its_network_and_overrides_out_of_effect(self, hosting):
-        from usd_chunks.plugins import chunk_graph
+        from usd_chunks import chunk_graph
         stage, scene, reference, _ = hosting
         transform = next(c for c in scene.get_chunks() if c.name == "Transform")
         transform.get_param("tx").value = 2.5
