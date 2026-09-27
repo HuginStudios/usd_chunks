@@ -164,8 +164,10 @@ def _find_in_dir(pin_dir: Path, chunk_type: str) -> Path | None:
 
 
 def _link_or_copy(src: Path, dst: Path, copy: bool) -> str:
-    """Place src at dst as a symlink (default) or a copy. Falls back to copy if
-    the platform refuses symlinks (Windows without developer mode/admin).
+    """Place src at dst as a symlink (default) or a copy.
+
+    Falls back to a copy if the platform refuses symlinks (Windows without developer mode or
+    admin).
     """
     if dst.is_symlink() or dst.exists():
         dst.unlink()
@@ -470,8 +472,9 @@ def write_lock(layer, lock: dict[str, str]) -> None:
 def _write_wrapper(scene_path: Path, lock: dict[str, str], pin_dir: Path,
                    packages: dict[str, str] | None = None,
                    hashes: dict[str, str] | None = None):
-    """A thin layer that sublayers the (immutable) scene and carries the lock,
-    written into the pin folder so the source is never touched. Render this.
+    """Write a thin layer that sublayers the (immutable) scene and carries the lock.
+
+    It goes into the pin folder so the source is never touched; this is the file to render.
     """
     from pxr import Sdf
 
@@ -489,8 +492,10 @@ def _write_wrapper(scene_path: Path, lock: dict[str, str], pin_dir: Path,
 def _record_lock(scene_path: Path, entry_layer, lock: dict[str, str], pin_dir: Path, wrapper: bool,
                  packages: dict[str, str] | None = None,
                  hashes: dict[str, str] | None = None):
-    """Write the lock onto the entry layer in place, or into a wrapper layer if
-    the entry layer is read-only (or --wrapper was forced). Returns (path, mode).
+    """Write the lock onto the entry layer in place, or into a wrapper layer.
+
+    A wrapper is used when the entry layer is read-only, or when --wrapper forces one.
+    Returns (path, mode).
     """
     if not wrapper:
         try:

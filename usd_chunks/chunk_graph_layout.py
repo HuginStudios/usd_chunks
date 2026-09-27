@@ -1,16 +1,13 @@
-"""Pure auto-layout math for the embedded node graph -- no Qt/USD dependency, so it's directly
-unit-testable without a real scene/stage. See ``plugins/chunk_qt_nodegraph.py`` for the Qt/USD
-glue: node sizing via ``ChunkNodeItem.boundingRect()``, position persistence via
-``ChunkNodeItem._write_pos_to_usd()``, and connection data built by walking prim attributes
-(exec + typed, mirroring ``ChunkGraphScene._build_edges``).
+"""Pure auto-layout math for the node graphs, with no Qt or USD dependency.
 
-Ported from the removed ``scripts/node_graph/_graph_layout.py`` (recoverable at git branch
-``feat/node-graph``) -- that file's backdrop/group-stacking half doesn't apply here (this
-codebase's chunkgroups are subnets, not spatial containers), so this operates directly on
-individual nodes with no grouping concept at all: topological depth assigns X-columns, and
-within a column each node's target Y is the average Y of its already-placed upstream/downstream
-neighbors, pushed down only on collision -- the same "target-then-push" strategy, applied to
-nodes instead of node-groups.
+That keeps it unit-testable without a real scene or stage. The frontends supply the rest:
+node sizes, position persistence, and the connection data (exec and typed alike), which
+`chunk_graph.layout_graph` assembles before calling in here.
+
+Topological depth assigns X-columns, and within a column each node's target Y is the
+average Y of its already-placed upstream and downstream neighbours, pushed down only on
+collision. Chunkgroups are subnets, not spatial containers, so the layout works on
+individual nodes with no grouping concept at all.
 """
 
 from __future__ import annotations

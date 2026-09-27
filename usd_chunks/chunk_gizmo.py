@@ -349,6 +349,7 @@ def _iter_groups(obj, prefix: str = ""):
 
 def _iter_vectors(obj, prefix: str = ""):
     """(path, vector) for every ChunkVectorBase under obj, not crossing into a nested chunk.
+
     Vectors are skipped by _iter_params, which walks scalars only.
     """
     for param in obj.get_my_params():
@@ -767,8 +768,7 @@ def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
 
 
 def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
-    """Nearest the view first, so a host driving descs[0] edits the chunk that has the
-    final say.
+    """Order gizmo descs nearest the view first, so descs[0] is the chunk with the final say.
 
     Layer strength alone is not enough. A chunk that has not authored yet is not in the
     prim's layer stack at all -- an Offset Transform sitting at zero authors nothing by

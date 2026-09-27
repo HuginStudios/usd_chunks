@@ -1,3 +1,4 @@
+"""The flag enums that describe params and groups: their type, layout, state and behaviour."""
 from __future__ import annotations
 from enum import IntFlag, IntEnum, auto
 from pxr import Gf, Sdf
