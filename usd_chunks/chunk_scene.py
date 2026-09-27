@@ -749,15 +749,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             self._creator = Creator(self)
         return self._creator
 
-    def add(self, chunk_type: str, *upstream: ChunkBase, **kwargs) -> ChunkBase:
+    def add(self, chunk_type: str, *inputs: ChunkBase, **kwargs) -> ChunkBase:
         """`scene.create.<chunk_type>(...)` with the type as a string, for types picked at
         runtime."""
-        return getattr(self.create, chunk_type)(*upstream, **kwargs)
+        return getattr(self.create, chunk_type)(*inputs, **kwargs)
 
     def place(
         self,
         new: ChunkBase,
-        upstream: Iterable[ChunkBase] = (),
+        inputs: Iterable[ChunkBase] = (),
         name: str | None = None,
         **params,
     ) -> ChunkBase:
@@ -765,8 +765,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         Args:
             new: The chunk, fresh from its module or a menu entry.
-            upstream: Chunks it runs after. None given, it runs after the innermost
-                `with` chunk, if there is one.
+            inputs: The chunks wired into its input port -- the exec edge, so it runs
+                after them. None given, the innermost `with` chunk, if there is one.
             name: The node's name; the module's own when omitted.
             **params: See `set`.
         """
@@ -786,11 +786,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         finally:
             new._executing = prev
         self.add_chunk(new)
-        upstream = list(upstream)
-        if not upstream and self._upstream and self._upstream[-1] is not None:
-            upstream = [self._upstream[-1]]
-        for u in upstream:
-            new.add_dependency(u)
+        inputs = list(inputs)
+        if not inputs and self._upstream and self._upstream[-1] is not None:
+            inputs = [self._upstream[-1]]
+        for i in inputs:
+            new.add_dependency(i)
         self.set(new, **wires)
         return new
 
@@ -809,12 +809,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 param.connect_value(value)
             else:
                 param.value = value
-
-    @staticmethod
-    def chain(*chunks: ChunkBase) -> None:
-        """Wire chunks to run in the order given."""
-        for upstream, downstream in zip(chunks, chunks[1:]):
-            downstream.add_dependency(upstream)
 
     def cook(self) -> None:
         """Run every chunk, upstream first.
@@ -881,8 +875,9 @@ class Creator:
     label in snake_case ("Dome Light" -> `dome_light`). A module name wins over a variant
     label, and a label two variants share is left out rather than guessed at.
 
-    Each function takes upstream chunks positionally, then `name=` for the node's name and
-    params by keyword -- see SceneSender.place and SceneSender.set.
+    Each function takes its input chunks positionally -- what is wired into its input
+    port -- then `name=` for the node's name and params by keyword; see SceneSender.place
+    and SceneSender.set.
     """
 
     def __init__(self, scene: SceneSender):
@@ -894,11 +889,11 @@ class Creator:
             raise AttributeError(name)
         entry = self._entry(name)
 
-        def create(*upstream: ChunkBase, name: str | None = None, **params):
+        def create(*inputs: ChunkBase, name: str | None = None, **params):
             # A module's main() may return helpers alongside its chunk; the first is the one
             # the params are for, the rest go into the scene beside it.
             primary, *extra = entry.create()
-            placed = self._scene.place(primary, upstream, name, **params)
+            placed = self._scene.place(primary, inputs, name, **params)
             for c in extra:
                 self._scene.add_chunk(c)
             return placed

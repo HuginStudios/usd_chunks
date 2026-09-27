@@ -56,7 +56,7 @@ Each function returns the chunk it made. Its arguments are:
 
 ``` py
 scene.create.transform(
-    box,                                          # upstream chunks: this runs after them
+    box,                                          # its input: box is wired into it
     name="Lift",                                  # the node's name; the chunk's own if left out
     primpath_location=box.get_param("prim_path"), # a param: wired to follow it
     ty=3.0,                                       # a value: set
@@ -68,16 +68,19 @@ the scene, so its first cook already uses them.
 
 ## Connecting chunks
 
-There are two kinds of connection, and they are the same two the graph draws.
+There are two kinds of connection, and they are the same two the graph draws: a node's
+input port, and its params.
 
-**An exec wire** says one chunk runs after another. It decides the order chunks cook in,
-and which layer a chunk authors into (see Edit Target below). Pass the upstream chunks
-positionally when creating, or wire existing ones:
+**The input port** takes the chunks that come before it -- as in Nuke, where a Read feeds
+the Blur after it, or Houdini's `setInput`. It decides the order chunks cook in, and which
+layer a chunk authors into (see Edit Target below). Pass a chunk's inputs positionally
+when creating it; several are fine, and it runs after all of them. To wire chunks that
+already exist, call `add_dependency` on the one that comes after:
 
 ``` py
-scene.create.transform(box)       # Transform runs after box
-scene.chain(a, b, c)              # a, then b, then c
-c.add_dependency(b)               # the same, on the chunk itself
+xform = scene.create.transform(box)   # box -> Transform
+merge = scene.create.merge(a, b)      # a and b -> Merge
+c.add_dependency(b)                   # b -> c, for chunks that already exist
 ```
 
 **A param wire** says one param follows another's value. It is saved with the network
@@ -89,16 +92,16 @@ scene.set(xform, primpath_location=box.get_param("prim_path"))
 xform.get_param("primpath_location").connect_value(box.get_param("prim_path"))
 ```
 
-`scene.chain` and a positional upstream call `add_dependency`; a param as a value calls
-`connect_value`. Calling them directly is fine: the scene only saves the typing.
+A positional input calls `add_dependency`, and a param as a value calls `connect_value`.
+Calling them directly is fine: the scene only saves the typing.
 
 ## `with` blocks
 
 `with chunk:` says where the chunks created inside it go.
 
 - **A chunkgroup takes them in as its children.**
-- **Any other chunk runs before them**, so each chunk created inside, unless given its
-  own upstream, runs after it.
+- **Any other chunk becomes their input**: each chunk created inside, unless given
+  inputs of its own, is wired after it.
 
 The second is how a script authors into a layer. The layer a chunk writes to comes from
 the nearest Edit Target upstream of it, so:

@@ -13,7 +13,7 @@ This file starts with the first release; development before that is in the commi
 
 - `from usd_chunks import Scene` builds and runs chunk networks from a plain script:
   `scene.create.<chunk>()` for every chunk module and menu variant (`scene.create.cube()`,
-  `scene.create.rect_light()`), upstream chunks passed positionally, and `with chunk:` to
+  `scene.create.rect_light()`), input chunks passed positionally, and `with chunk:` to
   nest into a chunkgroup or run after any other chunk -- so `with
   scene.create.edit_target(...)` authors what is inside into that layer. `save()` writes
   the network, `export()` the plain-USD result. Examples in `examples/scripts/`.
