@@ -192,6 +192,7 @@ class GraphView:
     def reload(self):
         # Recomputed here, not just at construction: grouping creates a context and
         # deleting a group removes one, and dive_out reads this list to find its parent.
+        """Re-read the context's nodes, ports, wires and positions from the stage."""
         self.available = contexts(self.stage)
         self.prims, self.ports, self.edges = chunk_graph.read_graph(
             self.stage, self.context, self.chunks)
@@ -210,6 +211,14 @@ class GraphView:
                           for p, (x, y) in flipped.items()}
 
     def rows(self, path: str):
+        """A node's input and output ports, exec first, then by name.
+
+        Args:
+            path: Prim path of the node.
+
+        Returns:
+            (inputs, outputs).
+        """
         node_ports = self.ports[path]
         ins = [p for p in node_ports if p.is_input]
         outs = [p for p in node_ports if not p.is_input]
@@ -246,20 +255,26 @@ class GraphView:
                 (point.y - self.pan[1]) / self.zoom)
 
     def _layout_to_usd(self, x: float, y: float) -> tuple[float, float]:
-        """Layout point -> the coordinates USD stores. Undoes the origin shift and the
-        Y-up flip together; every write of a node position goes through here.
+        """Layout point -> the coordinates USD stores.
+
+        Undoes the origin shift and the Y-up flip together; every write of a node position goes
+        through here.
         """
         return (x + self.origin[0], -(y + self.origin[1]))
 
     def _to_screen(self, x: float, y: float) -> tuple[float, float]:
-        """Layout point -> screen point. The inverse of _xy, for anyone who has a node
-        position and needs to know where to aim a pointer at it.
+        """Layout point -> screen point.
+
+        The inverse of _xy, for anyone who has a node position and needs to know where to aim a
+        pointer at it.
         """
         return (x * self.zoom + self.pan[0], y * self.zoom + self.pan[1])
 
     def _delta(self, event) -> tuple[float, float]:
-        """A drag delta in layout space -- a 10px drag moves a node 10px at zoom 1, and
-        20 layout units at zoom 0.5, which is what keeps the node under the cursor.
+        """A drag delta in layout space.
+
+        A 10px drag moves a node 10px at zoom 1, and 20 layout units at zoom 0.5, which is what
+        keeps the node under the cursor.
         """
         delta = event.local_delta
         return (delta.x / self.zoom, delta.y / self.zoom)
@@ -267,9 +282,15 @@ class GraphView:
     def port_xy(self, port: chunk_graph.PortRef):
         """Where a port's dot lands.
 
-        Placement is the view's business: the engine says a port exists and what it
-        carries, not where to draw it. Qt derives Y from live widget geometry; here it is a
-        row, and both are legitimate answers to a question the engine does not ask.
+        Placement is the view's business: the engine says a port exists and what it carries,
+        not where to draw it. Qt derives Y from live widget geometry; here it is a row, and both
+        are legitimate answers to a question the engine does not ask.
+
+        Args:
+            port: The port.
+
+        Returns:
+            (x, y) in layout space.
         """
         x0, y0 = self.positions[port.node_path]
         x = x0 if port.is_input else x0 + NODE_W
@@ -295,6 +316,13 @@ class GraphView:
 
         Only nodes whose rect the point could plausibly belong to are scanned, rather than
         every port on every node on every press and every drag frame.
+
+        Args:
+            x: Layout x.
+            y: Layout y.
+
+        Returns:
+            The port, or None.
         """
         best, best_distance = None, GRAB_R
         for path in self.prims:
@@ -311,6 +339,7 @@ class GraphView:
         return best
 
     def node_at(self, x: float, y: float):
+        """The node under a layout point, or None."""
         for path in self.prims:
             nx, ny = self.positions[path]
             if nx <= x <= nx + NODE_W and ny <= y <= ny + self.node_height(path):
@@ -320,6 +349,7 @@ class GraphView:
     # -- input -------------------------------------------------------------
 
     def on_tap(self, event):
+        """Select the node under a click; clicking two ports in turn connects them."""
         x, y = self._xy(event)
         port = self.port_at(x, y)
         if port is None:
@@ -359,6 +389,7 @@ class GraphView:
         self.refresh(bodies=True)
 
     def on_secondary_tap(self, event):
+        """Right-click: cut a port's wires, or open the create menu on empty canvas."""
         x, y = self._xy(event)
         port = self.port_at(x, y)
         if port is None:
@@ -375,6 +406,7 @@ class GraphView:
         self.refresh()
 
     def on_pan_start(self, event):
+        """Start a drag: a wire from a port, a node move, or a canvas pan."""
         self._shake_samples = []
         self._shook = False
         self._moved_far_enough = False
@@ -391,6 +423,7 @@ class GraphView:
         self.panning = self.dragging is None
 
     def on_pan_update(self, event):
+        """Continue a drag: pan the canvas, move the dragged nodes, or extend the wire."""
         if self.panning:
             # Pan is a SCREEN translation, so it uses the raw delta: dividing by
             # zoom here would make the canvas slide faster the further you zoom out.
@@ -419,15 +452,20 @@ class GraphView:
     def set_selection(self, paths, add: bool = False):
         """Select these nodes, mirroring onto the chunks' SELECTED state.
 
-        The state bit is presentation only -- chunk_scheduler.propagate_presentation --
-        so selecting cooks nothing. Writing it anyway is what lets an operation ask the
-        chunks what is selected instead of being handed a list by whichever frontend
-        happened to call it.
+        The state bit is presentation only -- chunk_scheduler.propagate_presentation -- so
+        selecting cooks nothing. Writing it anyway is what lets an operation ask the chunks
+        what is selected instead of being handed a list by whichever frontend happened to call
+        it.
+
+        Args:
+            paths: Prim paths of the nodes to select.
+            add: Add to the current selection instead of replacing it.
         """
         self.selected_nodes = chunk_graph.apply_selection(
             self.chunks, paths, self.selected_nodes, add)
 
     def selected_chunks(self):
+        """The chunks of the selected nodes."""
         return chunk_graph.chunks_for(self.chunks, self.selected_nodes)
 
     # -- clipboard ---------------------------------------------------------
@@ -439,6 +477,7 @@ class GraphView:
             self.selected_nodes)
 
     def copy_selection(self):
+        """Copy the selection to the clipboard shared by every frontend."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to copy"
@@ -447,6 +486,7 @@ class GraphView:
         self.refresh()
 
     def cut_selection(self):
+        """Copy the selection to the shared clipboard, then delete it."""
         nodes, edges = self.snapshot_selection()
         if not nodes:
             self.status = "nothing to cut"
@@ -459,8 +499,14 @@ class GraphView:
     def paste_at(self, x: float, y: float, nodes=None, edges=None):
         """Materialize clipboard nodes at a layout point and re-wire them.
 
-        Qt defers its wiring on a timer because its ports arrive in deferred proxy
-        batches; here everything is built synchronously, so paste_nodes wires as it goes.
+        Qt defers its wiring on a timer because its ports arrive in deferred proxy batches;
+        here everything is built synchronously, so paste_nodes wires as it goes.
+
+        Args:
+            x: Layout x of the paste.
+            y: Layout y of the paste.
+            nodes: Clipboard nodes; None pastes the shared clipboard.
+            edges: Clipboard edges; None uses the shared clipboard.
         """
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
         edges = chunk_graph.edge_clipboard if edges is None else edges
@@ -503,8 +549,9 @@ class GraphView:
         self.refresh(bodies=True)
 
     def duplicate_selection(self):
-        """Copy and paste in one step at a fixed offset, leaving the clipboard alone -- so
-        duplicating never clobbers whatever was last explicitly copied.
+        """Copy and paste in one step at a fixed offset, leaving the clipboard alone.
+
+        So duplicating never clobbers whatever was last explicitly copied.
         """
         nodes, edges = self.snapshot_selection()
         if not nodes:
@@ -525,8 +572,8 @@ class GraphView:
     def auto_layout(self):
         """L: lay out the selection's connected subgraph, or everything.
 
-        The computation is chunk_graph.layout_graph, shared with the other two frontends.
-        What is left here is applying it, which is the part that genuinely differs.
+        The computation is chunk_graph.layout_graph, shared with the other frontends. What is
+        left here is applying it, which is the part that genuinely differs.
         """
         if not self.prims:
             return self.refresh()
@@ -567,9 +614,15 @@ class GraphView:
     def edge_under_node(self, path: str):
         """The first wire passing under this node's rect, ignoring its own.
 
-        Qt asks QPainterPath.intersects; there is no such call here, so the curve is
-        sampled and each point tested against the rect. Same question, and the sampling is
-        dense enough that a wire crossing a 260px-wide node cannot slip between samples.
+        Qt asks QPainterPath.intersects; there is no such call here, so the curve is sampled
+        and each point tested against the rect. Same question, and the sampling is dense
+        enough that a wire crossing a 260px-wide node cannot slip between samples.
+
+        Args:
+            path: Prim path of the node.
+
+        Returns:
+            The edge, or None.
         """
         if path not in self.positions:
             return None
@@ -647,6 +700,9 @@ class GraphView:
 
         A -> C -> B becomes A -> B when C is shaken loose. Typed wires are simply cleared;
         there is no meaningful heal for them, which is the same line Qt takes.
+
+        Args:
+            path: Prim path of the node.
         """
         prim = self.prims.get(path)
         if prim is None:
@@ -676,10 +732,15 @@ class GraphView:
     def can_dive(self, path: str) -> bool:
         """Whether `path` is a subnet the user may navigate into.
 
-        Keyed on is_chunkgroup, not on the CONTEXT flag. Both a chunkgroup and a
-        chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material`
-        as an implementation detail) carry CONTEXT, so the flag cannot tell them apart, and
-        only the chunkgroup may be dived into.
+        Keyed on is_subnet (chunk_graph.can_dive), not on the CONTEXT flag. Both a chunkgroup
+        and a chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material`
+        as an implementation detail) carry CONTEXT, so the flag cannot tell them apart.
+
+        Args:
+            path: Prim path of the node.
+
+        Returns:
+            True if the node can be dived into.
         """
         return chunk_graph.can_dive(self.chunks, path)
 
@@ -722,6 +783,7 @@ class GraphView:
         self.refresh(bodies=True)
 
     def on_double_tap(self, event):
+        """Dive into a subnet, or out of this one on empty canvas."""
         node = self.node_at(*self._xy(event))
         if node is None:
             return self.dive_out()
@@ -742,10 +804,13 @@ class GraphView:
     def active_slot(self) -> int:
         """The view slot driving execution in this context, 0 for none.
 
-        Stored as chunk:activeView on the CONTEXT prim, which is the same place Qt reads
-        and writes -- so a file saved with slot 2 active opens on slot 2 in either
-        frontend. Each context has its own slots: a tab view and a group view can both be
-        slot 1 without colliding.
+        Stored as chunk:activeView on the CONTEXT prim, which is the same place every frontend
+        reads and writes -- so a file saved with slot 2 active opens on slot 2 in any of them.
+        Each context has its own slots: a tab view and a group view can both be slot 1 without
+        colliding.
+
+        Returns:
+            The active slot.
         """
         return chunk_graph.read_active_slot(self.stage, self.context)
 
@@ -765,8 +830,11 @@ class GraphView:
         """Switch which view drives execution, and recook for it.
 
         The cooking itself is chunk_stage.recook_for_view -- the same function the Qt graph
-        calls. It blocks and mutes everything outside the active view's upstream tree, so
-        this is a real execution switch rather than a highlight.
+        calls. It blocks and mutes everything outside the active view's upstream tree, so this
+        is a real execution switch rather than a highlight.
+
+        Args:
+            slot: The view slot, or 0 for none.
         """
         changed, self.status = chunk_graph.activate_view_slot(
             self.stage, self.scene, self.context, self.chunks, slot)
@@ -782,6 +850,10 @@ class GraphView:
         Creation is chunk_graph.new_view_slot, shared with the other frontends -- slot
         allocation is scoped to the container, and a view already wired to the target is
         reused rather than duplicated.
+
+        Args:
+            x: Layout x of the view node.
+            y: Layout y of the view node.
         """
         if self.scene is None:
             self.status = "no chunk session"
@@ -799,8 +871,9 @@ class GraphView:
         self.set_active_slot(slot)
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open. Without one, nothing cooks -- a network would
-        look right and do nothing.
+        """Give the context a view on open.
+
+        Without one, nothing cooks -- a network would look right and do nothing.
         """
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, self.chunks.get(self.context))
@@ -816,9 +889,12 @@ class GraphView:
     def on_key(self, event):
         """Graph shortcuts, ignored while a param is being typed into.
 
-        Flet has no per-control key handling: a page handler sees every keystroke,
-        including the ones meant for a TextField inside a node. Without this guard,
-        typing a prim path would delete the node on Delete and toggle disable on "d".
+        Flet has no per-control key handling: a page handler sees every keystroke, including
+        the ones meant for a TextField inside a node. Without this guard, typing a prim path
+        would delete the node on Delete and toggle disable on "d".
+
+        Args:
+            event: The keyboard event.
         """
         if self.focus.is_editing():
             return
@@ -870,6 +946,7 @@ class GraphView:
         return self._xy_from_screen(vw / 2, vh / 2)
 
     def delete_selected(self):
+        """Delete the selected chunks and save."""
         chunks = self.selected_chunks()
         if not chunks:
             self.status = "nothing selected"
@@ -883,6 +960,7 @@ class GraphView:
         self.refresh(bodies=True)
 
     def toggle_disable_selected(self):
+        """Flip DISABLED on the selected chunks and save."""
         chunks = self.selected_chunks()
         if not chunks:
             self.status = "nothing selected"
@@ -896,8 +974,11 @@ class GraphView:
     def frame(self, paths):
         """Fit `paths` in the viewport -- Qt's F.
 
-        Needs the viewport size, which only the page knows; with no page (tests, headless)
-        the zoom is still solved so the maths stays testable, using a nominal viewport.
+        Needs the viewport size, which only the page knows; with no page (tests, headless) the
+        zoom is still solved so the maths stays testable, using a nominal viewport.
+
+        Args:
+            paths: Prim paths of the nodes to frame.
         """
         paths = [p for p in paths if p in self.positions]
         if not paths:
@@ -929,8 +1010,13 @@ class GraphView:
     def create_chunk(self, entry, x: float, y: float):
         """Create one menu entry's chunk(s) at a layout position.
 
-        The sequence is chunk_graph.create_from_entry, shared with the other frontends;
-        the layout-to-USD conversion is the part that is this canvas's own.
+        The sequence is chunk_graph.create_from_entry, shared with the other frontends; the
+        layout-to-USD conversion is the part that is this canvas's own.
+
+        Args:
+            entry: The menu entry.
+            x: Layout x of the new node.
+            y: Layout y of the new node.
         """
         created, error = chunk_graph.create_from_entry(
             self.scene, entry, self._layout_to_usd(x, y), self._nest_target())
@@ -946,9 +1032,13 @@ class GraphView:
     def open_create_menu(self, x: float, y: float):
         """A searchable list of chunks, landing the choice at (x, y).
 
-        Flet has no context-menu primitive that can pop at an arbitrary point, so this is
-        a dialog. The search field ranks with chunk_registry.search_menu_entries, the same
+        Flet has no context-menu primitive that can pop at an arbitrary point, so this is a
+        dialog. The search field ranks with chunk_registry.search_menu_entries, the same
         ranking Qt's menu uses, so typing "trans" lists the same entries in the same order.
+
+        Args:
+            x: Layout x where the chunk lands.
+            y: Layout y where the chunk lands.
         """
         entries = self.menu_entries()
         if not entries or self.page is None:
@@ -985,10 +1075,13 @@ class GraphView:
     def on_scroll(self, event):
         """Wheel zoom, anchored on the pointer.
 
-        The layout point under the cursor is computed BEFORE the zoom changes and the pan
-        is then solved so that same point lands back under the cursor. Scaling about the
-        origin instead is the usual bug: the graph appears to flee the pointer, and at 3x
-        whatever you were looking at is off-screen.
+        The layout point under the cursor is computed BEFORE the zoom changes and the pan is
+        then solved so that same point lands back under the cursor. Scaling about the origin
+        instead makes the graph appear to flee the pointer, and at 3x whatever you were
+        looking at is off-screen.
+
+        Args:
+            event: The scroll event.
         """
         point = event.local_position
         lx, ly = self._xy(event)
@@ -1008,6 +1101,7 @@ class GraphView:
         self.refresh()
 
     def on_pan_end(self, event):
+        """Finish a drag: drop a wire onto a port, splice a node into a wire, or save a move."""
         if self.panning:
             self.panning = False
             return
@@ -1050,6 +1144,7 @@ class GraphView:
     # -- drawing -----------------------------------------------------------
 
     def shapes(self):
+        """The canvas shapes for the wires, including a wire being dragged."""
         out = []
         if self.wiring is not None:
             x1, y1 = self.port_xy(self.wiring)
@@ -1117,9 +1212,11 @@ class GraphView:
         return out
 
     def _header_colour(self, path: str, prim) -> str:
-        """A node's header colour. The active view gets the reserved accent, an inactive
-        view a dimmed one -- which of the three is driving execution is the single most
-        useful thing the graph can tell you at a glance.
+        """A node's header colour.
+
+        The active view gets the reserved accent, an inactive view a dimmed one -- which view
+        is driving execution is the single most useful thing the graph can tell you at a
+        glance.
         """
         if chunk_graph.is_disabled(prim):
             return "#242424"
@@ -1135,13 +1232,16 @@ class GraphView:
     def node_controls(self):
         """One positioned Container per node, holding that chunk's real param widgets.
 
-        Qt embeds the actual ChunkWidget on its canvas through a proxy; a Flet canvas
-        cannot host controls at all, so the graph is a Stack -- wires drawn on a canvas
-        underneath, node bodies as ordinary positioned controls on top. Same result, and
-        the params are live: moving a slider here changes the chunk.
+        Qt embeds the actual ChunkWidget on its canvas through a proxy; a Flet canvas cannot
+        host controls at all, so the graph is a Stack -- wires drawn on a canvas underneath,
+        node bodies as ordinary positioned controls on top. Same result, and the params are
+        live: moving a slider here changes the chunk.
 
-        The widgets are kept on self because nothing else holds them. Each registers a
-        notice callback, and a collected widget stops updating.
+        The widgets are kept on self because nothing else holds them. Each registers a notice
+        callback, and a collected widget stops updating.
+
+        Returns:
+            The node containers.
         """
         self.param_widgets = []
         controls = []
@@ -1187,13 +1287,18 @@ class GraphView:
         return controls
 
     def extent(self):
+        """The (width, height) the graph needs, with a margin."""
         width = max((x for x, _ in self.positions.values()), default=0) + NODE_W + MARGIN * 2
         height = max((y for _, y in self.positions.values()), default=0) + 300
         return width, height
 
     def breadcrumb(self) -> str:
-        """Where you are, and how deep. Diving with nothing to show for it on screen is
-        how you get lost in a nested graph.
+        """Where you are, and how deep.
+
+        Diving with nothing to show for it on screen is how you get lost in a nested graph.
+
+        Returns:
+            The context path, as "a / b / c".
         """
         if not self.context or self.context == chunk_graph.CHUNKS_ROOT:
             return self.context or chunk_graph.CHUNKS_ROOT
@@ -1201,6 +1306,7 @@ class GraphView:
         return " / ".join(parts)
 
     def summary(self):
+        """The status line: where you are, what the graph holds, and the last status."""
         return (f"{self.breadcrumb()}   —   {len(self.prims)} nodes · {len(self.edges)} wires · "
                 f"{sum(len(v) for v in self.ports.values())} ports · "
                 f"{len(self.available)} context(s)"
@@ -1208,11 +1314,15 @@ class GraphView:
                 + (f"   —   {self.status}" if self.status else ""))
 
     def refresh(self, bodies: bool = False):
+        """Redraw.
+
+        Args:
+            bodies: Rebuild the node controls too, which is only needed when the set of nodes
+                changed -- rebuilding them on every drag frame would recreate every param widget
+                sixty times a second and drop the notice callbacks they hold.
+        """
         if not self.live:
             return
-        """Redraw. `bodies` rebuilds the node controls too, which is only needed when the
-        set of nodes changed -- rebuilding them on every drag frame would recreate every
-        param widget sixty times a second and drop the notice callbacks they hold."""
         # Same ordering rule as main(): the bodies report the offsets the ports need.
         rebuilt = self.node_controls() if (bodies and self.stack is not None) else None
         if self.pan_container is not None:
@@ -1240,6 +1350,13 @@ class GraphView:
 
 
 def main(page: ft.Page, network: str, context: str | None = None):
+    """Run the Flet graph for one network file.
+
+    Args:
+        page: The Flet page.
+        network: The .usda file.
+        context: The context to open, or None for the default.
+    """
     view = GraphView(network, context)
     view.page = page
     page.on_keyboard_event = view.on_key
