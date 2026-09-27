@@ -62,6 +62,16 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- `usd_chunks/plugins/` is split by what each file is. Toolkit frontends moved to
+  `usd_chunks.frontends.{qt,flet,imgui,blender}` (`chunk_qt` -> `frontends.qt.factory`,
+  `chunk_qt_nodegraph` -> `frontends.qt.nodegraph`, and so on), host entry points to
+  `usd_chunks.hosts.{usdview,kraken,houdini}`, and the CLI to `usd_chunks.cli`. The old
+  module paths still import, as aliases. **Host directories moved with no alias**: point
+  `PXR_PLUGINPATH_NAME` at `usd_chunks/hosts/usdview` (or `kraken`) and `HOUDINI_PATH` at
+  `usd_chunks/hosts/houdini`; `usdchunks plugin-path --host <host>` prints the new path.
+  The standalone graphs run as `python -m usd_chunks.frontends.flet.nodegraph` and
+  `python -m usd_chunks.frontends.imgui.nodegraph`.
+
 - A network brought in by composition is tweaked, never rewritten. Sublayer a sequence's
   network into a shot, or reference it under a chunkgroup, and editing a param in the shot
   authors a sparse `over` in the stage's edit target (the shot file itself, unless the
