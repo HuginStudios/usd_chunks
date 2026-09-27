@@ -422,7 +422,7 @@ def _pick_package(package_ids: list[str], resolution: str) -> dict | None:
 
 
 def _child_of_type(parent, module_key: str):
-    """parent's first child chunk of this module, whatever it ended up being called.
+    """Parent's first child chunk of this module, whatever it ended up being called.
 
     By type, not by name: a child is only called "Reference" if nothing else took that
     name first, and looking it up by name made a second one whenever it had been renamed.

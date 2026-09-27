@@ -69,7 +69,6 @@ def add_validate_and_convert(cls: type[AttributesBase], fields: list[attrs.Attri
     """Used as attrs.field_transformer for chunk attributes in order to sort the __init__ arguments to
     match pylance
     """
-
     sort_keys = {}
     results = []
     for i, f in enumerate(fields):
@@ -197,8 +196,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         self.set_owner(owner)
 
     def get_notice_data(self) -> Self:
-        """
-        The notice data for AttributeSender's is simply self. A receiver of a notice may use this
+        """The notice data for AttributeSender's is simply self. A receiver of a notice may use this
         to get any data available on the AttributeSender. This is possible if the original sender
         of the notice is an AttributeSender, as the notice.data is retrieved from get_notice_data()
 
@@ -244,8 +242,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         return self._blocked
 
     def is_presentation_change(self) -> bool:
-        """
-        A change to the state attribute is presentation only unless it moved DISABLED.
+        """A change to the state attribute is presentation only unless it moved DISABLED.
 
         DISABLED decides whether the chunk cooks at all, so it is a real input to everything
         downstream. HIDDEN, COLLAPSED, SELECTED and STALE are hints to the UI and nothing
@@ -277,8 +274,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         return ChunkFlags.State.DISABLED not in (old ^ new)
 
     def get_usd_prop(self) -> Usd.Property | None:
-        """
-        Retrieve the UsdProperty that this attribute represents
+        """Retrieve the UsdProperty that this attribute represents
 
         Returns:
             Usd.Property | None: The UsdProperty of the attribute if it is bound, else None
@@ -310,8 +306,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
 
 
 class CopyMode(IntEnum):
-    """
-    This enum is used for deciding how the parameters should be created when copied from another
+    """This enum is used for deciding how the parameters should be created when copied from another
     parameter. The default is to create a copy, but if the parameters should be references (share resources),
     SHARE may be better
     """
@@ -323,10 +318,7 @@ class CopyMode(IntEnum):
 
 
 class SendMode(IntEnum):
-    """
-    Setting for whether an attribute should send a notice when changed
-
-    """
+    """Setting for whether an attribute should send a notice when changed"""
 
     NO_SEND = 0
     SEND = 1
@@ -408,9 +400,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
     @classmethod
     def print_init_signature(cls):
-        """
-        A debug function for printing the generated __init__ function signature
-        """
+        """A debug function for printing the generated __init__ function signature"""
         signature = inspect.signature(cls.__init__)
         msg = "__init__("
         for param in signature.parameters.keys():
@@ -445,8 +435,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return self._logger
 
     def clone(self) -> Self:
-        """
-        Create and return a copy of self. Most attributes are copied, but depending on the fields metadata copy_mode (CopyMode),
+        """Create and return a copy of self. Most attributes are copied, but depending on the fields metadata copy_mode (CopyMode),
         the attribute may behave differently. NoticeConnections are not copied, so in the following example, only the first param ("slider1")
         will trigger the callback to myFunc:
 
@@ -573,8 +562,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         raise AttributeError(f"Attribute sender not found {attribname}")
 
     def value_changed(self, attrname: str, old_value: Any, value: Any):
-        """
-        Called after any attr __setattr__ was called.
+        """Called after any attr __setattr__ was called.
         This function should not mutate self to avoid infitite recursion. The purpose is instead to only send Notices of changed attributes when applicable.
         If an attribute exists in self._attr_senders (added in __attrs_post_init__), the mapped AttributeSender is used as sender for the notice. Otherwise, use self as sender
 
@@ -584,7 +572,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             attrname (str): The name of the attribute that was changed
             value (Any): The new value
         """
-
         if old_value == value or attrname.startswith("_"):
             # No change was made, we should not send the notice
             return
@@ -610,8 +597,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             self.execute()
 
     def set_function(self, attrname: str, method: Callable[[Self, AttributeSender], Any]):
-        """
-        Set a function that will be called to evaluate the attribute with name attrname. The result of this function will be
+        """Set a function that will be called to evaluate the attribute with name attrname. The result of this function will be
         the new value of the attribute. For example, a parameters 'value' attribute may evaluate to the product of two inputs:
 
         ``` py
@@ -656,8 +642,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return super().data_changed(notice)
 
     def _safe_convert(self, attr: attrs.Attribute, val: Any) -> Any:
-        """
-        Wraps self.convert_attr, but puts any failed conversion attributes in to self._failed_converters
+        """Wraps self.convert_attr, but puts any failed conversion attributes in to self._failed_converters
         to try and resolve them after __init__. This is so a client does not need to worry about hasattr()
         in their custom convert_attr() functions.
 
@@ -679,8 +664,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return res
 
     def _resolve_failed_converters(self):
-        """
-        Naively try to resolve any failed converters in self._failed_converters, by simply trying to setting the
+        """Naively try to resolve any failed converters in self._failed_converters, by simply trying to setting the
         attributes again. This resolves because attributes are added to _failed_converters when convert_attr raises
         AttributeError (some referenced dependency attribute did not exist when the original convert_attr was called)
         An example of this is the chunk.Menu class; the value should convert to a value in the menu_items list, but

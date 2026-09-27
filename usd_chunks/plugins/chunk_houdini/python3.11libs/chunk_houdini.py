@@ -27,8 +27,7 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
         raise AttributeError("Could not get stage")
 
     def get_selected_prims(self) -> list[Usd.Prim]:
-        """
-        Get the selected prims in the scene
+        """Get the selected prims in the scene
 
         Returns:
             List[Usd.Prim]: Selected prims
@@ -46,8 +45,7 @@ class HoudiniSceneProxy(chunk_core.SceneSender):
         return res
 
     def get_selected_property(self) -> Usd.Property:
-        """
-        Get the selected property in the scene
+        """Get the selected property in the scene
 
         Returns:
             Usd.Property: Selected property

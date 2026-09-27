@@ -13,7 +13,8 @@ def _apply_sublayers(owner: chunk.Chunk) -> None:
     A file that holds a chunk network is not sublayered: it is hosted on this chunk's own
     prim (chunk_stage.host_networks), so the node becomes the network and can be dived
     into, exactly as a Reference pointed at one does. Several such files stack under the
-    node in list order, first strongest, the same order the sublayers take."""
+    node in list order, first strongest, the same order the sublayers take.
+    """
     list_group = owner.get_param("imports", chunk.is_inst(chunk.ListGroup))
     paths = []
 
@@ -49,7 +50,8 @@ def execute(node: chunk.Chunk) -> None:
     effect again. Needed here because export_chunks only copies prim ATTRIBUTES (imports'
     own values), never a layer's own subLayerPaths -- without this, a reloaded Sublayer
     chunk would show the correct path in its field but never actually bring the layer back
-    in, until the field was touched again live."""
+    in, until the field was touched again live.
+    """
     _apply_sublayers(node)
 
 
@@ -58,7 +60,8 @@ def _on_attribute_changed(owner: chunk.Chunk, notice, sender):
     the reserved execute(node) hook above (which does the same real work, for the reload
     case). Keeping this a separate, differently-named function is deliberate: naming a
     callback `execute` collides with the reserved hook's 1-arg calling convention and
-    crashed the very first time a Sublayer chunk got created on a live stage."""
+    crashed the very first time a Sublayer chunk got created on a live stage.
+    """
     if notice.data.name not in ["size", "value"]:
         return
     _apply_sublayers(owner)

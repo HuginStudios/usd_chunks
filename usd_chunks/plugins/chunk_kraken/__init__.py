@@ -1,6 +1,4 @@
-"""
-Plugin implementation for Hugins' inhouse Kraken toolset
-"""
+"""Plugin implementation for Hugins' inhouse Kraken toolset"""
 from __future__ import annotations
 
 from pxr import Tf
@@ -13,8 +11,7 @@ from usd_chunks import chunk_stage
 
 
 class KrakenScene(chunk_core.SceneSender):
-    """
-    This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
+    """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
     TODO: Make this abstract and move implementation to a UsdView related location
     """
 
@@ -85,7 +82,8 @@ class ChunksPluginContainer(KrakenPluginContainer):
 
     def saveChunkGroup(self):
         """Export the current chunk graph as one clean, portable USD layer.
-        See chunk_qt.save_chunkgroup_dialog."""
+        See chunk_qt.save_chunkgroup_dialog.
+        """
         chunk_qt.save_chunkgroup_dialog()
 
 
@@ -96,7 +94,6 @@ class ChunksPluginContainer(KrakenPluginContainer):
             plugRegistry: The plugin registry to register the UI Creator plugin with.
             usdviewApi: The Usdview API instance to use for module creation.
         """
-
         self.add_command_plugin("Chunks", "Reload Chunks", self.reloadChunks)
         self.add_command_plugin("Chunks", "Modules", self.openModuleSettings)
         self.add_command_plugin("Chunks", "Save Layers", self.saveLayers)

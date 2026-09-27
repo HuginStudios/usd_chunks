@@ -33,7 +33,8 @@ def execute(node: chunk.Chunk) -> None:
     """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
     bulk-restoring its param values, so a reloaded Reset Transform actually clears the
     target's xform ops again instead of leaving them intact (its real work lives in _run, a
-    Button callback, which load's value-restore deliberately does not trigger)."""
+    Button callback, which load's value-restore deliberately does not trigger).
+    """
     _run(node, None, None)
 
 

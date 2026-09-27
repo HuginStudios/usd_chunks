@@ -158,7 +158,8 @@ class FletParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     def _typing(self, control):
         """Wire a control's focus signals, if it has them. Called by the widgets whose
-        control accepts typed text -- a Checkbox or a Button cannot swallow a shortcut."""
+        control accepts typed text -- a Checkbox or a Button cannot swallow a shortcut.
+        """
         if hasattr(control, "on_focus"):
             control.on_focus = self.on_focus
             control.on_blur = self.on_blur
@@ -282,7 +283,8 @@ class FletFileWidget(FletParamWidget):
 
     def apply_picked(self, chosen) -> None:
         """Write a picked path back. pick_files hands back a LIST of files; the other two
-        hand back a path or None."""
+        hand back a path or None.
+        """
         if isinstance(chosen, (list, tuple)):
             chosen = chosen[0] if chosen else None
         path = getattr(chosen, "path", chosen)

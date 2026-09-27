@@ -35,7 +35,8 @@ def texture_file_is_usable(path: str) -> bool:
 def _apply_material(owner: chunk.Chunk, prims) -> None:
     """Core work: build the UV checker material and bind it to `prims`. Shared by the
     interactive Button callback (apply, below -- validates and pops a dialog first) and
-    the reserved execute(node) hook (which must never show a modal dialog mid-load)."""
+    the reserved execute(node) hook (which must never show a modal dialog mid-load).
+    """
     # Access the parameter inside the group
     x_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[0]
     y_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[1]
@@ -140,7 +141,8 @@ def execute(node: chunk.Chunk) -> None:
     material instead of leaving the target prim unbound (apply is a Button callback,
     which load's value-restore deliberately does not trigger). Calls the shared core
     directly rather than apply() itself -- apply()'s own validation pops a modal
-    QMessageBox on an empty selection, which must never happen mid-load."""
+    QMessageBox on an empty selection, which must never happen mid-load.
+    """
     prim_param = node.get_param("prim", chunk.is_inst(chunk.LineEdit))
     prims = prim_param.get_prims() if prim_param else []
     if not prims:

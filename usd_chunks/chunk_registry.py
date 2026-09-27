@@ -1,5 +1,4 @@
-﻿"""
-The ChunkRegistry singleton is responsible for loading and unloading the chunks.
+﻿"""The ChunkRegistry singleton is responsible for loading and unloading the chunks.
 USD_CHUNK_DIR environment variable tells the registry where to scan for .py files
 containing the chunks. The ChunkRegistry will also scan nested folders in this location
 
@@ -713,8 +712,7 @@ def installed_version(package: str):
 
 
 class ChunkModule:
-    """
-    A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
+    """A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
     ChunkLazyConfigLoader
 
     Args:
@@ -753,8 +751,7 @@ class ChunkModule:
 
     @staticmethod
     def from_chunk_definition(file: str | Path, name: str | None = None) -> list[ChunkModule]:
-        """
-        Create a ChunkModule from a chunk module file (.py).
+        """Create a ChunkModule from a chunk module file (.py).
 
         Returns:
             List[ChunkModule]: A list holding the created module, or empty for anything
@@ -776,8 +773,7 @@ class ChunkModule:
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
 
     def get_menu_path(self) -> list[str]:
-        """
-        Get the menu namespace this module lives under, outermost element first.
+        """Get the menu namespace this module lives under, outermost element first.
 
         The module's dotted path is prefixed with its category, dropping a leading path
         element that merely repeats that category.
@@ -785,7 +781,6 @@ class ChunkModule:
         Returns:
             List[str]: The menu namespace, outermost first; the last element is the label.
         """
-
         cat = self.config.category
         if isinstance(cat, Enum):
             cat = cat.value
@@ -800,8 +795,7 @@ class ChunkModule:
         return namespace
 
     def get_menu_name(self) -> str:
-        """
-        Get a path-like string refereing to where this module can be found in a menu
+        """Get a path-like string refereing to where this module can be found in a menu
 
         Returns:
             str: A path-like string to where this module can be found in a menu.
@@ -893,8 +887,7 @@ class ChunkModule:
         return True
 
     def load(self) -> Sequence[core.ChunkBase]:
-        """
-        Loads the module. This ensures that the module is properly created. If Already loaded, it's preferred to
+        """Loads the module. This ensures that the module is properly created. If Already loaded, it's preferred to
         call create() directly, to skip some initialization stuff that should only be called once
 
         Returns:
@@ -914,14 +907,11 @@ class ChunkModule:
         return res
 
     def unload(self):
-        """
-        Deletes any chunk created from this module and sets loaded to False
-        """
+        """Deletes any chunk created from this module and sets loaded to False"""
         self.loaded = False
 
     def create(self) -> Sequence[core.ChunkBase]:
-        """
-        Runs the main function from the module and adds the chunks returned from the main function to the
+        """Runs the main function from the module and adds the chunks returned from the main function to the
         ChunkRegistry scene
 
         Returns:
@@ -955,8 +945,7 @@ class ChunkModule:
         return loaded
 
     def should_load_for_filter(self) -> bool:
-        """
-        Check if this module should load. Checks if the module name exists in USD_CHUNK_LOAD_FILTER
+        """Check if this module should load. Checks if the module name exists in USD_CHUNK_LOAD_FILTER
 
         Returns:
             bool: True if this module should load
@@ -973,8 +962,7 @@ class ChunkModule:
         return self._has_main
 
     def should_load_for_plugin(self, plugin_name: str) -> bool:
-        """
-        Checks if the plugin_name exists in config.load_for_plugin. If the load_for_plugin is empty
+        """Checks if the plugin_name exists in config.load_for_plugin. If the load_for_plugin is empty
         then assume the module is safe to load
 
         Args:
@@ -988,8 +976,7 @@ class ChunkModule:
         return True
 
     def export(self, path: str | Path):
-        """
-        Export this ChunkModule's source as a .py file. Any other extension warns and fails.
+        """Export this ChunkModule's source as a .py file. Any other extension warns and fails.
 
         Args:
             path (str | Path): The path to export to. Should be .py
@@ -1045,7 +1032,8 @@ def _words(text: str) -> list[str]:
 
 def _subsequence_gaps(token: str, text: str) -> int | None:
     """How many extra characters the tightest in-order match of token in text spans over
-    its own length, or None when token's letters do not all appear in order."""
+    its own length, or None when token's letters do not all appear in order.
+    """
     best = None
     for start in (i for i, ch in enumerate(text) if ch == token[0]):
         pos = start
@@ -1139,7 +1127,8 @@ _FIRST_CATEGORY = "examples"
 
 def _category_order(entry: MenuEntry) -> tuple:
     """Sort key placing a menu entry's category: Examples first, the rest A-Z, and
-    chunks with no category after every category."""
+    chunks with no category after every category.
+    """
     category = tuple(part.lower() for part in entry.module.get_menu_path()[:-1])
     if not category:
         return (2,)
@@ -1250,7 +1239,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 We hold a reference to it here in order to keep it alive
             plugin (str): A string identifying the currently used plugin
         """
-
         self.scene = scene_sender
         self.plugin = plugin
 
@@ -1358,8 +1346,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         return mods
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
-        """
-        Register a ChunkModule. This will ensure that the module is kept alive and accessible
+        """Register a ChunkModule. This will ensure that the module is kept alive and accessible
 
         Args:
             module (ChunkModule): The module to add to the registry
@@ -1404,7 +1391,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     def _tier_of(self, file: Path) -> str:
         """Which precedence tier a module file belongs to: the appended
-        GLOBAL_USDCHUNKS install dir, or an explicit USD_CHUNK_DIRS entry."""
+        GLOBAL_USDCHUNKS install dir, or an explicit USD_CHUNK_DIRS entry.
+        """
         if self._global_dir is not None:
             try:
                 if file.resolve().is_relative_to(self._global_dir.resolve()):
@@ -1472,8 +1460,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         return sorted(v, key=lambda x: x.module_name.split(".")[-1])
 
     def get_menu_entries(self, sort_result: bool = True) -> list[MenuEntry]:
-        """
-        Get every entry a chunk-creation menu should offer, described without reference to any UI.
+        """Get every entry a chunk-creation menu should offer, described without reference to any UI.
 
         One entry per registered module, plus one per element of that module's
         ChunkConfig.variants. Variant entries sit alongside their module rather than
@@ -1526,8 +1513,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         return entries
 
     def import_chunk(self, path: str | Path):
-        """
-        Import a chunk module from path. The file extension of path should be .py.
+        """Import a chunk module from path. The file extension of path should be .py.
 
         Args:
             path (str | Path): The path to the chunk module
@@ -1540,9 +1526,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod.load()
 
     def reload_modules(self):
-        """
-        Reload all loaded modules
-        """
+        """Reload all loaded modules"""
         loaded_config_names = defaultdict(int)
         for c in self.scene.get_chunks():
             if conf := c.get_config():
@@ -1584,7 +1568,7 @@ def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
 
 
 def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
-    """parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
+    """Parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
 
     Both the "drop every occurrence" and the de-dup matter, because an anonymous layer's
     identifier embeds its address (anon:<address>:<tag>) and addresses get recycled: once a
@@ -1602,8 +1586,7 @@ def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
-    """
-    A singleton class for managing the chunk layers. All chunks will be associated with a layer, on to
+    """A singleton class for managing the chunk layers. All chunks will be associated with a layer, on to
     which the edits of the Chunks parameters are applied. This singleton is responsible for creating and
     deleting these layers on creation / deletion of the chunks.
 
@@ -1624,14 +1607,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     internal_layer_ids: set = set()
 
     def initialize(self, stage: Usd.Stage):
-        """
-        Called to initialize the singleton. This should be called at least once in order to setup
+        """Called to initialize the singleton. This should be called at least once in order to setup
         the manager
 
         Args:
             stage (Usd.Stage): The stage to manage
         """
-
         self._edit_target_listener = NoticeConnection(
             self._edit_target_changed, ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, globally=True
         )
@@ -1735,8 +1716,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return self.stage.GetRootLayer()
 
     def get_layer(self, c: core.ChunkHash) -> Sdf.Layer | None:
-        """
-        Get a layer associated with the a chunk
+        """Get a layer associated with the a chunk
 
         Args:
             c (ChunkUsdLayerSupport): A chunk object implementing the ChunkUsdLayerSupport protocol
@@ -1763,8 +1743,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         weakref.finalize(c, self._chunk_deleted, h)
 
     def get_or_create_layer(self, c: core.ChunkCommon) -> Sdf.Layer | None:
-        """
-        Get a layer similarly to get_layer(). Will create a new one if the layer does
+        """Get a layer similarly to get_layer(). Will create a new one if the layer does
         not already exists
 
         Args:
@@ -1925,8 +1904,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return layer
 
     def is_muted(self, c: core.ChunkHash) -> bool:
-        """
-        Check if a chunk layer is muted
+        """Check if a chunk layer is muted
 
         Args:
             c (ChunkHash): The chunk which whose layer to check
@@ -1942,8 +1920,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return self.stage.IsLayerMuted(layer.identifier) or layer.IsMuted()
 
     def add_layer(self, target_layer: Sdf.Layer, c: core.ChunkCommon, index: int = 0) -> Sdf.Layer:
-        """
-        Add a layer to the stage and add a mapping from chunk c to the new layer.
+        """Add a layer to the stage and add a mapping from chunk c to the new layer.
 
         Args:
             target_layer (Sdf.Layer): The target layer onto which we append the new layer
@@ -1987,8 +1964,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.internal_layer_ids.clear()
 
     def clear_layer(self, layer_id: str | core.ChunkBase):
-        """
-        Clear a layer and remove from sublayer list
+        """Clear a layer and remove from sublayer list
 
         Args:
             layer_id (str): The layer to remove
@@ -2002,9 +1978,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer.Clear()
 
     def reload_all(self):
-        """
-        clear the chunk layer stack and recreate them
-        """
+        """Clear the chunk layer stack and recreate them"""
         for gkey, g_layer in list(self.graph_layers.items()):
             target = self._graph_layer_target.pop(gkey, None)
             if target and g_layer.identifier in target.subLayerPaths:

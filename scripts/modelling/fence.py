@@ -53,7 +53,8 @@ def _normalized(v):
 
 class _Frame:
     """A right-handed (u, v, w) frame anchored at a point -- u along the fence,
-    v up, w through the fence's thickness."""
+    v up, w through the fence's thickness.
+    """
 
     def __init__(self, origin, u, v):
         self.o = Gf.Vec3f(origin)
@@ -121,7 +122,8 @@ def _add_picket(data, frame, a0, a1, b0, b1, c0, c1, top_mode, point_height):
 def _to_world(p, up_is_z):
     """Fence-local (x along, y up, z thick) -> world. On a Z-up stage this is a
     +90 degree turn about X, not a y/z swap: a swap mirrors the fence and would
-    flip every face normal inward."""
+    flip every face normal inward.
+    """
     if up_is_z:
         return Gf.Vec3f(p[0], -p[2], p[1])
     return Gf.Vec3f(p[0], p[1], p[2])

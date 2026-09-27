@@ -646,7 +646,8 @@ def iter_copyable_params(chunk: core.ChunkCommon):
 
     Deliberately a separate generator from `iter_connectable_params` itself (used elsewhere
     for port placement) rather than changing what that one yields -- copy/paste is the only
-    caller that needs this narrower set."""
+    caller that needs this narrower set.
+    """
     for param in iter_connectable_params(chunk):
         if param.has_state(ChunkFlags.State.HIDDEN):
             continue
@@ -718,7 +719,8 @@ class ClipboardEdge:
     than by prim path (paths don't exist yet at copy time for a not-yet-pasted node, and
     change on every paste anyway). src_attr/dst_attr are ChunkPortItem-suffix form
     ("outputs:chunk"/"inputs:tx", ...), not raw Sdf connection-target form -- see
-    `iter_prim_connections`."""
+    `iter_prim_connections`.
+    """
 
     __slots__ = ("src_index", "src_attr", "dst_index", "dst_attr")
 
@@ -736,7 +738,8 @@ def iter_prim_connections(prim: Usd.Prim):
     (unlike ChunkGraphScene._build_edges, which only builds what's currently drawn), since
     copy/paste needs every real connection, not just the visible ones. Takes a bare Usd.Prim
     rather than a ChunkNodeItem so it also works for a ChunkGroup's children, which have no
-    live Qt node at all unless someone has dived into that group."""
+    live Qt node at all unless someone has dived into that group.
+    """
     if not prim.IsValid():
         return
     for attr in prim.GetAttributes():
@@ -772,7 +775,8 @@ def iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, s
     structural parent). Mirrors _rebuild_nodes's own combined lookup (get_context() equality
     plus a get_context_for_prim_path() scan of the group's own USD children) exactly, so a
     ChunkGroup nested inside another ChunkGroup is still found. View chunks are excluded --
-    not content worth duplicating, matching the top-level selection's own exclusion."""
+    not content worth duplicating, matching the top-level selection's own exclusion.
+    """
     by_path: dict[str, core.ChunkBase] = {
         chunk_stage.get_chunk_prim_path(c): c
         for c in scene_sender.get_chunks()
@@ -796,7 +800,8 @@ def snapshot_chunk_node(
     """Build a ClipboardNode for `chunk` at rel_pos, recursing into its own children (and
     their internal wiring) if it's a ChunkGroup -- shared by the top-level selection snapshot
     and by each recursive level of group contents. Returns None for a chunk with no module
-    (nothing to recreate it from -- e.g. a bare exec 'dot')."""
+    (nothing to recreate it from -- e.g. a bare exec 'dot').
+    """
     cfg = chunk.get_config()
     module_name = cfg.module if cfg else None
     if not module_name:
@@ -902,7 +907,8 @@ def snapshot_param_values(chunk: core.ChunkCommon) -> list:
     """Positional snapshot of every copyable param's value, in `iter_copyable_params`
     order. Two instances of the same chunk module build their param tree in the same code
     order, so a plain positional zip (see `apply_param_values`) is enough to pair them back
-    up -- no param-path bookkeeping needed."""
+    up -- no param-path bookkeeping needed.
+    """
     return [p.value for p in iter_copyable_params(chunk)]
 
 

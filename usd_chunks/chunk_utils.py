@@ -22,7 +22,8 @@ _PATH_LIST_SPLIT = re.compile(r"([,\s]+)")
 def apply_namespace(namespace: str, paths: str) -> str:
     """Put every absolute prim path in `paths` (one, or a comma/space-separated list, globs
     included) under `namespace`. A path already under it, or a relative one, is left
-    alone, and so is the separators' spelling."""
+    alone, and so is the separators' spelling.
+    """
     if not namespace:
         return paths
     root = namespace.rstrip("/")
@@ -36,7 +37,8 @@ def apply_namespace(namespace: str, paths: str) -> str:
 
 def strip_namespace(namespace: str, paths: str) -> str:
     """The inverse of apply_namespace: every path under `namespace` made relative to it
-    again -- the form a param inside a namespaced host stores."""
+    again -- the form a param inside a namespaced host stores.
+    """
     if not namespace:
         return paths
     root = namespace.rstrip("/")
@@ -146,7 +148,8 @@ def is_composed_in(prim: Usd.Prim) -> bool:
     `def` for it is in a foreign layer (is_foreign_layer) or reached across a reference or
     payload, so any local opinion on it is an override. A prim that is not defined at all
     yet (mid-creation) is not composed in; neither is one with a `def` in an owned layer,
-    however many foreign opinions sit beneath it."""
+    however many foreign opinions sit beneath it.
+    """
     if prim is None or not prim.IsValid():
         return False
     stage = prim.GetStage()
@@ -163,7 +166,8 @@ def is_composed_in(prim: Usd.Prim) -> bool:
 def composed_in_from(prim: Usd.Prim) -> Sdf.Layer | None:
     """The layer a composed-in prim's strongest `def` comes from, or None when the prim is
     defined locally (or not at all). The layer a UI names when it says where a locked node
-    came from, and the one is_composed_in is really asking about."""
+    came from, and the one is_composed_in is really asking about.
+    """
     if prim is None or not prim.IsValid():
         return None
     stage = prim.GetStage()
@@ -1236,7 +1240,6 @@ def _chunk_prim_of(stage, node):
 # fix has to satisfy both -- most likely by re-cooking every chunk that touches a prim when
 # the participant set changes, so the per-chunk copies cannot go stale in the first place.
 def _xform_order_layer_unused(stage, node):
-
     """The layer a chunk should author `xformOpOrder` into: shared, not its own.
 
     The VALUES belong in each chunk's own layer -- that is what makes them compose and what

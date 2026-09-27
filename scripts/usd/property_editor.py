@@ -47,12 +47,10 @@ def build(myChunk: chunk.Chunk, notice, sender):
 
 
 def main():
-    """
-    Build a dynamic chunk that updates based on the currently selected prims.
+    """Build a dynamic chunk that updates based on the currently selected prims.
     All supported prim attributes will be created as chunk parameters, and
     connected to their UsdAttributes respectively.
     """
-
     myChunk = chunk.Chunk("Property Editor")
 
     primSel = chunk.LineEdit(

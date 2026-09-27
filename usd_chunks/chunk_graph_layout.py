@@ -204,7 +204,8 @@ def layout_positions(
 def grow_to_connected_subgraph(seed_ids: list[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> set[str]:
     """BFS from seed_ids through every connection (up and down) in the FULL up_of/down_of maps
     (which may reference ids outside seed_ids -- that's the point) and return every node
-    reached, including the seeds themselves."""
+    reached, including the seeds themselves.
+    """
     visited: set[str] = set(seed_ids)
     frontier = list(seed_ids)
     while frontier:

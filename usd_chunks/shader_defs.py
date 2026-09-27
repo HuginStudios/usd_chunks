@@ -1,5 +1,4 @@
-"""
-Shader definitions read from USD's shader registry (Sdr), normalised into a small
+"""Shader definitions read from USD's shader registry (Sdr), normalised into a small
 frontend-agnostic model that chunks can turn into params.
 
 One provider serves every renderer that publishes definitions to Sdr -- MaterialX

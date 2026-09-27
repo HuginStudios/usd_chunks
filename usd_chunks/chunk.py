@@ -1,5 +1,4 @@
-"""
-This module is the client-facing interface for working with chunks,
+"""This module is the client-facing interface for working with chunks,
 containing concrete implementations of the chunk objects. These
 classes can be used by themselves, but they also describe common
 UI related information, making them easy to implement in any UI
@@ -97,8 +96,7 @@ if TYPE_CHECKING:
 
 
 class DefaultConfig(_cfg):
-    """
-    This class is used as a default config.
+    """This class is used as a default config.
 
     To use, in the chunk module, add an additional function besides main():
 
@@ -242,8 +240,7 @@ def _apply_usd_hard_limits(param, attr) -> None:
 
 
 class Slider(ChunkParamBase[int | float]):
-    """
-    A slider parameter holding a float or int value
+    """A slider parameter holding a float or int value
 
     Attributes:
         min_value: A minimum value which the value should not subseed
@@ -277,8 +274,7 @@ class Slider(ChunkParamBase[int | float]):
 
 
 class Spinbox(ChunkParamBase[float | int]):
-    """
-    A spinbox parameter holding a float or int value
+    """A spinbox parameter holding a float or int value
 
     Attributes:
         min_value: A minimum value which the value should not subseed
@@ -308,8 +304,7 @@ class Spinbox(ChunkParamBase[float | int]):
 
 
 class Menu(ChunkParamBase[str]):
-    """
-    A menu parameter with menu_items
+    """A menu parameter with menu_items
 
     Attributes:
         menu_items: A list of items to display in the menu
@@ -366,25 +361,19 @@ class Menu(ChunkParamBase[str]):
 
 
 class Button(ChunkParamBase):
-    """
-    A button parameter. Does not store any usable value. Should be used with callbacks only
-    """
+    """A button parameter. Does not store any usable value. Should be used with callbacks only"""
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
     def click(self):
-        """
-        Click the button, triggering connected callbacks to called
-        """
+        """Click the button, triggering connected callbacks to called"""
         self.get_attribute_sender("value").execute()
 
 
 class Checkbox(ChunkParamBase[bool]):
-    """
-    A checkbox parameter. Stores a boolean value
-    """
+    """A checkbox parameter. Stores a boolean value"""
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
@@ -394,8 +383,7 @@ class Checkbox(ChunkParamBase[bool]):
 
 
 class LineEdit(ChunkParamBase[str]):
-    """
-    An editable string parameter for a single line. May set the ParamFlags.PRIM_SELECTION flag if the param is used for
+    """An editable string parameter for a single line. May set the ParamFlags.PRIM_SELECTION flag if the param is used for
     Usd.Prim selection
     """
 
@@ -414,8 +402,7 @@ class LineEdit(ChunkParamBase[str]):
         return super().value_changed(attrname, old_value, value)
 
     def set_prims(self, prims: Sequence[Usd.Prim]):
-        """
-        Sets the value of the param to a list of prim paths
+        """Sets the value of the param to a list of prim paths
 
         Args:
             prims (List[Usd.Prim]): The list of prims to set
@@ -433,8 +420,7 @@ class LineEdit(ChunkParamBase[str]):
         return chunk_utils.resolve_prim_paths(stage, self.value)
 
     def get_prims(self) -> Sequence[Usd.Prim]:
-        """
-        If this param is a list of prim paths (comma separated), then return the prims on the stage
+        """If this param is a list of prim paths (comma separated), then return the prims on the stage
 
         Returns:
             Iterable[Usd.Prim]: The prims
@@ -465,9 +451,7 @@ class LineEdit(ChunkParamBase[str]):
 
 
 class TextEdit(ChunkParamBase[str]):
-    """
-    An editable string parameter with multiple lines
-    """
+    """An editable string parameter with multiple lines"""
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
     rows: int | None = field(default=None, metadata={"validate": False, "convert": False})
@@ -478,8 +462,7 @@ class TextEdit(ChunkParamBase[str]):
 
 
 class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
-    """
-    A string parameter with the addition of a button for opening a file browser
+    """A string parameter with the addition of a button for opening a file browser
 
     Attributes:
         extensions: A list of supported file extensions
@@ -506,9 +489,7 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
 
 
 class Label(ChunkParamBase[str]):
-    """
-    A label parameter. Should not be editable in the UI. The name or label param attribute controls the displayed text
-    """
+    """A label parameter. Should not be editable in the UI. The name or label param attribute controls the displayed text"""
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -516,9 +497,7 @@ class Label(ChunkParamBase[str]):
 
 
 class Separator(ChunkParamBase):
-    """
-    An organizatorial parameter. Does not store a value
-    """
+    """An organizatorial parameter. Does not store a value"""
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -526,8 +505,7 @@ class Separator(ChunkParamBase):
 
 
 class ColorPicker(ChunkParamBase[tuple]):
-    """
-    A color parameter holding an (r, g, b) tuple with values in 0-1 range.
+    """A color parameter holding an (r, g, b) tuple with values in 0-1 range.
     Renders as a color swatch that opens a QColorDialog on click.
     """
 
@@ -555,8 +533,7 @@ class ColorPicker(ChunkParamBase[tuple]):
 
 
 class Matrix(ChunkParamBase[Gf.Matrix4d]):
-    """
-    A parameter holding a Gf.Matrix4d, stored in USD as a native matrix4d attribute.
+    """A parameter holding a Gf.Matrix4d, stored in USD as a native matrix4d attribute.
 
     Draws nothing. A matrix is data a chunk keeps -- a camera's placement, a baked
     transform -- rather than something anyone wants to edit as sixteen numbers, so this
@@ -588,9 +565,7 @@ class Matrix(ChunkParamBase[Gf.Matrix4d]):
 
 
 class Custom(ChunkParamBase):
-    """
-    A customizable parameter for holding custom widgets
-    """
+    """A customizable parameter for holding custom widgets"""
 
     @classmethod
     def get_type(cls) -> ChunkFlags.ParamType:
@@ -635,8 +610,7 @@ usd_type_map = {
 
 
 def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
-    """
-    Create a new paramaeter from a Usd.Attribute if the attribute type is supported. Will use
+    """Create a new paramaeter from a Usd.Attribute if the attribute type is supported. Will use
     the from_usd_attr class method of the found param type. It will connect the ATTRIBUTE_CHANGED
     notice to control the usd attribute. We return a ChunkCommon object rather than a ChunkParamBase as
     as some parameters may actually be groups (Vectors f.e.)
@@ -660,8 +634,7 @@ def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
 
 
 def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | None:
-    """
-    Similar to param_from_attr but for a Usd.Relationship. Will create a LineEdit.
+    """Similar to param_from_attr but for a Usd.Relationship. Will create a LineEdit.
 
     Args:
         attr (Usd.Relationship): The relationship to connect with a param
@@ -673,8 +646,7 @@ def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | Non
 
 
 def get_chunk_registry() -> ChunkRegistry | None:
-    """
-    Get the ChunkRegistry instance. This can be used to find / register loaded chunk modules
+    """Get the ChunkRegistry instance. This can be used to find / register loaded chunk modules
 
     Returns:
         ChunkRegistry | None: The registry if it has been initialized. Otherwise None
@@ -684,8 +656,7 @@ def get_chunk_registry() -> ChunkRegistry | None:
 
 
 def get_scene() -> SceneSender | None:
-    """
-    Return the current SceneSender object. The SceneSender can be used to find / add chunks to the scene, as well as saving / loading the current scene
+    """Return the current SceneSender object. The SceneSender can be used to find / add chunks to the scene, as well as saving / loading the current scene
 
     Returns:
         SceneSender | None: The current scene or None if the scene does not exists
@@ -695,8 +666,7 @@ def get_scene() -> SceneSender | None:
 
 
 def get_layer_manager() -> ChunkLayerManager | None:
-    """
-    Return the ChunkLayerManager. This can be used to manage the chunk layers. Useful for layer management such as clearing, muting, removing, etc.
+    """Return the ChunkLayerManager. This can be used to manage the chunk layers. Useful for layer management such as clearing, muting, removing, etc.
 
     Returns:
         ChunkLayerManager | None: The ChunkLayerManager if found, otherwise None
@@ -706,8 +676,7 @@ def get_layer_manager() -> ChunkLayerManager | None:
 
 
 def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
-    """
-    Find a ChunkModule in the registry and run it's main() function, then add the resulting chunk(s) to the scene if not anonymous.
+    """Find a ChunkModule in the registry and run it's main() function, then add the resulting chunk(s) to the scene if not anonymous.
 
     Args:
         module_name (str): The name of the module to load, relative to USD_CHUNK_DIRS
@@ -737,8 +706,7 @@ def create_chunks(module_name: str, anonymous=False) -> Sequence[Chunk]:
 
 
 def get_chunk(chunk_name: str):
-    """
-    A simple method to find a chunk in the current scene.
+    """A simple method to find a chunk in the current scene.
 
     Args:
         chunk_name (str): The name of the chunk to find. Note that this should be the current chunk instance name
@@ -757,8 +725,7 @@ def get_chunk(chunk_name: str):
 
 
 def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
-    """
-    A predicate function for checking if an object is an instance of ChunkParamBase
+    """A predicate function for checking if an object is an instance of ChunkParamBase
 
     Args:
         v (Any): The value to check
@@ -778,8 +745,7 @@ def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]: ...
 
 
 def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBase] | Predicate[ChunkParamBase[ValueT]]:
-    """
-    Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
+    """Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
     a value of type t or the param.evaluate_type() is t if t is a chunkFlags.ParamType enum
 
     Args:
@@ -788,7 +754,6 @@ def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBa
     Returns:
         Predicate[ChunkParamBase[ValueT]]: The predicate function
     """
-
     if isinstance(t, ChunkFlags.ParamType):
 
         def _fn_e(v) -> TypeGuard[ChunkParamBase]:
@@ -807,8 +772,7 @@ def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBa
 
 
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
-    """
-    A predicate function for checking if v is a ChunkGroupBase
+    """A predicate function for checking if v is a ChunkGroupBase
 
     Args:
         v (Any): The input value to check
@@ -820,8 +784,7 @@ def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
 
 
 def is_chunk(v: Any) -> TypeGuard[ChunkBase]:
-    """
-    A predicate function for checking if v is a ChunkBase
+    """A predicate function for checking if v is a ChunkBase
 
     Args:
         v (Any): The input value to check

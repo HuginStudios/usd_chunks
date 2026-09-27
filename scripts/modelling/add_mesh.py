@@ -41,10 +41,7 @@ class Topo(IntEnum):
 
 
 def build_plane(stage, name="/plane", divx=2, divy=2, width=1.0, height=1.0, pos=(0, 0, 0), topo: Topo = Topo.QUAD):
-    """
-    Build a simple plane for testing hair procedural
-    """
-
+    """Build a simple plane for testing hair procedural"""
     w = max(int(divx), 2)
     h = max(int(divy), 2)
 
@@ -240,9 +237,7 @@ def build_cube(
 
 
 def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, caps=True, pos=(0, 0, 0)):
-    """
-    Build a tube for testing hair procedural
-    """
+    """Build a tube for testing hair procedural"""
     rows = max(int(rows), 2)
     columns = max(int(columns), 3)
     rc = rows * columns
@@ -479,7 +474,8 @@ def execute(node: chunk.Chunk) -> None:
     type only un-hides its group, it doesn't itself trigger a build (that needs a param
     inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
     needs both steps repeated here to end up matching what was actually visible/built
-    before saving."""
+    before saving.
+    """
     menu = node.get_param("mesh_type", chunk.is_param_t(str))
     if menu is None:
         return

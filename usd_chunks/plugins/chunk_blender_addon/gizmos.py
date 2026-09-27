@@ -140,7 +140,8 @@ def placement_desc(prim, view):
 
 def _chunk_for(view, desc):
     """The live chunk object a desc names, or None. Needed for the start/stop bracket,
-    which is a method on the chunk; the write itself goes by prim path."""
+    which is a method on the chunk; the write itself goes by prim path.
+    """
     if view is None or desc is None:
         return None
     return view.chunks.get(str(desc.chunk_prim))
@@ -286,7 +287,8 @@ def scaled(values, axis, factor: float) -> list:
 def _current(chunk, kind) -> list:
     """The chunk's translate/rotate/scale, read off its params rather than remembered: a
     param moves for reasons that are not this gesture, and a cached one would write back a
-    stale two thirds of the matrix."""
+    stale two thirds of the matrix.
+    """
     names = {_TRANSLATE: ("tx", "ty", "tz"),
              _ROTATE: ("rx", "ry", "rz"),
              _SCALE: ("sx", "sy", "sz")}[kind]

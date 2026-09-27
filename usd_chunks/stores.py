@@ -54,7 +54,8 @@ class StoreProvider(Protocol):
     def provide(self, chunk_type: str, version: str) -> Path | None:
         """Ensure that exact ``version`` is present locally (fetch/download if
         needed) and return the file to link, or ``None`` if it cannot be
-        provided (unknown chunk/version, or the store is unreachable)."""
+        provided (unknown chunk/version, or the store is unreachable).
+        """
         ...
 
 

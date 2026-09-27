@@ -211,7 +211,8 @@ def focus_depth(stage, camera_path, point, time=Usd.TimeCode.Default()):
 
 def selection_focus_distance(stage, camera_path, prims, time=Usd.TimeCode.Default()):
     """The focus distance for `prims` -- focus_depth of their focus_point_of. None when
-    nothing is measurable or there is no camera, so the caller leaves the value alone."""
+    nothing is measurable or there is no camera, so the caller leaves the value alone.
+    """
     camera = stage.GetPrimAtPath(camera_path) if camera_path else None
     if camera is None or not camera.IsValid():
         return None
@@ -254,7 +255,8 @@ def _focus_on_selection(owner, notice, sender):
 def _refocus(node) -> None:
     """With Autofocus on, put Focus Distance back on the Focus Point from where the camera
     is now. Called after every authoring of the camera's transform. Writes only on a
-    change: the write re-cooks the chunk, and the re-cook lands here again."""
+    change: the write re-cooks the chunk, and the re-cook lands here again.
+    """
     autofocus = node.get_param("autofocus")
     if autofocus is None or not autofocus.value:
         return

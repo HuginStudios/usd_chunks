@@ -175,7 +175,8 @@ def list_row_of(param):
 def prop_key(param) -> str:
     """The node property that holds `param`: its name, or `list.row.name` inside a
     ListGroup row. RNA identifiers cannot carry a dot, which is fine -- a row key is
-    only ever an ID property."""
+    only ever an ID property.
+    """
     found = list_row_of(param)
     if found is None:
         return param.name
@@ -563,7 +564,8 @@ class BlenderParamWidget(chunk_widget_api.ChunkParamWidgetBase):
 
     def set_value(self, value):
         """Only ever touches the node. Writing to the param here would be re-entered by
-        the notice that write produces -- the same loop `chunk_flet` documents."""
+        the notice that write produces -- the same loop `chunk_flet` documents.
+        """
         if self._node is None:
             return
         name = self.param.name

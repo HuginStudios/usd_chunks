@@ -46,8 +46,7 @@ CHUNKGROUP_MODULE = "chunkgroup"
 
 
 class SceneSender(chunk_notice.ChunkNoticePropagator):
-    """
-    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
+    """Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
     See implementation in plugins/usdview/__init__.py for an example implementation.
 
     The class is not purely abstract, as most functions dealing with chunks are implemented. However, a subclass should implement all relevant
@@ -96,7 +95,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def add_stage_replaced_listener(self, callback) -> None:
         """Register a callback invoked when the DCC opens a new stage.
-        Called by chunk_stage.initialize so that reload_for_stage runs on file open."""
+        Called by chunk_stage.initialize so that reload_for_stage runs on file open.
+        """
         self._stage_replaced_listeners.append(callback)
 
     def notify_stage_replaced(self, stage) -> None:
@@ -106,10 +106,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
 
     def remove_chunk(self, chunk: str | ChunkHash):
-        """
-        Unload this module by deleting the associated chunk object
-        """
-
+        """Unload this module by deleting the associated chunk object"""
         if not (c := self.get_chunk(chunk)):
             return
 
@@ -164,8 +161,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self.add_context("Chunks")
 
     def add_context(self, name: str, prim_path: str | None = None) -> ChunkBase | None:
-        """
-        Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
+        """Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
         ChunkBase object is just a ChunkBase with the CONTEXT flag. This can be used as a organisatorial chunk that contains other chunks
         under a shared layer
 
@@ -181,8 +177,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=path))
 
     def set_chunks(self, chunks: NameSyncedContainer[ChunkBase]):
-        """
-        Sets the container storing all the chunks. Will override all currently loaded chunks
+        """Sets the container storing all the chunks. Will override all currently loaded chunks
 
         Args:
             chunks (NameSyncedContainer[ChunkBase]): The container
@@ -211,8 +206,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = True
 
     def add_chunk(self, c: ChunkBase, notify: bool = True) -> ChunkBase | None:
-        """
-        Adds a chunk to the root of the scene.
+        """Adds a chunk to the root of the scene.
 
         Args:
             c (ChunkBase): The chunk to add. Ideally this should be a context chunk, and nested chunks should live underneath
@@ -221,7 +215,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             ChunkBase | None: The added chunk
         """
-
         names = self.chunks.get_my_names()
         # The scene container is flat and keyed by name, but the model it holds is not: two
         # chunkgroups at different prim paths may legitimately share a name, and a live scene
@@ -320,8 +313,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return c
 
     def add_chunks(self, chunks: Sequence[ChunkBase]):
-        """
-        Add all chunks in the sequence
+        """Add all chunks in the sequence
 
         Args:
             chunks (Sequence[ChunkBase]): The chunks to add to the scene
@@ -330,16 +322,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             self.add_chunk(c)
 
     def clear(self):
-        """
-        Clear the chunk container. This may not delete the chunks if string references to the chunks
+        """Clear the chunk container. This may not delete the chunks if string references to the chunks
         are maintained elsewhere
         """
         self.chunks.clear()
         self._modified = True
 
     def holds_chunk(self, chunk: str | ChunkHash) -> bool:
-        """
-        Check if the scene holds a chunk with name or hash
+        """Check if the scene holds a chunk with name or hash
 
         Args:
             chunk (str | ChunkHash): The name or hash of the chunk to find
@@ -350,8 +340,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self.get_chunk(chunk) is not None
 
     def get_chunk(self, chunk: str | ChunkHash) -> ChunkBase | None:
-        """
-        Return a single chunk held by the scene. If no chunk is found, None is returned.
+        """Return a single chunk held by the scene. If no chunk is found, None is returned.
         Contrary to get_chunks, this may return context chunks as well
 
         Args:
@@ -434,15 +423,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return tuple(res)
 
     def clear_chunk_selection(self):
-        """
-        Clear the chunk selection
-        """
+        """Clear the chunk selection"""
         for i in self.get_selected_chunks():
             i.set_selected(False)
 
     def get_selected_chunks(self) -> tuple[ChunkBase, ...]:
-        """
-        get the currently selected chunks
+        """Get the currently selected chunks
 
         Returns:
             Tuple[ChunkBase, ...]: The selected chunks
@@ -450,8 +436,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return tuple(self._selected_chunks)
 
     def set_selected_chunks(self, selection: Sequence[ChunkBase]):
-        """
-        Deselects the currently selected chunks and sets the selection to the sequence of
+        """Deselects the currently selected chunks and sets the selection to the sequence of
         chunks passed as selection
 
         Args:
@@ -467,8 +452,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 c.set_selected(True)
 
     def is_modified(self) -> bool:
-        """
-        Returns whether the scene has been modified since created
+        """Returns whether the scene has been modified since created
 
         Returns:
             bool: True if the scene has been modified, False otherwise
@@ -502,8 +486,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def should_install_package(self, package_name: str) -> bool:
-        """
-        When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
+        """When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
         Before any package is installed though, the user should have the option to opt out of this. This method is called when packages can be installed,
         and should return True if the package may be installed. Any installed package is put in the
 
@@ -517,8 +500,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_stage(self) -> Usd.Stage | None:
-        """
-        Get the current scene stage. Should be implemented by a plugin
+        """Get the current scene stage. Should be implemented by a plugin
 
         Returns:
             Usd.Stage | None: The stage if available
@@ -527,8 +509,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_selected_prims(self) -> Sequence[Usd.Prim]:
-        """
-        Get the selected prims in the scene. Should be implemented by a plugin
+        """Get the selected prims in the scene. Should be implemented by a plugin
 
         Returns:
             Sequence[Usd.Prim]: Selected prims
@@ -537,8 +518,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_selected_property(self) -> Usd.Property | None:
-        """
-        Get the selected property in the scene. Should be implemented by a plugin
+        """Get the selected property in the scene. Should be implemented by a plugin
 
         Returns:
             Usd.Property: Selected property
@@ -581,8 +561,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_current_frame(self) -> float:
-        """
-        Get the current
+        """Get the current
 
         Returns:
             float: _description_
@@ -591,8 +570,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_end_frame(self) -> float:
-        """
-        Get the current end frame
+        """Get the current end frame
 
         Returns:
             float: _description_
@@ -601,8 +579,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_start_frame(self) -> float:
-        """
-        Get the current start frame
+        """Get the current start frame
 
         Returns:
             float: _description_
@@ -611,8 +588,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_current_frame(self, frame: float):
-        """
-        In the plugin implementation, set the current frame
+        """In the plugin implementation, set the current frame
 
         Args:
             frame (float): The frame to set
@@ -621,8 +597,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_end_frame(self, frame: float):
-        """
-        In the plugin implementation, set the end frame
+        """In the plugin implementation, set the end frame
 
         Args:
             frame (float): The frame to set
@@ -631,8 +606,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_start_frame(self, frame: float):
-        """
-        In the plugin implementation, set the start frame
+        """In the plugin implementation, set the start frame
 
         Args:
             frame (float): The frame to set

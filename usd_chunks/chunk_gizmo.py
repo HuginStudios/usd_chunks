@@ -333,7 +333,8 @@ def _iter_groups(obj, prefix: str = ""):
 
 def _iter_vectors(obj, prefix: str = ""):
     """(path, vector) for every ChunkVectorBase under obj, not crossing into a nested chunk.
-    Vectors are skipped by _iter_params, which walks scalars only."""
+    Vectors are skipped by _iter_params, which walks scalars only.
+    """
     for param in obj.get_my_params():
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkVectorBase):

@@ -80,7 +80,8 @@ _SEED = 20260913
 def _dedupe(points, eps=1e-7):
     """Drop consecutive (and a closing) duplicate point, so a degenerate polygon --
     the pyramid apex a Hip roof collapses to when width <= depth -- still has 3+ points
-    or is dropped rather than authored as a broken face."""
+    or is dropped rather than authored as a broken face.
+    """
     out = []
     for p in points:
         if not out or math.dist(p, out[-1]) > eps:
@@ -137,7 +138,8 @@ class _Mesh:
 
 def _axes(stage):
     """(right, forward, up) unit vectors for this stage's up axis -- the local (u, v, w)
-    frame every builder works in."""
+    frame every builder works in.
+    """
     if UsdGeom.GetStageUpAxis(stage).upper() == "Y":
         return Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 0, 1), Gf.Vec3d(0, 1, 0)
     return Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 1, 0), Gf.Vec3d(0, 0, 1)
@@ -428,7 +430,8 @@ def _build_wall_panel(mesh, wall, height, thickness, holes):
 
 def _mono_end_walls(mesh, mesh_planks, w, d, h_front, h_back, spacing):
     """The two sloped, window-less end walls under a Mono roof -- flat trapezoids, since
-    nothing is ever punched into them, grooved to the roofline like every other wall."""
+    nothing is ever punched into them, grooved to the roofline like every other wall.
+    """
     for u, sign in ((0.0, -1), (w, 1)):
         mesh.ngon([(u, 0.0, 0.0), (u, d, 0.0), (u, d, h_back), (u, 0.0, h_front)])
         _gable_grooves(mesh_planks, u, sign, [(0.0, h_front), (d, h_back)], 0.0, spacing, d)
@@ -705,7 +708,8 @@ def _eave_board(mesh, u0, u1, v, z, depth, drop):
 def _rake_board(mesh, gu, sign, a, b, board_width):
     """A trim board following one sloped segment of a gable end exactly -- a flat quad
     offset along its own perpendicular rather than a world-aligned box, so it reads as a
-    clean diagonal rather than a staircase."""
+    clean diagonal rather than a staircase.
+    """
     (v_a, z_a), (v_b, z_b) = a, b
     dv, dz = v_b - v_a, z_b - z_a
     length = math.hypot(dv, dz) or 1.0
@@ -724,7 +728,8 @@ def _rake_board(mesh, gu, sign, a, b, board_width):
 
 def _profile_height(pts, v):
     """The roofline height at one depth, by walking the profile -- what a groove on the
-    gable end has to stop at."""
+    gable end has to stop at.
+    """
     for (v_a, z_a), (v_b, z_b) in zip(pts, pts[1:]):
         if v_a - 1e-9 <= v <= v_b + 1e-9 and abs(v_b - v_a) > 1e-9:
             return z_a + (z_b - z_a) * (v - v_a) / (v_b - v_a)
@@ -806,7 +811,8 @@ def _build_profile_roof(
 def _build_hip_roof(mesh_roof, w, d, wall_top, overhang, pitch):
     """Four planes to one ridge -- or, when the footprint is deeper than it is wide, to a
     single apex, which `_Mesh.ngon`'s dedupe turns the degenerate trapezoids into clean
-    triangles for. No gable ends, which makes Hip the simplest wall case of the five."""
+    triangles for. No gable ends, which makes Hip the simplest wall case of the five.
+    """
     rise = d / 2.0 * math.tan(pitch)
     ridge_z = wall_top + rise
     ridge_half = max(0.0, (w - d) / 2.0)
@@ -844,7 +850,8 @@ def _build_mono_roof(
     plank_spacing,
 ):
     """A single flat slope, front wall short and back wall tall -- the one style whose
-    walls are not uniform height."""
+    walls are not uniform height.
+    """
     rise = d * math.tan(pitch)
     h_front, h_back = wall_top, wall_top + rise
     _mono_end_walls(mesh_walls, mesh_planks, w, d, h_front, h_back, plank_spacing)
@@ -984,7 +991,8 @@ def _ridge_prototype(axes, size, length, drop):
 
 def _polygon_normal(points):
     """Newell's normal -- robust on the slightly non-planar quads an overhang can produce,
-    where a single cross product of two edges is not."""
+    where a single cross product of two edges is not.
+    """
     nx = ny = nz = 0.0
     n = len(points)
     for i in range(n):
@@ -998,7 +1006,8 @@ def _polygon_normal(points):
 
 def _inside(polygon2d, x, y):
     """Ray-cast point-in-polygon, so one gridding routine covers a Gable's rectangle, a
-    Gambrel's bands and a Hip's triangles without knowing which it has."""
+    Gambrel's bands and a Hip's triangles without knowing which it has.
+    """
     inside = False
     n = len(polygon2d)
     for i in range(n):
@@ -1364,7 +1373,8 @@ def _report(node, s, windows, tiles):
 def execute(node: chunk.Chunk) -> None:
     """Build the house. Reactive: any param change re-runs this from scratch -- there is
     no incremental path, because at this geometry budget there is nothing to save by
-    having one."""
+    having one.
+    """
     stage = node.get_stage()
     if not stage:
         return

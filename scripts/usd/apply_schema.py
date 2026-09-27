@@ -28,7 +28,8 @@ def execute(node: chunk.Chunk) -> None:
     """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
     bulk-restoring its param values, so a reloaded Apply Schema actually reapplies the
     saved schema instead of leaving the target prim untouched (apply is a Button callback,
-    which load's value-restore deliberately does not trigger)."""
+    which load's value-restore deliberately does not trigger).
+    """
     apply(node, None, None)
 
 

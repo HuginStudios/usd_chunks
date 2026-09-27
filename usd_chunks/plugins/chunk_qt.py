@@ -53,7 +53,8 @@ def save_chunkgroup_dialog(scene=None) -> None:
     chunk's own bookkeeping freshly authored into a brand-new layer, with no
     subLayerPaths at all, carrying the scene's up-axis and units. Same mechanism
     as the Export ChunkGroup chunk. Shared by the DCC plugins' Save ChunkGroup
-    menu entries."""
+    menu entries.
+    """
     scene = scene or chunk_registry.ChunkRegistry().scene
 
     flt = "*.usda *.usd *.usdc *.usdz"
@@ -66,7 +67,8 @@ def save_chunkgroup_dialog(scene=None) -> None:
 
 def save_scene_dialog(scene=None) -> None:
     """Save the scene -- see chunk_stage.save_scene. Writes the same file Save
-    ChunkGroup does, kept as its own menu entry."""
+    ChunkGroup does, kept as its own menu entry.
+    """
     scene = scene or chunk_registry.ChunkRegistry().scene
 
     flt = "*.usda *.usd *.usdc *.usdz"
@@ -178,7 +180,8 @@ def _guarded_copy():
 def _focused_view_is_graph(focused: QtWidgets.QWidget | None) -> bool:
     """True if focused sits inside a ChunkGraphView (the Graph page), for either page's
     copy/paste shortcut -- both pages of a tab share one QShortcut (WidgetWithChildrenShortcut),
-    so this is how paste tells which surface it was actually triggered from."""
+    so this is how paste tells which surface it was actually triggered from.
+    """
     w = focused
     while w is not None:
         if isinstance(w, ChunkGraphView):
@@ -724,7 +727,8 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
 
     def _refresh_context_path(self) -> None:
         """Mark the tabs the current context is nested inside. The path itself is drawn by
-        the graph view, in its own top strip -- see ChunkContextBreadcrumb."""
+        the graph view, in its own top strip -- see ChunkContextBreadcrumb.
+        """
         self.tab_widget.mark_ancestors(self._current_context())
 
     def _current_context(self):
@@ -746,7 +750,8 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         """changed_chunks: passed through to ChunkGraphView.build()'s post-build recook when the
         caller knows exactly which chunk(s) triggered this rebuild (e.g. one chunk was just
         created) -- see build()'s docstring for why this matters. Omit for a genuine view/tab
-        switch, which always needs a full recook."""
+        switch, which always needs a full recook.
+        """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
             return
