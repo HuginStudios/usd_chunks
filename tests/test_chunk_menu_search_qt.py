@@ -12,7 +12,7 @@ from pxr import Usd
 from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.widgets import _RESULT_DIVIDER, FilterableChunkMenu, _host_menu_highlight
 
 

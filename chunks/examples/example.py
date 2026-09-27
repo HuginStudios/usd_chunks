@@ -1,5 +1,5 @@
 from __future__ import annotations
-from usd_chunks import chunk, chunk_core, chunk_notice
+from usd_chunks import chunk, chunk_core, chunk_notice, chunk_scene
 
 from functools import wraps
 
@@ -64,7 +64,7 @@ def clickedButton(owner: chunk.Button, notice, sender):
     owner.get_logger().info(f"Button clicked: {owner.name}")
 
 
-def updateLabel(owner: chunk.Label, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_core.SceneSender):
+def updateLabel(owner: chunk.Label, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_scene.SceneSender):
     """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
 
     Args:

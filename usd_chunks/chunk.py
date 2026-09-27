@@ -48,8 +48,10 @@ See [example](../example.md) for a more extensive example.
 """
 from __future__ import annotations
 
+import logging
+
 from attr import Attribute as Attribute
-from attrs import field
+from attrs import field, validators
 
 from enum import IntFlag, Enum
 from collections.abc import Sequence
@@ -73,17 +75,19 @@ from usd_chunks.chunk_core import (
     ChunkUsdAttributeSupport,
     ChunkCommon,
     ChunkListGroupBase,
-    SceneSender,
     Predicate,
     ValueT,
     is_inst,
 )
+from usd_chunks.chunk_scene import SceneSender
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 from usd_chunks import chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
+
+logger = logging.getLogger(__name__)
 
 
 ###########
@@ -632,8 +636,6 @@ class Custom(ChunkParamBase):
 
 def set_validators_enabled(enabled: bool):
     """Turn attrs validators on or off globally."""
-    from attrs import validators
-
     validators.set_disabled(not enabled)
 
 
@@ -703,6 +705,86 @@ def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | Non
         ChunkCommon | None: The resulting param if created successfully
     """
     return LineEdit.from_usd_rel(attr, *args, **kwargs)
+
+
+def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=()):
+    """Populate a group with typed editable params for all attributes and relationships on a prim.
+
+    This is the shared utility for dynamically building attribute editor UIs.
+    Used by the Dynamic chunk, Light chunk, and any chunk that needs to expose
+    a prim's attributes as interactive widgets.
+
+    Args:
+        prim: The Usd.Prim whose attributes to display.
+        target_group: A ChunkGroupBase to populate with params. Existing children
+            are cleared before populating.
+        collapse_non_inputs: If True, namespace groups other than 'inputs' start
+            collapsed. Keeps the UI tidy for prims with many attributes.
+        var_selections: The (anchor_prim_path, vs_name, variant) tuples active when `prim`
+            was resolved (split_variant_path / author_in_variant_context), if any. Recorded
+            on each generated attribute param so a later edit re-enters the same variant
+            (author_in_variant_selections) instead of authoring outside it -- see
+            ChunkUsdAttributeSupport.data_changed. Pass () for a prim reached outside any
+            variant context, which is the ordinary case and costs nothing extra.
+    """
+    if not prim or not prim.IsValid():
+        # Clean existing params: no prim means nothing to show.
+        for grp in target_group.get_my_params():
+            grp.request_delete()
+        return
+
+    # Read the prim FIRST, and build every param, before touching target_group at all.
+    #
+    # Installing a param fires notices; a cook reached that way can recompose the stage; and
+    # a resync EXPIRES this prim handle along with every attribute already read off it, so
+    # the next read raises. For example, a Stage Expression Switch writes the record of
+    # what it muted, that write cascades into cooking a light on the branch it just
+    # suppressed, and the light's own prim is gone by the time this loop reaches its
+    # second attribute.
+    #
+    # Raising there is not a local failure -- the exception would escape into
+    # gate_to_branches and leave the gate half done, with the branch it was suppressing
+    # still composed. Collecting first turns that into a lost cook rather than a
+    # half-emptied chunk: nothing has been deleted yet, the params the chunk already has
+    # stay exactly as they were, and the next cook rebuilds them.
+    prim_path = prim.GetPath()
+    specs = []
+    try:
+        for attr in prim.GetAttributes():
+            specs.append((attr.GetNamespace(),
+                          param_from_attr(attr, var_selections=var_selections),
+                          collapse_non_inputs))
+        for rel in prim.GetRelationships():
+            specs.append((rel.GetNamespace(), param_from_rel(rel), False))
+    except RuntimeError:
+        logger.debug("show_attribute: %s went away while it was being read; leaving this "
+                     "chunk's params alone for the next cook", prim_path)
+        return
+
+    # Clean existing params, now that there is something to replace them with.
+    for grp in target_group.get_my_params():
+        grp.request_delete()
+
+    groups = {}
+    for ns, param, collapse in specs:
+        if not param:
+            continue
+
+        if not isinstance(param, ChunkGroupBase):
+            param.set_flag(ChunkFlags.ParamFlags.LABELED)
+
+        tgt_grp = target_group if not ns else groups.get(ns)
+        if not tgt_grp:
+            tgt_grp = Group(
+                ns,
+                flags=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED,
+            )
+            if collapse and ns and ns != "inputs":
+                tgt_grp.set_state(ChunkFlags.State.COLLAPSED)
+            target_group.add_param(tgt_grp)
+            groups[ns] = tgt_grp
+
+        tgt_grp.add_param(param)
 
 
 def get_chunk_registry() -> ChunkRegistry | None:

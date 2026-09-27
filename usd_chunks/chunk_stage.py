@@ -17,6 +17,7 @@ from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_scene
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
@@ -24,6 +25,16 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, Registry
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
 
 from usd_chunks import chunk_layers, chunk_naming
+from usd_chunks.chunk_topology import (  # noqa: F401  re-exported
+    _iter_exec_upstream,
+    _prim_edit_target_layer,
+    _resolve_chunk_root,
+    edit_layer_memo_affected,
+    freeze_edit_layer_memo,
+    get_chunk_prim_path,
+    invalidate_edit_layer_memo,
+    nearest_upstream_edit_layer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +86,7 @@ def exec_input_connections(prim: Usd.Prim) -> list[Sdf.Path]:
 # downstream of it authors into. Publishing it (rather than importing the Edit Target
 # script's resolution logic into core) keeps core decoupled from the script -- same
 # published-marker pattern as chunk:pinned / set_chunk_pinned.
-_EDIT_TARGET_MARKER = "chunk:editTargetLayer"
+_EDIT_TARGET_MARKER = chunk_naming.EDIT_TARGET_MARKER
 
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 
@@ -351,7 +362,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     # targets, both of which edit the stage and notify straight back here.
     _reconciling_exec: bool = False
 
-    def initialize(self, stage: Usd.Stage, scene: core.SceneSender) -> None:
+    def initialize(self, stage: Usd.Stage, scene: chunk_scene.SceneSender) -> None:
         """Start syncing a stage and scene: listen for chunk and stage changes and load its chunks.
 
         Args:
@@ -2211,21 +2222,6 @@ def _define_chunk_parent(stage: Usd.Stage, path: str) -> Usd.Prim:
     return stage.DefinePrim(Sdf.Path(path), typename)
 
 
-def _resolve_chunk_root(chunk: core.ChunkBase) -> str:
-    """Return the parent prim path for chunk based on its context's prim_path."""
-    context = chunk.get_context()
-    if context and context.prim_path:
-        return context.prim_path
-    return _CHUNKS_ROOT
-
-
-def get_chunk_prim_path(chunk: core.ChunkBase) -> str:
-    """Return the USD prim path string for a chunk."""
-    if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) and chunk.get_config() and chunk.get_config().module:
-        return chunk.prim_path or f"{_resolve_chunk_root(chunk)}/{chunk.name}"
-    return f"{_resolve_chunk_root(chunk)}/{chunk.name}"
-
-
 def exec_output_path(chunk: core.ChunkBase) -> str:
     """Return the outputs:chunk attribute path an exec connection to chunk must point at.
 
@@ -3350,7 +3346,7 @@ def chunk_matches_search(chunk: core.ChunkBase, query: str, scope: str = "both")
 
 
 def find_group_active_view(
-    group: core.ChunkBase, stage: Usd.Stage, scene: core.SceneSender
+    group: core.ChunkBase, stage: Usd.Stage, scene: chunk_scene.SceneSender
 ) -> core.ChunkBase | None:
     """The inner active view of a group -- its output driver.
 
@@ -3387,7 +3383,7 @@ def find_group_active_view(
 def find_view_chunk_for_slot(
     slot: int,
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     context: core.ChunkBase | None = None,
 ) -> core.ChunkBase | None:
     """The view chunk assigned to slot, or None.
@@ -3418,7 +3414,7 @@ def find_view_chunk_for_slot(
 def get_view_exec_sources(
     view_chunk: core.ChunkBase,
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
 ) -> list[core.ChunkBase]:
     """Return the chunks wired into view_chunk's inputs:chunk."""
     prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
@@ -3434,7 +3430,7 @@ def get_view_exec_sources(
     ]
 
 
-def get_upstream_stage(stage: Usd.Stage, scene: core.SceneSender, chunk: core.ChunkBase) -> Usd.Stage:
+def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: core.ChunkBase) -> Usd.Stage:
     """A throwaway stage of every chunk layer except `chunk` itself and its real downstream.
 
     The raw root layer is included too. It is for a read that must never be influenced by a
@@ -3646,262 +3642,6 @@ def is_edit_target_chunk(chunk: core.ChunkBase) -> bool:
     """Return True if chunk is an Edit Target chunk (chunks/usd/edit_target.py)."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "edit_target")
-
-
-def _prim_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | None:
-    """The layer named by prim's Edit Target marker, if it is in the stage's layer stack.
-
-    Only a layer actually in the current stack is returned, so the result is always safe to
-    author into. Otherwise None.
-    """
-    attr = prim.GetAttribute(_EDIT_TARGET_MARKER)
-    if not (attr and attr.IsValid()):
-        return None
-    ident = attr.Get()
-    if not ident:
-        return None
-    for layer in stage.GetLayerStack(includeSessionLayers=True):
-        if layer.identifier == ident:
-            return layer
-    return None
-
-
-def _iter_exec_upstream(stage: Usd.Stage, start: Sdf.Path):
-    """Breadth-first walk of the exec chain (inputs:chunk connections) upstream from start.
-
-    Yields each reachable (path, prim, unbranched) exactly once, start itself excluded. prim
-    may be invalid (dangling connection) -- such nodes are yielded but not walked through.
-    Shared by every "look upstream" consumer so the traversal semantics (dedup, ordering,
-    dangling handling) live in one place.
-
-    unbranched says everything visited up to and including this node forms a single chain
-    start -> ... -> node, with no level holding more than one node. That is the condition
-    under which "what does the walk from here find" is the same question as "what does the
-    walk from start find", which is what lets nearest_upstream_edit_layer share one answer
-    along the run instead of re-deriving it per node. It goes False for good at the first
-    fork and never comes back.
-
-    Deliberately exec-only (inputs:chunk), NOT the exec+data walk view_cook_list
-    does: Edit Target resolution follows the execution chain that actually defines
-    authoring position, and must ignore incidental data wiring -- a chunk reading another's
-    points shouldn't drag its Edit Target upstream. The two are separate on purpose.
-    """
-    seen = {start}
-    frontier = [start]
-    unbranched = True
-    while frontier:
-        next_frontier: list = []
-        for path in frontier:
-            p = stage.GetPrimAtPath(path)
-            if path != start:
-                yield path, p, unbranched
-            if not (p and p.IsValid()):
-                continue
-            exec_in = p.GetAttribute(_EXEC_INPUT)
-            if exec_in and exec_in.IsValid():
-                for conn in exec_in.GetConnections():
-                    conn_prim = conn.GetPrimPath()
-                    if conn_prim not in seen:
-                        seen.add(conn_prim)
-                        next_frontier.append(conn_prim)
-        unbranched = unbranched and len(next_frontier) == 1
-        frontier = next_frontier
-
-
-_edit_layer_memo: dict[str, Sdf.Layer] = {}
-_edit_layer_memo_stage: weakref.ref | None = None
-_edit_layer_memo_frozen = False
-
-
-def invalidate_edit_layer_memo() -> None:
-    """Drop the memoised nearest_upstream_edit_layer answers.
-
-    Must be called by anything that can change what that function returns: the exec chain
-    it walks (an inputs:chunk connection appearing, moving or being healed away), the Edit
-    Target markers it looks for, or the stage's layer stack (a marker only counts while the
-    layer it names is actually composed).
-
-    Two kinds of write are exempt, both because they provably cannot move an answer: a
-    frozen block (see freeze_edit_layer_memo) and ChunkLayerManager rearranging its own
-    internal layers (see chunk_notice._internal_layer_write_active).
-    """
-    if _edit_layer_memo_frozen or chunk_notice._internal_layer_write_active:
-        return
-    _edit_layer_memo.clear()
-
-
-_edit_layer_memo_layer_stack: list[str] = []
-
-
-def edit_layer_memo_affected(
-    notice: Usd.Notice.ObjectsChanged, chunk_prim_paths: Iterable[str]
-) -> bool:
-    """Whether this change round can move any nearest_upstream_edit_layer answer.
-
-    That function is a walk of inputs:chunk connections between chunk prims, reading the
-    Edit Target marker off each and checking the named layer is in the layer stack. So an
-    answer moves only when one of those moves: an exec connection or a marker (a property
-    by one of two names), a chunk prim appearing or going, or the layer stack itself
-    (a sublayer edit, which USD reports as an info change on "/", or a mute, which it
-    reports with no paths, or with only the driven prims the layer held -- so the stack is
-    compared to what it was when the memo was built, a muted layer having dropped out of
-    GetLayerStack).
-
-    Everything else is what a scene load mostly consists of: a chunk writing the prims it
-    drives. On a four-node scene, 755 change rounds during a load touch no chunk prim at
-    all, and each one would otherwise throw the memo away and cost every chunk a fresh walk
-    of the chain above it.
-
-    A chunk prim the sync has not met yet is caught by its own type once anything touches
-    it, and by the "/" rule when it arrives by sublayer; an arrival by reference onto a
-    non-Chunk prim outside every known root is the one route this does not see until the
-    loader registers it.
-
-    Args:
-        notice: The stage's ObjectsChanged notice.
-        chunk_prim_paths: What the sync knows to be chunk prims, so a resync of an ancestor
-            of one counts (the prim under it may be gone).
-
-    Returns:
-        True if the memo must be dropped.
-    """
-    stage = notice.GetStage()
-    if stage is None:
-        return True
-    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
-        return True
-    resynced = notice.GetResyncedPaths()
-    info = notice.GetChangedInfoOnlyPaths()
-    if not resynced and not info:
-        return True
-    stack = [layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)]
-    if stack != _edit_layer_memo_layer_stack:
-        return True
-    known = list(chunk_prim_paths)
-    for path in (*resynced, *info):
-        if path.IsPropertyPath():
-            if path.name in (_EXEC_INPUT, _EDIT_TARGET_MARKER):
-                return True
-            continue
-        if path == Sdf.Path.absoluteRootPath:
-            return True
-        prim = stage.GetPrimAtPath(path)
-        if not (prim and prim.IsValid()):
-            return True
-        path_str = str(path)
-        if prim.GetTypeName() == _CHUNK_PRIM_TYPENAME or path_str == _CHUNKS_ROOT:
-            return True
-        prefix = path_str + "/"
-        if any(known_path.startswith(prefix) for known_path in known):
-            return True
-    return False
-
-
-@contextlib.contextmanager
-def freeze_edit_layer_memo():
-    """Hold the memo across a block whose writes provably cannot move any answer.
-
-    Only for authoring that rearranges *where* an already-composed opinion is stored --
-    _migrate_chunk_bookkeeping's per-property strong -> weak consolidation, which by
-    construction leaves both inputs:chunk and chunk:editTargetLayer composing exactly what
-    they composed before. Those writes still resync prims, so without this every migration
-    in a pass throws away the answers the pass just computed, and each of the next chunk's
-    answers is re-walked from scratch up the whole chain above it.
-
-    Never wrap a block that can author a new chunk prim, an exec connection or a layer
-    stack change: those are the three things the memo is a cache of.
-
-    Yields:
-        None, with the memo frozen.
-    """
-    global _edit_layer_memo_frozen
-    prev = _edit_layer_memo_frozen
-    _edit_layer_memo_frozen = True
-    try:
-        yield
-    finally:
-        _edit_layer_memo_frozen = prev
-
-
-def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | None:
-    """The layer a chunk at prim's position should author into.
-
-    That is the layer published by the nearest Edit Target chunk reachable by walking the
-    exec chain (inputs:chunk) upstream from prim, or the session layer if there is no
-    upstream Edit Target. A pure function of graph topology, never of which chunk ran last.
-    prim's own marker is deliberately skipped (an Edit Target chunk defines the target for
-    everything *downstream* of it, not for its own bookkeeping -- that follows whatever is
-    upstream of it, or the session layer).
-
-    Memoised per prim path, because being a pure function of topology also makes it a walk
-    of the entire exec chain above prim, and it is asked once per get_edit_context --
-    several times per chunk. On a long chain that is quadratic, and unmemoised it is the
-    single largest cost of opening a saved graph. The memo is dropped wholesale by
-    invalidate_edit_layer_memo() rather than aged per entry: one chunk's answer depends on
-    every chunk above it, so there is no cheaper unit to invalidate than "all of it".
-
-    Args:
-        stage: The stage.
-        prim: The chunk prim.
-
-    Returns:
-        The layer, the session layer when nothing upstream publishes one, or None without a
-        stage.
-    """
-    if not stage:
-        return None
-    session = stage.GetSessionLayer()
-    if not (prim and prim.IsValid()):
-        return session
-
-    # Answers are keyed by prim path, and prim paths repeat across stages -- /chunks/Dot in a
-    # file just opened is the same string as /chunks/Dot in the stage it replaced, while the
-    # layer it resolves to belongs to the old stage and is in no layer stack at all now.
-    # Authoring against that layer loses the write; migrating a chunk into it strips the
-    # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
-    # a different stage starts a new one.
-    global _edit_layer_memo_stage, _edit_layer_memo_layer_stack
-    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
-        _edit_layer_memo.clear()
-        _edit_layer_memo_stage = weakref.ref(stage)
-    # The layer stack every answer about to be memoised is computed against. Taken as the
-    # memo starts filling (not on each notice), so a stack change that happened while the
-    # memo was empty -- or under a frozen block -- is still seen by edit_layer_memo_affected
-    # as a difference from this, whichever notice comes next.
-    if not _edit_layer_memo:
-        _edit_layer_memo_layer_stack = [
-            layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
-        ]
-
-    key = str(prim.GetPath())
-    if (memoised := _edit_layer_memo.get(key)) is not None:
-        return memoised
-
-    result = session
-    # Every node on an unbranched run above prim has this same answer, so the walk both
-    # stops at the first one already memoised and leaves the answer on the rest. Without
-    # that the memo only ever holds the node that was asked about, and a chain restored or
-    # reconciled node by node re-walks the whole thing above each one in turn.
-    shared: list[str] = []
-    for path, p, unbranched in _iter_exec_upstream(stage, prim.GetPath()):
-        if not (p and p.IsValid()):
-            continue
-        layer = _prim_edit_target_layer(stage, p)
-        if layer is not None:
-            result = layer
-            break
-        if not unbranched:
-            continue
-        upstream_key = str(path)
-        if (upstream := _edit_layer_memo.get(upstream_key)) is not None:
-            result = upstream
-            break
-        shared.append(upstream_key)
-
-    _edit_layer_memo[key] = result
-    for shared_key in shared:
-        _edit_layer_memo[shared_key] = result
-    return result
 
 
 def _promote_prim_spec(dst_spec: Sdf.PrimSpec, holders: list[Sdf.Layer], sdf_path: Sdf.Path) -> None:
@@ -4116,7 +3856,7 @@ def _chunks_downstream_of(roots: list[core.ChunkBase]) -> set[int]:
 
 def connect_exec(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     src_prim_path: str,
     dst_prim_path: str,
     input_name: str = _EXEC_INPUT,
@@ -4189,7 +3929,7 @@ def connect_exec(
 
 def reconcile_edit_targets(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     roots: list[core.ChunkBase] | None = None,
     cook: bool = True,
     protect_root_layer: bool = False,
@@ -4323,7 +4063,7 @@ def snapshot_edit_target_selections(stage: Usd.Stage) -> dict[str, str]:
 
 
 def restore_edit_target_selections(
-    stage: Usd.Stage, scene: core.SceneSender, saved: dict[str, str] | None = None
+    stage: Usd.Stage, scene: chunk_scene.SceneSender, saved: dict[str, str] | None = None
 ) -> None:
     """After a load, re-apply each Edit Target chunk's stored selection.
 
@@ -4393,7 +4133,7 @@ def restore_edit_target_selections(
             param.value = stored
 
 
-def _active_scene() -> core.SceneSender | None:
+def _active_scene() -> chunk_scene.SceneSender | None:
     """The SceneSender to reconcile against, or None if there is no scene yet.
 
     ChunkStageSync is the usual holder, but it only gains a _scene once initialize() has run,
@@ -4468,7 +4208,7 @@ def publish_edit_target(chunk: core.ChunkBase, stage: Usd.Stage, layer: Sdf.Laye
 def view_cook_list(
     view_chunk: core.ChunkBase,
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
 ) -> list[core.ChunkBase]:
     """The chunks feeding view_chunk, following ALL input connections backward.
 
@@ -4543,7 +4283,7 @@ def view_cook_list(
 
 def recook_for_view(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     context: core.ChunkBase | None,
     view_chunk: core.ChunkBase | None,
     _synthetic_tail: bool = False,
@@ -4737,7 +4477,7 @@ def recook_for_view(
     _reorder_graph_layers_in_targets(lm, ident_rank)
 
 
-def _group_output_driver(stage: Usd.Stage, scene: core.SceneSender, group: core.ChunkBase):
+def _group_output_driver(stage: Usd.Stage, scene: chunk_scene.SceneSender, group: core.ChunkBase):
     """(what drives group's output, whether it is a stand-in exec tail rather than a view)."""
     inner_view = find_group_active_view(group, stage, scene)
     synthetic = False
@@ -4848,7 +4588,7 @@ def _reorder_graph_layers_in_targets(lm: ChunkLayerManager, ident_rank: dict) ->
 
 def recook_focus(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     context: core.ChunkBase | None,
     view_chunk: core.ChunkBase | None,
 ) -> None:
@@ -4953,7 +4693,7 @@ def _exec_consumers(stage: Usd.Stage) -> dict[str, set[str]]:
 
 def exec_tails(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     context: core.ChunkBase | None = None,
 ) -> list[core.ChunkBase]:
     """Non-view chunks in context whose exec output nothing takes: the ends of the chains.
@@ -5091,7 +4831,7 @@ def exec_upstream(chunk: core.ChunkBase, seen: set | None = None) -> set:
 def exec_downstream(
     start: core.ChunkBase,
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
 ) -> set[core.ChunkBase]:
     """Every chunk start's exec output reaches, following exec wires forward.
 
@@ -5395,7 +5135,7 @@ def _iter_list_group_arrays(
             yield from _iter_list_group_arrays(param, path)
 
 
-def initialize(stage: Usd.Stage, scene: core.SceneSender) -> None:
+def initialize(stage: Usd.Stage, scene: chunk_scene.SceneSender) -> None:
     """Start the layer manager and stage sync for a stage and scene, and follow stage replacement.
 
     Args:
@@ -5407,7 +5147,7 @@ def initialize(stage: Usd.Stage, scene: core.SceneSender) -> None:
     scene.add_stage_replaced_listener(ChunkStageSync().reload_for_stage)
 
 
-def _live_context_at(scene: core.SceneSender, path: str) -> core.ChunkBase | None:
+def _live_context_at(scene: chunk_scene.SceneSender, path: str) -> core.ChunkBase | None:
     """The live container whose prim is at path, or None.
 
     Searches get_contexts, not get_chunks: the outermost container is a node in nothing and
@@ -5499,7 +5239,7 @@ def _restore_collapsed_state(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
 
 def load_chunks(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     loaded_prim_paths: set[str] | None = None,
     prims: Generator | None = None,
 ) -> None:
@@ -5522,7 +5262,7 @@ def load_chunks(
 
 def _load_chunks(
     stage: Usd.Stage,
-    scene: core.SceneSender,
+    scene: chunk_scene.SceneSender,
     loaded_prim_paths: set[str] | None = None,
     prims: Generator | None = None,
 ):
@@ -6031,7 +5771,7 @@ def _resync_lofted_menus(chunks: Iterable[core.ChunkBase]) -> None:
                 mirror()
 
 
-def export_chunks(scene: core.SceneSender, path: str | Path) -> None:
+def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     """Export the current chunk graph as one clean, portable USD layer.
 
     Copies each chunk's already-composed, already-correctly-wired prim spec straight across
@@ -6081,7 +5821,7 @@ def export_chunks(scene: core.SceneSender, path: str | Path) -> None:
     _reload_cached_layer(path)
 
 
-def _export_layer(scene: core.SceneSender, path: Path) -> Sdf.Layer:
+def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     """export_chunks' layer, before it is stamped and written.
 
     That is the scene's chunk prims, composed from the owned layers, with the root's foreign
@@ -6170,7 +5910,7 @@ def _rebase_paths_in_layer(layer: Sdf.Layer, old_root: Sdf.Path, new_root: Sdf.P
     visit(layer.GetPrimAtPath(new_root))
 
 
-def export_network(scene: core.SceneSender, group: core.ChunkBase, path: str | Path) -> str:
+def export_network(scene: chunk_scene.SceneSender, group: core.ChunkBase, path: str | Path) -> str:
     """Write one group's network to its own file, the way export_chunks writes a scene's.
 
     The group goes at /chunks/<name> with its chunks beneath it, wiring rebased to the new
@@ -6518,7 +6258,7 @@ def _carry_ancestor_specs(flat: Sdf.Layer, dst: Sdf.Layer, prim_path: Sdf.Path) 
         parent = parent.GetParentPath()
 
 
-def save_scene(scene: core.SceneSender, chunkgroup_path: str | Path) -> None:
+def save_scene(scene: chunk_scene.SceneSender, chunkgroup_path: str | Path) -> None:
     """Save the scene: the same file export_chunks writes, under the name the Save Scene menu uses.
 
     Only chunk prims are written. Reopening regenerates everything a chunk is responsible

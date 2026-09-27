@@ -16,7 +16,7 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks import chunk_stage

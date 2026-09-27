@@ -5,6 +5,11 @@ import pathlib
 import pytest
 from usd_chunks.chunk_registry import ChunkLayerManager
 
+try:
+    from PySide6 import QtWidgets
+except ImportError:  # the ui extra is optional; only Qt tests ask for qapp
+    QtWidgets = None
+
 # Qt widget tests (test_chunk_pin.py, test_filter_bar.py, ...) instantiate real
 # ChunkWidget/QMainWindow objects via the qapp fixture below -- without forcing Qt's
 # built-in offscreen platform plugin first, each one flashes a real, visible window on
@@ -41,7 +46,8 @@ if _SCRIPTS not in os.environ.get("USD_CHUNK_DIRS", "").split(os.pathsep):
 @pytest.fixture(scope="session")
 def qapp():
     """Session-wide QApplication required by any test that creates Qt widgets."""
-    from PySide6 import QtWidgets
+    if QtWidgets is None:
+        pytest.skip("PySide6 is not installed")
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 

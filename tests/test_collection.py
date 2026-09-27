@@ -7,10 +7,11 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from pxr import Usd
+from pxr import Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
 
@@ -156,7 +157,6 @@ class TestCollectionTokenResolution:
         t.get_param("tz").value = 1.0
         _exec(transform_mod, t)
 
-        from pxr import UsdGeom
         stage = scene.get_stage()
         for p in ("/geo/a", "/geo/b", "/geo/c"):
             xformable = UsdGeom.Xformable(stage.GetPrimAtPath(p))

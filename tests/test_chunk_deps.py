@@ -17,7 +17,8 @@ import sys
 import pytest
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _NoScene(SceneSender):

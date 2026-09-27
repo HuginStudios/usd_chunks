@@ -9,7 +9,7 @@ from __future__ import annotations
 from PySide6 import QtWidgets
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.widgets import CHUNK_STYLESHEET, ChunkWidget, apply_chunk_stylesheet
 
 

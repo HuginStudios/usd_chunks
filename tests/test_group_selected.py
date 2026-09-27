@@ -10,12 +10,14 @@ has to come from the group, so the group sits in the chain exactly where the sel
 """
 from __future__ import annotations
 
+import sys
+import types
 import pytest
 from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import (
@@ -375,8 +377,6 @@ def config():
 @pytest.fixture
 def self_building(graph, tmp_path, monkeypatch):
     """A chunk that makes its own child when it cooks, like AMD MaterialX Library."""
-    import sys
-    import types
 
     qapp, reg, scene, d, stage = graph
     src = tmp_path / "self_building_chunk.py"

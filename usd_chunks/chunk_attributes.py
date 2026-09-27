@@ -342,16 +342,13 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         Returns:
             Usd.Property | None: The UsdProperty of the attribute if it is bound, else None
         """
-        # Imported here, not at the top: ChunkUsdAttributeSupport lives in chunk_core,
-        # which imports this module. A module-level import would be a cycle. This is the
-        # only place the attribute layer reaches back into the model -- everything else in
-        # this file knows nothing about chunks, params or groups.
-        from usd_chunks.chunk_core import ChunkUsdAttributeSupport
-
-        if owner := self.get_owner():
-            if not isinstance(owner, ChunkUsdAttributeSupport):
-                return
+        # Asked of the owner rather than of a chunk_core type: chunk_core imports this
+        # module, so naming ChunkUsdAttributeSupport here would be a cycle. AttributesBase
+        # answers None and ChunkUsdAttributeSupport overrides it, so this file still knows
+        # nothing about chunks, params or groups.
+        if isinstance(owner := self.get_owner(), AttributesBase):
             return owner.get_usd_prop()
+        return None
 
     def _copy_connection(
         self,
@@ -500,6 +497,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         if not self._logger:
             self._logger = logging.getLogger(f"usd_chunks.{self.__class__.__name__}")
         return self._logger
+
+    def get_usd_prop(self) -> Usd.Property | None:
+        """The USD property this object is bound to. Nothing, unless a subclass binds one.
+
+        Returns:
+            Usd.Property | None: Always None here; ChunkUsdAttributeSupport overrides it.
+        """
+        return None
 
     def clone(self) -> Self:
         """Create and return a copy of self.

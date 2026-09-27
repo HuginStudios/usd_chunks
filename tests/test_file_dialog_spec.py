@@ -12,6 +12,25 @@ import pytest
 from usd_chunks import chunk, chunk_widget_api
 from usd_chunks.chunk_flags import ChunkFlags
 
+# flet and imgui-bundle are optional extras; the Qt half of this contract still has to be
+# checked without them, so the skip is per-test rather than on the module. Only a missing
+# toolkit skips -- a frontend that fails to import for any other reason still errors.
+try:
+    import flet  # noqa: F401
+except ImportError:
+    chunk_flet = None
+else:
+    from usd_chunks.frontends.flet import factory as chunk_flet
+try:
+    import imgui_bundle  # noqa: F401
+except ImportError:
+    chunk_imgui = None
+else:
+    from usd_chunks.frontends.imgui import factory as chunk_imgui
+
+needs_flet = pytest.mark.skipif(chunk_flet is None, reason="flet is an optional extra")
+needs_imgui = pytest.mark.skipif(chunk_imgui is None, reason="imgui-bundle is an optional extra")
+
 
 def browser(name="file_path", **kwargs):
     param = chunk.FileBrowser(name)
@@ -78,11 +97,8 @@ class TestTitle:
 class TestEveryFrontendOffersBrowsing:
     """The gap this closes: two of the three had no browse affordance at all."""
 
+    @needs_flet
     def test_flet_builds_a_file_widget_not_a_text_field(self):
-        # flet is an optional extra; the Qt half of this contract still has to be checked
-        # without it, so the skip is per-test rather than on the module.
-        pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.frontends.flet import factory as chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
         widget = factory.create_widget(param)
@@ -90,18 +106,16 @@ class TestEveryFrontendOffersBrowsing:
             "a FileBrowser must not fall back to a plain text field")
         assert widget.picker is not None
 
+    @needs_flet
     def test_flet_hands_its_pickers_back_for_the_page_overlay(self):
         """A FilePicker cannot open until it is in page.overlay, and only the view can put
         it there -- so the widgets have to surrender them."""
-        # flet is an optional extra; the Qt half of this contract still has to be checked
-        # without it, so the skip is per-test rather than on the module.
-        pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.frontends.flet import factory as chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
         widget = factory.create_widget(param)
         assert chunk_flet.file_pickers([widget]) == [widget.picker]
 
+    @needs_flet
     def test_flet_applies_what_the_picker_returns(self):
         """pick_files hands back a LIST, save_file and get_directory_path hand back a
         path -- one write-back has to cope with both shapes.
@@ -110,10 +124,6 @@ class TestEveryFrontendOffersBrowsing:
         (see the NoticeConnection lifetime rule), so letting it fall out of scope makes
         widget.param raise "reference to param is dead" rather than fail an assertion.
         """
-        # flet is an optional extra; the Qt half of this contract still has to be checked
-        # without it, so the skip is per-test rather than on the module.
-        pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.frontends.flet import factory as chunk_flet
         factory = chunk_flet.ChunkFletWidgetFactory()
         param = browser()
         widget = factory.create_widget(param)
@@ -128,14 +138,12 @@ class TestEveryFrontendOffersBrowsing:
         widget.apply_picked(None)
         assert param.value == "C:/tmp/two.usda", "a cancelled dialog must not clear it"
 
+    @needs_imgui
     def test_imgui_has_a_browse_path(self):
-        pytest.importorskip("imgui_bundle")
-        from usd_chunks.frontends.imgui import factory as chunk_imgui
         assert callable(chunk_imgui._browse)
         assert callable(chunk_imgui.poll_dialogs)
 
+    @needs_imgui
     def test_imgui_polling_is_safe_with_nothing_pending(self):
-        pytest.importorskip("imgui_bundle")
-        from usd_chunks.frontends.imgui import factory as chunk_imgui
         chunk_imgui._pending_dialogs.clear()
         assert chunk_imgui.poll_dialogs() is False

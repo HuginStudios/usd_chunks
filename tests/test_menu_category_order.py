@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _NoScene(SceneSender):

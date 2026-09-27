@@ -9,13 +9,15 @@ its handle has a meaningful direction.
 from __future__ import annotations
 
 import importlib
+import types as _types
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.gizmo import runtime as chunk_gizmo
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
 
 
@@ -703,7 +705,6 @@ def test_a_chunk_without_the_hook_hides_nothing() -> None:
 def test_a_failing_hook_leaves_the_handle_visible() -> None:
     """A visible handle that misbehaves is easier to diagnose than one that silently never
     appears at all."""
-    import types as _types
 
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
     module = _types.ModuleType("chunks.camera_stub")

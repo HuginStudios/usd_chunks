@@ -1,8 +1,7 @@
 """The node graph as data: nodes, ports and edges, with no toolkit attached.
 
-It depends on `chunk_naming` for the chunk vocabulary and reaches for `chunk_stage` only
-inside the one function that needs a live session, so the reading and typing half runs with
-no stage machinery loaded at all.
+It depends on `chunk_naming` for the chunk vocabulary and on `chunk_stage` for the live
+session a disconnect keeps in step.
 
 `chunk_qt_nodegraph` grew the graph *model* and the Qt *view* together, but only
 superficially -- the connection logic reads three fields off a port item, and the port
@@ -539,12 +538,6 @@ def _clear_connections(stage: Usd.Stage, attr: Usd.Attribute) -> None:
     returns silently when uninitialised, so a frontend that reads a stage rather than
     joining a session got a disconnect that reported success and changed nothing.
     """
-    # Imported here, not at module scope: ChunkStageSync is the one thing in this file
-    # that belongs to a live session, and importing chunk_stage for it would put five
-    # thousand lines and two hundred and fifty modules behind every use of the engine --
-    # including the offline ones that have no session and want none.
-    from usd_chunks import chunk_stage
-
     sync = chunk_stage.ChunkStageSync()
     if getattr(sync, "initialized", False) and getattr(sync, "_stage", None) is stage:
         sync.clear_attr_connections(attr)
@@ -893,7 +886,7 @@ def iter_prim_connections(prim: Usd.Prim):
             yield attr_name, src_prim_path, src_attr_suffix
 
 
-def iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage):
+def iter_group_children(chunk: core.ChunkBase, scene_sender: chunk_scene.SceneSender, stage: Usd.Stage):
     """The direct children of a ChunkGroup: leaf chunks and nested sub-groups alike.
 
     Leaf chunks are found via get_context(), which walks the real Python ownership chain.
@@ -932,7 +925,7 @@ def iter_group_children(chunk: core.ChunkBase, scene_sender: core.SceneSender, s
 
 
 def snapshot_chunk_node(
-    chunk: core.ChunkBase, scene_sender: core.SceneSender, stage: Usd.Stage, rel_pos: tuple[float, float]
+    chunk: core.ChunkBase, scene_sender: chunk_scene.SceneSender, stage: Usd.Stage, rel_pos: tuple[float, float]
 ) -> ClipboardNode | None:
     """Build a ClipboardNode for `chunk`, recursing into its children if it is a ChunkGroup.
 

@@ -24,7 +24,8 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage

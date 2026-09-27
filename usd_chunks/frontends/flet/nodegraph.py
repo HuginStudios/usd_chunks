@@ -32,7 +32,7 @@ import flet.canvas as cv
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.frontends.flet import factory as chunk_flet
 from usd_chunks.graph import engine as chunk_graph

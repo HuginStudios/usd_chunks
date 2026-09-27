@@ -20,7 +20,8 @@ import importlib
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd, get_chunk_prim_path
 import usd_chunks.chunk_stage as chunk_stage
 

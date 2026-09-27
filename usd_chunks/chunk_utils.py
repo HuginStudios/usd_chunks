@@ -14,7 +14,9 @@ from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_naming
+from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
+from usd_chunks.chunk_topology import get_chunk_prim_path, nearest_upstream_edit_layer
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -95,10 +97,6 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     outside a module execute() (e.g. reconcile_edit_targets) passes owner explicitly rather
     than relying on this fallback.
 
-    The imports are local because chunk_stage imports this module at module scope, so
-    importing it back at module scope here would fail depending on which of the two loads
-    first.
-
     Args:
         stage: The stage being authored.
         owner: The authoring chunk. When None, falls back to the chunk whose execute() is
@@ -113,11 +111,9 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     if stage is None:
         return None
     if owner is None:
-        from usd_chunks import chunk_notice
         owner = chunk_notice._executing_chunk
     if owner is None:
         return stage.GetSessionLayer()
-    from usd_chunks.chunk_stage import nearest_upstream_edit_layer, get_chunk_prim_path
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
     return nearest_upstream_edit_layer(stage, prim)
 
@@ -148,8 +144,7 @@ def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
         # A chunk composed in from a sequence file has an Edit Target chain of its own,
         # and it is the sequence's: what the shot writes on such a chunk is an override,
         # and it goes where the host's edit target points (host_edit_layer), not down the
-        # sequence's chain. Same import shape as get_edit_layer above, same reason.
-        from usd_chunks.chunk_stage import get_chunk_prim_path
+        # sequence's chain.
         prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
         if is_composed_in(prim):
             return host_edit_layer(stage)
@@ -1136,90 +1131,6 @@ def edit_context_for(stage, var_selections, fallback_layer=None):
     if fallback_layer is None:
         return nullcontext()
     return Usd.EditContext(stage, fallback_layer)
-
-
-def show_attribute(prim, target_group, collapse_non_inputs=True, var_selections=()):
-    """Populate a group with typed editable params for all attributes and relationships on a prim.
-
-    This is the shared utility for dynamically building attribute editor UIs.
-    Used by the Dynamic chunk, Light chunk, and any chunk that needs to expose
-    a prim's attributes as interactive widgets.
-
-    Args:
-        prim: The Usd.Prim whose attributes to display.
-        target_group: A ChunkGroupBase to populate with params. Existing children
-            are cleared before populating.
-        collapse_non_inputs: If True, namespace groups other than 'inputs' start
-            collapsed. Keeps the UI tidy for prims with many attributes.
-        var_selections: The (anchor_prim_path, vs_name, variant) tuples active when `prim`
-            was resolved (split_variant_path / author_in_variant_context), if any. Recorded
-            on each generated attribute param so a later edit re-enters the same variant
-            (author_in_variant_selections) instead of authoring outside it -- see
-            ChunkUsdAttributeSupport.data_changed. Pass () for a prim reached outside any
-            variant context, which is the ordinary case and costs nothing extra.
-    """
-    # Late imports to avoid circular dependency (chunk imports chunk_utils)
-    from usd_chunks import chunk
-    from usd_chunks import chunk_core
-
-    if not prim or not prim.IsValid():
-        # Clean existing params: no prim means nothing to show.
-        for grp in target_group.get_my_params():
-            grp.request_delete()
-        return
-
-    # Read the prim FIRST, and build every param, before touching target_group at all.
-    #
-    # Installing a param fires notices; a cook reached that way can recompose the stage; and
-    # a resync EXPIRES this prim handle along with every attribute already read off it, so
-    # the next read raises. For example, a Stage Expression Switch writes the record of
-    # what it muted, that write cascades into cooking a light on the branch it just
-    # suppressed, and the light's own prim is gone by the time this loop reaches its
-    # second attribute.
-    #
-    # Raising there is not a local failure -- the exception would escape into
-    # gate_to_branches and leave the gate half done, with the branch it was suppressing
-    # still composed. Collecting first turns that into a lost cook rather than a
-    # half-emptied chunk: nothing has been deleted yet, the params the chunk already has
-    # stay exactly as they were, and the next cook rebuilds them.
-    prim_path = prim.GetPath()
-    specs = []
-    try:
-        for attr in prim.GetAttributes():
-            specs.append((attr.GetNamespace(),
-                          chunk.param_from_attr(attr, var_selections=var_selections),
-                          collapse_non_inputs))
-        for rel in prim.GetRelationships():
-            specs.append((rel.GetNamespace(), chunk.param_from_rel(rel), False))
-    except RuntimeError:
-        logger.debug("show_attribute: %s went away while it was being read; leaving this "
-                     "chunk's params alone for the next cook", prim_path)
-        return
-
-    # Clean existing params, now that there is something to replace them with.
-    for grp in target_group.get_my_params():
-        grp.request_delete()
-
-    groups = {}
-    for ns, param, collapse in specs:
-        if not param:
-            continue
-
-        if not isinstance(param, chunk.ChunkGroupBase):
-            param.set_flag(chunk_core.ChunkFlags.ParamFlags.LABELED)
-
-        tgt_grp = target_group if not ns else groups.get(ns)
-        if not tgt_grp:
-            tgt_grp = chunk.Group(
-                ns,
-                flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
-            )
-            if collapse and ns and ns != "inputs":
-                tgt_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
-            target_group.add_param(tgt_grp)
-            groups[ns] = tgt_grp
-
-        tgt_grp.add_param(param)
 
 
 # ---------------------------------------------------------------------------

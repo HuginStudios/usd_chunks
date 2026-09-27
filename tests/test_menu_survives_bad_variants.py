@@ -14,7 +14,10 @@ entry its sub-menu and nothing more.
 """
 from __future__ import annotations
 
+import logging
 from usd_chunks.chunk_core import ChunkConfig
+from pxr import Sdr
+from usd_chunks import shader_defs
 
 
 def test_a_raising_variants_callable_yields_no_variants():
@@ -55,9 +58,6 @@ def test_a_failure_is_retried_rather_than_cached_as_empty():
 
 def test_the_registry_being_unusable_is_not_an_exception(monkeypatch):
     """shader_defs is where the reported failure actually came from."""
-    from pxr import Sdr
-
-    from usd_chunks import shader_defs
 
     def _boom(*_a, **_k):
         raise RuntimeError("Invalid version 0.0")
@@ -74,11 +74,6 @@ def test_the_registry_warning_is_said_once_per_process(monkeypatch, caplog):
     working later -- but on a build where it never will, saying so on every right-click
     buries everything else in the log.
     """
-    import logging
-
-    from pxr import Sdr
-
-    from usd_chunks import shader_defs
 
     monkeypatch.setattr(shader_defs, "_registry_warned", False)
     monkeypatch.setattr(Sdr, "Registry", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("nope")))

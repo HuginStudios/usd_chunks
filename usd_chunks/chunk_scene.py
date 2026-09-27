@@ -11,8 +11,8 @@ importing it still loads the whole model. What it buys is that the host-facing s
 is now one file you can read end to end, rather than the last 600 lines of a 4900-line
 one.
 
-chunk_core re-exports SceneSender lazily (see its module __getattr__) so the many
-existing `from usd_chunks.chunk_core import SceneSender` imports keep working.
+Import it from here. chunk_core used to re-export it lazily for older code; that alias is
+gone, because chunk_core cannot import this module without a cycle.
 """
 from __future__ import annotations
 

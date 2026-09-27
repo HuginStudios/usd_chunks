@@ -13,12 +13,25 @@ from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
 
 import re
+from collections.abc import Callable
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
 
 # Re-exported under the original private name: chunk_qt imports it from here, and the
 # implementation is core (frontend-agnostic), not Qt.
 _clean_description = chunk_registry.clean_description
+
+#: Called with the chunks about to be deleted, before request_delete() runs on any of them.
+#: The node graph registers ChunkGraphView.mark_pending_delete_relevance here; it imports
+#: this module, so this module cannot import it back.
+pre_delete_hooks: list[Callable[[list], None]] = []
+
+
+def announce_pending_delete(chunks: list) -> None:
+    """Tell every pre-delete hook that `chunks` are about to be deleted."""
+    for hook in pre_delete_hooks:
+        hook(chunks)
+
 
 # Background tint for a tab's Params-page header panel (prim path field, lofted own-params,
 # filter bar) -- distinct from the body's #333333 (CHUNK_STYLESHEET's default QFrame color).
@@ -1857,8 +1870,7 @@ class ViewSlotState(QtCore.QObject):
         name = getattr(meth, "__name__", None)
         is_delete = name == "remove"
         if is_delete:
-            from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
-            ChunkGraphView.mark_pending_delete_relevance(list(targets))
+            announce_pending_delete(list(targets))
 
         for target in targets:
             if is_delete and getattr(target, "_deleting", False):
@@ -2022,8 +2034,7 @@ class ViewSlotState(QtCore.QObject):
                 # ChunkGraphView._delete_selected() entirely (that's the Delete-key path).
                 # Capture relevance the same way, right before it runs -- see
                 # mark_pending_delete_relevance's docstring for why it can't be judged after.
-                from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
-                ChunkGraphView.mark_pending_delete_relevance([grp])
+                announce_pending_delete([grp])
             conn.handle_callback(
                 chunk_notice.MenuActionNotice(grp.get_notice_data()), grp, False
             )

@@ -14,7 +14,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 from usd_chunks import chunk_registry
 from usd_chunks.gizmo import runtime as chunk_gizmo
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 
 brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
 

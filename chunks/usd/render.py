@@ -26,6 +26,18 @@ import tempfile
 
 from pxr import Sdf, Usd, UsdGeom, UsdRender, UsdUtils
 
+# Neither ships in the usd-core wheels. Each function that needs one checks for None and
+# falls back, so a headless install still loads this chunk.
+try:
+    from pxr import UsdAppUtils
+    from pxr.UsdAppUtils import rendererArgs
+except ImportError:
+    UsdAppUtils = rendererArgs = None
+try:
+    from pxr import UsdImagingGL
+except ImportError:
+    UsdImagingGL = None
+
 from usd_chunks import chunk
 
 
@@ -65,25 +77,23 @@ def _available_renderers():
     level down, used when UsdAppUtils is absent. Neither ships in the usd-core wheels,
     so a headless install falls back to a static list rather than an empty menu.
     """
-    try:
-        from pxr.UsdAppUtils import rendererArgs
+    if rendererArgs is not None:
+        try:
+            if names := list(rendererArgs.GetAllPluginArguments()):
+                return names
+        except Exception:
+            pass
 
-        if names := list(rendererArgs.GetAllPluginArguments()):
-            return names
-    except Exception:
-        pass
-
-    try:
-        from pxr import UsdImagingGL
-
-        names = [
-            UsdImagingGL.Engine.GetRendererDisplayName(plugin)
-            for plugin in UsdImagingGL.Engine.GetRendererPlugins()
-        ]
-        if names := [n for n in names if n]:
-            return names
-    except Exception:
-        pass
+    if UsdImagingGL is not None:
+        try:
+            names = [
+                UsdImagingGL.Engine.GetRendererDisplayName(plugin)
+                for plugin in UsdImagingGL.Engine.GetRendererPlugins()
+            ]
+            if names := [n for n in names if n]:
+                return names
+        except Exception:
+            pass
 
     return list(_FALLBACK_RENDERERS)
 
@@ -94,21 +104,19 @@ def _plugin_id(renderer_name):
     The menu shows argument names ("GL"), while FrameRecorder wants plugin ids
     ("HdStormRendererPlugin"), so the two have to be mapped rather than passed through.
     """
-    try:
-        from pxr.UsdAppUtils import rendererArgs
+    if rendererArgs is not None:
+        try:
+            return rendererArgs.GetPluginIdFromArgument(renderer_name)
+        except Exception:
+            pass
 
-        return rendererArgs.GetPluginIdFromArgument(renderer_name)
-    except Exception:
-        pass
-
-    try:
-        from pxr import UsdImagingGL
-
-        for plugin in UsdImagingGL.Engine.GetRendererPlugins():
-            if UsdImagingGL.Engine.GetRendererDisplayName(plugin) == renderer_name:
-                return plugin
-    except Exception:
-        pass
+    if UsdImagingGL is not None:
+        try:
+            for plugin in UsdImagingGL.Engine.GetRendererPlugins():
+                if UsdImagingGL.Engine.GetRendererDisplayName(plugin) == renderer_name:
+                    return plugin
+        except Exception:
+            pass
 
     return None
 
@@ -280,9 +288,7 @@ def _hydra_reads_render_products():
     the class rather than an instance so the answer is available before a recorder --
     and its render delegate -- has been built.
     """
-    try:
-        from pxr import UsdAppUtils
-    except ImportError:
+    if UsdAppUtils is None:
         return False
     return hasattr(UsdAppUtils.FrameRecorder, "SetExtraAovs")
 
@@ -399,9 +405,7 @@ def _why_refused(renderer, use_gpu):
 
 def _make_recorder(node, settings_path="", pass_path=""):
     """A configured FrameRecorder, or None when this build cannot render."""
-    try:
-        from pxr import UsdAppUtils
-    except ImportError:
+    if UsdAppUtils is None:
         logger.error(
             "Render: UsdAppUtils is not available. Rendering needs a full USD build — "
             "the usd-core wheels ship neither UsdAppUtils nor UsdImagingGL."
@@ -621,11 +625,7 @@ def _render_command(node, output_image):
 
 
 def _hydra_available():
-    try:
-        from pxr import UsdAppUtils  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return UsdAppUtils is not None
 
 
 def _gl_context_possible():
@@ -645,11 +645,12 @@ def _gl_context_possible():
     it has today; only a process with no Qt application, which is to say the CLI, can
     answer no. Guessing wrong in that direction costs a CPU render rather than a crash.
     """
-    try:
-        from PySide6.QtWidgets import QApplication
-    except ImportError:
+    # Looked up rather than imported: a QApplication can only exist if the host has already
+    # imported Qt, and the CLI has no reason to load it just to learn it is absent.
+    QtWidgets = sys.modules.get("PySide6.QtWidgets")
+    if QtWidgets is None:
         return False
-    return QApplication.instance() is not None
+    return QtWidgets.QApplication.instance() is not None
 
 
 def _render(node):

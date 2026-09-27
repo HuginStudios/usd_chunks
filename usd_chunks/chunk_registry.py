@@ -19,6 +19,8 @@ import re
 import sys
 from pathlib import Path
 from importlib import util
+from importlib.metadata import PackageNotFoundError, packages_distributions
+from importlib.metadata import version as distribution_version
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Sequence
 from typing import (
@@ -45,10 +47,14 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, Registry
 
 import usd_chunks.chunk_core as core
 import usd_chunks.chunk_notice as chunk_notice
+from usd_chunks import chunk_utils
 # from usd_chunks.chunk_core import ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
 
 if TYPE_CHECKING:
     import types
+
+    # Annotations only: chunk_scene imports chunk_core, which imports this module.
+    from usd_chunks.chunk_scene import SceneSender
 
 import atexit
 import ast
@@ -558,10 +564,6 @@ def _normalise_package(name: str) -> str:
 
 @functools.lru_cache(maxsize=1)
 def _packages_distributions() -> dict:
-    try:
-        from importlib.metadata import packages_distributions
-    except ImportError:  # pragma: no cover - 3.10+
-        return {}
     return packages_distributions()
 
 
@@ -752,10 +754,7 @@ def conflicting_requirements(modules) -> dict:
     Returns:
         {package: [(module_name, specifier, installed), ...]} for the failures only.
     """
-    try:
-        from packaging.specifiers import SpecifierSet
-        from packaging.version import InvalidVersion, Version
-    except ImportError:  # pragma: no cover - packaging ships with pip
+    if SpecifierSet is None:  # pragma: no cover - packaging ships with pip
         return {}
 
     wanted: dict = defaultdict(list)
@@ -797,13 +796,9 @@ def installed_version(package: str):
     Returns:
         The installed version, or None.
     """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:  # pragma: no cover
-        return None
     for candidate in (package, package.replace("-", "_"), package.replace("_", "-")):
         try:
-            return version(candidate)
+            return distribution_version(candidate)
         except PackageNotFoundError:
             continue
     return None
@@ -1331,7 +1326,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     registered_directories: set[Path] = set()
     registered_modules: dict[str, ChunkModule] = {}
-    scene: core.SceneSender
+    scene: SceneSender
     plugin: str
 
     # Duplicate module names skipped during registration, as
@@ -1342,7 +1337,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
     initialized: bool = False
 
-    def initialize(self, scene_sender: core.SceneSender, plugin: str) -> None:
+    def initialize(self, scene_sender: SceneSender, plugin: str) -> None:
         """Initialize the FileReader with the working directory.
 
         Args:
@@ -1936,12 +1931,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # containers) are structural scaffolding, not content -- they always stay pinned
         # to the session layer regardless of Edit Target, same as chunk-prim bookkeeping;
         # only a regular content-producing chunk's own driven data should move.
-        # Local import: chunk_utils imports this module at module scope, so importing it
-        # back at module scope here would fail depending on which of the two loads first.
         if isinstance(c, core.ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             target = self.stage.GetSessionLayer()
         else:
-            from usd_chunks import chunk_utils
             # Pass c as the owner so the target is resolved from c's own exec-chain position
             # (nearest upstream Edit Target), not from whichever chunk executed last.
             owner_chunk = c if isinstance(c, core.ChunkBase) else None

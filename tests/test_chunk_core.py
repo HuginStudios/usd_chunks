@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 # import usd_chunks.chunk_registry  # noqa: F401  # import-order workaround for chunk_core/chunk_registry circular init
-from pxr import Usd
+from pxr import Usd, Sdf
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ProxyParam, SceneSender
+from usd_chunks.chunk_core import ProxyParam
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
 
 
@@ -249,8 +250,6 @@ def test_list_group_remove_index_updates_size_and_proxies():
 
 
 def test_remove_chunk_with_layers():
-    from pxr import Usd
-
     scene = _DummyScene()
     stage = Usd.Stage.CreateInMemory()
 
@@ -284,7 +283,6 @@ def test_loft_connection_not_reconstructed_as_expression():
     _connect_param_attr must NOT rebuild it as a sibling expression @Container.attr@ -- that made
     an unresolvable ref ('Expression ref not found' spam) and briefly overwrote the forwarded
     value with the expression text. Sibling connections must still reconstruct as expressions."""
-    from pxr import Usd, Sdf
 
     scene = _DummyScene()
     stage = Usd.Stage.CreateInMemory()

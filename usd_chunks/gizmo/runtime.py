@@ -31,6 +31,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_stage
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
@@ -294,7 +295,6 @@ def _anchor_targets(chunk: core.ChunkBase, gizmo, stage: Usd.Stage) -> list:
         # resolve_paths can hand back variant-decorated paths (/prim{LOD=high}/geom); the
         # handle hangs off the prim, not the variant selection that authored it.
         try:
-            from usd_chunks import chunk_utils
             _, clean, _ = chunk_utils.split_variant_path(str(raw))
         except Exception:
             clean = str(raw)
@@ -748,8 +748,6 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
 
 def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
     """How far down the exec chain a chunk prim sits. Bigger is further downstream."""
-    from usd_chunks import chunk_stage
-
     depth, path, seen = 0, Sdf.Path(str(chunk_prim_path)), set()
     while path not in seen:
         seen.add(path)
@@ -1471,10 +1469,6 @@ def _create_chunk_at_tail(module_name: str):
         return None
     chunk = created[0]
 
-    # Imported here, not at module scope: chunk_stage imports this module to author gizmos, so
-    # a top-level import would be circular.
-    from usd_chunks import chunk_stage
-
     # Borrow the Params-tab create semantics -- chain onto the tail of the current context
     # and pull any view along with it. Without this the chunk is created unconnected, which
     # is right when a user places a node by hand and wrong here: nobody asked for a node, so
@@ -1520,8 +1514,6 @@ def _position_after_tail(scene) -> tuple[float, float] | None:
     so `chunk.get_context()` is still None and the tail lookup silently finds nothing --
     which reads as "no tail" and falls back to the default placement being fixed here.
     """
-    from usd_chunks import chunk_stage
-
     sync = chunk_stage.ChunkStageSync()
     stage = getattr(sync, "_stage", None)
     if stage is None:
@@ -1549,8 +1541,6 @@ def _nudge_downstream_views(chunk: core.ChunkBase) -> None:
     View-follows-tail rewires the view to consume the new chunk but leaves it where it was
     -- which is the slot the new node has just been placed in, so the two overlap.
     """
-    from usd_chunks import chunk_stage
-
     sync = chunk_stage.ChunkStageSync()
     stage = getattr(sync, "_stage", None)
     if stage is None:

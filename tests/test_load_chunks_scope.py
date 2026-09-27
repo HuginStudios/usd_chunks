@@ -16,7 +16,7 @@ from __future__ import annotations
 from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,

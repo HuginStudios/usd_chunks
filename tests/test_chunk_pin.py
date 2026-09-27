@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import weakref
 from pxr import Usd, UsdUtils
 
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from PySide6 import QtWidgets
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.frontends.qt.factory import _focused_view_is_graph
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
+from usd_chunks.frontends.qt.widgets import ChunkWidget, ViewSlotState
 
 
 class _DummyScene(SceneSender):
@@ -119,8 +126,6 @@ def test_pinned_true_survives_a_real_export_reload_cycle() -> None:
 # ---------------------------------------------------------------------------
 
 def test_params_page_filters_unpinned_chunks(qapp) -> None:
-    from usd_chunks.frontends.qt.widgets import ChunkWidget, ViewSlotState
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -140,8 +145,6 @@ def test_params_page_filters_unpinned_chunks(qapp) -> None:
 
 
 def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
-    from usd_chunks.frontends.qt.widgets import ChunkWidget, ViewSlotState
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -168,7 +171,6 @@ def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
 def test_a_chunk_with_no_pin_attribute_is_filtered_out(qapp) -> None:
     """Absent means unpinned, so a chunk saved before pinning existed opens with an
     unfiltered Params page rather than everything pinned."""
-    from usd_chunks.frontends.qt.widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -241,7 +243,6 @@ def test_pin_new_chunks_flag_marks_creation_as_pinned() -> None:
 def test_graph_surface_flag_resolves_the_race_to_unpinned(qapp) -> None:
     """With _pin_new_chunks explicitly set False (what ChunkGraphView.contextMenuEvent now
     does), a racing widget-listener must resolve to unpinned, not the legacy True default."""
-    from usd_chunks.frontends.qt.widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -259,8 +260,6 @@ def test_graph_surface_flag_resolves_the_race_to_unpinned(qapp) -> None:
 
 
 def test_params_surface_flag_resolves_the_race_to_pinned(qapp) -> None:
-    from usd_chunks.frontends.qt.widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -280,7 +279,6 @@ def test_view_chunk_never_defaults_to_pinned(qapp) -> None:
     """Views are graph-wiring utility nodes -- never auto-pinned, regardless of which surface
     (or none at all, e.g. _ensure_default_view's standalone auto-created default view) created
     them, and regardless of the listener race."""
-    from usd_chunks.frontends.qt.widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -321,9 +319,6 @@ def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -
     """Members created inside a chunkgroup's own dive-in tab go through the exact same
     ChunkGraphView.contextMenuEvent as a top-level tab, so they hit the identical race -- this
     confirms the fix covers a chunkgroup's own Params page too, not just a top-level tab's."""
-    from usd_chunks.frontends.qt.widgets import ChunkWidget
-    from usd_chunks.chunk_flags import ChunkFlags
-    import weakref
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -353,10 +348,6 @@ def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -
 
 
 def test_focused_view_is_graph_detects_graph_page_ancestor(qapp) -> None:
-    from usd_chunks.frontends.qt.factory import _focused_view_is_graph
-    from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
-    from PySide6 import QtWidgets
-
     plain = QtWidgets.QWidget()
     assert _focused_view_is_graph(plain) is False
     assert _focused_view_is_graph(None) is False

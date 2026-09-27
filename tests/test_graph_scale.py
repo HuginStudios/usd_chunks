@@ -35,7 +35,7 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry, chunk_scheduler
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias, ChunkNoticePropagator
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as chunk_usd_init

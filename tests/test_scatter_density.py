@@ -12,12 +12,13 @@ changes where instances land, and that an unpainted surface behaves exactly as i
 from __future__ import annotations
 
 import importlib
+import random
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -69,7 +70,6 @@ def _paint(mesh, weight_of):
 
 def _scatter_points(stage, path="/World/Floor", count=400, seed=3):
     """Run the surface sampler exactly as the cook does, mask included."""
-    import random
 
     prim = stage.GetPrimAtPath(path)
     triangles = scatter._collect_triangles(prim)

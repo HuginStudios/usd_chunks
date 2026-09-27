@@ -7,6 +7,8 @@ only when pxr is importable.
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import subprocess
 
 import pytest
 
@@ -158,10 +160,12 @@ def test_write_lock_preserves_other_custom_data():
 
 pxr = pytest.importorskip("pxr")
 
+from pxr import Sdf, Usd  # noqa: E402
+from usd_chunks import chunk_registry  # noqa: E402
+from usd_chunks.chunk_scene import SceneSender  # noqa: E402
+
 
 def _write_scene(path: Path) -> None:
-    from pxr import Usd
-
     stage = Usd.Stage.CreateNew(str(path))
     for name, ct in [("Prim1", "prim-chunk"), ("Grp", "chunkgroup")]:
         prim = stage.DefinePrim(f"/{name}", "Chunk")
@@ -183,7 +187,6 @@ def test_pin_end_to_end_writes_folder_and_lock(tmp_path):
     assert result.lock_mode == "in-place"
 
     # lock landed in the entry layer's customLayerData and reads back
-    from pxr import Sdf
 
     layer = Sdf.Layer.FindOrOpen(str(scene))
     assert read_lock(layer) == {"prim-chunk": "galder:1.2.0"}
@@ -223,8 +226,6 @@ class TestPackageLock:
     """
 
     def test_versions_round_trip_through_custom_layer_data(self):
-        from pxr import Sdf
-
         layer = Sdf.Layer.CreateAnonymous()
         pinmod.write_packages(layer, {"numpy": "2.4.2", "mujoco": "3.12.0"})
         assert pinmod.read_packages(layer) == {"numpy": "2.4.2", "mujoco": "3.12.0"}
@@ -232,7 +233,6 @@ class TestPackageLock:
     def test_they_sit_beside_the_impl_pins_rather_than_inside_them(self):
         """read_lock's contract is a flat {chunkType: 'store:version'}; widening it would
         break every reader to save one key."""
-        from pxr import Sdf
 
         layer = Sdf.Layer.CreateAnonymous()
         pinmod.write_lock(layer, {"transform": "store:1.0.0"})
@@ -242,14 +242,11 @@ class TestPackageLock:
         assert pinmod.read_packages(layer) == {"numpy": "2.4.2"}
 
     def test_nothing_recorded_reads_as_empty(self):
-        from pxr import Sdf
-
         assert pinmod.read_packages(Sdf.Layer.CreateAnonymous()) == {}
 
     def test_an_empty_lock_writes_no_key(self):
         """A scene whose chunks need nothing should not carry an empty dict implying it
         was checked and found bare."""
-        from pxr import Sdf
 
         layer = Sdf.Layer.CreateAnonymous()
         pinmod.write_packages(layer, {})
@@ -257,8 +254,6 @@ class TestPackageLock:
 
     def test_it_records_the_installed_version_not_the_declared_range(self):
         """rbd_solver declares mujoco>=3.1,<4. What belongs in a lock is what ran."""
-        from usd_chunks import chunk_registry
-        from usd_chunks.chunk_core import SceneSender
 
         class _NoScene(SceneSender):
             def get_stage(self):
@@ -293,8 +288,6 @@ class TestProvisionVenv:
         assert not target.exists()
 
     def test_the_interpreter_path_is_platform_correct(self, tmp_path):
-        import os
-
         expected = "Scripts" if os.name == "nt" else "bin"
         assert pinmod.venv_python(tmp_path).parent.name == expected
 
@@ -302,7 +295,6 @@ class TestProvisionVenv:
     def test_it_installs_the_exact_locked_versions(self, tmp_path):
         """Exact, not the declared range -- resolving ranges again would let versions drift,
         which is the thing the lock exists to stop."""
-        import subprocess
 
         target = tmp_path / "env"
         python, installed, problems = pinmod.provision_venv({"packaging": "24.0"}, target)
@@ -319,7 +311,6 @@ class TestProvisionVenv:
     def test_the_host_stack_stays_visible(self, tmp_path):
         """system_site_packages is not a convenience: pxr comes from a bundle pip cannot
         install, so a fully isolated venv is one where every chunk fails to import USD."""
-        import subprocess
 
         target = tmp_path / "env"
         python, _, problems = pinmod.provision_venv({"packaging": "24.0"}, target)
@@ -339,15 +330,11 @@ class TestIntegrityHashes:
     """
 
     def test_a_hash_round_trips(self):
-        from pxr import Sdf
-
         layer = Sdf.Layer.CreateAnonymous()
         pinmod.write_hashes(layer, {"transform": "sha256:abc"})
         assert pinmod.read_hashes(layer) == {"transform": "sha256:abc"}
 
     def test_it_sits_beside_the_pins_and_packages(self):
-        from pxr import Sdf
-
         layer = Sdf.Layer.CreateAnonymous()
         pinmod.write_lock(layer, {"transform": "store:1.0.0"})
         pinmod.write_packages(layer, {"numpy": "2.4.2"})

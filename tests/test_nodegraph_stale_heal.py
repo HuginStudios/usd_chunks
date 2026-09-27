@@ -22,8 +22,9 @@ import time
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
 
 class _DummyScene(SceneSender):
@@ -48,8 +49,6 @@ def _mk(reg, scene, module_name):
 
 
 def _graph_session(qapp):
-    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
-
     stage = Usd.Stage.CreateInMemory()
 
     class _StageScene(_DummyScene):

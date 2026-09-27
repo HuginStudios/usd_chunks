@@ -14,7 +14,7 @@ from PySide6 import QtCore, QtWidgets
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, context_ancestry
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init

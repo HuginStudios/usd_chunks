@@ -6,7 +6,9 @@ from pxr import Usd, UsdGeom
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
 
 class _DummyScene(SceneSender):
@@ -44,7 +46,6 @@ def test_unrelated_chunk_create_does_not_recreate_existing_node_or_proxy(qapp) -
     present and unchanged, only tearing down/recreating nodes whose chunk actually appeared or
     disappeared.
     """
-    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -112,7 +113,6 @@ def test_deleting_one_chunk_only_tears_down_that_nodes_proxy(qapp) -> None:
     """Companion sanity check: the incremental reuse above must not break real removal -- a
     deleted chunk's node must actually disappear, and an unrelated node's proxy must survive
     that deletion too."""
-    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -146,8 +146,6 @@ def test_deleting_one_chunk_only_tears_down_that_nodes_proxy(qapp) -> None:
     scatter_node = gv.scene()._nodes.get(scatter_path)
     proxy_before = scatter_node._proxy
     assert proxy_before is not None
-
-    from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
     ChunkGraphView.mark_pending_delete_relevance([stray])
     stray.request_delete()

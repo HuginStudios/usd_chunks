@@ -3,11 +3,12 @@ from __future__ import annotations
 import time
 
 import pytest
-from pxr import Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
-from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks import chunk_registry, chunk, chunk_stage as _chunk_usd
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
 
 class _DummyScene(SceneSender):
@@ -27,7 +28,6 @@ def _mk(mod, scene):
 
 def _set_proto(scatter, path, row=0, weight=None, scale=None):
     """Set row `row` of the Prototypes list (creating rows as needed)."""
-    from usd_chunks import chunk
 
     rows = scatter.get_param("prototypes", chunk.is_inst(chunk.ListGroup))
     if rows.size <= row:
@@ -133,7 +133,6 @@ def test_scatter_direct_param_edit_ignores_downstream_transform(qapp) -> None:
     establish that ranking in the first place -- a hand-wired chunk graph with no view/recook
     activity doesn't reach the same layer-strength state (confirmed while investigating the
     equivalent recook_for_view bug earlier)."""
-    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -215,7 +214,6 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     The unresolved reference used to leave ref_prim typeless and crash Set() on its
     xformOpOrder attr; it should fall back to the same default cube used when no prototype is
     set at all."""
-    from usd_chunks import chunk_stage as _chunk_usd
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -264,10 +262,9 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
 
 def _bootstrap():
     """A stage + registry + a Scatter Points chunk, ready to execute() by hand."""
-    from pxr import UsdGeom as _UsdGeom
 
     stage = Usd.Stage.CreateInMemory()
-    _UsdGeom.SetStageUpAxis(stage, _UsdGeom.Tokens.z)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
 
     class _StageScene(_DummyScene):
         def get_stage(self):
@@ -403,7 +400,6 @@ def test_stack_mode_packs_tight_stands_up_and_rests_on_the_surface() -> None:
     no two instances closer laterally than their footprint, and a second level lifted by
     exactly the prototype's height.
     """
-    from pxr import Gf
 
     stage, mod, scatter = _bootstrap()
     _plate(stage, half=10.0, height=3.0)
@@ -477,7 +473,6 @@ def test_stack_mode_respects_the_surface_outline_and_padding() -> None:
 
 def test_legacy_proto_prim_migrates_into_the_list() -> None:
     """A scene saved before the Prototypes list keeps working, and shows up in the new UI."""
-    from usd_chunks import chunk
 
     stage, mod, scatter = _bootstrap()
     _plate(stage)
@@ -505,7 +500,6 @@ def test_editing_a_prototype_row_recooks_on_its_own() -> None:
     Verified live before being written down (the whole point of the list is that it is
     editable in the UI, not just from execute()).
     """
-    from usd_chunks import chunk
 
     stage, _, scatter = _bootstrap()
     _plate(stage)
@@ -530,7 +524,6 @@ def test_editing_a_prototype_row_recooks_on_its_own() -> None:
 
 def test_stack_can_lay_prototypes_down_along_the_rows() -> None:
     """Lay Along Rows turns the long axis into the row direction -- a woodpile, not a cup."""
-    from pxr import Gf
 
     stage, mod, scatter = _bootstrap()
     _plate(stage, half=10.0)
@@ -556,7 +549,6 @@ def test_stack_can_lay_prototypes_down_along_the_rows() -> None:
 
 def test_spacing_default_and_collapsed_groups() -> None:
     """Spacing starts at 10, and the long groups start collapsed."""
-    from usd_chunks import chunk
 
     _, _, scatter = _bootstrap()
     assert scatter.get_param("spacing").default_value == pytest.approx(10.0)

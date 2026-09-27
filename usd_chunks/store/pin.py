@@ -23,20 +23,34 @@ it installs those exact versions into a venv, with system site packages on, so
 the host's OpenUSD and Qt stay visible while pip's share is pinned.
 
 The store-facing work goes through the plugin seam (usd_chunks.store.providers); this
-module never imports any marketplace. pxr is imported lazily so the pure
-resolve/materialize logic stays importable (and testable) without USD.
+module never imports any marketplace. pxr is optional here, and chunk_registry with it
+(it needs pxr), so the pure resolve/materialize logic stays importable (and testable)
+without USD.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
+import subprocess
+import venv as venv_module
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable
 
 from usd_chunks.store.providers import StoreProvider, discovered_stores, resolve_across_stores
 from usd_chunks import chunk_naming
+
+try:
+    from pxr import Sdf, Usd
+except ImportError:  # pragma: no cover - no USD here; the pure logic still imports
+    Sdf = Usd = None
+
+if Usd is not None:
+    from usd_chunks import chunk_registry
+else:  # pragma: no cover
+    chunk_registry = None
 
 #: Layer-level key holding the flat lock: {chunkType: "store:version"}.
 PINS_KEY = "usdchunks:pins"
@@ -287,8 +301,6 @@ def read_scene_lock(scene_path) -> dict[str, str]:
     Raises:
         PinError: The layer cannot be opened.
     """
-    from pxr import Sdf
-
     scene_path = Path(scene_path)
     layer = Sdf.Layer.FindOrOpen(str(scene_path))
     if layer is None:
@@ -314,8 +326,6 @@ def collect_packages(chunk_types: Iterable[str]) -> dict[str, str]:
     Returns:
         {package: installed version}.
     """
-    from usd_chunks import chunk_registry
-
     registry = chunk_registry.ChunkRegistry()
     modules = {m.module_name: m for m in registry.get_chunk_modules()} if registry.initialized else {}
 
@@ -345,8 +355,6 @@ def hash_file(path) -> str | None:
     Returns:
         The digest, or None.
     """
-    import hashlib
-
     try:
         digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     except OSError:
@@ -476,8 +484,6 @@ def _write_wrapper(scene_path: Path, lock: dict[str, str], pin_dir: Path,
 
     It goes into the pin folder so the source is never touched; this is the file to render.
     """
-    from pxr import Sdf
-
     pin_dir.mkdir(parents=True, exist_ok=True)
     wrapper = pin_dir / f"{scene_path.stem}.pinned.usda"
     wl = Sdf.Layer.CreateNew(str(wrapper))
@@ -539,9 +545,6 @@ def provision_venv(packages: dict[str, str], venv_dir, system_site_packages: boo
         (python, installed, problems). Nothing is installed and no venv is made when the lock
         is empty -- a scene whose chunks need no packages needs no environment.
     """
-    import subprocess
-    import venv as venv_module
-
     venv_dir = Path(venv_dir)
     if not packages:
         return None, [], []
@@ -596,8 +599,6 @@ def pin(
     Raises:
         PinError: The scene cannot be opened.
     """
-    from pxr import Usd
-
     scene_path = Path(scene_path)
     pin_dir = Path(pin_dir) if pin_dir else Path.cwd() / "pin"
 

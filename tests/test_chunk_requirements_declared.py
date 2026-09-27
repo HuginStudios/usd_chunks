@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -143,8 +144,6 @@ def test_the_scanner_sees_a_try_guarded_import():
     assert "mujoco" in chunk_registry.top_level_imports(path), (
         "the real case: rbd_solver guards mujoco and numpy in a try/except"
     )
-
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         guarded = Path(tmp) / "guarded.py"

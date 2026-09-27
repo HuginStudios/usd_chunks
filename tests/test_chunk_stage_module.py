@@ -14,6 +14,7 @@ import sys
 import pytest
 
 from usd_chunks import chunk_registry, chunk_stage
+from usd_chunks.chunk_scene import SceneSender
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -60,8 +61,6 @@ def test_importing_core_loads_no_plugin():
 
 @pytest.fixture
 def registry(qapp):
-    from usd_chunks.chunk_core import SceneSender
-
     class _Scene(SceneSender):
         def get_stage(self):
             return None

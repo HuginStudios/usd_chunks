@@ -12,7 +12,8 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,

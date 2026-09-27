@@ -43,7 +43,7 @@ def build(myChunk: chunk.Chunk, notice, sender):
             dynGrp.add_param(prim_grp)
             # var_selections is recorded on every generated param, so a later edit from its
             # slider/menu re-enters this same variant instead of authoring outside it.
-            chunk_utils.show_attribute(prim, prim_grp, collapse_non_inputs=True, var_selections=var_selections)
+            chunk.show_attribute(prim, prim_grp, collapse_non_inputs=True, var_selections=var_selections)
 
 
 def main():

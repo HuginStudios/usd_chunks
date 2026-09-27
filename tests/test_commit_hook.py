@@ -19,7 +19,8 @@ from pathlib import Path
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_scheduler
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import export_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd

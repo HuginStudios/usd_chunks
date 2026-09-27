@@ -22,12 +22,13 @@ from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_registry
+from usd_chunks import chunk_scene
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState
+from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState, pre_delete_hooks
 
 # The clipboard model and its snapshot helpers live in the engine now; these aliases keep
 # the rest of this file reading as it did, and keep the two frontends on one format.
@@ -1938,7 +1939,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._height_settle_timer = None
         self._build_complete = False
         self._stage: Usd.Stage | None = None
-        self._scene_sender: core.SceneSender | None = None
+        self._scene_sender: chunk_scene.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
         self._edges: list[ChunkEdgeItem] = []
         self._objects_changed_conn: NoticeConnection | None = None
@@ -1958,7 +1959,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # deletes to rebuild with no context and produce an empty graph until a tab-toggle.
         self._dirty = True
 
-    def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None):
+    def build(self, stage: Usd.Stage, scene_sender: chunk_scene.SceneSender, context=None):
         self._built_context = context
         self._dirty = False
         self._stage = stage
@@ -3087,7 +3088,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def minimumSizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(0, 0)
 
-    def build(self, stage: Usd.Stage, scene_sender: core.SceneSender, context=None, changed_chunks=None):
+    def build(self, stage: Usd.Stage, scene_sender: chunk_scene.SceneSender, context=None, changed_chunks=None):
         """changed_chunks: forwarded to the post-build recook -- see _recook_active_view's
         docstring. build() isn't only called on a genuine context/view switch (which always
         needs a full recook): ChunkWidgetDocker._loaded_module_callback also re-invokes it
@@ -5242,6 +5243,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         self._create_chunk_at(scene_pos, event.globalPos())
         event.accept()
+
+
+# The shared right-click "remove" menu action lives in widgets, which cannot import this
+# module; it announces deletes through this hook instead.
+pre_delete_hooks.append(ChunkGraphView.mark_pending_delete_relevance)
 
 
 class QtGraphFrontend:

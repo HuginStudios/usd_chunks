@@ -20,10 +20,12 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.gizmo import runtime as chunk_gizmo
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
+from usd_chunks.chunk_stage import _EXEC_INPUT, _EXEC_OUTPUT
 
 transform_mod = importlib.import_module("chunks.transforms.transform")
 
@@ -127,7 +129,6 @@ def test_two_transforms_compose(scene) -> None:
 
 def test_each_transform_owns_a_distinct_op(scene) -> None:
     """What makes composing possible: they are no longer writing the same attribute."""
-    from usd_chunks import chunk_utils
 
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
@@ -147,7 +148,6 @@ def test_each_transform_owns_a_distinct_op(scene) -> None:
 def test_a_chunks_op_id_survives_a_rename(scene) -> None:
     """Identity rests on the id, not the name, so renaming does not orphan the op a chunk
     has already authored."""
-    from usd_chunks import chunk_utils
 
     stage, sender, scene_layer = scene
     node = _mk(sender, transform_mod, "T1")
@@ -171,7 +171,6 @@ def test_the_same_network_mints_the_same_op_name_twice(scene) -> None:
 
     Two scenes built the same way stand in for two runs; with a random id this fails.
     """
-    from usd_chunks import chunk_utils
 
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
@@ -203,7 +202,6 @@ def test_a_vacated_path_does_not_hand_its_op_to_a_newcomer(scene) -> None:
     chunk called T1 seeds off exactly the same path. Without the salt they would share an
     op, which is the failure distinct op names exist to prevent in the first place.
     """
-    from usd_chunks import chunk_utils
 
     stage, sender, scene_layer = scene
     original = _mk(sender, transform_mod, "T1")
@@ -264,7 +262,6 @@ def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
 
 def _wire(stage, downstream, upstream):
     """downstream consumes upstream, the way the graph chains chunks."""
-    from usd_chunks.chunk_stage import _EXEC_INPUT, _EXEC_OUTPUT
 
     prim = stage.GetPrimAtPath(Sdf.Path(_chunk_path(downstream)))
     attr = prim.GetAttribute(_EXEC_INPUT)

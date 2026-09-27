@@ -9,13 +9,14 @@ Those are what these pin.
 from __future__ import annotations
 
 import importlib
+import time
 
 import numpy as np
 import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks import chunk_registry, chunk
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 pr = importlib.import_module("chunks.modelling.poly_reduce")
@@ -437,7 +438,6 @@ def test_target_triangle_count_mode_ignores_the_input_size(wired) -> None:
 def test_the_mode_menu_shows_only_the_control_that_mode_reads(wired) -> None:
     """Three modes sharing one panel; a Keep % slider that does nothing in Triangle Count
     mode is a bug report waiting to happen."""
-    from usd_chunks import chunk
 
     _, make = wired
     node = make()
@@ -513,7 +513,6 @@ def test_a_mesh_of_thousands_of_disconnected_cards_reduces_promptly() -> None:
     """The shape that broke it: a fir tree is a quarter of a million twig cards, and the
     library's replay helper took 698 seconds on it where the decimation itself took 0.4.
     Nothing about this mesh is unusual except how many separate islands it has."""
-    import time
 
     n_cards = 4000
     origins = np.arange(n_cards, dtype=np.float64)[:, None] * [1.0, 0.0, 0.0]
