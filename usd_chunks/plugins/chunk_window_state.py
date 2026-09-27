@@ -5,7 +5,7 @@ keeps splitter sizes, column visibility and view settings, and nothing about how
 window was or where it sat -- so every launch opens at whatever size Qt picks, with the
 Chunks dock at the fixed width :func:`chunk_qt.build_chunk_docker` asks for. On a large
 monitor that is a small window with a narrow node graph in it, resized by hand before any
-work can start, every single session. Reported as exactly that.
+work can start, every single session.
 
 Kept in ``QSettings`` rather than added to usdview's own state file: that file is keyed by
 usdview's ``SETTINGS_VERSION`` and rewritten wholesale by its ``ConfigManager``, so an entry
@@ -110,8 +110,7 @@ def install(window: QtWidgets.QMainWindow) -> None:
     """Restore the saved layout onto `window`, and arrange to save it again on close.
 
     Called after the Chunks dock exists: `restoreState` can only place docks that are
-    already there, so restoring first would drop ours and leave it at the default width --
-    the exact symptom this is here to remove.
+    already there, so restoring first would drop ours and leave it at the default width.
 
     Nothing saved yet is the ordinary first-run case and does nothing, leaving whatever
     usdview and `build_chunk_docker` decided.

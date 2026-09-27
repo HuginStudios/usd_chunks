@@ -246,7 +246,7 @@ class Slider(ChunkParamBase[int | float]):
     Attributes:
         min_value: A minimum value which the value should not subseed
         max_value: A maximum value which the value should not exceed
-        is_int: Set whether this parameter sould be an integer
+        is_int: Set whether this parameter should be an integer
     """
 
     min_value: Optional[float | int] = field(default=None)
@@ -281,7 +281,7 @@ class Spinbox(ChunkParamBase[float | int]):
     Attributes:
         min_value: A minimum value which the value should not subseed
         max_value: A maximum value which the value should not exceed
-        is_int: Set whether this parameter sould be an integer
+        is_int: Set whether this parameter should be an integer
     """
 
     min_value: Optional[float | int] = field(default=None)

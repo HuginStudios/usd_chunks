@@ -133,10 +133,9 @@ def _refresh_edit_target(owner, notice, sender):
         # edit from every chunk being restored, so "unresolved so far" is a normal,
         # transient state there (the layer shows up moments later, from a chunk still
         # ahead in the same load) rather than proof the selection is genuinely gone.
-        # Resetting on that transient reading is what live-reported as one of several
-        # chained Edit Target chunks silently reverting to "Session Layer" on
-        # reload while its siblings survived (whichever ones happened to be checked
-        # after their own upstream layer already existed) — so skip the reset
+        # Resetting on that transient reading would silently revert chained Edit
+        # Target chunks to "Session Layer" on reload, depending on whether each was
+        # checked before or after its own upstream layer existed — so skip the reset
         # entirely while loading and let a later refresh pass, triggered by that same
         # layer's own creation, resolve it correctly instead.
         if chunk_notice._loading_stage:
@@ -150,8 +149,8 @@ def execute(node):
     # can reactively re-trigger this same chunk's execute() before this call returns
     # (e.g. via another chunk's refresh cascading back here). We must NOT suppress
     # that reactivity at the notice level — chunk_utils.suppress_reexecution's
-    # set_blocked() looked like the fix but also blocks the notice the node-graph
-    # widget needs to know it should repaint, silently breaking the UI. Guard the
+    # set_blocked() would also block the notice the node-graph widget needs to know
+    # it should repaint, silently breaking the UI. Guard the
     # reentrant *call* directly instead, so widgets still refresh normally.
     if getattr(node, "_edit_target_executing", False):
         return

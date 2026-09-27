@@ -16,7 +16,7 @@ def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces
     if faces is None:
         faces = range(len(counts))
 
-    # On avarage, howmany curves per face to add
+    # On average, how many curves per face to add
     avg_curves = count / len(faces)
 
     # The increment in length to add to each segment
@@ -65,7 +65,7 @@ def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces
             u = r[j][0]
             v = r[j][1]
             if c == 3:
-                # triange parameterization
+                # triangle parameterization
                 u /= 2
                 v /= 2
                 w = 1 - u - v

@@ -7,13 +7,12 @@ on a scene just opened from disk that reconcile:
 
   * moved every chunk's bookkeeping out of the file's own root layer by DELETING the
     original specs. Sdf caches layers per process, so anything reopening or saving that
-    path got the gutted layer: opening the 60-chunk kitchen layout left 7 chunk
-    definitions in its root layer, and a save from that session wrote a file holding
-    exactly those (the tab, its two groups and the AMD chunk) and nothing else.
+    path got the gutted layer: opening a 60-chunk scene left 7 chunk definitions in its
+    root layer, and a save from that session wrote a file holding exactly those and
+    nothing else.
   * re-executed each chunk it moved, and each re-execute cascades a solve over everything
-    downstream of it -- once per chunk above, so quadratic. The kitchen layout's load ran
-    566 module executes for 60 chunks; its Materials script ran 28 times, costing 7 s, and
-    the same cascade fired again on every dive into or out of a chunkgroup.
+    downstream of it -- once per chunk above, so quadratic: a 60-chunk load ran 566 module
+    executes, and the same cascade fired again on every dive into or out of a chunkgroup.
 
 load_chunks already reconciles with cook=False and protect_root_layer=True for exactly
 these two reasons. The re-entrant call from a chunk's own execute() bypassed both.

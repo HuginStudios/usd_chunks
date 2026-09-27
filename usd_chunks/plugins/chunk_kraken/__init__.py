@@ -50,7 +50,7 @@ def launch_chunks(scene: SceneManager) -> None:
         usdviewApi: The Usdview API instance to use for module creation.
     """
     # The order of these does not matter. We can initialize the QT widgets before the ChunkRegistry since
-    # the QT widget subscribes to the CHUNK_LOADED notice, and will add chunks when that notice is recieved.
+    # the QT widget subscribes to the CHUNK_LOADED notice, and will add chunks when that notice is received.
 
     sceneSender = KrakenScene(scene)
     if not scene.stage:

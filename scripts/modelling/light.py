@@ -119,9 +119,8 @@ def execute(node):
         # attribute off it then raises, which is not a crash that stays local: this cook can
         # be running inside a gate's own evaluation (a Stage Expression Switch writes its
         # muted record, that write cascades, and this light is what it cascades into), so
-        # the exception aborts the gate half way and the branch it was suppressing stays on
-        # the stage. Live-reported as a gated light that would not go away when the shot
-        # changed, until a param on it was touched.
+        # the exception would abort the gate half way and leave the branch it was
+        # suppressing on the stage.
         prim_path = prim.GetPath()
         prim = stage.GetPrimAtPath(prim_path)
         if not prim or not prim.IsValid():

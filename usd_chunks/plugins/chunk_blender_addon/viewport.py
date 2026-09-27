@@ -1,11 +1,8 @@
 """A live Hydra Storm view of the chunk stage, in Blender's own 3D viewport.
 
-Used to live in the external launcher (blender_startup.py, in the usdbundle repo) because
-that script ran before the add-on was necessarily registered. It belongs here instead: the
-add-on always has a real usd_chunks import available to it, the launcher does not need to
-duplicate any of this, and chunk_blender_addon.BlenderScene.get_selected_prims() (viewport
-prim-picking) can read viewport state directly rather than through chunk_blender_nodegraph
-as a workaround for two files that could not otherwise see each other.
+It lives in the add-on rather than in an external launcher: the add-on always has a real
+usd_chunks import available to it, and chunk_blender_addon.BlenderScene.get_selected_prims()
+(viewport prim-picking) can read viewport state directly.
 
 **Why a draw handler and not a RenderEngine.** A `bpy.types.RenderEngine` renders
 Blender's depsgraph; getting an external stage in means importing it, which converts USD
@@ -194,8 +191,8 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     path swallows exactly this (see the module docstring); here the return value is the
     point of the call, so swallowing it leaves nothing. Hence the fallback: a CPU ray
     against prim bounds, which needs no GL and cannot be spoiled by someone else's error
-    queue. Reported live on Blender 5.1 / pxrBlender_v25_08 as an `invalid value` from
-    HgiGLTexture's constructor, on a viewport that was drawing perfectly.
+    queue. Blender 5.1 / pxrBlender_v25_08, for one, raises an `invalid value` from
+    HgiGLTexture's constructor on a viewport that is drawing perfectly.
     """
     from pxr import Gf, Tf
 

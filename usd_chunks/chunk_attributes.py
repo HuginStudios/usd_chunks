@@ -72,7 +72,7 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
     sort_keys = {}
     results = []
     for i, f in enumerate(fields):
-        # Find the first occurance of the attribute in the inheritance hierarchy, and use the index of the
+        # Find the first occurrence of the attribute in the inheritance hierarchy, and use the index of the
         # first declaration. This is to match the constructor arguments of pylance
         index = get_attr_index(cls, f.name)
         if index is not None:
@@ -92,7 +92,7 @@ class AttributesMetaclass(type):
     """Metaclass used to wrap Chunk attributes classes around attrs. Using it through metaclass instead of decorating all
     classes with @attrs.define order to have proper default behaviour of all chunk classes
 
-    This metaclass also injects some functions in to the defaul attrs __setattr__ in order to use out custom validation and conversion functions:
+    This metaclass also injects some functions in to the default attrs __setattr__ in order to use out custom validation and conversion functions:
     calls value_changed() on subclasses after __setattr__, and adds
     add _validate() and _convert() as default validator and conversion functions to all attrs.fields where applicable
     """
@@ -165,7 +165,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
     as it subclass from chunk_notice.ChunkNoticePropagator. This enables us to automatically send the
     ATTRIBUTE_CHANGED notice whenever the value is modified.
 
-    A valued parameter stores the value of the attributes itself, this class is a handle to thos attributes but with the
+    A valued parameter stores the value of the attributes itself, this class is a handle to those attributes but with the
     ability to use with the Tf.Notice system. See value_changed function of AttributesBase for more info
 
     Args:
@@ -197,7 +197,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
 
     def get_notice_data(self) -> Self:
         """
-        The notice data for AttributeSender's is simply self. A reciever of a notice may use this
+        The notice data for AttributeSender's is simply self. A receiver of a notice may use this
         to get any data available on the AttributeSender. This is possible if the original sender
         of the notice is an AttributeSender, as the notice.data is retrieved from get_notice_data()
 
@@ -259,11 +259,11 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # A param can declare that nothing downstream computes from its value. Rare, and
             # it has to be earned: the value must genuinely not reach the chunk's cook.
             #
-            # The Scatter Brush is the case that asked for it. Its radius, strength and mode
-            # steer a *stroke*, which happens outside any cook -- `execute` never reads them,
-            # and what downstream sees is the painted field, not the settings that produced
-            # it. Dirtying the chain for them made dragging Radius recook the scatter on every
-            # tick, reported as the brush being unusably sticky.
+            # The Scatter Brush is the example. Its radius, strength and mode steer a
+            # *stroke*, which happens outside any cook -- `execute` never reads them, and what
+            # downstream sees is the painted field, not the settings that produced it.
+            # Dirtying the chain for them would make dragging Radius recook the scatter on
+            # every tick.
             #
             # The change still solves and still sends its notice, so callbacks and the UI are
             # unaffected; only the dirtying of readers is skipped.
@@ -311,7 +311,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
 class CopyMode(IntEnum):
     """
     This enum is used for deciding how the parameters should be created when copied from another
-    parameter. The defsault is to create a copy, but if the parameters should be references (share recources),
+    parameter. The default is to create a copy, but if the parameters should be references (share resources),
     SHARE may be better
     """
 
@@ -422,7 +422,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         super().__init__()
 
         # Loop over all fields and add an AttributeSender for the attribute, which will be sent in value_changed. Doing this instead of
-        # get_notice_alias_for_attr in order to have a seperate sender for each attribute
+        # get_notice_alias_for_attr in order to have a separate sender for each attribute
         attr = attrs.fields_dict(type(self))
         for name, attr in attr.items():
             if attr.metadata.get("send_mode", SendMode.SEND) is SendMode.NO_SEND:
@@ -593,8 +593,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
         # No blocked check here. A blocked chunk (outside the active view's tree) must not
         # react to a change, but the change itself still has to be recorded: dropping it at
-        # this point lost renames and values for good -- the UI kept the old name, and the
-        # prim kept the old attribute and value, so the next save wrote them back. Whether
+        # this point would lose renames and values for good -- the UI would keep the old
+        # name, the prim the old attribute and value, and the next save would write them
+        # back. Whether
         # anything reacts is decided further on, by the owner's own notice (see
         # AttributeSender.is_blocked).
 
@@ -725,7 +726,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         Returns:
             bool: If this value is supported by the Interface
         """
-        # Attemp to cast to the type hint where applicable
+        # Attempt to cast to the type hint where applicable
         if attr.type:
             t = get_origin(attr.type)
 

@@ -160,10 +160,10 @@ class ImGuiGraphView:
         self._ensure_view()
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open, as Qt has always done.
+        """Give the context a view on open.
 
         Without one nothing cooks, so a network opened here would look right and do
-        nothing -- which is exactly how the other two frontends differed from Qt.
+        nothing.
         """
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, self.chunks.get(self.context))

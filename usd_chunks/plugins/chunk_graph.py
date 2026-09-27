@@ -496,9 +496,8 @@ def set_param_visibly(chunk_obj, param, value) -> None:
 
     A chunk created by dropping a wire into empty space is blocked the moment it is made
     (view-driven execution: nothing is wired to it yet), and a blocked chunk suppresses its
-    own param notices -- which is how a deferred connect could author the expression, have
-    it resolve correctly, and still leave the field on the node showing nothing at all.
-    Live-reported as "the wire works but the Prim Path param is empty".
+    own param notices -- so a deferred connect could author the expression, have it resolve
+    correctly, and still leave the field on the node showing nothing at all.
 
     Unblocking for the write is what makes the widget update, and `_executing` is what keeps
     that from running the module: set_blocked suppresses per-param VALUE_CHANGED notices as
@@ -1408,10 +1407,9 @@ def write_position(prim: "Usd.Prim | None", x: float, y: float, owner=None) -> N
     Authors through the attr's own existing home layer, or owner's bookkeeping layer for a
     first-time write -- never bare, which relies on the stage's ambient Edit Target. That
     target moves as chunks are created and edited, so a position pulled from the canvas
-    right after another node was authored landed in THAT node's layer instead of each
-    node's own -- reported as "drop a new node and the others jump back to (0, 0)", because
-    the misdirected writes lived in a procedural layer that then got cleared and
-    regenerated. Mirrors chunk_qt_nodegraph._write_pos_to_usd and the view-node position
+    right after another node was authored would land in THAT node's layer instead of each
+    node's own -- a procedural layer that then gets cleared and regenerated, snapping the
+    other nodes back to (0, 0). Mirrors chunk_qt_nodegraph._write_pos_to_usd and the view-node position
     write in ensure_view_slot, both of which already do this.
     """
     if prim is None or not prim.IsValid():
@@ -1587,8 +1585,8 @@ def can_dive(chunks: dict, path: str) -> bool:
 
     Keyed on is_subnet, never on the CONTEXT flag. Both a chunkgroup and a
     chunk-in-chunk (AMDMaterialXLibrary, which creates `reference` and `bind_material` as
-    an implementation detail) carry CONTEXT, so the flag cannot tell them apart -- which is
-    exactly why diving into the AMD node used to be offered and should not be. A chunk
+    an implementation detail) carry CONTEXT, so the flag cannot tell them apart, and only
+    the chunkgroup may be dived into. A chunk
     hosting a referenced network (chunk_stage.is_network_host) is a subnet too.
     """
     chunk = chunks.get(path)
@@ -1620,8 +1618,7 @@ def parent_context(context: str, available) -> "str | None":
 #
 # A view is what drives execution: chunk_stage.recook_for_view cooks the active view's
 # upstream tree and blocks everything else. A context with no view therefore cooks
-# NOTHING, which is why Qt has always made one on open -- and why the other two frontends
-# showing four nodes where Qt showed five was a real difference, not a cosmetic one.
+# NOTHING, which is why every frontend makes one on open (default_view_slot).
 # ---------------------------------------------------------------------------
 
 VIEW_MODULE = "view"
@@ -1677,9 +1674,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> "int | No
     Returns the EXISTING slot rather than making a duplicate when a view is already wired
     to that prim, so a caller can simply activate what comes back either way.
 
-    All USD and registry work -- no toolkit. Qt had this as a 75-line private method and
-    the other two frontends had nothing, which is why the same file showed five nodes in
-    one and four in the others.
+    All USD and registry work -- no toolkit -- so every frontend creates views the same way.
     """
     target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
     if not target.IsValid():

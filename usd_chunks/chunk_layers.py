@@ -82,11 +82,9 @@ def broken_property_specs(layer: Sdf.Layer) -> "list[Sdf.Path]":
 def drop_broken_property_specs(layers, logger=None) -> "list[str]":
     """Remove every unusable property stub from layers, and say what was removed.
 
-    Deliberately loud rather than quiet: this is a rescue, not a repair. Something is
-    creating these and we have not found it yet -- reproducing it from the reported edits
-    (a light moved onto a new prim, values changed, a material chunk added) did not, so the
-    logged layer and path are the evidence for the next attempt. Dropping the stub is safe
-    in the meantime because it holds nothing: no value, no type, no connection.
+    Deliberately loud rather than quiet: this is a rescue, not a repair. What creates these
+    stubs is not yet known, so the logged layer and path are there to help find it.
+    Dropping the stub is safe because it holds nothing: no value, no type, no connection.
 
     Returns:
         list[str]: "<layer>: <path>" for each stub removed
