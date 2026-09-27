@@ -1,24 +1,21 @@
-"""This module is the client-facing interface for working with chunks,
-containing concrete implementations of the chunk objects. These
-classes can be used by themselves, but they also describe common
-UI related information, making them easy to implement in any UI
-framework.
+r"""The client-facing chunk API: the concrete chunk, group and param classes.
 
-As all chunk classes inherit from chunk_core.AttributesMetaclass,
-all these classes are in fact attrs classes (dataclass). So creating a new
-Chunk Parameter class, one must only declare the class and inherit
-from [ChunkParamBase][usd_chunks.chunk_core.ChunkParamBase] or related base class. As the class will, behind
-the scenes, be wrapped in attrs.define() we get some method definitions
-for free; most notably \\_\\_init\\_\\_(). The \\_\\_init\\_\\_ will
-be created from all the fields of the class, including inherited, so
-we don't have to define the \\_\\_init\\_\\_ function for each chunk class.
+These classes can be used by themselves, but they also describe common UI information,
+which makes them easy to implement in any UI framework.
 
-For this reason, any attributes of a chunk class should be defined
-using attrs.field().
+As all chunk classes use chunk_core.AttributesMetaclass, they are all attrs classes
+(dataclasses). Creating a new param class only takes declaring the class and inheriting
+from [ChunkParamBase][usd_chunks.chunk_core.ChunkParamBase] or a related base class. The
+class is wrapped in attrs.define() behind the scenes, so it gets some methods for free,
+most notably \_\_init\_\_(), built from all the fields of the class, inherited ones
+included. For this reason, any attribute of a chunk class should be declared with
+attrs.field().
 
-A class which inherits from [ChunkParamBase][usd_chunks.chunk_core.ChunkParamBase] need to implement [get_type][usd_chunks.chunk_core.ChunkParamBase.get_type],
-and possibly [evaluate_type][usd_chunks.chunk_core.ChunkParamBase.evaluate_type] if the type may change during runtime. This
-is to ensure an easy mapping between chunks and whatever UI framework is used
+A class inheriting from [ChunkParamBase][usd_chunks.chunk_core.ChunkParamBase] needs to
+implement [get_type][usd_chunks.chunk_core.ChunkParamBase.get_type], and
+[evaluate_type][usd_chunks.chunk_core.ChunkParamBase.evaluate_type] too if the type can
+change at runtime. That is what maps a param to a widget in whatever UI framework is
+used.
 
 !!! example
 
@@ -31,9 +28,8 @@ is to ensure an easy mapping between chunks and whatever UI framework is used
             return ChunkFlags.ParamType.LINEEDIT
     ```
 
-When creating a chunk module, the chunk.Chunk() class is the top level
-container for which all parameters and groups should be added to. Creating
-a simple chunk with a button is as simple as:
+In a chunk module, chunk.Chunk() is the top-level container that every param and group
+is added to. A chunk with a button is as simple as:
 
 !!! example
     ``` py
@@ -41,15 +37,14 @@ a simple chunk with a button is as simple as:
 
 
     def main():
-        myChunk = chunk.Chunk("myChunk")
-        btnParam = chunk.Button("myButton")
+        my_chunk = chunk.Chunk("my_chunk")
+        button = chunk.Button("my_button")
 
-        myChunk.add_param(btnParam)
-        return myChunk
+        my_chunk.add_param(button)
+        return my_chunk
     ```
 
 See [example](../example.md) for a more extensive example.
-
 """
 from __future__ import annotations
 
@@ -59,6 +54,7 @@ from attrs import field
 from enum import IntFlag, Enum
 from collections.abc import Sequence
 from typing import Any, TYPE_CHECKING, cast, TypeGuard, overload
+from typing_extensions import override
 
 from pxr import Gf, Usd, Sdf
 
@@ -135,6 +131,7 @@ class Gizmo(_gizmo):
 
 
 class StandardCategory(str, Enum):
+    """The menu categories the bundled chunks use; a "/" nests a category."""
     MODELLING = "Modelling"
     DYNAMICS = "Dynamics"
     TRANSFORM = "Transform"
@@ -174,6 +171,7 @@ class Chunk(ChunkBase):
     )
     gizmo: str | None = field(default=None)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         if self.gizmo is not None and self.gizmo != _GIZMO_TRANSFORM:
@@ -184,7 +182,7 @@ class Chunk(ChunkBase):
 
 
 class Group(ChunkGroupBase):
-    """Group is a container holding child ChunkParamBase and ChunkGroupBase instances
+    """A container holding child params and groups.
 
     A group can carry a `gizmo=` type, which is usually the lightest way to declare a
     handle: the group already *is* the params the handle drives, so nothing needs listing.
@@ -198,6 +196,7 @@ class Group(ChunkGroupBase):
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
     gizmo: str | None = field(default=None)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         if self.gizmo is not None:
@@ -205,7 +204,10 @@ class Group(ChunkGroupBase):
 
 
 class ListGroup(ChunkListGroupBase):
-    """ListGroup is a container holding child ChunkParamBase and ChunkGroupBase instances with dynamic size. Params added with add_param will be duplicated size times"""
+    """A container of params and groups whose size can change.
+
+    Params added with add_param are duplicated `size` times.
+    """
 
     # Override defaults
     flags: IntFlag = field(
@@ -214,12 +216,13 @@ class ListGroup(ChunkListGroupBase):
 
 
 class Vector(ChunkVectorBase):
-    """A Vector is basically a group which holds a set number of parameters"""
+    """A group holding a fixed number of params, one per component."""
 
     # Override defaults
     flags: IntFlag = field(default=ChunkFlags.GroupFlags.LABELED | ChunkFlags.GroupFlags.FRAMED)
     gizmo: str | None = field(default=None)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         if self.gizmo is not None:
@@ -240,10 +243,10 @@ def _apply_usd_hard_limits(param, attr) -> None:
 
 
 class Slider(ChunkParamBase[int | float]):
-    """A slider parameter holding a float or int value
+    """A slider param holding a float or int value.
 
     Attributes:
-        min_value: A minimum value which the value should not subseed
+        min_value: A minimum value which the value should not go below
         max_value: A maximum value which the value should not exceed
         is_int: Set whether this parameter should be an integer
     """
@@ -254,19 +257,23 @@ class Slider(ChunkParamBase[int | float]):
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
     gizmo: str | None = field(default=None)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         if self.gizmo is not None:
             _check_gizmo_sugar(self.name, self.gizmo, scalar=True)
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.INT_SLIDER | ChunkFlags.ParamType.FLOAT_SLIDER
 
+    @override
     def evaluate_type(self) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.INT_SLIDER if self.is_int else ChunkFlags.ParamType.FLOAT_SLIDER
 
     @classmethod
+    @override
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
         _apply_usd_hard_limits(param, attr)
@@ -274,10 +281,10 @@ class Slider(ChunkParamBase[int | float]):
 
 
 class Spinbox(ChunkParamBase[float | int]):
-    """A spinbox parameter holding a float or int value
+    """A spinbox param holding a float or int value.
 
     Attributes:
-        min_value: A minimum value which the value should not subseed
+        min_value: A minimum value which the value should not go below
         max_value: A maximum value which the value should not exceed
         is_int: Set whether this parameter should be an integer
     """
@@ -288,15 +295,18 @@ class Spinbox(ChunkParamBase[float | int]):
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.INT_SPINBOX | ChunkFlags.ParamType.FLOAT_SPINBOX
 
+    @override
     def evaluate_type(self) -> ChunkFlags.ParamType:
         if self.is_int:
             return ChunkFlags.ParamType.INT_SPINBOX
         return ChunkFlags.ParamType.FLOAT_SPINBOX
 
     @classmethod
+    @override
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs) -> ChunkUsdAttributeSupport:
         param = super().from_usd_attr(attr, *args, **kwargs)
         _apply_usd_hard_limits(param, attr)
@@ -304,7 +314,7 @@ class Spinbox(ChunkParamBase[float | int]):
 
 
 class Menu(ChunkParamBase[str]):
-    """A menu parameter with menu_items
+    """A menu param: one choice out of menu_items.
 
     Attributes:
         menu_items: A list of items to display in the menu
@@ -322,6 +332,7 @@ class Menu(ChunkParamBase[str]):
     dynamic_items: bool = field(default=False)
 
     @classmethod
+    @override
     def from_usd_attr(cls, attr: Usd.Attribute, *args, **kwargs):
         param = super().from_usd_attr(attr, *args, **kwargs)
 
@@ -333,9 +344,11 @@ class Menu(ChunkParamBase[str]):
         return param
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.STRING_MENU
 
+    @override
     def convert_attr(self, attr: Attribute, val: Any) -> Any:
         if attr.name in ["default_value", "value"]:
             if self.menu_items and not self.dynamic_items and val is not None and val not in self.menu_items:
@@ -354,6 +367,7 @@ class Menu(ChunkParamBase[str]):
         return super().convert_attr(attr, val)
 
     def get_selected_index(self):
+        """The index of the current value in menu_items, 0 if it is not there."""
         try:
             return self.menu_items.index(self.value)
         except ValueError:
@@ -361,40 +375,48 @@ class Menu(ChunkParamBase[str]):
 
 
 class Button(ChunkParamBase):
-    """A button parameter. Does not store any usable value. Should be used with callbacks only"""
+    """A button param.
+
+    It stores no usable value and is used with callbacks only.
+    """
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.BUTTON
 
     def click(self):
-        """Click the button, triggering connected callbacks to called"""
+        """Click the button, triggering its connected callbacks."""
         self.get_attribute_sender("value").execute()
 
 
 class Checkbox(ChunkParamBase[bool]):
-    """A checkbox parameter. Stores a boolean value"""
+    """A checkbox param holding a bool."""
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.CHECKBOX
 
 
 class LineEdit(ChunkParamBase[str]):
-    """An editable string parameter for a single line. May set the ParamFlags.PRIM_SELECTION flag if the param is used for
-    Usd.Prim selection
+    """An editable single-line string param.
+
+    Set ParamFlags.PRIM_SELECTION when the param holds Usd.Prim paths.
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
+    @override
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
 
         if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
             self.set_prims(self.get_scene().get_selected_prims())
 
+    @override
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if attrname == "flags" and ChunkFlags.ParamFlags.PRIM_SELECTION in value:
             self.set_prims(self.get_scene().get_selected_prims())
@@ -402,39 +424,55 @@ class LineEdit(ChunkParamBase[str]):
         return super().value_changed(attrname, old_value, value)
 
     def set_prims(self, prims: Sequence[Usd.Prim]):
-        """Sets the value of the param to a list of prim paths
+        """Set the value to a comma-separated list of these prims' paths.
 
         Args:
-            prims (List[Usd.Prim]): The list of prims to set
+            prims (Sequence[Usd.Prim]): The prims to set
         """
         self.value = ",".join([str(x.GetPath()) for x in prims])
 
     def resolve_paths(self) -> list[str]:
-        """Return the list of prim path strings after expanding globs in the value.
+        """The prim paths in the value, with globs and collection references expanded.
 
-        Supports space/comma separation and Houdini-style glob patterns:
-          *   within one path component, **  across any depth, ?  single char.
+        Supports space/comma separation and Houdini-style glob patterns: ``*`` within one path
+        component, ``**`` across any depth, ``?`` a single character. See
+        chunk_utils.resolve_prim_paths.
+
+        Returns:
+            The resolved prim path strings, empty without a stage or a value.
         """
         if not (stage := self.get_stage()) or not self.value:
             return []
         return chunk_utils.resolve_prim_paths(stage, self.value)
 
     def get_prims(self) -> Sequence[Usd.Prim]:
-        """If this param is a list of prim paths (comma separated), then return the prims on the stage
+        """The valid prims on the stage for the paths in the value.
 
         Returns:
-            Iterable[Usd.Prim]: The prims
+            Sequence[Usd.Prim]: The prims
         """
         if not (stage := self.get_stage()):
             return []
         return [prm for pp in self.resolve_paths() if (prm := stage.GetPrimAtPath(pp)) and prm.IsValid()]
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LINEEDIT
 
     @classmethod
     def from_usd_rel(cls, rel: Usd.Relationship, *args, **kwargs):
+        """Create a param that holds a relationship's targets as paths.
+
+        Args:
+            rel: The relationship.
+            *args: Passed to the param constructor.
+            **kwargs: Passed to the param constructor; `name` defaults to the relationship's
+                base name.
+
+        Returns:
+            The new param.
+        """
         rel_name = rel.GetName()
 
         if (args and isinstance(args[0], str)) or kwargs.get("name"):
@@ -451,22 +489,23 @@ class LineEdit(ChunkParamBase[str]):
 
 
 class TextEdit(ChunkParamBase[str]):
-    """An editable string parameter with multiple lines"""
+    """An editable multi-line string param."""
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
     rows: int | None = field(default=None, metadata={"validate": False, "convert": False})
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.TEXTEDIT
 
 
 class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
-    """A string parameter with the addition of a button for opening a file browser
+    r"""A string param with a button that opens a file browser.
 
     Attributes:
         extensions: A list of supported file extensions
-        pattern: A regex pattern for filtering file names. Defaults to "\\*"
+        pattern: A glob pattern for filtering file names. Defaults to "\*"
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
@@ -475,9 +514,11 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
     pattern: str = field(default="*")
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.FILE
 
+    @override
     def validate_attr(self, attr: Attribute, val: Any) -> bool:
         if attr.name in ["value", "default_value"] and val:
             if self.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING):
@@ -489,28 +530,35 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
 
 
 class Label(ChunkParamBase[str]):
-    """A label parameter. Should not be editable in the UI. The name or label param attribute controls the displayed text"""
+    """A read-only text param.
+
+    Its name or label attribute is the text displayed.
+    """
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.LABEL
 
 
 class Separator(ChunkParamBase):
-    """An organizatorial parameter. Does not store a value"""
+    """A param that only separates others in the UI, and holds no value."""
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.SEPARATOR
 
 
 class ColorPicker(ChunkParamBase[tuple]):
-    """A color parameter holding an (r, g, b) tuple with values in 0-1 range.
-    Renders as a color swatch that opens a QColorDialog on click.
+    """A colour param holding an (r, g, b) tuple with values in the 0-1 range.
+
+    A UI shows it as a colour swatch that opens a colour dialog.
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
+    @override
     def convert_attr(self, attr: Attribute, val: Any) -> Any:
         # A colour read back from USD arrives as Gf.Vec3f, which the tuple validator
         # rejects -- so a ColorPicker bound to a chunk-prim Color3f attr would fail on the
@@ -525,9 +573,11 @@ class ColorPicker(ChunkParamBase[tuple]):
         return super().convert_attr(attr, val)
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.COLOR_PICKER
 
+    @override
     def evaluate_type(self) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.COLOR_PICKER
 
@@ -544,6 +594,7 @@ class Matrix(ChunkParamBase[Gf.Matrix4d]):
     every other param follows.
     """
 
+    @override
     def convert_attr(self, attr: Attribute, val: Any) -> Any:
         # A matrix arriving from USD or from a sequence of sixteen numbers is still a
         # matrix; only reject what cannot be read as one. Without this, restoring a saved
@@ -560,14 +611,16 @@ class Matrix(ChunkParamBase[Gf.Matrix4d]):
         return super().convert_attr(attr, val)
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.MATRIX
 
 
 class Custom(ChunkParamBase):
-    """A customizable parameter for holding custom widgets"""
+    """A param whose widget is supplied by the chunk, through param.custom_widget."""
 
     @classmethod
+    @override
     def get_type(cls) -> ChunkFlags.ParamType:
         return ChunkFlags.ParamType.CUSTOM
 
@@ -578,6 +631,7 @@ class Custom(ChunkParamBase):
 
 
 def set_validators_enabled(enabled: bool):
+    """Turn attrs validators on or off globally."""
     from attrs import validators
 
     validators.set_disabled(not enabled)
@@ -610,16 +664,20 @@ usd_type_map = {
 
 
 def param_from_attr(attr: Usd.Attribute, *args, **kwargs) -> ChunkCommon | None:
-    """Create a new paramaeter from a Usd.Attribute if the attribute type is supported. Will use
-    the from_usd_attr class method of the found param type. It will connect the ATTRIBUTE_CHANGED
-    notice to control the usd attribute. We return a ChunkCommon object rather than a ChunkParamBase as
-    as some parameters may actually be groups (Vectors f.e.)
+    """Create a param for a Usd.Attribute, if its type is supported.
+
+    Uses the from_usd_attr class method of the matching param type, which connects the
+    ATTRIBUTE_CHANGED notice so the param controls the USD attribute. The result is a
+    ChunkCommon rather than a ChunkParamBase because some params are really groups
+    (Vectors, for example).
 
     Args:
-        attr (Usd.Attribute): The Usd.Attribute which to create a parameter for
+        attr (Usd.Attribute): The attribute to create a param for
+        *args: Passed to the param constructor.
+        **kwargs: Passed to the param constructor.
 
     Returns:
-        ChunkCommon | None: If a mapping exists for the attr type, then returns a ChunkCommon object. Else None.
+        ChunkCommon | None: The param, or None if no param type maps the attr's type.
     """
     type_name = attr.GetTypeName()
 
@@ -638,6 +696,8 @@ def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | Non
 
     Args:
         attr (Usd.Relationship): The relationship to connect with a param
+        *args: Passed to the param constructor.
+        **kwargs: Passed to the param constructor.
 
     Returns:
         ChunkCommon | None: The resulting param if created successfully
@@ -646,20 +706,20 @@ def param_from_rel(attr: Usd.Relationship, *args, **kwargs) -> ChunkCommon | Non
 
 
 def get_chunk_registry() -> ChunkRegistry | None:
-    """Get the ChunkRegistry instance. This can be used to find / register loaded chunk modules
+    """Get the ChunkRegistry instance, which finds and registers chunk modules.
 
     Returns:
-        ChunkRegistry | None: The registry if it has been initialized. Otherwise None
+        ChunkRegistry | None: The registry if it has been initialized, otherwise None
     """
     res = ChunkRegistry()
     return res if res.initialized else None
 
 
 def get_scene() -> SceneSender | None:
-    """Return the current SceneSender object. The SceneSender can be used to find / add chunks to the scene, as well as saving / loading the current scene
+    """Return the current SceneSender, which finds, adds, saves and loads chunks.
 
     Returns:
-        SceneSender | None: The current scene or None if the scene does not exists
+        SceneSender | None: The current scene, or None if there is no scene
     """
     if reg := get_chunk_registry():
         return reg.scene
@@ -725,7 +785,7 @@ def get_chunk(chunk_name: str):
 
 
 def is_param(v: Any) -> TypeGuard[ChunkParamBase]:
-    """A predicate function for checking if an object is an instance of ChunkParamBase
+    """Check whether an object is a ChunkParamBase.
 
     Args:
         v (Any): The value to check
@@ -745,14 +805,16 @@ def is_param_t(t: type[ValueT]) -> Predicate[ChunkParamBase[ValueT]]: ...
 
 
 def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBase] | Predicate[ChunkParamBase[ValueT]]:
-    """Creates a predicate function for checking if a parameter is an instance of ChunkParamBase, and that it holds
-    a value of type t or the param.evaluate_type() is t if t is a chunkFlags.ParamType enum
+    """Create a predicate matching params of a value type or a ParamType.
+
+    A value type matches a param holding a value of that type; a ChunkFlags.ParamType
+    matches a param whose evaluate_type() includes it.
 
     Args:
-        t (Any): The value type or chunkFlags.ParamType to match
+        t (ChunkFlags.ParamType | type): The value type or ParamType to match
 
     Returns:
-        Predicate[ChunkParamBase[ValueT]]: The predicate function
+        Predicate[ChunkParamBase]: The predicate function
     """
     if isinstance(t, ChunkFlags.ParamType):
 
@@ -772,7 +834,7 @@ def is_param_t(t: ChunkFlags.ParamType | type[ValueT]) -> Predicate[ChunkParamBa
 
 
 def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
-    """A predicate function for checking if v is a ChunkGroupBase
+    """Check whether v is a ChunkGroupBase.
 
     Args:
         v (Any): The input value to check
@@ -784,7 +846,7 @@ def is_group(v: Any) -> TypeGuard[ChunkGroupBase]:
 
 
 def is_chunk(v: Any) -> TypeGuard[ChunkBase]:
-    """A predicate function for checking if v is a ChunkBase
+    """Check whether v is a ChunkBase.
 
     Args:
         v (Any): The input value to check
