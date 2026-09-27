@@ -5,18 +5,22 @@ import importlib
 import io
 import time
 import zipfile
+import threading
 
 import pytest
 from pxr import Usd, UsdShade, Sdf
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _author_prim,
     _CHUNKS_ROOT,
     ChunkStageSync,
     get_chunk_prim_path,
     initialize as init_chunk_usd,
+    load_chunks,
+    save_scene,
 )
 
 
@@ -243,8 +247,6 @@ def _chunk_path(name: str) -> str:
     add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
     parent is that group rather than the /chunks scope.
     """
-    from usd_chunks import chunk_registry
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
@@ -421,7 +423,6 @@ class TestAMDMaterialXLibraryChildCreation:
         to restore, which is what made this gap invisible for every OTHER CONTEXT
         chunk in the project.
         """
-        from usd_chunks.chunk_stage import load_chunks, save_scene
 
         stage = Usd.Stage.CreateInMemory()
 
@@ -691,8 +692,6 @@ class TestAMDMaterialXAsyncApply:
         _load("chunks.materials.bind_material")
 
     def test_apply_downloads_off_thread_and_assigns_on_the_main_thread(self, monkeypatch, tmp_path, qapp):
-        import threading
-
         stage = Usd.Stage.CreateInMemory()
 
         class _StageScene(_DummyScene):

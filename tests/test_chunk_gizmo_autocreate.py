@@ -17,7 +17,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks.gizmo import runtime as chunk_gizmo
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 
 transform_mod = importlib.import_module("chunks.transforms.transform")

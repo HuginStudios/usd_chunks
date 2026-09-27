@@ -43,6 +43,14 @@ INPUTS_PREFIX = "inputs:"
 EXEC_INPUT = "inputs:chunk"
 EXEC_OUTPUT = "outputs:chunk"
 
+# An Edit Target chunk publishes the identifier of the layer it currently points at onto
+# its own prim under this attribute. The presence of the attr marks an exec-chain boundary
+# for chunk_utils.get_edit_layer's upstream walk; its value names the layer everything
+# downstream of it authors into. Publishing it (rather than importing the Edit Target
+# script's resolution logic into core) keeps core decoupled from the script -- same
+# published-marker pattern as chunk:pinned / set_chunk_pinned.
+EDIT_TARGET_MARKER = "chunk:editTargetLayer"
+
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
 # keeps the plain EXEC_INPUT name, so any consumer that only ever looks up inputs:chunk

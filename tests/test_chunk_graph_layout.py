@@ -10,7 +10,9 @@ from usd_chunks.graph.layout import (
 )
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
 
 
 def _sizes(sizes: dict) -> callable:
@@ -213,8 +215,6 @@ def _wire_exec(stage: Usd.Stage, downstream_path: str, upstream_path: str) -> No
 
 
 def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> None:
-    from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -247,8 +247,6 @@ def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> 
 
 
 def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
-    from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -276,8 +274,6 @@ def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
 
 
 def test_layout_nodes_never_moves_a_locked_node(qapp) -> None:
-    from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")

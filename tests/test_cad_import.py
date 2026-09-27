@@ -21,6 +21,21 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
+try:
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.STEPControl import STEPControl_StepModelType
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.XCAFApp import XCAFApp_Application
+    from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool
+except ImportError:  # cadquery-ocp is optional; step_file skips before it needs these
+    pass
+
 ci = importlib.import_module("chunks.modelling.cad_import")
 
 needs_ocp = pytest.mark.skipif(not ci._HAS_OCP, reason="needs cadquery-ocp")
@@ -259,17 +274,6 @@ def step_file(tmp_path_factory):
     unit conversion has something real to do.
     """
     pytest.importorskip("OCP", reason="needs cadquery-ocp")
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
-    from OCP.gp import gp_Trsf, gp_Vec
-    from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
-    from OCP.STEPCAFControl import STEPCAFControl_Writer
-    from OCP.STEPControl import STEPControl_StepModelType
-    from OCP.TCollection import TCollection_ExtendedString
-    from OCP.TDataStd import TDataStd_Name
-    from OCP.TDocStd import TDocStd_Document
-    from OCP.TopLoc import TopLoc_Location
-    from OCP.XCAFApp import XCAFApp_Application
-    from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool
 
     app = XCAFApp_Application.GetApplication_s()
     doc = TDocStd_Document(TCollection_ExtendedString("BinXCAF"))

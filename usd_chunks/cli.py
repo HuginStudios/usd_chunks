@@ -18,7 +18,8 @@ from pathlib import Path
 
 from pxr import Sdf, Usd, UsdUtils
 from usd_chunks import chunk_naming
-from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler
+from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_stage import (
     ChunkLayerManager,
     ChunkStageSync,
@@ -35,7 +36,7 @@ GREEN = "\033[32m"
 RESET = "\033[0m"
 
 
-class HeadlessScene(chunk_core.SceneSender):
+class HeadlessScene(chunk_scene.SceneSender):
     def __init__(self, stage):
         super().__init__()
         self._stage = stage
@@ -283,8 +284,6 @@ def cmd_validate(args):
 
 
 def cmd_pin(args):
-    from usd_chunks.store import pin as pinmod
-
     if args.list:
         try:
             pins = pinmod.read_scene_lock(args.usda)

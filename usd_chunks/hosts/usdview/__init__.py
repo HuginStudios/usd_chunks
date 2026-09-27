@@ -11,7 +11,7 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore
 
-from usd_chunks import chunk_registry, chunk_core, shader_defs
+from usd_chunks import chunk_registry, chunk_scene, shader_defs
 from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks.frontends.qt import window_state as chunk_window_state
 from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
@@ -51,7 +51,7 @@ def _set_clip_overrides(free_cam, clip):
         free_cam.overrideFar = far
 
 
-class UsdviewScene(chunk_core.SceneSender):
+class UsdviewScene(chunk_scene.SceneSender):
     """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
     TODO: Make this abstract and move implementation to a UsdView related location
     """

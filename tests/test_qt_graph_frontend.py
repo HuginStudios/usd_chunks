@@ -13,11 +13,22 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.qt import nodegraph
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_flags import ChunkFlags
+
+# flet is an optional extra; the Qt half of the shared-clipboard contract still has to be
+# checked without it, so the skip is per-test rather than on the module. Imported for its
+# side effect: the flet frontend must bind the engine's lists, not replace them.
+try:
+    import flet  # noqa: F401
+except ImportError:
+    chunk_flet_nodegraph = None
+else:
+    from usd_chunks.frontends.flet import nodegraph as chunk_flet_nodegraph  # noqa: F401
 
 
 class _DummyScene(SceneSender):
@@ -114,7 +125,6 @@ class TestEditing:
         adapter, chunks, paths = frontend
         adapter.set_selection([paths[0]])
         adapter.toggle_disable_selected()
-        from usd_chunks.chunk_flags import ChunkFlags
         assert chunks[0].has_state(ChunkFlags.State.DISABLED)
 
     def test_copy_fills_the_shared_clipboard(self, frontend):
@@ -227,11 +237,8 @@ class TestTheClipboardIsShared:
         assert nodegraph._node_clipboard is chunk_graph.node_clipboard
         assert nodegraph._edge_clipboard is chunk_graph.edge_clipboard
 
+    @pytest.mark.skipif(chunk_flet_nodegraph is None, reason="flet is an optional extra")
     def test_flet_and_qt_hold_the_same_lists(self):
-        # flet is an optional extra; the Qt half of this contract still has to be checked
-        # without it, so the skip is per-test rather than on the module.
-        pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.frontends.flet import nodegraph as chunk_flet_nodegraph  # noqa: F401
         assert chunk_graph.node_clipboard is nodegraph._node_clipboard
 
     def test_a_qt_copy_is_visible_to_the_engine(self, frontend):

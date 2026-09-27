@@ -1741,7 +1741,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     # (anchor_prim_path, vs_name, variant) tuples active when this param was bound to
     # _param_attr_path -- set only for a param bound to a REAL prim's attribute via
-    # chunk_utils.show_attribute (the Property Editor, Light, ...), never for the ordinary
+    # chunk.show_attribute (the Property Editor, Light, ...), never for the ordinary
     # chunk-storage-attr binding. data_changed's write re-enters these via
     # chunk_utils.author_in_variant_selections instead of get_attr_home_layer, which cannot
     # see inside a variant. Empty for a param bound outside any variant context.
@@ -3812,20 +3812,6 @@ class ChunkConfig(AttributesBase):
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         return chunk_notice.ChunkNoticeAlias.CHUNK_CONFIG_CHANGED
 
-
-# SceneSender moved to chunk_scene. It is re-exported lazily rather than imported at the
-# top, because chunk_scene imports THIS module: a top-level import either way round is a
-# cycle. A plain import at the bottom of this file would work only if chunk_core happened
-# to be imported first -- `import usd_chunks.chunk_scene` on a cold interpreter would then
-# fail. PEP 562 module __getattr__ resolves on first access instead, by which point both
-# modules are fully loaded, so it is correct under any import order.
-def __getattr__(name: str):
-    """Resolve SceneSender lazily; it moved to chunk_scene and is still importable from here."""
-    if name == "SceneSender":
-        from usd_chunks.chunk_scene import SceneSender
-
-        return SceneSender
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 

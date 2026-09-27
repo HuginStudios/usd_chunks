@@ -22,7 +22,7 @@ import pytest
 from pxr import Usd, UsdGeom, UsdLux
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as chunk_stage_initialize, save_scene
 
 

@@ -14,7 +14,7 @@ from PySide6 import QtCore
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
 

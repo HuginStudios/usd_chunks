@@ -130,7 +130,7 @@ def execute(node):
             return
 
         attr_grp = node.get_param("attr_grp", chunk.is_group)
-        chunk_utils.show_attribute(prim, attr_grp)
+        chunk.show_attribute(prim, attr_grp)
 
 
 def config():

@@ -9,16 +9,21 @@ from __future__ import annotations
 
 import importlib
 import types
+import logging
+import os
+import sys
 
 import pytest
-from pxr import Usd, UsdGeom, UsdRender
+from pxr import Usd, UsdGeom, UsdRender, Sdf
 
-from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk_registry, chunk, render_defs
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
-from usd_chunks.chunk_stage import export_chunks
+from usd_chunks.chunk_stage import export_chunks, load_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
-from usd_chunks.cli import cmd_run
+from usd_chunks.cli import cmd_run, _all_chunks
+from usd_chunks.chunk_flags import ChunkFlags
 
 
 class _DummyScene(SceneSender):
@@ -98,8 +103,6 @@ class TestRenderVar:
         assert render_var.GetSourceTypeAttr().Get() == "raw"
 
     def test_driver_params_author_namespaced_attrs(self):
-        from usd_chunks import chunk
-
         scene, stage = _setup_stage()
         var_mod = importlib.import_module("chunks.usd.render_var")
         var = _make(scene, var_mod, "render_var")
@@ -126,8 +129,6 @@ class TestRenderVar:
         assert prim.GetAttribute("driver:parameters:husk:multiSampled").Get() is True
 
     def test_driver_params_skip_unusable_rows(self):
-        from usd_chunks import chunk
-
         scene, stage = _setup_stage()
         var_mod = importlib.import_module("chunks.usd.render_var")
         var = _make(scene, var_mod, "render_var")
@@ -161,7 +162,6 @@ class TestRenderProduct:
         """USD checks for a written product by opening productName verbatim -- no frame
         expansion, no resolution -- so these two shapes report a product missing while
         the image is on disk."""
-        import logging
         mod = importlib.import_module("chunks.usd.render_product")
 
         for name in ("renders/beauty.####.exr", "beauty.{frame}.exr", "renders/beauty.exr"):
@@ -171,8 +171,6 @@ class TestRenderProduct:
             assert caplog.records, f"{name} should warn"
 
     def test_an_absolute_unnumbered_product_is_not_warned_about(self, caplog):
-        import logging
-        import os
         mod = importlib.import_module("chunks.usd.render_product")
 
         absolute = os.path.abspath("beauty.exr")
@@ -268,7 +266,6 @@ class TestRenderSettings:
         dropping the node onto the graph."""
         for value in ("not/absolute", "/cam_a,/cam_b", "   "):
             scene, stage = _setup_stage()
-            from pxr import UsdGeom
             UsdGeom.Camera.Define(stage, "/cam_a")
             UsdGeom.Camera.Define(stage, "/cam_b")
             _var, product, settings = _render_network(scene)
@@ -280,7 +277,6 @@ class TestRenderSettings:
 
     def test_multiple_selected_cameras_take_the_first(self):
         scene, stage = _setup_stage()
-        from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cam_a")
         UsdGeom.Camera.Define(stage, "/cam_b")
         _var, _product, settings = _render_network(scene)
@@ -325,7 +321,6 @@ class TestRenderSettings:
 
 def _populate_containing(owner, param_name):
     """Expand whichever lazy group holds param_name, so its param exists."""
-    from usd_chunks.chunk_flags import ChunkFlags
 
     def walk(node):
         for child in node.get_my_params():
@@ -343,7 +338,6 @@ def _populate_containing(owner, param_name):
 
 
 def _schema_delegates():
-    from usd_chunks import render_defs
     return [d for d in render_defs.iter_render_settings_defs() if d.source == "schema"]
 
 
@@ -395,7 +389,6 @@ class TestDelegateSettings:
     def test_groups_start_empty_and_fill_on_expand(self):
         """Building all 258 up front took twenty seconds before one was visible, so a
         collapsed group holds its settings until someone opens it."""
-        from usd_chunks.chunk_flags import ChunkFlags
 
         scene, _stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
@@ -443,10 +436,7 @@ class TestDelegateSettings:
         chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
         scene2._stage = stage2
         init_chunk_usd(stage2, scene2)
-        from usd_chunks.chunk_stage import load_chunks
         load_chunks(stage2, scene2)
-
-        from usd_chunks.cli import _all_chunks
 
         reloaded = next(
             (c for c in _all_chunks(scene2.get_chunks())
@@ -512,8 +502,6 @@ class TestCameraChoice:
     viewport needs the log to account for it."""
 
     def _stage(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdRender
-
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.Camera.Define(stage, "/World/aaa_first")
         UsdGeom.Camera.Define(stage, "/World/shotCam")
@@ -538,7 +526,6 @@ class TestCameraChoice:
     def test_a_settings_camera_is_named_as_such(self, caplog):
         mod = importlib.import_module("chunks.usd.render")
         stage, sdf = self._stage()
-        from pxr import UsdRender
 
         settings = UsdRender.Settings(stage.GetPrimAtPath("/Render/settings"))
         settings.CreateCameraRel().SetTargets([sdf.Path("/World/shotCam")])
@@ -562,8 +549,6 @@ class TestCameraChoice:
         assert "nothing chose it" in caplog.text
 
     def test_no_camera_still_returns_none(self):
-        from pxr import Usd
-
         mod = importlib.import_module("chunks.usd.render")
 
         assert mod._resolve_camera(self._node(""), Usd.Stage.CreateInMemory(), "") is None
@@ -580,8 +565,6 @@ class TestViewportPush:
     """
 
     def _def(self):
-        from usd_chunks import render_defs
-
         return render_defs.RenderSettingsDef(
             key="delegate:HdFakePlugin",
             label="Fake",
@@ -607,7 +590,6 @@ class TestViewportPush:
         on teardown whenever it did not already exist, which takes out whichever test
         runs next and reads it.
         """
-        from usd_chunks import render_defs
 
         mod = importlib.import_module("chunks.usd.render_settings")
         definition = self._def()
@@ -801,7 +783,6 @@ class TestRenderPass:
         _var, _product, settings = _render_network(scene)
         rp = self._pass(scene, settings)
 
-        from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         mod = importlib.import_module("chunks.usd.render")
@@ -881,13 +862,11 @@ class TestFrameSpec:
         assert mod.parse_frames("1:9x4") == [1.0, 5.0, 9.0]
 
     def test_backwards_range_is_rejected(self):
-        import pytest
         mod = importlib.import_module("chunks.usd.render")
         with pytest.raises(ValueError):
             mod.parse_frames("10:2")
 
     def test_non_positive_stride_is_rejected(self):
-        import pytest
         mod = importlib.import_module("chunks.usd.render")
         with pytest.raises(ValueError):
             mod.parse_frames("1:10x0")
@@ -918,7 +897,6 @@ class TestHydraMode:
         rop = _make(scene, mod, "render")
         rop.get_param("mode").value = "Hydra"
 
-        from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         fake = recorder or _FakeRecorder()
@@ -957,7 +935,6 @@ class TestHydraMode:
         rop.get_param("output_image").value = str(tmp_path / "beauty.png")
         rop.get_param("settings_path").value = settings.get_param("primpath_location").value
 
-        from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         captured = {}
@@ -986,7 +963,6 @@ class TestHydraMode:
         rop.get_param("output_image").value = str(tmp_path / "beauty.png")
         assert not rop.get_param("settings_path").value
 
-        from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         captured = {}
@@ -1007,7 +983,6 @@ class TestHydraMode:
         `usdchunks run scene.usda -o out.exr` writes somewhere the command line did not
         ask for.
         """
-        import os
         mod = importlib.import_module("chunks.usd.render")
 
         scene_file = tmp_path / "shot" / "scene.usda"
@@ -1056,7 +1031,6 @@ class TestHydraMode:
         rop.get_param("mode").value = "Hydra"
         rop.get_param("output_image").value = str(tmp_path / "beauty.png")
 
-        from pxr import UsdGeom
         UsdGeom.Camera.Define(stage, "/cameras/shotcam")
 
         monkeypatch.setattr(mod, "_hydra_available", lambda: True)
@@ -1208,7 +1182,6 @@ class TestRenderRop:
         monkeypatch.setattr(mod.subprocess, "run", _fake_run)
         mod.commit(rop)
 
-        import os
         assert not os.path.exists(staged["path"]), "staged scene file should be cleaned up"
 
     def test_output_param_records_the_written_image(self, monkeypatch, tmp_path):
@@ -1247,7 +1220,6 @@ class TestRenderCommandResolution:
     with WinError 2 while the tool was plainly installed."""
 
     def test_extension_less_script_runs_through_the_interpreter(self, monkeypatch):
-        import sys
         mod = importlib.import_module("chunks.usd.render")
         monkeypatch.setattr(mod.os, "name", "nt")
         monkeypatch.setattr(mod.shutil, "which", lambda _c: r"C:\USD\bin\usdrecord")
@@ -1262,7 +1234,6 @@ class TestRenderCommandResolution:
         assert mod._resolve_command("usdrecord") == [r"C:\USD\bin\usdrecord.exe"]
 
     def test_py_script_runs_through_the_interpreter_on_any_platform(self, monkeypatch):
-        import sys
         mod = importlib.import_module("chunks.usd.render")
         monkeypatch.setattr(mod.os, "name", "posix")
         monkeypatch.setattr(mod.shutil, "which", lambda _c: "/usr/bin/usdrecord.py")
@@ -1302,7 +1273,8 @@ class TestRendererMenu:
     def test_falls_back_when_nothing_can_be_enumerated(self, monkeypatch):
         """usd-core wheels ship neither UsdAppUtils nor UsdImagingGL."""
         mod = importlib.import_module("chunks.usd.render")
-        monkeypatch.setitem(__import__("sys").modules, "pxr.UsdAppUtils", None)
+        monkeypatch.setattr(mod, "rendererArgs", None)
+        monkeypatch.setattr(mod, "UsdImagingGL", None)
 
         renderers = mod._available_renderers()
         assert "GL" in renderers
@@ -1416,8 +1388,6 @@ class TestUnpatchedUsdBuild:
         return mod, node
 
     def test_refuses_product_driven_output(self, monkeypatch, caplog):
-        import logging
-
         scene, stage = _setup_stage()
         mod, node = self._hydra_render(monkeypatch, scene, stage, "")
 
@@ -1428,8 +1398,6 @@ class TestUnpatchedUsdBuild:
             "an empty Output Image on an unpatched build must be refused by name"
 
     def test_warns_that_aovs_will_be_missing(self, monkeypatch, caplog):
-        import logging
-
         scene, stage = _setup_stage()
         mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
         monkeypatch.setattr(mod, "_make_recorder", lambda *a, **k: None)
@@ -1441,8 +1409,6 @@ class TestUnpatchedUsdBuild:
             "losing the render vars must not be silent"
 
     def test_says_nothing_on_a_build_that_supports_it(self, monkeypatch, caplog):
-        import logging
-
         scene, stage = _setup_stage()
         mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
         monkeypatch.setattr(mod, "_hydra_reads_render_products", lambda: True)

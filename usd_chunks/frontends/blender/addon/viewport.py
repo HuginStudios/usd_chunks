@@ -25,6 +25,8 @@ import logging
 import traceback
 
 import bpy
+from bpy_extras import view3d_utils
+from pxr import Gf, Glf, Sdf, Tf, Usd, UsdGeom, UsdImagingGL
 
 from usd_chunks.frontends.blender import nodegraph as bg
 
@@ -67,7 +69,6 @@ def _headlight(engine, rv3d) -> None:
     shade with at all and draws flat black. Recomputed every draw so it tracks navigation,
     same as the camera state below it.
     """
-    from pxr import Glf, Gf
 
     eye = rv3d.view_matrix.inverted().translation
     light = Glf.SimpleLight()
@@ -94,7 +95,6 @@ def pick_matrix(ndc_x: float, ndc_y: float, dx: float, dy: float):
     Post-multiplied onto the projection by the caller, because Gf uses row-vectors
     (v * M1 * M2 applies M1 first).
     """
-    from pxr import Gf
     return (Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(-ndc_x, -ndc_y, 0.0))
             * Gf.Matrix4d(1.0).SetScale(Gf.Vec3d(1.0 / dx, 1.0 / dy, 1.0)))
 
@@ -111,7 +111,6 @@ def hit_path(result) -> str | None:
     a build that returns the hit point there would have a Vec3d at the origin read as a
     miss, which is a hit dead centre of the near plane.
     """
-    from pxr import Sdf
     if not result:
         return None
     if isinstance(result[0], bool) and not result[0]:
@@ -128,7 +127,6 @@ def ray_from_region(region, rv3d, mouse_x, mouse_y):
     Blender's own view maths, no GL: this is what the bounds pick below rides on, and the
     reason that pick keeps working on a driver where Hydra's does not.
     """
-    from bpy_extras import view3d_utils
     coord = (mouse_x, mouse_y)
     origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
     direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
@@ -148,7 +146,6 @@ def pick_by_bounds(stage, origin, direction, time=None) -> str | None:
     pointed at, and a host that wants the prim above it walks up from there (which is what
     the gizmo module does, to find the one a chunk drives).
     """
-    from pxr import Gf, Usd, UsdGeom
     if stage is None:
         return None
     time = Usd.TimeCode.Default() if time is None else time
@@ -194,7 +191,6 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     queue. Blender 5.1 / pxrBlender_v25_08, for one, raises an `invalid value` from
     HgiGLTexture's constructor on a viewport that is drawing perfectly.
     """
-    from pxr import Gf, Tf
 
     ndc_x = (mouse_x / region.width) * 2.0 - 1.0
     ndc_y = (mouse_y / region.height) * 2.0 - 1.0
@@ -232,8 +228,6 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
 
 
 def _draw():
-    from pxr import Gf, UsdImagingGL
-
     context = bpy.context
     rv3d = getattr(context, "region_data", None)
     region = getattr(context, "region", None)
@@ -405,7 +399,6 @@ class USDCHUNKS_OT_toggle_picking(bpy.types.Operator):
 
 
 def _available_renderers() -> list:
-    from pxr import UsdImagingGL
     try:
         return list(UsdImagingGL.Engine.GetRendererPlugins())
     except Exception:
@@ -413,7 +406,6 @@ def _available_renderers() -> list:
 
 
 def _renderer_display_name(plugin_id) -> str:
-    from pxr import UsdImagingGL
     try:
         return UsdImagingGL.Engine.GetRendererDisplayName(plugin_id) or str(plugin_id)
     except Exception:

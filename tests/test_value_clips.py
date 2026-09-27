@@ -17,7 +17,7 @@ from pxr import Gf, Sdf, Usd, UsdSkel, Vt
 from usd_chunks import chunk as _chunk
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_widget_api
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init

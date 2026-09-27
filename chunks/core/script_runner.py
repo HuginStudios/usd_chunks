@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import traceback
 import weakref
 
@@ -175,9 +176,10 @@ def _ensure_timer():
     global _timer
     if _timer is not None:
         return
-    try:
-        from PySide6 import QtCore
-    except ImportError:
+    # Looked up rather than imported: an application can only be running if the host has
+    # already imported Qt, and a headless cook has no reason to load it.
+    QtCore = sys.modules.get("PySide6.QtCore")
+    if QtCore is None:
         return
     app = QtCore.QCoreApplication.instance()
     if app is None:

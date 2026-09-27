@@ -16,8 +16,10 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.chunk_stage import get_chunk_prim_path
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
+import usd_chunks.chunk_stage as _cu
 
 
 class _DummyScene(SceneSender):
@@ -44,7 +46,6 @@ def _make(scene, mod, module_name):
     # chunk), not execution order -- so chunks must actually be wired into the chain, the
     # way the Params tab auto-chains them (prev -> new via inputs:chunk). Flip the same
     # flag the Params-tab create path sets so add_chunk builds that linear chain here too.
-    import usd_chunks.chunk_stage as _cu
     prev = _cu._params_tab_create
     _cu._params_tab_create = True
     try:

@@ -7,7 +7,9 @@ from pxr import Sdf, Usd, UsdGeom
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_stage
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
 
 class _DummyScene(SceneSender):
@@ -39,7 +41,6 @@ def _wire(dst, src):
 def _setup(qapp):
     """Common scaffolding: a real graph widget with an active view wired straight to a
     reactive Scatter chunk, so Scatter is unambiguously part of the view's cook set."""
-    from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -163,8 +164,6 @@ def test_unrelated_chunk_removed_via_right_click_menu_does_not_recook(qapp) -> N
     """
     docker, scene, reg, stage, gv, scatter, view, _pump = _setup(qapp)
     transform_mod = reg.get_chunk_module("transform")
-
-    from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
     real_scatter_module = reg.get_chunk_module("scatter_points").module
     call_count = {"n": 0}

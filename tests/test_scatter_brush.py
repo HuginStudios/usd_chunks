@@ -14,11 +14,12 @@ import importlib
 import random
 
 import pytest
-from pxr import Gf, Usd, UsdGeom, Vt
+from pxr import Gf, Usd, UsdGeom, Vt, Sdf
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk as chunk_api, chunk_scheduler
 from usd_chunks.gizmo import runtime as chunk_gizmo
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -350,8 +351,6 @@ def test_an_unknown_handle_name_raises() -> None:
 
 
 def test_brush_is_a_known_gizmo_type() -> None:
-    from usd_chunks import chunk as chunk_api
-
     assert chunk_api.Gizmo("g", type="brush", driver="radius").type == "brush"
 
 
@@ -572,7 +571,6 @@ def _routing_of(change):
     cleared again the moment the node solves, so a test that checked it later would report
     "not dirtied" for everything and pass for entirely the wrong reason.
     """
-    from usd_chunks import chunk_scheduler
 
     seen = []
     real_dirty = chunk_scheduler.propagate_dirty
@@ -944,9 +942,7 @@ def test_wiring_painted_points_hides_the_distribution_settings() -> None:
     """Reported: with Painted Points connected, Auto Spacing, Spacing, Max Count and Seed all
     still sat there doing nothing. A control that cannot affect the result is worse than an
     absent one -- it invites you to reach for it when something looks wrong."""
-    import importlib
 
-    from usd_chunks import chunk as chunk_api
     scatter_points = importlib.import_module("chunks.modelling.scatter_points")
     sc = scatter_points.main()
 
@@ -1177,7 +1173,6 @@ def test_the_painted_field_is_recorded_on_the_chunks_own_prim() -> None:
 def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
     """The other half: with the record on the prim and the surface's own field gone -- which is
     what a reopened scene looks like -- the cook restores it rather than authoring zeros."""
-    from pxr import Sdf
 
     stage = _stage_with_floor()
     c = _brush(stage, radius=4.0, strength=1.0)

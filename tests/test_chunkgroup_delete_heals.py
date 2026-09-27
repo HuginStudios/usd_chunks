@@ -18,7 +18,7 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
@@ -26,6 +26,7 @@ from usd_chunks.chunk_stage import (
     get_chunk_prim_path,
     initialize as _chunk_usd_init,
 )
+from usd_chunks.chunk_flags import ChunkFlags
 
 
 class _DummyScene(SceneSender):
@@ -148,8 +149,6 @@ def test_re_enabling_a_chunkgroup_brings_its_contents_back(scene):
     s._current_context = None
     qapp.processEvents()
 
-    from usd_chunks.chunk_flags import ChunkFlags
-
     group.disable()
     qapp.processEvents()
     group.enable()
@@ -168,8 +167,6 @@ def test_a_chunk_disabled_on_its_own_stays_disabled(scene):
     qapp, reg, s, stage = scene
     chunk = _mk(reg, s, "transform")
     qapp.processEvents()
-
-    from usd_chunks.chunk_flags import ChunkFlags
 
     stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))).SetActive(False)
     qapp.processEvents()

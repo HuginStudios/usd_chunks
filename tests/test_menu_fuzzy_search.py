@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkRegistry, MenuEntry, search_menu_entries
 
 

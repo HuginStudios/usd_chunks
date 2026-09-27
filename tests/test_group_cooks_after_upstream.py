@@ -14,7 +14,7 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry, chunk_stage
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import connect_exec, get_chunk_prim_path
 
 _PROBE = "_group_cooks_after_upstream_probe"

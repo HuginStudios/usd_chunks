@@ -19,9 +19,9 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk
 from usd_chunks.gizmo import runtime as chunk_gizmo
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as chunk_usd_init
 
 
@@ -640,7 +640,6 @@ def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
 
 def test_wiring_painted_points_hides_the_root_count(host) -> None:
     """A control that cannot affect the result is worse than an absent one."""
-    from usd_chunks import chunk
 
     _paint(host.mesh, _stripe(0.0, SIZE))
     node = host.vine()

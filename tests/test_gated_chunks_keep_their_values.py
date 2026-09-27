@@ -35,8 +35,9 @@ import sys
 import pytest
 from pxr import Usd, UsdGeom
 
-from usd_chunks import chunk_registry, chunk_stage, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk, chunk_registry, chunk_stage, chunk_utils
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.chunk_stage import initialize as chunk_stage_initialize, save_scene
 
@@ -324,11 +325,11 @@ def test_a_bound_chunk_still_takes_the_shortcut(reopened):
     stage, sender = reopened
     shared = next(c for c in sender.get_chunks() if c.name == "Shared")
     calls = []
-    real = chunk_utils.show_attribute
-    chunk_utils.show_attribute = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+    real = chunk.show_attribute
+    chunk.show_attribute = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
     try:
         shared.execute()
     finally:
-        chunk_utils.show_attribute = real
+        chunk.show_attribute = real
 
     assert calls == [], "a bound, unchanged light rebuilt its params anyway"

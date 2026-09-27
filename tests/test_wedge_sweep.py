@@ -17,7 +17,7 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
@@ -381,7 +381,7 @@ def test_an_expression_onto_a_lofted_param_updates_live(network):
         "import sys;"
         "from pxr import Usd;"
         "from usd_chunks import chunk_registry;"
-        "from usd_chunks.chunk_core import SceneSender;"
+        "from usd_chunks.chunk_scene import SceneSender;"
         "from usd_chunks.chunk_registry import ChunkLayerManager;"
         "from usd_chunks.chunk_stage import load_chunks;"
         "from usd_chunks.cli import _all_chunks;"

@@ -26,10 +26,14 @@ import logging
 import math
 
 import bpy
+import gpu
+from bpy_extras import view3d_utils
+from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 from pxr import Gf, UsdGeom
 
 from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.frontends.blender import addon
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.frontends.blender.addon import viewport
 
@@ -53,10 +57,10 @@ _DEG = 57.29577951308232
 def _active_view():
     """The add-on's live graph view, or None.
 
-    Imported here rather than at module scope: the add-on package imports this module in
-    order to register it, so a module-scope import back into it is a cycle.
+    The add-on package imports this module in order to register it, so `addon` is still
+    half-loaded when this module is; that is fine, because it is only read here, at call
+    time, by which point registration has finished.
     """
-    from usd_chunks.frontends.blender import addon
     return addon.get_view()
 
 
@@ -358,9 +362,6 @@ def pivot_point(stage, view):
 
 
 def _draw_pivot():
-    import gpu
-    from gpu_extras.batch import batch_for_shader
-
     if not viewport.hydra_view_enabled():
         return
     point = pivot_point(viewport.active_stage(), _active_view())
@@ -417,8 +418,6 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         return _picked_prim(viewport.active_stage()) is not None
 
     def invoke(self, context, event):
-        from bpy_extras import view3d_utils
-
         self._region = context.region
         self._rv3d = context.region_data
         stage = viewport.active_stage()
@@ -457,7 +456,6 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def _world_at(self, mouse):
-        from bpy_extras import view3d_utils
         return view3d_utils.region_2d_to_location_3d(
             self._region, self._rv3d, mouse, self._pivot)
 

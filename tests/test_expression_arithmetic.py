@@ -12,12 +12,14 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _INPUTS_PREFIX,
     _load_wire_inputs,
     _patch_expressions,
     ChunkStageSync,
+    get_chunk_prim_path,
 )
 
 
@@ -27,8 +29,6 @@ def _chunk_path(name: str) -> str:
     add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
     parent is that group rather than the /chunks scope.
     """
-    from usd_chunks import chunk_registry
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None

@@ -7,7 +7,8 @@ import importlib
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils as CU
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
 

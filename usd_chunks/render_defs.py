@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -470,9 +471,10 @@ def _host_owns_a_viewport() -> bool:
     override = os.environ.get("USD_CHUNKS_PROBE_DELEGATES")
     if override is not None:
         return override.strip() not in ("1", "true", "yes", "on")
-    try:
-        from PySide6 import QtWidgets
-    except ImportError:
+    # Looked up rather than imported: a QApplication can only exist if the host has already
+    # imported Qt, and a batch script has no reason to load it just to learn it is absent.
+    QtWidgets = sys.modules.get("PySide6.QtWidgets")
+    if QtWidgets is None:
         return False
     return QtWidgets.QApplication.instance() is not None
 
