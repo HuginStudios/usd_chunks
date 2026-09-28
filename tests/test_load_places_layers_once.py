@@ -9,7 +9,9 @@ those sublayer edits recomposes the stage -- a fifth of opening a 70-chunk netwo
 
 from __future__ import annotations
 
-from usd_chunks import Scene, chunk_registry
+from pxr import Usd
+
+from usd_chunks import Scene, chunk, chunk_registry
 
 
 def _save_chain(path):
@@ -46,3 +48,28 @@ def test_open_makes_no_throwaway_graph_layers(tmp_path, monkeypatch):
         for c in scene.get_chunks():
             if layer := lm.get_layer(c):
                 assert layer.identifier in placed, f"{c.name}'s layer is not on the stage"
+
+
+def test_a_held_layer_can_be_authored_into():
+    """A load can cook a chunk while its layer is held: restoring a saved vector announces
+    the whole vector, and in a chunkgroup that cooks the chunk there and then. The layer
+    must already be on the stage for that: Usd.EditContext silently keeps the old edit
+    target for a layer outside the stage's layer stack, so the first cut of this -- held
+    layers kept off the stage -- sent a camera's cook to another layer, without an error."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        lm = chunk_registry.ChunkLayerManager()
+        held = chunk.Chunk("Held")  # no layer yet, like a chunk mid-load
+
+        assert lm.defer_placement()
+        try:
+            layer = lm.get_or_create_layer(held)
+            with Usd.EditContext(stage, layer):
+                stage.OverridePrim("/World/held")
+            assert layer.GetPrimAtPath("/World/held"), "authored somewhere other than its layer"
+        finally:
+            lm.place_deferred_layers()
+
+        placed = {sub for g in lm.graph_layers.values() for sub in g.subLayerPaths}
+        assert layer.identifier in placed
+        assert not any("loading" in sub for sub in stage.GetSessionLayer().subLayerPaths)
