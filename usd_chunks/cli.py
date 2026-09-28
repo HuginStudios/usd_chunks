@@ -470,18 +470,22 @@ def _variant_dir(out, index):
     return os.path.join(out, f"variant_{index:05d}")
 
 
-def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
+def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False, params=()):
     """One variant, in its own process.
 
     A process per variant rather than a loop: the registry and stage-sync singletons hold
     the stage a network was loaded into, so a second load in one process returns the
     chunkgroup and none of its children -- variant 2 would silently re-export variant 1.
     It also stops one bad variant taking the batch down.
+
+    params are `run` overrides applied to every variant alike -- a render device, a
+    resolution -- ahead of the wedge's own index, so an override can never replace it.
     """
     directory = _variant_dir(out, index)
     os.makedirs(directory, exist_ok=True)
     cmd = [
         sys.executable, "-m", "usd_chunks.cli", "run", usda,
+        *params,
         f"{wedge_name}.current_index={index}",
         "--export", os.path.join(directory, "variant.usda"),
     ]
@@ -524,7 +528,7 @@ def cmd_sweep(args):
     print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}")
 
     def one(i):
-        return _run_variant(args.usda, name, i, args.out, args.procedural, args.all)
+        return _run_variant(args.usda, name, i, args.out, args.procedural, args.all, args.params)
 
     failed = []
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
@@ -564,7 +568,7 @@ def _verify(args, name, indices):
     print(f"Verifying {len(indices)} variant(s) of {name} against {args.out}")
     with tempfile.TemporaryDirectory(prefix="usdchunks-verify-") as scratch:
         def one(i):
-            return _run_variant(args.usda, name, i, scratch, args.procedural, args.all)
+            return _run_variant(args.usda, name, i, scratch, args.procedural, args.all, args.params)
 
         identical, differing, errored = [], [], []
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
@@ -783,10 +787,15 @@ def main():
             "  usdchunks sweep drop.usda --out ./data --count 500 --jobs 4\n"
             "  usdchunks sweep drop.usda --out ./data --only 42,1337\n"
             "  usdchunks sweep drop.usda --out ./data --verify --only 0,7,19\n"
+            "  usdchunks sweep drop.usda --out ./data vray_render_device=7\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
     sweep_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    sweep_parser.add_argument(
+        "params", nargs="*",
+        help="Param overrides for every variant, as for run: ChunkName.param=value",
+    )
     sweep_parser.add_argument(
         "--out", required=True, metavar="DIR", help="Where variant_NNNNN/ directories are written"
     )
@@ -855,7 +864,16 @@ def main():
         "--host", choices=["usdview"], default="usdview", help="Which host integration (default: usdview)"
     )
 
-    args = parser.parse_args()
+    # Overrides are positionals after a positional, and argparse settles a trailing
+    # nargs="*" the moment it reads the file name -- so `sweep net.usda --out d x=1`
+    # rejected x=1 as unrecognised. Whatever is left that reads as name=value is an
+    # override, wherever on the line it was written.
+    args, extra = parser.parse_known_args()
+    overrides = [a for a in extra if "=" in a and not a.startswith("-")]
+    if extra != overrides or (overrides and not hasattr(args, "params")):
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    if overrides:
+        args.params = list(args.params) + overrides
 
     if args.command == "run":
         cmd_run(args)
