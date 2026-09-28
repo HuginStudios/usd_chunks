@@ -45,7 +45,7 @@ You write a chunk once and it runs as a panel, as a node, or from the command li
 UI at all:
 
 ```
-usdchunks run layout.usda Transform.translate_x=5 -o result.usda
+usdchunks run layout.usda Transform.tx=5 -o result.usda
 usdchunks run layout.usda --procedural -o network.usda
 ```
 
@@ -54,7 +54,7 @@ so the network can be opened again and re-cooked.
 
 Procedural chunks rebuild their output when the file loads, so a saved network stores the
 steps, not a baked result. Chunks that write files to disk do it in a separate `commit`
-function that only runs once the values have settled. See
+function. `usdchunks run` calls it once, after every chunk has cooked. See
 [`commit()`](writing-a-chunk.md#commit).
 
 ## Background

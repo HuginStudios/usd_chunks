@@ -42,9 +42,9 @@ a chunk is created: once for each node you add, and once for each saved chunk pr
 file is opened. So anything slow in `main()`, like building a lookup table, runs again for
 every node. If that matters, cache it at module level.
 
-**Don't use the stage or the scene in `main()`.** It runs *before* the chunk has a prim or
-a stage, so `chunk.get_scene()` and the chunk's `get_stage()` don't work yet. Anything that
-needs the stage goes in a callback, in `execute()`, or in `commit()`.
+**Don't change the stage in `main()`.** It runs *before* the chunk has its prim and its
+own layer, so anything it writes lands in the wrong place. Anything that changes the stage
+goes in a callback, in `execute()`, or in `commit()`.
 
 [`docs/example.md`](example.md) has a longer example with notes on the param types,
 groups, flags and callback signatures you can use in `main()`.
@@ -77,7 +77,7 @@ defaults below.
 | `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being cleared and rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
 | `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) chunk uses this. |
-| `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch always passes on slot 0, and turns slot 1 on or off. |
+| `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs. |
 | `dynamic_exec_inputs` | `False` | The chunk adds a new numbered exec input port for each wire connected to it, plus one empty port for the next one. For chunks like Merge or Switch, where each incoming branch needs its own port. Unlike `exec_inputs`, the number of ports isn't fixed. |
 | `outputs` | `[]` | Extra typed output ports beyond `outputs:chunk`, as `[(name, SdfTypeName), ...]`. |
 | `variants` | `[]` | Extra entries in the chunk's submenu in the create menu, as `[(label, {param: value}), ...]`, or a function that returns that list. Use a function when the list is slow to build (for example, listing a shader registry). It then only runs the first time the menu is shown, not every time chunks are loaded. |
@@ -111,10 +111,10 @@ again (see below). `node` is the chunk itself, the same object `main()` returned
 the stage.
 
 It runs with a `Usd.EditContext` already set to the chunk's own layer (unless the chunk is
-`interactive`, which writes somewhere else). It must give the same result every time it
-runs with the same inputs. It can run many times while the graph cooks, so keep it fast.
-The usual approach is to clear the chunk's layer first and write everything again, instead
-of trying to fix up what was there.
+`interactive`, which writes somewhere else). The framework clears that layer right before
+each `execute()`, so write the whole result every time. It must give the same result every
+time it runs with the same inputs. It can run many times while the graph cooks, so keep it
+fast.
 
 A common pattern is a chunk that does its real work in a param callback, with `execute`
 only there to redo that work after the file is opened. This is why `execute` exists,
@@ -158,9 +158,10 @@ run at different times:
 
 - `execute` runs many times while the graph cooks and params change. It's the right place
   for fast USD edits, and the wrong place for writing to disk.
-- `commit` runs once, **after** everything has finished cooking. It's called by whatever
-  started the cook (`usdchunks run`, or a host's Commit action). Chunks commit in graph
-  order, so a chunk that reads another chunk's output sees the finished result.
+- `commit` runs once, **after** everything has finished cooking. `usdchunks run` calls it,
+  and so does `Scene.commit()` from Python. usdview doesn't call it on its own; a chunk like
+  Export USD has a button for that. Chunks commit in graph order, so a chunk that reads
+  another chunk's output sees the finished result.
 
 No edit context is set up for `commit`. It reads the final composed stage and writes to
 disk. Modules without `commit` are skipped, since most chunks have nothing to write. A
@@ -170,7 +171,7 @@ never commits.
 ## Discovery, recap
 
 Every folder in `USD_CHUNK_DIRS`, including subfolders, is searched for `.py` files.
-Any file whose `main()` returns a `Chunk` is registered under the module's name. There are
+Any file with a top-level `main()` is registered under its file name. There are
 no other rules for folder layout or file names. [Environment
 variables](install.md#environment-variables) explains which one wins when two folders have
 a chunk with the same name.

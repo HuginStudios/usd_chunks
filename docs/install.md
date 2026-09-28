@@ -33,7 +33,7 @@ In PowerShell, use `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)` and
 `$env:NAME = "value"` for the other variables. On macOS/Linux, use
 `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"` and `export NAME=value`.
 
-In usdview, right-click the graph canvas (or press Tab) to see every chunk in
+In usdview, right-click the graph canvas (or press Tab) to see the chunks in
 [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks). When you start
 writing your own chunks, point `USD_CHUNK_DIRS` at your own folder. You only need the rest
 of this page if something goes wrong or you want more detail.
@@ -98,27 +98,28 @@ integration](#usdview-integration) below.
 ### ⚠️ A plain install won't show every bundled chunk
 
 !!! warning
-    A plain install doesn't include numpy, PySide6 or requests, and about a sixth of the
-    chunks in [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks)
-    need one of them.
+    A plain install only includes attrs. About one in six of the chunks in
+    [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) need another
+    package, mostly numpy.
 
-If a chunk module fails to import, it's left out of the create menu. The registry logs
-what's missing as a `WARNING` at the default log level, but nothing else tells you. Usually
-the first thing you notice is that the chunk you want isn't in the menu.
+If a chunk module fails to import, it's left out of the create menu. The console shows a
+warning that names the missing package, then the import error. Nothing shows in the UI.
+Usually the first thing you notice is that the chunk you want isn't in the menu.
 
-The chunks affected today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`,
-`curves_to_mesh`, `custom_widget`, `poly_reduce`, `rbd_solver`, `scatter_brush`,
-`scatter_points`, `urdf_import`, `uv_checker` and `vine`. That includes some of the main
-ones, like Scatter, Poly Reduce and the RBD solver.
+The chunks affected today: `AMDMaterialXLibrary`, `add_curves`, `cad_import`,
+`curves_to_mesh`, `custom_widget`, `mesh`, `poly_reduce`, `rbd_solver`, `requirements`
+(an example), `scatter_brush`, `scatter_points`, `urdf_import`, `uv_checker` and `vine`.
+That includes some of the main ones, like Mesh, Scatter, Poly Reduce and the RBD solver.
 
 There are two ways to fix it:
 
-- Install the packages yourself: `pip install numpy requests mujoco` (mujoco is only for
-  the RBD solver). Add `PySide6` only if your host doesn't have Qt already; usdview,
-  Houdini and Maya do. You can also install just the ones you need.
-- Set [`USD_CHUNK_AUTO_INSTALL`](#environment-variables). Then a chunk's own
-  `requirements` ([Writing a chunk](writing-a-chunk.md#config)) are installed for you,
-  after asking first.
+- Install the packages yourself: `pip install numpy requests mujoco fast-simplification`.
+  mujoco is only for the RBD solver, and fast-simplification only for Poly Reduce. CAD
+  Import also needs `cadquery-ocp`. Add `PySide6` only if your host doesn't have Qt
+  already; usdview, Houdini and Maya do. You can also install just the ones you need.
+- Set [`USD_CHUNK_AUTO_INSTALL`](#environment-variables). Then usdview asks you about each
+  package in a chunk's `requirements` ([Writing a chunk](writing-a-chunk.md#config)) and
+  installs the ones you allow.
 
 ### Other extras
 
@@ -130,7 +131,7 @@ These are only needed for specific work. You can combine them, for example
 | `ui` | Installs PySide6, for a host that doesn't have Qt. usdview and Houdini already have Qt, so skip it there. |
 | `flet` | Running the standalone Flet graph frontend (`python -m usd_chunks.frontends.flet.nodegraph <network.usda>`) instead of a Qt host. |
 | `imgui` | The same for the Dear ImGui frontend (`python -m usd_chunks.frontends.imgui.nodegraph <network.usda>`). |
-| `dev` | Working on usd_chunks itself: pytest, ruff, build tools, `usd-core` and every optional frontend, so the tests can cover all of them. |
+| `dev` | Working on usd_chunks itself: pytest, ruff, build tools, `usd-core`, and the Flet and ImGui frontends so the tests can cover them. |
 | `docs` | Building the docs site. See [Build documentation](#build-documentation). |
 
 ## usdview integration
@@ -177,7 +178,7 @@ before testing with plain `python`. usdview and the `usdchunks` command aren't a
 
 ## If a chunk is missing from the menu
 
-The panel is there, but a chunk like Scatter, Add Mesh or the RBD solver isn't in the
+The panel is there, but a chunk like Scatter, Mesh or the RBD solver isn't in the
 create menu. This is almost always a missing pip package: the chunk failed to import, so
 it was left out. The console shows which package when it loads:
 
@@ -249,21 +250,22 @@ import the `usd_chunks` package:
 set PYTHONPATH=C:\path\to\usd_chunks;%PYTHONPATH%
 ```
 
-You still need `PXR_PLUGINPATH_NAME`. `usdchunks plugin-path` works from a clone too.
+You still need `PXR_PLUGINPATH_NAME`. Without an install there's no `usdchunks` command, so
+get the path with `python -m usd_chunks.cli plugin-path` instead.
 
 ## Environment variables
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `USD_CHUNK_DIRS` | *(empty)* | The folders your chunk modules are in, separated by `;` on Windows and `:` on macOS/Linux. Each folder is searched, including subfolders, for `.py` files with a `main()` function. See [Writing a chunk](writing-a-chunk.md). If two folders have a chunk with the same name, the one in the **first** folder is used. |
-| `USD_CHUNK_DEPENDENCY_DIR` | `<usd_chunks package>/../_installed_deps` | Where `USD_CHUNK_AUTO_INSTALL` installs the pip packages a chunk needs. If the folder exists, it's added to `sys.path` automatically. |
-| `USD_CHUNK_AUTO_INSTALL` | off | A chunk module can list `requirements` in its `config()` ([Writing a chunk](writing-a-chunk.md#config)). With this set, missing packages are installed into `USD_CHUNK_DEPENDENCY_DIR` after asking you first. When it's off, nothing is installed and a missing package only shows up as a warning, so opening someone else's network can never install packages on its own. It also applies to `usdchunks run`, which can't ask. |
-| `USD_CHUNK_LOAD_FILTER` | *(unset, so everything loads)* | Only load the chunk modules you list, as comma-separated exact module names, for example `USD_CHUNK_LOAD_FILTER=transform,scatter_points`. The check is `module_name not in USD_CHUNK_LOAD_FILTER`, so a module loads if its name appears somewhere in the string. That means `transform_ops` would **not** load with `transform` alone. Useful for a quick test with only a few chunks loaded. |
-| `USD_CHUNK_VERBOSE` | off | When two chunk modules have the same name, one is picked without a message (the first `USD_CHUNK_DIRS` folder wins, see above). Set this to log every chunk that was skipped because of a name clash. |
+| `USD_CHUNK_DEPENDENCY_DIR` | `<usd_chunks package>/../_installed_deps` | Where `USD_CHUNK_AUTO_INSTALL` installs the pip packages a chunk needs. It's added to `sys.path` automatically. |
+| `USD_CHUNK_AUTO_INSTALL` | off | A chunk module can list `requirements` in its `config()` ([Writing a chunk](writing-a-chunk.md#config)). With this set, usdview asks you about each missing package and installs the ones you allow into `USD_CHUNK_DEPENDENCY_DIR`. Other hosts and `usdchunks run` never install anything. When it's off, nothing is installed and a missing package only shows up as a warning, so opening someone else's network can never install packages on its own. |
+| `USD_CHUNK_LOAD_FILTER` | *(unset, so everything loads)* | Only load the chunk modules you list, for example `USD_CHUNK_LOAD_FILTER=transform,scatter_points`. A module loads if its name appears anywhere in the string, so `transform` also lets a module called `trans` load, but not one called `transform_ops`. Useful for a quick test with only a few chunks loaded. |
+| `USD_CHUNK_VERBOSE` | off | When two chunk modules have the same name, the first `USD_CHUNK_DIRS` folder wins and the log only gets a one-line summary. Set this to log every clash, with the file that was used and the one that was skipped. |
 | `PXR_PLUGINPATH_NAME` | — | Only needed for usdview. See [usdview integration](#usdview-integration). |
 | `PYTHONPATH` | — | Only needed when running from a clone instead of an install. See [Running from a clone](#running-from-a-clone). |
 | `USD_CHUNK_LOG_LEVEL` | `INFO` | usd_chunks' own log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Any other value is treated as `INFO`. Set it to `DEBUG` to see what a reload or cook does, param by param. That includes why a [`config()`](writing-a-chunk.md#config) fell back to defaults, which is otherwise only a log line. |
-| `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to ask render delegates for their settings. By default this only happens in a GUI host (when a `QApplication` is running), not in scripts or tests. `=1` turns it on, `=0` turns it off. Note the name starts with `USD_CHUNKS_`, unlike the other variables. |
+| `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to ask render delegates for their settings. By default this is skipped in a GUI host like usdview (when a `QApplication` is running), because loading a second render engine there can crash it. Scripts and tests do ask. `=1` always asks, `=0` never does. Note the name starts with `USD_CHUNKS_`, unlike the other variables. |
 
 ## Build documentation
 

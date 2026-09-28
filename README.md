@@ -14,13 +14,14 @@ command you can run from the terminal.
   saves the graph.
 - **Runs anywhere.** The same chunk works as a panel, as a node, or from the command line,
   without changes.
-- **The UI is built for you.** The node graph, the parameter panels and the viewport gizmos
-  are all built from the chunk's own definition.
+- **The UI is built for you.** The node graph and the parameter panels are built from the
+  chunk's own definition. So are the viewport handles, if you install
+  [usd_gizmos](https://github.com/HuginStudios/usd_gizmos).
 
 Running a saved network from the command line:
 
 ```
-usdchunks run layout.usda Transform.translate_x=5 -o result.usda
+usdchunks run layout.usda Transform.tx=5 -o result.usda
 ```
 
 ## 🚀 Getting started
@@ -37,7 +38,7 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
    something doesn't show up.
 2. **[Use the node graph](docs/node-graph-basics.md)**: add and connect your first chunk.
 3. **[Learn what a Chunk is](docs/chunk-basics.md)**: params, groups, flags and an example.
-4. **[View and ChunkGroup](docs/core-chunks.md)**: the two chunks every network needs.
+4. **[View and ChunkGroup](docs/core-chunks.md)**: the two chunks that organise a graph.
 5. **[Write your own chunk](docs/writing-a-chunk.md)**: `main()`, `config()`, `execute()`
    and `commit()`.
 
@@ -45,7 +46,7 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
 
 The [`chunks/`](chunks/) folder has the chunks we build and test against: transforms,
 references, materials, MaterialX shading, scattering, a MuJoCo rigid-body solver and more.
-Most are a few hundred lines, so they also work as examples to learn from.
+Most are under 500 lines, so they also work as examples to learn from.
 
 ![Scatter Brush painting instances across a rock, wired to Scatter Points and a Camera, rendered in V-Ray](docs/assets/graph_scatter.png)
 
@@ -61,9 +62,10 @@ stage, and usdview is one of several places you can run it.
 ## 🔒 Security
 
 A chunk is ordinary Python and can do anything Python can, just like a package you
-install with `pip`. Opening a `.usda` file can't add new code, but it does control what
-your installed chunks do. Read [SECURITY.md](SECURITY.md) before opening a network from
-someone else.
+install with `pip`. A `.usda` file can't install new chunks, but opening one runs the
+chunks you have installed, with the values saved in the file. Some chunks, like the Python
+chunk, run code stored in the file. Read [SECURITY.md](SECURITY.md) before opening a network
+from someone else.
 
 ## 🤝 Contributing
 

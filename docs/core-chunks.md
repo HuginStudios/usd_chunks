@@ -1,46 +1,42 @@
 # View and ChunkGroup
 
 These two chunks don't change the stage themselves. They control *when* things cook and
-*how* a graph is organised. Every other chunk in
-[`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) does something to
-your scene. Both are in
+*how* a graph is organised. Both are in
 [`chunks/core/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks/core):
 [`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/view.py) and
 [`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/chunkgroup.py).
 
 ## 🔎 At a glance
 
-- **View** decides what's shown and what runs. The first chunk in a graph gets one
+- **View** decides what's shown and what runs. A graph with no View gets one
   automatically. After that, right-click a chunk and choose **Set View** to move it there.
-- **ChunkGroup** is a subnet. Double-click it to go inside and build like in any other
-  graph, and double-click again to come back out.
+- **ChunkGroup** is a subnet. Double-click its header to go inside and build like in any
+  other graph. Click the path at the top-left of the graph to come back out.
 
 The rest of this page goes into more detail on both.
 
 ## View
 
-**In the UI**, nothing cooks unless it's connected to a View. Only what the active view
-needs is cooked. **From the command line** it's the other way around: `usdchunks run`
-cooks *everything* in a file that has no view, and `--all` cooks everything even when there
-is one. Either way, a view limits what runs.
+**In the UI**, only chunks connected to the active View cook. **From the command line**,
+`usdchunks run` does the same, with two differences: a file with no view cooks
+*everything*, and `--all` cooks everything even when there is a view.
 
-**Adding a view:** the first chunk in an empty graph gets a View added and connected for
-you. For later chunks, right-click the one whose output you want to see and choose **Set
-View**. That creates a View, connects it to the chunk's output, and makes it active. If the
+**Adding a view:** if a graph has no View, one is added and connected for you. After
+that, right-click the chunk whose output you want to see and choose **Set View**. That
+creates a View, connects it to the chunk's output, and makes it active. If the
 chunk is already connected to a view, the menu shows **Activate View N** instead.
 
-For example: build Add Mesh → Transform, right-click Transform and choose **Set View**.
-Move the Transform's sliders and the viewport updates. Only Add Mesh and Transform cook,
+For example: build Mesh → Transform, right-click Transform and choose **Set View**.
+Move the Transform's sliders and the viewport updates. Only Mesh and Transform cook,
 because nothing else is connected to the view.
 
 **Switching between views:** a graph can have up to three views, numbered 1 to 3. Press
 `1`, `2` or `3` to switch between the ones that exist. Pressing a number with no view does
 nothing, so you can't blank the graph by accident.
 
-A view that isn't active is dimmed. A view whose inputs changed since it last cooked turns
-amber, so you can tell its result is out of date. Each graph level (the top level, or the
-inside of a [ChunkGroup](#chunkgroup)) has its own three views. When you open a saved file,
-the view that was active when you saved is active again.
+The active view has an orange header, and the others are dimmed. Each graph level (the top
+level, or the inside of a [ChunkGroup](#chunkgroup)) has its own three views. When you
+open a saved file, the view that was active when you saved is active again.
 
 ## ChunkGroup
 

@@ -26,8 +26,8 @@ c.add_param(chunk.Slider("slider"))   # still there next time
 ```
 
 **Behaviour isn't saved.** Callbacks are Python objects that only exist in the session
-that made them, and a file never stores code, so opening a network can never run any. A
-runtime chunk comes back with its params and data only. To make it do something again, you
+that made them, and a saved file doesn't store them. A runtime chunk comes back with its
+params and data only. To make it do something again, you
 have to run its code again.
 
 Also, an attribute only stores a param's type and value, not which widget it was. A float

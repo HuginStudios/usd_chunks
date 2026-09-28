@@ -51,8 +51,8 @@ examples.
 ## 🎛️ Params
 
 Params are the parts of a chunk you interact with, like sliders, buttons and menus. Each
-one maps to a widget in the UI and, once its value differs from the default, to an
-`inputs:` attribute on the chunk's prim.
+one maps to a widget in the UI and to an `inputs:` attribute on the chunk's prim. A param
+that is still at its default value may not have the attribute yet.
 
 | Param | Value | Notes |
 | --- | --- | --- |
@@ -94,6 +94,8 @@ The flags:
 - `OUTPUT`: a computed result. It's hidden in the UI, but other chunks can still read it
   as `@ChunkName.param@`.
 - `LABELED`: show a label next to the widget.
+- `TRANSIENT`: the value only lives in this session. It isn't saved with the scene and
+  comes back empty when you reopen it.
 - `FILE_EXISTING`, `DIRECTORY`: for `FileBrowser`. Only allow existing files, or only
   folders.
 - `PRIM_SELECTION`, `PROP_SELECTION`: for `LineEdit`. The value is a prim or property path,
@@ -101,8 +103,9 @@ The flags:
 - `PY_SYNTAX_HIGHLIGHT`, `USD_SYNTAX_HIGHLIGHT`: syntax highlighting for `TextEdit`.
 
 **State** (`ChunkFlags.State`) describes what a param is doing right now: `HIDDEN`,
-`DISABLED`, `COLLAPSED`, `SELECTED` and `STALE`. `STALE` is a UI hint that a result is out
-of date with its inputs. Nothing sets or clears it automatically.
+`DISABLED`, `COLLAPSED`, `SELECTED` and `STALE`. `STALE` means a result is out of date with its
+inputs. The chunk sets and clears it itself (the RBD Solver does), and the graph shows it
+as an amber badge on the node.
 
 ## 📁 Groups
 
@@ -126,4 +129,4 @@ chunk_api.add_param(transform)
 `ChunkFlags.GroupFlags` controls how a group looks: `LABELED`, `COLLAPSABLE`, `FRAMED`,
 `LIST` and `CONTEXT`. `CONTEXT` is the important one. A context group is shown as a
 workspace that holds other chunks, not as a node (in the Qt plugin, it's a tab).
-[View and ChunkGroup](core-chunks.md) both use it.
+[ChunkGroup](core-chunks.md#chunkgroup) uses it.

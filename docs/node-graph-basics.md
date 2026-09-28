@@ -2,12 +2,12 @@
 
 ## 🚀 Your first chunk node
 
-1. Open usdview. The graph is in the **Chunks** panel (or the **Chunks** menu).
-2. **Right-click the empty canvas** and pick a chunk, for example *Add Mesh*. The first
-   chunk in an empty graph always gets a View added and connected for you.
+1. Open usdview. The graph is the **Graph** tab in the **Chunks** panel.
+2. **Right-click the empty canvas** and pick a chunk, for example *Mesh*. If the graph has
+   no View yet, one is added and connected for you.
 3. Change the node's params in its panel and watch the viewport update.
 4. To see the output of another chunk you add later, right-click it and choose **Set
-   View**. The automatic View only happens for the first node in a graph.
+   View**. A View is only added for you when the graph has none.
 
 That's all you need for a working chunk. The rest of this page covers connecting several
 nodes, keyboard shortcuts, disabled and locked nodes, and working inside a ChunkGroup. For
@@ -17,9 +17,9 @@ ChunkGroup](core-chunks.md).
 
 ## Opening the graph
 
-The **Chunks** panel or menu opens the graph you're currently in: the top-level graph, or
-the inside of a [ChunkGroup](core-chunks.md#chunkgroup) if you're in one. Each graph
-remembers which of its three views was active when you saved, and opens on that one.
+The **Graph** tab shows the graph you're currently in: the top level, or the inside of a
+[ChunkGroup](core-chunks.md#chunkgroup) if you're in one. Each graph remembers which of its
+views was active when you saved, and opens on that one.
 
 ## Creating a node
 
@@ -37,18 +37,19 @@ node is created without a wire, and no error is shown.
 Drag from one port to another port of the same type to connect them. A few things work
 differently:
 
-- **Drop a node onto an existing wire to insert it.** The wire is split and goes through
-  the new node's matching input and output.
-- **Shake a node quickly back and forth to disconnect all its wires.** The chain is joined
-  back up behind it: whatever fed the node now feeds what the node used to feed, so taking
-  a step out of the middle doesn't break the rest.
+- **Drop a node onto an exec wire to insert it.** The exec wire is the chain wire between
+  `outputs:chunk` and `inputs:chunk`. It's split and goes through the node.
+- **Shake a node quickly back and forth to disconnect all its wires.** The exec chain is
+  joined back up behind it: whatever fed the node now feeds what the node used to feed, so
+  taking a step out of the middle doesn't break the rest. Value wires are just removed.
 - Connecting a value port writes a real `@Node.param@` expression, so it's an actual data
   connection, not just a line on screen (see [The graph is
   USD](index.md#the-graph-is-usd)).
 
 ## Nothing cooks without a View
 
-A new chain does nothing until it's connected to a [View](core-chunks.md#view).
+Only chunks connected to the active [View](core-chunks.md#view) cook. A new chain does
+nothing until it's connected to one.
 **Right-click the chunk whose output you want to see and choose Set View.** That creates a
 View, connects it to the chunk's output, and makes it active. If the chunk is already
 connected to a view, the menu shows **Activate View N** instead. Until then, the nodes are
