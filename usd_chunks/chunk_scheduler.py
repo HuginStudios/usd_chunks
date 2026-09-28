@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import atexit
 import weakref
+from contextlib import contextmanager
 from collections.abc import Callable, Generator, Iterable
 from typing import TYPE_CHECKING
 
@@ -278,6 +279,41 @@ def propagate_presentation(seed: DagNode):
         node = owner_node
 
 
+#: The seeds whose downstream walk an enclosing deferred_dirty() is holding back; None
+#: outside one.
+_deferred_seeds: dict[DagNode, None] | None = None
+
+
+@contextmanager
+def deferred_dirty():
+    """Hold back every downstream dirty walk until the block ends, then walk once.
+
+    Dirtying a node walks everything downstream of it -- the closure, a topological sort,
+    the change reasons -- which is right for one edit and quadratic for a thousand: loading
+    a network adds every dependency edge one at a time, and each edge dirtied, and walked,
+    everything below it. A 90-chunk network spent most of its load there.
+
+    Inside the block a data change marks only its seed dirty. When the block ends, one walk
+    over the combined closure of every seed does what the individual walks would have
+    done, in one topological pass. Presentation changes are not held back: they only touch
+    the ownership chain and are cheap.
+
+    Nothing must solve inside the block -- a solve would see the seeds dirty but nothing
+    below them yet. It is for building or rewiring a graph, not for cooking it.
+    """
+    global _deferred_seeds
+    if _deferred_seeds is not None:
+        yield
+        return
+    _deferred_seeds = {}
+    try:
+        yield
+    finally:
+        seeds, _deferred_seeds = _deferred_seeds, None
+        if seeds:
+            _dirty_downstream(seeds)
+
+
 def propagate_dirty(seed: DagNode):
     """Mark seed and everything downstream of it dirty, recording why.
 
@@ -311,9 +347,31 @@ def propagate_dirty(seed: DagNode):
         propagate_presentation(seed)
         return
 
+    if _deferred_seeds is not None:
+        _deferred_seeds[seed] = None
+        return
+
+    _dirty_downstream((seed,))
+
+
+def _dirty_downstream(seeds: Iterable[DagNode]):
+    """Dirty everything downstream of seeds, recording why, in one topological pass.
+
+    The body of propagate_dirty, for one seed or many: the change reasons a node collects
+    depend only on the node and what feeds it, so walking the union of several seeds'
+    closures once records exactly what walking each closure in turn would.
+
+    Args:
+        seeds: The nodes that changed
+    """
     input_changed = chunk_notice.ChunkNoticeAlias.INPUT_CHANGED
 
-    for node in topo_order(downstream_closure(seed)):
+    closure: dict[DagNode, None] = {}
+    for seed in seeds:
+        if seed not in closure:
+            closure.update(downstream_closure(seed))
+
+    for node in topo_order(closure):
         node._dirty = True
 
         conns = node._connections
