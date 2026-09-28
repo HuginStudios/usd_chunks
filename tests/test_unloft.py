@@ -129,3 +129,25 @@ def test_nothing_is_left_connected_to_the_removed_attribute(env):
     dangling = [str(a.GetPath()) for p in stage.TraverseAll() for a in p.GetAttributes()
                 if any(str(c) == removed for c in a.GetConnections())]
     assert dangling == []
+
+
+def test_an_expression_reading_the_port_becomes_a_plain_value(env):
+    stage = env["stage"]
+    outside = env["mk"]("transform", name="Outside")
+    group = env["mk"]("chunkgroup", context=outside.get_context(), name="Group")
+    inner = env["mk"]("transform", context=group)
+    env["settle"]()
+    lofted = _loft(env, inner.get_param("tx"), group)
+    src = next(p for p in chunk_graph.iter_ports(_prim(stage, group), group)
+               if p.name == lofted.name and not p.is_input)
+    dst = next(p for p in chunk_graph.iter_ports(_prim(stage, outside), outside)
+               if p.name == "tx" and p.is_input)
+    chunks = {get_chunk_prim_path(group): group, get_chunk_prim_path(outside): outside}
+    assert chunk_graph.connect(stage, src, dst, chunks) is not None
+    consumer = outside.get_param("tx")
+    assert consumer.raw_value == f"@Group.{lofted.name}@"
+
+    chunk_stage.unloft_param(lofted)
+    env["settle"]()
+
+    assert not isinstance(consumer.raw_value, str)
