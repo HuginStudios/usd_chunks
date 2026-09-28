@@ -4942,8 +4942,16 @@ def _chunks_at(paths: Iterable[str]) -> list[core.ChunkBase]:
     paths = list(paths)
     if not paths:
         return []
+    # Only the chunks that can be at one of paths get their prim path worked out. A chunk's
+    # prim is named after it, so its name is the path's last element -- except a context
+    # with a prim_path of its own, which goes anywhere and so is always a candidate. Working
+    # out every chunk's path on each call was most of what a load spent here: this is asked
+    # once per notice by listeners that hear every chunk.
+    names = {path.rsplit("/", 1)[-1] for path in paths}
     by_path = {
-        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        get_chunk_prim_path(c): c
+        for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        if c.name in names or c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
     }
     return [c for path in paths if (c := by_path.get(path)) is not None]
 

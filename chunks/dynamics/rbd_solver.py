@@ -2990,16 +2990,25 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
     _chunk = owner.get_chunk()
     if sender is None or sender is _chunk:
         return
+    # The cheap answers first: this hears every change to every chunk in the scene, and the
+    # upstream walk below is the expensive part. A solver already stale with Auto Simulate
+    # off has nothing left to do whatever changed -- which is its state all through a load.
+    auto_sim_param = _chunk.get_param("auto_sim", chunk.is_param_t(bool))
+    if auto_sim_param is None:
+        return  # still being built, or already being torn down
+    auto_sim = auto_sim_param.value
+    if not auto_sim and _chunk.has_state(chunk.ChunkFlags.State.STALE):
+        return
+    if _only_presentation_changed(sender):
+        return
     scene = chunk_registry.ChunkRegistry().scene
     stage = _chunk.get_stage()
     if not scene or not stage:
         return
     if sender not in chunk_stage.view_cook_list(_chunk, stage, scene):
         return
-    if _only_presentation_changed(sender):
-        return
     _chunk.set_state(chunk.ChunkFlags.State.STALE)
-    if _chunk.get_param("auto_sim", chunk.is_param_t(bool)).value:
+    if auto_sim:
         _schedule_auto_run(_chunk)
 
 
