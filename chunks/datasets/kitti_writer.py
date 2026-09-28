@@ -32,6 +32,7 @@ import math
 import os
 import random
 import re
+import shutil
 
 import numpy as np
 import OpenEXR
@@ -628,44 +629,46 @@ def _save(path, array_or_image):
 
 
 def write_frame(out_dir, frame, result, settings):
-    """Write one processed frame: the KITTI files and, optionally, the annotation folders."""
+    """Write one processed frame: the KITTI files, the annotation folders and YOLO, as set."""
     fid = f"{int(round(frame)):06d}"
     classes, rename = settings["classes"], settings["rename"]
     detect = set(settings["detect_classes"]) or set(classes)
     class_colours = settings["class_colours"]
     records = result["records"]
+    # KITTI's own layout: per-frame data under training/, the split lists beside it.
+    training = os.path.join(out_dir, "training")
 
     if settings["write_kitti"]:
-        _save(os.path.join(out_dir, "image_2", fid + ".png"), Image.fromarray(result["rgb"]))
+        _save(os.path.join(training, "image_2", fid + ".png"), Image.fromarray(result["rgb"]))
         lines = [_kitti_line(r, rename.get(r["class"], r["class"]), settings)
                  for r in records if r["bbox2d"] and r["class"] in detect]
-        os.makedirs(os.path.join(out_dir, "label_2"), exist_ok=True)
-        with open(os.path.join(out_dir, "label_2", fid + ".txt"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(training, "label_2"), exist_ok=True)
+        with open(os.path.join(training, "label_2", fid + ".txt"), "w", encoding="utf-8") as f:
             f.write("".join(line + "\n" for line in lines))
-        os.makedirs(os.path.join(out_dir, "calib"), exist_ok=True)
-        with open(os.path.join(out_dir, "calib", fid + ".txt"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(training, "calib"), exist_ok=True)
+        with open(os.path.join(training, "calib", fid + ".txt"), "w", encoding="utf-8") as f:
             f.write(_calib_text(result["camera"]))
 
-        _save(os.path.join(out_dir, "semantic", fid + ".png"), Image.fromarray(result["class_ids"]))
+        _save(os.path.join(training, "semantic", fid + ".png"), Image.fromarray(result["class_ids"]))
         colourised = np.zeros(result["class_ids"].shape + (3,), dtype=np.uint8)
         for class_id in range(1, len(classes) + 1):
             colourised[result["class_ids"] == class_id] = _colour8(class_colours[class_id])
-        _save(os.path.join(out_dir, "semantic_rgb", fid + ".png"), Image.fromarray(colourised))
-        _save(os.path.join(out_dir, "semantic_primvar", fid + ".png"), Image.fromarray(result["semantic_pass"]))
+        _save(os.path.join(training, "semantic_rgb", fid + ".png"), Image.fromarray(colourised))
+        _save(os.path.join(training, "semantic_primvar", fid + ".png"), Image.fromarray(result["semantic_pass"]))
 
         # KITTI's instance encoding: class id * 256 + instance, in a 16-bit PNG.
         panoptic = result["class_ids"].astype(np.uint16) * 256 + np.minimum(result["instance_ids"], 255).astype(np.uint16)
-        _save(os.path.join(out_dir, "instance", fid + ".png"), Image.fromarray(panoptic))
+        _save(os.path.join(training, "instance", fid + ".png"), Image.fromarray(panoptic))
 
         # KITTI's depth encoding: metres * 256 in a 16-bit PNG, 0 where there is no depth.
         plane = result["distance_to_image_plane"]
         depth = np.where(np.isfinite(plane) & (plane > 0), np.clip(np.round(plane * 256.0), 1, 65535), 0)
-        _save(os.path.join(out_dir, "depth", fid + ".png"), Image.fromarray(depth.astype(np.uint16)))
+        _save(os.path.join(training, "depth", fid + ".png"), Image.fromarray(depth.astype(np.uint16)))
 
     if settings["write_annotations"]:
         # The same frame beyond KITTI's own files, one folder per kind beside image_2/.
         def at(folder, suffix=""):
-            return os.path.join(out_dir, folder, fid + suffix)
+            return os.path.join(training, folder, fid + suffix)
 
         _save(at("distance_to_camera", ".npy"), result["distance_to_camera"])
         _save(at("distance_to_image_plane", ".npy"), result["distance_to_image_plane"])
@@ -697,6 +700,86 @@ def write_frame(out_dir, frame, result, settings):
             _json(at(folder, "_labels.json"), box_labels)
             _json(at(folder, "_prim_paths.json"), prim_paths)
         _json(at("camera_params", ".json"), _camera_params(result["camera"]))
+
+    if settings["write_yolo"]:
+        _write_yolo(out_dir, fid, result, settings)
+
+
+def split_of(fid, settings):
+    """"train" or "val" for a frame id.
+
+    A hash of the id rather than the frame's position, so adding frames later -- another
+    sweep, a larger count -- never moves an existing frame from one split to the other.
+    ImageSets and the YOLO folders both ask this, so they always agree.
+    """
+    return "val" if random.Random(f"{settings['split_seed']}:{fid}").random() < settings["val_fraction"] else "train"
+
+
+def yolo_names(settings):
+    """The YOLO class names, in id order: the detected classes, renamed as in label_2."""
+    return [settings["rename"].get(c, c) for c in (settings["detect_classes"] or settings["classes"])]
+
+
+def yolo_lines(result, settings):
+    """One YOLO label line per box: class id, then centre x, centre y, width, height, all
+    relative to the image.
+
+    The same boxes label_2 gets, minus those too short to learn from: KITTI marks those
+    DontCare, which its evaluation ignores, but YOLO has no such label -- a box it is
+    given is a box it must find -- so they are left out.
+    """
+    detected = settings["detect_classes"] or settings["classes"]
+    ids = {name: i for i, name in enumerate(detected)}
+    width, height = result["width"], result["height"]
+    lines = []
+    for record in result["records"]:
+        if not record["bbox2d"] or record["class"] not in ids:
+            continue
+        left, top, right, bottom = record["bbox2d"]  # inclusive pixel indices
+        box_w, box_h = right - left + 1, bottom - top + 1
+        if box_h < settings["bbox_height_threshold"]:
+            continue
+        lines.append(f"{ids[record['class']]} {(left + box_w / 2) / width:.6f} {(top + box_h / 2) / height:.6f} "
+                     f"{box_w / width:.6f} {box_h / height:.6f}")
+    return lines
+
+
+def _yolo_files(out_dir, split, fid):
+    yolo = os.path.join(out_dir, "yolo")
+    return (os.path.join(yolo, "images", split, fid + ".png"),
+            os.path.join(yolo, "labels", split, fid + ".txt"))
+
+
+def remove_yolo(out_dir, fid):
+    """Take a frame out of the YOLO folders, from both splits."""
+    for split in ("train", "val"):
+        for path in _yolo_files(out_dir, split, fid):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def _write_yolo(out_dir, fid, result, settings):
+    """The frame in Ultralytics YOLO's layout: images/<split>/ and labels/<split>/.
+
+    The image is a hard link to training/image_2 where the filesystem allows, so the
+    dataset does not store every image twice; otherwise a copy.
+    """
+    # A frame whose split moved (a changed Validation Fraction) must not stay in the other.
+    remove_yolo(out_dir, fid)
+    image, labels = _yolo_files(out_dir, split_of(fid, settings), fid)
+    os.makedirs(os.path.dirname(image), exist_ok=True)
+    source = os.path.join(out_dir, "training", "image_2", fid + ".png")
+    if settings["write_kitti"] and os.path.exists(source):
+        try:
+            os.link(source, image)
+        except OSError:
+            shutil.copyfile(source, image)
+    else:
+        Image.fromarray(result["rgb"]).save(image)
+    os.makedirs(os.path.dirname(labels), exist_ok=True)
+    with open(labels, "w", encoding="utf-8") as f:
+        # An empty file is a background image: no objects, which a detector learns from too.
+        f.write("".join(line + "\n" for line in yolo_lines(result, settings)))
 
 
 def _json(path, data):
@@ -737,6 +820,9 @@ def _settings(node):
         "fully_visible_threshold": float(node.get_param("fully_visible_threshold").value),
         "write_kitti": bool(node.get_param("write_kitti").value),
         "write_annotations": bool(node.get_param("write_annotations").value),
+        "write_yolo": bool(node.get_param("write_yolo").value),
+        "val_fraction": float(node.get_param("val_fraction").value),
+        "split_seed": int(node.get_param("split_seed").value),
     }
 
 
@@ -779,6 +865,7 @@ def write_dataset(node):
             logger.warning("KITTI Writer: frame %g skipped: %s.", frame, exc)
             fid = f"{int(round(frame)):06d}"
             _json(os.path.join(out_dir, "qa", fid + ".json"), {"frame": fid, "skipped": str(exc)})
+            remove_yolo(out_dir, fid)
             continue
         except (KeyError, ValueError) as exc:
             logger.error("KITTI Writer: frame %g: %s", frame, exc)
@@ -800,14 +887,14 @@ def write_dataset(node):
                            frame, 100.0 * result["semantic_agreement"])
 
     if written:
-        write_index(out_dir, settings, float(node.get_param("val_fraction").value),
-                    int(node.get_param("split_seed").value))
+        write_index(out_dir, settings)
         logger.info("KITTI Writer: wrote %d frame(s) to %s", written, out_dir)
     return written
 
 
-def write_index(out_dir, settings, val_fraction, split_seed):
-    """ImageSets, classes.txt and dataset.json, from every frame in the dataset on disk.
+def write_index(out_dir, settings):
+    """ImageSets, classes.txt, dataset.json and yolo/data.yaml, from every frame in the
+    dataset on disk.
 
     Rebuilt from disk rather than from the frames this run wrote: under `usdchunks sweep`
     each wedge index is its own process writing one frame, and the index has to describe
@@ -823,14 +910,12 @@ def write_index(out_dir, settings, val_fraction, split_seed):
     if not frames:
         return
 
-    # Split by a hash of the frame id, not by position, so adding frames later -- another
-    # sweep, a larger count -- never moves an existing frame from train to val.
     train, val = [], []
     for record in frames:
         if record.get("skipped"):
             continue
         fid = record["frame"]
-        (val if random.Random(f"{split_seed}:{fid}").random() < val_fraction else train).append(fid)
+        (val if split_of(fid, settings) == "val" else train).append(fid)
 
     image_sets = os.path.join(out_dir, "ImageSets")
     os.makedirs(image_sets, exist_ok=True)
@@ -843,21 +928,38 @@ def write_index(out_dir, settings, val_fraction, split_seed):
     with open(os.path.join(out_dir, "classes.txt"), "w", encoding="utf-8") as f:
         f.write("".join(rename.get(c, c) + "\n" for c in detected))
     _json(os.path.join(out_dir, "dataset.json"), {
-        "format": "KITTI object (label_2, calib, image_2) + KITTI semantic/instance/depth + annotation folders",
+        "format": "KITTI object + semantic/instance/depth under training/, annotation folders, YOLO under yolo/",
         "classes": [{"id": i, "name": c, "kitti_name": rename.get(c, c),
                      "color": _colour8(settings["class_colours"][i]), "detected": c in detected}
                     for i, c in enumerate(classes, start=1)],
         "background_id": 0,
         "image_size": next((r["image_size"] for r in reversed(frames) if "image_size" in r), None),
-        "semantic": "semantic/*.png: uint8 class id per pixel, 0 = background",
-        "instance": "instance/*.png: uint16, class_id * 256 + instance_id",
-        "depth": "depth/*.png: uint16, metres * 256 along the optical axis, 0 = no depth",
+        "semantic": "training/semantic/*.png: uint8 class id per pixel, 0 = background",
+        "instance": "training/instance/*.png: uint16, class_id * 256 + instance_id",
+        "depth": "training/depth/*.png: uint16, metres * 256 along the optical axis, 0 = no depth",
+        "yolo": "yolo/data.yaml: Ultralytics layout, labels 'class cx cy w h' relative to the image",
         "label_2": "type truncated occluded alpha left top right bottom h w l x y z rotation_y "
                    "(camera frame: x right, y down, z forward, metres)",
         "calib": "P2 = K [I|0]; Tr_velo_to_cam = world -> camera",
         "splits": {"train": len(train), "val": len(val)},
         "frames": frames,
     })
+
+    if settings["write_yolo"]:
+        yolo = os.path.join(out_dir, "yolo")
+        # Both splits always exist: data.yaml names them, and a trainer reading it fails on
+        # a folder that is missing rather than empty.
+        for kind in ("images", "labels"):
+            for split in ("train", "val"):
+                os.makedirs(os.path.join(yolo, kind, split), exist_ok=True)
+        if not val:
+            logger.warning("KITTI Writer: no frame is in the validation split yet, and YOLO training "
+                           "needs at least one -- write more frames or raise Validation Fraction.")
+        with open(os.path.join(yolo, "data.yaml"), "w", encoding="utf-8") as f:
+            # No `path`: Ultralytics then takes this file's directory as the root, so the
+            # dataset can be moved or copied to a training machine as it is.
+            f.write("train: images/train\nval: images/val\nnames:\n")
+            f.write("".join(f"  {i}: {json.dumps(name)}\n" for i, name in enumerate(yolo_names(settings))))
 
 
 def _write_clicked(owner, notice, sender):
@@ -927,6 +1029,9 @@ def main():
         chunk.Slider("split_seed", "Split Seed", default_value=0, is_int=True, min_value=0, max_value=100000),
         chunk.Checkbox("write_kitti", "Write KITTI", default_value=True),
         chunk.Checkbox("write_annotations", "Write Annotations", default_value=True),
+        chunk.Checkbox("write_yolo", "Write YOLO", default_value=True,
+                       tooltip="Also write the boxes in Ultralytics YOLO's layout under yolo/, "
+                       "split as ImageSets is."),
     ])
     chunk_api.add_param(kitti)
 
@@ -957,7 +1062,7 @@ def config():
         instance_color primvar passes; this reads each, together with the stage at
         that frame, in commit() — after Render's own commit — or on Write Dataset.
 
-        Output, per frame NNNNNN:
+        Output, in KITTI's layout -- per-frame data under training/, per frame NNNNNN:
           - image_2/NNNNNN.png          RGB, sRGB 8-bit
           - label_2/NNNNNN.txt          KITTI object labels: type truncated
                                         occluded alpha, the tight 2D box, and a
@@ -970,7 +1075,7 @@ def config():
           - semantic_primvar/NNNNNN.png the semantic primvar pass as rendered
           - instance/NNNNNN.png         uint16 class*256 + instance
           - depth/NNNNNN.png            uint16 metres*256, 0 = no depth
-        and with Write Annotations, per frame NNNNNN:
+        and with Write Annotations, also under training/, per frame NNNNNN:
           - distance_to_camera/NNNNNN.npy, distance_to_image_plane/NNNNNN.npy
                                         float32 metres, inf = no hit
           - semantic_segmentation/NNNNNN.png + .json
@@ -984,8 +1089,21 @@ def config():
                                         occlusionRatio
           - camera_params/NNNNNN.json   aperture, focal length, clipping,
                                         projection, view, intrinsics
-        and once: ImageSets/train.txt, val.txt, trainval.txt, classes.txt and
-        dataset.json (classes, ids, colours, encodings, per-frame QA).
+        and at the root, once: ImageSets/train.txt, val.txt, trainval.txt,
+        classes.txt and dataset.json (classes, ids, colours, encodings, per-frame
+        QA).
+
+        With Write YOLO, the boxes also go out in Ultralytics YOLO's layout, ready
+        for `yolo train data=<Output Dir>/yolo/data.yaml`:
+          - yolo/data.yaml              train/val folders and class names
+          - yolo/images/<split>/NNNNNN.png
+                                        hard links to training/image_2 where the
+                                        filesystem allows, else copies
+          - yolo/labels/<split>/NNNNNN.txt
+                                        "class cx cy w h" relative to the image;
+                                        empty for a background-only image
+        The split is ImageSets', and YOLO ids count Detect Classes from 0. Boxes
+        KITTI marks DontCare are left out, as YOLO has no label for "ignore".
 
         Masks are decoded rather than thresholded: an anti-aliased edge pixel is
         given to whichever of the instances around it contributes more, so every
@@ -1016,6 +1134,7 @@ def config():
             frame by a hash so adding frames never moves existing ones.
           - Write KITTI / Write Annotations: the KITTI files, and the folders
             beyond them (distances, box arrays, segmentation, camera).
+          - Write YOLO: the boxes in Ultralytics YOLO's layout under yolo/.
           - Write on Commit: write when `usdchunks run` commits.
           - Frames Written (output), Write Dataset (button).
         """,

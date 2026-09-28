@@ -186,6 +186,54 @@ def test_a_camera_inside_an_object_is_caught(writer, position, inside):
     assert (found == Sdf.Path("/box")) if inside else found is None
 
 
+def _yolo_settings(**extra):
+    settings = {"classes": ["sphere", "cube"], "detect_classes": [], "rename": {"cube": "Cube"},
+                "bbox_height_threshold": 25, "val_fraction": 0.3, "split_seed": 0}
+    settings.update(extra)
+    return settings
+
+
+def _record(cls, box):
+    return {"class": cls, "bbox2d": box}
+
+
+def test_yolo_lines_are_the_kitti_boxes_relative_to_the_image(writer):
+    # KITTI boxes are inclusive pixel indices; YOLO's are centre and size over the image.
+    result = {"width": 200, "height": 100, "records": [
+        _record("cube", (10, 20, 49, 59)),     # 40 x 40 px
+        _record("sphere", (100, 0, 199, 99)),  # the whole right half
+        _record("cube", (0, 0, 9, 9)),         # 10 px tall: DontCare in KITTI, so left out
+        _record("cube", None),                 # fully occluded: no box at all
+    ]}
+    lines = writer.yolo_lines(result, _yolo_settings())
+    assert lines == ["1 0.150000 0.400000 0.200000 0.400000", "0 0.750000 0.500000 0.500000 1.000000"]
+
+
+def test_yolo_ids_count_only_the_detected_classes(writer):
+    result = {"width": 100, "height": 100, "records": [_record("sphere", (0, 0, 49, 49)), _record("cube", (50, 50, 99, 99))]}
+    settings = _yolo_settings(detect_classes=["cube"])
+    assert writer.yolo_lines(result, settings) == ["0 0.750000 0.750000 0.500000 0.500000"]
+    assert writer.yolo_names(settings) == ["Cube"]  # renamed, as in label_2
+
+
+def test_the_split_is_a_pure_function_of_the_frame(writer):
+    settings = _yolo_settings()
+    splits = [writer.split_of(f"{i:06d}", settings) for i in range(1000)]
+    assert splits == [writer.split_of(f"{i:06d}", settings) for i in range(1000)]
+    assert 250 < splits.count("val") < 350  # about Validation Fraction
+
+
+def test_the_index_writes_yolo_data_yaml_and_both_split_folders(writer, tmp_path):
+    settings = _yolo_settings(write_yolo=True, class_colours={1: np.zeros(3), 2: np.ones(3)})
+    writer._json(str(tmp_path / "qa" / "000001.json"), {"frame": "000001", "image_size": [200, 100]})
+    writer.write_index(str(tmp_path), settings)
+    assert (tmp_path / "yolo" / "data.yaml").read_text() == (
+        'train: images/train\nval: images/val\nnames:\n  0: "sphere"\n  1: "Cube"\n')
+    for kind in ("images", "labels"):
+        for split in ("train", "val"):
+            assert (tmp_path / "yolo" / kind / split).is_dir()  # a missing folder fails a trainer
+
+
 def test_frame_path_matches_the_render_chunks_spelling(writer, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert writer.frame_path("raw/frame.####.exr", 7) == str(tmp_path / "raw" / "frame.0007.exr")
