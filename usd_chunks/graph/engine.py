@@ -34,7 +34,6 @@ from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
-from usd_chunks.chunk import Checkbox, ColorPicker, FileBrowser, LineEdit, Menu, Slider, Spinbox, TextEdit
 from usd_chunks import chunk_naming, chunk_registry, chunk_scene
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.graph import layout as chunk_graph_layout
@@ -90,23 +89,12 @@ def sdf_to_port_type(sdf_type_name) -> str:
 
 
 def iter_connectable_params(obj: core.ChunkCommon):
-    """Every param that can carry a wire, recursing into groups.
-
-    A vector yields as ONE param: its components are not individually connectable.
-
-    Args:
-        obj: The chunk or group to walk.
-
-    Yields:
-        Each connectable param, in the order the chunk declares them.
-    """
+    """Every param that has a port, recursing into groups. A vector counts as one param."""
     for param in obj.get_my_params():
-        if isinstance(param, (Slider, Spinbox, Checkbox, LineEdit, TextEdit, FileBrowser,
-                              ColorPicker, Menu)):
-            yield param
-        elif isinstance(param, core.ChunkVectorBase):
-            yield param
-        elif not isinstance(param, core.ChunkParamBase):
+        if isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase)):
+            if param_port_type(param) is not None:
+                yield param
+        else:
             yield from iter_connectable_params(param)
 
 
@@ -119,19 +107,23 @@ def iter_all_vectors(obj: core.ChunkCommon):
             yield from iter_all_vectors(param)
 
 
-def param_port_type(param) -> str:
-    """A param as the port token it presents."""
-    if isinstance(param, ColorPicker):
+def param_port_type(param) -> str | None:
+    """The port type for a param's evaluate_type(), or None if it gets no port."""
+    param_type = param.evaluate_type()
+    # Compared with ==: VECTOR | FLOAT_SLIDER also contains every bit of COLOR_PICKER.
+    if param_type == ChunkFlags.ParamType.COLOR_PICKER:
         return PORT_COLOR
-    if isinstance(param, core.ChunkVectorBase):
+    if ChunkFlags.ParamType.VECTOR in param_type:
         return PORT_VECTOR
-    if isinstance(param, Checkbox):
+    if ChunkFlags.ParamType.BOOL in param_type:
         return PORT_BOOL
-    if isinstance(param, (LineEdit, TextEdit, FileBrowser, Menu)):
+    if ChunkFlags.ParamType.STRING in param_type and param_type != ChunkFlags.ParamType.LABEL:
         return PORT_STRING
-    if param.value is not None and isinstance(param.value, int) and not isinstance(param.value, bool):
+    if ChunkFlags.ParamType.INT in param_type:
         return PORT_INT
-    return PORT_FLOAT
+    if ChunkFlags.ParamType.FLOAT in param_type:
+        return PORT_FLOAT
+    return None
 
 
 @dataclass(frozen=True)
@@ -227,9 +219,8 @@ def resolve_graph_nodes(stage: Usd.Stage, root_path: str = CHUNKS_ROOT) -> list[
 def iter_ports(prim: Usd.Prim, chunk=None) -> list[PortRef]:
     """Every port a node presents: the exec pair, then one in/out pair per typed param.
 
-    Works from the prim alone. A chunk object, when given, is the better source for param
-    typing because it knows the param CLASS -- a Menu and a LineEdit are both strings in
-    USD but only the chunk knows which is which.
+    Works from the prim alone. When a chunk object is given, ports are typed from its params
+    instead.
 
     Args:
         prim: The node's chunk prim.

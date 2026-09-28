@@ -75,10 +75,7 @@ def _get_usdview_api():
     return None
 
 
-# The empty value each output falls back to. A float output blanks to 0.0, not 0: the
-# node graph reads a port's colour off the param's CURRENT value
-# (chunk_qt_nodegraph._param_port_type), so an int here paints the float port with the int
-# colour until someone assigns a real float to it.
+# The empty value each output falls back to.
 _EMPTY = {
     "result": "",
     "result_int": 0,

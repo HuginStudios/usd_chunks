@@ -36,7 +36,7 @@ _COLLAPSE_PAGES = True
 # output port and the input port it feeds agree on port type.
 #
 # The graph derives the two ends differently: an output port is typed from its USD attr
-# (_sdf_to_port_type), an input port from its param class (_param_port_type). color3f needs
+# (_sdf_to_port_type), an input port from its param type (_param_port_type). color3f needs
 # no entry here -- it is a ColorPicker input and a Color3f output, and both read as a
 # colour port. color4f has no ColorPicker (which is rgb only) so its input is a Vector, and
 # Float4 is what puts that vector port on the same footing as the output.
