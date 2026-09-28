@@ -24,11 +24,14 @@ time, as in any host: close it (or leave the `with` block) before making the nex
 """
 from __future__ import annotations
 
+import contextlib
+
 from pxr import Sdf, Usd, UsdUtils
 
 from usd_chunks import chunk_naming, chunk_registry, chunk_scene, chunk_scheduler
 from usd_chunks.chunk_stage import (
     ChunkLayerManager,
+    ChunkStageSync,
     commit_order_from_stage,
     export_chunks,
     initialize as chunk_stage_init,
@@ -92,6 +95,9 @@ class Scene(chunk_scene.SceneSender):
 
     def __init__(self, stage: Usd.Stage | None = None, host_name: str = "script", *, sync: bool = True):
         super().__init__()
+        # Whether the stage is this Scene's own -- made here, or opened by Scene.open -- and
+        # so goes when the Scene does. A stage passed in belongs to the caller.
+        self._owns_stage = stage is None
         self._stage = stage or Usd.Stage.CreateInMemory()
         self.registry = chunk_registry.ChunkRegistry()
         self.registry.initialize(self, host_name)
@@ -107,7 +113,9 @@ class Scene(chunk_scene.SceneSender):
         stage = Usd.Stage.Open(path)
         if not stage:
             raise FileNotFoundError(f"Failed to open: {path}")
-        return cls(stage, host_name)
+        scene = cls(stage, host_name)
+        scene._owns_stage = True
+        return scene
 
     def get_stage(self):
         return self._stage
@@ -146,6 +154,16 @@ class Scene(chunk_scene.SceneSender):
         inner = chunk_scene.all_chunks(self.get_chunks())
         for c in inner:
             c.get_dag_node().disconnect()
-        for c in inner + list(self.get_chunks()):
-            c.request_delete()
+        # A stage this Scene made or opened goes with it, so tidying its prims away chunk by
+        # chunk -- each deletion re-healing the exec chain and reconciling Edit Targets over
+        # the whole scene -- was most of the time closing took. A stage the caller passed in
+        # is theirs, and keeps the tidy-up.
+        sync = ChunkStageSync()
+        if self._owns_stage and sync._stage is self._stage:
+            teardown = sync.discarding_stage()
+        else:
+            teardown = contextlib.nullcontext()
+        with teardown:
+            for c in inner + list(self.get_chunks()):
+                c.request_delete()
         ChunkLayerManager().reset()

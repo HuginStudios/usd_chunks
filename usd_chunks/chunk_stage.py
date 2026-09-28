@@ -571,6 +571,23 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prims = _iter_scoped_prims(stage, resyncs, info_changes)
         load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
 
+    @contextlib.contextmanager
+    def discarding_stage(self):
+        """Delete chunks inside this block without touching the stage they are on.
+
+        Deleting a chunk removes its prim, re-heals the exec chain around it and reconciles
+        Edit Targets across the scene -- right for a chunk deleted from a stage that lives
+        on, and wasted work, once per chunk, for a stage that is about to be thrown away
+        whole. File > Open already tears down that way (_reloading); this is the same for
+        any caller that owns the stage it is discarding, such as a script's Scene closing.
+        """
+        was_reloading = self._reloading
+        self._reloading = True
+        try:
+            yield
+        finally:
+            self._reloading = was_reloading
+
     def _on_chunk_deleted(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
