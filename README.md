@@ -41,17 +41,6 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
 5. **[Write your own chunk](docs/writing-a-chunk.md)**: `main()`, `config()`, `execute()`
    and `commit()`.
 
-## 🧩 ChunkGroup
-
-A ChunkGroup holds a whole network inside one node. Double-click it to go inside, and
-build as usual. See [ChunkGroup](docs/core-chunks.md#chunkgroup).
-
-## 🎬 View
-
-Nothing in a network cooks until it's connected to a View. The View decides which part of
-the graph runs, and lets you switch between several results in the same graph. See
-[View](docs/core-chunks.md#view).
-
 ## 📦 What comes with it
 
 The [`chunks/`](chunks/) folder has the chunks we build and test against: transforms,

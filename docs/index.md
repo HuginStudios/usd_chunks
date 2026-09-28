@@ -26,8 +26,7 @@ screen.
 
 ## The graph is USD
 
-usd_chunks has no file format of its own, and doesn't keep a separate graph next to the
-stage:
+usd_chunks has no file format of its own. The saved graph is plain USD:
 
 - **A node is a prim.** Each chunk is a `Chunk`-typed prim. Its params are `inputs:`
   attributes on the prim, and its position is stored with `UsdUINodeGraphNodeAPI`.
@@ -35,7 +34,9 @@ stage:
   Passing a value from one chunk's param to another is a connection plus an expression.
 - **Each chunk writes into its own layer.** The layers compose into the final result.
 
-So saving the stage saves the graph. What a chunk makes is ordinary USD, so a renderer,
+At runtime usd_chunks also keeps a dependency graph in Python (`DagNode`) to know what
+needs to recook. It is rebuilt from the USD connections when a scene loads, so saving the
+stage saves the graph. What a chunk makes is ordinary USD, so a renderer,
 simulator or another DCC can read the result without usd_chunks installed.
 
 ## Interactive or headless
