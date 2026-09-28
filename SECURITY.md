@@ -33,11 +33,12 @@ its author, exactly as installing a package is. It follows that:
   untrusted Python package — because that is precisely what it is.
 - **A malicious chunk is not a vulnerability in usd_chunks.** Reports amounting to "a chunk
   can run arbitrary code" describe the design. Sandboxing untrusted chunks is out of scope.
-- **Opening a `.usda` scene that references chunk types does not execute them.** Resolution
-  is by name against what is already installed; running a network is a separate, explicit
-  act.
+- **Opening a `.usda` scene runs its chunks.** A file can't add chunk code. It only names
+  chunk types, and those are looked up among the chunks you installed. But opening it in
+  usdview cooks the network straight away, so those chunks run with the values saved in the
+  file. A chunk that runs code from a param, like the Python chunk, runs whatever code the
+  file holds. Which chunks you install and trust is up to you.
 
-What *is* in scope: a way to get code executed without the user installing or running
-anything (for example through parsing a scene file), privilege or path escapes such as a
-chunk name resolving outside the configured directories, or anything that lets one chunk
-tamper with another's layers or execution.
+What *is* in scope: running code other than through the chunks a user installed; privilege
+or path escapes, such as a chunk name resolving outside the configured directories; or
+anything that lets one chunk tamper with another's layers or execution.
