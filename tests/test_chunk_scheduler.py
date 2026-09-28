@@ -6,6 +6,8 @@ dragging a USD stage into it.
 """
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from usd_chunks import chunk_notice, chunk_scheduler
@@ -387,6 +389,42 @@ class TestSortKey:
         b.add_dependency(a)
 
         assert b.get_dag_node().get_sort_key() == 1
+
+    def test_cached_depths_survive_any_sequence_of_rewiring(self):
+        # Invalidation stops walking at the first node with no cached depth, which is only
+        # sound while nothing downstream of an uncached node is cached. Checked against an
+        # independent depth after every edit, over a few hundred random ones -- edges and
+        # owners both -- asking only a few nodes each time, so the cache stays part-filled
+        # the way a real load leaves it.
+        rng = random.Random(7)
+        nodes = [Node(f"n{i}") for i in range(40)]
+        edges = []
+
+        def expected(dag, memo):
+            if dag not in memo:
+                memo[dag] = max(
+                    [1 + expected(d, memo) for d in dag._connections.inputs.values()]
+                    + [expected(o, memo) for o in (dag._owned or ())],
+                    default=0,
+                )
+            return memo[dag]
+
+        for _ in range(300):
+            lo, hi = sorted(rng.sample(range(len(nodes)), 2))
+            action = rng.random()
+            if action < 0.45:
+                nodes[hi].add_dependency(nodes[lo])  # lower index upstream: stays acyclic
+                edges.append((hi, lo))
+            elif action < 0.65 and edges:
+                down, up = edges.pop(rng.randrange(len(edges)))
+                nodes[down].remove_dependency(nodes[up])
+            else:
+                nodes[lo].set_owner(nodes[hi])
+
+            memo = {}
+            for i in rng.sample(range(len(nodes)), 5):
+                dag = nodes[i].get_dag_node()
+                assert dag.get_sort_key() == expected(dag, memo), f"n{i}"
 
 
 class TestDependencyRemoval:

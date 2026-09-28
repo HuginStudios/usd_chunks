@@ -103,9 +103,21 @@ def topology_changed(*nodes: DagNode):
         _topology_epoch += 1
         return
 
+    # The walk stops at any node with no cached depth: _depth caches a node only once
+    # everything upstream of it is cached, and this drops whole downstream closures, so
+    # nothing downstream of an uncached node can be cached either. Without that stop, every
+    # param a load builds -- each one uncached, gaining an owner -- walked everything below
+    # its chunk: thirty thousand walks, and a fifth of opening a network. The changed nodes
+    # themselves are the exception, since their edges are what just moved.
     for node in nodes:
-        for stale in downstream_closure(node):
-            _depth_cache.pop(stale, None)
+        _depth_cache.pop(node, None)
+        pending = downstream(node)
+        while pending:
+            stale = pending.pop()
+            if stale not in _depth_cache:
+                continue
+            del _depth_cache[stale]
+            pending.extend(downstream(stale))
 
 
 def downstream(node: DagNode) -> list[DagNode]:
