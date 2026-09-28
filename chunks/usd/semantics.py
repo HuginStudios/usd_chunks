@@ -95,6 +95,9 @@ def labelled_instances(stage, root, taxonomy, classes):
         name = next((label for label in labels if label in classes), None)
         if name is not None:
             instances.append((prim, name))
+    # Sorted by path, not left in traversal order: traversal follows the order prims were
+    # authored in, so rewiring the network that builds them renumbered every instance.
+    instances.sort(key=lambda pair: pair[0].GetPath())
     return instances, list(classes)
 
 
