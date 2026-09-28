@@ -59,13 +59,13 @@ from usd_chunks import chunk
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         description="Clears all authored transform ops on the target prim.",
     )
 ```
 
-`config()` returns a [`chunk.DefaulConfig`][usd_chunks.chunk.DefaulConfig] (a thin
+`config()` returns a [`chunk.DefaultConfig`][usd_chunks.chunk.DefaultConfig] (a thin
 subclass of [`chunk_core.ChunkConfig`][usd_chunks.chunk_core.ChunkConfig]) describing how
 the chunk should be treated at load time and offered in menus. A module with no `config()`
 gets the defaults below.
@@ -92,7 +92,7 @@ other top-level code. A `config()` that reads a module-level constant or helper 
 `NameError` on that first attempt; the registry retries once after executing the module's
 top-level assignments and `def`s, but anything among those that itself depends on a
 non-`usd_chunks` import still fails, is skipped, and the module quietly falls back to
-`DefaulConfig()`'s plain defaults — wrong category, generic description, no error shown
+`DefaultConfig()`'s plain defaults — wrong category, generic description, no error shown
 anywhere but a warning in the log. If `config()` needs something expensive or
 module-derived, `variants` accepting a callable (see the table above) is the supported way
 to defer that cost rather than reaching for a constant built above it.
@@ -144,7 +144,7 @@ def main():
     return chunk_api
 ```
 
-(the full version is [`scripts/transforms/reset_transform.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/transforms/reset_transform.py)).
+(the full version is [`chunks/transforms/reset_transform.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/transforms/reset_transform.py)).
 A save only ever records a chunk's **data** — its params, values and wiring — never the
 code path that produced them (see [*What a save keeps*](runtime-chunks.md#what-a-save-keeps)).
 `execute` is what makes a reload behave, not just look, the way it did before saving.

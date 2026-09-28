@@ -13,7 +13,7 @@ plain `pip install usd-chunks` once that changes.
 git clone https://github.com/HuginStudios/usd_chunks.git
 pip install -e ./usd_chunks                                                      # into usdview's own Python
 for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   # Windows (cmd)
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts                                 # Windows (cmd)
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks                                 # Windows (cmd)
 usdview anything.usda
 ```
 
@@ -22,7 +22,7 @@ Or, headless (no usdview, `usd-core` only):
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
 pip install -e "./usd_chunks[standalone]"
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdchunks run --help
 ```
 
@@ -31,7 +31,7 @@ for the rest. macOS/Linux: `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)
 `export NAME=value` for the rest.
 
 Right-click the graph canvas in usdview and every chunk under
-[`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) is there to
+[`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) is there to
 drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks of your
 own — everything past this point is detail for when you need it.
 
@@ -88,7 +88,7 @@ below.
 
 !!! warning
     A plain install doesn't bring in numpy, PySide6 or requests, and roughly a sixth of
-    [`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) needs one
+    [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) needs one
     of those to import at all.
 
 A module whose import fails is skipped silently as far as the create menu goes — the
@@ -114,8 +114,8 @@ The rest only matter for specific work, and combine (`pip install -e ".[dev,docs
 | Extra | Who's it for |
 | --- | --- |
 | `ui` | A host that doesn't already ship Qt — pulls in PySide6. usdview and Houdini already have Qt, skip this there. |
-| `flet` | Running the standalone Flet graph frontend (`python -m usd_chunks.plugins.chunk_flet_nodegraph <network.usda>`) rather than embedding in a Qt host. |
-| `imgui` | Same, for the Dear ImGui frontend (`python -m usd_chunks.plugins.chunk_imgui_nodegraph <network.usda>`). |
+| `flet` | Running the standalone Flet graph frontend (`python -m usd_chunks.frontends.flet.nodegraph <network.usda>`) rather than embedding in a Qt host. |
+| `imgui` | Same, for the Dear ImGui frontend (`python -m usd_chunks.frontends.imgui.nodegraph <network.usda>`). |
 | `dev` | Working on usd_chunks itself — pytest, ruff, build tooling, plus `usd-core` and every optional frontend toolkit so the test suite can exercise all of them. |
 | `docs` | Building the docs site — see [Build documentation](#build-documentation). |
 
@@ -265,7 +265,7 @@ copy. Install the docs extra and build:
 
 ```
 pip install -e ".[docs]"
-USD_CHUNK_DIRS=scripts mkdocs serve
+USD_CHUNK_DIRS=chunks mkdocs serve
 ```
 
 That serves the site locally; `mkdocs build` writes it to `site/` instead. The docs are not

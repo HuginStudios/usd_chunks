@@ -37,7 +37,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
 ```
 
 ![image](assets/example_add_cube.png)
@@ -45,7 +45,7 @@ def config():
 That's the whole shape: `main()` builds the chunk and its params, `config()` sets where it
 files in the create menu. See [Writing a chunk](writing-a-chunk.md) for the full picture —
 `main()`, `config()`, the reactive `execute()` hook, and the file-writing `commit()` hook —
-and [scripts/](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) for more
+and [chunks/](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) for more
 worked examples.
 
 ## 🎛️ Params

@@ -33,7 +33,7 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
    git clone https://github.com/HuginStudios/usd_chunks.git
    pip install -e ./usd_chunks
    for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
-   set USD_CHUNK_DIRS=C:\path\to\usd_chunks\scripts
+   set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
    usdview anything.usda
    ```
    → every environment variable, extras, and troubleshooting what won't show up.
@@ -59,7 +59,7 @@ how you switch between several results in the same graph. →
 
 ## 📦 What comes with it
 
-[`scripts/`](scripts/) ships the chunks this has been built and tested against —
+[`chunks/`](chunks/) ships the chunks this has been built and tested against —
 transforms, references, materials, MaterialX shading, scattering, a MuJoCo rigid-body
 solver, and more. Most are a few hundred lines each, and doubly worth reading: they're
 also the worked examples.

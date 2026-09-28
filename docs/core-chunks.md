@@ -2,11 +2,11 @@
 
 Two chunks that don't touch the stage themselves — they shape *when* things cook and *how
 a graph is organized*. Everything else in
-[`scripts/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts) does something
+[`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) does something
 to your scene; these two are structural. Both ship in
-[`scripts/core/`](https://github.com/HuginStudios/usd_chunks/tree/main/scripts/core):
-[`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/core/view.py) and
-[`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/scripts/core/chunkgroup.py).
+[`chunks/core/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks/core):
+[`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/view.py) and
+[`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/chunkgroup.py).
 
 ## 🔎 At a glance
 
