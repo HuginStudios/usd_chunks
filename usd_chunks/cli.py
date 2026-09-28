@@ -11,7 +11,8 @@ import os
 import subprocess
 import sys
 import tempfile
-from argparse import ArgumentParser, RawDescriptionHelpFormatter
+import time
+from argparse import SUPPRESS, ArgumentParser, RawDescriptionHelpFormatter
 from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 from pxr import Usd
 from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene, flatten_without_chunks
 from usd_chunks.chunk_stage import (
@@ -525,6 +527,16 @@ def cmd_sweep(args):
         return _verify(args, name, indices)
 
     os.makedirs(args.out, exist_ok=True)
+
+    if args.prepare_only:
+        return _prepare_only(args, name, indices)
+
+    if not (args.per_variant or args.procedural):
+        reason = _sweep_batched(args, name, indices)
+        if reason is None:
+            return
+        print(f"Not batching: {reason}. One process per variant instead.")
+
     print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}")
 
     def one(i):
@@ -544,6 +556,88 @@ def cmd_sweep(args):
         print(f"\n{RED}{len(failed)} of {len(indices)} failed{RESET}: {failed[:10]}")
         sys.exit(1)
     print(f"\n{GREEN}{len(indices)} variant(s){RESET} -> {args.out}")
+
+
+def _open_for_sweep(args):
+    """The network loaded as `run` loads it, overrides applied, and its active view."""
+    scene = Scene.open(args.usda, "cli")
+    if args.params:
+        _parse_param_overrides(scene, args.params)
+    stage = scene.get_stage()
+    view = None if args.all else _active_view(stage, scene)
+    return scene, view
+
+
+def _prepare_only(args, name, indices):
+    """A worker of a batched sweep: prepare these variants, commit nothing."""
+    scene, view = _open_for_sweep(args)
+    try:
+        failed = sweepmod.prepare(scene, sweepmod.find_wedge(scene, name), indices, args.out, view)
+    finally:
+        scene.close()
+    if failed:
+        sys.exit(1)
+
+
+def _sweep_batched(args, name, indices):
+    """Prepare every variant in one load, stitch them into frames, commit once.
+
+    See usd_chunks.sweep. --jobs splits the preparing between this process and workers;
+    the commit is always one.
+
+    Returns:
+        None when the sweep is done, or why this network cannot be batched -- the caller
+        then sweeps one process per variant.
+    """
+    started = time.perf_counter()
+    scene, view = _open_for_sweep(args)
+    try:
+        consumers, reason = sweepmod.frame_consumers(_all_chunks(scene.get_chunks()), name)
+        if reason:
+            return reason
+        wedge = sweepmod.find_wedge(scene, name)
+
+        slices = [indices[i::max(1, args.jobs)] for i in range(max(1, args.jobs))]
+        mine, others = slices[0], [s for s in slices[1:] if s]
+        print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}, batched")
+        workers = [
+            subprocess.Popen([
+                sys.executable, "-m", "usd_chunks.cli", "sweep", args.usda, *args.params,
+                "--out", args.out, "--only", ",".join(str(i) for i in part), "--prepare-only",
+                *(["--all"] if args.all else []),
+            ])
+            for part in others
+        ]
+        failed = sweepmod.prepare(scene, wedge, mine, args.out, view)
+        for worker, part in zip(workers, others):
+            if worker.wait() != 0:
+                failed.extend(i for i in part if not os.path.exists(sweepmod.variant_path(args.out, i)))
+        prepared = time.perf_counter()
+
+        done = [i for i in indices if i not in failed]
+        if not done:
+            print(f"{RED}Every variant failed{RESET}")
+            sys.exit(1)
+        stitched = os.path.join(args.out, sweepmod.STITCHED_NAME)
+        problems = sweepmod.stitch({i: sweepmod.variant_path(args.out, i) for i in done}, stitched)
+        if problems:
+            for problem in problems[:5]:
+                print(f"  {problem}")
+            return f"the variants cannot be stitched into frames ({len(problems)} difference(s) above)"
+
+        committed = sweepmod.commit_frames(scene, consumers, stitched, done)
+        finished = time.perf_counter()
+    finally:
+        scene.close()
+
+    print(f"\nPrepared {len(done)} variant(s) in {prepared - started:.1f}s, then "
+          f"{', '.join(c.name for c in committed) or 'nothing'} over all of them as frames "
+          f"in {finished - prepared:.1f}s")
+    if failed:
+        print(f"{RED}{len(failed)} of {len(indices)} failed{RESET}: {sorted(failed)[:10]}")
+        sys.exit(1)
+    print(f"{GREEN}{len(done)} variant(s){RESET} -> {args.out}")
+    return None
 
 
 def _verify(args, name, indices):
@@ -779,7 +873,13 @@ def main():
             "Cook a network once per wedge index and export each result.\n\n"
             "Every value a wedge produces is a pure function of (seed, index, range name),\n"
             "so variants are independent: --only regenerates one without producing the ones\n"
-            "before it, --jobs runs them concurrently, and --verify proves a rerun matches."
+            "before it, --jobs runs them concurrently, and --verify proves a rerun matches.\n\n"
+            "Batched by default: the network is loaded once and every variant cooked and\n"
+            "exported in turn, then the variants are stitched into one stage, variant i at\n"
+            "frame i, and the commit hooks (Render, KITTI Writer) run once over all of them.\n"
+            "A network that cannot be batched -- a commit that is not per frame, such as\n"
+            "Export USD, or variants that differ in more than attribute values -- falls back\n"
+            "to one `run` per variant and says why. --per-variant forces that."
         ),
         epilog=(
             "Examples:\n"
@@ -799,6 +899,13 @@ def main():
     sweep_parser.add_argument(
         "--out", required=True, metavar="DIR", help="Where variant_NNNNN/ directories are written"
     )
+    sweep_parser.add_argument(
+        "--per-variant",
+        action="store_true",
+        help="One `run` process per variant, instead of preparing them all in one load and "
+             "committing (rendering, writing) once over all of them as frames",
+    )
+    sweep_parser.add_argument("--prepare-only", action="store_true", help=SUPPRESS)
     sweep_parser.add_argument(
         "--count", type=int, default=0, help="How many variants (default: the wedge's own count)"
     )
