@@ -51,11 +51,10 @@ def test_open_makes_no_throwaway_graph_layers(tmp_path, monkeypatch):
 
 
 def test_a_held_layer_can_be_authored_into():
-    """A load can cook a chunk while its layer is held: restoring a saved vector announces
-    the whole vector, and in a chunkgroup that cooks the chunk there and then. The layer
-    must already be on the stage for that: Usd.EditContext silently keeps the old edit
-    target for a layer outside the stage's layer stack, so the first cut of this -- held
-    layers kept off the stage -- sent a camera's cook to another layer, without an error."""
+    """A held layer behaves as a placed one: anything that authors into it mid-load lands
+    in it. Kept off the stage, as the first cut of this did, Usd.EditContext raises for it
+    ("not in the local LayerStack"), and a chunk whose layer is not in the stack is not
+    cooked at all -- which quietly changed what a load produced."""
     with Scene() as scene:
         stage = scene.get_stage()
         lm = chunk_registry.ChunkLayerManager()

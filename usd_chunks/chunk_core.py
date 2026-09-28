@@ -3706,6 +3706,12 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         Deliberately does NOT use set_blocked(), which is transitive to children via their
         owner-chain is_blocked() check -- that would also suppress each child's own notify,
         which their widgets rely on to refresh live as they're set.
+
+        Announces nothing while a load is restoring values, the same rule value_changed
+        follows. This call used to solve right there, cooking the chunk before the rest of
+        its inputs were back: a camera restored its clipping range, cooked with the default
+        target, and wrote its lens onto /cameras/camera1. The load cooks once, after
+        everything is restored.
         """
         self._suppress_storage_write = True
         try:
@@ -3713,7 +3719,8 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 self[i] = val[i]
         finally:
             self._suppress_storage_write = False
-        self.get_attribute_sender("value").execute()
+        if not chunk_notice._loading_stage:
+            self.get_attribute_sender("value").execute()
 
     def _on_ref_changed(self, notice=None, sender=None):
         if self._resolving_ref:

@@ -1949,9 +1949,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         it into the shared one a moment later and threw that graph layer away. Each of those
         sublayer edits recomposes the stage -- a fifth of opening a 70-chunk network.
 
-        The held layers still have to be on the stage: restoring an input can author into
-        the chunk's layer (a camera's driven attributes, say), and Usd.EditContext silently
-        keeps the old edit target for a layer outside the stage's layer stack.
+        The held layers stay on the stage, in one loading layer, so a held layer behaves as a
+        placed one does. Off the stage it would not: Usd.EditContext raises for a layer
+        outside the stage's layer stack, and chunk_notice declines to cook a chunk whose
+        layer is not in it yet. A first version kept them off the stage, and that skipped a
+        cook the load used to run -- the same outcome, reached by accident, that a vector's
+        premature cook no longer has in the first place (see _set_children_blocked).
 
         Returns:
             bool: True if this call turned deferral on. Only that caller calls
