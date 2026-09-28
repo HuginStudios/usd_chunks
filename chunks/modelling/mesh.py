@@ -126,7 +126,7 @@ class Node:
         ni = list(self.xyz)
         ni[dim] = ni[dim] + 1
         if ni[dim] > self.dim[dim] - 1:
-            raise IndexError("Fuck off")
+            raise IndexError()
 
         return Node(tuple(ni), self.dim)
 
@@ -644,8 +644,7 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
         # One entry per shape, so "Cube" is found and created directly rather than by
-        # creating Mesh and re-picking the type. No Sphere: the menu lists it, but nothing
-        # builds one yet. Ground is a grid preset, sized to stand things on.
+        # creating Mesh and re-picking the type. Ground is a grid preset, sized to stand things on.
         variants=[
             ("Cube", {"mesh_type": "cube", "prim_path": "/cube"}),
             ("Grid", {"mesh_type": "grid", "prim_path": "/grid"}),
