@@ -414,15 +414,45 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         return any(_satisfies(v, specifier) for v in versions)
 
 
+#: One source line with its ending, split where the parser splits: at \r\n, \r or \n and
+#: nowhere else (not at the form feeds and other separators str.splitlines also honours).
+_SOURCE_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
+
+
 class _ConfigTransformer(ast.NodeTransformer):
     def __init__(self, code, globs: dict, module: ChunkModule) -> None:
         self._code = code
         self._module = module
         self._globs = globs.copy()
         self._deferred_config: Callable | None = None
+        self._lines: list[str] | None = None
 
     def _get_node_source(self, node):
-        return ast.get_source_segment(self._code, node)
+        """The source text of node, as ast.get_source_segment returns it.
+
+        Not ast.get_source_segment itself: that splits the whole source into lines on
+        every call, and this is called for every import, config() and main() of every
+        chunk module, at discovery and again at load -- quadratic in a module's size, and
+        seconds of every process start. The lines are split once here instead. Column
+        offsets are UTF-8 byte offsets, as in the original.
+        """
+        try:
+            if node.end_lineno is None or node.end_col_offset is None:
+                return None
+            first, last = node.lineno - 1, node.end_lineno - 1
+            start, end = node.col_offset, node.end_col_offset
+        except AttributeError:
+            return None
+        if self._lines is None:
+            self._lines = _SOURCE_LINE.findall(self._code)
+        lines = self._lines
+        if first == last:
+            return lines[first].encode()[start:end].decode()
+        return "".join([
+            lines[first].encode()[start:].decode(),
+            *lines[first + 1:last],
+            lines[last].encode()[:end].decode(),
+        ])
 
     def _exec_node(self, node):
         if not (src := self._get_node_source(node)):
@@ -839,7 +869,11 @@ class ChunkModule:
 
         # Call _exec_module to lazily load the module. This runs the _ConfigTransformer. If module_file is .py and
         # module is not a RuntimeModule, _exec_module will create a _ChunkConfigLazyLoader
-        self._exec_module()
+        #
+        # Whether the file needs reading again before the next load: not after this read
+        # succeeds, until unload() says the file may have changed. Reading it twice parses and
+        # transforms it twice, and was half of what finding a scene's chunk modules cost.
+        self._needs_read = not self._exec_module()
 
     @staticmethod
     def from_chunk_definition(file: str | Path, name: str | None = None) -> list[ChunkModule]:
@@ -963,9 +997,10 @@ class ChunkModule:
         dep_reg.install_packages(self.config.requirements)
 
     def _pre_load(self):
-        if not self.loaded:
+        if not self.loaded and (self._needs_read or not self.module):
             if not self._exec_module():
                 return False
+            self._needs_read = False
 
         self._install_deps()
 
@@ -1008,6 +1043,8 @@ class ChunkModule:
     def unload(self):
         """Mark the module as not loaded."""
         self.loaded = False
+        # Reload Chunks unloads to pick up an edited file, so the next load reads it again.
+        self._needs_read = True
 
     def create(self) -> Sequence[core.ChunkBase]:
         """Run the module's main function and return the chunks it made, with its config attached.
