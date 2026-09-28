@@ -294,8 +294,8 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
 
 
 def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
-    dimx = max(int(dimx), 2)
-    dimy = max(int(dimy), 2)
+    dimx = max(int(dimx), 3)
+    dimy = max(int(dimy), 3)
     rc = dimx * dimy - (dimx - 1) * 2
     indices = []
     counts = []
@@ -535,7 +535,7 @@ def sphere_changed(owner: chunk.Group, notice, sender):
 
     dimx = owner.get_param("dimx2", chunk.is_param_t(int))
     dimy = owner.get_param("dimy2", chunk.is_param_t(int))
-    rad = owner.get_param("radius", chunk.is_param_t(float))
+    rad = owner.get_param("radius1", chunk.is_param_t(float))
 
     raw_path = "/sphere"
     if c := owner.get_chunk():
@@ -543,6 +543,31 @@ def sphere_changed(owner: chunk.Group, notice, sender):
 
     with chunk_utils.author_in_variant_context(stage, raw_path) as path:
         build_sphere(stage, path, dimx.value, dimy.value, rad.value)
+
+
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded Mesh actually rebuilds its shape
+    instead of leaving the target prim empty (the real work lives in cube_changed/
+    tube_changed/grid_changed, all add_callback handlers, which load's value-restore
+    deliberately does not trigger).
+
+    menu_changed's hidden/disabled bookkeeping is reapplied first: live, picking a mesh
+    type only un-hides its group, it doesn't itself trigger a build (that needs a param
+    inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
+    needs both steps repeated here to end up matching what was actually visible/built
+    before saving.
+    """
+    menu = node.get_param("mesh_type", chunk.is_param_t(str))
+    if menu is None:
+        return
+    # menu_changed(node, None, menu)
+    build_fn = {"cube": cube_changed, "tube": tube_changed, "grid": grid_changed, "sphere": sphere_changed}.get(menu.value)
+    if build_fn is None:
+        return
+
+    group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
+    build_fn(group, None, None)
 
 
 def main():
@@ -597,9 +622,9 @@ def main():
     sphere_group = chunk.Group("sphere", "Sphere")
     sphere_group.add_params(
         [
-            chunk.Spinbox("dimx2", "dimx", min_value=2, default_value=10, is_int=True),
-            chunk.Spinbox("dimy2", "dimy", min_value=2, default_value=10, is_int=True),
-            chunk.Slider("radius", "radius", default_value=1),
+            chunk.Spinbox("dimx2", "dimx", min_value=3, default_value=10, is_int=True),
+            chunk.Spinbox("dimy2", "dimy", min_value=3, default_value=10, is_int=True),
+            chunk.Slider("radius1", "radius", default_value=1),
         ]
     )
     sphere_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
@@ -616,4 +641,16 @@ def main():
 def config():
     # numpy is imported at module scope, so without it the registry skips this chunk
     # entirely -- declaring it turns that silence into a named package.
-    return chunk.DefaultConfig(category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"])
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
+        # One entry per shape, so "Cube" is found and created directly rather than by
+        # creating Mesh and re-picking the type. No Sphere: the menu lists it, but nothing
+        # builds one yet. Ground is a grid preset, sized to stand things on.
+        variants=[
+            ("Cube", {"mesh_type": "cube", "prim_path": "/cube"}),
+            ("Grid", {"mesh_type": "grid", "prim_path": "/grid"}),
+            ("Tube", {"mesh_type": "tube", "prim_path": "/tube"}),
+            ("Sphere", {"mesh_type": "sphere", "prim_path": "/sphere"}),
+            ("Ground", {"mesh_type": "grid", "prim_path": "/ground", "width1": 20.0, "height2": 20.0}),
+        ],
+    )
