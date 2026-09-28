@@ -65,8 +65,39 @@ _internal_layer_write_active: bool = False
 _executing_chunk = None
 
 # The propagators whose solve an enclosing batched_solve() is holding back, in the order they
-# asked; None outside a batch.
+# asked, each with the batch clock at the time it asked; None outside a batch.
 _batched: list | None = None
+
+# Inside a batch, a clock that ticks once per queued solve and once per cook, and when each
+# chunk last cooked by it. None outside a batch. See _cooked_since.
+_batch_clock = 0
+_batch_cooked: dict | None = None
+
+# The batch clock when the solve now draining was queued; None when no queued solve is running.
+_solving_since: int | None = None
+
+
+def _tick() -> int:
+    global _batch_clock
+    _batch_clock += 1
+    return _batch_clock
+
+
+def _cooked_since(prop) -> bool:
+    """Whether prop's chunk already cooked after the change the draining solve is for.
+
+    A batch solves the changes it held back one after another, and the first solve cooks
+    everything below them with every new value in place. Expression params re-announce their
+    value only once the param they read has changed -- which happens during that first solve,
+    so they are queued behind it, and solving them re-cooked every chunk below a second time
+    with the same values. A chunk that cooked after the queued change was made has read it
+    already: its module is skipped, while everything else the solve does -- widgets, the
+    param's own USD write -- still happens. A later change is queued with a later clock, and
+    cooks it again.
+    """
+    if _batch_cooked is None or _solving_since is None:
+        return False
+    return _batch_cooked.get(id(prop), -1) > _solving_since
 
 
 @contextmanager
@@ -92,21 +123,27 @@ def batched_solve():
 
     Nested blocks join the outermost one.
     """
-    global _batched
+    global _batched, _batch_cooked, _solving_since
     if _batched is not None:
         yield
         return
     _batched = collections.deque()
+    _batch_cooked = {}
     try:
         yield
         while _batched:
-            prop = _batched.popleft()
+            prop, queued_at = _batched.popleft()
             # Not re-dirtied: an earlier solve in this loop may have cleaned it along with
             # everything else it reached, and dirtying it again would cook that twice.
             if prop.get_dag_node().dirty:
-                prop._solve_downstream()
+                _solving_since = queued_at
+                try:
+                    prop._solve_downstream()
+                finally:
+                    _solving_since = None
     finally:
         _batched = None
+        _batch_cooked = None
 
 
 def is_cook_stale(chunk) -> bool:
@@ -1362,7 +1399,7 @@ class ChunkNoticePropagator:
         node = self.get_dag_node()
         node.dirty = True
         if _batched is not None:
-            _batched.append(self)
+            _batched.append((self, _tick()))
             return
         self._solve_downstream()
 
@@ -1432,7 +1469,9 @@ class ChunkNoticePropagator:
                 # window -- usdview clears its stage before opening the next file while still
                 # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
                 # window, can reach here.
-                if (callable(getattr(module, 'execute', None)) and stage is not None
+                if _cooked_since(prop):
+                    prop._cook_stale = False
+                elif (callable(getattr(module, 'execute', None)) and stage is not None
                         and not getattr(prop, '_executing', False)
                         and not getattr(prop, '_deleting', False)
                         and not muted and not not_yet_in_stack and not prop.is_blocked()):
@@ -1493,6 +1532,8 @@ class ChunkNoticePropagator:
                         _usd_write_active = prev_usd_write_active
                         _executing_chunk = prev_executing_chunk
                         prop._executing = False
+                        if _batch_cooked is not None:
+                            _batch_cooked[id(prop)] = _tick()
 
         msg += "====== FINISHED ======\n"
         logger.debug(msg)
