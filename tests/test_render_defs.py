@@ -12,6 +12,8 @@ the correct answer there rather than an error.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from usd_chunks import render_defs
@@ -511,14 +513,33 @@ class TestDiscoveryIsCachedOnDisk:
         assert len(calls) == 1, "should have been read back, not discovered again"
         assert len(list(folder.glob("render_settings-*.pickle"))) == 1
 
-    def test_a_changed_key_discovers_again_and_drops_the_old_file(self, disk_cache, monkeypatch):
+    def test_two_keys_in_use_keep_their_own_files(self, disk_cache, monkeypatch):
+        """Two checkouts have two keys; each must not delete the other's file on write,
+        or alternating between them pays the whole discovery on every run."""
+        folder, calls = disk_cache
+        this_checkout = render_defs._disk_cache_key
+        render_defs._discover()
+        render_defs.clear_cache()
+        monkeypatch.setattr(render_defs, "_disk_cache_key", lambda: "another-checkout")
+        render_defs._discover()
+        assert len(calls) == 2
+
+        monkeypatch.setattr(render_defs, "_disk_cache_key", this_checkout)
+        render_defs.clear_cache()
+        render_defs._discover()
+        assert len(calls) == 2, "the first key's file should still be there"
+        assert len(list(folder.glob("render_settings-*.pickle"))) == 2
+
+    def test_a_file_unread_for_a_month_is_removed(self, disk_cache, monkeypatch):
         folder, calls = disk_cache
         render_defs._discover()
+        old = next(folder.glob("render_settings-*.pickle"))
+        month_ago = old.stat().st_mtime - render_defs._DISK_CACHE_MAX_IDLE - 60
+        os.utime(old, (month_ago, month_ago))
         render_defs.clear_cache()
         monkeypatch.setattr(render_defs, "_disk_cache_key", lambda: "another-usd")
 
         render_defs._discover()
-        assert len(calls) == 2
         assert [p.name for p in folder.glob("render_settings-*.pickle")] == [
             "render_settings-another-usd.pickle"
         ]

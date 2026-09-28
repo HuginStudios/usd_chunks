@@ -43,6 +43,7 @@ import pickle
 import re
 import sys
 import tempfile
+import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -544,6 +545,9 @@ def _defs_from_delegates(existing) -> list[RenderSettingsDef]:
 #: an older layout is ignored rather than unpickled into the wrong fields.
 _DISK_CACHE_FORMAT = 1
 
+#: A cache file nobody has read for this long is removed when another is written.
+_DISK_CACHE_MAX_IDLE = 30 * 24 * 3600
+
 
 def _disk_cache_dir() -> str | None:
     """Where discovered definitions are kept between processes, or None for nowhere.
@@ -599,6 +603,10 @@ def _read_disk_cache(path: str) -> tuple | None:
         return None
     if not isinstance(found, tuple) or not all(isinstance(d, RenderSettingsDef) for d in found):
         return None
+    try:
+        os.utime(path)  # still in use: see _write_disk_cache's clean-up
+    except OSError:
+        pass
     return found
 
 
@@ -622,12 +630,18 @@ def _write_disk_cache(path: str, found: tuple) -> None:
     except Exception as exc:  # noqa: BLE001 - a default that will not pickle, a read-only home
         logger.debug("Could not write render settings cache %s: %s", path, exc)
         return
-    # A new key means the old file answers a USD, plugin set or code that is gone.
+    # Only files nobody has read for a month go. A different key is not proof the old file
+    # is dead: two checkouts, two worktrees, or usdview beside a CLI from another clone each
+    # have their own key, and removing every other file on write made them delete each
+    # other's on every run -- each paying the whole discovery again, every time.
     cache_dir, name = os.path.split(path)
+    cutoff = time.time() - _DISK_CACHE_MAX_IDLE
     for other in os.listdir(cache_dir):
         if other != name and other.startswith("render_settings-") and other.endswith(".pickle"):
+            other_path = os.path.join(cache_dir, other)
             try:
-                os.unlink(os.path.join(cache_dir, other))
+                if os.path.getmtime(other_path) < cutoff:
+                    os.unlink(other_path)
             except OSError:
                 pass
 
