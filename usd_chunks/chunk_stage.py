@@ -5513,6 +5513,9 @@ def _load_chunks(
         def _add_prim_mods(prim_mods):
             old_loading_stage = chunk_notice._loading_stage
             chunk_notice._loading_stage = stage
+            # Layers made while the chunks below are built and wired stay off the stage
+            # until the wiring is done; see ChunkLayerManager.defer_placement.
+            placing = ChunkLayerManager().defer_placement()
             try:
                 deferred = []  # (prim, chunk)
                 loaded.append(deferred)
@@ -5733,6 +5736,22 @@ def _load_chunks(
                 lm = ChunkLayerManager()
                 can_execute_sub_chunks = lm.initialized and lm.stage is stage
 
+                # The wiring is final, so every layer made so far can go straight into the
+                # graph layer it belongs in -- in the order it would have had if nothing had
+                # been deferred, because a new graph layer goes on top of the ones before it
+                # and the order of chunks at the same depth is kept by the re-sort below.
+                # Layers the loop below leaves alone (a chunkgroup's own) were placed the
+                # moment they were asked for, so before it; the loop places the rest.
+                held = lm.end_deferral() if placing else []
+                placing = False
+                looped = {
+                    id(c) for _, c in deferred
+                    if lm.initialized and (id(c) in top_level_chunk_ids or can_execute_sub_chunks)
+                }
+                for c in held:
+                    if id(c) not in looped:
+                        lm.get_or_create_layer(c)
+
                 # Ensure every chunk eligible to execute below already has its own layer
                 # registered before the re-sort pass. Most chunks' layers get created as a
                 # side effect of restoring their values in _load_wire_inputs (via
@@ -5839,6 +5858,9 @@ def _load_chunks(
                         sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
             finally:
                 chunk_notice._loading_stage = old_loading_stage
+                # A load that failed part-way still leaves its layers on the stage.
+                if placing:
+                    ChunkLayerManager().place_deferred_layers()
 
         # Chunks already homed under a context recreated above -- no new tab needed, and
         # the context chunk already exists, so just process them directly.
