@@ -1546,7 +1546,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
                 else:
-                    attr.Set(vector.value)
+                    attr.Set(chunk_utils.as_attr_value(attr, vector.value))
 
         vector._connect_param_attr(attr)
 

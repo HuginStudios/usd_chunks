@@ -127,7 +127,13 @@ def parse_frames(spec):
     Accepts comma-separated entries, each a single frame, a "start:end" range, or a
     "start:endxstride" strided range. An empty spec means a single render at the
     stage's default values rather than at a frame, and is reported as an empty list.
+
+    A lone number is one frame. It arrives as a number rather than text when Frames is
+    wired to an integer -- a Wedge's Index, so each variant renders as its own frame -- and
+    index 0 would otherwise read as empty by being falsy.
     """
+    if isinstance(spec, (int, float)):
+        return [float(spec)]
     if not spec or not spec.strip():
         return []
 

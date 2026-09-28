@@ -3584,14 +3584,22 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                             # variant (show_attribute) must re-enter it here rather than rely on
                             # the ambient edit target -- that is the ordinary case for a ChunkVectorBase
                             # too (displayColor, extent, ... are common on a variant-scoped prim).
-                            # Outside a variant this keeps the ambient edit target it always
-                            # used, unlike its scalar counterpart's get_attr_home_layer fallback
-                            # -- ChunkVectorBase never resolved one. Inside one, the chunk's own
-                            # layer, where a chunk's edits always go.
+                            # Inside one, the chunk's own layer, where a chunk's edits always go.
+                            #
+                            # Outside a variant, the attr's own home layer, as its scalar
+                            # counterpart resolves it. This used to keep the ambient edit
+                            # target, which is not where _sync_vector_input authors the attr
+                            # (the bookkeeping layer, session by default) -- so every edit
+                            # after the first landed in a weaker layer than the value it was
+                            # meant to replace, and a vector never changed again.
+                            home = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
+                                stage, self.get_chunk()
+                            )
                             if not is_expr:
                                 current = usd_attr.Get(0)
                                 if current != val:
-                                    usd_attr.Set(val)
+                                    with chunk_utils.edit_context_for(stage, self._var_selections, home):
+                                        usd_attr.Set(chunk_utils.as_attr_value(usd_attr, val))
                             else:
                                 chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
                                 usd_attr.SetConnections([
