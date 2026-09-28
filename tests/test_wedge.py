@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "core"))
 import wedge  # noqa: E402
 
 from usd_chunks import chunk  # noqa: E402
