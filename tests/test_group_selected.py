@@ -19,6 +19,8 @@ from PySide6 import QtCore, QtGui
 from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import (
     _EXEC_OUTPUT, connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
@@ -413,3 +415,88 @@ def test_a_self_building_chunk_is_not_cooked_outside_the_scene_or_doubled(graph,
     kids = [p for p in moved[0].get_my_params() if isinstance(p, type(built))]
     assert len(kids) == 1, f"expected one child, got {[k.name for k in kids]}"
 
+
+
+def _is_disabled(stage, chunk):
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    return chunk.has_state(ChunkFlags.State.DISABLED), chunk_graph.is_disabled(prim)
+
+
+def test_disabled_chunks_stay_disabled_inside_the_group(graph):
+    qapp, reg, scene, d, stage = graph
+    chunks = [_mk(reg, scene) for _ in range(4)]
+    for i, c in enumerate(chunks):
+        c.name = f"C{i}"
+    chunks[1].set_state(ChunkFlags.State.DISABLED)
+    chunks[3].set_state(ChunkFlags.State.DISABLED)
+    gv = _view(d, qapp)
+    _settle(qapp)
+    scene.set_selected_chunks(chunks)
+
+    gv._group_selected()
+    _settle(qapp)
+
+    (group,) = _groups(scene)
+    state = {get_chunk_prim_path(c).rsplit("/", 1)[-1]: _is_disabled(stage, c)
+             for c in _contents_of(scene, group)}
+    assert state == {
+        "C0": (False, False), "C1": (True, True), "C2": (False, False), "C3": (True, True),
+    }
+
+
+def test_duplicating_a_disabled_chunk_keeps_it_disabled(graph):
+    qapp, reg, scene, d, stage = graph
+    a = _mk(reg, scene)
+    a.set_state(ChunkFlags.State.DISABLED)
+    gv = _view(d, qapp)
+    _settle(qapp)
+    scene.set_selected_chunks([a])
+
+    gv._duplicate_selected()
+    _settle(qapp)
+
+    copies = [c for c in scene.get_chunks() if c is not a and not chunk_stage.is_view_chunk(c)
+              and c.get_config() and c.get_config().module == "transform"]
+    assert len(copies) == 1
+    assert _is_disabled(stage, copies[0]) == (True, True)
+
+
+def _param_wires(stage, path):
+    """{dst attr name: [src attr name]} for the typed wires from other chunks."""
+    prim = stage.GetPrimAtPath(path)
+    wires = {}
+    for attr in prim.GetAttributes():
+        if not attr.GetName().startswith("inputs:") or chunk_stage.is_exec_input_name(attr.GetName()):
+            continue
+        srcs = [c.name for c in attr.GetConnections() if c.GetPrimPath() != prim.GetPath()]
+        if srcs:
+            wires[attr.GetName()] = srcs
+    return wires
+
+
+def test_a_param_wire_inside_the_selection_survives(graph):
+    qapp, reg, scene, d, stage = graph
+    a, b = _mk(reg, scene), _mk(reg, scene)
+    a.name, b.name = "Src", "Dst"
+    gv = _view(d, qapp)
+    _settle(qapp)
+    a_path, b_path = get_chunk_prim_path(a), get_chunk_prim_path(b)
+    src = next(p for p in chunk_graph.iter_ports(stage.GetPrimAtPath(a_path), a)
+               if p.name == "tx" and not p.is_input)
+    dst = next(p for p in chunk_graph.iter_ports(stage.GetPrimAtPath(b_path), b)
+               if p.name == "tx" and p.is_input)
+    assert chunk_graph.connect(stage, src, dst, {a_path: a, b_path: b}) is not None
+    before = _param_wires(stage, b_path)
+    assert before
+    scene.set_selected_chunks([a, b])
+
+    gv._group_selected()
+    _settle(qapp)
+
+    inside = {get_chunk_prim_path(c).rsplit("/", 1)[-1]: c for c in _contents_of(scene, _groups(scene)[0])}
+    dst_path = get_chunk_prim_path(inside["Dst"])
+    assert _param_wires(stage, dst_path) == before
+    prim = stage.GetPrimAtPath(dst_path)
+    for attr_name in before:
+        for conn in prim.GetAttribute(attr_name).GetConnections():
+            assert str(conn.GetPrimPath()) == get_chunk_prim_path(inside["Src"])

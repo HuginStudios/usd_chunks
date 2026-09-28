@@ -782,6 +782,7 @@ class ClipboardNode:
         list_sizes: (param path, row count) for each of the chunk's list groups.
         lofts: (child index, inner attribute) for each param a group publishes.
         name: The name the chunk had.
+        disabled: Whether the chunk was disabled.
 
     Attributes:
         module_name: The chunk module to recreate it from.
@@ -803,9 +804,10 @@ class ClipboardNode:
             ClipboardEdge: it points UP from a child to the group itself, and the copy has to
             re-loft rather than re-connect -- the pasted group has no such param until
             something lofts one.
+        disabled: Whether the chunk was disabled, so a paste or Ctrl+G keeps it disabled.
     """
     __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes",
-                 "lofts", "name")
+                 "lofts", "name", "disabled")
 
     def __init__(
         self, module_name: str, values: list, rel_pos: tuple[float, float],
@@ -814,9 +816,11 @@ class ClipboardNode:
         list_sizes: list[tuple[str, int]] | None = None,
         lofts: list[tuple[int, str]] | None = None,
         name: str = "",
+        disabled: bool = False,
     ):
         self.module_name = module_name
         self.name = name
+        self.disabled = disabled
         self.values = values
         self.list_sizes = list_sizes or []
         self.rel_pos = rel_pos
@@ -954,6 +958,7 @@ def snapshot_chunk_node(
     clip_node = ClipboardNode(
         module_name, snapshot_param_values(chunk), rel_pos,
         list_sizes=snapshot_list_sizes(chunk), name=chunk.name,
+        disabled=chunk.has_state(ChunkFlags.State.DISABLED),
     )
     # Children only for a chunkgroup. A chunk that builds its own children (AMD MaterialX
     # Library's Reference and BindMaterial) makes them again when the copy cooks, so
@@ -1056,6 +1061,36 @@ def apply_name(chunk: core.ChunkCommon, item: ClipboardNode) -> None:
     name = getattr(item, "name", "")
     if name and chunk.name != name:
         chunk.name = name
+
+
+def apply_clipboard_node(chunk: core.ChunkBase, item: ClipboardNode) -> None:
+    """Give a pasted chunk its copied name, list rows and values.
+
+    Call it before the chunk is added to a scene. Rows come before values, because a list
+    group starts empty and its values need the rows to land in.
+
+    Args:
+        chunk: The freshly created chunk.
+        item: The clipboard entry it was made from.
+    """
+    apply_name(chunk, item)
+    apply_list_sizes(chunk, getattr(item, "list_sizes", []))
+    apply_param_values(chunk, item.values)
+
+
+def apply_disabled(chunk: core.ChunkBase, item: ClipboardNode) -> None:
+    """Disable a pasted chunk if the copy was disabled.
+
+    Call it right after the chunk is added to a scene, and before anything cooks it. Adding
+    the chunk reads its state from the new prim, which is active, so setting it earlier is
+    undone.
+
+    Args:
+        chunk: The pasted chunk, already added to a scene.
+        item: The clipboard entry it was made from.
+    """
+    if getattr(item, "disabled", False):
+        chunk.set_state(ChunkFlags.State.DISABLED)
 
 
 def snapshot_param_values(chunk: core.ChunkCommon) -> list:
@@ -1568,14 +1603,11 @@ def materialize(scene, nodes, to_usd) -> dict:
         if not chunks:
             continue
         primary = chunks[0]
-        apply_name(primary, item)
-        # Rows before values: a list group starts empty on a fresh chunk, so its values
-        # have nowhere to land until the rows it had are back.
-        apply_list_sizes(primary, getattr(item, "list_sizes", []))
-        apply_param_values(primary, item.values)
+        apply_clipboard_node(primary, item)
         with chunk_stage.creating_at(to_usd(item.rel_pos[0], item.rel_pos[1])):
             for chunk in chunks:
                 scene.add_chunk(chunk)
+        apply_disabled(primary, item)
         made[index] = primary
     return made
 
