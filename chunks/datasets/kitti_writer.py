@@ -1,6 +1,6 @@
 """KITTI Writer chunk -- turns rendered frames into a training dataset: KITTI object labels,
-calibration, class and instance masks and depth, plus the same data laid out the way
-NVIDIA Replicator's BasicWriter writes it.
+calibration, class and instance masks and depth, plus per-frame distance arrays, 2D and
+3D box arrays, segmentation with label JSON, and camera parameters.
 
 The render supplies pixels; the stage supplies everything the pixels cannot say. Each
 frame's layered EXR (written by a Render chunk whose Render Settings name four Render
@@ -62,7 +62,7 @@ _SUPERSAMPLE = 4
 
 _BACKGROUND = "BACKGROUND"
 
-#: Replicator's structured array layouts.
+#: Structured array layouts of the per-frame box files, bounding_box_2d/ and _3d/.
 _BBOX2D_DTYPE = np.dtype([
     ("semanticId", "<u4"), ("x_min", "<i4"), ("y_min", "<i4"),
     ("x_max", "<i4"), ("y_max", "<i4"), ("occlusionRatio", "<f4"),
@@ -604,7 +604,7 @@ def _calib_text(camera):
 
 
 def _camera_params(camera):
-    """Replicator's camera_params record."""
+    """The per-frame camera record, camera_params/."""
     return {
         "cameraAperture": [float(camera.gf.horizontalAperture), float(camera.gf.verticalAperture)],
         "cameraApertureOffset": [float(camera.gf.horizontalApertureOffset), float(camera.gf.verticalApertureOffset)],
@@ -628,7 +628,7 @@ def _save(path, array_or_image):
 
 
 def write_frame(out_dir, frame, result, settings):
-    """Write one processed frame in the KITTI layout and, optionally, Replicator's."""
+    """Write one processed frame: the KITTI files and, optionally, the annotation folders."""
     fid = f"{int(round(frame)):06d}"
     classes, rename = settings["classes"], settings["rename"]
     detect = set(settings["detect_classes"]) or set(classes)
@@ -662,12 +662,13 @@ def write_frame(out_dir, frame, result, settings):
         depth = np.where(np.isfinite(plane) & (plane > 0), np.clip(np.round(plane * 256.0), 1, 65535), 0)
         _save(os.path.join(out_dir, "depth", fid + ".png"), Image.fromarray(depth.astype(np.uint16)))
 
-    if settings["write_replicator"]:
-        rep = os.path.join(out_dir, "replicator")
-        rid = f"{int(round(frame)):04d}"
-        _save(os.path.join(rep, f"rgb_{rid}.png"), Image.fromarray(result["rgb"]))
-        _save(os.path.join(rep, f"distance_to_camera_{rid}.npy"), result["distance_to_camera"])
-        _save(os.path.join(rep, f"distance_to_image_plane_{rid}.npy"), result["distance_to_image_plane"])
+    if settings["write_annotations"]:
+        # The same frame beyond KITTI's own files, one folder per kind beside image_2/.
+        def at(folder, suffix=""):
+            return os.path.join(out_dir, folder, fid + suffix)
+
+        _save(at("distance_to_camera", ".npy"), result["distance_to_camera"])
+        _save(at("distance_to_image_plane", ".npy"), result["distance_to_image_plane"])
 
         rgba = np.zeros(result["class_ids"].shape + (4,), dtype=np.uint8)
         labels = {"(0, 0, 0, 0)": {"class": _BACKGROUND}}
@@ -675,12 +676,11 @@ def write_frame(out_dir, frame, result, settings):
             colour = _colour8(class_colours[class_id]) + (255,)
             rgba[result["class_ids"] == class_id] = colour
             labels[str(colour)] = {"class": classes[class_id - 1]}
-        _save(os.path.join(rep, f"semantic_segmentation_{rid}.png"), Image.fromarray(rgba, "RGBA"))
-        _json(os.path.join(rep, f"semantic_segmentation_labels_{rid}.json"), labels)
+        _save(at("semantic_segmentation", ".png"), Image.fromarray(rgba, "RGBA"))
+        _json(at("semantic_segmentation", ".json"), labels)
 
-        _save(os.path.join(rep, f"instance_segmentation_{rid}.png"),
-              Image.fromarray(result["instance_ids"].astype(np.uint16)))
-        _json(os.path.join(rep, f"instance_segmentation_mapping_{rid}.json"),
+        _save(at("instance_segmentation", ".png"), Image.fromarray(result["instance_ids"].astype(np.uint16)))
+        _json(at("instance_segmentation", ".json"),
               {str(r["instance_id"]): {"primPath": r["prim_path"], "class": r["class"]} for r in records})
 
         boxed = [r for r in records if r["bbox2d"] and r["class"] in detect]
@@ -691,13 +691,12 @@ def write_frame(out_dir, frame, result, settings):
             low, high = r["local_extent"]
             cube[row] = (r["class_id"], *low, *high, r["local_to_world"].astype(np.float32), r["occlusion_ratio"])
         box_labels = {str(i): {"class": classes[i - 1]} for i in sorted({r["class_id"] for r in boxed})}
-        _save(os.path.join(rep, f"bounding_box_2d_tight_{rid}.npy"), tight)
-        _json(os.path.join(rep, f"bounding_box_2d_tight_labels_{rid}.json"), box_labels)
-        _json(os.path.join(rep, f"bounding_box_2d_tight_prim_paths_{rid}.json"), [r["prim_path"] for r in boxed])
-        _save(os.path.join(rep, f"bounding_box_3d_{rid}.npy"), cube)
-        _json(os.path.join(rep, f"bounding_box_3d_labels_{rid}.json"), box_labels)
-        _json(os.path.join(rep, f"bounding_box_3d_prim_paths_{rid}.json"), [r["prim_path"] for r in boxed])
-        _json(os.path.join(rep, f"camera_params_{rid}.json"), _camera_params(result["camera"]))
+        prim_paths = [r["prim_path"] for r in boxed]
+        for folder, boxes in (("bounding_box_2d", tight), ("bounding_box_3d", cube)):
+            _save(at(folder, ".npy"), boxes)
+            _json(at(folder, "_labels.json"), box_labels)
+            _json(at(folder, "_prim_paths.json"), prim_paths)
+        _json(at("camera_params", ".json"), _camera_params(result["camera"]))
 
 
 def _json(path, data):
@@ -737,7 +736,7 @@ def _settings(node):
         "partly_occluded_threshold": float(node.get_param("partly_occluded_threshold").value),
         "fully_visible_threshold": float(node.get_param("fully_visible_threshold").value),
         "write_kitti": bool(node.get_param("write_kitti").value),
-        "write_replicator": bool(node.get_param("write_replicator").value),
+        "write_annotations": bool(node.get_param("write_annotations").value),
     }
 
 
@@ -844,7 +843,7 @@ def write_index(out_dir, settings, val_fraction, split_seed):
     with open(os.path.join(out_dir, "classes.txt"), "w", encoding="utf-8") as f:
         f.write("".join(rename.get(c, c) + "\n" for c in detected))
     _json(os.path.join(out_dir, "dataset.json"), {
-        "format": "KITTI object (label_2, calib, image_2) + KITTI semantic/instance/depth + Replicator BasicWriter",
+        "format": "KITTI object (label_2, calib, image_2) + KITTI semantic/instance/depth + annotation folders",
         "classes": [{"id": i, "name": c, "kitti_name": rename.get(c, c),
                      "color": _colour8(settings["class_colours"][i]), "detected": c in detected}
                     for i, c in enumerate(classes, start=1)],
@@ -927,7 +926,7 @@ def main():
         chunk.Slider("val_fraction", "Validation Fraction", default_value=0.2, min_value=0.0, max_value=1.0),
         chunk.Slider("split_seed", "Split Seed", default_value=0, is_int=True, min_value=0, max_value=100000),
         chunk.Checkbox("write_kitti", "Write KITTI", default_value=True),
-        chunk.Checkbox("write_replicator", "Write Replicator", default_value=True),
+        chunk.Checkbox("write_annotations", "Write Annotations", default_value=True),
     ])
     chunk_api.add_param(kitti)
 
@@ -950,8 +949,8 @@ def config():
         requirements=["numpy>=1.24,<3", "OpenEXR>=3.3,<4", "Pillow>=10,<13"],
         description="""
         KITTI Writer — turns rendered frames into a training dataset: KITTI object
-        labels, calibration, class and instance masks and depth, plus the same data
-        in NVIDIA Replicator's BasicWriter layout.
+        labels, calibration, class and instance masks and depth, plus per-frame
+        distance arrays, box arrays, segmentation and camera parameters.
 
         Put it after the Render chunk. Render writes one layered EXR per frame
         holding the beauty, world position (P) and the semantic_color and
@@ -971,10 +970,20 @@ def config():
           - semantic_primvar/NNNNNN.png the semantic primvar pass as rendered
           - instance/NNNNNN.png         uint16 class*256 + instance
           - depth/NNNNNN.png            uint16 metres*256, 0 = no depth
-          - replicator/                 rgb_, distance_to_camera_,
-                                        distance_to_image_plane_, semantic_ and
-                                        instance_segmentation_, bounding_box_2d_tight_,
-                                        bounding_box_3d_, camera_params_ per frame
+        and with Write Annotations, per frame NNNNNN:
+          - distance_to_camera/NNNNNN.npy, distance_to_image_plane/NNNNNN.npy
+                                        float32 metres, inf = no hit
+          - semantic_segmentation/NNNNNN.png + .json
+                                        RGBA class colours, colour -> class
+          - instance_segmentation/NNNNNN.png + .json
+                                        uint16 instance id, id -> prim, class
+          - bounding_box_2d/NNNNNN.npy + _labels.json + _prim_paths.json
+                                        semanticId, x/y min/max, occlusionRatio
+          - bounding_box_3d/NNNNNN.npy + _labels.json + _prim_paths.json
+                                        semanticId, local extent, transform,
+                                        occlusionRatio
+          - camera_params/NNNNNN.json   aperture, focal length, clipping,
+                                        projection, view, intrinsics
         and once: ImageSets/train.txt, val.txt, trainval.txt, classes.txt and
         dataset.json (classes, ids, colours, encodings, per-frame QA).
 
@@ -1000,12 +1009,13 @@ def config():
             rest stay in the images and masks as negatives. Empty labels all.
           - Class Mapping: renames in label_2, e.g. "cube=Cube".
           - Render Layers: the EXR layer names, i.e. the Render Vars' names.
-          - Min Box Height: shorter boxes become DontCare (Replicator's 25 px).
+          - Min Box Height: shorter boxes become DontCare. 25 px by default.
           - Partly Occluded / Fully Visible: visible-fraction thresholds for
-            KITTI's occluded levels 1 and 0 (Replicator's 0.5 and 0.95).
+            KITTI's occluded levels 1 and 0. 0.5 and 0.95 by default.
           - Validation Fraction / Split Seed: the train/val split, decided per
             frame by a hash so adding frames never moves existing ones.
-          - Write KITTI / Write Replicator: which layouts to write.
+          - Write KITTI / Write Annotations: the KITTI files, and the folders
+            beyond them (distances, box arrays, segmentation, camera).
           - Write on Commit: write when `usdchunks run` commits.
           - Frames Written (output), Write Dataset (button).
         """,
