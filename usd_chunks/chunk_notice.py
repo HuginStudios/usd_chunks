@@ -17,12 +17,14 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, some_param, {"any": "data"})
 """
 from __future__ import annotations
 
+import collections
 import functools
 import inspect
 import itertools
 import logging
 import weakref
 from abc import abstractmethod
+from contextlib import contextmanager
 from enum import IntEnum, auto
 from collections.abc import Callable, Generator, Iterator
 from typing import (
@@ -61,6 +63,50 @@ _internal_layer_write_active: bool = False
 # authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
+
+# The propagators whose solve an enclosing batched_solve() is holding back, in the order they
+# asked; None outside a batch.
+_batched: list | None = None
+
+
+@contextmanager
+def batched_solve():
+    """Hold back every solve until the block ends, then solve once.
+
+    Setting a value solves everything downstream of it straight away, which is right for
+    one edit and wasteful for many: setting N values that feed the same chunks cooks those
+    chunks N times, each against a half-updated set of inputs, and only the last cook
+    counts. A Wedge cooking one variant sets every range it has -- dozens -- and that alone
+    cooked the chunks below it hundreds of times per variant.
+
+    Inside the block a value change only marks what it affects dirty. When the block ends,
+    each propagator that asked to solve is solved -- and the first solve already takes in
+    every dirty node it is connected to, in dependency order, so the rest are clean by the
+    time their turn comes and are skipped. Everything downstream cooks once, with all the
+    new values in place.
+
+    Solves asked for while the batch is being solved -- a param binding its storage
+    attribute sets its value, which asks for a solve -- are queued behind it rather than
+    run inside it. Run inside, each one nested a whole solve in the one before, and a batch
+    of dozens of changes nested deep enough to exhaust the stack.
+
+    Nested blocks join the outermost one.
+    """
+    global _batched
+    if _batched is not None:
+        yield
+        return
+    _batched = collections.deque()
+    try:
+        yield
+        while _batched:
+            prop = _batched.popleft()
+            # Not re-dirtied: an earlier solve in this loop may have cleaned it along with
+            # everything else it reached, and dirtying it again would cook that twice.
+            if prop.get_dag_node().dirty:
+                prop._solve_downstream()
+    finally:
+        _batched = None
 
 
 def is_cook_stale(chunk) -> bool:
@@ -1311,11 +1357,18 @@ class ChunkNoticePropagator:
         """Dirty this object and solve everything downstream of it.
 
         Each solved object's data_changed() runs, and with it send_self(), which triggers any
-        connected callbacks.
+        connected callbacks. Inside batched_solve() the solve waits for the block to end.
         """
         node = self.get_dag_node()
         node.dirty = True
+        if _batched is not None:
+            _batched.append(self)
+            return
+        self._solve_downstream()
 
+    def _solve_downstream(self):
+        """Solve this object's already-dirty node and everything downstream of it."""
+        node = self.get_dag_node()
         msg = "\n====== SOLVE ======\n"
         for n in node.solve_outputs():
             if not (prop := n.propagator):
