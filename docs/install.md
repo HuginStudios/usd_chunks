@@ -6,22 +6,25 @@ detail on those two facts.
 
 ## Quick start
 
-Not on PyPI yet, so `git clone` + `pip install -e` is the path for now — this becomes a
-plain `pip install usd-chunks` once that changes.
+Needs **Python 3.11+**, the same Python your USD was built with — see
+[Requirements](#requirements). On Windows (cmd), with `python` being usdview's own Python:
 
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
-pip install -e ./usd_chunks                                                      # into usdview's own Python
-for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   # Windows (cmd)
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks                                 # Windows (cmd)
+python -m pip install -e ./usd_chunks
+for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdview anything.usda
 ```
+
+If `pip install -e` fails, your pip is likely too old for editable installs — run
+`python -m pip install --upgrade pip` and try again.
 
 Or, headless (no usdview, `usd-core` only):
 
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
-pip install -e "./usd_chunks[standalone]"
+python -m pip install -e "./usd_chunks[standalone]"
 set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdchunks run --help
 ```
@@ -30,7 +33,7 @@ PowerShell: `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)`, `$env:NAME = "
 for the rest. macOS/Linux: `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"`,
 `export NAME=value` for the rest.
 
-Right-click the graph canvas in usdview and every chunk under
+Right-click the graph canvas in usdview (or press Tab) and every chunk under
 [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) is there to
 drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks of your
 own — everything past this point is detail for when you need it.
@@ -40,6 +43,18 @@ Python than the one usdview runs — see [If the Chunks panel is
 missing](#if-the-chunks-panel-is-missing).
 
 ## Install
+
+### Requirements
+
+- **Python 3.11 or newer.** usd_chunks uses `typing.dataclass_transform`, which arrived
+  in 3.11.
+- **The same Python your USD was built with.** USD's Python bindings are compiled against
+  one Python version and only import under that version, so usd_chunks has to be
+  installed into that interpreter — usdview's, Houdini's `hython`, Maya's `mayapy`, and so
+  on. If your USD build uses a Python older than 3.11, USD has to be rebuilt against 3.11+
+  first.
+
+### Getting the package
 
 Clone it — usd_chunks isn't on PyPI yet, so this is the only path in either case:
 
@@ -247,11 +262,10 @@ clone too.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `USD_CHUNK_DIRS` | *(empty)* | Where chunk modules live. A list of directories — `;`-separated on Windows, `:`-separated on unix. Scanned recursively for `.py` files with a `main()` function; see [Writing a chunk](writing-a-chunk.md). On a duplicate chunk name the **first** directory in the list wins. |
-| `GLOBAL_USDCHUNKS` | `~/.usdchunks/global` | Where a chunk store (`usdchunks install`) deposits chunks. Scanned the same way as `USD_CHUNK_DIRS`, but appended **after** it — your own directories always win a name clash against anything installed here, and it's skipped entirely if it doesn't exist yet (a clean machine gets no "directory not found" noise). |
 | `USD_CHUNK_DEPENDENCY_DIR` | `<usd_chunks package>/../_installed_deps` | Where `USD_CHUNK_AUTO_INSTALL` installs a chunk's declared pip requirements. Added to `sys.path` automatically if it exists, so packages installed there are importable without any other setup. |
 | `USD_CHUNK_AUTO_INSTALL` | off | Off unless set. A chunk module may declare `requirements` in its `config()` ([Writing a chunk](writing-a-chunk.md#config)); with this on, missing ones are installed (after an interactive confirmation) into `USD_CHUNK_DEPENDENCY_DIR`. Left off, nothing is installed and a missing package is only named in a warning — so opening someone else's network can never add packages to your environment on its own. Also gates headless `usdchunks run`, which has no one to answer a confirmation prompt. |
 | `USD_CHUNK_LOAD_FILTER` | *(unset — everything loads)* | Restricts which chunk modules load. The check is `module_name not in USD_CHUNK_LOAD_FILTER` — the *module's* name has to appear as a substring of the filter string, not the other way round — so treat it as a comma-joined list of exact module names, e.g. `USD_CHUNK_LOAD_FILTER=transform,scatter_points` loads only the modules named `transform` and `scatter_points`. (A module named `transform_ops` would **not** match `transform` alone — it's longer than the substring it's being checked against.) Useful for a fast, minimal repro without every other chunk in `USD_CHUNK_DIRS` also registering. |
-| `USD_CHUNK_VERBOSE` | off | Off unless set (truthy). A **name clash** between two chunk modules resolves silently by precedence (first `USD_CHUNK_DIRS` entry, then `GLOBAL_USDCHUNKS` — see above); with this on, every shadowed name is logged at load, not just the ambiguous same-tier ones. |
+| `USD_CHUNK_VERBOSE` | off | Off unless set (truthy). A **name clash** between two chunk modules resolves silently by precedence (the first `USD_CHUNK_DIRS` entry wins — see above); with this on, every shadowed name is logged at load, not just the ambiguous same-tier ones. |
 | `PXR_PLUGINPATH_NAME` | — | Only needed for the usdview integration. See [usdview integration](#usdview-integration). |
 | `PYTHONPATH` | — | Only needed when running from a clone rather than an install. See [Running from a clone](#running-from-a-clone). |
 | `USD_CHUNK_LOG_LEVEL` | `INFO` | `usd_chunks`'s own log level — `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; an unrecognized value is left at `INFO` rather than raising. Set `USD_CHUNK_LOG_LEVEL=DEBUG` before launching to see what a reload or a cook is actually doing param-by-param — including why a [`config()`](writing-a-chunk.md#config) silently fell back to defaults, which otherwise shows up nowhere but a log line at the default level. |
@@ -265,7 +279,8 @@ copy. Install the docs extra and build:
 
 ```
 pip install -e ".[docs]"
-USD_CHUNK_DIRS=chunks mkdocs serve
+set USD_CHUNK_DIRS=chunks
+mkdocs serve
 ```
 
 That serves the site locally; `mkdocs build` writes it to `site/` instead. The docs are not

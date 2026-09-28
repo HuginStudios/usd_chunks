@@ -105,7 +105,7 @@ def execute(node: chunk.Chunk) -> None:
 ```
 
 `execute` is a **reserved name** at module scope — don't give a plain callback this name,
-even one that isn't meant to be the reactive hook, or the framework will call it as one.
+or the framework will call it every time the chunk cooks.
 
 If defined, `execute(node)` runs whenever the chunk needs to cook: when a dependency
 changes (`add_dependency`), when the chunk is reloaded (its param *values* are restored on
@@ -176,6 +176,6 @@ never commits.
 ## Discovery, recap
 
 `USD_CHUNK_DIRS` is scanned recursively for `.py` files ([Environment
-variables](install.md#environment-variables) has the full precedence rules against
-`GLOBAL_USDCHUNKS`). Any file whose `main()` returns a `Chunk` is registered under that
+variables](install.md#environment-variables) has the precedence rules when two
+directories define the same name). Any file whose `main()` returns a `Chunk` is registered under that
 module's name — no directory structure or naming convention is required beyond that.

@@ -31,7 +31,7 @@ There is no scene format of our own, and no runtime graph living beside the stag
 
 - **A node is a prim.** Each chunk is a `Chunk`-typed prim; its params are `inputs:`
   attributes on it, and its position is `UsdUINodeGraphNodeAPI`.
-- **An edge is a USD connection.** Execution order is `inputs:chunk` → `outputs:chunk`. A
+- **A wire is a USD connection.** Execution order is `inputs:chunk` → `outputs:chunk`. A
   value flowing from one chunk's param into another's is a connection plus an expression.
 - **Each chunk authors into its own layer.** Composition *is* the dataflow.
 

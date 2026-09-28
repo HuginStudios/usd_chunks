@@ -8,7 +8,7 @@ params, flip flags, or change what the chunk does next, all at runtime.
 
 ## A minimal example
 
-A button that creates a cube, one click at a time:
+A button that adds a new cube to the stage each time it's pressed:
 
 ```py
 from usd_chunks import chunk
@@ -42,16 +42,18 @@ def config():
 
 ![image](assets/example_add_cube.png)
 
-That's the whole shape: `main()` builds the chunk and its params, `config()` sets where it
-files in the create menu. See [Writing a chunk](writing-a-chunk.md) for the full picture —
-`main()`, `config()`, the reactive `execute()` hook, and the file-writing `commit()` hook —
+That's the whole shape: `main()` builds the chunk and its params, and `config()` describes
+the module's configuration — here, its category, which decides where you find it in the Tab
+menu. See [Writing a chunk](writing-a-chunk.md) for the full picture — `main()`,
+`config()`, `execute()` (what the chunk does when it cooks) and `commit()` (writing files) —
 and [chunks/](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) for more
 worked examples.
 
 ## 🎛️ Params
 
-Params are the leaves — each one maps to a widget in the UI and, once its value differs
-from the default, to an `inputs:` attribute on the chunk's prim.
+Params are the parts of a chunk you interact with — sliders, buttons, menus and so on. Each
+one maps to a widget in the UI and, once its value differs from the default, to an
+`inputs:` attribute on the chunk's prim.
 
 | Param | Value | Notes |
 | --- | --- | --- |
@@ -77,7 +79,18 @@ divisions.value = 8   # read/write through .value
 Prefer `Slider` over `Spinbox` for numeric values — `Slider` covers the integer case with
 `is_int=True`, and is the type the rest of the toolkit is built and tested against.
 
-**Param flags** (`ChunkFlags.ParamFlags`) adjust behavior:
+**Param flags** (`ChunkFlags.ParamFlags`) adjust behavior. Set one with `set_flag()`,
+clear it with `unset_flag()`, check it with `has_flag()`:
+
+```py
+output_dir = chunk.FileBrowser("output_dir", "Output Directory")
+output_dir.set_flag(chunk.ChunkFlags.ParamFlags.DIRECTORY)   # pick a folder, not a file
+
+output_dir.unset_flag(chunk.ChunkFlags.ParamFlags.LABELED)   # FileBrowser is labeled by default
+output_dir.has_flag(chunk.ChunkFlags.ParamFlags.LABELED)     # False
+```
+
+The flags:
 
 - `OUTPUT` — a computed result. Hidden from the UI, but still readable by other chunks as
   `@ChunkName.param@`.

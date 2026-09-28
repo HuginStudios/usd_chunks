@@ -4,23 +4,20 @@
 
 <sub>One chunk module, no UI code: the sliders, the node, the ports and the panel are all generated from its declaration.</sub>
 
-**A framework for building procedural USD tools — no Qt, no plugin boilerplate, no scene
-format of your own.**
+**A framework for building procedural USD tools.**
 
 A *Chunk* is a short Python module that declares its parameters and what to do with them.
 usd_chunks turns that one declaration into a node in a graph, a panel of widgets, and a
-command-line invocation, for free:
+command-line invocation:
 
-- **The graph is USD.** A node is a prim, an edge is a USD connection — no adapter, no
+- **The graph is USD.** A node is a prim, a wire is a USD connection — no adapter, no
   export step. Saving the stage saves the graph.
 - **Runs everywhere.** The same chunk works as a panel, a node on the canvas, or
   headless from the command line — nothing to rewrite.
 - **Self-describing.** The node graph, the param panels and the viewport gizmos are all
   generated from one declaration.
-- **Just Python.** No Qt, no plugin registration, no serialization format, no undo
-  stack, no CLI to hand-write.
 
-No UI, no problem — the same network runs headless from the command line:
+Headless, that looks like:
 
 ```
 usdchunks run layout.usda Transform.translate_x=5 -o result.usda
@@ -28,10 +25,10 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
 
 ## 🚀 Getting started
 
-1. **[Install it](docs/install.md):** (not on PyPI yet — clone it for now)
+1. **[Install it](docs/install.md):**
    ```
    git clone https://github.com/HuginStudios/usd_chunks.git
-   pip install -e ./usd_chunks
+   python -m pip install -e ./usd_chunks
    for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
    set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
    usdview anything.usda
@@ -41,7 +38,7 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
    minute.
 3. **[Learn what a Chunk is](docs/chunk-basics.md)** — params, groups, flags, a worked
    example.
-4. **[Meet View and ChunkGroup](docs/core-chunks.md)** — the two chunks every network
+4. **[View and ChunkGroup](docs/core-chunks.md)** — the two chunks every network
    needs.
 5. **[Write your own chunk](docs/writing-a-chunk.md)** — `main()`, `config()`,
    `execute()`, `commit()`.
