@@ -20,7 +20,6 @@ from pxr import Usd
 from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks.store import pin as pinmod
-from usd_chunks.chunk_scene import execute_roots
 from usd_chunks.chunk_script import Scene, flatten_without_chunks
 from usd_chunks.chunk_stage import (
     commit_order_from_stage,
@@ -409,8 +408,11 @@ def cmd_run(args):
     scene = Scene(stage, "cli")
 
     if args.params:
+        # Each override solves what it reaches, as the same edit in the UI does -- no
+        # re-cook of every root afterwards. That re-cook only ever papered over the first
+        # change after a load reading its param's saved value back over the new one
+        # (fixed in ChunkStageSync._sync_param_input), and cooked the network twice over.
         _parse_param_overrides(scene, args.params)
-        execute_roots(scene.get_chunks())
 
     # Establish the active view, exactly as the UI does on focus. load_chunks has already
     # executed every dependency-free chunk by this point -- in the UI the view recook then
