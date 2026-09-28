@@ -298,6 +298,63 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
     return mesh
 
 
+def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
+    dimx = max(int(dimx), 2)
+    dimy = max(int(dimy), 2)
+    rc = dimx * dimy - (dimx - 1) * 2
+    indices = []
+    counts = []
+
+    pts = np.zeros((rc, 3))
+    for i in range(dimx):
+        row = (i / dimx) * np.pi * 2
+        for j in range(dimy):
+
+            offset = 0 if i == 0 else i + (i - 1)
+            idx = int(i * dimy + j - offset)
+            nbr = dimy - 1 if i == 0 else dimy -2
+
+            if j == 0:
+                indices.append(0)
+                indices.append(idx + 1)
+                indices.append(idx + 1 + nbr if i != dimx - 1 else 1)
+                counts.append(3)
+
+            elif j == dimy - 2:
+                indices.append(idx)
+                indices.append(dimy - 1)
+                indices.append(idx + nbr if i != dimx - 1 else dimy - 2)
+                counts.append(3)
+
+            elif j < dimy - 2:
+                indices.append(idx)
+                indices.append(idx + 1)
+                indices.append(idx + nbr + 1 if i != dimx - 1 else j + 1)
+                indices.append(idx + nbr if i != dimx - 1 else j)
+                counts.append(4)
+
+            if (j == 0 or j == dimy - 1) and i > 0:
+                continue
+
+            theta = (j % dimy) / (dimy - 1) * np.pi
+            y = pos[1] + radius * np.sin(theta) * np.sin(row)
+            x = pos[0] + radius * np.sin(theta) * np.cos(row)
+            z = pos[2] + radius * np.cos(theta)
+            pts[idx] = (x, y, z)
+
+    mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(name))
+    mesh.CreateFaceVertexIndicesAttr(indices)
+    mesh.CreateFaceVertexCountsAttr(counts)
+
+    mesh.CreatePointsAttr(pts)
+
+    pv = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+    rest = pv.CreatePrimvar("rest", Sdf.ValueTypeNames.Vector3fArray, "vertex", len(pts))
+    rest.Set(pts)
+
+    return mesh
+
+
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     selected = sender.value
 
@@ -306,6 +363,9 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
             g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:
             g.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+
+    if selected == "none":
+        clear_layer(owner)
 
 
 def add_texture(prim: Usd.Prim, texture_file: Optional[str] = None):
@@ -406,8 +466,7 @@ def cube_changed(owner: chunk.Group, notice, sender):
     if c := owner.get_chunk():
         raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
-        build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
+    build_cube(stage, raw_path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
 
 
 def tube_changed(owner: chunk.Group, notice, sender):
@@ -432,8 +491,8 @@ def tube_changed(owner: chunk.Group, notice, sender):
     if c := owner.get_chunk():
         raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
-        build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
+    # with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+    build_tube(stage, raw_path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
 def grid_changed(owner: chunk.Group, notice, sender):
@@ -468,29 +527,54 @@ def grid_changed(owner: chunk.Group, notice, sender):
             add_texture(grid.GetPrim())
 
 
-def execute(node: chunk.Chunk) -> None:
-    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
-    bulk-restoring its param values, so a reloaded Add Mesh actually rebuilds its shape
-    instead of leaving the target prim empty (the real work lives in cube_changed/
-    tube_changed/grid_changed, all add_callback handlers, which load's value-restore
-    deliberately does not trigger).
+def sphere_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
 
-    menu_changed's hidden/disabled bookkeeping is reapplied first: live, picking a mesh
-    type only un-hides its group, it doesn't itself trigger a build (that needs a param
-    inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
-    needs both steps repeated here to end up matching what was actually visible/built
-    before saving."""
-    menu = node.get_param("mesh_type", chunk.is_param_t(str))
-    if menu is None:
+    if not stage:
         return
-    menu_changed(node, None, menu)
-    build_fn = {"cube": cube_changed, "tube": tube_changed, "grid": grid_changed}.get(menu.value)
-    if build_fn is None:
+
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
         return
-    group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
-    if group is None:
-        return
-    build_fn(group, None, None)
+
+    clear_layer(owner)
+
+    dimx = owner.get_param("dimx2", chunk.is_param_t(int))
+    dimy = owner.get_param("dimy2", chunk.is_param_t(int))
+    rad = owner.get_param("radius", chunk.is_param_t(float))
+
+    raw_path = "/sphere"
+    if c := owner.get_chunk():
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+
+    build_sphere(stage, raw_path, dimx.value, dimy.value, rad.value)
+
+
+# def execute(node: chunk.Chunk) -> None:
+#     """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+#     bulk-restoring its param values, so a reloaded Add Mesh actually rebuilds its shape
+#     instead of leaving the target prim empty (the real work lives in cube_changed/
+#     tube_changed/grid_changed, all add_callback handlers, which load's value-restore
+#     deliberately does not trigger).
+
+#     menu_changed's hidden/disabled bookkeeping is reapplied first: live, picking a mesh
+#     type only un-hides its group, it doesn't itself trigger a build (that needs a param
+#     inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
+#     needs both steps repeated here to end up matching what was actually visible/built
+#     before saving."""
+#     menu = node.get_param("mesh_type", chunk.is_param_t(str))
+#     if menu is None:
+#         return
+#     menu_changed(node, None, menu)
+#     build_fn = {"cube": cube_changed, "tube": tube_changed, "grid": grid_changed}.get(menu.value)
+
+
+#     print("FN:", build_fn)
+#     if build_fn is None:
+#         return
+#     group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
+#     if group is None:
+#         return
+#     build_fn(group, None, None)
 
 
 def main():
@@ -542,8 +626,20 @@ def main():
     grid_group.add_callback(grid_changed)
     grid_group.add_callback(grid_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
+    sphere_group = chunk.Group("sphere", "Sphere")
+    sphere_group.add_params(
+        [
+            chunk.Spinbox("dimx2", "dimx", min_value=2, default_value=4, is_int=True),
+            chunk.Spinbox("dimy2", "dimy", min_value=2, default_value=4, is_int=True),
+            chunk.Slider("radius", "radius", default_value=1),
+        ]
+    )
+    sphere_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+    sphere_group.add_callback(sphere_changed)
+    sphere_group.add_callback(sphere_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+
     chunk_api = chunk.Chunk("Add Mesh")
-    chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
+    chunk_api.add_params([path, menu, cube_group, tube_group, grid_group, sphere_group])
     chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api
@@ -552,6 +648,4 @@ def main():
 def config():
     # numpy is imported at module scope, so without it the registry skips this chunk
     # entirely -- declaring it turns that silence into a named package.
-    return chunk.DefaulConfig(
-        category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"]
-    )
+    return chunk.DefaulConfig(category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"])
