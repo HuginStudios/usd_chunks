@@ -2048,7 +2048,9 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if stage and self._param_attr_path:
             return stage.GetPropertyAtPath(self._param_attr_path)
 
-    def _connect_param_attr(self, attr: Usd.Property, var_selections: tuple | None = None) -> None:
+    def _connect_param_attr(
+        self, attr: Usd.Property, var_selections: tuple | None = None, *, read_back: bool = True
+    ) -> None:
         """Bind this param to its storage attribute for UI-to-USD sync.
 
         After binding, re-authors any pending USD connections to driven real attrs. Called by
@@ -2063,6 +2065,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 param was first built from a real prim's attribute (show_attribute). Only a
                 caller that actually knows the answer -- from_usd_attr -- passes a tuple,
                 even () for "bound outside any variant".
+            read_back: Take the attr's value into the param, which is what a load wants.
+                False for a caller that has just written the param's own value into the
+                attr: reading it back then only rounds a double through a float attr, and
+                the param announces a change it never had.
         """
         if var_selections is not None:
             self._var_selections = tuple(var_selections)
@@ -2082,7 +2088,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             except AttributeError:
                 pass
         self._author_driven_connections()
-        if isinstance(attr, Usd.Attribute):
+        if isinstance(attr, Usd.Attribute) and read_back:
             val = attr.Get(0)
             connections = attr.GetConnections()
             if not connections:

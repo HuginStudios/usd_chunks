@@ -1674,6 +1674,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             saved = prim.GetAttribute(attr_name)
         if saved.IsValid() and saved.Get() is not None:
             attr = saved
+            # The saved value predates whatever brought this param here -- a change to it,
+            # or a chunk unblocking with a value typed in while it was -- and binding reads
+            # the attr back into the param. Unwritten, that read undid the change: the first
+            # time a Wedge set a range after a network was opened, every param still bound
+            # to nothing went straight back to the value saved in the file, and whatever it
+            # drove kept the old variant until the next change.
+            self._store_in_saved_attr(chunk, param, attr, raw, is_expr, prim)
         else:
             # Chunk-prim bookkeeping -- the chunk's currently active Edit Target (session
             # by default, see chunk_utils.get_bookkeeping_layer).
@@ -1684,7 +1691,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk_utils.store_expression_text(attr, raw)
                 else:
                     attr.Set(raw)
-        param._connect_param_attr(attr)
+        # The attr holds the param's value either way now; nothing to read back.
+        param._connect_param_attr(attr, read_back=False)
 
         if existing and existing != str(attr.GetPath()):
             # Inside the variant the old binding was made in: a prim that only exists in
@@ -1706,6 +1714,33 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     # saved value at all, so a save/reload restores the pre-edit number.
                     # _drive_from_storage already read the old value above; safe to clear now.
                     param._var_selections = ()
+
+    def _store_in_saved_attr(self, chunk, param, attr, raw, is_expr, prim) -> None:
+        """Write param's current value into an attr it is about to be bound to.
+
+        Where update_usd_prop would write it once bound: the attr's home layer, so the edit
+        lands where the saved value lives rather than in a stronger layer over it.
+        """
+        stage = attr.GetStage()
+        home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, chunk)
+        prev_write = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            with Usd.EditContext(stage, home):
+                if is_expr:
+                    attr.SetConnections(self._expr_connections(prim, raw))
+                    chunk_utils.store_expression_text(attr, raw)
+                    value = raw if chunk_utils.attr_holds_text(attr) else param.value
+                else:
+                    chunk_utils.clear_expression_text(attr)
+                    value = raw
+                if isinstance(value, str) and not chunk_utils.attr_holds_text(attr):
+                    return  # an unresolved expression: the connections carry it
+                value = chunk_utils.as_attr_value(attr, value)
+                if attr.Get(0) != value:
+                    attr.Set(value)
+        finally:
+            chunk_notice._usd_write_active = prev_write
 
     def _delete_stale_attr_specs(self, prim: Usd.Prim, attr_name: str) -> None:
         """Remove attr_name's spec from every layer in the stack where it is found.
