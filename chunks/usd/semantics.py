@@ -24,17 +24,45 @@ def class_colour(class_id):
     return Gf.Vec3f(*colorsys.hsv_to_rgb(hue, 0.7, 0.8))
 
 
+def _lattice(levels, brightest_at_least):
+    return [
+        (r, g, b)
+        for r in levels for g in levels for b in levels
+        if max(r, g, b) >= brightest_at_least
+    ]
+
+
+#: Instance colours: points of an RGB lattice, so every pair is a known distance apart --
+#: which is what lets a reader tell two instances apart at an anti-aliased edge. Hue-based
+#: palettes drift together as ids grow. The dark corner is left out: black is background,
+#: and an instance's edge must stay distinguishable from it.
+#:   - 6 levels a channel, 0.2 apart: 152 colours, every pair at least 0.2 apart.
+#:   - Then a second lattice offset 0.1 from the first: 117 more, at least 0.1 from all.
+_INSTANCE_LATTICES = [
+    _lattice([0.0, 0.2, 0.4, 0.6, 0.8, 1.0], 0.6),
+    _lattice([0.1, 0.3, 0.5, 0.7, 0.9], 0.5),
+]
+
+#: Walked with a stride coprime to each lattice's size, so consecutive ids land far apart
+#: rather than on neighbouring lattice points.
+_INSTANCE_STRIDE = 67
+
+#: How many instances get a colour of their own; beyond it, colours repeat.
+DISTINCT_INSTANCES = sum(len(lattice) for lattice in _INSTANCE_LATTICES)
+
+
 def instance_colour(instance_id):
     """The instance pass colour of a 1-based instance id.
 
-    Golden-ratio hue steps keep consecutive ids far apart, and saturation and value cycle
-    through three tiers so hues can repeat without colours doing so. Never dark: black is
-    background, and a reader must be able to tell an instance's edge from the ground.
+    Distinct for the first DISTINCT_INSTANCES ids (269), each at least 0.1 from every other
+    on some channel; past that, colours repeat and two instances could share one.
     """
-    hue = (instance_id * 0.618033988749895) % 1.0
-    tier = (instance_id // 7) % 3
-    saturation, value = ((1.0, 1.0), (0.55, 1.0), (1.0, 0.6))[tier]
-    return Gf.Vec3f(*colorsys.hsv_to_rgb(hue, saturation, value))
+    index = (instance_id - 1) % DISTINCT_INSTANCES
+    for lattice in _INSTANCE_LATTICES:
+        if index < len(lattice):
+            return Gf.Vec3f(*lattice[(index * _INSTANCE_STRIDE) % len(lattice)])
+        index -= len(lattice)
+    raise AssertionError("unreachable")
 
 
 def _split(text):

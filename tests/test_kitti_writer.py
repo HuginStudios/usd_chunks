@@ -98,11 +98,12 @@ def test_render_primvars_are_off_by_default(scene):
 
 def test_instance_colours_are_distinct_and_never_dark():
     mod = importlib.import_module("chunks.usd.semantics")
-    colours = [np.array(mod.instance_colour(i)) for i in range(1, 129)]
-    for i, a in enumerate(colours):
-        assert a.max() >= 0.59  # far from the black background
-        for b in colours[i + 1:]:
-            assert np.abs(a - b).max() > 0.02  # the writer's exact-match tolerance
+    colours = np.array([mod.instance_colour(i) for i in range(1, mod.DISTINCT_INSTANCES + 1)])
+    assert colours.max(axis=1).min() >= 0.5  # far from the black background
+    # Every pair apart by far more than the writer's 0.02 exact-match tolerance.
+    gaps = np.abs(colours[:, None, :] - colours[None, :, :]).max(axis=2)
+    np.fill_diagonal(gaps, np.inf)
+    assert gaps.min() >= 0.1 - 1e-6
 
 
 # --------------------------------------------------------------------------------------
@@ -142,6 +143,7 @@ def test_decoder_resolves_antialiased_edges(writer):
 
 def test_camera_projects_its_own_aim_point_to_the_principal_point(writer):
     stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)  # the fallback is centimetres; this test is in metres
     camera = UsdGeom.Camera.Define(stage, "/cam")
     camera.CreateFocalLengthAttr(35.0)
     camera.CreateHorizontalApertureAttr(36.0)
@@ -150,7 +152,8 @@ def test_camera_projects_its_own_aim_point_to_the_principal_point(writer):
     ahead = model.to_camera(np.array([[0.0, 0.0, -10.0]]))
     assert ahead[0] == pytest.approx([0.0, 0.0, 10.0])  # KITTI: z forward
     assert model.project(ahead)[0] == pytest.approx([model.cx, model.cy])
-    assert (model.cx, model.cy) == pytest.approx((620.5, 186.5))
+    # The image centre, with pixel centres at integers: ((W - 1) / 2, (H - 1) / 2).
+    assert (model.cx, model.cy) == pytest.approx((620.5, 187.0))
     # expandAperture on a 3.31:1 image keeps the vertical field of view.
     assert model.fy == pytest.approx(35.0 / 24.0 * 375)
 
