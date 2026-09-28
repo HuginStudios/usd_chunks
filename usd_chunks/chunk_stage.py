@@ -5130,6 +5130,8 @@ def _iter_chunk_params(
     obj: core.ChunkCommon, prefix: str = ""
 ) -> Generator[tuple[str, core.ChunkParamBase], None, None]:
     for param in obj.get_my_params():
+        if isinstance(param, core.ChunkBase):
+            continue  # a nested chunk's params are its own
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkParamBase):
             yield path, param
@@ -5162,6 +5164,8 @@ def _iter_chunk_vectors(
 ) -> Generator[tuple[str, core.ChunkVectorBase], None, None]:
     """Yield (path, vector) for every ChunkVectorBase reachable under obj."""
     for param in obj.get_my_params():
+        if isinstance(param, core.ChunkBase):
+            continue  # a nested chunk's params are its own
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkVectorBase):
             yield path, param
@@ -5174,6 +5178,8 @@ def _iter_list_group_arrays(
 ) -> Generator[tuple[str, core.ChunkListGroupBase], None, None]:
     """Yield (path, list_group) for every ChunkListGroupBase in the hierarchy."""
     for param in obj.get_my_params():
+        if isinstance(param, core.ChunkBase):
+            continue  # a nested chunk's params are its own
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkListGroupBase):
             yield path, param
