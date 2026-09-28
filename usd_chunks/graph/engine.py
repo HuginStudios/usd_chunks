@@ -804,7 +804,7 @@ class ClipboardNode:
             ClipboardEdge: it points UP from a child to the group itself, and the copy has to
             re-loft rather than re-connect -- the pasted group has no such param until
             something lofts one.
-        disabled: Whether the chunk was disabled, so a paste or Ctrl+G keeps it disabled.
+        disabled: Whether the chunk was disabled.
     """
     __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes",
                  "lofts", "name", "disabled")
@@ -1081,9 +1081,8 @@ def apply_clipboard_node(chunk: core.ChunkBase, item: ClipboardNode) -> None:
 def apply_disabled(chunk: core.ChunkBase, item: ClipboardNode) -> None:
     """Disable a pasted chunk if the copy was disabled.
 
-    Call it right after the chunk is added to a scene, and before anything cooks it. Adding
-    the chunk reads its state from the new prim, which is active, so setting it earlier is
-    undone.
+    Call it right after add_chunk and before anything cooks. Set any earlier, add_chunk
+    clears it again.
 
     Args:
         chunk: The pasted chunk, already added to a scene.
