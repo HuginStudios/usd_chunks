@@ -7,7 +7,7 @@ were resynced.
 
 That is only safe while a prim cannot appear outside a resynced subtree, so these tests
 pin the arrival routes a chunk prim actually has, and the notice behaviour the narrowing
-rests on. They are deliberately about *whether the chunk shows up at all* — the failure
+rests on. They are deliberately about *whether the chunk shows up at all* -- the failure
 mode of getting this wrong is a node silently missing from the graph, not a crash.
 """
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,
@@ -73,7 +73,7 @@ def test_chunk_arriving_in_a_sublayer_is_picked_up():
     """A chunk can arrive without anyone authoring it on this stage at all.
 
     Inserting a sublayer that already holds a Chunk prim resyncs the *parent* of the new
-    prim, not the prim itself — which is why the narrowing has to scope by subtree rather
+    prim, not the prim itself -- which is why the narrowing has to scope by subtree rather
     than by the changed paths themselves.
     """
     stage, scene = _live_scene()
@@ -155,7 +155,7 @@ def test_resynced_paths_cover_every_arrival_route():
             action()
             assert resyncs, f"{label} reported no resynced path to scope a scan by"
             # Every resync must be an ancestor of, or equal to, something under the chunk
-            # root — i.e. a subtree walk from it would reach the new prim.
+            # root -- i.e. a subtree walk from it would reach the new prim.
             assert any(
                 _CHUNKS_ROOT.startswith(path) or path.startswith(_CHUNKS_ROOT) or path == "/"
                 for path in resyncs

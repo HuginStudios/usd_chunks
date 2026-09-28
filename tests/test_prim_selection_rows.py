@@ -18,7 +18,7 @@ from __future__ import annotations
 from pxr import Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 def _scene_with(*paths, selected=()):

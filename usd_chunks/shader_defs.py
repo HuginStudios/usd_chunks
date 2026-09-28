@@ -1,11 +1,10 @@
-"""
-Shader definitions read from USD's shader registry (Sdr), normalised into a small
-frontend-agnostic model that chunks can turn into params.
+"""Shader definitions read from USD's shader registry (Sdr), normalised for chunks.
 
-One provider serves every renderer that publishes definitions to Sdr -- MaterialX
-(``mtlx``), V-Ray (``vray``), RenderMan (``args``), OSL (``OSL``) -- because the only
-thing that differs between them is the source type string and how the resulting
-``UsdShade.Shader`` is identified in USD. Nothing here imports Qt.
+The model is small and frontend-agnostic, and chunks turn it into params. One provider
+serves every renderer that publishes definitions to Sdr -- MaterialX (``mtlx``), V-Ray
+(``vray``), RenderMan (``args``), OSL (``OSL``) -- because the only thing that differs
+between them is the source type string and how the resulting ``UsdShade.Shader`` is
+identified in USD. Nothing here imports Qt.
 
 ``` py
 for d in iter_shader_defs("mtlx"):
@@ -21,7 +20,8 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from pxr import Sdr
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # round-trip. color4f is left as a Vector -- a ColorPicker is rgb only.
 # Filter for a shader's asset inputs. An asset on a shader is a texture in practice, and
 # without a filter the browser lists every file in the directory. Same set as
-# scripts/materials/uv_texture.py, so both texture browsers behave alike.
+# chunks/materials/uv_texture.py, so both texture browsers behave alike.
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".exr", ".tx", ".tif", ".tiff", ".hdr")
 
 _TYPE_OVERRIDES: dict = {
@@ -136,8 +136,8 @@ class ShaderDef:
     role: str = ""
     category: str = ""
     help: str = ""
-    inputs: List[ShaderProp] = field(default_factory=list)
-    outputs: List[ShaderProp] = field(default_factory=list)
+    inputs: list[ShaderProp] = field(default_factory=list)
+    outputs: list[ShaderProp] = field(default_factory=list)
 
     @property
     def is_terminal(self) -> bool:
@@ -145,7 +145,7 @@ class ShaderDef:
         return self.context in ("surface", "displacement", "volume")
 
 
-def _prop_from_sdr(prop, is_output: bool) -> Optional[ShaderProp]:
+def _prop_from_sdr(prop, is_output: bool) -> ShaderProp | None:
     """Normalise one SdrShaderProperty; None when its type has no Sdf equivalent."""
     try:
         sdf_type = prop.GetTypeAsSdfType().GetSdfType()
@@ -170,8 +170,8 @@ def _prop_from_sdr(prop, is_output: bool) -> Optional[ShaderProp]:
 
 def _def_from_sdr(node) -> ShaderDef:
     """Normalise one SdrShaderNode into a ShaderDef."""
-    inputs: List[ShaderProp] = []
-    outputs: List[ShaderProp] = []
+    inputs: list[ShaderProp] = []
+    outputs: list[ShaderProp] = []
 
     for names, is_output, into in (
         (_first_attr(node, _NODE_METHODS["input_names"]) or (), False, inputs),
@@ -196,7 +196,7 @@ def _def_from_sdr(node) -> ShaderDef:
     )
 
 
-def available_source_types() -> List[str]:
+def available_source_types() -> list[str]:
     """Every shader source type this USD's registry can parse (e.g. ['mtlx', 'vray'])."""
     return [str(s) for s in (_first_attr(Sdr.Registry(), _REGISTRY_METHODS["source_types"]) or ())]
 
@@ -255,14 +255,14 @@ def iter_shader_defs(source_type: str = "") -> Iterator[ShaderDef]:
         try:
             yield _def_from_sdr(node)
         except Exception as e:  # noqa: BLE001 - one bad definition must not kill discovery
-            logger.debug(f"Skipping shader definition {name}: {e}")
+            logger.debug("Skipping shader definition %s: %s", name, e)
 
 
 #: Started once per process; see warm_registry_in_background.
-_warm_thread: Optional[threading.Thread] = None
+_warm_thread: threading.Thread | None = None
 
 
-def warm_registry_in_background(source_type: str = "mtlx") -> Optional[threading.Thread]:
+def warm_registry_in_background(source_type: str = "mtlx") -> threading.Thread | None:
     """Build the shader registry on a worker thread, so the first menu does not wait for it.
 
     The first touch of Sdr.Registry() discovers every installed shader plugin -- ~2.7s in
@@ -310,7 +310,7 @@ def warm_registry_in_background(source_type: str = "mtlx") -> Optional[threading
     return _warm_thread
 
 
-def get_shader_def(name: str, source_type: str = "") -> Optional[ShaderDef]:
+def get_shader_def(name: str, source_type: str = "") -> ShaderDef | None:
     """Look up a single shader definition by registry name.
 
     Args:
@@ -385,7 +385,7 @@ def param_for_prop(prop: ShaderProp):
     try:
         param = cls(prop.name, prop.label, **kwargs)
     except Exception as e:  # noqa: BLE001 - a default this param type cannot hold
-        logger.debug(f"Could not build param for {prop.name} ({prop.sdf_type}): {e}")
+        logger.debug("Could not build param for %s (%s): %s", prop.name, prop.sdf_type, e)
         kwargs.pop("default_value", None)
         try:
             param = cls(prop.name, prop.label, **kwargs)

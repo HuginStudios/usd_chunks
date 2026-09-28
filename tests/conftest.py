@@ -1,11 +1,17 @@
+from __future__ import annotations
 import os
 import pathlib
 
 import pytest
 from usd_chunks.chunk_registry import ChunkLayerManager
 
+try:
+    from PySide6 import QtWidgets
+except ImportError:  # the ui extra is optional; only Qt tests ask for qapp
+    QtWidgets = None
+
 # Qt widget tests (test_chunk_pin.py, test_filter_bar.py, ...) instantiate real
-# ChunkWidget/QMainWindow objects via the qapp fixture below — without forcing Qt's
+# ChunkWidget/QMainWindow objects via the qapp fixture below -- without forcing Qt's
 # built-in offscreen platform plugin first, each one flashes a real, visible window on
 # screen for the duration of the test run. Must be set before QApplication is ever
 # constructed (Qt reads QT_QPA_PLATFORM at that point), so set it at import time here
@@ -29,7 +35,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # directory keeps it, and keeps precedence, since entries earlier in the list win on a
 # duplicate module name (ChunkEnvVar._get). Absolute, so the suite does not depend on
 # being run from the repo root.
-_SCRIPTS = str(pathlib.Path(__file__).resolve().parent.parent / "scripts")
+_SCRIPTS = str(pathlib.Path(__file__).resolve().parent.parent / "chunks")
 if _SCRIPTS not in os.environ.get("USD_CHUNK_DIRS", "").split(os.pathsep):
     _existing = os.environ.get("USD_CHUNK_DIRS", "")
     os.environ["USD_CHUNK_DIRS"] = (
@@ -40,7 +46,8 @@ if _SCRIPTS not in os.environ.get("USD_CHUNK_DIRS", "").split(os.pathsep):
 @pytest.fixture(scope="session")
 def qapp():
     """Session-wide QApplication required by any test that creates Qt widgets."""
-    from PySide6 import QtWidgets
+    if QtWidgets is None:
+        pytest.skip("PySide6 is not installed")
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 

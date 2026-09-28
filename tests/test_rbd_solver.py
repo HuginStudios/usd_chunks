@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-
+import pytest
 from pxr import Usd, UsdGeom
 
+import chunks.dynamics.rbd_solver as rbd_mod_file
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -48,11 +49,7 @@ def test_rbd_run_does_not_reexecute_upstream_chunk() -> None:
     already-existing layers, so pressing "Run Simulation" must not execute any other chunk at
     all (no crash risk, and no more surprise re-scatters).
     """
-    import scripts.dynamics.rbd_solver as rbd_mod_file
-
     if not rbd_mod_file._HAS_MUJOCO:
-        import pytest
-
         pytest.skip("mujoco not installed in this environment")
 
     stage = Usd.Stage.CreateInMemory()

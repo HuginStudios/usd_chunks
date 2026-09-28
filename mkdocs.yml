@@ -50,7 +50,7 @@ plugins:
             extensions:
               - griffe_fieldz:
                   include_inherited: true
-              - ./griffe_chunks.py:GriffleChunks:
+              - ./docs/griffe_chunks.py:GriffleChunks:
                   modules: [chunk, chunk_core]
   
             merge_init_into_class: true

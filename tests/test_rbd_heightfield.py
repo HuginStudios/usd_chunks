@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pxr import Usd, UsdGeom
 
-import scripts.dynamics.rbd_solver as rbd_mod
+import chunks.dynamics.rbd_solver as rbd_mod
 
 if not rbd_mod._HAS_MUJOCO:
     pytest.skip("mujoco not installed in this environment", allow_module_level=True)

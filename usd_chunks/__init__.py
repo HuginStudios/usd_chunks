@@ -1,3 +1,10 @@
+"""usd_chunks: interactive UI panels ("chunks") for OpenUSD, built from plain Python modules.
+
+Importing the package checks that the OpenUSD bindings are importable, sets up the
+``usd_chunks`` logger (its level comes from ``USD_CHUNK_LOG_LEVEL``), and checks the attrs
+version.
+"""
+from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 import os
 import sys
@@ -20,6 +27,12 @@ except ImportError as _exc:  # pragma: no cover - depends on the install, not th
         "installing usd-core, which would add a second, incompatible USD.\n"
         "  Standalone: pip install 'usd-chunks[standalone]'"
     ) from _exc
+
+# Old module names (usd_chunks.plugins.*, chunk_graph, chunk_gizmo, ...) keep importing as
+# aliases of where those modules live now. Stdlib only, so it costs nothing here.
+from usd_chunks import _moved
+
+_moved.install()
 
 try:
     __version__ = version("usd_chunks")
@@ -50,7 +63,7 @@ formatter = logging.Formatter("%(levelname)s: %(asctime)s - %(name)s: %(message)
 ch.setFormatter(formatter)
 _logger.addHandler(ch)
 
-# Attempt to import nesessary deps. If not found, use the installed packages from .venv
+# Attempt to import necessary deps. If not found, use the installed packages from .venv
 try:
     import attrs  # noqa: F401
     import typing_extensions  # noqa: F401
@@ -70,3 +83,9 @@ if ATTRS_VERSION < (25, 4):  # type: ignore
         attrs.__version__,
         "Some functionality may not work. Consider updating to 25.4",
     )
+
+# The scripting entry points: `Scene` for a script of its own, `current_scene()` for the one
+# a host is already running (usdview's, typed into its interpreter). Last, so everything
+# above is set up before the chunk model they pull in is imported.
+from usd_chunks.chunk_scene import current_scene  # noqa: E402
+from usd_chunks.chunk_script import Scene  # noqa: E402

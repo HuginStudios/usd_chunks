@@ -20,7 +20,7 @@ from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_naming import CHUNKS_ROOT, CHUNK_PRIM_TYPENAME
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
@@ -84,7 +84,7 @@ def network(tmp_path):
 
 
 def _run(*args):
-    cmd = [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", *args]
+    cmd = [sys.executable, "-m", "usd_chunks.cli", "run", *args]
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
     assert result.returncode == 0, result.stdout + result.stderr
     return result

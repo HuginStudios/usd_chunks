@@ -1,5 +1,5 @@
 """Tests for the Collection chunk and its %name reference token support in
-chunk_utils.resolve_prim_paths — the mechanism that makes collections a first-class,
+chunk_utils.resolve_prim_paths -- the mechanism that makes collections a first-class,
 reusable prim-targeting primitive across every other chunk's prim-pattern field.
 """
 from __future__ import annotations
@@ -7,16 +7,17 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from pxr import Usd
+from pxr import Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
 
 def _exec(mod, node):
     """Mirror the real auto-execute chain (chunk_notice.py), which runs module.execute()
-    inside Usd.EditContext(stage, node.get_edit_context()) — each chunk's own anonymous
+    inside Usd.EditContext(stage, node.get_edit_context()) -- each chunk's own anonymous
     layer. Calling mod.execute(node) directly would target the ambient root edit target
     for every chunk, so two clearing chunks would stomp on each other's output."""
     stage = node.get_stage()
@@ -63,7 +64,7 @@ def _make_collection(mod, name: str):
 
 class TestCollectionChunk:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.collection")
+        self.mod = importlib.import_module("chunks.usd.collection")
 
     def test_main_returns_chunk(self, scene):
         c = self.mod.main()
@@ -117,7 +118,7 @@ class TestCollectionChunk:
 
 class TestCollectionTokenResolution:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.usd.collection")
+        self.mod = importlib.import_module("chunks.usd.collection")
 
     def test_resolve_prim_paths_expands_collection_token(self, scene):
         c = _make_collection(self.mod, "Coll1")
@@ -135,7 +136,7 @@ class TestCollectionTokenResolution:
         assert chunk_utils.resolve_prim_paths(stage, "%doesNotExist") == []
 
     def test_transform_consumes_collection_reference(self, scene):
-        """Integration: Transform's Prim Path field already calls resolve_paths() —
+        """Integration: Transform's Prim Path field already calls resolve_paths() --
         pointing it at a %name token must transform every collection member with zero
         changes to transform.py itself."""
         coll_chunk = _make_collection(self.mod, "Coll1")
@@ -144,7 +145,7 @@ class TestCollectionTokenResolution:
         coll_chunk.get_param("include_pattern").value = "/geo/*"
         _exec(self.mod, coll_chunk)
 
-        transform_mod = importlib.import_module("scripts.transforms.transform")
+        transform_mod = importlib.import_module("chunks.transforms.transform")
         t = transform_mod.main()
         t.name = "Xform1"
         t._config = ChunkConfig(module="transform")
@@ -156,7 +157,6 @@ class TestCollectionTokenResolution:
         t.get_param("tz").value = 1.0
         _exec(transform_mod, t)
 
-        from pxr import UsdGeom
         stage = scene.get_stage()
         for p in ("/geo/a", "/geo/b", "/geo/c"):
             xformable = UsdGeom.Xformable(stage.GetPrimAtPath(p))

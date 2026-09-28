@@ -7,8 +7,9 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.chunk_stage import initialize as init_chunk_usd
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_stage import initialize as init_chunk_usd, get_chunk_prim_path
 
 
 def _chunk_path(name: str) -> str:
@@ -17,8 +18,6 @@ def _chunk_path(name: str) -> str:
     add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
     parent is that group rather than the /chunks scope.
     """
-    from usd_chunks import chunk_registry
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
@@ -62,7 +61,7 @@ def scene():
 
 class TestMathOpsExpression:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.utils.math_ops")
+        self.mod = importlib.import_module("chunks.utils.math_ops")
 
     def test_expression_survives_first_execute(self, scene):
         node1 = _make_math_ops(self.mod, "Mult1")
@@ -104,7 +103,7 @@ class TestMathOpsExpression:
 
         assert node2.get_param("result").value == pytest.approx(20.0), "node2.result = 20 after first execute"
 
-        # Second mutation — expression must survive
+        # Second mutation -- expression must survive
         node1.get_param("a").value = 25.0
         _exec(self.mod, node1)
 
@@ -119,7 +118,7 @@ class TestMathOpsExpression:
     def test_connection_cleared_when_operation_hides_the_param(self, scene):
         """C is only used by 3-arg ops like Multiply Add. Wiring C via expression then
         switching to a 2-arg op (Add) that hides it must clear both the Python-side
-        expression and the USD connection — otherwise switching back would silently
+        expression and the USD connection -- otherwise switching back would silently
         reconnect to a source the user never re-picked, with no indication anything
         is still wired."""
         node1 = _make_math_ops(self.mod, "Mult1")
@@ -139,7 +138,7 @@ class TestMathOpsExpression:
         attr = stage.GetAttributeAtPath(Sdf.Path(f'{_chunk_path("Mult2")}.inputs:c'))
         assert len(attr.GetConnections()) == 1
 
-        # Add doesn't use C — switching to it must clear the connection, not just hide it.
+        # Add doesn't use C -- switching to it must clear the connection, not just hide it.
         node2.get_param("operation").value = "Add"
         assert c2.raw_value == 0.0
         assert c2.has_state(chunk.ChunkFlags.State.HIDDEN)
@@ -163,7 +162,7 @@ class TestMathOpsExpression:
         node2.get_param("b").value = 1.0
         node2.get_param("a").value = "@Mult1.result@"
 
-        # First mutation — triggers value_changed chain
+        # First mutation -- triggers value_changed chain
         node1.get_param("a").value = 20.0
 
         assert node2.get_param("a").raw_value == "@Mult1.result@", \

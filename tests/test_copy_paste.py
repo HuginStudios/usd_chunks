@@ -8,9 +8,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry, chunk_widget_api
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt import nodegraph
 
 
 class _DummyScene(SceneSender):
@@ -136,7 +136,7 @@ def test_copy_paste_creates_independent_duplicate_with_same_param_values(graph) 
 
 def test_copy_skips_hidden_bookkeeping_params(graph) -> None:
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
@@ -176,7 +176,7 @@ def test_pasted_widget_shows_the_copied_value_even_when_blocked(graph) -> None:
     the later reactive VALUE_CHANGED notice that would otherwise have corrected the
     widget -- so the blank became permanent instead of self-healing a moment later."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)

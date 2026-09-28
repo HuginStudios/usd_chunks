@@ -9,12 +9,15 @@ its handle has a meaningful direction.
 from __future__ import annotations
 
 import importlib
+import types as _types
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks import chunk, chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
 
 
@@ -234,7 +237,7 @@ def test_an_explicit_gizmo_wins_over_sugar_of_the_same_name() -> None:
 # ---------------------------------------------------------------------------
 
 def test_anchor_infers_from_the_name_without_prim_selection() -> None:
-    """camera.py names primpath_location but never flags it, and roughly half of scripts/ is
+    """camera.py names primpath_location but never flags it, and roughly half of chunks/ is
     the same -- which is why the name is the primary signal rather than the flag."""
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
     assert not c.get_param("primpath_location").has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION)
@@ -249,7 +252,7 @@ def test_anchor_infers_from_the_name_without_prim_selection() -> None:
 # ---------------------------------------------------------------------------
 
 def test_shipped_camera_declares_a_focus_distance_handle() -> None:
-    camera_mod = importlib.import_module("scripts.modelling.camera")
+    camera_mod = importlib.import_module("chunks.modelling.camera")
     gizmos = camera_mod.config().gizmos
 
     assert [g.name for g in gizmos] == ["zdist"]
@@ -261,7 +264,7 @@ def test_shipped_camera_pins_the_handle_to_the_cameras_view_direction() -> None:
     """Signed, and the sign matters: a camera looks down -Z, so an unsigned "Z" would put the
     focus handle out the back of the camera. Found by reconstructing the handle on paper from
     the authored USD alone -- exactly what that exercise is for."""
-    camera_mod = importlib.import_module("scripts.modelling.camera")
+    camera_mod = importlib.import_module("chunks.modelling.camera")
     assert camera_mod.config().gizmos[0].axis == "-Z"
 
 
@@ -492,7 +495,7 @@ def test_a_transform_declared_by_hand_must_drive_nine() -> None:
 
 def _camera_chunk_and_stage():
     """The real camera chunk, cooking against a stage of its own."""
-    camera_mod = importlib.import_module("scripts.modelling.camera")
+    camera_mod = importlib.import_module("chunks.modelling.camera")
     stage = Usd.Stage.CreateInMemory()
 
     class _StagedScene(_DummyScene):
@@ -539,8 +542,7 @@ class _CamNode:
 
 
 def test_the_camera_declares_both_handles() -> None:
-    """A focus-distance handle and a whole-chunk transform, which is what Dan asked for --
-    and the transform drives the camera's *own* params, so nothing reaches across chunks."""
+    """A focus-distance handle and a whole-chunk transform -- and the transform drives the camera's *own* params, so nothing reaches across chunks."""
     camera_mod, c, _stage = _camera_chunk_and_stage()
 
     names = sorted(g.name for g in chunk_gizmo.get_gizmos(c))
@@ -609,7 +611,7 @@ def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None
     """Both chunks must invert to the same decomposition, or one handle drifts and the other
     does not -- which would look like a gizmo bug rather than a chunk bug."""
     camera_mod, c, _stage = _camera_chunk_and_stage()
-    transform_mod = importlib.import_module("scripts.transforms.transform")
+    transform_mod = importlib.import_module("chunks.transforms.transform")
 
     for name, value in [("tx", 1.0), ("ty", -2.0), ("rx", 30.0), ("ry", 15.0), ("sz", 2.0)]:
         c.get_param(name).value = value
@@ -703,10 +705,9 @@ def test_a_chunk_without_the_hook_hides_nothing() -> None:
 def test_a_failing_hook_leaves_the_handle_visible() -> None:
     """A visible handle that misbehaves is easier to diagnose than one that silently never
     appears at all."""
-    import types as _types
 
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
-    module = _types.ModuleType("scripts.camera_stub")
+    module = _types.ModuleType("chunks.camera_stub")
 
     def gizmo_hidden(node, gizmo):
         raise RuntimeError("boom")
@@ -726,10 +727,22 @@ def _fly_freecam_to(camera_mod, chunk_obj, stage, path, translate):
     described a state the code could no longer produce, and failed for that instead of for a
     real regression. Migration from a genuine legacy op has its own test below.
     """
-    camera_mod._author_matrix(
-        chunk_obj, stage, stage.GetPrimAtPath(path),
-        Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate)),
-    )
+    matrix = Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate))
+    # Recorded on the chunk as well, as the real callback does: the framework clears the
+    # camera's layer before every cook, so the flight is kept on the chunk, not the prim.
+    setattr(chunk_obj, camera_mod._FLOWN_MATRIX, matrix)
+    camera_mod._author_matrix(chunk_obj, stage, stage.GetPrimAtPath(path), matrix)
+
+
+def _cook(camera_mod, node):
+    """Cook the way a session does: from a cleared layer.
+
+    execute() is called directly in these tests, so nothing else clears the layer the camera
+    authors into -- the stage's root here. The framework clears a chunk's layer before every
+    cook, and a test that skipped it would find last cook's prim in the way of this one.
+    """
+    node.get_stage().GetRootLayer().Clear()
+    camera_mod.execute(node)
 
 
 def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
@@ -743,16 +756,16 @@ def test_unlocking_the_freecam_leaves_the_camera_where_it_was_flown() -> None:
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     # The freecam flies the camera somewhere, exactly as _apply_freecam_transform does.
     c.get_param("lock_to_freecam").value = True
     path = c.get_param("primpath_location").value
     _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = False
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     # Re-fetch: prim handles expire across the layer.Clear() inside execute().
     matrix = UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation()
@@ -765,15 +778,15 @@ def test_unlocking_also_seeds_the_params_so_the_handle_picks_up_from_there() -> 
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = True
     path = c.get_param("primpath_location").value
     _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = False
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     assert c.get_param("tx").value == pytest.approx(100.0)
     assert c.get_param("tz").value == pytest.approx(-200.0)
@@ -800,12 +813,15 @@ def test_a_cook_survives_an_order_naming_an_op_nothing_defines() -> None:
     path = c.get_param("primpath_location").value
 
     # The leftover state, established explicitly rather than left to whatever the cook
-    # happened to author -- the op is *named* by the order and *defined* by nothing.
+    # happened to author -- the op is *named* by the order and *defined* by nothing. In a
+    # layer of its own, as it is in a session: the camera's own layer is cleared before every
+    # cook, so the order that outlives the attribute is always somebody else's.
     prim = stage.GetPrimAtPath(path)
     prim.RemoveProperty(camera_mod._LEGACY_OP)
-    UsdGeom.Xformable(prim).GetXformOpOrderAttr().Set([camera_mod._LEGACY_OP])
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        UsdGeom.Xformable(prim).GetXformOpOrderAttr().Set([camera_mod._LEGACY_OP])
 
-    camera_mod.execute(node)   # must not raise
+    _cook(camera_mod, node)   # must not raise
 
     assert c.get_param("primpath_location").value == path
 
@@ -819,6 +835,10 @@ def test_a_camera_saved_before_named_ops_keeps_its_placement() -> None:
     now write. That doubling is what turned a scale of 100 into 10000 in transform.py.
     """
     camera_mod, c, stage = _camera_chunk_and_stage()
+    # Only a layer the framework does not clear can still hold a legacy op when a cook starts
+    # -- a context's file layer. The stage's root stands in for it, and the chunk is told it
+    # is its own, as it would be.
+    c.get_edit_context = stage.GetRootLayer
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
     camera_mod.execute(node)
@@ -878,28 +898,28 @@ def test_unlocking_hands_back_the_flight_even_after_the_camera_was_moved() -> No
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
     path = c.get_param("primpath_location").value
 
     # A real edit first, which is what used to disable the handover.
     moved = Gf.Transform()
     moved.SetTranslation(Gf.Vec3d(3.0, 0.0, -4.0))
     chunk_gizmo.apply_bindings(c, "transform", moved.GetMatrix())
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = True
     _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     c.get_param("lock_to_freecam").value = False
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
 
     assert UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation()         .ExtractTranslation() == Gf.Vec3d(100.0, 50.0, -200.0)
     assert c.get_param("tx").value == pytest.approx(100.0), "the params have to agree too"
 
     # And it fires once per lock, not on every cook afterwards.
     c.get_param("tx").value = 7.0
-    camera_mod.execute(node)
+    _cook(camera_mod, node)
     assert c.get_param("tx").value == pytest.approx(7.0)
 
 

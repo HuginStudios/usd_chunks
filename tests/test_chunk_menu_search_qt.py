@@ -12,8 +12,8 @@ from pxr import Usd
 from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt_widgets import _RESULT_DIVIDER, FilterableChunkMenu, _host_menu_highlight
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.widgets import _RESULT_DIVIDER, FilterableChunkMenu, _host_menu_highlight
 
 
 class _Scene(SceneSender):
@@ -36,7 +36,7 @@ def menu(qapp):
     reg = chunk_registry.ChunkRegistry()
     reg.initialize(_Scene(), "pytest")
     if not reg.get_menu_entries():
-        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
     m = FilterableChunkMenu()
     m.exec_ = lambda _pos: None  # build it without popping it up
     m.select_module(None)

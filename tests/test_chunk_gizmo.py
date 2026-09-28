@@ -11,8 +11,10 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, GizmoBase, SceneSender
+from usd_chunks import chunk, chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, GizmoBase
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,
     _author_prim,
@@ -36,14 +38,14 @@ chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 # ---------------------------------------------------------------------------
 
 def _transform_chunk(name: str = "Transform", target: str = "/World/Cube") -> chunk.Chunk:
-    """A stand-in for scripts/transforms/transform.py: nested translate params + a prim-path anchor."""
+    """A stand-in for chunks/transforms/transform.py: nested translate params + a prim-path anchor."""
     c = chunk.Chunk(name)
     c.add_param(chunk.LineEdit(
         "primpath_location", "Prim Path", default_value=target,
         flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.PRIM_SELECTION,
     ))
     # A PRIM_SELECTION param takes its value from the scene selection at construction, which
-    # is empty here — so default_value alone leaves it blank, exactly as it would in a real
+    # is empty here -- so default_value alone leaves it blank, exactly as it would in a real
     # session before the user picks a prim.
     c.get_param("primpath_location").value = target
     grp = chunk.Group("translate_grp", "Translate")
@@ -461,7 +463,7 @@ def test_wrong_value_count_fails_loudly() -> None:
 def test_drag_writes_params_and_the_cook_moves_the_prim() -> None:
     """The point of the feature: a handle value ends up as a real xform on a real prim,
     having gone through the chunk's params rather than around them."""
-    transform_mod = importlib.import_module("scripts.transforms.transform")
+    transform_mod = importlib.import_module("chunks.transforms.transform")
 
     stage = _stage_with_cube()
     c = transform_mod.main()
@@ -499,7 +501,7 @@ def test_the_shipped_transform_chunk_declares_gizmos() -> None:
     config() has none: spelling the same nine param paths out there was longer than every
     other line of the config put together.
     """
-    transform_mod = importlib.import_module("scripts.transforms.transform")
+    transform_mod = importlib.import_module("chunks.transforms.transform")
     c = transform_mod.main()
     c._config = ChunkConfig(module="transform")
 

@@ -39,10 +39,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from pxr import Plug, Usd
 
@@ -66,7 +68,7 @@ _LABEL_SUFFIXES = ("RendererSettingsAPI", "RenderSettingsAPI", "SettingsAPI", "A
 #: RenderMan declares its settings this way instead of as a USD schema. Unverified --
 #: this machine has no RenderMan install -- so treat it as the seam to extend rather
 #: than a tested mapping.
-_SDR_OPTION_NODES: Dict[str, tuple] = {
+_SDR_OPTION_NODES: dict[str, tuple] = {
     "ri": ("PRManOptions", "PRManGlobalOptions"),
 }
 
@@ -96,7 +98,7 @@ _DELEGATE_SDF_TYPES = {
 #:
 #: Renderer-specific by necessity, in the same spirit as _SDR_OPTION_NODES. A schema
 #: renderer needs no entry here -- V-Ray's allowedTokens already reach options.
-_DELEGATE_ENUMS: Dict[str, tuple] = {
+_DELEGATE_ENUMS: dict[str, tuple] = {
     "cycles:integrator:denoiser_type": (
         ("none", 0), ("optix", 2), ("openimagedenoise", 4),
     ),
@@ -212,7 +214,7 @@ class RenderSettingsDef:
     namespace: str = ""
     source: str = ""
     schema_name: str = ""
-    props: List[RenderSettingProp] = field(default_factory=list)
+    props: list[RenderSettingProp] = field(default_factory=list)
 
 
 def _label_from_schema_name(schema_name: str) -> str:
@@ -228,7 +230,7 @@ def _namespace_of(attr_names) -> str:
     A schema may carry the odd unnamespaced attribute; the namespace is whatever most
     of them agree on rather than whatever the first one happens to be.
     """
-    counts: Dict[str, int] = defaultdict(int)
+    counts: dict[str, int] = defaultdict(int)
     for name in attr_names:
         head, sep, _ = name.partition(":")
         if sep:
@@ -250,7 +252,7 @@ def _sanitize_default(value):
     return value
 
 
-def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> Optional[RenderSettingProp]:
+def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> RenderSettingProp | None:
     """Normalise one attribute of an applied API schema's prim definition."""
     spec = prim_def.GetSchemaAttributeSpec(attr_name)
     if spec is None:
@@ -270,7 +272,7 @@ def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> Optional[
     )
 
 
-def _schema_names_for_render_settings() -> List[str]:
+def _schema_names_for_render_settings() -> list[str]:
     """Applied API schemas that may only be applied to a RenderSettings prim.
 
     Read from plugin metadata rather than Tf.Type: the schema's library is not loaded
@@ -287,7 +289,7 @@ def _schema_names_for_render_settings() -> List[str]:
     return sorted(set(names))
 
 
-def _def_from_schema(schema_name: str) -> Optional[RenderSettingsDef]:
+def _def_from_schema(schema_name: str) -> RenderSettingsDef | None:
     prim_def = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
     if prim_def is None:
         return None
@@ -312,7 +314,7 @@ def _def_from_schema(schema_name: str) -> Optional[RenderSettingsDef]:
     )
 
 
-def _def_from_sdr(namespace: str, identifiers: tuple) -> Optional[RenderSettingsDef]:
+def _def_from_sdr(namespace: str, identifiers: tuple) -> RenderSettingsDef | None:
     """A settings def from an Sdr options node, for renderers that declare them there.
 
     RenderMan registers .args files describing its options into the shader registry
@@ -356,8 +358,13 @@ def authored_value(prop: RenderSettingProp, value):
     renderer only described as an int: there the param holds a readable label and the
     attribute -- and the delegate -- want the number behind it.
 
-    Returns None for a label that is not one of the options, which a caller skips rather
-    than authoring something the renderer would reject.
+    Args:
+        prop: The render setting.
+        value: The param's current value.
+
+    Returns:
+        The value to author, or None for a label that is not one of the options, which a
+        caller skips rather than authoring something the renderer would reject.
     """
     if not prop.option_values:
         return value
@@ -385,7 +392,7 @@ def _normalised(label: str) -> str:
     return "".join(ch for ch in label.lower() if ch.isalnum())
 
 
-def _def_from_delegate(plugin_id: str, label: str, settings) -> Optional[RenderSettingsDef]:
+def _def_from_delegate(plugin_id: str, label: str, settings) -> RenderSettingsDef | None:
     """A settings def from a loaded render delegate's setting descriptors.
 
     Cycles declares its settings in C++ and ships neither a schema nor .args, so the
@@ -464,14 +471,15 @@ def _host_owns_a_viewport() -> bool:
     override = os.environ.get("USD_CHUNKS_PROBE_DELEGATES")
     if override is not None:
         return override.strip() not in ("1", "true", "yes", "on")
-    try:
-        from PySide6 import QtWidgets
-    except ImportError:
+    # Looked up rather than imported: a QApplication can only exist if the host has already
+    # imported Qt, and a batch script has no reason to load it just to learn it is absent.
+    QtWidgets = sys.modules.get("PySide6.QtWidgets")
+    if QtWidgets is None:
         return False
     return QtWidgets.QApplication.instance() is not None
 
 
-def _defs_from_delegates(existing) -> List[RenderSettingsDef]:
+def _defs_from_delegates(existing) -> list[RenderSettingsDef]:
     """Ask every render delegate not already described for its setting descriptors.
 
     Loading a delegate is the expensive part -- V-Ray's takes two seconds to bring up its
@@ -580,7 +588,7 @@ def iter_render_settings_defs() -> Iterator[RenderSettingsDef]:
     yield from _discover()
 
 
-def get_render_settings_def(key: str) -> Optional[RenderSettingsDef]:
+def get_render_settings_def(key: str) -> RenderSettingsDef | None:
     """The def with this key, or None when the renderer is not installed here."""
     for definition in iter_render_settings_defs():
         if definition.key == key:
@@ -588,7 +596,7 @@ def get_render_settings_def(key: str) -> Optional[RenderSettingsDef]:
     return None
 
 
-def def_for_plugin(plugin_id: str) -> Optional[RenderSettingsDef]:
+def def_for_plugin(plugin_id: str) -> RenderSettingsDef | None:
     """The settings def belonging to a Hydra plugin id, or None when it has none.
 
     Matched on the key first, since a def read from a delegate is keyed by the very
@@ -598,6 +606,12 @@ def def_for_plugin(plugin_id: str) -> Optional[RenderSettingsDef]:
 
     Used to send one renderer's settings without sending every renderer's: a delegate
     redraws for each setting it is handed and discards the namespaces it does not own.
+
+    Args:
+        plugin_id: The Hydra renderer plugin id.
+
+    Returns:
+        The matching def, or None.
     """
     for definition in iter_render_settings_defs():
         if definition.key == f"delegate:{plugin_id}":
@@ -620,7 +634,7 @@ def def_for_plugin(plugin_id: str) -> Optional[RenderSettingsDef]:
     return None
 
 
-def available_delegates() -> List[str]:
+def available_delegates() -> list[str]:
     """Labels of every renderer with describable settings, for a menu."""
     return [d.label for d in iter_render_settings_defs()]
 
@@ -658,13 +672,13 @@ def _split_segment(remainder: str):
 
 def _bucket(items):
     """One level of grouping over (prop, remaining name) pairs."""
-    counts: Dict[str, int] = defaultdict(int)
+    counts: dict[str, int] = defaultdict(int)
     for _prop, remainder in items:
         head, _rest = _split_segment(remainder)
         if head:
             counts[head] += 1
 
-    buckets: "OrderedDict[str, list]" = OrderedDict()
+    buckets: OrderedDict[str, list] = OrderedDict()
     for prop, remainder in items:
         head, rest = _split_segment(remainder)
         if head and counts[head] >= _MIN_GROUP_SIZE:
@@ -705,7 +719,7 @@ def _factor_camel_prefixes(grouped):
     names just do not put a separator in front of, and reading it as one gives
     Settings > Camera rather than a column of near-identical siblings.
     """
-    counts: Dict[str, int] = defaultdict(int)
+    counts: dict[str, int] = defaultdict(int)
     for name in grouped:
         if name == _GENERAL_GROUP:
             continue
@@ -716,7 +730,7 @@ def _factor_camel_prefixes(grouped):
     if not factorable:
         return grouped
 
-    folded: "OrderedDict[str, Any]" = OrderedDict()
+    folded: OrderedDict[str, Any] = OrderedDict()
     for name, contents in grouped.items():
         match = _CAMEL_PREFIX.match(name) if name != _GENERAL_GROUP else None
         prefix = match.group(1) if match else None
@@ -734,7 +748,7 @@ def _factor_camel_prefixes(grouped):
 
 
 def _tree(items, depth: int):
-    grouped: "OrderedDict[str, Any]" = OrderedDict()
+    grouped: OrderedDict[str, Any] = OrderedDict()
 
     for name, members in _bucket(items).items():
         split_further = (
@@ -760,7 +774,7 @@ def _tree(items, depth: int):
     return _factor_camel_prefixes(grouped)
 
 
-def group_props(props) -> "OrderedDict[str, Any]":
+def group_props(props) -> OrderedDict[str, Any]:
     """Bucket settings into nested collapsible groups, the way a renderer's own UI does.
 
     Setting names are structured -- ``vray:SettingsImageSampler_progressive_maxSubdivs``
@@ -769,9 +783,13 @@ def group_props(props) -> "OrderedDict[str, Any]":
     that is still too big to read is split again on the next segment, up to a few levels
     deep. Anything left over lands in General, which sorts last.
 
-    Returns an ordered mapping of group name to either a list of settings or a nested
-    mapping of the same shape, so a caller renders it by recursing rather than by
-    knowing any renderer's layout.
+    Args:
+        props: The render settings.
+
+    Returns:
+        An ordered mapping of group name to either a list of settings or a nested mapping of
+        the same shape, so a caller renders it by recursing rather than by knowing any
+        renderer's layout.
     """
     return _tree([(p, p.attr_name.partition(":")[2] or p.attr_name) for p in props], 0)
 
@@ -781,6 +799,12 @@ def param_for_setting(prop: RenderSettingProp):
 
     Delegates to shader_defs.param_for_prop rather than repeating its Sdf-type-to-param
     table: a render setting and a shader input are the same problem once normalised.
+
+    Args:
+        prop: The render setting.
+
+    Returns:
+        The param, or None.
     """
     return shader_defs.param_for_prop(
         shader_defs.ShaderProp(

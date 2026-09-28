@@ -2,7 +2,7 @@
 operators survive a save/reload.
 
 Two halves used to be missing. The value read back was the substituted *string*
-("20.0 * 3.0"), and a non-String attr stored only its connections — so reload rebuilt the
+("20.0 * 3.0"), and a non-String attr stored only its connections -- so reload rebuilt the
 expression by joining the connection targets and dropped everything between them, turning
 "@a.x@ * @b.y@" into "@a.x@@b.y@".
 """
@@ -12,12 +12,14 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _INPUTS_PREFIX,
     _load_wire_inputs,
     _patch_expressions,
     ChunkStageSync,
+    get_chunk_prim_path,
 )
 
 
@@ -27,8 +29,6 @@ def _chunk_path(name: str) -> str:
     add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
     parent is that group rather than the /chunks scope.
     """
-    from usd_chunks import chunk_registry
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
@@ -137,7 +137,7 @@ def test_single_ref_still_returns_the_typed_value(scene) -> None:
 
 
 def test_string_param_still_interpolates(scene) -> None:
-    """Path building is the reason multi-ref interpolation exists — don't compute it."""
+    """Path building is the reason multi-ref interpolation exists -- don't compute it."""
     a = _mk("chunkA")
     a.add_param(chunk.LineEdit("primpath_location"))
     scene.add_chunk(a)
@@ -154,7 +154,7 @@ def test_string_param_still_interpolates(scene) -> None:
 
 
 def test_unevaluable_text_on_numeric_param_falls_back(scene) -> None:
-    """Not arithmetic once substituted — keep the string rather than raising."""
+    """Not arithmetic once substituted -- keep the string rather than raising."""
     a = _mk("chunkA")
     a.add_param(chunk.LineEdit("name"))
     scene.add_chunk(a)
@@ -213,7 +213,7 @@ def test_rename_patches_stored_text(scene) -> None:
 
 
 def test_legacy_connection_only_attr_still_loads(scene) -> None:
-    """Files authored before the text was stored have connections and nothing else —
+    """Files authored before the text was stored have connections and nothing else --
     they must still come back as a (single-ref) expression, not as a bare number."""
     _two_sources(scene)
     dst = _mk("dst")

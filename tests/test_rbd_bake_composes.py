@@ -20,11 +20,12 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 
-transform_mod = importlib.import_module("scripts.transforms.transform")
-rbd_mod = importlib.import_module("scripts.dynamics.rbd_solver")
+transform_mod = importlib.import_module("chunks.transforms.transform")
+rbd_mod = importlib.import_module("chunks.dynamics.rbd_solver")
 
 
 class _Scene(SceneSender):

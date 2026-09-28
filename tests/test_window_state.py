@@ -6,11 +6,12 @@ dragged out by hand before any work could start.
 Sizes here stay well inside Qt's offscreen 800x800 virtual screen: anything larger is clamped
 to it, and a test asserting on a clamped size is asserting on the platform plugin.
 """
+from __future__ import annotations
 
 import pytest
 from PySide6 import QtCore, QtWidgets
 
-from usd_chunks.plugins import chunk_window_state
+from usd_chunks.frontends.qt import window_state as chunk_window_state
 
 
 @pytest.fixture

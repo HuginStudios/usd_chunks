@@ -1,12 +1,12 @@
-﻿"""
-The ChunkRegistry singleton is responsible for loading and unloading the chunks.
-USD_CHUNK_DIR environment variable tells the registry where to scan for .py files
-containing the chunks. The ChunkRegistry will also scan nested folders in this location
+﻿"""The ChunkRegistry singleton, which finds, loads and unloads chunk modules.
 
-The ChunkRegistry can also be used at runtime to find loaded chunks:
+The USD_CHUNK_DIRS environment variable tells the registry where to scan for chunk
+modules (.py files), nested folders included. The registry also holds the scene, which
+is how running code finds a chunk by name:
+
 ``` py
 reg = ChunkRegistry()
-myChunk = reg.get_chunk("my_chunk")
+my_chunk = reg.scene.get_chunk("my_chunk")  # or chunk.get_chunk("my_chunk")
 ```
 """
 
@@ -19,23 +19,18 @@ import re
 import sys
 from pathlib import Path
 from importlib import util
+from importlib.metadata import PackageNotFoundError, packages_distributions
+from importlib.metadata import version as distribution_version
 from collections import defaultdict
+from collections.abc import Callable, Generator, Iterable, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    Generator,
-    Iterable,
-    List,
-    Optional,
-    Set,
     Generic,
     TypeVar,
     overload,
-    Sequence,
-    Tuple,
 )
+from typing_extensions import override
 from enum import Enum
 
 from pxr import Sdf, Usd, UsdUtils
@@ -52,10 +47,14 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, Registry
 
 import usd_chunks.chunk_core as core
 import usd_chunks.chunk_notice as chunk_notice
+from usd_chunks import chunk_utils
 # from usd_chunks.chunk_core import ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
 
 if TYPE_CHECKING:
     import types
+
+    # Annotations only: chunk_scene imports chunk_core, which imports this module.
+    from usd_chunks.chunk_scene import SceneSender
 
 import atexit
 import ast
@@ -77,6 +76,15 @@ _T = TypeVar("_T")
 
 
 class ChunkEnvVar(Generic[_T]):
+    """An environment variable the chunk system reads, with a typed default.
+
+    A list-typed variable is split on os.pathsep, and its entries come before the defaults.
+
+    Args:
+        key: The environment variable's name.
+        default: The value when the variable is unset or empty.
+        relpath: Resolve a string or list default relative to the repository root.
+    """
     def __init__(self, key: str, default: _T, relpath=False):
         self.key = key
         self._default: _T = default
@@ -84,6 +92,7 @@ class ChunkEnvVar(Generic[_T]):
 
     @property
     def default(self) -> _T:
+        """The default, resolved against the repository root when `relpath` is set."""
         if self._relpath and self._default:
             dirname = os.path.dirname(os.path.dirname(__file__))
             if isinstance(self._default, list):
@@ -113,8 +122,8 @@ class ChunkEnvVar(Generic[_T]):
             # Preserve order: env-provided dirs first (they take precedence on
             # duplicate module names -- first registered wins, see
             # ChunkRegistry.register_module), then defaults. Dedupe keeping the
-            # first occurrence rather than collapsing to a set (which dropped
-            # ordering, so precedence was previously non-deterministic).
+            # first occurrence rather than collapsing to a set, which would drop
+            # ordering and make precedence non-deterministic.
             ordered: list = []
             for x in res + default:
                 if x and x not in ordered:
@@ -122,7 +131,21 @@ class ChunkEnvVar(Generic[_T]):
             return ordered
         return envvar
 
-    def __call__(self, fallback: Optional[_T] = None, /, *args: Any, **kwds: Any):
+    def __call__(self, fallback: _T | None = None, /, *args: Any, **kwds: Any):
+        """The variable's current value.
+
+        A list variable returns the environment's entries first, then the defaults, keeping the
+        first of any duplicate: env-provided dirs take precedence on duplicate module names,
+        since the first one registered wins.
+
+        Args:
+            fallback: Used in place of the environment value when the variable is unset.
+            *args: Ignored.
+            **kwds: Ignored.
+
+        Returns:
+            The value, or the default when the variable is unset or empty.
+        """
         return self._get(self.default, fallback)
 
 
@@ -133,7 +156,7 @@ PY_MODULE_EXT = ".py"
 #: Discovery cache for ChunkRegistry._discover_module: (file, module name) -> (mtime, modules).
 #: Process-wide, like registered_modules itself, so a re-initialize() does not re-parse the
 #: whole chunk directory to rebuild objects the registry already holds.
-_DISCOVERED_MODULES: "Dict[Tuple[str, str], Tuple[int, List[ChunkModule]]]" = {}
+_DISCOVERED_MODULES: dict[tuple[str, str], tuple[int, list[ChunkModule]]] = {}
 
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
@@ -170,12 +193,18 @@ def _is_truthy(value) -> bool:
 
 
 class ChunkDependencyManager(metaclass=RegistrySingleton):
+    """Installs and tracks the pip packages chunk modules declare as requirements.
+
+    Packages go into USD_CHUNK_DEPENDENCY_DIR, which is added to sys.path. Installing is off
+    unless USD_CHUNK_AUTO_INSTALL is set; see that variable.
+    """
     initialized = False
     #: Whether `pip list` has run this process -- see install_packages. Not reset by
     #: initialize(), which runs again on every stage reload.
     _listed = False
 
     def initialize(self):
+        """Put the dependency directory on sys.path and in PYTHONPATH for subprocesses."""
         self._cache = defaultdict(set)
         self.package_dir = USD_CHUNK_DEPENDENCY_DIR()
 
@@ -225,6 +254,14 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
     @staticmethod
     def package_info(package):
+        """Split an "==" requirement into (name, version); version is None without "==".
+
+        Args:
+            package: A requirement string such as "numpy==2.1.0".
+
+        Returns:
+            (name, version).
+        """
         try:
             name, version = package.split("==")
         except ValueError:
@@ -233,6 +270,15 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         return name, version
 
     def install_packages(self, requirements):
+        """Install whichever of these requirements are not already satisfied.
+
+        Nothing is installed unless USD_CHUNK_AUTO_INSTALL is set; the missing packages are
+        named in a warning instead. When it is set, the scene is still asked about each package
+        (should_install_package), and only what pip actually installed is cached.
+
+        Args:
+            requirements: Requirement strings, ranges allowed.
+        """
         if not self.initialized:
             return
 
@@ -280,17 +326,16 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=_NO_WINDOW_FLAGS
         )
 
-        # Only cache what pip actually installed. These packages used to be added to the
-        # cache the moment the user approved the dialog, before pip ran and without ever
-        # checking its return code -- so a failed install (an embedded interpreter shipping
-        # no pip, no network, a bad package name) was remembered as a success. Every later
-        # run then short-circuited on package_in_cache: the install was never retried, the
-        # user was never prompted again, and the chunk errored on creation forever.
+        # Only cache what pip actually installed, after checking its return code. A failed
+        # install (an embedded interpreter shipping no pip, no network, a bad package name)
+        # remembered as a success would short-circuit package_in_cache forever: never
+        # retried, never prompted again, and the chunk erroring on every creation.
         if proc.returncode != 0:
             output = (proc.stdout or b"").decode(errors="replace").strip()
             logger.error(
-                f"Failed to install chunk dependencies {packages} (pip exited {proc.returncode}). "
-                f"They will be retried the next time a chunk requires them.\n{output}"
+                "Failed to install chunk dependencies %s (pip exited %s). "
+                "They will be retried the next time a chunk requires them.\n%s",
+                packages, proc.returncode, output,
             )
             return
 
@@ -306,12 +351,14 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             self._cache[name].add(installed_version(name))
 
     def should_install_package(self, package):
+        """Whether the scene allows installing `package`; False with no scene."""
         reg = ChunkRegistry()
         if not reg.scene or not self.initialized:
             return False
         return reg.scene.should_install_package(package)
 
     def update_cache(self):
+        """Record every installed package, from `pip list` over the interpreter and the dependency dir."""
         if not self.initialized:
             return
 
@@ -342,13 +389,16 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
     def package_in_cache(self, package):
         """Whether `package` -- a requirement, range and all -- is satisfied by the cache.
 
-        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". This used to go
-        through package_info, which splits on "==" alone: a ranged requirement came back
-        with the whole string as its name, which no cache entry is ever keyed by, so every
-        chunk declaring a range missed the cache on every load -- two `pip list` subprocesses
-        each time, two thirds of a second, and a warning that numpy was not installed next
-        to a numpy that was. Blender loads every module at once to generate its node
-        classes, so that was most of the pause on the first open of a network.
+        Reads the ranges chunks declare ("numpy>=2,<3"), not only "==". package_info splits
+        on "==" alone, so a ranged requirement would come back with the whole string as its
+        name, which no cache entry is ever keyed by -- every chunk declaring a range would
+        miss the cache on every load, costing two `pip list` subprocesses each time.
+
+        Args:
+            package: A requirement string.
+
+        Returns:
+            True if a cached version satisfies it.
         """
         if not self.initialized:
             return False
@@ -369,7 +419,7 @@ class _ConfigTransformer(ast.NodeTransformer):
         self._code = code
         self._module = module
         self._globs = globs.copy()
-        self._deferred_config: Optional[Callable] = None
+        self._deferred_config: Callable | None = None
 
     def _get_node_source(self, node):
         return ast.get_source_segment(self._code, node)
@@ -412,7 +462,7 @@ class _ConfigTransformer(ast.NodeTransformer):
         try:
             self._module.config = self._deferred_config()
         except Exception as e:  # noqa: BLE001 - keep a bad config from taking down discovery
-            logger.warning(f"Could not evaluate config() for {self._module.module_name}: {e}")
+            logger.warning("Could not evaluate config() for %s: %s", self._module.module_name, e)
 
         self._deferred_config = None
 
@@ -462,16 +512,20 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
         self._loader = util.LazyLoader(loader)
         self._module = mod
 
+    @override
     def get_filename(self, fullname: str) -> str:  # noqa: ARG002
         return self.path
 
+    @override
     def get_data(self, path: str | bytes) -> bytes:
         with open(path, "rb") as f:
             return f.read()
 
+    @override
     def load_module(self, fullname: str) -> types.ModuleType:
         return self._loader.load_module(fullname)
 
+    @override
     def exec_module(self, module: types.ModuleType) -> None:
         source_bytes = self.get_data(self.get_filename(self.fullname))
         source = source_bytes.decode("utf-8")
@@ -510,10 +564,6 @@ def _normalise_package(name: str) -> str:
 
 @functools.lru_cache(maxsize=1)
 def _packages_distributions() -> dict:
-    try:
-        from importlib.metadata import packages_distributions
-    except ImportError:  # pragma: no cover - 3.10+
-        return {}
     return packages_distributions()
 
 
@@ -526,6 +576,12 @@ def candidate_distributions(imported: str) -> set:
     installed; the environment is consulted as well, which catches the variants the map
     does not know, but is never the only source or a chunk would pass or fail on which
     variant this particular machine happens to have.
+
+    Args:
+        imported: A top-level import name.
+
+    Returns:
+        Normalised distribution names.
     """
     candidates = {imported, IMPORT_TO_PACKAGE.get(imported, imported)}
     candidates.update(_packages_distributions().get(imported, ()))
@@ -540,9 +596,8 @@ _NOT_MODULE_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.La
 def top_level_imports(module_file) -> set:
     """The root names a chunk module imports at module scope, read without executing it.
 
-    Walks into try/except, if and with rather than only `tree.body`. An earlier version
-    read the top level literally and so never saw a guarded import -- and rbd_solver is
-    exactly that case:
+    Walks into try/except, if and with rather than only `tree.body`, so a guarded import is
+    seen. rbd_solver is exactly that case::
 
         try:
             import mujoco as _mj
@@ -551,14 +606,19 @@ def top_level_imports(module_file) -> set:
         except ImportError:
             _HAS_MUJOCO = False
 
-    It reported nothing for that file. Removing its requirements would still have read as
-    clean, in the one chunk where a version silently changing the answer matters most --
-    try-guarding a heavy optional is the normal pattern for precisely the chunks that carry
-    a simulator.
+    Reading only the literal top level would report nothing for that file, in the one chunk
+    where a version silently changing the answer matters most -- try-guarding a heavy
+    optional is the normal pattern for precisely the chunks that carry a simulator.
 
     Function and class bodies are still skipped, which is the actual house rule: imports go
     at module top level, never inside a function. A try-guarded import obeys that rule
     lexically; it just is not an ast.Import node in tree.body, which is a different thing.
+
+    Args:
+        module_file: The chunk module's file.
+
+    Returns:
+        The imported root names, empty if the file cannot be read or parsed.
     """
     try:
         tree = ast.parse(Path(module_file).read_text(encoding="utf-8"))
@@ -580,7 +640,7 @@ def top_level_imports(module_file) -> set:
     return roots
 
 
-def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
+def undeclared_imports(module: ChunkModule, sibling_modules=()) -> list:
     """Third-party imports a chunk makes without declaring them in config().
 
     An undeclared dependency is not only an install that breaks on a clean machine -- it is
@@ -588,8 +648,13 @@ def undeclared_imports(module: "ChunkModule", sibling_modules=()) -> list:
     means a numpy upgrade can change its results while the manifest still reads clean, which
     is worse than having no manifest, because it looks authoritative.
 
-    sibling_modules are the other chunk modules' import names, which resolve locally and are
-    not dependencies to declare.
+    Args:
+        module: The chunk module.
+        sibling_modules: The other chunk modules' import names, which resolve locally and
+            are not dependencies to declare.
+
+    Returns:
+        The undeclared import names.
     """
     # split_requirement, not package_info: the latter only understands "==", so a
     # requirement declared as a range would come back with the whole string as its name
@@ -620,6 +685,12 @@ def split_requirement(requirement: str) -> tuple:
 
     Separate from ChunkDependencyManager.package_info, which answers a narrower question --
     the exact version to cache an install under -- and only understands "==".
+
+    Args:
+        requirement: A requirement string.
+
+    Returns:
+        (name, specifier).
     """
     text = str(requirement).strip()
     for op in _SPECIFIER_OPS:
@@ -634,8 +705,7 @@ def _satisfies(version, specifier: str) -> bool:
 
     None is a version this manager could not determine after an install it made itself,
     and counts as meeting anything -- the alternative is re-installing on every load. A
-    version or specifier packaging cannot parse falls back to the literal "==" match this
-    used to be.
+    version or specifier packaging cannot parse falls back to a literal "==" match.
     """
     if version is None or not specifier or SpecifierSet is None:
         return True
@@ -645,7 +715,7 @@ def _satisfies(version, specifier: str) -> bool:
         return specifier == f"=={version}"
 
 
-def unconstrained_requirements(module: "ChunkModule") -> list:
+def unconstrained_requirements(module: ChunkModule) -> list:
     """Requirements declared with no version constraint at all.
 
     A bare "mujoco" says nothing, so two runs a month apart can use different solvers from
@@ -656,6 +726,12 @@ def unconstrained_requirements(module: "ChunkModule") -> list:
     solution, there is one sys.modules['numpy'], and resolving it would mean editing someone
     else's chunk. Ranges intersect, and the exact version belongs in the recipe that runs
     them, recorded as what was actually imported.
+
+    Args:
+        module: The chunk module.
+
+    Returns:
+        The unconstrained requirement strings.
     """
     return [r for r in (module.config.requirements or []) if not split_requirement(r)[1]]
 
@@ -672,12 +748,13 @@ def conflicting_requirements(modules) -> dict:
     matters exactly when what is on the machine cannot satisfy both. It also catches the
     single-chunk case, where the one declared range is not what is installed.
 
-    Returns {package: [(module_name, specifier, installed), ...]} for the failures only.
+    Args:
+        modules: The chunk modules to check.
+
+    Returns:
+        {package: [(module_name, specifier, installed), ...]} for the failures only.
     """
-    try:
-        from packaging.specifiers import SpecifierSet
-        from packaging.version import InvalidVersion, Version
-    except ImportError:  # pragma: no cover - packaging ships with pip
+    if SpecifierSet is None:  # pragma: no cover - packaging ships with pip
         return {}
 
     wanted: dict = defaultdict(list)
@@ -712,23 +789,23 @@ def installed_version(package: str):
     The only number that is true. What a chunk declared is a claim; this is what ran, and it
     is what a recipe's manifest has to record -- otherwise a conflict resolved by whichever
     install landed last is invisible after the fact.
+
+    Args:
+        package: A distribution name; "-" and "_" spellings are both tried.
+
+    Returns:
+        The installed version, or None.
     """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:  # pragma: no cover
-        return None
     for candidate in (package, package.replace("-", "_"), package.replace("_", "-")):
         try:
-            return version(candidate)
+            return distribution_version(candidate)
         except PackageNotFoundError:
             continue
     return None
 
 
 class ChunkModule:
-    """
-    A class used by ChunkRegistry for managing chunk modules. Modules are loaded at runtime using the
-    ChunkLazyConfigLoader
+    """One chunk module file, as the ChunkRegistry manages it.
 
     Args:
         module (ModuleType | None): The loaded chunk module
@@ -738,7 +815,7 @@ class ChunkModule:
 
     def __init__(
         self,
-        module: Optional[types.ModuleType] = None,
+        module: types.ModuleType | None = None,
         module_name: str = "",
         module_file: Path | str = Path(),
     ):
@@ -748,7 +825,7 @@ class ChunkModule:
 
         self.loaded = False
         # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
-        self.func: Optional[Callable[[], core.ChunkBase | List[core.ChunkBase]]] = None
+        self.func: Callable[[], core.ChunkBase | list[core.ChunkBase]] | None = None
 
         self._has_main = False
 
@@ -765,12 +842,15 @@ class ChunkModule:
         self._exec_module()
 
     @staticmethod
-    def from_chunk_definition(file: str | Path, name: Optional[str] = None) -> List["ChunkModule"]:
-        """
-        Create a ChunkModule from a chunk module file (.py).
+    def from_chunk_definition(file: str | Path, name: str | None = None) -> list[ChunkModule]:
+        """Create a ChunkModule from a chunk module file (.py).
+
+        Args:
+            file: The module file.
+            name: The module name; defaults to the file's stem.
 
         Returns:
-            List[ChunkModule]: A list holding the created module, or empty for anything
+            list[ChunkModule]: A list holding the created module, or empty for anything
             that is not a .py file.
         """
         p = Path(file)
@@ -779,18 +859,18 @@ class ChunkModule:
             name = p.stem
 
         if p.suffix != PY_MODULE_EXT:
-            logger.warning(f"Cannot import {p.name}: a chunk module is a .py file")
+            logger.warning("Cannot import %s: a chunk module is a .py file", p.name)
             return []
 
         # No deserialising to do -- loading the module is ChunkModule's own job.
         return [ChunkModule(module_name=name, module_file=file)]
 
     def __repr__(self) -> str:
+        """The module's name and file."""
         return f"ChunkModule(module_name='{self.module_name}', module_file='{self.module_file.as_posix()}')"
 
-    def get_menu_path(self) -> List[str]:
-        """
-        Get the menu namespace this module lives under, outermost element first.
+    def get_menu_path(self) -> list[str]:
+        """Get the menu namespace this module lives under, outermost element first.
 
         The module's dotted path is prefixed with its category, dropping a leading path
         element that merely repeats that category.
@@ -798,7 +878,6 @@ class ChunkModule:
         Returns:
             List[str]: The menu namespace, outermost first; the last element is the label.
         """
-
         cat = self.config.category
         if isinstance(cat, Enum):
             cat = cat.value
@@ -813,8 +892,7 @@ class ChunkModule:
         return namespace
 
     def get_menu_name(self) -> str:
-        """
-        Get a path-like string refereing to where this module can be found in a menu
+        """Get a path-like string referring to where this module can be found in a menu.
 
         Returns:
             str: A path-like string to where this module can be found in a menu.
@@ -823,13 +901,13 @@ class ChunkModule:
 
     def _exec_module(self):
         if not self.module_file.exists():
-            logger.error(f"Could not load module from file {self.module_file}")
+            logger.error("Could not load module from file %s", self.module_file)
             return False
 
         elif self.module_file.suffix == PY_MODULE_EXT:
             spec = util.spec_from_file_location(self.module_name, self.module_file)
             if not spec or not spec.loader:
-                logger.warning(f"Module spec or loader failed for module {self.module_name}. Skipping")
+                logger.warning("Module spec or loader failed for module %s. Skipping", self.module_name)
                 return False
 
             loader = _ChunkLazyConfigLoader(self.module_name, str(self.module_file), spec.loader, self)
@@ -840,7 +918,7 @@ class ChunkModule:
                 spec.loader.exec_module(module)
             except Exception:
                 # This module failed to load. Set to file_name so we can try loading it again later§
-                logger.exception(f"Failed to load module {self.module_name}")
+                logger.exception("Failed to load module %s", self.module_name)
                 return False
 
             if not self.has_main():
@@ -895,7 +973,7 @@ class ChunkModule:
             self.func = getattr(self.module, "main")
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later
-            logger.exception(f"Failed to run module {self.module_name}")
+            logger.exception("Failed to run module %s", self.module_name)
             self.loaded = False
             return False
 
@@ -906,15 +984,16 @@ class ChunkModule:
         return True
 
     def load(self) -> Sequence[core.ChunkBase]:
-        """
-        Loads the module. This ensures that the module is properly created. If Already loaded, it's preffered to
-        call create() directly, to skip some initialization stuff that should only be called once
+        """Load the module and create its chunks.
+
+        Runs the one-time initialization before create(). Once loaded, call create() directly
+        to skip it.
 
         Returns:
-            bool: True if loaded successfully, Fale otherwise
+            Sequence[ChunkBase]: The created chunks, empty if loading failed.
         """
         if not self._pre_load():
-            logger.warning(f"Could not load module {self.module}")
+            logger.warning("Could not load module %s", self.module)
             return []
 
         start = timer()
@@ -923,22 +1002,20 @@ class ChunkModule:
         self.loaded = len(res) > 0
         end = timer()
 
-        logger.info(f"loaded module: {self.module_name}. Load took {end - start} seconds")
+        logger.info("loaded module: %s. Load took %s seconds", self.module_name, end - start)
         return res
 
     def unload(self):
-        """
-        Deletes any chunk created from this module and sets loaded to False
-        """
+        """Mark the module as not loaded."""
         self.loaded = False
 
     def create(self) -> Sequence[core.ChunkBase]:
-        """
-        Runs the main function from the module and adds the chunks returned from the main function to the
-        ChunkRegistry scene
+        """Run the module's main function and return the chunks it made, with its config attached.
+
+        The chunks are not added to a scene; the caller does that.
 
         Returns:
-            Bool: True on success
+            Sequence[ChunkBase]: The created chunks, empty if main failed or is missing.
         """
         if not self.loaded:
             logger.warning("Trying to create a chunk from an unloaded module. Consider running load() first")
@@ -956,7 +1033,7 @@ class ChunkModule:
             except TypeError:
                 loaded.append(retval)
         else:
-            logger.warning(f"module {self.module_name} does not have a function for creating chunks")
+            logger.warning("module %s does not have a function for creating chunks", self.module_name)
             return []
 
         if self.config:
@@ -968,11 +1045,10 @@ class ChunkModule:
         return loaded
 
     def should_load_for_filter(self) -> bool:
-        """
-        Check if this module should load. Checks if the module name exists in USD_CHUNK_LOAD_FILTER
+        """Check if this module passes USD_CHUNK_LOAD_FILTER.
 
         Returns:
-            bool: True if this module should load
+            bool: True if no filter is set or the module is named in it
         """
         if module_filter := USD_CHUNK_LOAD_FILTER():
             if self.module_name not in module_filter:
@@ -980,15 +1056,17 @@ class ChunkModule:
         return True
 
     def has_config(self):
+        """Whether the module defines a config."""
         return bool(self.config)
 
     def has_main(self):
+        """Whether the module defines a main function."""
         return self._has_main
 
     def should_load_for_plugin(self, plugin_name: str) -> bool:
-        """
-        Checks if the plugin_name exists in config.load_for_plugin. If the load_for_plugin is empty
-        then assume the module is safe to load
+        """Check if the module may be used with a plugin.
+
+        An empty config.load_for_plugin means the module is safe to load everywhere.
 
         Args:
             plugin_name (str): The name of the plugin
@@ -1001,8 +1079,7 @@ class ChunkModule:
         return True
 
     def export(self, path: str | Path):
-        """
-        Export this ChunkModule's source as a .py file. Any other extension warns and fails.
+        """Export this ChunkModule's source as a .py file. Any other extension warns and fails.
 
         Args:
             path (str | Path): The path to export to. Should be .py
@@ -1013,13 +1090,13 @@ class ChunkModule:
             return
 
         if p.suffix != PY_MODULE_EXT:
-            logger.warning(f"wrong file extension {path}")
+            logger.warning("wrong file extension %s", path)
             return
 
         try:
             source = inspect.getsource(self.module)
         except (OSError, TypeError):
-            logger.exception(f"Could not read the source of {self.module_name}")
+            logger.exception("Could not read the source of %s", self.module_name)
             return
 
         with open(p, "w", encoding="utf-8") as f:
@@ -1051,14 +1128,16 @@ def clean_description(desc: str) -> str:
 _WORD_SPLIT = re.compile(r"[^0-9a-zA-Z]+|(?<=[a-z0-9])(?=[A-Z])")
 
 
-def _words(text: str) -> List[str]:
+def _words(text: str) -> list[str]:
     """Lowercased words of a menu label: split on separators and camelCase humps."""
     return [w.lower() for w in _WORD_SPLIT.split(text) if w]
 
 
-def _subsequence_gaps(token: str, text: str) -> Optional[int]:
-    """How many extra characters the tightest in-order match of token in text spans over
-    its own length, or None when token's letters do not all appear in order."""
+def _subsequence_gaps(token: str, text: str) -> int | None:
+    """How far the tightest in-order match of `token` in `text` spreads beyond its own length.
+
+    Returns None when token's letters do not all appear in order.
+    """
     best = None
     for start in (i for i, ch in enumerate(text) if ch == token[0]):
         pos = start
@@ -1072,7 +1151,7 @@ def _subsequence_gaps(token: str, text: str) -> Optional[int]:
     return best
 
 
-def _token_score(token: str, label: str, path: Tuple[str, ...]) -> int:
+def _token_score(token: str, label: str, path: tuple[str, ...]) -> int:
     """How well one query word matches an entry; 0 for no match. Higher is closer.
 
     The label is what you are looking for, so every way of matching it outranks matching
@@ -1106,7 +1185,7 @@ def _token_score(token: str, label: str, path: Tuple[str, ...]) -> int:
 _BASE_ENTRY_BONUS = 60
 
 
-def search_menu_entries(entries: List["MenuEntry"], query: str) -> List["MenuEntry"]:
+def search_menu_entries(entries: list[MenuEntry], query: str) -> list[MenuEntry]:
     """The entries matching query, closest first -- the chunk menu's search.
 
     Every word of the query must match the entry's name or its category path. A name that
@@ -1150,9 +1229,11 @@ def search_menu_entries(entries: List["MenuEntry"], query: str) -> List["MenuEnt
 _FIRST_CATEGORY = "examples"
 
 
-def _category_order(entry: "MenuEntry") -> tuple:
-    """Sort key placing a menu entry's category: Examples first, the rest A-Z, and
-    chunks with no category after every category."""
+def _category_order(entry: MenuEntry) -> tuple:
+    """Sort key for a menu entry's category.
+
+    Examples come first, the rest A-Z, and chunks with no category after every category.
+    """
     category = tuple(part.lower() for part in entry.module.get_menu_path()[:-1])
     if not category:
         return (2,)
@@ -1180,10 +1261,10 @@ class MenuEntry:
         presets (Optional[Dict[str, Any]]): Param values to apply on create; None for a base entry
     """
 
-    module: "ChunkModule"
-    namespace: Tuple[str, ...]
+    module: ChunkModule
+    namespace: tuple[str, ...]
     tooltip: str = ""
-    presets: Optional[Dict[str, Any]] = None
+    presets: dict[str, Any] | None = None
 
     @property
     def label(self) -> str:
@@ -1191,7 +1272,7 @@ class MenuEntry:
         return self.namespace[-1] if self.namespace else self.module.module_name
 
     @property
-    def search_terms(self) -> Set[str]:
+    def search_terms(self) -> set[str]:
         """Lowercased namespace elements, for substring matching in a search field."""
         return {x.lower() for x in self.namespace}
 
@@ -1213,7 +1294,7 @@ class MenuEntry:
                 # Values only, no cook. Setting a param runs the chunk's module, and here
                 # the chunk is not in any context yet: it cooked into a layer the stage
                 # had not adopted, and when the real cook came on CHUNK_LOADED a module
-                # that remembers what it last authored (light.py's _last_light_type)
+                # that remembered what it last authored (light.py's since-removed _last_light_type)
                 # saw nothing new and returned -- a "Dome Light" entry created the chunk
                 # with the right menu value and no prim. Same guard the Qt paste path
                 # sets before applying copied values (_paste_guard_sets): execute()
@@ -1232,30 +1313,31 @@ class MenuEntry:
 
 
 class ChunkRegistry(metaclass=RegistrySingleton):
-    """A singeton class to read and register chunk modules. By default,
-    chunk modules are scanned for in the USD_CHUNK_DIRS directories.
+    """A singleton that finds and registers chunk modules.
+
+    By default chunk modules are scanned for in the USD_CHUNK_DIRS directories.
 
     Attributes:
-        registered_directories (Set[str]) : A set of directories we have searched
-        registered_modules (Dict[str, ChunkModule]) : A mapping between module names and modules
-        scene (SceneSender) : An instance of the SceneSender for accesing the scene
-        plugin (str) : A string identifier of the currently loaded plugin
+        registered_directories (set[str]): A set of directories we have searched
+        registered_modules (dict[str, ChunkModule]): A mapping between module names and modules
+        scene (SceneSender): An instance of the SceneSender for accessing the scene
+        plugin (str): A string identifier of the currently loaded plugin
     """
 
-    registered_directories: Set[Path] = set()
-    registered_modules: Dict[str, ChunkModule] = {}
-    scene: core.SceneSender
+    registered_directories: set[Path] = set()
+    registered_modules: dict[str, ChunkModule] = {}
+    scene: SceneSender
     plugin: str
 
     # Duplicate module names skipped during registration, as
     # (name, winner_file, loser_file). Reported after discovery. See
     # _report_shadows / _tier_of.
-    shadowed_modules: List[Tuple[str, Path, Path]] = []
-    _global_dir: Optional[Path] = None
+    shadowed_modules: list[tuple[str, Path, Path]] = []
+    _global_dir: Path | None = None
 
     initialized: bool = False
 
-    def initialize(self, scene_sender: core.SceneSender, plugin: str) -> None:
+    def initialize(self, scene_sender: SceneSender, plugin: str) -> None:
         """Initialize the FileReader with the working directory.
 
         Args:
@@ -1263,7 +1345,6 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 We hold a reference to it here in order to keep it alive
             plugin (str): A string identifying the currently used plugin
         """
-
         self.scene = scene_sender
         self.plugin = plugin
 
@@ -1278,17 +1359,19 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         self.register_chunk_modules(ordered_dirs + extras)
 
         c = len(self.get_chunk_modules(loaded=True))
-        logger.info(f"Found {len(self.registered_modules)} chunks. Loaded {c}")
+        logger.info("Found %s chunks. Loaded %s", len(self.registered_modules), c)
         self._report_shadows()
         self.initialized = True
 
     def register_chunk_environ_directories(self) -> list[Path]:
         """Register USD_CHUNK_DIRS, then append the GLOBAL_USDCHUNKS directory.
 
-        Returns the registered directories in precedence order. On a duplicate
-        module name the first-registered wins (see register_module), so the
-        USD_CHUNK_DIRS entries -- your proprietary / on-prem chunks -- override
-        marketplace chunks installed into the appended GLOBAL_USDCHUNKS dir.
+        On a duplicate module name the first-registered wins (see register_module), so the
+        USD_CHUNK_DIRS entries -- your proprietary / on-prem chunks -- override marketplace
+        chunks installed into the appended GLOBAL_USDCHUNKS dir.
+
+        Returns:
+            The registered directories, in precedence order.
         """
         dirs = list(USD_CHUNK_DIRS())
         # Append the marketplace install dir last (lowest precedence). Skip it
@@ -1308,13 +1391,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         return ordered
 
     def register_directory(self, chunk_dir: str | Path):
-        """Add a single directory to the register
+        """Add a single directory to the register.
 
         Args:
-            chunk_dir (str): A pathlike string to add
+            chunk_dir (str | Path): The directory to add
         """
         if (p := Path(chunk_dir)) and not p.exists():
-            logger.warning(f"{chunk_dir} directory not found.")
+            logger.warning("%s directory not found.", chunk_dir)
             return
 
         if p in self.registered_directories:
@@ -1325,8 +1408,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         self.registered_directories.add(p)
 
     def register_chunk_modules(self, paths: Iterable[Path]):
-        """Recursively register chunk module files (.py) from paths. Paths should be a sequence of
-        directory paths that contain ChunkModule files
+        """Recursively register the chunk module files (.py) under each directory.
 
         Args:
             paths (Iterable[Path]): The directories containing the chunk modules to register.
@@ -1343,7 +1425,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     self.register_module(mod)
 
     @staticmethod
-    def _discover_module(module_path: Path, module_name: str) -> "List[ChunkModule]":
+    def _discover_module(module_path: Path, module_name: str) -> list[ChunkModule]:
         """ChunkModule.from_chunk_definition, memoised on (file, mtime).
 
         Constructing a ChunkModule is not bookkeeping: it reads the file, AST-parses it and
@@ -1371,29 +1453,28 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         return mods
 
     def register_module(self, module: ChunkModule) -> ChunkModule | None:
-        """
-        Register a ChunkModule. This will wnsure that the module is kept alive and accessible
+        """Register a ChunkModule, keeping it alive and accessible.
 
         Args:
             module (ChunkModule): The module to add to the registry
 
         Returns:
-            ChunkModule | None: The registered module, or None if failed
+            ChunkModule | None: The registered module, or None if it was skipped
         """
         if not module.has_main():
-            logger.info(f"Skipping {module.module_name}. Module is has no main function defined")
+            logger.info("Skipping %s. Module has no main function defined", module.module_name)
             return
         if not module.has_config():
-            logger.info(f"Skipping {module.module_name}. Module is has no config function defined")
+            logger.info("Skipping %s. Module has no config function defined", module.module_name)
             return
         if not module.module:
-            logger.info(f"Skipping {module.module_name}. Module has no valid python source module")
+            logger.info("Skipping %s. Module has no valid python source module", module.module_name)
             return
         if not module.should_load_for_plugin(self.plugin):
-            logger.info(f"Skipping {module.module_name}. Module should not be registered in this context")
+            logger.info("Skipping %s. Module should not be registered in this context", module.module_name)
             return
         if not module.should_load_for_filter():
-            logger.info(f"Skipping {module.module_name}. Module is excluded in CHUNK_MODULE_FILTER")
+            logger.info("Skipping %s. Module is excluded in CHUNK_MODULE_FILTER", module.module_name)
             return
 
         name = module.module_name
@@ -1409,15 +1490,17 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             self.shadowed_modules.append(
                 (name, Path(winner.module_file), Path(module.module_file))
             )
-            logger.debug(f"Skipping {module.module_file}. Duplicate module: {name}")
+            logger.debug("Skipping %s. Duplicate module: %s", module.module_file, name)
             return
 
         self.registered_modules[name] = module
         return self.registered_modules[name]
 
     def _tier_of(self, file: Path) -> str:
-        """Which precedence tier a module file belongs to: the appended
-        GLOBAL_USDCHUNKS install dir, or an explicit USD_CHUNK_DIRS entry."""
+        """The precedence tier a module file belongs to.
+
+        That is the appended GLOBAL_USDCHUNKS install dir, or an explicit USD_CHUNK_DIRS entry.
+        """
         if self._global_dir is not None:
             try:
                 if file.resolve().is_relative_to(self._global_dir.resolve()):
@@ -1441,8 +1524,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         if _is_truthy(USD_CHUNK_VERBOSE()):
             for name, winner, loser in self.shadowed_modules:
                 logger.info(
-                    f"shadowed chunk '{name}': using {winner} [{self._tier_of(winner)}], "
-                    f"ignoring {loser} [{self._tier_of(loser)}]"
+                    "shadowed chunk '%s': using %s [%s], ignoring %s [%s]",
+                    name, winner, self._tier_of(winner), loser, self._tier_of(loser),
                 )
             return
 
@@ -1454,20 +1537,23 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         if same_tier:
             names = ", ".join(sorted({s[0] for s in same_tier}))
             logger.info(
-                f"usd_chunks: {len(same_tier)} shadowed chunk name(s) at the same "
-                f"precedence tier ({names}) -- set USD_CHUNK_VERBOSE=1 to list"
+                "usd_chunks: %d shadowed chunk name(s) at the same precedence tier (%s) "
+                "-- set USD_CHUNK_VERBOSE=1 to list",
+                len(same_tier), names,
             )
 
     def get_chunk_module(self, module_name: str) -> ChunkModule | None:
-        """Get the ChunkModule registered under module_name: the chunk's file name without
-        its folder or extension, e.g. A/B/C/foo.py is 'foo'. A folder-qualified name such as
-        'B.C.foo', as older scenes saved it, resolves to the same module.
+        """Get the ChunkModule registered under a module name.
+
+        The name is the chunk's file name without its folder or extension, e.g. A/B/C/foo.py is
+        'foo'. A folder-qualified name such as 'B.C.foo', as older scenes saved it, resolves to
+        the same module.
 
         Args:
             module_name (str): The name of the module to find
 
         Returns:
-            ChunkModule | None: A found ChunkModule object with name, or None if not found
+            ChunkModule | None: The module, or None if not found
         """
         if found := self.registered_modules.get(module_name):
             return found
@@ -1475,7 +1561,16 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         # still resolve: a chunk's name is now its file name alone.
         return self.registered_modules.get(module_name.rpartition(".")[2])
 
-    def get_chunk_modules(self, loaded=False, sort_result=False) -> List[ChunkModule]:
+    def get_chunk_modules(self, loaded=False, sort_result=False) -> list[ChunkModule]:
+        """Every registered chunk module.
+
+        Args:
+            loaded: Only the modules that are loaded.
+            sort_result: Sort by module name.
+
+        Returns:
+            The modules.
+        """
         v = list(self.registered_modules.values())
         if loaded:
             v = [x for x in v if x.loaded]
@@ -1483,9 +1578,8 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return v
         return sorted(v, key=lambda x: x.module_name.split(".")[-1])
 
-    def get_menu_entries(self, sort_result: bool = True) -> List[MenuEntry]:
-        """
-        Get every entry a chunk-creation menu should offer, described without reference to any UI.
+    def get_menu_entries(self, sort_result: bool = True) -> list[MenuEntry]:
+        """Get every entry a chunk-creation menu should offer, described without reference to any UI.
 
         One entry per registered module, plus one per element of that module's
         ChunkConfig.variants. Variant entries sit alongside their module rather than
@@ -1502,7 +1596,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Returns:
             List[MenuEntry]: Base and variant entries, in module order
         """
-        entries: List[MenuEntry] = []
+        entries: list[MenuEntry] = []
 
         for mod in self.get_chunk_modules(sort_result=sort_result):
             if mod.config.hidden:
@@ -1538,8 +1632,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         return entries
 
     def import_chunk(self, path: str | Path):
-        """
-        Import a chunk module from path. The file extension of path should be .py.
+        """Import a chunk module from path. The file extension of path should be .py.
 
         Args:
             path (str | Path): The path to the chunk module
@@ -1552,9 +1645,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 mod.load()
 
     def reload_modules(self):
-        """
-        Reload all loaded modules
-        """
+        """Reload every module, recreating as many chunks of each as the scene held."""
         loaded_config_names = defaultdict(int)
         for c in self.scene.get_chunks():
             if conf := c.get_config():
@@ -1581,7 +1672,7 @@ def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
     Target or exports, and never somewhere a chunk's bookkeeping may be hand-moved.
 
     Answered from the identifiers ChunkLayerManager records as it creates them, so it costs
-    a set lookup. The alternative — deriving it by walking every tracked layer's sublayers —
+    a set lookup. The alternative -- deriving it by walking every tracked layer's sublayers --
     has to be redone against live subLayerPaths every time it is asked, which is once per
     reconcile pass and one pass per wire, and the layer stack grows with the graph.
 
@@ -1589,6 +1680,12 @@ def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
     Sdf.Layer.Clear() drops customLayerData along with everything else, and Clear() on its
     own layer is exactly what a procedural chunk does every time it cooks. A mark there
     survives until the chunk first runs and then silently disappears.
+
+    Args:
+        layer: The layer to check.
+
+    Returns:
+        True for a layer the chunk graph created.
     """
     if not layer:
         return False
@@ -1596,14 +1693,14 @@ def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
 
 
 def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
-    """parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
+    """Parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
 
     Both the "drop every occurrence" and the de-dup matter, because an anonymous layer's
     identifier embeds its address (anon:<address>:<tag>) and addresses get recycled: once a
     tracked layer is freed while its identifier is still listed here, a later anon layer can
     be handed the same address and produce a byte-identical identifier. subLayerPaths is a
     list editor that rejects duplicates outright, so assigning such a list raises rather than
-    edits, and the delete never completes. Collapsing them is the only legal state anyway —
+    edits, and the delete never completes. Collapsing them is the only legal state anyway --
     two entries could never have named two different live layers at once.
     """
     seen: set = set()
@@ -1614,14 +1711,14 @@ def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
 
 
 class ChunkLayerManager(metaclass=RegistrySingleton):
-    """
-    A singleton class for managing the chunk layers. All chunks will be associated with a layer, on to
-    which the edits of the Chunks parameters are applied. This singleton is responsible for creating and
-    deleting these layers on creation / deletion of the chunks.
+    """A singleton that creates, tracks and removes the layers chunks author into.
+
+    Every chunk is associated with a layer onto which the edits of its parameters are
+    applied. The layers are created and deleted along with the chunks.
 
     Attributes:
-        chunk_layers (Dict[ChunkHash, str]) : A mapping from a Chunk to a layer identifier
-        scene (SceneSender) : A handle to the scene for stage access
+        chunk_layers (dict[ChunkHash, Sdf.Layer]): Maps each chunk to its layer
+        scene (SceneSender): A handle to the scene for stage access
     """
 
     initialized: bool = False
@@ -1636,14 +1733,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     internal_layer_ids: set = set()
 
     def initialize(self, stage: Usd.Stage):
-        """
-        Called to initialize the singleton. This should be called at least once in order to setup
-        the manager
+        """Set up the manager for a stage. Call at least once before using it.
 
         Args:
             stage (Usd.Stage): The stage to manage
         """
-
         self._edit_target_listener = NoticeConnection(
             self._edit_target_changed, ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED, globally=True
         )
@@ -1654,25 +1748,25 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._on_chunk_deleted_notice, ChunkNoticeAlias.CHUNK_DELETED, globally=True
         )
 
-        self.chunk_layers: Dict[core.ChunkHash, Sdf.Layer] = {}
-        # Keyed by (graph_id, target_layer_identifier) — a graph's chunks get split into a
+        self.chunk_layers: dict[core.ChunkHash, Sdf.Layer] = {}
+        # Keyed by (graph_id, target_layer_identifier) -- a graph's chunks get split into a
         # separate sibling group per Edit Target they're actually authored against, since a
         # single graph_layer can only ever be a sublayer of one target at a time.
-        self.graph_layers: Dict[tuple, Sdf.Layer] = {}
-        # Which real layer each graph_layer entry is currently sublayered under — needed to
+        self.graph_layers: dict[tuple, Sdf.Layer] = {}
+        # Which real layer each graph_layer entry is currently sublayered under -- needed to
         # detect and reparent when the resolved Edit Target changes between calls.
-        self._graph_layer_target: Dict[tuple, Sdf.Layer] = {}
+        self._graph_layer_target: dict[tuple, Sdf.Layer] = {}
         # Which real layer each individual chunk's content currently resolves against (same
-        # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) — lets
+        # value as its graph_layer's entry above, but keyed per-chunk for easy lookup) -- lets
         # export tooling group a chunk's own bookkeeping prim with whichever layer its driven
-        # content nests in (see scripts/core/export_usd.py's per-layer export mode).
-        self._chunk_target: Dict[core.ChunkHash, Sdf.Layer] = {}
+        # content nests in (see chunks/core/export_usd.py's per-layer export mode).
+        self._chunk_target: dict[core.ChunkHash, Sdf.Layer] = {}
         # The graph_key each chunk's layer was last placed under. get_or_create_layer only
         # has to look for that layer in OTHER graph layers when this has changed since --
         # and it is asked several times per chunk per cook, nearly always with nothing moved.
-        self._chunk_graph_key: Dict[core.ChunkHash, tuple] = {}
+        self._chunk_graph_key: dict[core.ChunkHash, tuple] = {}
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
-        # notice fired by the teardown itself can't resurrect one — see _chunk_deleted.
+        # notice fired by the teardown itself can't resurrect one -- see _chunk_deleted.
         self._retired_chunks: set = set()
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
@@ -1688,10 +1782,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.initialized = True
 
     def reset(self):
-        """Return the singleton to its pre-initialize state, dropping every layer
-        mapping. Used when switching stages (reload, tests) so state from the old
-        stage's stack doesn't leak into the new one. Keeps this class the single
-        owner of its private field list — callers must not clear fields directly.
+        """Return the singleton to its pre-initialize state, dropping every layer mapping.
+
+        Used when switching stages (reload, tests) so state from the old stage's stack doesn't
+        leak into the new one. Keeps this class the single owner of its private field list --
+        callers must not clear fields directly.
         """
         self.initialized = False
         self.stage = None
@@ -1704,9 +1799,19 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
+        """The file name a layer is saved under: its display name without the unique suffix."""
         return "_".join(layer.GetDisplayName().split("_")[:-1]) + ".usda"
 
     def save_layer(self, c: core.ChunkHash, dirname: str | Path):
+        """Export one chunk's layer into a directory.
+
+        Args:
+            c: The chunk.
+            dirname: The directory to write to.
+
+        Returns:
+            The written file, or None if the chunk has no layer.
+        """
         if not (layer := self.get_layer(c)):
             return None
 
@@ -1715,10 +1820,18 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer.Export(file)
         return Path(file)
 
-    def save_layers(self, path: str | Path) -> Dict[str, str]:
+    def save_layers(self, path: str | Path) -> dict[str, str]:
+        """Export every chunk layer into a directory.
+
+        Args:
+            path: The directory to write to.
+
+        Returns:
+            {chunk: written file}, empty if `path` is not a directory.
+        """
         p = Path(path)
         if not p.is_dir():
-            logger.warning(f"Can't save layers. Path is not a directory {path}")
+            logger.warning("Can't save layers. Path is not a directory %s", path)
             return {}
 
         layers = {}
@@ -1732,66 +1845,70 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return layers
 
     def open_layer(self, path: str | Path):
+        """Open a layer file, or None if it does not exist."""
         p = Path(path)
         if not p.exists():
             return
         return Sdf.Layer.FindOrOpen(str(path))
 
     def stitch_layers(self, layer_a, layer_b):
+        """Merge layer_b's opinions into layer_a, where layer_a's are stronger."""
         UsdUtils.StitchLayers(layer_a, layer_b)
 
     def get_layer_usda(self, layer: Sdf.Layer):
+        """A layer's contents as usda text."""
         return layer.ExportToString()
 
     def get_stage_root(self) -> Sdf.Layer:
+        """The managed stage's root layer."""
         return self.stage.GetRootLayer()
 
-    def get_layer(self, c: "core.ChunkHash") -> Sdf.Layer | None:
-        """
-        Get a layer associated with the a chunk
+    def get_layer(self, c: core.ChunkHash) -> Sdf.Layer | None:
+        """Get the layer associated with a chunk.
 
         Args:
-            c (ChunkUsdLayerSupport): A chunk object implementing the ChunkUsdLayerSupport protocol
+            c (ChunkHash): The chunk whose layer to get
 
         Returns:
-            Sdf.Layer: The layer associated with the ChunkCommon object
-            None: If the layer does not exist
+            Sdf.Layer | None: The chunk's layer, or None if it has none
         """
         return self.chunk_layers.get(c)
 
-    def get_chunk_target(self, c: "core.ChunkHash") -> Sdf.Layer | None:
-        """Return the real layer this chunk's content last resolved against — the session
-        layer by default, or an Edit-Target-chosen layer — as tracked by get_or_create_layer.
+    def get_chunk_target(self, c: core.ChunkHash) -> Sdf.Layer | None:
+        """The real layer this chunk's content last resolved against.
 
-        Used by export tooling to group a chunk's own bookkeeping prim (always in the
-        session layer) with whichever real layer its driven content actually nests in.
+        That is the session layer by default, or an Edit-Target-chosen layer, as tracked by
+        get_or_create_layer. Export tooling uses it to group a chunk's own bookkeeping prim
+        (always in the session layer) with whichever real layer its driven content nests in.
+
+        Args:
+            c: The chunk.
+
+        Returns:
+            The layer, or None if the chunk has none yet.
         """
         return self._chunk_target.get(c)
 
-    def register_chunk_layer(self, c: "core.ChunkCommon", layer: Sdf.Layer) -> None:
+    def register_chunk_layer(self, c: core.ChunkCommon, layer: Sdf.Layer) -> None:
         """Associate an existing layer as this chunk's edit layer."""
         h = c.get_hash()
         self.chunk_layers[h] = layer
         weakref.finalize(c, self._chunk_deleted, h)
 
-    def get_or_create_layer(self, c: "core.ChunkCommon") -> Sdf.Layer | None:
-        """
-        Get a layer similarly to get_layer(). Will create a new one if the layer does
-        not already exists
+    def get_or_create_layer(self, c: core.ChunkCommon) -> Sdf.Layer | None:
+        """Get a chunk's layer as get_layer() does, creating it if it does not exist yet.
 
         Args:
-            c (ChunkUsdLayerSupport): The chunk object which implements the ChunkUsdLayerSupport protocol
+            c (ChunkCommon): The chunk whose layer to get
 
         Returns:
-            Sdf.Layer: The layer, either found or created
-
-        Raises:
-            AttributeError: If the stage has not been initialized
+            Sdf.Layer | None: The layer, or None when there is no stage or the chunk has been
+            deleted
         """
         if not self.stage:
             return
 
-        # A deleted chunk never gets a layer back — see _chunk_deleted for why re-creating
+        # A deleted chunk never gets a layer back -- see _chunk_deleted for why re-creating
         # one mid-teardown is what corrupts the graph layer's sublayer list.
         if c.get_hash() in self._retired_chunks:
             return
@@ -1809,17 +1926,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 return ctx_layer
 
         # Resolve where this chunk's content should nest: the user's chosen Edit Target,
-        # or the session layer by default — the same resolution chunk-prim redirect
+        # or the session layer by default -- the same resolution chunk-prim redirect
         # opinions already follow (chunk_utils.get_edit_layer). CONTEXT chunks (Tab-like
-        # containers) are structural scaffolding, not content — they always stay pinned
+        # containers) are structural scaffolding, not content -- they always stay pinned
         # to the session layer regardless of Edit Target, same as chunk-prim bookkeeping;
         # only a regular content-producing chunk's own driven data should move.
-        # Local import: chunk_utils imports this module at module scope, so importing it
-        # back at module scope here would fail depending on which of the two loads first.
         if isinstance(c, core.ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             target = self.stage.GetSessionLayer()
         else:
-            from usd_chunks import chunk_utils
             # Pass c as the owner so the target is resolved from c's own exec-chain position
             # (nearest upstream Edit Target), not from whichever chunk executed last.
             owner_chunk = c if isinstance(c, core.ChunkBase) else None
@@ -1838,13 +1952,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # same method (via ChunkStageSync._on_contents_changed -> load_chunks, the same
         # reentrancy class documented on _chunk_deleted's own guard below) for a sibling chunk
         # targeting the same graph_key, before this call's own bookkeeping/insert has settled
-        # — seen live in CI as a genuine, if intermittent, "Duplicate item ... not allowed for
+        # -- seen live in CI as a genuine, if intermittent, "Duplicate item ... not allowed for
         # field 'subLayers'" Sdf error on the exact same graph layer being inserted twice.
         prev_w = chunk_notice._usd_write_active
         prev_internal = chunk_notice._internal_layer_write_active
         chunk_notice._usd_write_active = True
         # Everything sublayered below is a graph layer or a chunk's own procedural layer, so
-        # none of it can change which Edit Target a chunk resolves to — see the flag's own
+        # none of it can change which Edit Target a chunk resolves to -- see the flag's own
         # comment. Set alongside _usd_write_active because the Edit Target memo is dropped
         # ahead of that flag's bail-out, deliberately: an ordinary suppressed sublayer edit
         # still moves a real layer in or out of the stack, and this one does not.
@@ -1856,9 +1970,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 self.graph_layers[graph_key] = parent
                 self._graph_layer_target[graph_key] = target
                 # Insert at the top so this graph's layers win over other sublayers already on
-                # the target — e.g. an RBD bake must beat the prim's existing xformOp:transform.
+                # the target -- e.g. an RBD bake must beat the prim's existing xformOp:transform.
                 # Checked rather than unconditional: a freshly minted anon layer's identifier
-                # can still collide with one already sitting in target.subLayerPaths — e.g. a
+                # can still collide with one already sitting in target.subLayerPaths -- e.g. a
                 # stale reference left over from before a reload (anon identifiers are reused
                 # once the process's underlying slot is freed), which USD's Sdf list editor
                 # rejects outright as a duplicate ("Duplicate item ... not allowed for field
@@ -1869,7 +1983,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 prev_target = self._graph_layer_target.get(graph_key)
                 if prev_target and prev_target.identifier != target.identifier:
                     # The resolved Edit Target changed since this graph layer was created (e.g.
-                    # an upstream Edit Target chunk's selection changed) — reparent rather than
+                    # an upstream Edit Target chunk's selection changed) -- reparent rather than
                     # leave it sublayered under a now-stale target.
                     if parent.identifier in prev_target.subLayerPaths:
                         prev_target.subLayerPaths.remove(parent.identifier)
@@ -1897,14 +2011,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
             # If a chunk connection changed after the chunk layer was created, the layer may have been
             # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
-            # Only inspect pl for emptiness right after we've just removed its child above — never as
+            # Only inspect pl for emptiness right after we've just removed its child above -- never as
             # a blanket sweep over every tracked graph layer, since a graph layer can legitimately be
             # momentarily empty while it's still being constructed (its own first leaf not yet added).
             #
             # Looks only at the graph layers' own direct sublayers, not the whole composed
             # hierarchy iter_chunk_layers() walks. A chunk leaf layer is only ever inserted as a
             # direct sublayer of a graph layer (add_layer), so those are the only pairs that could
-            # ever match here — the deeper levels of that walk are a chunk layer's own imports
+            # ever match here -- the deeper levels of that walk are a chunk layer's own imports
             # (a Sublayer chunk's files), which are never this layer. The full walk resolves every
             # sublayer path through Sdf.Find on every call, and this runs on every single
             # get_edit_context: it was ~30% of the cost of opening a saved graph.
@@ -1936,12 +2050,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         return layer
 
-    def is_muted(self, c: "core.ChunkHash") -> bool:
-        """
-        Check if a chunk layer is muted
+    def is_muted(self, c: core.ChunkHash) -> bool:
+        """Check if a chunk's layer is muted.
+
+        A chunk layer can be muted stage-scoped (the disable path) or at the Sdf level (node
+        graph view slots); either counts.
 
         Args:
-            c (ChunkHash): The chunk which whose layer to check
+            c (ChunkHash): The chunk whose layer to check
 
         Returns:
             bool: True when the layer is muted, False otherwise
@@ -1953,14 +2069,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # view slots); treat either as muted.
         return self.stage.IsLayerMuted(layer.identifier) or layer.IsMuted()
 
-    def add_layer(self, target_layer: Sdf.Layer, c: "core.ChunkCommon", index: int = 0) -> Sdf.Layer:
-        """
-        Add a layer to the stage and add a mapping from chunk c to the new layer.
+    def add_layer(self, target_layer: Sdf.Layer, c: core.ChunkCommon, index: int = 0) -> Sdf.Layer:
+        """Add a layer to the stage and add a mapping from chunk c to the new layer.
 
         Args:
             target_layer (Sdf.Layer): The target layer onto which we append the new layer
             c (ChunkUsdLayerSupport): The chunk that can modify the new layer. The new layer's identifier
                 will be created from the chunks get_layer_identifier()
+            index (int): Where in target_layer's subLayerPaths to insert the new layer
 
         Returns:
             Sdf.Layer: A new layer
@@ -1975,6 +2091,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         self.chunk_layers[h] = layer
         target_layer.subLayerPaths.insert(index, layer.identifier)
+        # An empty layer holds no result, so the chunk must cook before recook_for_view can
+        # count on its layer. Covers a load and reload_all, which make every layer afresh
+        # for chunk objects that may have cooked into the old ones.
+        chunk_notice.mark_cook_stale(c)
 
         # We must make sure to delete the layer of the chunk AFTER all other notices are sent.
         # For this reason, we can't rely on callbacks. Instead we can register a finalizer, so we delete
@@ -1984,6 +2104,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return layer
 
     def clear_all_layers(self):
+        """Clear every chunk layer and detach every graph layer from its target."""
         for c, lay in self.chunk_layers.items():
             self.clear_layer(lay.identifier)
 
@@ -1999,11 +2120,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.internal_layer_ids.clear()
 
     def clear_layer(self, layer_id: str | core.ChunkBase):
-        """
-        Clear a layer and remove from sublayer list
+        """Clear a layer's contents.
 
         Args:
-            layer_id (str): The layer to remove
+            layer_id (str | ChunkBase): The layer identifier, or the chunk whose layer to clear
         """
         if isinstance(layer_id, str):
             layer = Sdf.Layer.Find(layer_id)
@@ -2014,9 +2134,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         layer.Clear()
 
     def reload_all(self):
-        """
-        clear the chunk layer stack and recreate them
-        """
+        """Drop every chunk and graph layer and create them again."""
         for gkey, g_layer in list(self.graph_layers.items()):
             target = self._graph_layer_target.pop(gkey, None)
             if target and g_layer.identifier in target.subLayerPaths:
@@ -2034,17 +2152,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         """Adopt the stage whose edit target moved -- but only when there is none yet.
 
-        This listens globally, so it hears every stage in the process. It used to adopt
-        whichever one spoke last, which is right for the one case it exists for -- chunks
-        loaded before the host had a stage -- and wrong for every other: a second stage
-        in the same process (a test authoring an asset into a file it just exported,
-        a tool opening a scratch stage) changed its edit target, this manager switched
-        to it, and the next get_or_create_layer -- reached from any chunk's global
-        stage-change callback through get_edit_context -- sublayered every chunk's layer
-        under THAT stage's session. The chunks' opinions then composed over the foreign
-        stage: a variant selection authored by a Set Variant chunk overrode the one the
-        other stage had just set, and its variant edit context wrote into the wrong
-        variant. A stage the host replaces reaches this manager through initialize()
+        This listens globally, so it hears every stage in the process, and it adopts one
+        only when it has none -- the case it exists for is chunks loaded before the host
+        had a stage. Adopting whichever stage spoke last would be wrong for every other
+        case: a second stage in the same process (a test exporting an asset, a tool
+        opening a scratch stage) would pull every chunk's layer under THAT stage's session,
+        and the chunks' opinions would compose over a stage they were never meant for.
+        A stage the host replaces reaches this manager through initialize()
         (chunk_stage.reload_for_stage), so an occupied slot never needs a notice to move.
         """
         stage = notice.GetStage()
@@ -2063,12 +2177,16 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 yield (layer, slayer)
                 yield from self._iter_sublayers(slayer, visited)
 
-    def iter_chunk_layers(self) -> Generator[Tuple[Sdf.Layer, Sdf.Layer], None, None]:
-        """Yield (parent, sublayer) for every graph layer and chunk leaf layer currently
-        tracked, regardless of which real layer (session, or an Edit-Target-chosen
-        sublayer) each graph layer is actually attached under.
+    def iter_chunk_layers(self) -> Generator[tuple[Sdf.Layer, Sdf.Layer], None, None]:
+        """Every tracked graph layer and chunk layer, with the layer it sits under.
+
+        Covers every graph layer regardless of which real layer (the session layer, or an
+        Edit-Target-chosen sublayer) it is attached under.
+
+        Yields:
+            (parent, sublayer) pairs.
         """
-        # Don't pre-mark g_layer as visited here — _iter_sublayers does that itself as
+        # Don't pre-mark g_layer as visited here -- _iter_sublayers does that itself as
         # its first action, and would otherwise immediately bail (thinking it's already
         # walked) before ever descending into g_layer's own chunk leaf layers.
         visited: set = set()
@@ -2080,8 +2198,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _on_chunk_deleted_notice(self, notice, sender):
         # Remove the chunk's edit layer immediately on delete. The layer is normally freed by
-        # a GC finalizer (add_layer), but a lingering reference — a node/widget or a reference
-        # cycle — can defer collection, leaving the layer and any baked edits (e.g. an RBD
+        # a GC finalizer (add_layer), but a lingering reference -- a node/widget or a reference
+        # cycle -- can defer collection, leaving the layer and any baked edits (e.g. an RBD
         # sim's time samples) composed into the scene. Idempotent with the finalizer.
         get_hash = getattr(sender, "get_hash", None)
         if callable(get_hash):
@@ -2089,8 +2207,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
     def _chunk_deleted(self, chunk_hash):
         # Retire the chunk before touching any layer. The subLayerPaths edits below fire
-        # StageContentsChanged, and a chunk script listening for it (create_layer's and
-        # edit_target's menu-refresh callbacks) re-executes off that notice — landing back in
+        # StageContentsChanged, and a chunk script listening for it (layer's and
+        # edit_target's menu-refresh callbacks) re-executes off that notice -- landing back in
         # get_or_create_layer, which would hand this same chunk a BRAND NEW anon layer to
         # replace the one being torn down and sublayer it right back in. Every delete then
         # feeds the next: the leftovers pile up under the graph layer until two of them are
@@ -2105,7 +2223,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not (layer := self.get_layer(chunk_hash)):
             return
 
-        layer_hierarchy: Dict[Sdf.Layer, Sdf.Layer] = {}
+        layer_hierarchy: dict[Sdf.Layer, Sdf.Layer] = {}
 
         # subLayerPaths edits below are plain Sdf writes that fire StageContentsChanged
         # like any other stage edit. Without this guard, each one re-enters
@@ -2155,6 +2273,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self.stage.MuteLayer(layer.identifier)
         elif self.is_muted(c) and not c.is_blocked():
             # Only un-mute a disable-muted layer. A view-driven block also mutes the layer, and
-            # this handler runs on EVERY state change (incl. selection) — without the is_blocked
+            # this handler runs on EVERY state change (incl. selection) -- without the is_blocked
             # guard, selecting an out-of-view node would un-mute it and show its output.
             self.stage.UnmuteLayer(layer.identifier)

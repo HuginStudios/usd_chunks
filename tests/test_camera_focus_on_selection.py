@@ -13,7 +13,7 @@ import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 CAMERA = "/cameras/camera1"
@@ -46,8 +46,8 @@ def _cube(stage, path, center, size=1.0):
 
 
 def _module():
-    """scripts/ is not importable as a package; the chunk is loaded from its file."""
-    path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "modelling" / "camera.py"
+    """chunks/ is not importable as a package; the chunk is loaded from its file."""
+    path = pathlib.Path(__file__).resolve().parent.parent / "chunks" / "modelling" / "camera.py"
     spec = importlib.util.spec_from_file_location("camera_chunk_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

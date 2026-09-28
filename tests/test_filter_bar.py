@@ -6,7 +6,15 @@ from PySide6 import QtCore
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.frontends.qt.widgets import (
+    ChunkWidget,
+    ViewSlotState,
+    ParamsFilterBar,
+    _PARAMS_HEADER_BG,
+)
 
 
 class _DummyScene(SceneSender):
@@ -48,8 +56,8 @@ def test_pin_filter_defaults_enabled_when_attribute_absent() -> None:
 
 def test_set_pin_filter_enabled_roundtrips_and_defines_prim_on_demand() -> None:
     """A plain tab context's own prim is never authored by _define_prim (PARAM_ADDED never
-    fires for it — see SceneSender.add_chunk's send_added=False for contexts without a
-    module) — an empty, just-created tab has no prim at all yet. set_pin_filter_enabled must
+    fires for it -- see SceneSender.add_chunk's send_added=False for contexts without a
+    module) -- an empty, just-created tab has no prim at all yet. set_pin_filter_enabled must
     define one on demand rather than silently no-op."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -68,7 +76,7 @@ def test_pin_filter_enabled_uses_own_prim_path_not_get_chunk_prim_path() -> None
     """Regression: get_chunk_prim_path(context) double-appends the context's own name for a
     plain tab (ChunkBase.get_context() returns self for a CONTEXT chunk, so
     _resolve_chunk_root resolves to the context's own prim_path, and get_chunk_prim_path then
-    appends "/{name}" a second time) — only chunkgroups dodge this via their own prim_path
+    appends "/{name}" a second time) -- only chunkgroups dodge this via their own prim_path
     short-circuit. The context's own .prim_path must be used directly instead."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -81,8 +89,6 @@ def test_pin_filter_enabled_uses_own_prim_path_not_get_chunk_prim_path() -> None
 
 
 def test_pin_filter_enabled_works_for_chunkgroup_context_too() -> None:
-    from usd_chunks.chunk_flags import ChunkFlags
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -101,8 +107,6 @@ def test_pin_filter_enabled_works_for_chunkgroup_context_too() -> None:
 # ---------------------------------------------------------------------------
 
 def test_pin_filter_on_shows_only_pinned(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -119,8 +123,6 @@ def test_pin_filter_on_shows_only_pinned(qapp) -> None:
 
 
 def test_toggling_pin_filter_off_reveals_every_chunk_live(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -146,8 +148,7 @@ def test_toggling_pin_filter_off_reveals_every_chunk_live(qapp) -> None:
 
 def test_pin_toggle_menu_action_respects_disabled_pin_filter(qapp) -> None:
     """With the pin filter off, explicitly unpinning a chunk via the menu (pin_changed signal)
-    must NOT hide it — the filter is off, so it should stay visible regardless of pin state."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget, ViewSlotState
+    must NOT hide it -- the filter is off, so it should stay visible regardless of pin state."""
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -164,7 +165,7 @@ def test_pin_toggle_menu_action_respects_disabled_pin_filter(qapp) -> None:
 
     chunk_stage.set_chunk_pinned(c, False)
     vs.pin_changed.emit(c, False)
-    assert c.get_hash() in w.group_widgets  # still shown — filter is off
+    assert c.get_hash() in w.group_widgets  # still shown -- filter is off
 
 
 def test_pin_filter_toggle_persists_across_export_reload_cycle(qapp) -> None:
@@ -184,15 +185,13 @@ def test_pin_filter_toggle_persists_across_export_reload_cycle(qapp) -> None:
 
 
 def test_legacy_tab_with_no_filter_attribute_behaves_as_pin_filter_on(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
     chunk_stage.set_chunk_pinned(c, False)
-    # No filter:pinEnabled ever written for this tab — matches a scene from before issue 05.
+    # No filter:pinEnabled ever written for this tab -- matches a scene from before issue 05.
 
     w = ChunkWidget(ctx, is_tab_context=True)
     assert c.get_hash() not in w.group_widgets  # pin filter defaults on, chunk is unpinned
@@ -292,8 +291,6 @@ def test_set_search_scope_rejects_unrecognized_value() -> None:
 # ---------------------------------------------------------------------------
 
 def test_search_box_live_filters_by_name(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -321,8 +318,6 @@ def _set_scope(filter_bar, scope: str) -> None:
 
 
 def test_scope_combo_narrows_search_to_type_only(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -342,8 +337,6 @@ def test_scope_combo_narrows_search_to_type_only(qapp) -> None:
 
 
 def test_scope_combo_only_ever_has_one_of_three_values(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -357,7 +350,6 @@ def test_scope_combo_only_ever_has_one_of_three_values(qapp) -> None:
 
 def test_search_filter_ands_with_pin_filter(qapp) -> None:
     """Pin filter on + search: only chunks that are BOTH pinned AND matching show."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -379,15 +371,13 @@ def test_search_filter_ands_with_pin_filter(qapp) -> None:
     assert c_unpinned_match.get_hash() not in w.group_widgets  # matches search, but not pinned
     assert c_pinned_nomatch.get_hash() not in w.group_widgets  # pinned, but doesn't match search
 
-    # Turning the pin filter off lets the unpinned match through — search alone now decides.
+    # Turning the pin filter off lets the unpinned match through -- search alone now decides.
     w._filter_bar.pin_filter_checkbox.setChecked(False)
     assert c_unpinned_match.get_hash() in w.group_widgets
     assert c_pinned_nomatch.get_hash() not in w.group_widgets  # still filtered out by search
 
 
 def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -403,7 +393,7 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
 
 # ---------------------------------------------------------------------------
 # filter bar placement: a tinted "ParamsHeader" panel (prim path -> lofted own-
-# params, e.g. a chunkgroup's "doc" Description field from scripts/core/chunkgroup.py
+# params, e.g. a chunkgroup's "doc" Description field from chunks/core/chunkgroup.py
 # -> filter bar) -> an embossed separator -> the chunk list
 # ---------------------------------------------------------------------------
 
@@ -422,8 +412,6 @@ def _index_of(widgets: list, target) -> int:
 
 
 def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget, ParamsFilterBar
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -446,12 +434,10 @@ def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -
 
 
 def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgroup_tab(qapp) -> None:
-    """A chunkgroup's own top-level params (e.g. scripts/core/chunkgroup.py's "doc" Description
-    TextEdit) render lofted, above the filter bar — via ChunkWidget.add_widget's existing
+    """A chunkgroup's own top-level params (e.g. chunks/core/chunkgroup.py's "doc" Description
+    TextEdit) render lofted, above the filter bar -- via ChunkWidget.add_widget's existing
     lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds. Both
     live inside the same tinted header panel as the prim path field and the filter bar."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-    from usd_chunks.chunk_flags import ChunkFlags
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -478,10 +464,9 @@ def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgro
 
 
 def test_header_panel_has_a_distinct_tint_and_separator_is_visible(qapp) -> None:
-    """A plain QFrame HLine would be invisible here — CHUNK_STYLESHEET's global
-    `QFrame { border: none; }` rule strips the border frame-shape painting relies on — so the
+    """A plain QFrame HLine would be invisible here -- CHUNK_STYLESHEET's global
+    `QFrame { border: none; }` rule strips the border frame-shape painting relies on -- so the
     header panel's tint and the separator both use explicit background styling instead."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -498,10 +483,9 @@ def test_header_panel_has_a_distinct_tint_and_separator_is_visible(qapp) -> None
 
 
 def test_prim_path_and_lofted_container_match_header_panel_tint(qapp) -> None:
-    """Both are plain QWidgets with no background of their own by default — they must be
+    """Both are plain QWidgets with no background of their own by default -- they must be
     explicitly tinted to match the header panel rather than showing some other default,
     with WA_StyledBackground set so a bare QWidget actually paints it."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget, _PARAMS_HEADER_BG
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)

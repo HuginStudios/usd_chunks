@@ -1,7 +1,7 @@
 """Tests for the reserved commit(node) chunk hook.
 
 commit() is the write-to-disk counterpart to execute(): dispatched once per chunk that
-defines it, in topological order, after the DAG solve has settled — rather than from
+defines it, in topological order, after the DAG solve has settled -- rather than from
 inside the notice propagation loop, the way execute() is re-run throughout a solve.
 
 Covers the dispatch itself (chunk_scheduler.commit_all), Export USD's implementation of
@@ -19,11 +19,12 @@ from pathlib import Path
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_scheduler
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import export_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
-from usd_chunks.plugins.usdchunks_cli import cmd_run
+from usd_chunks.cli import cmd_run
 
 
 class _DummyScene(SceneSender):
@@ -49,7 +50,7 @@ def _setup_stage():
 
 def _make(scene, mod, module_name):
     """Create a chunk from mod and add it to scene, auto-chaining it onto the previous
-    one exactly as the Params tab does — Edit Target resolves from exec-chain topology,
+    one exactly as the Params tab does -- Edit Target resolves from exec-chain topology,
     so chunks have to actually be wired into the chain."""
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
@@ -104,7 +105,7 @@ class TestCommitDispatch:
         ordering has to come from depth, where ownership pulls a chunk at least as deep as
         its deepest param.
 
-        Note this is the in-memory add_dependency API, NOT what the node graph does — a
+        Note this is the in-memory add_dependency API, NOT what the node graph does -- a
         dragged param port authors an expression and creates no DAG edge at all. That path
         is covered by TestCommitOrderFromStage, which orders from the stage instead."""
         chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
@@ -152,12 +153,12 @@ class TestExportUsdCommit:
     """Export USD's commit() and its Export button must be the same implementation."""
 
     def setup_method(self):
-        self.create_mod = importlib.import_module("scripts.usd.create_layer")
-        self.export_mod = importlib.import_module("scripts.core.export_usd")
+        self.create_mod = importlib.import_module("chunks.usd.layer")
+        self.export_mod = importlib.import_module("chunks.core.export_usd")
 
     def _network(self, tmp_path, out_name="out"):
         scene, stage = _setup_stage()
-        shot = _make(scene, self.create_mod, "create_layer")
+        shot = _make(scene, self.create_mod, "layer")
         shot.get_param("layer_name").value = "shot"
         shot.execute()
 
@@ -218,14 +219,14 @@ class TestExportUsdCommit:
 
 class TestCliRunCommits:
     """`usdchunks run` on a network containing an Export USD chunk writes that chunk's
-    configured output — the deliberate behaviour change that makes the chunk reachable
+    configured output -- the deliberate behaviour change that makes the chunk reachable
     headlessly at all, since it has no execute() to reach it through."""
 
     def _write_network(self, tmp_path):
         """Author a Light -> Export USD network and serialize it, returning the network
         file and the output path the Export USD chunk is configured to write."""
-        export_mod = importlib.import_module("scripts.core.export_usd")
-        light_mod = importlib.import_module("scripts.modelling.light")
+        export_mod = importlib.import_module("chunks.core.export_usd")
+        light_mod = importlib.import_module("chunks.modelling.light")
 
         scene, _stage = _setup_stage()
         light = _make(scene, light_mod, "light")
@@ -256,19 +257,19 @@ class TestCliRunCommits:
     def test_run_writes_the_networks_driven_content(self, tmp_path):
         """The same thing end to end, in a clean interpreter. Loading a second network
         into a process that already holds a live scene does not re-cook the loaded
-        chunks — `--printout` comes back empty there too, so it is not something commit
-        introduced — and only a fresh process shows that what `run` commits is the real
+        chunks -- `--printout` comes back empty there too, so it is not something commit
+        introduced -- and only a fresh process shows that what `run` commits is the real
         driven content, not an empty stage."""
         net, result = self._write_network(tmp_path)
 
         repo_root = Path(__file__).resolve().parents[1]
         env = dict(os.environ)
-        env["USD_CHUNK_DIRS"] = str(repo_root / "scripts")
+        env["USD_CHUNK_DIRS"] = str(repo_root / "chunks")
         # Prepended, not assigned: USD's own bindings are often found through PYTHONPATH,
         # and replacing it left the child unable to import pxr at all.
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), os.environ.get("PYTHONPATH")]))
         proc = subprocess.run(
-            [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run", str(net)],
+            [sys.executable, "-m", "usd_chunks.cli", "run", str(net)],
             cwd=str(repo_root),
             env=env,
             capture_output=True,
@@ -284,7 +285,7 @@ class TestCliRunCommits:
 
 
 class TestCommitOrderFromStage:
-    """chunk_stage.commit_order_from_stage — ordering read from USD connections.
+    """chunk_stage.commit_order_from_stage -- ordering read from USD connections.
 
     Depth used to be blind to a param port: drag-to-connect authors an @Node.param@
     expression whose live link is a NoticeConnection, not a DAG edge, so both chunks sat at

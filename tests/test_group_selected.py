@@ -10,14 +10,16 @@ has to come from the group, so the group sits in the chain exactly where the sel
 """
 from __future__ import annotations
 
+import sys
+import types
 import pytest
 from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import (
     _EXEC_OUTPUT, connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init,
 )
@@ -280,9 +282,8 @@ def test_ctrl_g_reaches_it(graph):
 
 
 # ---------------------------------------------------------------------------
-# Reported on the kitchen layout: grouping Materials and the four AMD MaterialX
-# Library nodes (the chain feeding a Merge's second slot) unplugged the Appliances
-# group from the Merge's first slot, and the walls lost their materials.
+# Grouping the chain feeding a Merge's second slot must not unplug whatever feeds the
+# Merge's first slot.
 # ---------------------------------------------------------------------------
 
 
@@ -343,14 +344,14 @@ def test_grouped_chunks_keep_their_names(graph):
 
 _PROBE = "_self_building_probe"
 
-_SELF_BUILDING_SRC = """
+_SELF_BUILDING_SRC = f"""
 import sys
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 
 
 def execute(node):
-    probe = sys.modules.get(%r)
+    probe = sys.modules.get({_PROBE!r})
     if not node.get_param("level").value:
         return
     scene = chunk_registry.ChunkRegistry().scene
@@ -369,15 +370,13 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="Test")
-""" % _PROBE
+    return chunk.DefaultConfig(category="Test")
+"""
 
 
 @pytest.fixture
 def self_building(graph, tmp_path, monkeypatch):
     """A chunk that makes its own child when it cooks, like AMD MaterialX Library."""
-    import sys
-    import types
 
     qapp, reg, scene, d, stage = graph
     src = tmp_path / "self_building_chunk.py"

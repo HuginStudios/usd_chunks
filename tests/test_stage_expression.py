@@ -18,7 +18,8 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import ChunkStageSync
 
 
@@ -176,7 +177,7 @@ def test_a_plain_value_is_untouched(scene) -> None:
 
 def _stage_expression(scene, *rows):
     """Build the chunk with one row per (name, type, value) triple."""
-    mod = importlib.import_module("scripts.utils.stage_expression")
+    mod = importlib.import_module("chunks.utils.stage_expression")
 
     node = mod.main()
     node._config = ChunkConfig(module="stage_expression")

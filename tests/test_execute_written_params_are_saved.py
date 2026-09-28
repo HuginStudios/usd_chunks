@@ -21,7 +21,7 @@ import pathlib
 from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks import chunk_notice, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     ChunkStageSync,
     initialize as chunk_usd_initialize,
@@ -70,7 +70,7 @@ def _add(scene: SceneSender, module: str):
     return chunk_obj
 
 
-def _reopen(scene: SceneSender, module: str, tmp_path) -> "tuple[Usd.Stage, list]":
+def _reopen(scene: SceneSender, module: str, tmp_path) -> tuple[Usd.Stage, list]:
     """Save the scene, open the file fresh, and hand back the stage and its chunks."""
     out = pathlib.Path(tmp_path) / "scene.usda"
     save_scene(scene, out)
@@ -205,14 +205,14 @@ def test_a_write_from_somewhere_else_mid_cook_is_still_ignored() -> None:
 
 def test_a_transient_param_is_kept_out_of_the_saved_scene(tmp_path) -> None:
     """Recording what a chunk writes during its cook is right for a value and wrong for a
-    handle. Create Layer keeps the identifier of the anonymous layer it owns in a param, and
+    handle. Layer keeps the identifier of the anonymous layer it owns in a param, and
     an anonymous identifier names an in-memory object -- saving one records an address that is
     already dead by the time anything reads it back. Reported by the layer stack coming up
     with two layers called "B" after a reload.
     """
     stage = _new_stage()
     scene = _scene_for(stage)
-    layer_chunk = _add(scene, "create_layer")
+    layer_chunk = _add(scene, "layer")
     layer_chunk.get_param("layer_name").value = "B"
 
     assert layer_chunk.get_param("_new_layer_id").value, (

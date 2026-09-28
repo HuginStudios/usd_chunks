@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pxr import Sdf, Usd
 
-from usd_chunks.plugins.chunk_graph_layout import (
+from usd_chunks.graph.layout import (
     find_connected_components,
     grow_to_connected_subgraph,
     layout_positions,
@@ -10,7 +10,9 @@ from usd_chunks.plugins.chunk_graph_layout import (
 )
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
 
 
 def _sizes(sizes: dict) -> callable:
@@ -99,7 +101,7 @@ def test_layout_positions_places_a_simple_chain_left_to_right() -> None:
 
 
 def test_layout_positions_preserves_the_pre_layout_top_left_corner() -> None:
-    """The view shouldn't jump far from wherever the user was looking — the result's
+    """The view shouldn't jump far from wherever the user was looking -- the result's
     top-left corner should match the minimum X/Y of the nodes' positions going in."""
     up = {"b": {"a"}, "c": {"b"}}
     down = {"a": {"b"}, "b": {"c"}}
@@ -131,7 +133,7 @@ def test_layout_positions_averages_target_y_between_two_upstream_neighbors() -> 
     positions = {"a": (0.0, 0.0), "b": (0.0, 200.0), "c": (0.0, 0.0)}
     result = layout_positions(["a", "b", "c"], sizes, _locked(set()), _positions(positions), up, down)
     # a and b are both depth 0 (no upstream) so they get placed by the algorithm too, not
-    # read from `positions` — what matters is c's Y lands between wherever a/b end up.
+    # read from `positions` -- what matters is c's Y lands between wherever a/b end up.
     a_cy = result["a"][1] + 25
     b_cy = result["b"][1] + 25
     c_cy = result["c"][1] + 25
@@ -213,8 +215,6 @@ def _wire_exec(stage: Usd.Stage, downstream_path: str, upstream_path: str) -> No
 
 
 def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -247,8 +247,6 @@ def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> 
 
 
 def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -268,7 +266,7 @@ def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
     graph_scene.build(stage, scene, ctx)
     before = {path: node.pos().x() for path, node in graph_scene._nodes.items()}
 
-    # Only the middle node is "selected" — layout must still grow to the full chain.
+    # Only the middle node is "selected" -- layout must still grow to the full chain.
     graph_scene.layout_nodes(seed_paths=["/Tab1/b"])
 
     after = {path: node.pos().x() for path, node in graph_scene._nodes.items()}
@@ -276,8 +274,6 @@ def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
 
 
 def test_layout_nodes_never_moves_a_locked_node(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")

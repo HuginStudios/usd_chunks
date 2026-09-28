@@ -24,7 +24,7 @@ import importlib
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 
 
@@ -38,7 +38,7 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-rbd = importlib.import_module("scripts.dynamics.rbd_solver")
+rbd = importlib.import_module("chunks.dynamics.rbd_solver")
 
 
 def _probe(source):
@@ -69,7 +69,7 @@ def _probe(source):
 
 
 def _brush():
-    brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
+    brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
     c = brush_mod.main()
     c._module = brush_mod
     return c

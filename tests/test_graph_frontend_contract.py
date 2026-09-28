@@ -22,8 +22,24 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 import inspect  # noqa: E402
 
 
-from usd_chunks.plugins import chunk_graph  # noqa: E402
-from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
+from graph_fixtures import make_network  # noqa: E402
+from usd_chunks.graph import engine as chunk_graph  # noqa: E402
+from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
+
+# The other frontends are optional too, each for its own reason; a missing one is simply
+# not in the list.
+try:
+    from usd_chunks.frontends.qt import nodegraph as qg  # noqa: E402
+except ImportError:  # pragma: no cover - Qt not installed
+    qg = None
+try:
+    from usd_chunks.frontends.imgui import nodegraph as ig  # noqa: E402
+except ImportError:  # pragma: no cover - imgui-bundle is an optional extra
+    ig = None
+try:
+    from usd_chunks.frontends.blender import nodegraph as bg  # noqa: E402
+except ImportError:  # pragma: no cover - bpy only exists inside Blender
+    bg = None
 
 
 def frontends():
@@ -32,24 +48,16 @@ def frontends():
     Add a new frontend here the day you start it: the failures are the to-do list.
     """
     found = [("flet", fg.GraphView)]
-    try:
-        from usd_chunks.plugins import chunk_qt_nodegraph as qg
-    except ImportError:  # pragma: no cover - Qt not installed
+    if qg is None:
         return found
     facade = getattr(qg, "QtGraphFrontend", None)
     if facade is not None:
         found.append(("qt", facade))
 
-    try:
-        from usd_chunks.plugins import chunk_imgui_nodegraph as ig
-    except ImportError:  # pragma: no cover - imgui-bundle is an optional extra
-        ig = None
     if ig is not None:
         found.append(("imgui", ig.ImGuiGraphView))
 
-    try:
-        from usd_chunks.plugins import chunk_blender_nodegraph as bg
-    except ImportError:  # pragma: no cover - bpy only exists inside Blender
+    if bg is None:
         return found
     found.append(("blender", bg.BlenderGraphView))
     return found
@@ -129,7 +137,6 @@ class TestTheContractItself:
     def test_isinstance_agrees_for_a_real_frontend(self, tmp_path):
         """runtime_checkable works for the cheap case; the signature test above covers
         what it cannot see."""
-        from graph_fixtures import make_network
         path, context = make_network(tmp_path / "contract.usda")
         view = fg.GraphView(path, context)
         view.live = False

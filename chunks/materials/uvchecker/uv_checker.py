@@ -1,0 +1,215 @@
+from __future__ import annotations
+import logging
+import os
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from pxr import Ar, Sdf, UsdShade
+from PySide6 import QtWidgets
+
+logger = logging.getLogger(__name__)
+
+
+def texture_file_is_usable(path: str) -> bool:
+    """Whether a UsdUVTexture authored with *path* will actually have an image to load.
+
+    A texture whose file cannot be resolved is not merely a missing image: the shader
+    network still carries the whole UV chain (primvar reader -> UsdTransform2d -> the
+    texture's `st`), and a render delegate that drops the unloadable texture node while
+    still translating what fed it is left holding a connection to a node it never built.
+    hdCycles fails exactly that way -- "Failed to load 1 image files" followed by
+    "Could not find node '/Mapping' to connect" out of BuildShaderGraph (its Cycles
+    `mapping` node being the translation of our UsdTransform2d) -- and takes usdview down
+    with it on a delegate switch. So the chain is only worth authoring when the image is
+    really there.
+
+    A path carrying a `<UDIM>` (or any other `<token>`) is left alone: those never resolve
+    as a plain file and are meant not to, so treating them as missing would break a
+    perfectly valid texture set.
+    """
+    if not path:
+        return False
+    if "<" in path and ">" in path:
+        return True  # UDIM / token pattern -- not resolvable as a single file by design
+    return bool(Ar.GetResolver().Resolve(path))
+
+
+def _apply_material(owner: chunk.Chunk, prims) -> None:
+    """Core work: build the UV checker material and bind it to `prims`. Shared by the
+    interactive Button callback (apply, below -- validates and pops a dialog first) and
+    the reserved execute(node) hook (which must never show a modal dialog mid-load).
+    """
+    # Access the parameter inside the group
+    x_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[0]
+    y_scale_param = owner.get_param("uvscale", chunk.is_inst(chunk.Vector))[1]
+
+    x_scale = x_scale_param.value
+    y_scale = y_scale_param.value
+
+    filebrowser = owner.get_param("browse", chunk.is_param_t(str))
+    checker_file = filebrowser.value
+
+    stage = owner.get_stage()
+    if not stage:
+        return
+
+    base_material_grp = "/materials"
+    material_path = f"{base_material_grp}/UVCheckerMaterial"
+    surface_path = f"{material_path}/previewSurface"
+    texture_path = f"{material_path}/texture"
+    transform2d_path = f"{material_path}/transform2d"
+    reader_path = f"{material_path}/reader"
+
+    # Create the material, shaders and its id
+    stage.DefinePrim(base_material_grp, "Scope")
+    material = UsdShade.Material.Define(stage, material_path)
+
+    preview = UsdShade.Shader.Define(stage, surface_path)
+    stage.GetPrimAtPath(surface_path).GetAttribute("info:id").Set("UsdPreviewSurface")
+
+    path_to_uv = checker_file
+    if not path_to_uv:
+        path_to_uv = os.path.sep.join([os.path.dirname(__file__), "CustomUVChecker_byValle_2K.png"])
+
+    if not texture_file_is_usable(path_to_uv):
+        # No image to sample: bind a plain surface rather than a texture network whose
+        # image cannot load -- see texture_file_is_usable for what that costs downstream.
+        logger.warning("texture file does not resolve, binding a plain surface: %s", path_to_uv)
+        preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.5, 0.5, 0.5))
+        preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.GetOutput("surface").ConnectToSource(preview_output_surface)
+        for prim in prims:
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                material, UsdShade.Tokens.strongerThanDescendants
+            )
+        return
+
+    texture = UsdShade.Shader.Define(stage, texture_path)
+    stage.GetPrimAtPath(texture_path).GetAttribute("info:id").Set("UsdUVTexture")
+
+    transform2d = UsdShade.Shader.Define(stage, transform2d_path)
+    stage.GetPrimAtPath(transform2d_path).GetAttribute("info:id").Set("UsdTransform2d")
+
+    reader = UsdShade.Shader.Define(stage, reader_path)
+    stage.GetPrimAtPath(reader_path).GetAttribute("info:id").Set("UsdPrimvarReader_float2")
+
+    # Create the inputs and outputs for the shaders
+    preview_output_surface = preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+    material.GetOutput("surface").ConnectToSource(preview_output_surface)
+
+    preview_in_diff = preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+    texture_out_rgb = texture.CreateOutput("rgb", Sdf.ValueTypeNames.Color3f)
+    preview_in_diff.ConnectToSource(texture_out_rgb)
+
+    texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path_to_uv)
+    transform2d_out_result = transform2d.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform2d_out_result)
+
+    transform2d.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((x_scale, y_scale))
+    transform2d_in_uv = transform2d.CreateInput("in", Sdf.ValueTypeNames.Float2)
+    reader_out = reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    transform2d_in_uv.ConnectToSource(reader_out)
+    reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
+
+    for prim in prims:
+        api = UsdShade.MaterialBindingAPI.Apply(prim)
+        api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
+
+
+def apply(owner: chunk.Chunk, notice, sender):
+    # The "prim" param (not live viewport selection) so this is replayable on reload --
+    # nothing is selected in the viewport at load time, but the param's own stored path
+    # restores normally like any other value.
+    prim_param = owner.get_param("prim", chunk.is_inst(chunk.LineEdit))
+    prims = prim_param.get_prims() if prim_param else []
+    stage = owner.get_stage()
+
+    if not prims or (stage and prims == stage.GetPseudoRoot()):
+        msg = "Prim not selected."
+        if prims:
+            msg = "Cannot apply material on the top PseudoRoot!"
+        error_dlg = QtWidgets.QMessageBox()
+        error_dlg.setWindowTitle("Error")
+        error_dlg.setText(msg)
+        error_dlg.exec_()
+        return
+
+    _apply_material(owner, prims)
+
+
+def execute(node: chunk.Chunk) -> None:
+    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
+    bulk-restoring its param values, so a reloaded UV Checker actually reapplies the
+    material instead of leaving the target prim unbound (apply is a Button callback,
+    which load's value-restore deliberately does not trigger). Calls the shared core
+    directly rather than apply() itself -- apply()'s own validation pops a modal
+    QMessageBox on an empty selection, which must never happen mid-load.
+    """
+    prim_param = node.get_param("prim", chunk.is_inst(chunk.LineEdit))
+    prims = prim_param.get_prims() if prim_param else []
+    if not prims:
+        return
+    _apply_material(node, prims)
+
+
+def clear(owner: chunk.Chunk, notice, sender):
+    """Remove the assign checker edits"""
+    chunk_registry.ChunkLayerManager().clear_layer(owner)
+
+
+def scale(owner: chunk.Vector, notice, sender):
+    stage = owner.get_stage()
+    if not stage:
+        return None
+
+    base_material_grp = "/materials"
+    material_path = f"{base_material_grp}/UVCheckerMaterial"
+    transform2d_path = f"{material_path}/transform2d"
+
+    prim = stage.GetPrimAtPath(transform2d_path)
+    if not prim:
+        return
+
+    scale_attr = prim.GetAttribute("inputs:scale")
+    scale_val = scale_attr.Get()
+
+    # idx = 1 if param.name == "scale1" else 0
+    scale_val[0] = owner[0].value
+    scale_val[1] = owner[1].value
+    scale_attr.Set(scale_val)
+
+
+def main():
+    chunk_api = chunk.Chunk("UV Checker")
+
+    prim_param = chunk.LineEdit(
+        "prim",
+        "Prim",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="The prim to visualize UVs on — pick it in the viewport or type a path.",
+    )
+
+    spinbox = chunk.Spinbox(default_value=1)
+    vec = chunk.Vector("uvscale", "UV Scale", param=spinbox, length=2, suffixes="UV")
+
+    # Adds a callback that runs when any of the spinboxes changes
+    vec.add_callback(scale)
+
+    filebrowser = chunk.FileBrowser("browse")
+
+    visUVsButton = chunk.Button("apply", "Visualize")
+    clearUVsButton = chunk.Button("clear", "Clear Vis")
+
+    chunk_api.add_params([prim_param, vec, filebrowser, visUVsButton, clearUVsButton])
+
+    # Setting the sender explicitly. The callback will then get params as such:
+    # 1 - chunk_api (the chunk)
+    # 2 - Tf.Notice (the notice)
+    # 3 - ChunkParam (the button)
+
+    chunk_api.add_callback(apply, sender=visUVsButton, notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
+    chunk_api.add_callback(clear, sender=clearUVsButton)
+
+    return chunk_api
+
+
+def config():
+    return chunk.DefaultConfig(category=chunk.StandardCategory.MATERIALS)

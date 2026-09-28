@@ -20,7 +20,7 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
@@ -94,7 +94,7 @@ def two_branches(tmp_path):
 
 
 def _run(network, out, *extra):
-    cmd = [sys.executable, "-m", "usd_chunks.plugins.usdchunks_cli", "run",
+    cmd = [sys.executable, "-m", "usd_chunks.cli", "run",
            str(network), "--export", str(out), *extra]
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
 

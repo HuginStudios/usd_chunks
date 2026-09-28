@@ -24,12 +24,13 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 switch_mod = importlib.import_module("stage_expression_switch")
 transform_mod = importlib.import_module("transform")
 

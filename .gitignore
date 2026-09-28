@@ -3,7 +3,7 @@ node_modules
 .pytest_cache
 .vscode
 .venv
-scripts/user
+chunks/user
 .mypy*
 .env
 _installed_deps
@@ -33,5 +33,3 @@ AGENTS.md
 CONTEXT.md
 CONTEXT-MAP.md
 
-# Per-developer pre-push failure baseline (see hooks/known-failures.txt).
-hooks/known-failures.local.txt

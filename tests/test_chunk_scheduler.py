@@ -4,6 +4,7 @@ These build DAGs out of bare ChunkNoticePropagator subclasses rather than real c
 so the ordering, dirty propagation and change-reason behaviour can be asserted without
 dragging a USD stage into it.
 """
+from __future__ import annotations
 
 import pytest
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 import mdl_to_mtlx  # noqa: E402
 
 

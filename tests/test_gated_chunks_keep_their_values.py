@@ -23,6 +23,10 @@ a muted layer at all, and don't trust the cache unless the params it built are s
 (`chunk_stage.params_are_bound`). The Camera chunk has the same shape -- a per-shot camera
 on a gated branch is the same story -- so it is covered here too.
 
+Since then the framework itself refuses to cook against a muted layer, and clears a chunk's
+layer before every cook, so both caches are gone. show_attribute keeps a light's params
+across a cook only while every one of them is still bound, which is the same test.
+
 Assertions read the composed stage: the value a renderer would get, not the chunk's UI.
 """
 
@@ -35,12 +39,13 @@ import sys
 import pytest
 from pxr import Usd, UsdGeom
 
-from usd_chunks import chunk_registry, chunk_stage, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk, chunk_registry, chunk_stage, chunk_utils
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.chunk_stage import initialize as chunk_stage_initialize, save_scene
 
-_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "chunks"
 for _chunk_dir in (_SCRIPTS / "utils", _SCRIPTS / "modelling"):
     if str(_chunk_dir) not in sys.path:
         sys.path.insert(0, str(_chunk_dir))
@@ -318,17 +323,26 @@ def test_the_same_for_a_camera(reopened):
     assert _value(stage, SHOT_CAM, "focalLength") == pytest.approx(FOCAL_LENGTH)
 
 
-def test_a_bound_chunk_still_takes_the_shortcut(reopened):
-    """The cache is an optimisation worth keeping: a cook that has nothing to redo must
-    still do nothing, or every light re-runs show_attribute on every cook of the graph."""
+def test_a_bound_chunk_keeps_its_params(reopened):
+    """A cook with nothing new to show must keep the params it has, or every light rebuilds
+    its whole param panel -- every widget -- on every cook of the graph.
+
+    This was the light's own cache, which skipped the cook. The framework now clears the
+    layer before every cook, so the cook always runs; show_attribute is what keeps the
+    params, as long as the prim has the same attributes and every param is still bound.
+    """
     stage, sender = reopened
     shared = next(c for c in sender.get_chunks() if c.name == "Shared")
-    calls = []
-    real = chunk_utils.show_attribute
-    chunk_utils.show_attribute = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
-    try:
-        shared.execute()
-    finally:
-        chunk_utils.show_attribute = real
 
-    assert calls == [], "a bound, unchanged light rebuilt its params anyway"
+    def shown():
+        return [p for _, p in shared.get_param("attr_grp").iter_hierarchy()]
+
+    before = shown()
+    shared.execute()
+
+    after = shown()
+    assert len(after) == len(before) and all(a is b for a, b in zip(after, before)), (
+        "a bound, unchanged light rebuilt its params anyway"
+    )
+    assert chunk_stage.params_are_bound(shared)
+    assert _value(stage, SHARED, "inputs:intensity") == pytest.approx(INTENSITY)

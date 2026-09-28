@@ -18,7 +18,11 @@ from __future__ import annotations
 import copy
 import inspect
 import logging
-from typing import (Any, Callable, Dict, Generic, List, Optional,
+import sys
+import types
+import weakref
+from collections.abc import Callable
+from typing import (Any, Generic, Optional,
                     TypeVar, TypedDict, Union, dataclass_transform, get_origin)
 
 import attrs
@@ -40,8 +44,57 @@ logger = logging.getLogger(__name__)
 
 ValueT = TypeVar("ValueT")
 
+_field_types: weakref.WeakKeyDictionary[type, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+
+def field_type(cls: type, attr: attrs.Attribute) -> Any:
+    """The runtime type of an attrs field on `cls`, with a string annotation resolved.
+
+    Every module here uses `from __future__ import annotations`, so attrs records each
+    annotation as a string. Validation and enum conversion need the real type, so the
+    string is evaluated in the module of the class that declared the field. Resolved once
+    per class and cached.
+
+    Args:
+        cls: The class the field is read from.
+        attr: The field.
+
+    Returns:
+        The type, or None when the annotation cannot be evaluated at runtime (a name
+        imported only under TYPE_CHECKING), which callers treat as nothing to check.
+    """
+    resolved = _field_types.get(cls)
+    if resolved is None:
+        resolved = {f.name: _resolve_annotation(cls, f.name, f.type) for f in attrs.fields(cls)}
+        _field_types[cls] = resolved
+    return resolved.get(attr.name, None if isinstance(attr.type, str) else attr.type)
+
+
+def _resolve_annotation(cls: type, name: str, annotation: Any) -> Any:
+    """Evaluate one string annotation in the namespace of the class that declared it."""
+    if not isinstance(annotation, str):
+        return annotation
+    for klass in cls.__mro__:
+        if name in klass.__dict__.get("__annotations__", {}):
+            module = sys.modules.get(klass.__module__)
+            namespace = {**(vars(module) if module else {}), klass.__name__: klass}
+            try:
+                return eval(annotation, namespace)
+            except Exception:
+                return None
+    return None
+
 
 def get_attr_index(cls, data):
+    """The position `data` was first declared at in `cls`'s attrs fields, searching bases too.
+
+    Args:
+        cls: An attrs class.
+        data: A field name.
+
+    Returns:
+        The field's index in the earliest base that declares it, or None.
+    """
     try:
         fields_dict = attrs.fields_dict(cls)
     except Exception:
@@ -64,15 +117,23 @@ def get_attr_index(cls, data):
     return idx
 
 
-def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Attribute]):
-    """Used as attrs.field_transformer for chunk attributes in order to sort the __init__ arguments to
-    match pylance
-    """
+def add_validate_and_convert(cls: type[AttributesBase], fields: list[attrs.Attribute]):
+    """An attrs field_transformer that orders __init__ arguments by first declaration.
 
+    A field redeclared in a subclass keeps the position of its first declaration, so the
+    generated __init__ matches the signature Pylance infers.
+
+    Args:
+        cls: The class being built.
+        fields: Its attrs fields.
+
+    Returns:
+        The fields, sorted.
+    """
     sort_keys = {}
     results = []
     for i, f in enumerate(fields):
-        # Find the first occurance of the attribute in the inheritance hierarchy, and use the index of the
+        # Find the first occurrence of the attribute in the inheritance hierarchy, and use the index of the
         # first declaration. This is to match the constructor arguments of pylance
         index = get_attr_index(cls, f.name)
         if index is not None:
@@ -89,17 +150,17 @@ def add_validate_and_convert(cls: type["AttributesBase"], fields: List[attrs.Att
 
 @dataclass_transform(field_specifiers=(attrs.Attribute, attrs.field), eq_default=False)
 class AttributesMetaclass(type):
-    """Metaclass used to wrap Chunk attributes classes around attrs. Using it through metaclass instead of decorating all
-    classes with @attrs.define order to have proper default behaviour of all chunk classes
+    """Metaclass that makes every chunk attributes class an attrs class.
 
-    This metaclass also injects some functions in to the defaul attrs __setattr__ in order to use out custom validation and conversion functions:
-    calls value_changed() on subclasses after __setattr__, and adds
-    add _validate() and _convert() as default validator and conversion functions to all attrs.fields where applicable
+    A metaclass rather than @attrs.define on each class, so all chunk classes share the
+    same default behaviour.
+
+    It also injects into attrs' __setattr__ so that every field runs _convert() and
+    _validate(), and value_changed() is called after the attribute is set.
     """
 
     def __new__(cls, name, bases, attributes):
-        # Construct new class and wrap it around attrs.define
-
+        """Build the class, wrap its __setattr__, and pass it through attrs.define."""
         res = super().__new__(cls, name, bases, attributes)
 
         # we use a custom __setattr__ on all subclasses for a couple of reasons:
@@ -110,7 +171,7 @@ class AttributesMetaclass(type):
 
         setattr_override = attrs.setters.NO_OP
 
-        def _wrapped_setattr(inst: "AttributesBase", name, value):
+        def _wrapped_setattr(inst: AttributesBase, name, value):
             nonlocal res
 
             if name not in attributes:
@@ -160,16 +221,15 @@ class AttributesMetaclass(type):
 
 
 class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
-    """An AttributeSender gets sent when an attribute changes on a AttributesBase instance, as attrs.Attribute
-    is not able to send through the Tf.Notice system. Instances of this class can be added to a propagator hierarchy
-    as it subclass from chunk_notice.ChunkNoticePropagator. This enables us to automatically send the
-    ATTRIBUTE_CHANGED notice whenever the value is modified.
+    """A handle to one attribute on an AttributesBase, which sends a notice when it changes.
 
-    A valued parameter stores the value of the attributes itself, this class is a handle to thos attributes but with the
-    ability to use with the Tf.Notice system. See value_changed function of AttributesBase for more info
+    attrs.Attribute cannot send through the Tf.Notice system. This class can: it is a
+    ChunkNoticePropagator, so it can join a propagator hierarchy and send ATTRIBUTE_CHANGED
+    whenever the value is modified. The value itself stays on the owner; see
+    AttributesBase.value_changed.
 
     Args:
-        owner (AttributesBase): The owning objcet of the attribute
+        owner (AttributesBase): The object owning the attribute
         name (str): The name of the attribute
         alias (chunk_notice.ChunkNoticeAlias): The ChunkNoticeAlias that is sent when the attribute changed
 
@@ -177,7 +237,6 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         name (str): The name of the attribute
         value (Any): A property looking up the value of the owner
         old_value (Any): A copy of the old value. This may be not-None after the value has been changed
-
     """
 
     __slots__ = ("name", "alias", "old_value")
@@ -191,44 +250,44 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         super().__init__()
         self.name: str = name
         self.alias: chunk_notice.ChunkNoticeAlias = alias
-        self.old_value: Optional[ValueT] = None
+        self.old_value: ValueT | None = None
 
         self.set_owner(owner)
 
     def get_notice_data(self) -> Self:
-        """
-        The notice data for AttributeSender's is simply self. A reciever of a notice may use this
-        to get any data available on the AttributeSender. This is possible if the original sender
-        of the notice is an AttributeSender, as the notice.data is retrieved from get_notice_data()
+        """The notice data for an AttributeSender: the sender itself.
 
-        ``` py
-        def callback(owner, notice, sender):
-            val = notice.data.value
-            old_val = notice.data.old_value
-        ```
+        A receiver can read everything the sender holds from notice.data::
+
+            def callback(owner, notice, sender):
+                val = notice.data.value
+                old_val = notice.data.old_value
 
         Returns:
-            Tuple[Any, Any]: A tuple of new and old values
+            Self: This sender
         """
         return self
 
     @property
     def value(self) -> ValueT | None:
+        """The attribute's current value on the owner, or None once the owner is gone."""
         if not self.get_owner():
             return None
         return getattr(self.get_owner(), self.name)
 
     @value.setter
     def value(self, val: ValueT):
+        """Set the attribute on the owner; a no-op once the owner is gone."""
         if not self.get_owner():
             return
         if not hasattr(self.get_owner(), self.name):
-            logger.error(f"Failed to set attribute {self.name} from AttributeSender")
+            logger.error("Failed to set attribute %s from AttributeSender", self.name)
             return
 
         setattr(self.get_owner(), self.name, val)
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        """The alias this attribute's notices go out under."""
         return self.alias
 
     def is_blocked(self) -> bool:
@@ -238,13 +297,15 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         a value into it and refreshes the widget showing it. Blocking a chunk is about it not
         reacting -- not cooking, not running its callbacks -- and that is still enforced one
         step up, where the owner sends its own notice (a blocked param sends no
-        PARAM_CHANGED). Inheriting the owner's block here dropped the record as well.
+        PARAM_CHANGED). Inheriting the owner's block here would drop the record as well.
+
+        Returns:
+            Whether this sender itself is blocked.
         """
         return self._blocked
 
     def is_presentation_change(self) -> bool:
-        """
-        A change to the state attribute is presentation only unless it moved DISABLED.
+        """A change to the state attribute is presentation only unless it moved DISABLED.
 
         DISABLED decides whether the chunk cooks at all, so it is a real input to everything
         downstream. HIDDEN, COLLAPSED, SELECTED and STALE are hints to the UI and nothing
@@ -259,11 +320,11 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # A param can declare that nothing downstream computes from its value. Rare, and
             # it has to be earned: the value must genuinely not reach the chunk's cook.
             #
-            # The Scatter Brush is the case that asked for it. Its radius, strength and mode
-            # steer a *stroke*, which happens outside any cook -- `execute` never reads them,
-            # and what downstream sees is the painted field, not the settings that produced
-            # it. Dirtying the chain for them made dragging Radius recook the scatter on every
-            # tick, reported as the brush being unusably sticky.
+            # The Scatter Brush is the example. Its radius, strength and mode steer a
+            # *stroke*, which happens outside any cook -- `execute` never reads them, and what
+            # downstream sees is the painted field, not the settings that produced it.
+            # Dirtying the chain for them would make dragging Radius recook the scatter on
+            # every tick.
             #
             # The change still solves and still sends its notice, so callbacks and the UI are
             # unaffected; only the dirtying of readers is skipped.
@@ -276,22 +337,18 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         return ChunkFlags.State.DISABLED not in (old ^ new)
 
     def get_usd_prop(self) -> Usd.Property | None:
-        """
-        Retrieve the UsdProperty that this attribute represents
+        """Retrieve the UsdProperty that this attribute represents.
 
         Returns:
             Usd.Property | None: The UsdProperty of the attribute if it is bound, else None
         """
-        # Imported here, not at the top: ChunkUsdAttributeSupport lives in chunk_core,
-        # which imports this module. A module-level import would be a cycle. This is the
-        # only place the attribute layer reaches back into the model -- everything else in
-        # this file knows nothing about chunks, params or groups.
-        from usd_chunks.chunk_core import ChunkUsdAttributeSupport
-
-        if owner := self.get_owner():
-            if not isinstance(owner, ChunkUsdAttributeSupport):
-                return
+        # Asked of the owner rather than of a chunk_core type: chunk_core imports this
+        # module, so naming ChunkUsdAttributeSupport here would be a cycle. AttributesBase
+        # answers None and ChunkUsdAttributeSupport overrides it, so this file still knows
+        # nothing about chunks, params or groups.
+        if isinstance(owner := self.get_owner(), AttributesBase):
             return owner.get_usd_prop()
+        return None
 
     def _copy_connection(
         self,
@@ -309,10 +366,9 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
 
 
 class CopyMode(IntEnum):
-    """
-    This enum is used for deciding how the parameters should be created when copied from another
-    parameter. The defsault is to create a copy, but if the parameters should be references (share recources),
-    SHARE may be better
+    """How a parameter's attributes are carried over when it is copied.
+
+    The default is to create a copy; SHARE makes the copy reference the same resources.
     """
 
     COPY = 0  # copy.copy() attribute. This is default if nothing else is specified
@@ -322,26 +378,26 @@ class CopyMode(IntEnum):
 
 
 class SendMode(IntEnum):
-    """
-    Setting for whether an attribute should send a notice when changed
-
-    """
+    """Whether an attribute sends a notice when it changes."""
 
     NO_SEND = 0
     SEND = 1
 
 
 class AttributeMetadata(TypedDict, total=False):
-    """Use in field(metadata=AttributeMetadata(...)).
-
+    """Per-field settings, used as field(metadata=AttributeMetadata(...)).
 
     Attributes:
-    copy_mode (CopyMode): Decides how the attribute should be treated when copying. If not set, use a COPY
-    send_mode (SendMode): Decides if the attribute should send a notice when modified. If not set, use SEND
-    sender_alias (chunk_notice.ChunkNoticeAlias): What ChunkNoticeAlias to use when sending. If not set, will use ATTRIBUTE_CHANGED
-    validate (bool): Whether to validate this attribute's value when changed
-    convert (bool): whether to convert this attribute's value to a valid value when changed
-    documentation (str): The documentation for this parameter, which will be added to the parameter's description through MkDocs
+        copy_mode (CopyMode): How the attribute is treated when copying. Defaults to COPY.
+        send_mode (SendMode): Whether the attribute sends a notice when modified. Defaults
+            to SEND.
+        sender_alias (chunk_notice.ChunkNoticeAlias): The alias to send the notice under.
+            Defaults to ATTRIBUTE_CHANGED.
+        validate (bool): Whether to validate this attribute's value when changed.
+        convert (bool): Whether to convert this attribute's value to a valid value when
+            changed.
+        documentation (str): The documentation for this parameter, added to the
+            parameter's description in the API docs.
     """
 
     copy_mode: CopyMode
@@ -354,21 +410,21 @@ class AttributeMetadata(TypedDict, total=False):
 
 
 class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMetaclass):
-    """This class is used as base for Chunk dataclasses. Sends modification notices and validates/converts attribute values
+    """Base class for chunk dataclasses: validates and converts values, and sends change notices.
 
-    Any modifications to an attribute with `metadata["send_mode"]==SendMode.SEND`, will send a notice of type metadata["sender_alias"] when modified.
-    This is achieved by using the AttributeSender class, which holds a handle to the owner (AttributesBase), name of the attribute it represents,
-    and the alias for which notice to send. It also holds the old_value (the value of the attribute prior to the change) when available.
+    Any modification to an attribute with `metadata["send_mode"] == SendMode.SEND` sends a
+    notice of type metadata["sender_alias"]. That is done through AttributeSender, which
+    holds a handle to the owner, the name of the attribute it represents, the alias of the
+    notice to send, and the old value when available. Instances set themselves as owner on
+    every AttributeSender they manage.
 
-    Instances of this class will automatically set self as owner on all AttributeSenders it manages.
-
-    AttributesMetaclass is used as metaclass to automatically hook into the attrs framework. Any subclass is thus treated as it was
-    created with attrs.define. All fields will call _validate() and _convert() as validation and conversion functions. Any changes made to an
-    attribute (through __setattr__) will call value_changed() after the original __setattr__ finished.
-
+    AttributesMetaclass hooks every subclass into attrs, so each is treated as if it had
+    been created with attrs.define. All fields use _validate() and _convert() as validator
+    and converter, and any change made through __setattr__ calls value_changed() once the
+    original __setattr__ has finished.
     """
 
-    _failed_converters: Dict[str, Any] = attrs.field(
+    _failed_converters: dict[str, Any] = attrs.field(
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
@@ -376,7 +432,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         ),
     )
 
-    _attr_senders: Dict[str, AttributeSender] = attrs.field(
+    _attr_senders: dict[str, AttributeSender] = attrs.field(
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
@@ -392,14 +448,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         ),
     )
 
-    _attrib_functions: Dict[str, Callable[[Self, AttributeSender], Any]] = attrs.field(
+    _attrib_functions: dict[str, Callable[[Self, AttributeSender], Any]] = attrs.field(
         factory=dict,
         init=False,
         metadata=AttributeMetadata(
             copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND, validate=False, convert=False, serialize=True
         ),
     )
-    _logger: Optional[logging.Logger] = attrs.field(
+    _logger: logging.Logger | None = attrs.field(
         init=False,
         default=None,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
@@ -407,9 +463,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
     @classmethod
     def print_init_signature(cls):
-        """
-        A debug function for printing the generated __init__ function signature
-        """
+        """Print the generated __init__ signature, for debugging."""
         signature = inspect.signature(cls.__init__)
         msg = "__init__("
         for param in signature.parameters.keys():
@@ -418,11 +472,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         print(f"{cls.__name__} __init__ signature: \n", msg)
 
     def __attrs_post_init__(self):
-        # initialise ChunkNoticePropagator
+        """Initialize the propagator and give each notifying field its own AttributeSender."""
         super().__init__()
 
         # Loop over all fields and add an AttributeSender for the attribute, which will be sent in value_changed. Doing this instead of
-        # get_notice_alias_for_attr in order to have a seperate sender for each attribute
+        # get_notice_alias_for_attr in order to have a separate sender for each attribute
         attr = attrs.fields_dict(type(self))
         for name, attr in attr.items():
             if attr.metadata.get("send_mode", SendMode.SEND) is SendMode.NO_SEND:
@@ -439,40 +493,51 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         self._resolve_failed_converters()
 
     def get_logger(self) -> logging.Logger:
+        """A logger named after this class, created on first use."""
         if not self._logger:
             self._logger = logging.getLogger(f"usd_chunks.{self.__class__.__name__}")
         return self._logger
 
-    def clone(self) -> Self:
-        """
-        Create and return a copy of self. Most attributes are copied, but depending on the fields metadata copy_mode (CopyMode),
-        the attribute may behave differently. NoticeConnections are not copied, so in the following example, only the first param ("slider1")
-        will trigger the callback to myFunc:
-
-        ``` py
-        param = chunk.Slider("slider1")
-        param.add_callback(myFunc)
-
-        myChunk = chunk.Chunk("myCHunk")
-        myChunk.add_params([param, param.clone()])
-        ```
+    def get_usd_prop(self) -> Usd.Property | None:
+        """The USD property this object is bound to. Nothing, unless a subclass binds one.
 
         Returns:
-            Self: a copy of self
+            Usd.Property | None: Always None here; ChunkUsdAttributeSupport overrides it.
+        """
+        return None
+
+    def clone(self) -> Self:
+        """Create and return a copy of self.
+
+        Most attributes are copied, but a field's metadata copy_mode (CopyMode) can change
+        that. NoticeConnections are not copied, so in the following example only the first
+        param ("slider1") triggers the callback to my_func::
+
+            param = chunk.Slider("slider1")
+            param.add_callback(my_func)
+
+            my_chunk = chunk.Chunk("my_chunk")
+            my_chunk.add_params([param, param.clone()])
+
+        Returns:
+            Self: A copy of self
         """
         return copy.copy(self)
 
     def __copy__(self) -> Self:
-        """Create a new instance of self.__class__ and set member variabled appropriately. A fields metadata["copy_mode"] sets how the field should transfer to the copy.
-        If a non-attrs class exists in the hierarchy, its members will be ignored. The exception being ChunkNoticePropagator, which is initialized in AttributesBase.__attrs_post_init__().
+        """Create a new instance of this class and carry each field over by its copy mode.
 
-        No __init__ is called on the copied class. Instead, the attrs pre and post init methods are called, if available
-        __attrs_pre_init__ is called prior to copying the fields
-        __attrs_post_init__ is called after copying the fields.
-        Any instantiation of base classes should be done inside either of these functions. For example, ChunkNoticePropagaor is initialized inside of AttributesBase.__attrs_post_init__()
+        A field's metadata["copy_mode"] sets how it transfers to the copy. Members of a
+        non-attrs class in the hierarchy are ignored, except ChunkNoticePropagator, which is
+        initialized in AttributesBase.__attrs_post_init__().
+
+        No __init__ is called on the copy. Instead the attrs hooks run, if present:
+        __attrs_pre_init__ before the fields are copied and __attrs_post_init__ after. Any
+        initialization of base classes belongs in one of those; ChunkNoticePropagator, for
+        example, is initialized in AttributesBase.__attrs_post_init__().
 
         Returns:
-            Self: Return a copy of self, with updated uuid and rewired connections
+            Self: A copy of self, with an updated uuid and rewired connections
         """
         copied = type(self).__new__(self.__class__)
 
@@ -535,34 +600,35 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return copied
 
     @classmethod
-    def inspect_class(cls) -> "attrs.ClassProps":  # type: ignore
-        """Wrapper around attrs.inspect. Can be used to debug the class attributes
+    def inspect_class(cls) -> attrs.ClassProps:  # type: ignore
+        """Wrapper around attrs.inspect, for debugging the class attributes.
 
         Returns:
-            attrs.ClassProps: ClassProps of this class
+            attrs.ClassProps: ClassProps of this class, or None on attrs older than 25.4
         """
         if not _ATTRS_SUPPORT_INSPECT:
             return None  # type: ignore
         return attrs.inspect(cls)  # type: ignore
 
     def get_attribute_sender(self, attribname: str) -> AttributeSender:
-        """Get a sender for an attribute on this instance. The AttributeSender can be used to
-        subscribe to specific attribute changes in callbacks, either by:
-            attributeSender.add_callback(some_method)
-        or:
-            chunkParamBase.add_callback(some_method, sender=attributeSender)
+        """Get the sender for one attribute on this instance.
 
-        A gotcha with the first method is that AttributeSenders are not preserved in copies, so:
-            c = chunk.Checkbox("someName")
-            c.get_attribute_sender("value").add_callback(someFunc)
-            myChunk.add_params([C, C.clone()])
-        would mean that only the first instance of C will call someFunc when its value attribute changes
+        The AttributeSender can be used to subscribe to changes of that attribute, either with
+        ``attribute_sender.add_callback(some_method)`` or with
+        ``chunk_param.add_callback(some_method, sender=attribute_sender)``.
+
+        AttributeSenders are not preserved in copies, so with the first form only the first of
+        these two params calls some_func when its value changes::
+
+            c = chunk.Checkbox("some_name")
+            c.get_attribute_sender("value").add_callback(some_func)
+            my_chunk.add_params([c, c.clone()])
 
         Args:
             attribname (str): Name of the attribute
 
         Returns:
-            AttributeSender: The AttributeSender mapped by attribname, if found
+            AttributeSender: The AttributeSender mapped by attribname
 
         Raises:
             AttributeError: If the attribute sender was not found
@@ -572,18 +638,18 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         raise AttributeError(f"Attribute sender not found {attribname}")
 
     def value_changed(self, attrname: str, old_value: Any, value: Any):
-        """
-        Called after any attr __setattr__ was called.
-        This function should not mutate self to avoid infitite recursion. The purpose is instead to only send Notices of changed attributes when applicable.
-        If an attribute exists in self._attr_senders (added in __attrs_post_init__), the mapped AttributeSender is used as sender for the notice. Otherwise, use self as sender
+        """Send a notice for an attribute that changed; called after every attrs __setattr__.
 
-        This method is explicitly injected to __setattr__ by AttributesMetaclass
+        This must not mutate self, to avoid infinite recursion; its purpose is only to send
+        notices for changed attributes. If the attribute has an AttributeSender in
+        self._attr_senders (added in __attrs_post_init__), that sender sends the notice;
+        otherwise self does. AttributesMetaclass injects the call into __setattr__.
 
         Args:
             attrname (str): The name of the attribute that was changed
+            old_value (Any): The value before the change
             value (Any): The new value
         """
-
         if old_value == value or attrname.startswith("_"):
             # No change was made, we should not send the notice
             return
@@ -593,8 +659,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
         # No blocked check here. A blocked chunk (outside the active view's tree) must not
         # react to a change, but the change itself still has to be recorded: dropping it at
-        # this point lost renames and values for good -- the UI kept the old name, and the
-        # prim kept the old attribute and value, so the next save wrote them back. Whether
+        # this point would lose renames and values for good -- the UI would keep the old
+        # name, the prim the old attribute and value, and the next save would write them
+        # back. Whether
         # anything reacts is decided further on, by the owner's own notice (see
         # AttributeSender.is_blocked).
 
@@ -608,32 +675,40 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
             self.execute()
 
     def set_function(self, attrname: str, method: Callable[[Self, AttributeSender], Any]):
-        """
-        Set a function that will be called to evaluate the attribute with name attrname. The result of this function will be
-        the new value of the attribute. For example, a parameters 'value' attribute may evaluate to the product of two inputs:
+        """Set a function that computes an attribute's value.
 
-        ``` py
-        c_param = chunk.Slider()
-        c_param.add_dependency(a_param)
-        c_param.add_dependency(b_param)
-        c_param.set_function(
-            "value",
-            lambda p, attr: (
-                p.get_dependency(0).value
-                * p.get_dependency(1).value
-            ),
-        )
-        ```
-        The sliders value, in this case, will update any time a_param or b_baram updates.
+        The function's result becomes the attribute's new value. For example, a param's
+        'value' attribute may evaluate to the product of two inputs::
+
+            c_param = chunk.Slider()
+            c_param.add_dependency(a_param)
+            c_param.add_dependency(b_param)
+            c_param.set_function(
+                "value",
+                lambda p, attr: (
+                    p.get_dependency(0).value
+                    * p.get_dependency(1).value
+                ),
+            )
+
+        The slider's value then updates whenever a_param or b_param updates.
 
         Args:
             attrname (str): The name of the attribute that should use the function when evaluating
-            method (Callable[[Self, AttributeSender], Any]): The function to run when evaluating the attribute. The returned value from the function
-                will be the new attribute's value
+            method (Callable[[Self, AttributeSender], Any]): The function to run when evaluating
+                the attribute. Its return value becomes the attribute's new value.
         """
         self._attrib_functions[attrname] = method
 
-    def data_changed(self, notice: Optional[chunk_notice.ChunkNotice] = None) -> chunk_notice.ChunkNotice | None:
+    def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        """Re-evaluate any attribute functions when an attribute, value or input changes.
+
+        Args:
+            notice: The notice being handled.
+
+        Returns:
+            The notice to propagate.
+        """
         if not self._solving_attributes:
             # Run any attribute functions before continuing. Since calling __setattr__ calls value_changed, we need to disable
             # the notices to not get recursion. Only the first call to __setattr__ should send notices.
@@ -654,17 +729,17 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return super().data_changed(notice)
 
     def _safe_convert(self, attr: attrs.Attribute, val: Any) -> Any:
-        """
-        Wraps self.convert_attr, but puts any failed conversion attributes in to self._failed_converters
-        to try and resolve them after __init__. This is so a client does not need to worry about hasattr()
-        in their custom convert_attr() functions.
+        """Wrap self.convert_attr, deferring any conversion that raises AttributeError.
+
+        A failed conversion is kept in self._failed_converters and retried after __init__, so a
+        client's custom convert_attr() need not worry about hasattr().
 
         Args:
             attr (attrs.Attribute): The attribute to check conversion for
             val (Any): The value to convert
 
         Returns:
-            Any: The converted value if success, otherwise the input val
+            Any: The converted value if successful, otherwise the input val
         """
         res = val
         try:
@@ -677,12 +752,11 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return res
 
     def _resolve_failed_converters(self):
-        """
-        Naively try to resolve any failed converters in self._failed_converters, by simply trying to setting the
-        attributes again. This resolves because attributes are added to _failed_converters when convert_attr raises
-        AttributeError (some referenced dependency attribute did not exist when the original convert_attr was called)
-        An example of this is the chunk.Menu class; the value should convert to a value in the menu_items list, but
-        the 'value' and 'default_value' attributes are initialized prior to the menu_items
+        """Retry every deferred conversion by setting the attributes again.
+
+        A conversion is deferred when convert_attr raises AttributeError because an attribute
+        it depends on did not exist yet. chunk.Menu is an example: its value must convert to an
+        entry of menu_items, but 'value' and 'default_value' are initialized before menu_items.
         """
         max_count = 1000
         count = 0
@@ -698,18 +772,14 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 return
 
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
-        """Attempts to convert a value to a desired value when modifying an attribute. Used like attrs.Attrs.Converter but for all attributes
-        with attrs.field_transformer=add_validate_and_conver for the current instance. Makes it easier for clients to modify the conversion of attributes.
+        """Convert a value being assigned to an attribute.
 
-        In this example, inst.b = 2, should convert 2 to True
-
-        class SomeClass:
-            b: bool
-        inst = SomeClass()
-        inst.b = 2
+        Used like an attrs converter, but for every attribute of the instance, which makes it
+        easy for a subclass to change how attributes convert. For example, with a field
+        ``b: bool``, assigning ``inst.b = 2`` should convert 2 to True.
 
         Args:
-            attr (Attrs.Attribute): The attribute that was modified. Use attr.name to check the name of the modified attribute
+            attr (attrs.Attribute): The attribute that was modified. Use attr.name to check the name of the modified attribute
             val (Any): The value which was set to the attribute. This should be the base of the conversion
 
         Returns:
@@ -718,18 +788,23 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         return attrs.converters.default_if_none(attr.default)(val)
 
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
-        """Check if val is a supported value for attr prior to setting it. Raises ValueError if validation failed
+        """Check that val is a supported value for attr before it is set.
+
         Args:
+            attr (attrs.Attribute): The attribute being set
             val (Any): A value to check
 
         Returns:
-            bool: If this value is supported by the Interface
-        """
-        # Attemp to cast to the type hint where applicable
-        if attr.type:
-            t = get_origin(attr.type)
+            bool: True if the value is supported
 
-            if t and (t is Generic or t is Union or t is Optional):
+        Raises:
+            ValueError: The value's type does not match the field's generic type.
+        """
+        # Attempt to cast to the type hint where applicable
+        if ftype := field_type(type(self), attr):
+            t = get_origin(ftype)
+
+            if t and (t is Generic or t is Union or t is Optional or t is types.UnionType):
                 return True
 
             if t and not isinstance(val, t):

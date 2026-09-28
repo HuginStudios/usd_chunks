@@ -21,7 +21,7 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
-from usd_chunks.plugins import chunk_flet_nodegraph as fg  # noqa: E402
+from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
 
 
 class FakePage:
@@ -120,11 +120,11 @@ class TestEveryChunkTypeStarts:
     user meets it.
     """
 
-    # edit_target and create_layer carry Menu params -- the widget the Dropdown crash was
+    # edit_target and layer carry Menu params -- the widget the Dropdown crash was
     # in. Verified they do: with on_select reverted to on_change, these fail and the
     # transform-only cases still pass, which is why the list is not just "transform".
     @pytest.mark.parametrize("module", ["transform", "reference", "sublayer",
-                                        "edit_target", "create_layer"])
+                                        "edit_target", "layer"])
     def test_a_network_of_that_chunk_starts(self, page, tmp_path, module):
         path, context = make_network(tmp_path / f"{module}.usda",
                                      modules=(module, module))

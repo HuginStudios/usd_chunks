@@ -44,7 +44,7 @@ they are writing have stopped moving.
 
 ## What comes with it
 
-[`scripts/`](/scripts/) holds the chunks this has been built against — transforms,
+[`chunks/`](/chunks/) holds the chunks this has been built against — transforms,
 references, payloads, sublayers, variants and variant authoring, collections, material
 binding, MaterialX shading, render settings, products, vars and passes, scattering, mesh
 and curve creation, and a MuJoCo rigid-body solver. They are also the worked examples:
@@ -70,7 +70,7 @@ problem is still solved, and it is no longer the point: a chunk is a description
 operation on a stage, and usdview is one of the places it can be run.
 
 ## Chunks
-A 'Chunk' is primarily a container of parameters, groups and attributes. All data encapsulated in a chunk can be modified freely. Chunks, parameters and groups are similar and can be used similarly. Parameters hold values and are ultimately the things we can interact with. Any data modified on a chunk object will send a relevant notice for users to listen for through callbacks. Callbacks are python functions, commonly for modifying the stage. Any changes to the stage through a callback will be encapsulated in a relevant UsdLayer, as to not clutter irrelevant layers. As chunks are dynamic, callbacks can also be used to modify the chunks at runtime by adding / removing params, or otherise change the behaviour of the Chunk.
+A 'Chunk' is primarily a container of parameters, groups and attributes. All data encapsulated in a chunk can be modified freely. Chunks, parameters and groups are similar and can be used similarly. Parameters hold values and are ultimately the things we can interact with. Any data modified on a chunk object will send a relevant notice for users to listen for through callbacks. Callbacks are python functions, commonly for modifying the stage. Any changes to the stage through a callback will be encapsulated in a relevant UsdLayer, as to not clutter irrelevant layers. As chunks are dynamic, callbacks can also be used to modify the chunks at runtime by adding / removing params, or otherwise change the behaviour of the Chunk.
 
 ### Example
 A simple Chunk module providing a button, which when pressed creates a cube prim. By default, the chunks are put in a dockable widget to the right of the viewport in usdview.
@@ -104,13 +104,13 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
 
 ```
 
 ![image](docs/assets/example_add_cube.png)
 
-See more examples and use cases in [scripts](/scripts/)
+See more examples and use cases in [chunks](/chunks/)
 
 A Chunk is defined in a python module like above and should be returned from a **main()** function of the same module. Similarly, a **config()** function may return a configuration of the chunk module. This module is found from the **USD_CHUNK_DIRS** environment variable, where .py files are scanned for a **main()** function returning a Chunk. 
 
@@ -195,7 +195,7 @@ other chunks rather than as a node itself. In the Qt plugin that is a tab.
 
 **Discovery.** `USD_CHUNK_DIRS` is scanned recursively for `.py` files. Any module with a
 `main()` function is registered as a chunk module. `main()` takes no arguments and returns a
-`Chunk`. An optional `config()` returns a `DefaulConfig`, which sets the category the chunk
+`Chunk`. An optional `config()` returns a `DefaultConfig`, which sets the category the chunk
 is filed under (`StandardCategory.MODELLING`, `UTILS`, `RIGS`, `PROPERTIES`, `USER`,
 `EXAMPLES`) and whether it loads automatically. Chunks installed by a store are picked up the
 same way from `GLOBAL_USDCHUNKS`, appended after `USD_CHUNK_DIRS` so your own chunks win a
@@ -245,9 +245,9 @@ instead, so its edits persist. `usdchunks run` follows exactly the same path hea
 ## Reliance on attrs
 We use [python-attrs](https://www.attrs.org/en/stable) extensively to get dataclass-like behaviour for all the chunk classes. The reasoning being that managing of chunk attributes become much easier, without having to define \_\_init\_\_ functions with heavy signatures. Chunk classes has many attributes, and thus this would fill the class definitions with unnecessary clutter. We also get attribute validation and conversion for free using attrs. Our base classes defines some standard attributes, and each higher lever of the inheritance hierarchy defines more specific attributes. All of these attributes are combined dynamically by attrs, creating the final class with a genertated \_\_init\_\_ function. 
 
-This means we trade off some readability for cleaner code and easier maintanence, as the classes we interface with do not have explicit \_\_init\_\_ functions. We therefore rely on static type checking (using pylance) for hints on the signatures.
+This means we trade off some readability for cleaner code and easier maintenance, as the classes we interface with do not have explicit \_\_init\_\_ functions. We therefore rely on static type checking (using pylance) for hints on the signatures.
 
-Most of the attrs interfacing has been abstracted away execpt for using attrs.field() for class attributes. Users do not need to think about this unless creating custom parameters or otherwise extending the chunk_core module.
+Most of the attrs interfacing has been abstracted away except for using attrs.field() for class attributes. Users do not need to think about this unless creating custom parameters or otherwise extending the chunk_core module.
 
 ## Setup
 
@@ -312,12 +312,12 @@ Two things that would otherwise be surprising:
 ## Build documentation
 
 The reference pages are generated from the source, so usd_chunks has to be importable —
-mkdocstrings and `griffe_chunks.py` introspect the modules rather than reading a static
+mkdocstrings and `docs/griffe_chunks.py` introspect the modules rather than reading a static
 copy. Install the docs extra and build:
 
 ```
 pip install -e ".[docs]"
-USD_CHUNK_DIRS=scripts mkdocs serve
+USD_CHUNK_DIRS=chunks mkdocs serve
 ```
 
 That serves the site locally; `mkdocs build` writes it to `site/` instead. The docs are not

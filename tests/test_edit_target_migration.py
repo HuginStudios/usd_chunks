@@ -3,14 +3,14 @@
 The Edit Target chunk publishes the layer it points at onto its own prim
 (chunk:editTargetLayer). A chunk's effective edit layer is the one published by the
 nearest Edit Target chunk reachable by walking inputs:chunk upstream (session layer if
-there is none) — see chunk_stage.nearest_upstream_edit_layer. When that resolved target
+there is none) -- see chunk_stage.nearest_upstream_edit_layer. When that resolved target
 changes (an Edit Target repoints, or is removed), the downstream chunk's bookkeeping AND
 driven content move to the new layer, and its old edits are removed from the old one
 (chunk_stage.reconcile_edit_targets).
 
 Chunks are wired into the exec chain the way the Params tab auto-chains them
 (prev -> new via inputs:chunk); the _make helper flips _params_tab_create to build that
-linear chain, since the topology — not execution order — is what now decides the target.
+linear chain, since the topology -- not execution order -- is what now decides the target.
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ import importlib
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd, get_chunk_prim_path
 import usd_chunks.chunk_stage as chunk_stage
 
@@ -70,16 +71,16 @@ def _reachable_layers(root: Sdf.Layer) -> set[str]:
 
 class TestEditTargetMigration:
     def setup_method(self):
-        self.create_mod = importlib.import_module("scripts.usd.create_layer")
-        self.edit_mod = importlib.import_module("scripts.usd.edit_target")
-        self.prim_mod = importlib.import_module("scripts.usd.prim")
+        self.create_mod = importlib.import_module("chunks.usd.layer")
+        self.edit_mod = importlib.import_module("chunks.usd.edit_target")
+        self.prim_mod = importlib.import_module("chunks.usd.prim")
         self._scenes = []
 
     def teardown_method(self):
         """Delete each scene's chunks instead of just dropping the reference to the scene.
 
-        create_layer and edit_target both register their refresh handlers with
-        listen_globally=True, and a chunk left alive keeps answering those notices — on
+        layer and edit_target both register their refresh handlers with
+        listen_globally=True, and a chunk left alive keeps answering those notices -- on
         whatever stage is current, since ChunkBase.get_stage() resolves the live one rather
         than the stage the chunk was built on. Left to leak, one test's chunks go on
         authoring layers into the next test's stage.
@@ -106,9 +107,9 @@ class TestEditTargetMigration:
 
     def _create_layer(self, scene, name, module_name=None):
         # module_name is what gets written to the prim as info:chunkType. The reload test
-        # passes the real "create_layer" so the registry can rebuild a working chunk from it
+        # passes the real "layer" so the registry can rebuild a working chunk from it
         # and the layer this authors exists again on the other side of a reload; the rest
-        # pass nothing and get a per-layer stand-in, which no module backs — they only care
+        # pass nothing and get a per-layer stand-in, which no module backs -- they only care
         # about where edits land, and a name the registry can't resolve keeps their chunks
         # from re-running module code as unrelated notices cascade past.
         c = _make(scene, self.create_mod, module_name or f"cl_{name}")
@@ -174,20 +175,20 @@ class TestEditTargetMigration:
 
     def test_selection_and_homing_survive_reload(self, tmp_path):
         """A saved graph of chained Edit Targets reloads with each selection intact and each
-        downstream chunk re-homed under the right layer — the reload path re-applies the
+        downstream chunk re-homed under the right layer -- the reload path re-applies the
         stored selections (which a Menu drops on load until its layer is recreated),
         upstream-first, from a pre-read snapshot so a cascade can't corrupt a sibling's value.
         """
-        export_cg = importlib.import_module("scripts.core.export_chunkgroup")
+        export_cg = importlib.import_module("chunks.core.export_chunkgroup")
         scene, stage = self._setup()
-        # CreateLayer(A) -> EditTarget(->A) -> CreateLayer(B) -> EditTarget(->B) -> Prim.
-        # Real module names (create_layer/edit_target/prim) so the registry can rebuild the
+        # Layer(A) -> EditTarget(->A) -> Layer(B) -> EditTarget(->B) -> Prim.
+        # Real module names (layer/edit_target/prim) so the registry can rebuild the
         # chunks from info:chunkType on reload.
-        self._create_layer(scene, "A", "create_layer")
+        self._create_layer(scene, "A", "layer")
         et_a = _make(scene, self.edit_mod, "edit_target")
         et_a.get_param("edit_target").value = "A"
         et_a.execute()
-        self._create_layer(scene, "B", "create_layer")
+        self._create_layer(scene, "B", "layer")
         et_b = _make(scene, self.edit_mod, "edit_target")
         et_b.get_param("edit_target").value = "B"
         et_b.execute()
@@ -218,14 +219,14 @@ class TestEditTargetMigration:
         }
         assert et_values == {"A", "B"}  # both selections survived, not reset to Session Layer
 
-        # Regression companion to the selection check above: Create Layer's OWN params
+        # Regression companion to the selection check above: Layer's OWN params
         # (layer_name in particular) must also survive, and there must be exactly one
-        # layer per Create Layer chunk -- not a second, orphaned one falling back to the
+        # layer per Layer chunk -- not a second, orphaned one falling back to the
         # chunk's default name because layer_name came back empty (live-reported: the
-        # Layer Stack panel showing a duplicate "CreateLayer" entry alongside the correctly
+        # Layer Stack panel showing a duplicate "Layer" entry alongside the correctly
         # named "A"/"B" layers after a reload).
         create_layer_chunks = [
-            c for c in chunks2 if (c.get_config() and c.get_config().module) == "create_layer"
+            c for c in chunks2 if (c.get_config() and c.get_config().module) == "layer"
         ]
         assert {c.get_param("layer_name").value for c in create_layer_chunks} == {"A", "B"}
         for name in ("A", "B"):
@@ -239,7 +240,7 @@ class TestEditTargetMigration:
             }
             assert len(matches) == 1, f"expected exactly one layer named {name!r}, found {matches}"
         assert not any(
-            lyr.GetDisplayName() == "CreateLayer"
+            lyr.GetDisplayName() == "Layer"
             for lyr in stage2.GetLayerStack(includeSessionLayers=True)
         ), "no orphaned layer should fall back to the chunk's default name"
 
@@ -255,7 +256,7 @@ class TestEditTargetMigration:
         assert layer_b.GetPrimAtPath(ppath) is not None
         assert stage2.GetSessionLayer().GetPrimAtPath(ppath) is None
 
-        # Every chunk prim must survive the reload's migrations still *defined* — the node
+        # Every chunk prim must survive the reload's migrations still *defined* -- the node
         # graph iterates Usd.PrimIsDefined, so one demoted to a bare `over` stops drawing.
         undefined = [
             str(c2path)
@@ -271,7 +272,7 @@ class TestEditTargetMigration:
 
         _migrate_chunk_bookkeeping deletes the source specs, so if the destination keeps its
         `over` specifier and empty typeName the prim becomes undefined and typeless across
-        the whole stack — invisible to every Usd.PrimIsDefined traversal, which is what the
+        the whole stack -- invisible to every Usd.PrimIsDefined traversal, which is what the
         node graph iterates, so the chunk silently stops drawing a node.
         """
         scene, stage = self._setup()
@@ -299,7 +300,7 @@ class TestEditTargetMigration:
         their params.
 
         The teardown's own PARAM_REMOVED / layer-stack notices cascade straight back into the
-        graph — an Edit Target's refresh callback re-runs, reconcile_edit_targets re-executes
+        graph -- an Edit Target's refresh callback re-runs, reconcile_edit_targets re-executes
         chunks. Any chunk that lost its params without being asked to delete is still live to
         all of that, and every chunk script crashes on a get_param() that now returns None.
         """
@@ -342,16 +343,16 @@ class TestEditTargetMigration:
 
 
 class TestFollowUpstreamUsesExecEdgesOnly:
-    """Which Create Layer "Follow Upstream" means is decided by the exec chain alone.
+    """Which Layer "Follow Upstream" means is decided by the exec chain alone.
 
     reconcile_dag_dependencies mirrors param wires into the Python DAG as well, so
     chunk.get_dependencies() no longer answers "what precedes me". A param wire means a
-    value flows; letting one pick the Create Layer would silently change where every
+    value flows; letting one pick the Layer would silently change where every
     downstream chunk authors, on a signal the user never meant as ordering.
     """
 
     def setup_method(self):
-        self.edit_mod = importlib.import_module("scripts.usd.edit_target")
+        self.edit_mod = importlib.import_module("chunks.usd.edit_target")
         self._scenes = []
 
     def teardown_method(self):
@@ -368,7 +369,7 @@ class TestFollowUpstreamUsesExecEdgesOnly:
         return scene, stage
 
     def _pair(self, scene):
-        """A Create Layer stand-in and an Edit Target stand-in, deliberately NOT chained.
+        """A Layer stand-in and an Edit Target stand-in, deliberately NOT chained.
 
         Bare chunks rather than the real modules: this pins the topology question, and a
         stand-in keeps unrelated notices from re-running module code.

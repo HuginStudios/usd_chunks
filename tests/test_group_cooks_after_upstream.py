@@ -2,8 +2,8 @@
 
 recook_for_view used to recurse into a group while it was still blocking and muting the
 context -- before any of the context's own chunks had been revealed and cooked. So a chunk
-inside the group read the stage as its upstream had left it LAST time: reported as the
-kitchen layout's Materials script, once grouped, converting none of the appliances.
+inside the group read the stage as its upstream had left it LAST time, and found none of
+the prims it acts on.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry, chunk_stage
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import connect_exec, get_chunk_prim_path
 
 _PROBE = "_group_cooks_after_upstream_probe"

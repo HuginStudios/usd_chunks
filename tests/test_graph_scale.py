@@ -2,12 +2,12 @@
 
 Two tiers, because the cost of a large graph is not where you would first look for it:
 
-* **Scheduler tier** — 1000 bare propagators wired into a chain, exercising
+* **Scheduler tier** -- 1000 bare propagators wired into a chain, exercising
   `chunk_scheduler` alone (dirty propagation, Kahn sort, solve, depth). No USD, no Qt.
   This is the part people assume is the bottleneck. It is not: it is linear and finishes
   a 1000-node chain in tens of milliseconds.
 
-* **Full-stack tier** — 1000 real `dot` chunks (the cheapest module there is: its
+* **Full-stack tier** -- 1000 real `dot` chunks (the cheapest module there is: its
   `execute` clears its own layer and returns) created through the registry and wired
   through `add_dependency`, so every structural change drags the real USD bookkeeping
   behind it. This is where the time goes, and it does not go there linearly.
@@ -16,8 +16,8 @@ The full-stack tier is opt-in (`USD_CHUNKS_SCALE=1`): a 1000-node build is a cou
 minutes, which is worth having on demand but not on every suite run. Run the sweep
 directly to get the phase table and the fitted growth exponent per phase:
 
-    USD_CHUNK_DIRS=scripts python tests/test_graph_scale.py --sweep 25,50,100,200
-    USD_CHUNK_DIRS=scripts python tests/test_graph_scale.py --n 1000
+    USD_CHUNK_DIRS=chunks python tests/test_graph_scale.py --sweep 25,50,100,200
+    USD_CHUNK_DIRS=chunks python tests/test_graph_scale.py --n 1000
 
 `--sweep` is the useful mode: absolute numbers move with the machine, but the exponent
 (how the phase grows as N doubles) is what says whether a phase is linear, quadratic or
@@ -29,13 +29,13 @@ from __future__ import annotations
 import math
 import os
 import time
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry, chunk_scheduler
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias, ChunkNoticePropagator
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as chunk_usd_init
@@ -52,7 +52,7 @@ SCALE_TESTS_ENABLED = os.environ.get("USD_CHUNKS_SCALE") == "1"
 
 
 class _ChainNode(ChunkNoticePropagator):
-    """A propagator with nothing but a name — the scheduler tier's unit of work."""
+    """A propagator with nothing but a name -- the scheduler tier's unit of work."""
 
     def __init__(self, name: str):
         super().__init__()
@@ -79,14 +79,14 @@ class _BenchScene(SceneSender):
         return []
 
 
-def _time(fn: Callable[[], object]) -> Tuple[float, object]:
+def _time(fn: Callable[[], object]) -> tuple[float, object]:
     """Run fn and return (seconds, result)."""
     start = time.perf_counter()
     result = fn()
     return time.perf_counter() - start, result
 
 
-def build_scheduler_chain(count: int) -> List[_ChainNode]:
+def build_scheduler_chain(count: int) -> list[_ChainNode]:
     """A linear chain of count propagators, each depending on the one before it."""
     nodes = [_ChainNode(f"n{i}") for i in range(count)]
     for previous, current in zip(nodes, nodes[1:]):
@@ -94,7 +94,7 @@ def build_scheduler_chain(count: int) -> List[_ChainNode]:
     return nodes
 
 
-def scheduler_phases(count: int) -> List[Tuple[str, float]]:
+def scheduler_phases(count: int) -> list[tuple[str, float]]:
     """Time each scheduler operation over a chain of count nodes."""
     build, nodes = _time(lambda: build_scheduler_chain(count))
     head = nodes[0].get_dag_node()
@@ -108,7 +108,7 @@ def scheduler_phases(count: int) -> List[Tuple[str, float]]:
     return [("build+wire", build), ("propagate_dirty", dirty), ("solve", solve), ("get_depth", depth)]
 
 
-def build_chunk_graph(count: int) -> List[Tuple[str, float]]:
+def build_chunk_graph(count: int) -> list[tuple[str, float]]:
     """Create count `dot` chunks on a fresh stage, chain them, and time each phase.
 
     `dot` is chosen because its module body does nothing but clear its own layer: whatever
@@ -129,12 +129,12 @@ def build_chunk_graph(count: int) -> List[Tuple[str, float]]:
 
     module = registry.get_chunk_module("dot")
     if not module:
-        pytest.skip("USD_CHUNK_DIRS must point at scripts/ for the dot chunk to be found")
+        pytest.skip("USD_CHUNK_DIRS must point at chunks/ for the dot chunk to be found")
 
     _ACTIVE["scene"] = scene
     _ACTIVE["stage"] = stage
 
-    def create() -> List:
+    def create() -> list:
         chunks = []
         for _ in range(count):
             created = module.create() if module.loaded else module.load()
@@ -164,7 +164,7 @@ def build_chunk_graph(count: int) -> List[Tuple[str, float]]:
     ]
 
 
-def reload_chunk_graph(count: int, directory: str) -> List[Tuple[str, float]]:
+def reload_chunk_graph(count: int, directory: str) -> list[tuple[str, float]]:
     """Build count chained chunks, export them, then time opening that file back up.
 
     A different cost to build_chunk_graph and the one that actually matters for a saved
@@ -185,7 +185,7 @@ def reload_chunk_graph(count: int, directory: str) -> List[Tuple[str, float]]:
     registry.initialize(fresh, "scale-bench")
     chunk_registry.ChunkLayerManager().initialize(stage)
 
-    # chunk_stage.initialize is what loads the file — it runs load_chunks against the sync's
+    # chunk_stage.initialize is what loads the file -- it runs load_chunks against the sync's
     # own path bookkeeping. Calling load_chunks again afterwards with a fresh set does not
     # measure a second open, it builds a duplicate of every chunk already there.
     load, _ = _time(lambda: chunk_usd_init(stage, fresh))
@@ -205,7 +205,7 @@ def test_scheduler_solves_1000_connected_nodes():
 
     Guards the scheduler against a regression back to the per-path recursive walk it
     replaced, which went exponential on shapes this size. The threshold is deliberately
-    loose — it is there to catch an algorithmic regression, not to police milliseconds on
+    loose -- it is there to catch an algorithmic regression, not to police milliseconds on
     a busy CI box.
     """
     phases = scheduler_phases(NODE_COUNT)
@@ -218,7 +218,7 @@ def _best_of(fn: Callable[[], object], runs: int = 3) -> float:
     """Seconds for the fastest of runs calls to fn.
 
     Noise on a busy machine only ever adds time, never subtracts it, so the fastest
-    sample is the one closest to what the code actually costs — a single timing measures
+    sample is the one closest to what the code actually costs -- a single timing measures
     the box as much as the code.
     """
     return min(_time(fn)[0] for _ in range(runs))
@@ -257,7 +257,7 @@ def test_chunk_graph_builds_1000_connected_nodes():
 
     Guards the fix that made this reachable at all: `reconcile_edit_targets` used to re-run
     over every chunk in the scene on every single wire, making the wiring phase cubic in the
-    node count — 4+ hours at this size. Scoped to the chunks downstream of the new edge it is
+    node count -- 4+ hours at this size. Scoped to the chunks downstream of the new edge it is
     quadratic and measured in seconds.
 
     The threshold is several times the measured time, so it fails on a return to cubic
@@ -269,15 +269,15 @@ def test_chunk_graph_builds_1000_connected_nodes():
     assert total < 600.0, f"1000-node chunk graph took {total:.1f}s: {_format(phases)}"
 
 
-def _format(phases: List[Tuple[str, float]]) -> str:
+def _format(phases: list[tuple[str, float]]) -> str:
     return ", ".join(f"{name}={seconds:.3f}s" for name, seconds in phases)
 
 
-def _sweep(counts: List[int], builder: Callable[[int], List[Tuple[str, float]]], title: str) -> None:
+def _sweep(counts: list[int], builder: Callable[[int], list[tuple[str, float]]], title: str) -> None:
     """Run builder at each count and print a phase table plus the fitted growth exponent.
 
     The exponent is a straight log-log slope between the smallest and largest run: 1.0 is
-    linear, 2.0 quadratic, 3.0 cubic. It is the number worth reading — it says whether a
+    linear, 2.0 quadratic, 3.0 cubic. It is the number worth reading -- it says whether a
     phase will survive being asked for ten times as many nodes.
     """
     print(f"\n=== {title} ===")

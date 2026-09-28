@@ -11,14 +11,15 @@ here.
 from __future__ import annotations
 
 import pytest
-from PySide6 import QtCore, QtGui
+from PySide6 import QtCore, QtGui, QtWidgets
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.graph import engine as chunk_graph
 
 
 class _DummyScene(SceneSender):
@@ -130,7 +131,6 @@ def test_a_selection_limits_it_to_those_nodes(graph) -> None:
 
 def test_ctrl_c_still_copies(graph) -> None:
     """The bare key had to share with an existing shortcut, so pin that it still copies."""
-    from usd_chunks.plugins import chunk_graph
 
     qapp, view, chunks = graph
     chunks[0].set_state(ChunkFlags.State.SELECTED)
@@ -212,8 +212,6 @@ def test_the_key_is_left_alone_when_the_cursor_is_elsewhere(graph) -> None:
 
 
 def test_ctrl_c_is_not_swallowed_by_the_bare_c_fallback(over_the_graph) -> None:
-    from usd_chunks.plugins import chunk_graph
-
     qapp, view, router, chunks = over_the_graph
     chunks[0].set_state(ChunkFlags.State.SELECTED)
     qapp.processEvents()
@@ -228,7 +226,6 @@ def test_ctrl_c_is_not_swallowed_by_the_bare_c_fallback(over_the_graph) -> None:
 def test_typing_c_into_a_node_field_is_not_hijacked(over_the_graph) -> None:
     """C is a printable character: typed into a node's own text field it must reach the
     field, not collapse the graph underneath it."""
-    from PySide6 import QtWidgets
 
     qapp, view, router, chunks = over_the_graph
     container = QtWidgets.QWidget()

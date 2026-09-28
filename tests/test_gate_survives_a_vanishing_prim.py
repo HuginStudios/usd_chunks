@@ -33,10 +33,11 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry, chunk_stage, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
-_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "chunks"
 for _dir in (_SCRIPTS / "utils", _SCRIPTS / "modelling"):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
@@ -222,7 +223,7 @@ def test_show_attribute_leaves_the_params_alone_when_the_prim_goes(graph, monkey
         return real(attr, *args, **kwargs)
 
     monkeypatch.setattr(chunk, "param_from_attr", explode)
-    chunk_utils.show_attribute(stage.GetPrimAtPath("/probe"), group)
+    chunk.show_attribute(stage.GetPrimAtPath("/probe"), group)
     qapp.processEvents()
 
     assert calls["n"] > 1, "test setup: the read must have failed part way"

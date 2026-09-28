@@ -7,16 +7,28 @@ everywhere else.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+import time
 import pytest
 from pxr import Sdf, Usd
 from PySide6 import QtCore
 from PySide6.QtTest import QTest
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_qt_widgets import ChunkLineEditWidget
-from usd_chunks.chunk_stage import initialize as _chunk_usd_init
+from usd_chunks.frontends.qt.widgets import ChunkLineEditWidget
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init, get_chunk_prim_path
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+
+# usdview is not part of the usd-core wheel. Only its absence skips; the host module
+# failing to import for any other reason still errors.
+try:
+    from pxr import Usdviewq  # noqa: F401
+except ImportError:
+    UsdviewScene = None
+else:
+    from usd_chunks.hosts.usdview import UsdviewScene
 
 CTRL = QtCore.Qt.KeyboardModifier.ControlModifier
 LEFT = QtCore.Qt.MouseButton.LeftButton
@@ -204,9 +216,8 @@ class _Selection:
 
 @pytest.fixture
 def usdview_scene():
-    pytest.importorskip("pxr.Usdviewq", reason="usdview is not part of the usd-core wheel")
-    from types import SimpleNamespace
-    from usd_chunks.plugins.chunk_usdview import UsdviewScene
+    if UsdviewScene is None:
+        pytest.skip("usdview is not part of the usd-core wheel")
 
     stage = Usd.Stage.CreateInMemory()
     stage.DefinePrim("/World/Kettle", "Xform")
@@ -244,7 +255,6 @@ def test_usdview_with_nothing_real_to_select_keeps_the_selection(usdview_scene):
 def test_ctrl_click_on_the_field_in_a_graph_node_selects_the_prim_not_the_node(qapp, scene):
     """The node claims ctrl+click on its own chrome to toggle node selection. On the field
     embedded in its body, the field has to get it -- and the node selection must not move."""
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     docker = ChunkWidgetDocker()
     docker.resize(900, 700)
@@ -263,10 +273,6 @@ def test_ctrl_click_on_the_field_in_a_graph_node_selects_the_prim_not_the_node(q
 
 
 def _click_through_graph(qapp, scene, docker):
-    import time
-    from usd_chunks.chunk_flags import ChunkFlags as _Flags
-    from usd_chunks.chunk_stage import get_chunk_prim_path
-
     xf = _mk(scene, "transform")
     xf.get_param("primpath_location").value = "/World/Kettle"
     view = docker.tab_widget.get_current_graph_view()
@@ -293,13 +299,13 @@ def _click_through_graph(qapp, scene, docker):
         # viewport, and the click then lands on nothing -- which says nothing about who
         # gets a ctrl+click. Skip rather than fail on where a widget happened to end up.
         pytest.skip("the field is not on screen in this docker configuration")
-    was_selected = xf.has_state(_Flags.State.SELECTED)
+    was_selected = xf.has_state(ChunkFlags.State.SELECTED)
 
     QTest.mouseClick(view.viewport(), LEFT, CTRL, at)
     qapp.processEvents()
 
     assert scene.selected == [["/World/Kettle"]]
-    assert xf.has_state(_Flags.State.SELECTED) == was_selected, "the click must not toggle the node"
+    assert xf.has_state(ChunkFlags.State.SELECTED) == was_selected, "the click must not toggle the node"
 
 
 def test_the_field_gives_up_the_keyboard(qapp, scene):

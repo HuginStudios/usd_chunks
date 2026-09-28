@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtWidgets
 
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene, ChunkGraphView
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene, ChunkGraphView
 
 
 def test_chunk_deleted_debounces_recook_across_many_notices(qapp, monkeypatch) -> None:
