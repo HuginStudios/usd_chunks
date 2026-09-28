@@ -969,13 +969,15 @@ class DagNode:
         chunk_scheduler.topology_changed(self, node)
         return True
 
-    def set_owner(self, owner: ChunkNoticePropagator | None):
+    def set_owner(self, owner: ChunkNoticePropagator | None, *, dirty: bool = True):
         """Set the owner of this node.
 
         The owner is treated like an output, with some semantic differences; see DagConnections.
 
         Args:
             owner (ChunkNoticePropagator | None): The owner propagator
+            dirty (bool): Whether joining marks the owner dirty. A new child is new data for
+                its owner; an attribute's own sender is not -- see AttributeSender.
         """
         if owner == self.get_owner():
             return
@@ -1002,7 +1004,8 @@ class DagNode:
             if node._owned is None:
                 node._owned = weakref.WeakSet()
             node._owned.add(self)
-            node.dirty = True
+            if dirty:
+                node.dirty = True
             node.set_graph_id(self)
 
     def get_inputs(self) -> Iterator[tuple[int, DagNode]]:
@@ -1326,7 +1329,7 @@ class ChunkNoticePropagator:
         """
         return self.get_dag_node().get_owner()
 
-    def set_owner(self, owner: ChunkNoticePropagator | None):
+    def set_owner(self, owner: ChunkNoticePropagator | None, *, dirty: bool = True):
         """Set the owner of this object: its parent in a parent-child relationship.
 
         Call this once the parent has actually taken ownership of this object, to update the
@@ -1334,8 +1337,9 @@ class ChunkNoticePropagator:
 
         Args:
             owner (ChunkNoticePropagator | None): The owning (parent) object that should receive notices when this instance is modified
+            dirty (bool): Whether joining marks the owner dirty; see DagNode.set_owner.
         """
-        self.get_dag_node().set_owner(owner)
+        self.get_dag_node().set_owner(owner, dirty=dirty)
 
     def is_presentation_change(self) -> bool:
         """Whether the change this propagator is being dirtied for is presentation only.
