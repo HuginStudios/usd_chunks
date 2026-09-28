@@ -471,6 +471,79 @@ class TestDiscoveryIsCached:
             assert first[0].key == second[0].key
 
 
+_SAMPLE = (
+    render_defs.RenderSettingsDef(
+        key="FooRendererSettingsAPI",
+        label="Foo",
+        namespace="foo",
+        source="schema",
+        props=[render_defs.RenderSettingProp(name="foo_samples", attr_name="foo:samples", default=4)],
+    ),
+)
+
+
+@pytest.fixture
+def disk_cache(tmp_path, monkeypatch):
+    """Discovery against a cache folder of its own, with a discovery that counts its calls."""
+    monkeypatch.setenv("USD_CHUNKS_CACHE_DIR", str(tmp_path))
+    calls = []
+
+    def discover():
+        calls.append(1)
+        return _SAMPLE
+
+    monkeypatch.setattr(render_defs, "_discover_uncached", discover)
+    render_defs.clear_cache()
+    yield tmp_path, calls
+    render_defs.clear_cache()
+
+
+class TestDiscoveryIsCachedOnDisk:
+    """The first discovery in a process was two seconds of Sdr discovering every shader,
+    and its answer only changes when USD, a plugin or this code does."""
+
+    def test_a_second_process_reads_the_first_ones_answer(self, disk_cache):
+        folder, calls = disk_cache
+        assert render_defs._discover() == _SAMPLE
+        render_defs.clear_cache()  # what a new process starts with
+
+        assert render_defs._discover() == _SAMPLE
+        assert len(calls) == 1, "should have been read back, not discovered again"
+        assert len(list(folder.glob("render_settings-*.pickle"))) == 1
+
+    def test_a_changed_key_discovers_again_and_drops_the_old_file(self, disk_cache, monkeypatch):
+        folder, calls = disk_cache
+        render_defs._discover()
+        render_defs.clear_cache()
+        monkeypatch.setattr(render_defs, "_disk_cache_key", lambda: "another-usd")
+
+        render_defs._discover()
+        assert len(calls) == 2
+        assert [p.name for p in folder.glob("render_settings-*.pickle")] == [
+            "render_settings-another-usd.pickle"
+        ]
+
+    def test_a_torn_file_is_only_a_miss(self, disk_cache):
+        folder, calls = disk_cache
+        render_defs._discover()
+        render_defs.clear_cache()
+        for path in folder.glob("render_settings-*.pickle"):
+            path.write_bytes(b"not a pickle")
+
+        assert render_defs._discover() == _SAMPLE
+        assert len(calls) == 2
+
+    def test_an_empty_cache_dir_turns_it_off(self, disk_cache, monkeypatch):
+        folder, calls = disk_cache
+        monkeypatch.setenv("USD_CHUNKS_CACHE_DIR", "")
+        render_defs._discover()
+        render_defs.clear_cache()
+        render_defs._discover()
+
+        assert len(calls) == 2
+        assert not list(folder.iterdir())
+
+
 class TestLabels:
     def test_schema_suffixes_are_stripped(self):
         assert render_defs._label_from_schema_name("VRayRendererSettingsAPI") == "VRay"

@@ -36,10 +36,13 @@ for group, props in group_props(d.props).items():
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import pickle
 import re
 import sys
+import tempfile
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -537,9 +540,127 @@ def _defs_from_delegates(existing) -> list[RenderSettingsDef]:
     return found
 
 
+#: Bumped when RenderSettingsDef or RenderSettingProp change shape, so a cache written by
+#: an older layout is ignored rather than unpickled into the wrong fields.
+_DISK_CACHE_FORMAT = 1
+
+
+def _disk_cache_dir() -> str | None:
+    """Where discovered definitions are kept between processes, or None for nowhere.
+
+    USD_CHUNKS_CACHE_DIR overrides it, and set empty turns the cache off.
+    """
+    override = os.environ.get("USD_CHUNKS_CACHE_DIR")
+    if override is not None:
+        return override or None
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "usd_chunks")
+
+
+def _disk_cache_key() -> str:
+    """Everything the discovered definitions depend on, hashed.
+
+    USD's version, and every plugin with the path it loads from -- a renderer installed,
+    removed or upgraded changes that list, and a V-Ray build's path names its version.
+    Then whether this process may load delegates at all, which decides whether they are
+    in the answer, and the two modules' own files, so a change to how definitions are
+    built is never answered from a cache the old code wrote.
+    """
+    plugins = sorted((p.name, p.path) for p in Plug.Registry().GetAllPlugins())
+    sources = []
+    for module_file in (__file__, shader_defs.__file__):
+        try:
+            stat = os.stat(module_file)
+            sources.append((module_file, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            sources.append((module_file, 0, 0))
+    parts = (
+        _DISK_CACHE_FORMAT,
+        Usd.GetVersion(),
+        sys.version_info[:2],
+        plugins,
+        UsdImagingGL is not None and not _host_owns_a_viewport(),
+        sources,
+    )
+    return hashlib.sha1(repr(parts).encode()).hexdigest()
+
+
+def _read_disk_cache(path: str) -> tuple | None:
+    try:
+        with open(path, "rb") as f:
+            found = pickle.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - a torn or foreign file is only a miss
+        logger.debug("Ignoring unreadable render settings cache %s: %s", path, exc)
+        return None
+    if not isinstance(found, tuple) or not all(isinstance(d, RenderSettingsDef) for d in found):
+        return None
+    return found
+
+
+def _write_disk_cache(path: str, found: tuple) -> None:
+    """Keep found for the next process, or quietly don't.
+
+    Written beside its final name and moved into place, so a process reading it at the
+    same moment finds the old file or the new one, never half of one.
+    """
+    try:
+        data = pickle.dumps(found, protocol=pickle.HIGHEST_PROTOCOL)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    except Exception as exc:  # noqa: BLE001 - a default that will not pickle, a read-only home
+        logger.debug("Could not write render settings cache %s: %s", path, exc)
+        return
+    # A new key means the old file answers a USD, plugin set or code that is gone.
+    cache_dir, name = os.path.split(path)
+    for other in os.listdir(cache_dir):
+        if other != name and other.startswith("render_settings-") and other.endswith(".pickle"):
+            try:
+                os.unlink(os.path.join(cache_dir, other))
+            except OSError:
+                pass
+
+
 @lru_cache(maxsize=1)
 def _discover() -> tuple:
-    """Read every renderer's settings once per process.
+    """Read every renderer's settings once per process, and from disk when unchanged.
+
+    The first read was two seconds of every process that opened a scene with a Render
+    Settings chunk in it, and almost none of it is this module's work: asking Sdr for
+    RenderMan's options node is Sdr's first touch, which discovers every shader every
+    plugin publishes -- whether or not RenderMan is installed at all. The answer only
+    changes when USD, a plugin or this code does, and those are what the file is keyed
+    on (_disk_cache_key), so a later process reads it back instead.
+    """
+    cache_dir = _disk_cache_dir()
+    path = None
+    if cache_dir:
+        try:
+            path = os.path.join(cache_dir, f"render_settings-{_disk_cache_key()}.pickle")
+        except Exception as exc:  # noqa: BLE001 - never let the cache stop discovery
+            logger.debug("Could not key the render settings cache: %s", exc)
+        if path and (found := _read_disk_cache(path)) is not None:
+            return found
+
+    found = _discover_uncached()
+    if path:
+        _write_disk_cache(path, found)
+    return found
+
+
+def _discover_uncached() -> tuple:
+    """Read every renderer's settings.
 
     Cached because building a definition is not cheap -- V-Ray's is 258 attributes, each
     needing a spec, a fallback and its documentation out of the schema registry -- and it
