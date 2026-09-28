@@ -77,6 +77,61 @@ def _coerce(param, raw):
         return None, f"cannot read {raw!r} as {getattr(first, '__name__', first)}"
 
 
+def _collapsed_groups(owner):
+    """The collapsed groups under owner, outermost first, not looking inside them."""
+    for child in getattr(owner, "get_my_params", lambda: [])():
+        if not hasattr(child, "get_my_params"):
+            continue
+        if child.has_state(chunk.ChunkFlags.State.COLLAPSED):
+            yield child
+        else:
+            yield from _collapsed_groups(child)
+
+
+def _expanded(group):
+    """Open group the way clicking its header does, then close it again.
+
+    A chunk may build a group's params only once it is first opened -- Render Settings
+    does, since V-Ray alone declares hundreds -- and a param that has not been built
+    cannot be found, let alone set. Closing it again afterwards keeps the saved network
+    as it was: the params stay built, only the header state goes back.
+    """
+    group.unset_state(chunk.ChunkFlags.State.COLLAPSED)
+    group.set_state(chunk.ChunkFlags.State.COLLAPSED)
+
+
+def _find_param(owner, name):
+    """owner's param at name, opening collapsed groups until it has been built.
+
+    The groups a dotted name passes through are opened first, since that is where the
+    param has to be. Failing that -- a bare name, or a path that skips a level -- the
+    collapsed groups are opened one at a time, outermost first, until the param exists,
+    so only as much is built as it takes to find it.
+    """
+    param = owner.get_param(name)
+    if param is not None:
+        return param
+
+    parts = name.split(".")
+    for depth in range(1, len(parts)):
+        group = owner.get_param(".".join(parts[:depth]))
+        if group is None:
+            break
+        if group.has_state(chunk.ChunkFlags.State.COLLAPSED):
+            _expanded(group)
+    if (param := owner.get_param(name)) is not None:
+        return param
+
+    pending = list(_collapsed_groups(owner))
+    while pending:
+        group = pending.pop(0)
+        _expanded(group)
+        if (param := owner.get_param(name)) is not None:
+            return param
+        pending[:0] = _collapsed_groups(group)
+    return None
+
+
 def _parse_param_overrides(scene, overrides):
     # Contexts first, in both lookups. get_chunks() omits plain tab contexts because they
     # are not executable, but a tab is exactly where a network's lofted interface lives --
@@ -103,6 +158,13 @@ def _parse_param_overrides(scene, overrides):
                 if p:
                     param = p
                     break
+            else:
+                # Not built yet in any chunk: look inside the collapsed groups too, once
+                # every chunk's already-built params have had their chance.
+                for c in searchable:
+                    if (p := _find_param(c, name)) is not None and chunk.is_param(p):
+                        param = p
+                        break
             if not param:
                 print(f"Param not found: {name!r}")
                 continue
@@ -112,7 +174,9 @@ def _parse_param_overrides(scene, overrides):
             if not c:
                 print(f"Chunk not found: {chunk_name!r}")
                 continue
-            param = c.get_param(param_path, chunk.is_param)
+            param = _find_param(c, param_path)
+            if param is not None and not chunk.is_param(param):
+                param = None
             if not param:
                 print(f"Param not found: {param_path!r} on chunk {chunk_name!r}")
                 continue
