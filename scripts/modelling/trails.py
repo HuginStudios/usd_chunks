@@ -65,6 +65,26 @@ def sample_paths(stage, prim, frames):
     return np.stack(out) if out else np.zeros((0, 0, 3))
 
 
+def sample_normals(stage, prim, frames, count):
+    """(F, N, 3) world normals of a Points prim over *frames*, or None when it has none."""
+    if not prim.IsA(UsdGeom.PointBased):
+        return None
+    attr = UsdGeom.PointBased(prim).GetNormalsAttr()
+    if not attr or not attr.HasValue():
+        return None
+    xf = UsdGeom.Xformable(prim)
+    out = []
+    for f in frames:
+        v = attr.Get(f)
+        n = np.asarray(v, dtype=np.float64).reshape(-1, 3) if v is not None else np.zeros((0, 3))
+        if len(n) != count:
+            return None
+        m = np.array(xf.ComputeLocalToWorldTransform(f), dtype=np.float64)[:3, :3]
+        n = n @ m
+        out.append(n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12))
+    return np.stack(out)
+
+
 def build_trails(paths, min_step):
     """Per point, the indices of the frames kept along its trail (a point that never moved
     further than *min_step* gets a single index)."""
@@ -78,8 +98,25 @@ def build_trails(paths, min_step):
     return keep
 
 
-def _curves_at(paths, keep, upto, widths, taper):
-    """Points, vertex counts and widths of every trail with at least two vertices by frame *upto*."""
+def _wobble(arc, phases, variation, frequency):
+    """Smooth width multiplier along a trail's length: 1 +- *variation*, *frequency* bulges
+    per scene unit. Two detuned sines with per-trail phases -- a run swells and thins where
+    the water gathered, never in a pattern shared with its neighbours."""
+    if variation <= 0.0:
+        return np.ones_like(arc)
+    x = 2.0 * np.pi * frequency * arc
+    n = 0.6 * np.sin(x + phases[0]) + 0.4 * np.sin(2.37 * x + phases[1])
+    return np.maximum(0.15, 1.0 + variation * n)
+
+
+def _curves_at(paths, keep, upto, widths, taper, normals=None, variation=0.0, frequency=1.0, sink=0.0,
+               phases=None):
+    """Points, vertex counts and widths of every trail with at least two vertices by frame *upto*.
+
+    *variation* / *frequency* swell and thin each trail along its length; *sink* pushes it
+    into the surface along *normals* by that fraction of its half-width, so a tube reads as a
+    flat film of water lying on the surface rather than a wire on top of it.
+    """
     pts, counts, wid = [], [], []
     for i, idx in enumerate(keep):
         idx = [f for f in idx if f <= upto]
@@ -88,10 +125,16 @@ def _curves_at(paths, keep, upto, widths, taper):
             idx = idx + [upto]  # the head, where the point is right now
         if len(idx) < 2:
             continue
-        pts.append(paths[idx, i])
-        counts.append(len(idx))
+        p = paths[idx, i]
+        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))])
         ramp = np.linspace(taper, 1.0, len(idx))
-        wid.append(widths[i] * ramp)
+        ph = phases[i] if phases is not None else (0.0, 0.0)
+        w = widths[i] * ramp * _wobble(arc, ph, variation, frequency)
+        if sink > 0.0 and normals is not None:
+            p = p - normals[idx, i] * (0.5 * w * sink)[:, None]
+        pts.append(p)
+        counts.append(len(idx))
+        wid.append(w)
     if not counts:
         return np.zeros((0, 3)), [], np.zeros(0)
     return np.concatenate(pts), counts, np.concatenate(wid)
@@ -131,19 +174,25 @@ def execute(node) -> None:
     taper = min(1.0, max(0.0, node.get_param("taper", is_f).value))
     keep = build_trails(paths, max(0.0, node.get_param("min_step", is_f).value))
     grow = node.get_param("grow", chunk.is_param_t(bool)).value
+    sink = min(1.0, max(0.0, node.get_param("sink", is_f).value))
+    normals = sample_normals(upstream, prim, frames, n) if sink > 0.0 else None
+    shape = dict(normals=normals, sink=sink,
+                 variation=max(0.0, node.get_param("width_variation", is_f).value),
+                 frequency=max(0.0, node.get_param("width_frequency", is_f).value),
+                 phases=np.random.default_rng(node.get_param("seed", is_i).value).uniform(0, 2 * np.pi, (n, 2)))
     with Usd.EditContext(stage, layer):
         curves = UsdGeom.BasisCurves.Define(stage, out_path)
         curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
         curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
         pa, ca, wa = curves.CreatePointsAttr(), curves.CreateCurveVertexCountsAttr(), curves.CreateWidthsAttr()
-        full = _curves_at(paths, keep, len(frames) - 1, widths, taper)
+        full = _curves_at(paths, keep, len(frames) - 1, widths, taper, **shape)
         for attr_, value in zip((pa, ca, wa), (Vt.Vec3fArray.FromNumpy(full[0].astype(np.float32)),
                                                Vt.IntArray(full[1]),
                                                Vt.FloatArray.FromNumpy(full[2].astype(np.float32)))):
             attr_.Set(value)
         if grow:
             for k, f in enumerate(frames):
-                p, c, w = _curves_at(paths, keep, k, widths, taper)
+                p, c, w = _curves_at(paths, keep, k, widths, taper, **shape)
                 t = Usd.TimeCode(f)
                 pa.Set(Vt.Vec3fArray.FromNumpy(p.astype(np.float32)), t)
                 ca.Set(Vt.IntArray(c), t)
@@ -177,6 +226,16 @@ def main() -> chunk.Chunk:
                                        "source is a Points prim that has them."))
     chunk_api.add_param(chunk.Slider("taper", "Taper", min_value=0.0, max_value=1.0, default_value=0.5,
                                      tooltip="Width at the start of a trail, relative to its head."))
+    chunk_api.add_param(chunk.Slider("width_variation", "Width Variation", min_value=0.0, max_value=1.0,
+                                     default_value=0.0,
+                                     tooltip="How much each trail swells and thins along its length."))
+    chunk_api.add_param(chunk.Spinbox("width_frequency", "Width Frequency", default_value=1.0,
+                                      tooltip="Swellings per scene unit of length."))
+    chunk_api.add_param(chunk.Slider("sink", "Sink", min_value=0.0, max_value=1.0, default_value=0.0,
+                                     tooltip="Push each trail into the surface it ran over (needs the source's "
+                                     "normals, which Surface Flow writes), as a fraction of its half-width: "
+                                     "a tube then reads as a flat film lying on the surface."))
+    chunk_api.add_param(chunk.Spinbox("seed", "Seed", default_value=0, is_int=True))
     chunk_api.add_param(chunk.Checkbox("grow", "Grow", default_value=False,
                                        tooltip="Animate the curves: each reaches only as far as its point "
                                        "has got at that frame."))

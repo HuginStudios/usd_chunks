@@ -290,3 +290,19 @@ def test_scatter_keeps_away_from_curves(scene):
     # Distance to the run's line (x = 0.05, y = 0): clear by the distance plus half the spacing.
     d = np.hypot(p[:, 0] - 0.05, p[:, 1])
     assert d.min() >= 0.01 + 0.002 - 1e-6
+
+
+def test_trails_swell_and_sink_into_the_surface():
+    """Width Variation swells and thins a trail along its length; Sink pushes it into the
+    surface along the normals by that fraction of its half-width."""
+    paths = np.zeros((11, 1, 3))
+    paths[:, 0, 2] = -np.arange(11) * 0.5  # straight down a wall facing -Y
+    normals = np.tile((0.0, -1.0, 0.0), (11, 1, 1))
+    keep = trails.build_trails(paths, 0.1)
+    kw = dict(normals=normals, phases=np.array([[0.3, 1.1]]))
+    pts, _, w = trails._curves_at(paths, keep, 10, np.array([0.4]), 1.0, variation=0.5, frequency=0.4, **kw)
+    assert w.max() > 0.4 * 1.2 and w.min() < 0.4 * 0.8
+    assert np.allclose(pts[:, 1], 0.0)  # no sink: on the surface
+    pts, _, w = trails._curves_at(paths, keep, 10, np.array([0.4]), 1.0, variation=0.5, frequency=0.4,
+                                  sink=0.6, **kw)
+    assert np.allclose(pts[:, 1], 0.5 * w * 0.6)  # into the wall, which faces -Y

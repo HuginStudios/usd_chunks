@@ -27,6 +27,7 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSou
 from __future__ import annotations
 
 import bisect
+import itertools
 import logging
 import math
 import random
@@ -348,20 +349,30 @@ class _PoissonGrid:
 
 
 class _AvoidSet:
-    """Points to keep away from -- a curve's samples, another scatter -- on a spatial hash."""
+    """Points to keep away from -- a curve's samples, another scatter -- on a spatial hash.
 
-    def __init__(self, points, distance):
-        self._dist = max(distance, 1e-9)
-        self._cell = self._dist
+    Each point may carry a radius of its own (half a curve's width there), added to the
+    distance: a wide run of water is kept clear edge to edge, not centre to centre.
+    """
+
+    def __init__(self, points, distance, radii=None, extra_max=0.0):
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        radii = np.zeros(len(points)) if radii is None else np.asarray(radii, dtype=np.float64)
+        self._dist = distance + (float(radii.max()) if len(radii) else 0.0)
+        self._base = distance
+        # One cell spans the furthest a point can reach, so a query only ever looks one cell out.
+        self._cell = max(self._dist + extra_max, 1e-6)
         self._grid: dict = {}
-        for p in np.asarray(points, dtype=np.float64).reshape(-1, 3):
-            self._grid.setdefault(self._key(p), []).append(p)
+        for p, r in zip(points, radii):
+            self._grid.setdefault(self._key(p), []).append((p, r))
 
     def _key(self, pt):
         c = self._cell
         return (math.floor(pt[0] / c), math.floor(pt[1] / c), math.floor(pt[2] / c))
 
     def near(self, pt, extra=0.0):
+        if self._dist <= 0.0:
+            return False
         reach = self._dist + max(extra, 0.0)
         r = int(math.ceil(reach / self._cell))
         kx, ky, kz = self._key(pt)
@@ -369,15 +380,17 @@ class _AvoidSet:
         for dx in range(-r, r + 1):
             for dy in range(-r, r + 1):
                 for dz in range(-r, r + 1):
-                    for ex in self._grid.get((kx + dx, ky + dy, kz + dz), ()):
-                        if (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2 < lim:
+                    for ex, er in self._grid.get((kx + dx, ky + dy, kz + dz), ()):
+                        d2 = (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2
+                        if d2 < lim and d2 < (self._base + er + max(extra, 0.0)) ** 2:
                             return True
         return False
 
 
 def _avoid_points(stage, paths, step):
-    """World-space points of every prim under *paths*; curves are sampled every *step* along."""
-    out = []
+    """World-space points of every prim under *paths*, and a radius per point (half the
+    curve's width there, 0 elsewhere); curves are sampled every *step* along."""
+    out, out_r = [], []
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     for path in paths:
         root = stage.GetPrimAtPath(path) if path else None
@@ -396,21 +409,37 @@ def _avoid_points(stage, paths, step):
             if not value:
                 continue
             pts = np.asarray(value, dtype=np.float64).reshape(-1, 3)
+            rad = np.zeros(len(pts))
             if prim.IsA(UsdGeom.Curves):
-                counts = UsdGeom.Curves(prim).GetCurveVertexCountsAttr().Get() or [len(pts)]
-                dense, k = [], 0
+                curves = UsdGeom.Curves(prim)
+                w = curves.GetWidthsAttr().Get()
+                if w is None and curves.GetWidthsAttr().GetNumTimeSamples():
+                    w = curves.GetWidthsAttr().Get(curves.GetWidthsAttr().GetTimeSamples()[-1])
+                if w is not None and len(w) == len(pts):
+                    rad = np.asarray(w, dtype=np.float64) * 0.5
+                elif w is not None and len(w) == 1:
+                    rad = np.full(len(pts), float(w[0]) * 0.5)
+                counts = curves.GetCurveVertexCountsAttr().Get() or [len(pts)]
+                dense, dense_r, k = [], [], 0
                 for c in counts:
-                    seg = pts[k:k + c]
+                    seg, seg_r = pts[k:k + c], rad[k:k + c]
                     k += c
                     dense.append(seg[:1])
-                    for a, b in zip(seg[:-1], seg[1:]):
+                    dense_r.append(seg_r[:1])
+                    for j in range(len(seg) - 1):
+                        a, b = seg[j], seg[j + 1]
                         n = max(1, int(math.ceil(float(np.linalg.norm(b - a)) / max(step, 1e-9))))
-                        t = (np.arange(1, n + 1) / n)[:, None]
-                        dense.append(a + (b - a) * t)
-                pts = np.concatenate(dense) if dense else pts
+                        t = np.arange(1, n + 1) / n
+                        dense.append(a + (b - a) * t[:, None])
+                        dense_r.append(seg_r[j] + (seg_r[j + 1] - seg_r[j]) * t)
+                if dense:
+                    pts, rad = np.concatenate(dense), np.concatenate(dense_r)
             m = np.array(cache.GetLocalToWorldTransform(prim), dtype=np.float64)
             out.append(pts @ m[:3, :3] + m[3, :3])
-    return np.concatenate(out) if out else np.zeros((0, 3))
+            out_r.append(rad)
+    if not out:
+        return np.zeros((0, 3)), np.zeros(0)
+    return np.concatenate(out), np.concatenate(out_r)
 
 
 def _draw_scale(rng, lo, hi, bias):
@@ -423,58 +452,126 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
                    mask=None, avoid=None, vary=True):
     """Like _scatter_on_triangles, but each candidate draws its scale first and keeps
     Spacing x scale / Scale Max from the others -- small instances pack in between big ones,
-    and none overlap. Returns positions, normals and the scale each one drew."""
+    and none overlap. Returns positions, normals and the scale each one drew.
+
+    Candidates are drawn and tested in batches against a KD-tree of everything placed so far
+    (scipy), then against each other. Testing them one at a time in Python against a hash grid
+    was fine for hundreds and hopeless for condensation: a 26k-drop can took ten minutes, all
+    of it in the neighbour walk once tiny drops were filling the gaps between big ones.
+    """
     if not len(triangles):
         return [], [], []
     areas = triangles.areas()
     total_area = float(areas.sum())
     if total_area < 1e-10:
         return [], [], []
-    cdf = (np.cumsum(areas) / total_area).tolist()
-    v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:  # scipy is optional: the same result, slowly
+        cKDTree = None
+    cdf = np.cumsum(areas) / total_area
+    v0s, v1s, v2s = (np.asarray(a, dtype=np.float64) for a in (triangles.v0, triangles.v1, triangles.v2))
+    normals_all = np.asarray(triangles.n, dtype=np.float64)
     # Radius per unit of scale -- or, with *vary* off, every instance keeps plain Spacing.
     unit = spacing / max(scale_hi, 1e-9) * 0.5 if vary else 0.0
-    cell = max(spacing, 1e-6)
-    grid: dict = {}
+    r_max = unit * scale_hi if vary else spacing * 0.5
+    gen = np.random.default_rng(rng.getrandbits(63))
+    sgen = np.random.default_rng(scale_rng.getrandbits(63))
+
+    # Placed instances by size class, each class searched only as far as its largest radius
+    # reaches: searching every neighbour out to the biggest radius found hundreds of tiny
+    # drops around every candidate once the surface filled up.
+    bounds = [r_max, r_max / 4.0, r_max / 16.0, 0.0]
+    placed_p = [np.zeros((0, 3)) for _ in bounds[:-1]]
+    placed_r = [np.zeros(0) for _ in bounds[:-1]]
     positions, normals, scales = [], [], []
     attempts, max_attempts = 0, count * 100
+    cell = max(2.0 * r_max, 1e-9)
     while len(positions) < count and attempts < max_attempts:
-        attempts += 1
-        tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
-        u, v = rng.random(), rng.random()
-        if u + v > 1.0:
-            u, v = 1.0 - u, 1.0 - v
-        w = 1.0 - u - v
-        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
-        pt = (w * v0[0] + u * v1[0] + v * v2[0], w * v0[1] + u * v1[1] + v * v2[1],
-              w * v0[2] + u * v1[2] + v * v2[2])
-        s = _draw_scale(scale_rng, scale_lo, scale_hi, bias)
-        r = unit * s if vary else spacing * 0.5
-        if avoid is not None and avoid.near(pt, r):
-            continue
-        key = (math.floor(pt[0] / cell), math.floor(pt[1] / cell), math.floor(pt[2] / cell))
-        clash = False
-        if r > 0:
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    for dz in (-1, 0, 1):
-                        for ex, er in grid.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
-                            if (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2 < (r + er) ** 2:
-                                clash = True
+        batch = int(min(8192, max(512, 3 * (count - len(positions)))))
+        attempts += batch
+        tri = np.minimum(np.searchsorted(cdf, gen.random(batch)), len(cdf) - 1)
+        uv = gen.random((batch, 2))
+        flip = uv.sum(axis=1) > 1.0
+        uv[flip] = 1.0 - uv[flip]
+        pts = (v0s[tri] * (1.0 - uv[:, :1] - uv[:, 1:]) + v1s[tri] * uv[:, :1] + v2s[tri] * uv[:, 1:])
+        u = sgen.random(batch)
+        sc = scale_lo + (scale_hi - scale_lo) * (u ** bias if bias != 1.0 else u)
+        rad = unit * sc if vary else np.full(batch, spacing * 0.5)
+        ok = np.ones(batch, dtype=bool)
+        roll = gen.random(batch) if mask is not None else None
+        # Against everything already placed -- first, as once the surface fills up it rejects
+        # nearly everything, and the density lookup below is per candidate.
+        if r_max > 0:
+            for cls, (cp, cr) in enumerate(zip(placed_p, placed_r)):
+                cand = np.flatnonzero(ok)
+                if not len(cp) or not len(cand):
+                    continue
+                if cKDTree is not None:
+                    hits = cKDTree(cp).query_ball_point(pts[cand], rad[cand] + bounds[cls])
+                    counts_ = np.fromiter((len(h) for h in hits), dtype=np.int64, count=len(hits))
+                    if not counts_.sum():
+                        continue
+                    flat = np.fromiter(itertools.chain.from_iterable(hits), dtype=np.int64, count=int(counts_.sum()))
+                    owner = np.repeat(np.arange(len(cand)), counts_)
+                    d = np.linalg.norm(cp[flat] - pts[cand][owner], axis=1)
+                    bad = d < rad[cand][owner] + cr[flat]
+                    ok[cand[np.bincount(owner[bad], minlength=len(cand)) > 0]] = False
+                else:
+                    for i in cand:
+                        if (np.linalg.norm(cp - pts[i], axis=1) < rad[i] + cr).any():
+                            ok[i] = False
+        if mask is not None:
+            live = np.flatnonzero(ok)
+            many = getattr(getattr(mask, "__self__", None), "sample_many", None)
+            if many is not None:
+                ok[live] = roll[live] <= many(pts[live])
+            else:
+                for i in live:
+                    ok[i] = roll[i] <= mask(Gf.Vec3f(*pts[i]), Gf.Vec3f(*normals_all[tri[i]]))
+        # Against each other, in draw order, and the keep-away set.
+        new_p, new_r, grid = [], [], {}
+        before = len(positions)
+        for i in np.flatnonzero(ok):
+            pt, r = pts[i], rad[i]
+            if avoid is not None and avoid.near(pt, r):
+                continue
+            key = (math.floor(pt[0] / cell), math.floor(pt[1] / cell), math.floor(pt[2] / cell))
+            if r_max > 0:
+                clash = False
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        for dz in (-1, 0, 1):
+                            for j in grid.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
+                                q = new_p[j]
+                                if (pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 + (pt[2] - q[2]) ** 2 < (r + new_r[j]) ** 2:
+                                    clash = True
+                                    break
+                            if clash:
                                 break
                         if clash:
                             break
-                    if clash:
-                        break
-        if clash:
-            continue
-        n = Gf.Vec3f(*normals_all[tri_idx])
-        if mask is not None and rng.random() > mask(Gf.Vec3f(*pt), n):
-            continue
-        grid.setdefault(key, []).append((pt, r))
-        positions.append(Gf.Vec3f(*pt))
-        normals.append(n)
-        scales.append(s)
+                if clash:
+                    continue
+                grid.setdefault(key, []).append(len(new_p))
+            new_p.append(pt)
+            new_r.append(r)
+            positions.append(Gf.Vec3f(*pt))
+            normals.append(Gf.Vec3f(*normals_all[tri[i]]))
+            scales.append(float(sc[i]))
+            if len(positions) >= count:
+                break
+        if new_p:
+            new_p, new_r = np.asarray(new_p), np.asarray(new_r)
+            for cls in range(len(placed_p)):
+                sel = (new_r <= bounds[cls]) & (new_r > bounds[cls + 1])
+                if sel.any():
+                    placed_p[cls] = np.concatenate([placed_p[cls], new_p[sel]])
+                    placed_r[cls] = np.concatenate([placed_r[cls], new_r[sel]])
+        # Full is full: when fewer than 1 candidate in 500 still finds room, the surface has
+        # taken what it can -- the last gap-fillers are not worth minutes of max_attempts.
+        if len(positions) - before < batch / 500.0:
+            break
     return positions, normals, scales
 
 
@@ -836,6 +933,22 @@ class _NearestWeight:
             merged = np.concatenate(parts) if parts else _NO_INDICES
             self._neighbourhood[key] = merged
         return merged
+
+    def sample_many(self, points):
+        """sample() for an (N, 3) array at once: the same nearest-vertex weight, 0 where no
+        vertex is in the neighbourhood. A per-point Python call was most of a condensation
+        scatter's cook -- a quarter of a million candidates."""
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        out = np.zeros(len(points))
+        keys = self._keys(points)
+        for key in np.unique(keys):
+            nearby = self._nearby(int(key))
+            if not len(nearby):
+                continue
+            rows = np.flatnonzero(keys == key)
+            diff = points[rows, None, :] - self._points[nearby][None, :, :]
+            out[rows] = self._weights[nearby[np.einsum("ijk,ijk->ij", diff, diff).argmin(axis=1)]]
+        return out
 
     def sample(self, point, normal=None):
         """The painted weight nearest `point`, in 0..1. `normal` is unused but is part of the
@@ -1706,8 +1819,11 @@ def execute(node):
             # passed as the `mask=` hook above.
             surf_tris = triangles.select(triangles.slope_mask(world_up, max_slope))
             avoid = None
-            if avoid_paths and avoid_distance > 0:
-                avoid = _AvoidSet(_avoid_points(scratch_stage, avoid_paths, avoid_distance * 0.5), avoid_distance)
+            if avoid_paths:
+                pts_, radii_ = _avoid_points(scratch_stage, avoid_paths, max(avoid_distance, spacing, 1e-6) * 0.5)
+                avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5)
+                if avoid._dist <= 0.0:
+                    avoid = None
             if len(surf_tris) and (size_spacing or avoid is not None):
                 # Spacing Follows Scale / Keep Away From: the scale is drawn with the point,
                 # so the spacing and the clearance can both take the instance's size.
@@ -2031,7 +2147,8 @@ def main():
             "avoid_distance",
             "Keep Away Distance",
             default_value=0.0,
-            tooltip="How far from Keep Away From an instance's edge must stay. 0 = off.",
+            tooltip="How far an instance's edge stays from Keep Away From -- from a curve's "
+            "edge where it has widths.",
         )
     )
     dist_grp.add_param(
