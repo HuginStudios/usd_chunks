@@ -309,10 +309,9 @@ def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
     for i in range(dimx):
         row = (i / dimx) * np.pi * 2
         for j in range(dimy):
-
             offset = 0 if i == 0 else i + (i - 1)
             idx = int(i * dimy + j - offset)
-            nbr = dimy - 1 if i == 0 else dimy -2
+            nbr = dimy - 1 if i == 0 else dimy - 2
 
             if j == 0:
                 indices.append(0)
@@ -466,7 +465,8 @@ def cube_changed(owner: chunk.Group, notice, sender):
     if c := owner.get_chunk():
         raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    build_cube(stage, raw_path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
 
 
 def tube_changed(owner: chunk.Group, notice, sender):
@@ -491,8 +491,8 @@ def tube_changed(owner: chunk.Group, notice, sender):
     if c := owner.get_chunk():
         raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    # with chunk_utils.author_in_variant_context(stage, raw_path) as path:
-    build_tube(stage, raw_path, rows.value, cols.value, radius.value, height.value, caps.value)
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
 def grid_changed(owner: chunk.Group, notice, sender):
@@ -546,35 +546,8 @@ def sphere_changed(owner: chunk.Group, notice, sender):
     if c := owner.get_chunk():
         raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
 
-    build_sphere(stage, raw_path, dimx.value, dimy.value, rad.value)
-
-
-# def execute(node: chunk.Chunk) -> None:
-#     """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
-#     bulk-restoring its param values, so a reloaded Add Mesh actually rebuilds its shape
-#     instead of leaving the target prim empty (the real work lives in cube_changed/
-#     tube_changed/grid_changed, all add_callback handlers, which load's value-restore
-#     deliberately does not trigger).
-
-#     menu_changed's hidden/disabled bookkeeping is reapplied first: live, picking a mesh
-#     type only un-hides its group, it doesn't itself trigger a build (that needs a param
-#     inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
-#     needs both steps repeated here to end up matching what was actually visible/built
-#     before saving."""
-#     menu = node.get_param("mesh_type", chunk.is_param_t(str))
-#     if menu is None:
-#         return
-#     menu_changed(node, None, menu)
-#     build_fn = {"cube": cube_changed, "tube": tube_changed, "grid": grid_changed}.get(menu.value)
-
-
-#     print("FN:", build_fn)
-#     if build_fn is None:
-#         return
-#     group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
-#     if group is None:
-#         return
-#     build_fn(group, None, None)
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_sphere(stage, path, dimx.value, dimy.value, rad.value)
 
 
 def main():
@@ -629,8 +602,8 @@ def main():
     sphere_group = chunk.Group("sphere", "Sphere")
     sphere_group.add_params(
         [
-            chunk.Spinbox("dimx2", "dimx", min_value=2, default_value=4, is_int=True),
-            chunk.Spinbox("dimy2", "dimy", min_value=2, default_value=4, is_int=True),
+            chunk.Spinbox("dimx2", "dimx", min_value=2, default_value=10, is_int=True),
+            chunk.Spinbox("dimy2", "dimy", min_value=2, default_value=10, is_int=True),
             chunk.Slider("radius", "radius", default_value=1),
         ]
     )
