@@ -2,7 +2,7 @@
 
 ![A parametric house chunk in usdview: labelled sliders on the node drive the geometry in the viewport, wired through a Camera to a View node](docs/assets/graph_house.png)
 
-<sub>One chunk module and no UI code. The sliders, node, ports and panel are all built from it.</sub>
+<sub>A procedural house, built with chunks.</sub>
 
 **A framework for building procedural USD tools.**
 
