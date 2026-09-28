@@ -35,6 +35,14 @@ def texture_file_is_usable(path: str) -> bool:
     return bool(Ar.GetResolver().Resolve(path))
 
 
+#: The subdivision scheme of every mesh this chunk builds: "none", i.e. plain polygons.
+#: USD's default is catmullClark, which makes the mesh a subdivision cage -- a renderer
+#: that subdivides (V-Ray does; Storm at its default refine level does not) then draws a
+#: two-segment cube as a rounded blob and pulls a coarse sphere inside its own points, so
+#: what renders stops matching the viewport and anything measured from the points.
+_POLYGONS = UsdGeom.Tokens.none
+
+
 class Topo(IntEnum):
     TRIS = 3
     QUAD = 4
@@ -102,6 +110,8 @@ def build_plane(stage, name="/plane", divx=2, divy=2, width=1.0, height=1.0, pos
     mesh.CreatePointsAttr(pts)
     mesh.CreateFaceVertexIndicesAttr(ids)
     mesh.CreateFaceVertexCountsAttr(counts)
+    # Polygons, not a subdivision cage -- see _POLYGONS.
+    mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
 
     # orient = mesh.CreateOrientationAttr()
     # orient.Set("leftHanded")
@@ -228,12 +238,140 @@ def build_cube(
     mesh.CreatePointsAttr(pts)
     mesh.CreateFaceVertexIndicesAttr(indices)
     mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
 
     pv = UsdGeom.PrimvarsAPI(mesh.GetPrim())
     rest = pv.CreatePrimvar("rest", Sdf.ValueTypeNames.Vector3fArray, "vertex", len(pts))
     rest.Set(pts)
 
     return mesh
+
+
+def _smooth_mesh(stage, name, pts, normals, indices, counts):
+    """A polygon mesh shaded smooth from explicit normals rather than by subdivision.
+
+    subdivisionScheme is "none" so the surface a renderer draws is the one the points
+    describe: subdivided, a coarse sphere or torus shrinks inside its own control cage,
+    and anything measuring the shape from its points (a bounding box, a silhouette) would
+    disagree with the pixels.
+    """
+    mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(name))
+    mesh.CreatePointsAttr(pts)
+    mesh.CreateFaceVertexIndicesAttr(indices)
+    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
+    mesh.CreateNormalsAttr(normals)
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    mesh.CreateExtentAttr(UsdGeom.PointBased.ComputeExtent(pts))
+
+    pv = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+    rest = pv.CreatePrimvar("rest", Sdf.ValueTypeNames.Vector3fArray, "vertex", len(pts))
+    rest.Set(pts)
+    return mesh
+
+
+def build_sphere(stage, name="/sphere", rows=16, columns=32, radius=1.0):
+    """A UV sphere centred on the origin: quads between the rings, triangle fans at the poles."""
+    rows = max(int(rows), 3)
+    columns = max(int(columns), 3)
+
+    normals = [(0.0, 1.0, 0.0), (0.0, -1.0, 0.0)]
+    for i in range(1, rows):
+        theta = np.pi * i / rows
+        for j in range(columns):
+            phi = 2.0 * np.pi * j / columns
+            normals.append((np.sin(theta) * np.cos(phi), np.cos(theta), np.sin(theta) * np.sin(phi)))
+    normals = np.array(normals)
+
+    def ring(i, j):
+        return 2 + (i - 1) * columns + (j % columns)
+
+    indices, counts = [], []
+    for j in range(columns):
+        indices += [0, ring(1, j + 1), ring(1, j)]
+        indices += [1, ring(rows - 1, j), ring(rows - 1, j + 1)]
+        counts += [3, 3]
+    for i in range(1, rows - 1):
+        for j in range(columns):
+            indices += [ring(i, j), ring(i, j + 1), ring(i + 1, j + 1), ring(i + 1, j)]
+            counts.append(4)
+
+    return _smooth_mesh(stage, name, normals * radius, normals, indices, counts)
+
+
+def build_torus(stage, name="/torus", rings=48, sides=20, radius=1.0, tube_radius=0.4):
+    """A closed torus centred on the origin, lying in the XZ plane around +Y.
+
+    `radius` is the distance from the centre to the middle of the tube, `tube_radius` the
+    tube's own; the outer diameter is 2 * (radius + tube_radius).
+    """
+    rings = max(int(rings), 3)
+    sides = max(int(sides), 3)
+
+    pts, normals = [], []
+    for i in range(rings):
+        u = 2.0 * np.pi * i / rings
+        for j in range(sides):
+            v = 2.0 * np.pi * j / sides
+            normal = (np.cos(v) * np.cos(u), np.sin(v), np.cos(v) * np.sin(u))
+            normals.append(normal)
+            pts.append((radius * np.cos(u) + tube_radius * normal[0], tube_radius * normal[1],
+                        radius * np.sin(u) + tube_radius * normal[2]))
+
+    indices, counts = [], []
+    for i in range(rings):
+        for j in range(sides):
+            a = i * sides + j
+            b = ((i + 1) % rings) * sides + j
+            c = ((i + 1) % rings) * sides + (j + 1) % sides
+            d = i * sides + (j + 1) % sides
+            indices += [a, d, c, b]  # counter-clockwise seen from outside
+            counts.append(4)
+
+    return _smooth_mesh(stage, name, np.array(pts), np.array(normals), indices, counts)
+
+
+def build_cone(stage, name="/cone", rows=8, columns=32, radius=1.0, height=2.0):
+    """A cone standing on its base: the base centred on the origin, the apex on +Y.
+
+    Built like the tube, rings from the base up, with the radius shrinking to nothing at
+    the top. The apex is a ring of coincident points rather than one shared point, so each
+    column keeps its own smooth normal all the way up. The base is a separate ring with
+    its own downward normals, so the cap shades flat instead of borrowing the side's.
+    """
+    rows = max(int(rows), 2)
+    columns = max(int(columns), 3)
+    slope = radius / height if height else 0.0
+
+    pts, normals = [], []
+    for i in range(rows):
+        y = height * i / (rows - 1)
+        ring = radius * (1.0 - i / (rows - 1))
+        for j in range(columns):
+            v = 2.0 * np.pi * j / columns
+            pts.append((np.cos(v) * ring, y, np.sin(v) * ring))
+            normal = np.array((np.cos(v), slope, np.sin(v)))
+            normals.append(normal / np.linalg.norm(normal))
+
+    indices, counts = [], []
+    for i in range(rows - 1):
+        for j in range(columns):
+            a, b = i * columns + j, i * columns + (j + 1) % columns
+            indices += [a, a + columns, b + columns, b]  # counter-clockwise seen from outside
+            counts.append(4)
+
+    base, centre = len(pts), len(pts) + columns
+    for j in range(columns):
+        v = 2.0 * np.pi * j / columns
+        pts.append((np.cos(v) * radius, 0.0, np.sin(v) * radius))
+        normals.append((0.0, -1.0, 0.0))
+    pts.append((0.0, 0.0, 0.0))
+    normals.append((0.0, -1.0, 0.0))
+    for j in range(columns):
+        indices += [centre, base + j, base + (j + 1) % columns]
+        counts.append(3)
+
+    return _smooth_mesh(stage, name, np.array(pts), np.array(normals), indices, counts)
 
 
 def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, caps=True, pos=(0, 0, 0)):
@@ -285,6 +423,7 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
     mesh.CreatePointsAttr(pts)
     mesh.CreateFaceVertexIndicesAttr(indices)
     mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
 
     pv = UsdGeom.PrimvarsAPI(mesh.GetPrim())
     rest = pv.CreatePrimvar("rest", Sdf.ValueTypeNames.Vector3fArray, "vertex", len(pts))
@@ -431,6 +570,65 @@ def tube_changed(owner: chunk.Group, notice, sender):
         build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
+def sphere_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
+    if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        return
+
+    clear_layer(owner)
+
+    if not (c := owner.get_chunk()):
+        return
+
+    rows = owner.get_param("sphere_rows", chunk.is_param_t(int))
+    cols = owner.get_param("sphere_cols", chunk.is_param_t(int))
+    radius = owner.get_param("sphere_radius", chunk.is_param_t(float))
+
+    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
+    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
+        build_sphere(stage, path, rows.value, cols.value, radius.value)
+
+
+def torus_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
+    if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        return
+
+    clear_layer(owner)
+
+    if not (c := owner.get_chunk()):
+        return
+
+    rings = owner.get_param("torus_rings", chunk.is_param_t(int))
+    sides = owner.get_param("torus_sides", chunk.is_param_t(int))
+    radius = owner.get_param("torus_radius", chunk.is_param_t(float))
+    tube_radius = owner.get_param("torus_tube_radius", chunk.is_param_t(float))
+
+    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
+    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
+        build_torus(stage, path, rings.value, sides.value, radius.value, tube_radius.value)
+
+
+def cone_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
+    if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        return
+
+    clear_layer(owner)
+
+    if not (c := owner.get_chunk()):
+        return
+
+    rows = owner.get_param("cone_rows", chunk.is_param_t(int))
+    cols = owner.get_param("cone_cols", chunk.is_param_t(int))
+    radius = owner.get_param("cone_radius", chunk.is_param_t(float))
+    height = owner.get_param("cone_height", chunk.is_param_t(float))
+
+    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
+    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
+        build_cone(stage, path, rows.value, cols.value, radius.value, height.value)
+
+
 def grid_changed(owner: chunk.Group, notice, sender):
     stage = owner.get_stage()
 
@@ -480,7 +678,10 @@ def execute(node: chunk.Chunk) -> None:
     if menu is None:
         return
     menu_changed(node, None, menu)
-    build_fn = {"cube": cube_changed, "tube": tube_changed, "grid": grid_changed}.get(menu.value)
+    build_fn = {
+        "cube": cube_changed, "sphere": sphere_changed, "torus": torus_changed, "cone": cone_changed,
+        "tube": tube_changed, "grid": grid_changed,
+    }.get(menu.value)
     if build_fn is None:
         return
     group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
@@ -492,7 +693,7 @@ def execute(node: chunk.Chunk) -> None:
 def main():
     path = chunk.LineEdit("prim_path", "Prim Path", default_value="/mesh")
     menu = chunk.Menu(
-        "mesh_type", "Mesh Type", menu_items=["none", "cube", "sphere", "grid", "tube"], default_value="none"
+        "mesh_type", "Mesh Type", menu_items=["none", "cube", "sphere", "torus", "cone", "grid", "tube"], default_value="none"
     )
 
     cube_group = chunk.Group("cube", "Cube")
@@ -509,6 +710,46 @@ def main():
     cube_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     cube_group.add_callback(cube_changed)
     cube_group.add_callback(cube_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+
+    # Params named per shape: get_param by bare name returns the first match, and the
+    # tube already has a "radius".
+    sphere_group = chunk.Group("sphere", "Sphere")
+    sphere_group.add_params(
+        [
+            chunk.Slider("sphere_rows", "rows", min_value=3, max_value=128, default_value=16, is_int=True),
+            chunk.Slider("sphere_cols", "columns", min_value=3, max_value=256, default_value=32, is_int=True),
+            chunk.Slider("sphere_radius", "radius", min_value=0.001, max_value=1000.0, default_value=1.0),
+        ]
+    )
+    sphere_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+    sphere_group.add_callback(sphere_changed)
+    sphere_group.add_callback(sphere_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+
+    torus_group = chunk.Group("torus", "Torus")
+    torus_group.add_params(
+        [
+            chunk.Slider("torus_rings", "rings", min_value=3, max_value=256, default_value=48, is_int=True),
+            chunk.Slider("torus_sides", "sides", min_value=3, max_value=128, default_value=20, is_int=True),
+            chunk.Slider("torus_radius", "radius", min_value=0.001, max_value=1000.0, default_value=1.0),
+            chunk.Slider("torus_tube_radius", "tube radius", min_value=0.001, max_value=1000.0, default_value=0.4),
+        ]
+    )
+    torus_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+    torus_group.add_callback(torus_changed)
+    torus_group.add_callback(torus_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+
+    cone_group = chunk.Group("cone", "Cone")
+    cone_group.add_params(
+        [
+            chunk.Slider("cone_rows", "rows", min_value=2, max_value=128, default_value=8, is_int=True),
+            chunk.Slider("cone_cols", "columns", min_value=3, max_value=256, default_value=32, is_int=True),
+            chunk.Slider("cone_radius", "radius", min_value=0.001, max_value=1000.0, default_value=1.0),
+            chunk.Slider("cone_height", "height", min_value=0.001, max_value=1000.0, default_value=2.0),
+        ]
+    )
+    cone_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+    cone_group.add_callback(cone_changed)
+    cone_group.add_callback(cone_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     tube_group = chunk.Group("tube", "Tube")
     tube_group.add_params(
@@ -539,7 +780,7 @@ def main():
     grid_group.add_callback(grid_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     chunk_api = chunk.Chunk("Mesh")
-    chunk_api.add_params([path, menu, cube_group, tube_group, grid_group])
+    chunk_api.add_params([path, menu, cube_group, sphere_group, torus_group, cone_group, tube_group, grid_group])
     chunk_api.add_callback(menu_changed, sender=menu)
 
     return chunk_api
@@ -551,10 +792,13 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
         # One entry per shape, so "Cube" is found and created directly rather than by
-        # creating Mesh and re-picking the type. No Sphere: the menu lists it, but nothing
-        # builds one yet. Ground is a grid preset, sized to stand things on.
+        # creating Mesh and re-picking the type. Ground is a grid preset, sized to stand
+        # things on.
         variants=[
             ("Cube", {"mesh_type": "cube", "prim_path": "/cube"}),
+            ("Sphere", {"mesh_type": "sphere", "prim_path": "/sphere"}),
+            ("Torus", {"mesh_type": "torus", "prim_path": "/torus"}),
+            ("Cone", {"mesh_type": "cone", "prim_path": "/cone"}),
             ("Grid", {"mesh_type": "grid", "prim_path": "/grid"}),
             ("Tube", {"mesh_type": "tube", "prim_path": "/tube"}),
             ("Ground", {"mesh_type": "grid", "prim_path": "/ground", "width1": 20.0, "height2": 20.0}),
