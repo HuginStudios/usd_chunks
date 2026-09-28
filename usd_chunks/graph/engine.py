@@ -89,7 +89,14 @@ def sdf_to_port_type(sdf_type_name) -> str:
 
 
 def iter_connectable_params(obj: core.ChunkCommon):
-    """Every param that has a port, recursing into groups. A vector counts as one param."""
+    """Every param that has a port, recursing into groups. A vector counts as one param.
+
+    Args:
+        obj: The chunk or group to walk.
+
+    Yields:
+        Each connectable param, in the order the chunk declares them.
+    """
     for param in obj.get_my_params():
         if isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase)):
             if param_port_type(param) is not None:
@@ -108,7 +115,14 @@ def iter_all_vectors(obj: core.ChunkCommon):
 
 
 def param_port_type(param) -> str | None:
-    """The port type for a param's evaluate_type(), or None if it gets no port."""
+    """The port type for a param's evaluate_type().
+
+    Args:
+        param: The param or vector to type.
+
+    Returns:
+        A PORT_* token, or None if the param gets no port (buttons, labels, ...).
+    """
     param_type = param.evaluate_type()
     # Compared with ==: VECTOR | FLOAT_SLIDER also contains every bit of COLOR_PICKER.
     if param_type == ChunkFlags.ParamType.COLOR_PICKER:
