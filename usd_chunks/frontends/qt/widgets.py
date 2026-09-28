@@ -1388,6 +1388,7 @@ class LabeledWidget(QtWidgets.QWidget):
         # same-named lofts stay tellable apart, but that default has to be just a default,
         # not the only option, or "rename the lofted param" would not mean anything.
         rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
+        unloft_action = menu.addAction("Unloft") if on_label and getattr(param, "_lofted", False) else None
         override_source = chunk_stage.param_override_source(param)
         revert_action = None
         if override_source is not None:
@@ -1410,6 +1411,9 @@ class LabeledWidget(QtWidgets.QWidget):
         if action := menu.exec_(event.globalPos()):
             if loft_action and action == loft_action:
                 chunk_stage.loft_param_to_context(param, context)
+            elif unloft_action and action == unloft_action:
+                # Next tick: unlofting deletes this widget, which is still inside its own event.
+                QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(param))
             elif revert_action and action == revert_action:
                 chunk_stage.revert_param_override(param)
             elif rename_action and action == rename_action:
