@@ -12,7 +12,7 @@ from __future__ import annotations
 import collections
 import sys
 
-from usd_chunks import Scene
+from usd_chunks import Scene, chunk_notice
 
 
 def _count_cooks(module_name, counts):
@@ -44,3 +44,14 @@ def test_a_wedge_change_cooks_what_it_drives_once():
 
         assert counts[place.name] == 1, f"cooked {counts[place.name]} times for one change"
         assert place.get_param("tx").value == wedge.get_param("x").value
+
+
+def test_deferred_work_runs_once_after_the_batch():
+    """Asked for under one key any number of times, it runs once, after the solves."""
+    runs = []
+    assert chunk_notice.defer_to_batch_end("k", lambda: runs.append("now")) is False
+    with chunk_notice.batched_solve():
+        for _ in range(5):
+            assert chunk_notice.defer_to_batch_end("k", lambda: runs.append("batch"))
+        assert runs == []
+    assert runs == ["batch"]

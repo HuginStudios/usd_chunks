@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import functools
 import logging
 import math
 import weakref
@@ -1105,7 +1106,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_param_input(chunk, owner)
-                        self._refresh_gizmo_anchors(chunk)
+                        # Once per chunk per batch: a Wedge change writes hundreds of params,
+                        # and each refresh reads every param the chunk has.
+                        refresh = functools.partial(self._refresh_gizmo_anchors, chunk)
+                        if not chunk_notice.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
+                            refresh()
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:

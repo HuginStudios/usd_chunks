@@ -76,6 +76,30 @@ _batch_cooked: dict | None = None
 # The batch clock when the solve now draining was queued; None when no queued solve is running.
 _solving_since: int | None = None
 
+# Follow-up work held until an enclosing batch has drained, by key; None outside a batch.
+_batch_deferred: dict | None = None
+
+
+def defer_to_batch_end(key, fn) -> bool:
+    """Run fn once when the enclosing batch has drained, instead of now.
+
+    For bookkeeping that only has to be right once the dust settles and costs something each
+    time -- refreshing a chunk's gizmo anchors reads every param it has, and a Wedge change
+    asked for it once per param written, hundreds of times. Deferred under the same key it
+    runs once, with the batch's final values.
+
+    Args:
+        key: Identifies the work, so asking twice runs it once.
+        fn: What to run.
+
+    Returns:
+        False outside a batch -- the caller runs fn itself, straight away.
+    """
+    if _batch_deferred is None:
+        return False
+    _batch_deferred[key] = fn
+    return True
+
 
 def _tick() -> int:
     global _batch_clock
@@ -123,27 +147,36 @@ def batched_solve():
 
     Nested blocks join the outermost one.
     """
-    global _batched, _batch_cooked, _solving_since
+    global _batched, _batch_cooked, _solving_since, _batch_deferred
     if _batched is not None:
         yield
         return
     _batched = collections.deque()
     _batch_cooked = {}
+    _batch_deferred = {}
     try:
         yield
-        while _batched:
-            prop, queued_at = _batched.popleft()
-            # Not re-dirtied: an earlier solve in this loop may have cleaned it along with
-            # everything else it reached, and dirtying it again would cook that twice.
-            if prop.get_dag_node().dirty:
-                _solving_since = queued_at
-                try:
-                    prop._solve_downstream()
-                finally:
-                    _solving_since = None
+        while _batched or _batch_deferred:
+            while _batched:
+                prop, queued_at = _batched.popleft()
+                # Not re-dirtied: an earlier solve in this loop may have cleaned it along
+                # with everything else it reached, and dirtying it again would cook that twice.
+                if prop.get_dag_node().dirty:
+                    _solving_since = queued_at
+                    try:
+                        prop._solve_downstream()
+                    finally:
+                        _solving_since = None
+            # Deferred work runs once the solves have settled; anything it changes queues
+            # another round rather than being lost.
+            pending = list(_batch_deferred.values())
+            _batch_deferred.clear()
+            for fn in pending:
+                fn()
     finally:
         _batched = None
         _batch_cooked = None
+        _batch_deferred = None
 
 
 def is_cook_stale(chunk) -> bool:
