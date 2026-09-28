@@ -2,22 +2,22 @@
 
 ![A parametric house chunk in usdview: labelled sliders on the node drive the geometry in the viewport, wired through a Camera to a View node](docs/assets/graph_house.png)
 
-<sub>One chunk module, no UI code: the sliders, the node, the ports and the panel are all generated from its declaration.</sub>
+<sub>One chunk module and no UI code. The sliders, node, ports and panel are all built from it.</sub>
 
 **A framework for building procedural USD tools.**
 
-A *Chunk* is a short Python module that declares its parameters and what to do with them.
-usd_chunks turns that one declaration into a node in a graph, a panel of widgets, and a
-command-line invocation:
+A *Chunk* is a short Python module that lists its parameters and what to do with them.
+From that one module, usd_chunks builds a node in the graph, a panel of widgets, and a
+command you can run from the terminal.
 
-- **The graph is USD.** A node is a prim, a wire is a USD connection — no adapter, no
-  export step. Saving the stage saves the graph.
-- **Runs everywhere.** The same chunk works as a panel, a node on the canvas, or
-  headless from the command line — nothing to rewrite.
-- **Self-describing.** The node graph, the param panels and the viewport gizmos are all
-  generated from one declaration.
+- **The graph is USD.** A node is a prim and a wire is a USD connection. Saving the stage
+  saves the graph.
+- **Runs anywhere.** The same chunk works as a panel, as a node, or from the command line,
+  without changes.
+- **The UI is built for you.** The node graph, the parameter panels and the viewport gizmos
+  are all built from the chunk's own definition.
 
-Headless, that looks like:
+Running a saved network from the command line:
 
 ```
 usdchunks run layout.usda Transform.translate_x=5 -o result.usda
@@ -33,57 +33,54 @@ usdchunks run layout.usda Transform.translate_x=5 -o result.usda
    set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
    usdview anything.usda
    ```
-   → every environment variable, extras, and troubleshooting what won't show up.
-2. **[Use the node graph](docs/node-graph-basics.md)** — drop your first chunk in a
-   minute.
-3. **[Learn what a Chunk is](docs/chunk-basics.md)** — params, groups, flags, a worked
-   example.
-4. **[View and ChunkGroup](docs/core-chunks.md)** — the two chunks every network
-   needs.
-5. **[Write your own chunk](docs/writing-a-chunk.md)** — `main()`, `config()`,
-   `execute()`, `commit()`.
+   The install page covers other shells, every environment variable, and what to do if
+   something doesn't show up.
+2. **[Use the node graph](docs/node-graph-basics.md)**: add and connect your first chunk.
+3. **[Learn what a Chunk is](docs/chunk-basics.md)**: params, groups, flags and an example.
+4. **[View and ChunkGroup](docs/core-chunks.md)**: the two chunks every network needs.
+5. **[Write your own chunk](docs/writing-a-chunk.md)**: `main()`, `config()`, `execute()`
+   and `commit()`.
 
-## 🧩 ChunkGroup — the subnet container
+## 🧩 ChunkGroup
 
-A ChunkGroup holds a whole network inside a single node on the outer graph — double-click
-to dive in, build, dive back out. → [docs/core-chunks.md#chunkgroup](docs/core-chunks.md#chunkgroup)
+A ChunkGroup holds a whole network inside one node. Double-click it to go inside, and
+build as usual. See [ChunkGroup](docs/core-chunks.md#chunkgroup).
 
-## 🎬 View — what actually runs
+## 🎬 View
 
-Nothing in a network cooks until it's wired into a View. It decides what runs, and it's
-how you switch between several results in the same graph. →
-[docs/core-chunks.md#view](docs/core-chunks.md#view)
+Nothing in a network cooks until it's connected to a View. The View decides which part of
+the graph runs, and lets you switch between several results in the same graph. See
+[View](docs/core-chunks.md#view).
 
 ## 📦 What comes with it
 
-[`chunks/`](chunks/) ships the chunks this has been built and tested against —
-transforms, references, materials, MaterialX shading, scattering, a MuJoCo rigid-body
-solver, and more. Most are a few hundred lines each, and doubly worth reading: they're
-also the worked examples.
+The [`chunks/`](chunks/) folder has the chunks we build and test against: transforms,
+references, materials, MaterialX shading, scattering, a MuJoCo rigid-body solver and more.
+Most are a few hundred lines, so they also work as examples to learn from.
 
 ![Scatter Brush painting instances across a rock, wired to Scatter Points and a Camera, rendered in V-Ray](docs/assets/graph_scatter.png)
 
-<sub>Paint density onto a surface, scatter instances through it, frame it with a camera — three shipped chunks, wired.</sub>
+<sub>Scatter Brush, Scatter Points and a Camera, wired together.</sub>
 
-## 🕰️ Where it came from
+## 🕰️ Background
 
-Built to spare every [usdview](https://openusd.org/release/toolset.html#usdview) plugin
-its own boilerplate, `plugInfo.json` and Qt code. That problem is solved, and it's no
-longer the point — a chunk describes an operation on a stage, and usdview is just one
-place to run it.
+usd_chunks started as a way to add tools to
+[usdview](https://openusd.org/release/toolset.html#usdview) without writing a
+`plugInfo.json` and Qt code for every one. It has grown past that: a chunk works on a USD
+stage, and usdview is one of several places you can run it.
 
-## 🔒 A note on trust
+## 🔒 Security
 
-A chunk is arbitrary Python running with the host's full privileges — the same trust
-model as `pip`. Opening a `.usda` can't introduce code you don't already have installed,
-but it does decide what your chunks do. See [SECURITY.md](SECURITY.md) before opening a
-network from someone else.
+A chunk is ordinary Python and can do anything Python can, just like a package you
+install with `pip`. Opening a `.usda` file can't add new code, but it does control what
+your installed chunks do. Read [SECURITY.md](SECURITY.md) before opening a network from
+someone else.
 
 ## 🤝 Contributing
 
-This repo is the runtime core — not a place to publish chunks of your own. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for getting set up, running tests, and opening a PR.
+This repo is the core framework, not a place to publish your own chunks. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests and opening a PR.
 
 ## 📄 License
 
-Apache License 2.0 — see [LICENSE](LICENSE). The same license OpenUSD itself ships under.
+Apache License 2.0, the same license as OpenUSD. See [LICENSE](LICENSE).

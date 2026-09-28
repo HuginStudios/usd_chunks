@@ -80,17 +80,16 @@ Changing either is a breaking change for every chunk that exists.
 
 ## Why attrs
 
-Chunk classes lean on [python-attrs](https://www.attrs.org/en/stable) throughout, rather
-than hand-written `__init__` methods. A chunk class carries a lot of attributes, and each
-level of the inheritance hierarchy (base classes → `Chunk`/`Group` → the concrete param
-types) adds more of its own — attrs combines them all into one generated `__init__`
-dynamically, so a subclass never repeats what its parent already declared, and validation
-and conversion come for free on top.
+Chunk classes use [python-attrs](https://www.attrs.org/en/stable) instead of hand-written
+`__init__` methods. Chunk classes have a lot of attributes, and each level of the class
+hierarchy (base classes → `Chunk`/`Group` → the param types) adds more. attrs combines
+them into one generated `__init__`, so a subclass doesn't repeat its parent's attributes,
+and you get validation and conversion as well.
 
-The trade-off: these classes have no explicit `__init__` to read for their signature, so
-rely on static type checking (Pylance) instead. Most of the attrs machinery is abstracted
-away — the only piece a contributor usually touches directly is `attrs.field()` on a class
-attribute, and only when adding a new param type or otherwise extending `chunk_core`.
+The downside is that there's no `__init__` to read for the signature, so use static type
+checking (Pylance) to see it. Most of attrs is hidden away. Usually the only part you use
+directly is `attrs.field()` on a class attribute, and only when adding a new param type or
+extending `chunk_core`.
 
 ## Pull requests
 

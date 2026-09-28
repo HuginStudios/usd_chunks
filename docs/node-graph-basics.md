@@ -2,101 +2,95 @@
 
 ## 🚀 Your first chunk node
 
-1. Open usdview — the **Chunks** panel (or the **Chunks** menu) is where the graph lives.
-2. **Right-click empty canvas** and pick any chunk, e.g. *Add Mesh*. A View node is
-   placed and wired to it automatically — the first chunk in an empty graph always gets
-   one, so there's nothing extra to do here.
-3. Play with the node's params in its panel and watch the viewport update.
-4. Add a second chunk and want to see *its* output instead? Right-click it and choose
-   **Set View** — the auto-wiring only happens for the very first node in a graph, so
-   this is how you point the view at anything after that.
+1. Open usdview. The graph is in the **Chunks** panel (or the **Chunks** menu).
+2. **Right-click the empty canvas** and pick a chunk, for example *Add Mesh*. The first
+   chunk in an empty graph always gets a View added and connected for you.
+3. Change the node's params in its panel and watch the viewport update.
+4. To see the output of another chunk you add later, right-click it and choose **Set
+   View**. The automatic View only happens for the first node in a graph.
 
-That's it — you have a working chunk. Everything below is for when you want more: wiring
-several nodes together, keyboard shortcuts, disabled/locked nodes, working inside a
-ChunkGroup. For what a node graph is *made of* under the hood (prims, ports, USD
-connections), see [The graph is USD](index.md#the-graph-is-usd) in the docs home; for View
-and ChunkGroup specifically, see [View and ChunkGroup](core-chunks.md).
+That's all you need for a working chunk. The rest of this page covers connecting several
+nodes, keyboard shortcuts, disabled and locked nodes, and working inside a ChunkGroup. For
+how the graph is stored (prims, ports, USD connections), see [The graph is
+USD](index.md#the-graph-is-usd). For more on View and ChunkGroup, see [View and
+ChunkGroup](core-chunks.md).
 
 ## Opening the graph
 
-The **Chunks** panel/menu opens the graph view for the current context — the top-level
-graph, or, if you're inside a [ChunkGroup](core-chunks.md#chunkgroup), that group's own
-inner graph. Every context remembers which of its (up to three) view slots was active
-when it was saved, and opens back on that one.
+The **Chunks** panel or menu opens the graph you're currently in: the top-level graph, or
+the inside of a [ChunkGroup](core-chunks.md#chunkgroup) if you're in one. Each graph
+remembers which of its three views was active when you saved, and opens on that one.
 
 ## Creating a node
 
-Right-click empty canvas for the create menu, organized by the `category` each chunk
-module declared in its `config()` (see [Writing a chunk](writing-a-chunk.md#config)).
-Picking an entry drops that chunk at the cursor.
+Right-click the empty canvas to open the create menu. Chunks are sorted by the `category`
+set in each module's `config()` (see [Writing a chunk](writing-a-chunk.md#config)). Pick
+one and it's added at the cursor.
 
-Dragging a wire out of **any port — input or output** — and releasing it on empty canvas
-opens the same create menu, and picking an entry creates the node *and* wires it to the
-port you dragged from, in one motion. The menu here isn't filtered to compatible chunks —
-it's the same full list either way — so it's possible to pick something with no matching
-port; when that happens you get the new node with no wire, silently, rather than an error.
+If you drag a wire out of **any port, input or output,** and let go on empty canvas, the
+same menu opens. The chunk you pick is created and connected to the port you dragged from.
+The menu isn't filtered, so you can pick a chunk with no matching port. In that case the
+node is created without a wire, and no error is shown.
 
 ## Wiring
 
-Drag from a port to another port of a matching type to connect them. A few things behave
-specially:
+Drag from one port to another port of the same type to connect them. A few things work
+differently:
 
-- **Dropping a node onto an existing wire splices it in** — the wire is cut and rerouted
-  through the new node's matching input/output pair, rather than just landing on top of it.
-- **A quick back-and-forth "shake" drag on a node disconnects every wire touching it**, and
-  heals the exec chain behind it — whatever fed the node's input now feeds whatever it used
-  to feed, so removing a step from the middle of a chain doesn't leave the rest dangling.
-- Connecting a value port authors a real `@Node.param@` expression, not just a visual line
-  — the connection *is* the dataflow (see [The graph is USD](index.md#the-graph-is-usd)).
+- **Drop a node onto an existing wire to insert it.** The wire is split and goes through
+  the new node's matching input and output.
+- **Shake a node quickly back and forth to disconnect all its wires.** The chain is joined
+  back up behind it: whatever fed the node now feeds what the node used to feed, so taking
+  a step out of the middle doesn't break the rest.
+- Connecting a value port writes a real `@Node.param@` expression, so it's an actual data
+  connection, not just a line on screen (see [The graph is
+  USD](index.md#the-graph-is-usd)).
 
 ## Nothing cooks without a View
 
-A freshly created chain does nothing until it's wired into a [View](core-chunks.md#view)
-chunk. **Right-click the chunk whose output you want to see and choose Set View** — that
-creates a View chunk, wires it to that chunk's output, and makes it active in one step. If
-that chunk already feeds a view, the same menu entry shows as **Activate View N** instead.
-Until something is wired to an active view, every node sits there fully configured and
-inert; that's deliberate, not a bug you're diagnosing.
+A new chain does nothing until it's connected to a [View](core-chunks.md#view).
+**Right-click the chunk whose output you want to see and choose Set View.** That creates a
+View, connects it to the chunk's output, and makes it active. If the chunk is already
+connected to a view, the menu shows **Activate View N** instead. Until then, the nodes are
+set up but don't run. This is on purpose, not a bug.
 
-A graph can hold up to three views at once. Press `1`, `2` or `3` to switch which one is
-active — it only switches to a slot that already has a view in the current graph, so you
-can never accidentally blank the whole thing by pressing a number nothing is wired to.
+A graph can have up to three views. Press `1`, `2` or `3` to switch the active one. It only
+switches to a number that has a view in the current graph, so you can't blank the graph by
+accident.
 
 ## Keyboard shortcuts
 
 | Key | Does |
 | --- | --- |
-| `F` | Frame the current selection (or everything, with nothing selected). |
-| `1` / `2` / `3` | Switch the active view slot, if one exists there. |
-| `L` | Auto-layout the current selection, or the whole graph with nothing selected. |
-| `C` | Collapse the current selection, or the whole graph with nothing selected. |
-| `D` | Toggle disable on the current selection. |
-| `Delete` | Delete the current selection. |
-| `Esc` | Cancel an in-progress wire drag, or clear focus. |
-| `Tab` | Open the create menu (the chunk picker) at the cursor. |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste selection. |
-| `Ctrl+D` | Duplicate selection. |
-| `Ctrl+G` | Group the current selection into a new [ChunkGroup](core-chunks.md#chunkgroup). |
+| `F` | Frame the selection (or everything, if nothing is selected). |
+| `1` / `2` / `3` | Switch to that view, if it exists. |
+| `L` | Auto-layout the selection, or the whole graph if nothing is selected. |
+| `C` | Collapse the selection, or the whole graph if nothing is selected. |
+| `D` | Disable or enable the selection. |
+| `Delete` | Delete the selection. |
+| `Esc` | Cancel a wire drag, or clear focus. |
+| `Tab` | Open the create menu at the cursor. |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste the selection. |
+| `Ctrl+D` | Duplicate the selection. |
+| `Ctrl+G` | Put the selection into a new [ChunkGroup](core-chunks.md#chunkgroup). |
 
-Shortcuts that double up a key with its `Ctrl` form (`D`/`Ctrl+D`, `C`/`Ctrl+C`) are
-deliberate — the bare key is the graph-specific action, the modified one is the familiar
-clipboard verb.
+Some keys do one thing on their own and another with `Ctrl` (`D`/`Ctrl+D`, `C`/`Ctrl+C`).
+The plain key is the graph action, and the `Ctrl` version is the usual clipboard action.
 
 ## Disabled and locked nodes
 
-A **disabled** chunk (`D`) stays visible on the canvas, greyed out, rather than
-disappearing — it's still there to re-enable, just not cooking or contributing output.
+A **disabled** chunk (`D`) stays on the canvas, greyed out, so you can turn it back on. It
+doesn't cook or produce output.
 
-A **locked** node — one whose prim comes from a layer you don't own: a
-[ChunkGroup](core-chunks.md#chunkgroup) loaded by reference, sublayer or payload, or any
-other externally-authored layer — gets an amber header and can't be dragged, including by
-auto-layout, which routes around it as a fixed obstacle. Its params are still meant to be
-edited: an edit there lands as an `over` in your own edit target, so a shot can tweak a
-shared sequence's params without touching the sequence file itself.
+A **locked** node comes from a layer you don't own, such as a
+[ChunkGroup](core-chunks.md#chunkgroup) loaded as a reference, sublayer or payload. It has
+an amber header and can't be moved, not even by auto-layout, which works around it. You
+can still edit its params. Your edits are written as an `over` in your own edit target, so
+a shot can change a shared sequence's params without changing the sequence file.
 
-## Diving into a ChunkGroup
+## Going inside a ChunkGroup
 
-Double-click a ChunkGroup node to dive into it and work on its contents as their own
-graph, with their own view slots. New chunks created while you're inside a group nest
-under it automatically. See [ChunkGroup](core-chunks.md#chunkgroup) for what crosses the
-boundary (lofted params) and what doesn't (everything else).
+Double-click a ChunkGroup node to go inside and work on its contents as a separate graph,
+with its own views. New chunks you create while inside a group are added to that group.
+See [ChunkGroup](core-chunks.md#chunkgroup) for how params are shared with the outside
+(lofting).

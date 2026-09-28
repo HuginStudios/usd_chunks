@@ -1,13 +1,13 @@
 # Install
 
-Two things make a usd_chunks setup work: the package importable in whatever Python runs
-your host, and **USD_CHUNK_DIRS** pointed at your chunk modules. Everything else below is
-detail on those two facts.
+To get usd_chunks working you need two things: the package installed in the Python your
+host runs, and **USD_CHUNK_DIRS** set to the folder with your chunk modules. The rest of
+this page is detail on those two steps.
 
 ## Quick start
 
-Needs **Python 3.11+**, the same Python your USD was built with — see
-[Requirements](#requirements). On Windows (cmd), with `python` being usdview's own Python:
+You need **Python 3.11+**, and it has to be the same Python your USD was built with (see
+[Requirements](#requirements)). On Windows (cmd), where `python` is usdview's own Python:
 
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
@@ -17,10 +17,10 @@ set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdview anything.usda
 ```
 
-If `pip install -e` fails, your pip is likely too old for editable installs — run
+If `pip install -e` fails, your pip is probably too old for editable installs. Run
 `python -m pip install --upgrade pip` and try again.
 
-Or, headless (no usdview, `usd-core` only):
+To run without usdview, using `usd-core` only:
 
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
@@ -29,135 +29,133 @@ set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdchunks run --help
 ```
 
-PowerShell: `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)`, `$env:NAME = "value"`
-for the rest. macOS/Linux: `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"`,
-`export NAME=value` for the rest.
+In PowerShell, use `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)` and
+`$env:NAME = "value"` for the other variables. On macOS/Linux, use
+`export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"` and `export NAME=value`.
 
-Right-click the graph canvas in usdview (or press Tab) and every chunk under
-[`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) is there to
-drop in. Point `USD_CHUNK_DIRS` at your own directory once you're writing chunks of your
-own — everything past this point is detail for when you need it.
+In usdview, right-click the graph canvas (or press Tab) to see every chunk in
+[`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks). When you start
+writing your own chunks, point `USD_CHUNK_DIRS` at your own folder. You only need the rest
+of this page if something goes wrong or you want more detail.
 
-No **Chunks** panel when usdview opens? Almost always the install went into a different
-Python than the one usdview runs — see [If the Chunks panel is
+No **Chunks** panel when usdview opens? Usually usd_chunks was installed into a different
+Python than the one usdview uses. See [If the Chunks panel is
 missing](#if-the-chunks-panel-is-missing).
 
 ## Install
 
 ### Requirements
 
-- **Python 3.11 or newer.** usd_chunks uses `typing.dataclass_transform`, which arrived
+- **Python 3.11 or newer.** usd_chunks uses `typing.dataclass_transform`, which was added
   in 3.11.
-- **The same Python your USD was built with.** USD's Python bindings are compiled against
-  one Python version and only import under that version, so usd_chunks has to be
-  installed into that interpreter — usdview's, Houdini's `hython`, Maya's `mayapy`, and so
-  on. If your USD build uses a Python older than 3.11, USD has to be rebuilt against 3.11+
-  first.
+- **The same Python your USD was built with.** USD's Python bindings only work with the
+  Python version they were compiled for, so usd_chunks has to be installed into that
+  Python: usdview's, Houdini's `hython`, Maya's `mayapy`, and so on. If your USD was built
+  with a Python older than 3.11, you need to rebuild USD with 3.11 or newer first.
 
 ### Getting the package
 
-Clone it — usd_chunks isn't on PyPI yet, so this is the only path in either case:
+usd_chunks isn't on PyPI yet, so start by cloning it:
 
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
 ```
 
-Which extra to install with comes down to one question: does the Python you're
-installing into already have USD?
+How you install it depends on whether the Python you're installing into already has USD.
+Check with:
 
 ```
 python -c "import pxr"
 ```
 
-**That already works** — you're inside usdview, Houdini's `hython`, Maya's `mayapy`,
-Blender's bundled Python, or any other DCC:
+**If that works**, you're in usdview, Houdini's `hython`, Maya's `mayapy`, Blender's
+Python or another DCC. Install it as is:
 
 ```
-pip install -e ./usd_chunks
+python -m pip install -e ./usd_chunks
 ```
 
-**That fails** — a plain script, a CI job, a bare venv with no DCC in sight — bring your
-own USD:
+**If that fails**, you're in a plain Python (a script, a CI job, a new venv) and need USD
+as well:
 
 ```
-pip install -e "./usd_chunks[standalone]"
+python -m pip install -e "./usd_chunks[standalone]"
 ```
 
-The `standalone` extra pulls in `usd-core`, giving you the library plus the `usdchunks`
-command with no separate USD build required — `usdchunks run my_setup.usda` works
-immediately.
+The `standalone` extra installs `usd-core`, so you get the library and the `usdchunks`
+command without building USD yourself. `usdchunks run my_setup.usda` works straight away.
 
 !!! danger "🚫 Never install `[standalone]` into a host that already has USD"
-    Houdini's `hython`, Maya's `mayapy`, Blender's Python and usdview all embed USD under
-    their own build — Blender's is compiled as `pxrBlender_v26_03__pxrReserved__`, for
-    instance — so a second, pip-installed USD is a different C++ type entirely and cannot
-    exchange objects with the host's. You end up with two unrelated USDs sharing one
-    process rather than one shared USD, and things fail in confusing,
-    not-obviously-related ways.
+    Houdini, Maya, Blender and usdview each ship their own USD build. Blender's, for
+    example, is compiled as `pxrBlender_v26_03__pxrReserved__`. A second USD installed with
+    pip is a completely separate library that can't share objects with the host's. You end
+    up with two USDs in one process, and things break in confusing ways.
 
-The `usd-core` wheels on PyPI don't include usdview — using the usdview integration needs
-a full USD build that provides `pxr.Usdviewq`; see [usdview integration](#usdview-integration)
-below.
+The `usd-core` package on PyPI doesn't include usdview. To use usd_chunks in usdview you
+need a full USD build that includes `pxr.Usdviewq`. See [usdview
+integration](#usdview-integration) below.
 
 ### ⚠️ A plain install won't show every bundled chunk
 
 !!! warning
-    A plain install doesn't bring in numpy, PySide6 or requests, and roughly a sixth of
-    [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) needs one
-    of those to import at all.
+    A plain install doesn't include numpy, PySide6 or requests, and about a sixth of the
+    chunks in [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks)
+    need one of them.
 
-A module whose import fails is skipped silently as far as the create menu goes — the
-registry logs exactly what's missing as a `WARNING`, visible at the default log level, but
-nothing else marks the gap. The first symptom is usually "the chunk I want isn't in the
-menu," not an error dialog.
+If a chunk module fails to import, it's left out of the create menu. The registry logs
+what's missing as a `WARNING` at the default log level, but nothing else tells you. Usually
+the first thing you notice is that the chunk you want isn't in the menu.
 
-Affected today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`, `curves_to_mesh`,
-`custom_widget`, `poly_reduce`, `rbd_solver`, `scatter_brush`, `scatter_points`,
-`urdf_import`, `uv_checker`, `vine` — several of them the headline ones (Scatter, Poly
-Reduce, the RBD solver).
+The chunks affected today: `AMDMaterialXLibrary`, `add_curves`, `add_mesh`,
+`curves_to_mesh`, `custom_widget`, `poly_reduce`, `rbd_solver`, `scatter_brush`,
+`scatter_points`, `urdf_import`, `uv_checker` and `vine`. That includes some of the main
+ones, like Scatter, Poly Reduce and the RBD solver.
 
-Fix it either by hand — `pip install numpy requests mujoco` (the last only for the RBD
-solver), plus `PySide6` only if your host doesn't already ship Qt; usdview, Houdini and
-Maya do — or just the ones you actually hit, or by setting [`USD_CHUNK_AUTO_INSTALL`](#environment-variables) so a
-chunk's own declared `requirements` ([Writing a chunk](writing-a-chunk.md#config)) get
-installed for you, after asking.
+There are two ways to fix it:
+
+- Install the packages yourself: `pip install numpy requests mujoco` (mujoco is only for
+  the RBD solver). Add `PySide6` only if your host doesn't have Qt already; usdview,
+  Houdini and Maya do. You can also install just the ones you need.
+- Set [`USD_CHUNK_AUTO_INSTALL`](#environment-variables). Then a chunk's own
+  `requirements` ([Writing a chunk](writing-a-chunk.md#config)) are installed for you,
+  after asking first.
 
 ### Other extras
 
-The rest only matter for specific work, and combine (`pip install -e ".[dev,docs]"`):
+These are only needed for specific work. You can combine them, for example
+`pip install -e ".[dev,docs]"`.
 
-| Extra | Who's it for |
+| Extra | What it's for |
 | --- | --- |
-| `ui` | A host that doesn't already ship Qt — pulls in PySide6. usdview and Houdini already have Qt, skip this there. |
-| `flet` | Running the standalone Flet graph frontend (`python -m usd_chunks.frontends.flet.nodegraph <network.usda>`) rather than embedding in a Qt host. |
-| `imgui` | Same, for the Dear ImGui frontend (`python -m usd_chunks.frontends.imgui.nodegraph <network.usda>`). |
-| `dev` | Working on usd_chunks itself — pytest, ruff, build tooling, plus `usd-core` and every optional frontend toolkit so the test suite can exercise all of them. |
-| `docs` | Building the docs site — see [Build documentation](#build-documentation). |
+| `ui` | Installs PySide6, for a host that doesn't have Qt. usdview and Houdini already have Qt, so skip it there. |
+| `flet` | Running the standalone Flet graph frontend (`python -m usd_chunks.frontends.flet.nodegraph <network.usda>`) instead of a Qt host. |
+| `imgui` | The same for the Dear ImGui frontend (`python -m usd_chunks.frontends.imgui.nodegraph <network.usda>`). |
+| `dev` | Working on usd_chunks itself: pytest, ruff, build tools, `usd-core` and every optional frontend, so the tests can cover all of them. |
+| `docs` | Building the docs site. See [Build documentation](#build-documentation). |
 
 ## usdview integration
 
-usdview loads usd_chunks as a USD plugin, so it needs to be told where that plugin's
-`plugInfo.json` lives, via `PXR_PLUGINPATH_NAME`. `usdchunks` prints the right value for
-your install:
+usdview loads usd_chunks as a USD plugin, so it needs to know where the plugin's
+`plugInfo.json` is. You tell it with `PXR_PLUGINPATH_NAME`. This command prints the right
+path for your install:
 
 ```
 usdchunks plugin-path
 ```
 
-Point `PXR_PLUGINPATH_NAME` at that path before launching usdview. With that set and
-`USD_CHUNK_DIRS` pointed at your chunks, opening usdview shows a **Chunks** panel and a
-**Chunks** menu.
+Set `PXR_PLUGINPATH_NAME` to that path before starting usdview. With that and
+`USD_CHUNK_DIRS` set, usdview opens with a **Chunks** panel and a **Chunks** menu.
 
 ## If the Chunks panel is missing
 
 ### ⚠️ Installed into the wrong Python
 
-By far the most common cause, and it fails silently: no error, the panel is simply
-absent. Most machines have several Pythons, and usdview almost certainly embeds its own —
-often not the one a bare `pip` resolves to.
+This is the most common cause, and there's no error message: the panel just isn't there.
+Most machines have several Pythons installed, and usdview usually has its own, which is
+often not the one plain `pip` installs into.
 
-Ask usdview which interpreter it is (`import sys; print(sys.executable)` in its Python
-console, or read your launcher script), then run pip through that one directly:
+Find out which Python usdview uses (run `import sys; print(sys.executable)` in its Python
+console, or look in your launcher script), then run pip with that Python:
 
 ```
 "<that path>" -m pip install -e usd_chunks     # usdview
@@ -165,39 +163,37 @@ hython -m pip install -e usd_chunks            # Houdini
 mayapy -m pip install -e usd_chunks            # Maya
 ```
 
-If you already installed into the wrong one, reinstall with the right interpreter rather
-than trying to patch it up. A regular install can be rescued by pointing `PYTHONPATH` at
-that environment's `site-packages`, but an **editable** (`-e`) one cannot: its `.pth` only
-activates when Python's own `site` module processes the directory, which a bare
-`PYTHONPATH` entry never does.
+If you already installed into the wrong Python, reinstall with the right one. A regular
+install can be fixed by pointing `PYTHONPATH` at that environment's `site-packages`, but an
+editable (`-e`) install can't. Editable installs rely on a `.pth` file, and Python only
+reads those from real site directories, not from `PYTHONPATH`.
 
 ### ⚠️ Testing the import from the folder you cloned into
 
-Standing in the directory that directly *contains* `usd_chunks/` and running a bare
-`python -c "..."` or a script there shadows the real install — the current directory wins
-over site-packages, and it fails naming something unexpected (`ATTRS_VERSION` or similar)
-rather than "not found". `cd` anywhere else first if you want to sanity-check with plain
-`python`. usdview and the `usdchunks` command are both unaffected.
+If you run `python -c "..."` or a script from the folder that contains `usd_chunks/`,
+Python imports that folder instead of your install. The error then names something odd,
+like `ATTRS_VERSION`, instead of saying the module wasn't found. Change to any other folder
+before testing with plain `python`. usdview and the `usdchunks` command aren't affected.
 
 ## If a chunk is missing from the menu
 
-The panel is there, but Scatter — or Add Mesh, the RBD solver — isn't in the create menu.
-Almost always a missing pip package: the chunk's import failed, so it was skipped. The
-console already says which one, as a warning at load:
+The panel is there, but a chunk like Scatter, Add Mesh or the RBD solver isn't in the
+create menu. This is almost always a missing pip package: the chunk failed to import, so
+it was left out. The console shows which package when it loads:
 
 ```
 WARNING: usd_chunks.chunk_registry: Chunk dependencies not installed: numpy>=2,<3. ...
 ```
 
-Install what it names into the same Python usdview runs. The full list and the one-line
-fix are under [A plain install won't show every bundled
+Install that package into the Python usdview uses. The full list and the fix are under [A
+plain install won't show every bundled
 chunk](#a-plain-install-wont-show-every-bundled-chunk).
 
 ## Gizmos (viewport handles)
 
-Viewport handles you drag to change a chunk's params live in a second repo,
-[usd_gizmos](https://github.com/HuginStudios/usd_gizmos). With usd_chunks already set up,
-it's three more lines:
+The handles you drag in the viewport to change a chunk's params are in a separate repo,
+[usd_gizmos](https://github.com/HuginStudios/usd_gizmos). Once usd_chunks is set up, it
+takes three more commands:
 
 ```
 git clone https://github.com/HuginStudios/usd_gizmos.git
@@ -208,37 +204,36 @@ set PXR_PLUGINPATH_NAME=%PXR_PLUGINPATH_NAME%;C:\path\to\usd_gizmos\gizmo\plugin
 PowerShell: `$env:PXR_PLUGINPATH_NAME += ";C:\path\to\usd_gizmos\gizmo\plugins\usdview"`.
 macOS/Linux: `export PXR_PLUGINPATH_NAME="$PXR_PLUGINPATH_NAME:/path/to/usd_gizmos/gizmo/plugins/usdview"`.
 
-Same interpreter rule as usd_chunks — install through usdview's own Python (see [Installed
-into the wrong Python](#installed-into-the-wrong-python)). The path is `...\plugins\usdview`;
-its sibling `...\plugins\kraken` is for Kraken and easy to grab by mistake.
+As with usd_chunks, install it with usdview's own Python (see [Installed into the wrong
+Python](#installed-into-the-wrong-python)). The path ends in `...\plugins\usdview`. The
+folder next to it, `...\plugins\kraken`, is for Kraken and easy to pick by mistake.
 
 **What you should see:** select any prim and a transform handle appears in the viewport.
-Drag it, and a Transform chunk shows up in the graph to record the move — a drag never
-writes the prim directly. Camera and Scatter Brush chunks bring handles of their own.
+When you drag it, a Transform chunk appears in the graph and stores the move. Dragging
+never changes the prim directly. Camera and Scatter Brush chunks have their own handles.
 
 ### How the two repos split the work
 
-usd_chunks only **authors** a handle: a chunk declares `gizmos` in its `config()` ([Writing
-a chunk](writing-a-chunk.md#config)), which writes `ui:gizmo:*` attributes saying what
-handle exists and which params it drives. usd_gizmos **draws, picks and drags** it. The
-dependency runs one way: usd_chunks works identically without usd_gizmos (you just see no
-handle), and usd_gizmos runs without usd_chunks (it just drives no chunk params). See
-[Chunk gizmos: the host contract](gizmo-host-contract.md) if you're building the viewport
-side for another host.
+usd_chunks only **describes** a handle. A chunk lists `gizmos` in its `config()` ([Writing
+a chunk](writing-a-chunk.md#config)), which writes `ui:gizmo:*` attributes saying which
+handle exists and which params it controls. usd_gizmos **draws** the handle and handles the
+dragging. Each repo works without the other: without usd_gizmos you just don't see handles,
+and without usd_chunks the handles don't control any chunk params. See [Chunk gizmos: the
+host contract](gizmo-host-contract.md) if you're building handles for another host.
 
-### If the handle is missing, or dragging doesn't move the params
+### If the handle is missing, or dragging doesn't change the params
 
 - **No handle at all:** `PXR_PLUGINPATH_NAME` doesn't include
-  `usd_gizmos\gizmo\plugins\usdview` (check you didn't take the `kraken` sibling), or
-  usd_gizmos went into a different Python than usdview's.
-- **A handle, but the chunk's params don't move:** an older gizmo plugin is loaded
-  alongside this one. Both override the same viewport methods, and nothing on screen tells
-  you which one you're dragging. Two ways it sneaks in:
-    - a usdview bundle that ships a flattened copy (e.g. `usdviewTools\gizmo`), pulled in
-      when the whole `usdviewTools` folder is on the plugin path — list only the subfolders
-      you want;
-    - a **persistent user** `PXR_PLUGINPATH_NAME` pointing at an old plugins folder, which
-      any launcher that appends to the variable inherits. Check it:
+  `usd_gizmos\gizmo\plugins\usdview` (make sure you didn't pick the `kraken` folder), or
+  usd_gizmos was installed into a different Python than usdview's.
+- **A handle shows, but the chunk's params don't change:** an older gizmo plugin is loaded
+  as well. Both replace the same viewport functions, and nothing on screen shows which one
+  you're using. This usually happens in one of two ways:
+    - A usdview bundle that includes its own copy (for example `usdviewTools\gizmo`), loaded
+      because the whole `usdviewTools` folder is on the plugin path. List only the
+      subfolders you want.
+    - A saved **user-level** `PXR_PLUGINPATH_NAME` that points at an old plugins folder.
+      Any launcher that adds to the variable picks it up. Check it with:
 
         ```powershell
         [Environment]::GetEnvironmentVariable("PXR_PLUGINPATH_NAME", "User")
@@ -246,36 +241,34 @@ side for another host.
 
 ## Running from a clone
 
-If you're running against a checkout of this repo rather than an install (working on
-usd_chunks itself, or on a fork), add the repo root to `PYTHONPATH` instead of installing
-it, so usdview's Python can import the `usd_chunks` package:
+If you want to run from a checkout of this repo without installing it (for example while
+working on usd_chunks itself), add the repo root to `PYTHONPATH` so usdview's Python can
+import the `usd_chunks` package:
 
 ```
 set PYTHONPATH=C:\path\to\usd_chunks;%PYTHONPATH%
 ```
 
-`PXR_PLUGINPATH_NAME` still applies the same way — `usdchunks plugin-path` works from a
-clone too.
+You still need `PXR_PLUGINPATH_NAME`. `usdchunks plugin-path` works from a clone too.
 
 ## Environment variables
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `USD_CHUNK_DIRS` | *(empty)* | Where chunk modules live. A list of directories — `;`-separated on Windows, `:`-separated on unix. Scanned recursively for `.py` files with a `main()` function; see [Writing a chunk](writing-a-chunk.md). On a duplicate chunk name the **first** directory in the list wins. |
-| `USD_CHUNK_DEPENDENCY_DIR` | `<usd_chunks package>/../_installed_deps` | Where `USD_CHUNK_AUTO_INSTALL` installs a chunk's declared pip requirements. Added to `sys.path` automatically if it exists, so packages installed there are importable without any other setup. |
-| `USD_CHUNK_AUTO_INSTALL` | off | Off unless set. A chunk module may declare `requirements` in its `config()` ([Writing a chunk](writing-a-chunk.md#config)); with this on, missing ones are installed (after an interactive confirmation) into `USD_CHUNK_DEPENDENCY_DIR`. Left off, nothing is installed and a missing package is only named in a warning — so opening someone else's network can never add packages to your environment on its own. Also gates headless `usdchunks run`, which has no one to answer a confirmation prompt. |
-| `USD_CHUNK_LOAD_FILTER` | *(unset — everything loads)* | Restricts which chunk modules load. The check is `module_name not in USD_CHUNK_LOAD_FILTER` — the *module's* name has to appear as a substring of the filter string, not the other way round — so treat it as a comma-joined list of exact module names, e.g. `USD_CHUNK_LOAD_FILTER=transform,scatter_points` loads only the modules named `transform` and `scatter_points`. (A module named `transform_ops` would **not** match `transform` alone — it's longer than the substring it's being checked against.) Useful for a fast, minimal repro without every other chunk in `USD_CHUNK_DIRS` also registering. |
-| `USD_CHUNK_VERBOSE` | off | Off unless set (truthy). A **name clash** between two chunk modules resolves silently by precedence (the first `USD_CHUNK_DIRS` entry wins — see above); with this on, every shadowed name is logged at load, not just the ambiguous same-tier ones. |
-| `PXR_PLUGINPATH_NAME` | — | Only needed for the usdview integration. See [usdview integration](#usdview-integration). |
-| `PYTHONPATH` | — | Only needed when running from a clone rather than an install. See [Running from a clone](#running-from-a-clone). |
-| `USD_CHUNK_LOG_LEVEL` | `INFO` | `usd_chunks`'s own log level — `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; an unrecognized value is left at `INFO` rather than raising. Set `USD_CHUNK_LOG_LEVEL=DEBUG` before launching to see what a reload or a cook is actually doing param-by-param — including why a [`config()`](writing-a-chunk.md#config) silently fell back to defaults, which otherwise shows up nowhere but a log line at the default level. |
-| `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to probe render delegates for their declared settings. usd_chunks guesses by whether a `QApplication` is already running (a GUI host has one, a batch script or test doesn't) and skips the probe outside a GUI host; `=1` forces the probe on anyway, `=0` forces it off. Note the plural — `USD_CHUNKS_`, unlike every other variable here. |
+| `USD_CHUNK_DIRS` | *(empty)* | The folders your chunk modules are in, separated by `;` on Windows and `:` on macOS/Linux. Each folder is searched, including subfolders, for `.py` files with a `main()` function. See [Writing a chunk](writing-a-chunk.md). If two folders have a chunk with the same name, the one in the **first** folder is used. |
+| `USD_CHUNK_DEPENDENCY_DIR` | `<usd_chunks package>/../_installed_deps` | Where `USD_CHUNK_AUTO_INSTALL` installs the pip packages a chunk needs. If the folder exists, it's added to `sys.path` automatically. |
+| `USD_CHUNK_AUTO_INSTALL` | off | A chunk module can list `requirements` in its `config()` ([Writing a chunk](writing-a-chunk.md#config)). With this set, missing packages are installed into `USD_CHUNK_DEPENDENCY_DIR` after asking you first. When it's off, nothing is installed and a missing package only shows up as a warning, so opening someone else's network can never install packages on its own. It also applies to `usdchunks run`, which can't ask. |
+| `USD_CHUNK_LOAD_FILTER` | *(unset, so everything loads)* | Only load the chunk modules you list, as comma-separated exact module names, for example `USD_CHUNK_LOAD_FILTER=transform,scatter_points`. The check is `module_name not in USD_CHUNK_LOAD_FILTER`, so a module loads if its name appears somewhere in the string. That means `transform_ops` would **not** load with `transform` alone. Useful for a quick test with only a few chunks loaded. |
+| `USD_CHUNK_VERBOSE` | off | When two chunk modules have the same name, one is picked without a message (the first `USD_CHUNK_DIRS` folder wins, see above). Set this to log every chunk that was skipped because of a name clash. |
+| `PXR_PLUGINPATH_NAME` | — | Only needed for usdview. See [usdview integration](#usdview-integration). |
+| `PYTHONPATH` | — | Only needed when running from a clone instead of an install. See [Running from a clone](#running-from-a-clone). |
+| `USD_CHUNK_LOG_LEVEL` | `INFO` | usd_chunks' own log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Any other value is treated as `INFO`. Set it to `DEBUG` to see what a reload or cook does, param by param. That includes why a [`config()`](writing-a-chunk.md#config) fell back to defaults, which is otherwise only a log line. |
+| `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to ask render delegates for their settings. By default this only happens in a GUI host (when a `QApplication` is running), not in scripts or tests. `=1` turns it on, `=0` turns it off. Note the name starts with `USD_CHUNKS_`, unlike the other variables. |
 
 ## Build documentation
 
-The reference pages are generated from the source, so usd_chunks has to be importable —
-mkdocstrings and `griffe_chunks.py` introspect the modules rather than reading a static
-copy. Install the docs extra and build:
+The reference pages are generated from the source code, so usd_chunks has to be
+importable when you build. Install the docs extra and build:
 
 ```
 pip install -e ".[docs]"
@@ -283,32 +276,30 @@ set USD_CHUNK_DIRS=chunks
 mkdocs serve
 ```
 
-That serves the site locally; `mkdocs build` writes it to `site/` instead. The docs are not
-built in CI — publishing is a deliberate act, and the publish below builds the site anyway,
-so that is where a breakage surfaces.
+`mkdocs serve` runs the site locally, and `mkdocs build` writes it to `site/` instead. CI
+doesn't build the docs, so if something is broken you'll find out when you publish (the
+publish step below builds the site).
 
-On Windows, `build_docs.bat` wraps both. With no arguments it serves locally; with
-`--share` it builds and copies the site to a destination of your choosing — a UNC share, a
-mapped drive, or a web root:
+On Windows, `build_docs.bat` does both. With no arguments it runs the site locally. With
+`--share` it builds the site and copies it to a folder you choose, such as a network share,
+a mapped drive or a web server folder:
 
 ```
 build_docs.bat --share \\server\share\usd_chunks_docs
 build_docs.bat --share E:\www\usd_chunks --directory-urls
 ```
 
-It adds and overwrites, never deletes. Pass `--mirror` to also remove files that are no
-longer part of the site; that is refused unless the destination is empty or was published
-by this script before, and publishing into anything that looks like a source checkout is
-refused outright.
+It adds and overwrites files but never deletes them. Add `--mirror` to also delete files
+that are no longer part of the site. That only works if the destination is empty or was
+published by this script before, and publishing into something that looks like a source
+checkout is always refused.
 
-By default it builds flat filenames (`example.html`), which work both over `file://` and
-over http. A browser opening the site from a share will not resolve a directory to its
-`index.html`, so the default `/example/` style URLs would break navigation there. Once the
-destination is definitely behind a web server such as nginx, pass `--directory-urls` for
-the tidier form.
+By default it builds plain file names (`example.html`), which work both from a file share
+and from a web server. A browser opening files from a share won't turn `/example/` into
+`/example/index.html`, so the default mkdocs URLs would break there. If the site is served
+by a web server such as nginx, you can pass `--directory-urls` for cleaner URLs.
 
-Either way the search box only works when the site is served over http, since the search
-index is fetched by XHR and browsers block that for `file://` origins. Everything else
-works from a plain fileshare.
+Search only works when the site is served over http, because browsers block the search
+index from loading over `file://`. Everything else works from a plain file share.
 
 Run `docs/gen_ref_nav.py` to regenerate the `docs/reference` markdown files.

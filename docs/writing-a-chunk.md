@@ -1,21 +1,20 @@
 # Writing a chunk module
 
-> usd_chunks in a nutshell: chunks are written in Python. A chunk describes what it does
-> in `execute(node)`, how it looks in `main()`, and its metadata in `config()` — things
-> like `description` and `category`. That's it.
+> In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
+> the work, and `config()` holds details like its `description` and `category`.
 
-A chunk module is a plain `.py` file. Drop it anywhere under
-[`USD_CHUNK_DIRS`](install.md#environment-variables) and it is discovered automatically —
-there is no registration step, no `plugInfo.json`, nothing to import it from elsewhere.
+A chunk module is a plain `.py` file. Put it anywhere in a
+[`USD_CHUNK_DIRS`](install.md#environment-variables) folder and it's found automatically.
+You don't need to register it, write a `plugInfo.json`, or import it anywhere.
 
 A module can define up to four top-level functions. Only `main()` is required.
 
 | Function | Required | Called |
 | --- | --- | --- |
-| `main()` | yes | Once per **instance**, to build a `Chunk` object — every node dropped on the graph, and every chunk prim a reload restores, is its own `main()` call. |
-| `config()` | no | Once at discovery, for load-time configuration ([`ChunkConfig`](#config)). |
-| `execute(node)` | no | Whenever the chunk needs to (re)cook — see [`execute()`](#execute). |
-| `commit(node)` | no | Once per chunk, after a solve has settled — see [`commit()`](#commit). |
+| `main()` | yes | Once per **instance**, to build a `Chunk` object. Each node you add to the graph, and each chunk prim loaded from a file, is a separate `main()` call. |
+| `config()` | no | Once, when the module is found, for its settings ([`ChunkConfig`](#config)). |
+| `execute(node)` | no | Every time the chunk cooks. See [`execute()`](#execute). |
+| `commit(node)` | no | Once per chunk, after everything has finished cooking. See [`commit()`](#commit). |
 
 ## `main()`
 
@@ -32,25 +31,23 @@ def main():
     return chunk_api
 ```
 
-`main()` takes no arguments and must return a [`chunk.Chunk`][usd_chunks.chunk.Chunk] — a
-`Group` with some extra bookkeeping (it holds the layer, the DAG node, the exec ports).
-Build its params and groups here and wire up their callbacks with `add_param` /
+`main()` takes no arguments and must return a [`chunk.Chunk`][usd_chunks.chunk.Chunk].
+A `Chunk` is a `Group` that also keeps track of its layer, its DAG node and its exec ports.
+Create its params and groups here, and add their callbacks with `add_param` and
 `add_callback`.
 
-**`main()` runs once per instance, not once at discovery.** Discovery only imports the
-module and looks for the function; the registry calls it fresh every time a chunk actually
-needs to exist — once for every node you drop on the graph, and once per saved chunk prim
-when a file is reloaded. Anything expensive built at `main()`'s top level (constructing a
-lookup table, say) is paid again on every node, not once for the whole session — put that
-kind of thing behind a module-level cache if it matters.
+**`main()` runs once per instance, not once when the module is found.** Finding the module
+only imports it and checks that `main()` exists. After that, `main()` is called every time
+a chunk is created: once for each node you add, and once for each saved chunk prim when a
+file is opened. So anything slow in `main()`, like building a lookup table, runs again for
+every node. If that matters, cache it at module level.
 
-**Do not touch the stage or the scene from `main()`.** Even though it runs per instance, it
-runs *before* that instance has a prim or a stage to belong to — `chunk.get_scene()` and a
-chunk's `get_stage()` are only meaningful once the chunk actually exists on one. Anything
-that needs the stage belongs in a callback, in `execute()`, or in `commit()`.
+**Don't use the stage or the scene in `main()`.** It runs *before* the chunk has a prim or
+a stage, so `chunk.get_scene()` and the chunk's `get_stage()` don't work yet. Anything that
+needs the stage goes in a callback, in `execute()`, or in `commit()`.
 
-See [`docs/example.md`](example.md) for a longer, annotated tour of the param types,
-groups, flags and callback signatures available inside `main()`.
+[`docs/example.md`](example.md) has a longer example with notes on the param types,
+groups, flags and callback signatures you can use in `main()`.
 
 ## `config()`
 
@@ -65,37 +62,36 @@ def config():
     )
 ```
 
-`config()` returns a [`chunk.DefaultConfig`][usd_chunks.chunk.DefaultConfig] (a thin
-subclass of [`chunk_core.ChunkConfig`][usd_chunks.chunk_core.ChunkConfig]) describing how
-the chunk should be treated at load time and offered in menus. A module with no `config()`
-gets the defaults below.
+`config()` returns a [`chunk.DefaultConfig`][usd_chunks.chunk.DefaultConfig], a small
+subclass of [`chunk_core.ChunkConfig`][usd_chunks.chunk_core.ChunkConfig]. It describes how
+the chunk is loaded and how it shows up in menus. A module without `config()` gets the
+defaults below.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `category` | `"Chunks"` | Where the chunk is filed in the create menu. Use a [`StandardCategory`][usd_chunks.chunk.StandardCategory] member (`MODELLING`, `DYNAMICS`, `TRANSFORM`, `UTILS`, `RIGS`, `USER`, `EXAMPLES`, `USD`, `PROPERTIES`, `USD_RENDER`, `USD_LAYER`, `CORE`, `MATERIALS`, `MTLX`) or a plain string for your own. |
-| `description` | `"Chunk description..."` | Shown in tooltips and the create menu. `ChunkGroup`'s `doc` param reuses this same text as the network-interface description a human or an LLM reads to understand what a saved network does. |
-| `load_for_plugin` | `None` | Restrict discovery to one host plugin (e.g. `"chunk_usdview"`), if the chunk only makes sense there. |
-| `requirements` | `[]` | pip requirements the module needs, e.g. `["numpy>=2,<3"]`. A module that fails to import (because one is missing) is skipped rather than crashing discovery; with [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables) set, missing ones are offered for install into `USD_CHUNK_DEPENDENCY_DIR`. |
-| `required_modules` | `[]` | Other chunk *modules* this one depends on being registered. |
-| `interactive` | `False` | The chunk writes to a file layer that persists, instead of its own layer being cleared and regenerated on every cook. Set this for a chunk whose job is a one-off authored edit rather than a repeatable cook. |
-| `hidden` | `False` | Kept out of the create menu. For a type that only exists to be saved and reloaded rather than created by hand — `runtime`, the type a chunk built in the interpreter is written as (see [Building a chunk at runtime](runtime-chunks.md)). It must still be a registered module, since that's how a reload finds what to rebuild a prim from. |
-| `terminal` | `False` | No `outputs:chunk` is authored — the chunk ends an exec chain rather than passing it on. The [View](core-chunks.md#view) chunk sets this. |
-| `exec_inputs` | `1` | How many *positional* exec input slots the chunk has. `1` is the ordinary case — one `inputs:chunk` port that can still carry several wires stacked on it. Above `1`, each slot gets its own port and which wire lands where is meaningful (Stage Expression Switch's slot 0 is the stream it always forwards, slot 1 the branch it gates). |
-| `dynamic_exec_inputs` | `False` | The chunk grows a fresh numbered exec input port per incoming wire, plus one empty trailing slot to attach the next branch to. For a chunk like Merge or Switch where every upstream branch needs to be its own port rather than several wires stacked on one — the slot count isn't known until the graph is wired, unlike `exec_inputs`. |
+| `category` | `"Chunks"` | Where the chunk appears in the create menu. Use a [`StandardCategory`][usd_chunks.chunk.StandardCategory] member (`MODELLING`, `DYNAMICS`, `TRANSFORM`, `UTILS`, `RIGS`, `USER`, `EXAMPLES`, `USD`, `PROPERTIES`, `USD_RENDER`, `USD_LAYER`, `CORE`, `MATERIALS`, `MTLX`) or a plain string for your own. |
+| `description` | `"Chunk description..."` | Shown in tooltips and the create menu. `ChunkGroup`'s `doc` param uses the same text to describe what a saved network does, for a person or an AI reading the file. |
+| `load_for_plugin` | `None` | Only load the chunk in one host plugin (e.g. `"chunk_usdview"`), if it only works there. |
+| `requirements` | `[]` | pip packages the module needs, e.g. `["numpy>=2,<3"]`. If one is missing and the module fails to import, it's skipped instead of crashing. With [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables) set, you're asked whether to install the missing ones into `USD_CHUNK_DEPENDENCY_DIR`. |
+| `required_modules` | `[]` | Other chunk *modules* that must be loaded for this one to work. |
+| `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being cleared and rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
+| `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
+| `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) chunk uses this. |
+| `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch always passes on slot 0, and turns slot 1 on or off. |
+| `dynamic_exec_inputs` | `False` | The chunk adds a new numbered exec input port for each wire connected to it, plus one empty port for the next one. For chunks like Merge or Switch, where each incoming branch needs its own port. Unlike `exec_inputs`, the number of ports isn't fixed. |
 | `outputs` | `[]` | Extra typed output ports beyond `outputs:chunk`, as `[(name, SdfTypeName), ...]`. |
-| `variants` | `[]` | Extra entries in the chunk's create-menu submenu, as `[(label, {param: value}), ...]`, or a callable returning that list. Pass a callable when building the list is expensive (enumerating a shader registry, say) — it then only runs the first time a menu is actually drawn, not on every headless discovery. |
-| `gizmos` | `[]` | Viewport handles driven by this chunk's params — see [Chunk gizmos: the host contract](gizmo-host-contract.md). |
+| `variants` | `[]` | Extra entries in the chunk's submenu in the create menu, as `[(label, {param: value}), ...]`, or a function that returns that list. Use a function when the list is slow to build (for example, listing a shader registry). It then only runs the first time the menu is shown, not every time chunks are loaded. |
+| `gizmos` | `[]` | Viewport handles that control this chunk's params. See [Chunk gizmos: the host contract](gizmo-host-contract.md). |
 
-**Keep `config()` self-contained.** Discovery evaluates it in isolation — only the
-module's `usd_chunks` imports have run, precisely so *looking at* a module never runs its
-other top-level code. A `config()` that reads a module-level constant or helper raises
-`NameError` on that first attempt; the registry retries once after executing the module's
-top-level assignments and `def`s, but anything among those that itself depends on a
-non-`usd_chunks` import still fails, is skipped, and the module quietly falls back to
-`DefaultConfig()`'s plain defaults — wrong category, generic description, no error shown
-anywhere but a warning in the log. If `config()` needs something expensive or
-module-derived, `variants` accepting a callable (see the table above) is the supported way
-to defer that cost rather than reaching for a constant built above it.
+**Keep `config()` self-contained.** When the module is found, `config()` is run on its
+own, with only the module's `usd_chunks` imports done. This way, reading a module's config
+never runs the rest of its code. If `config()` uses a constant or helper from the module,
+the first try fails with `NameError`. The registry then tries once more after running the
+module's top-level assignments and `def`s. If any of those need a non-`usd_chunks` import,
+that fails too, and the module falls back to the `DefaultConfig()` defaults: wrong
+category, generic description, and only a warning in the log. If `config()` needs
+something slow to build, pass a function to `variants` (see the table above) instead of a
+constant built in the module.
 
 ## `execute()`
 
@@ -104,25 +100,25 @@ def execute(node: chunk.Chunk) -> None:
     ...
 ```
 
-`execute` is a **reserved name** at module scope — don't give a plain callback this name,
-or the framework will call it every time the chunk cooks.
+`execute` is a **reserved name** at module level. Don't use it for a normal callback, or
+it will be called every time the chunk cooks.
 
-If defined, `execute(node)` runs whenever the chunk needs to cook: when a dependency
-changes (`add_dependency`), when the chunk is reloaded (its param *values* are restored on
-load, but callback side effects are not replayed — see below), or as part of an explicit
-re-run of the exec chain. `node` is the chunk itself — the same object `main()` returned —
-so the usual body is `node.get_stage()` / `node.get_edit_context()` plus whatever the
-chunk actually does to the stage.
+If a module has `execute(node)`, it runs every time the chunk cooks: when something it
+depends on changes (`add_dependency`), when the chunk is loaded from a file, or when the
+exec chain is run again. On load, param *values* are restored, but callbacks don't run
+again (see below). `node` is the chunk itself, the same object `main()` returned. So
+`execute` usually calls `node.get_stage()` or `node.get_edit_context()` and then changes
+the stage.
 
-It runs inside a `Usd.EditContext` already pointed at the chunk's own layer (unless the
-chunk is `interactive`, which authors elsewhere), and it must be **idempotent**: cheap
-enough to re-run constantly while the graph solves, and safe to run twice in a row with
-the same inputs. The usual pattern is to clear the chunk's own layer first and re-author
-from scratch, rather than trying to patch up whatever was there before.
+It runs with a `Usd.EditContext` already set to the chunk's own layer (unless the chunk is
+`interactive`, which writes somewhere else). It must give the same result every time it
+runs with the same inputs. It can run many times while the graph cooks, so keep it fast.
+The usual approach is to clear the chunk's layer first and write everything again, instead
+of trying to fix up what was there.
 
-A very common shape — and the reason `execute` exists at all, rather than only ever
-running from callbacks — is a chunk whose *real* work already happens in a param callback,
-with `execute` there purely to repeat that work after a reload:
+A common pattern is a chunk that does its real work in a param callback, with `execute`
+only there to redo that work after the file is opened. This is why `execute` exists,
+instead of doing everything in callbacks:
 
 ```python
 def _run(owner, notice, sender):
@@ -145,9 +141,9 @@ def main():
 ```
 
 (the full version is [`chunks/transforms/reset_transform.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/transforms/reset_transform.py)).
-A save only ever records a chunk's **data** — its params, values and wiring — never the
-code path that produced them (see [*What a save keeps*](runtime-chunks.md#what-a-save-keeps)).
-`execute` is what makes a reload behave, not just look, the way it did before saving.
+A save only stores a chunk's **data** (params, values and wiring), never the code that
+ran (see [*What a save keeps*](runtime-chunks.md#what-a-save-keeps)). `execute` is what
+makes a chunk do its work again after the file is opened.
 
 ## `commit()`
 
@@ -156,26 +152,25 @@ def commit(node: chunk.Chunk) -> None:
     ...
 ```
 
-`commit` is for a chunk whose real work is writing a *file*, as opposed to authoring into
-its own USD layer — Export USD, a render-product chunk. It is a separate hook from
-`execute` because the two run at different times for different reasons:
+`commit` is for a chunk whose job is writing a *file*, not writing to its own USD layer,
+for example Export USD or a render product chunk. It's separate from `execute` because they
+run at different times:
 
-- `execute` is dispatched from inside the notice/DAG solve, over and over, as params
-  settle — the right place for cheap, repeatable USD authoring, the wrong place for a disk
-  write.
-- `commit` is called once, by whoever drove the solve (`usdchunks run`, or a host's Commit
-  action), **after** the solve has settled — every chunk in topological order, so a chunk
-  that reads another chunk's output sees the finished result.
+- `execute` runs many times while the graph cooks and params change. It's the right place
+  for fast USD edits, and the wrong place for writing to disk.
+- `commit` runs once, **after** everything has finished cooking. It's called by whatever
+  started the cook (`usdchunks run`, or a host's Commit action). Chunks commit in graph
+  order, so a chunk that reads another chunk's output sees the finished result.
 
-No edit context is opened around a `commit` call: it reads the fully composed stage and
-writes to disk, rather than authoring into a layer. A module with no `commit` is simply
-skipped — most chunks have nothing to write, and the hook is entirely opt-in. A disabled
-chunk (or one blocked by sitting outside the active [view](core-chunks.md#view)'s tree)
+No edit context is set up for `commit`. It reads the final composed stage and writes to
+disk. Modules without `commit` are skipped, since most chunks have nothing to write. A
+disabled chunk, or one that isn't connected to the active [view](core-chunks.md#view),
 never commits.
 
 ## Discovery, recap
 
-`USD_CHUNK_DIRS` is scanned recursively for `.py` files ([Environment
-variables](install.md#environment-variables) has the precedence rules when two
-directories define the same name). Any file whose `main()` returns a `Chunk` is registered under that
-module's name — no directory structure or naming convention is required beyond that.
+Every folder in `USD_CHUNK_DIRS`, including subfolders, is searched for `.py` files.
+Any file whose `main()` returns a `Chunk` is registered under the module's name. There are
+no other rules for folder layout or file names. [Environment
+variables](install.md#environment-variables) explains which one wins when two folders have
+a chunk with the same name.

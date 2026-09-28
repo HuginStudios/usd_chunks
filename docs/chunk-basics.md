@@ -1,10 +1,10 @@
 # Chunks, params and groups
 
-A **Chunk** is a container of parameters, groups and attributes — the params hold the
-values you actually interact with. Change anything on a chunk and it sends a notice;
-callbacks (plain Python functions) subscribe to those to do the real work, usually
-authoring to the stage. That's what makes a chunk dynamic: a callback can add or remove
-params, flip flags, or change what the chunk does next, all at runtime.
+A **Chunk** holds parameters, groups and attributes. The params hold the values you
+change in the UI. When anything on a chunk changes, it sends a notice. Callbacks, which are
+plain Python functions, listen for these notices and do the work, usually writing to the
+stage. A callback can also add or remove params, change flags, or change what the chunk
+does next, all while it runs.
 
 ## A minimal example
 
@@ -42,16 +42,15 @@ def config():
 
 ![image](assets/example_add_cube.png)
 
-That's the whole shape: `main()` builds the chunk and its params, and `config()` describes
-the module's configuration — here, its category, which decides where you find it in the Tab
-menu. See [Writing a chunk](writing-a-chunk.md) for the full picture — `main()`,
-`config()`, `execute()` (what the chunk does when it cooks) and `commit()` (writing files) —
-and [chunks/](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) for more
-worked examples.
+`main()` builds the chunk and its params. `config()` describes the module's
+configuration. Here it sets the category, which decides where you find the chunk in the Tab
+menu. [Writing a chunk](writing-a-chunk.md) covers `main()`, `config()`, `execute()` (what
+the chunk does when it cooks) and `commit()` (writing files). See [chunks/](https://github.com/HuginStudios/usd_chunks/tree/main/chunks) for more
+examples.
 
 ## 🎛️ Params
 
-Params are the parts of a chunk you interact with — sliders, buttons, menus and so on. Each
+Params are the parts of a chunk you interact with, like sliders, buttons and menus. Each
 one maps to a widget in the UI and, once its value differs from the default, to an
 `inputs:` attribute on the chunk's prim.
 
@@ -76,8 +75,8 @@ mode = chunk.Menu("mode", menu_items=["linear", "smooth"])
 divisions.value = 8   # read/write through .value
 ```
 
-Prefer `Slider` over `Spinbox` for numeric values — `Slider` covers the integer case with
-`is_int=True`, and is the type the rest of the toolkit is built and tested against.
+Use `Slider` rather than `Spinbox` for numbers. `Slider` handles integers with
+`is_int=True`, and it's the one the rest of the toolkit is tested with.
 
 **Param flags** (`ChunkFlags.ParamFlags`) adjust behavior. Set one with `set_flag()`,
 clear it with `unset_flag()`, check it with `has_flag()`:
@@ -92,27 +91,28 @@ output_dir.has_flag(chunk.ChunkFlags.ParamFlags.LABELED)     # False
 
 The flags:
 
-- `OUTPUT` — a computed result. Hidden from the UI, but still readable by other chunks as
-  `@ChunkName.param@`.
-- `LABELED` — draw a label next to the widget.
-- `FILE_EXISTING`, `DIRECTORY` — for `FileBrowser`: restrict to existing files, or folders.
-- `PRIM_SELECTION`, `PROP_SELECTION` — for `LineEdit`: the value is a prim or property
-  path, so the UI can offer selection.
-- `PY_SYNTAX_HIGHLIGHT`, `USD_SYNTAX_HIGHLIGHT` — for `TextEdit`.
+- `OUTPUT`: a computed result. It's hidden in the UI, but other chunks can still read it
+  as `@ChunkName.param@`.
+- `LABELED`: show a label next to the widget.
+- `FILE_EXISTING`, `DIRECTORY`: for `FileBrowser`. Only allow existing files, or only
+  folders.
+- `PRIM_SELECTION`, `PROP_SELECTION`: for `LineEdit`. The value is a prim or property path,
+  so the UI lets you pick it from the selection.
+- `PY_SYNTAX_HIGHLIGHT`, `USD_SYNTAX_HIGHLIGHT`: syntax highlighting for `TextEdit`.
 
-**State** (`ChunkFlags.State`) carries the current condition instead: `HIDDEN`,
-`DISABLED`, `COLLAPSED`, `SELECTED`, and `STALE` (a UI hint that a result no longer
-reflects its inputs — nothing sets or clears this automatically).
+**State** (`ChunkFlags.State`) describes what a param is doing right now: `HIDDEN`,
+`DISABLED`, `COLLAPSED`, `SELECTED` and `STALE`. `STALE` is a UI hint that a result is out
+of date with its inputs. Nothing sets or clears it automatically.
 
 ## 📁 Groups
 
-Groups hold params and other groups, giving a chunk its structure. A `Chunk` is itself a
-container, so `add_param`, `add_params`, `get_param`, `get_my_params` work at every level.
+Groups hold params and other groups, and give a chunk its layout. A `Chunk` is a group
+too, so `add_param`, `add_params`, `get_param` and `get_my_params` work at every level.
 
-- `Group` — a plain container.
-- `ListGroup` — children can be added and removed at runtime, for variable-length input.
-- `Vector` — a fixed set of params treated as one value, for something like an XYZ triple.
-  Expressions can reference the whole vector as `@Node.vecParam@`.
+- `Group`: a plain container.
+- `ListGroup`: items can be added and removed while it runs, for lists of any length.
+- `Vector`: a fixed set of params used as one value, like X, Y and Z. Expressions can refer
+  to the whole vector as `@Node.vecParam@`.
 
 ```py
 transform = chunk.Group("transform", "Transform")
@@ -123,7 +123,7 @@ transform.add_params([
 chunk_api.add_param(transform)
 ```
 
-`ChunkFlags.GroupFlags` controls presentation: `LABELED`, `COLLAPSABLE`, `FRAMED`, `LIST`,
-and `CONTEXT`. `CONTEXT` is the one worth knowing early — a context group renders as a
-workspace holding other chunks rather than as a node itself (a tab, in the Qt plugin).
-[View and ChunkGroup](core-chunks.md) are both built on it.
+`ChunkFlags.GroupFlags` controls how a group looks: `LABELED`, `COLLAPSABLE`, `FRAMED`,
+`LIST` and `CONTEXT`. `CONTEXT` is the important one. A context group is shown as a
+workspace that holds other chunks, not as a node (in the Qt plugin, it's a tab).
+[View and ChunkGroup](core-chunks.md) both use it.
