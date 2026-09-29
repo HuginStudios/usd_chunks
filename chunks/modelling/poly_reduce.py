@@ -50,6 +50,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks import chunk_stage
+from usd_chunks.mesh_math import fan_triangulate
 
 try:
     import fast_simplification
@@ -111,39 +112,6 @@ class ReducedMesh:
     triangles: np.ndarray  # (m, 3) int64
     source_point: np.ndarray | None  # (n,) index into the original points array
     source_corner: np.ndarray | None  # (n,) index into the original face-corner array
-
-
-def fan_triangulate(counts, indices):
-    """Fan-triangulate a polygon mesh: `(triangles, corners, face_of_triangle)`.
-
-    `corners` is the same shape as `triangles` but indexes the flat face-corner array
-    (i.e. positions within `faceVertexIndices`) instead of the point array -- that is what
-    lets a faceVarying primvar be read per triangle corner afterwards.
-
-    Faces with fewer than three vertices contribute nothing but still consume their slots
-    in `indices`, so offsets are computed over every face, not just the usable ones.
-    """
-    counts = np.asarray(counts, dtype=np.int64)
-    indices = np.asarray(indices, dtype=np.int64)
-    if counts.size == 0 or indices.size == 0:
-        empty_i = np.zeros((0, 3), dtype=np.int64)
-        return empty_i, empty_i, np.zeros(0, dtype=np.int64)
-
-    offsets = np.concatenate(([0], np.cumsum(counts)[:-1]))
-    per_face = np.maximum(counts - 2, 0)
-    total = int(per_face.sum())
-    if total == 0:
-        empty_i = np.zeros((0, 3), dtype=np.int64)
-        return empty_i, empty_i, np.zeros(0, dtype=np.int64)
-
-    face_of_tri = np.repeat(np.arange(counts.size, dtype=np.int64), per_face)
-    # Position of each triangle within its own face's fan, without a Python loop.
-    run_start = np.repeat(np.cumsum(per_face) - per_face, per_face)
-    step = np.arange(total, dtype=np.int64) - run_start
-
-    base = offsets[face_of_tri]
-    corners = np.stack([base, base + step + 1, base + step + 2], axis=1)
-    return indices[corners], corners, face_of_tri
 
 
 # A packed weld key has to stay inside int64. The margin below 2**63 is there so the guard

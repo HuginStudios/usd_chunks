@@ -8,11 +8,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import logging
+import os
 import re
 import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Ar, Gf, Sdf, Usd, UsdGeom, UsdShade
 
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
@@ -1448,6 +1449,101 @@ def _xform_order_layer_unused(stage, node):
             if own.identifier in parent.subLayerPaths:
                 return parent
     return own
+
+
+def texture_file_is_usable(path: str) -> bool:
+    """Whether a UsdUVTexture authored with *path* will actually have an image to load.
+
+    A texture whose file cannot be resolved is not merely a missing image: the shader
+    network still carries the whole UV chain (primvar reader -> UsdTransform2d -> the
+    texture's `st`), and a render delegate that drops the unloadable texture node while
+    still translating what fed it is left holding a connection to a node it never built.
+    hdCycles fails exactly that way -- "Failed to load 1 image files" followed by
+    "Could not find node '/Mapping' to connect" out of BuildShaderGraph (its Cycles
+    `mapping` node being the translation of our UsdTransform2d) -- and takes usdview down
+    with it on a delegate switch. So the chain is only worth authoring when the image is
+    really there.
+
+    A path carrying a `<UDIM>` (or any other `<token>`) is left alone: those never resolve
+    as a plain file and are meant not to, so treating them as missing would break a
+    perfectly valid texture set.
+    """
+    if not path:
+        return False
+    if "<" in path and ">" in path:
+        return True  # UDIM / token pattern -- not resolvable as a single file by design
+    return bool(Ar.GetResolver().Resolve(path))
+
+
+def bind_uv_checker(stage, prims, texture_file: str, scale=(1.0, 1.0)) -> None:
+    """Build /materials/UVCheckerMaterial showing texture_file, and bind it to prims.
+
+    A UsdPreviewSurface fed by a repeating UsdUVTexture, read through `st` and scaled by a
+    UsdTransform2d. When the image does not resolve, a plain grey surface is bound
+    instead -- see texture_file_is_usable for why the texture chain is left out then.
+
+    Args:
+        stage: The stage to author on.
+        prims: The prims to bind the material to.
+        texture_file: The image to show.
+        scale: The UV scale (x, y).
+    """
+    material_path = "/materials/UVCheckerMaterial"
+    stage.DefinePrim("/materials", "Scope")
+    material = UsdShade.Material.Define(stage, material_path)
+    preview = UsdShade.Shader.Define(stage, f"{material_path}/previewSurface")
+    preview.CreateIdAttr("UsdPreviewSurface")
+    material.GetOutput("surface").ConnectToSource(
+        preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+    )
+    diffuse = preview.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+
+    if not texture_file_is_usable(texture_file):
+        logger.warning("texture file does not resolve, binding a plain surface: %s", texture_file)
+        diffuse.Set((0.5, 0.5, 0.5))
+    else:
+        texture = UsdShade.Shader.Define(stage, f"{material_path}/texture")
+        texture.CreateIdAttr("UsdUVTexture")
+        texture.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        texture.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(texture_file)
+        diffuse.ConnectToSource(texture.CreateOutput("rgb", Sdf.ValueTypeNames.Color3f))
+
+        transform2d = UsdShade.Shader.Define(stage, f"{material_path}/transform2d")
+        transform2d.CreateIdAttr("UsdTransform2d")
+        transform2d.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(tuple(scale))
+        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
+            transform2d.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        )
+
+        reader = UsdShade.Shader.Define(stage, f"{material_path}/reader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.String).Set("st")
+        transform2d.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
+            reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        )
+
+    for prim in prims:
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+
+
+def cwd_relative(path):
+    """Resolve a relative output path against the working directory.
+
+    The same base USD uses for a RenderProduct's productName, which is the point: when
+    the two disagree, a render writes its image in one place while the product it
+    declared is looked for in another, and only one of them is where the person who ran
+    the command was looking.
+
+    This deliberately replaces resolving against the scene file. Next to the scene reads
+    like the tidier answer, and for usdview it often is -- but it makes `usdchunks run
+    scene.usda -o out.exr` write beside scene.usda rather than beside the shell, which is
+    not what a command line means by a relative path anywhere else.
+    """
+    if not path or os.path.isabs(path):
+        return path
+
+    return os.path.normpath(os.path.join(os.getcwd(), path))
 
 
 def parse_frames(spec: str) -> list[float]:

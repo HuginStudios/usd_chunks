@@ -32,27 +32,6 @@ def _first_target_prim(node):
     return None
 
 
-def _set_items(menu, items) -> None:
-    """Put `items` on `menu`, keeping whatever it currently says visible.
-
-    The current value stays in the list even when the prim no longer offers it: a saved
-    selection arrives before the upstream chunk that defines its variant set has cooked,
-    and a view-driven recook mutes layers one at a time, so "not on the prim right now" is
-    routinely transient. Dropping the value would lose it for good; listing it keeps the
-    dropdown honest about what will be authored, and it disappears on its own once a
-    real choice replaces it.
-
-    Only assigned when something changed: menu_items is a plain field, and writing it
-    re-triggers this chunk's execute() whether or not anything differs (see layer).
-    """
-    current = menu.value or ""
-    items = list(items)
-    if current and current not in items and not chunk_utils.has_expression(current):
-        items.append(current)
-    if list(menu.menu_items or []) != items:
-        menu.menu_items = items
-
-
 def _refresh_menus(owner, _notice=None, _sender=None):
     """Rebuild Variant Set from the target prim, and Variant Selection from the chosen set.
 
@@ -94,13 +73,13 @@ def _refresh_menus(owner, _notice=None, _sender=None):
 
     prim = _first_target_prim(_chunk)
     vsets = prim.GetVariantSets() if prim is not None else None
-    _set_items(vs_menu, vsets.GetNames() if vsets else [])
+    vs_menu.set_items(vsets.GetNames() if vsets else [])
 
     chosen = vs_menu.value or ""
     variants = []
     if vsets and chosen and chosen in vsets.GetNames():
         variants = list(vsets.GetVariantSet(chosen).GetVariantNames())
-    _set_items(sel_menu, [NONE] + variants)
+    sel_menu.set_items([NONE] + variants)
 
 
 def execute(node):

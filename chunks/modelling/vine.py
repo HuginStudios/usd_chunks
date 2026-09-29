@@ -40,7 +40,7 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
-from usd_chunks import chunk_stage
+from usd_chunks import chunk_stage, mesh_math
 
 logger = logging.getLogger(__name__)
 
@@ -140,33 +140,6 @@ class _Surface:
         return float(np.linalg.norm(found[1] - found[0])) if found else 0.0
 
 
-def _world_points(prim, points):
-    """A mesh's points in world space, as an (N, 3) array."""
-    matrix = np.asarray(UsdGeom.XformCache().GetLocalToWorldTransform(prim), dtype=np.float64)
-    # Row-vector convention, matching Gf: p * M, with the translation in the last row.
-    return np.asarray(points, dtype=np.float64) @ matrix[:3, :3] + matrix[3, :3]
-
-
-def _fan_triangulate(counts, indices):
-    """Fan-triangulate every face at once: three index arrays, or None when there are no faces.
-
-    The fan a per-face loop would walk -- (v0, vi, vi+1) for i in 1..count-2 -- as index
-    arithmetic, so USD's flat face buffers are never unpacked one face at a time.
-    """
-    if not len(counts):
-        return None
-    per_face = np.maximum(counts - 2, 0)
-    total = int(per_face.sum())
-    if total == 0:
-        return None
-    face_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
-    fan_start = np.concatenate(([0], np.cumsum(per_face)[:-1]))
-    face_of = np.repeat(np.arange(len(counts)), per_face)
-    within = np.arange(total) - np.repeat(fan_start, per_face)
-    base = face_start[face_of]
-    return indices[base], indices[base + within + 1], indices[base + within + 2]
-
-
 def _vertex_weights(prim, count, primvar_name):
     """The paint on one mesh, per vertex, or all-ones when there is no field to read.
 
@@ -244,13 +217,12 @@ def _collect_surface(prim, primvar_name):
         indices = mesh.GetFaceVertexIndicesAttr().Get()
         if not counts or not indices:
             continue
-        fan = _fan_triangulate(
-            np.asarray(counts, dtype=np.int64), np.asarray(indices, dtype=np.int64)
-        )
-        if fan is None:
+        triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
+        if not len(triangles):
             continue
+        fan = tuple(triangles.T)
         i0, i1, i2 = fan
-        world = _world_points(p, points)
+        world = mesh_math.world_points(p, points)
         weights = _vertex_weights(p, len(points), primvar_name)
         v0, v1, v2 = world[i0], world[i1], world[i2]
         n = np.cross(v1 - v0, v2 - v0)

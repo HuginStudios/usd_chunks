@@ -44,34 +44,16 @@ def execute(node):
 
 
 def _on_change(owner, notice, sender):
-    """Callback for the chunk panel -- prune selected prims."""
+    """Callback for the chunk panel: author again from scratch, the same way a cook does."""
     _chunk = owner.get_chunk()
-    stage = owner.get_stage()
-    if not stage or not _chunk:
+    if not owner.get_stage() or not _chunk:
         return
-
-    prim_param = _chunk.get_param("prim_path")
-    prims = prim_param.get_prims()
-    if not prims:
-        return
-
     layer = owner.get_edit_context()
     if not layer:
         return
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
-
-    for prim in prims:
-        over = stage.OverridePrim(prim.GetPath())
-
-        # Deactivate
-        over.SetActive(False)
-
-        # Author pruned flag
-        custom_data = over.GetMetadata("customData") or {}
-        custom_data = dict(custom_data)
-        custom_data[_PRUNE_KEY] = True
-        over.SetMetadata("customData", custom_data)
+    execute(_chunk)
 
 
 def main():

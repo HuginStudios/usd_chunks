@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pxr import Usd, UsdGeom
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk
 
 #: Set on the chunk once CHUNK_LOADED has fired -- its value is in, the menu may fill.
 _IN_SCENE = "_set_camera_in_scene"
@@ -16,25 +16,6 @@ def _camera_paths(stage):
     if not stage:
         return []
     return [str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)]
-
-
-def _set_items(menu, items) -> None:
-    """Put `items` on `menu`, keeping whatever it currently says visible.
-
-    Same rule as Set Variant: the current value stays listed even when the stage has no
-    such camera right now. A saved pick arrives before the Camera chunk that creates the
-    prim has cooked, and a view-driven recook mutes layers one at a time, so "not on the
-    stage right now" is routinely transient. Dropping the value would lose it for good.
-
-    Only assigned when something changed: menu_items is a plain field, and writing it
-    re-triggers this chunk's execute() whether or not anything differs.
-    """
-    current = menu.value or ""
-    items = list(items)
-    if current and current not in items and not chunk_utils.has_expression(current):
-        items.append(current)
-    if list(menu.menu_items or []) != items:
-        menu.menu_items = items
 
 
 def _refresh_menu(owner, notice=None, _sender=None):
@@ -67,7 +48,7 @@ def _refresh_menu(owner, notice=None, _sender=None):
         # Deleting the chunk tears its params down while the stage edits that teardown
         # makes are still firing this global handler for it.
         return
-    _set_items(menu, _camera_paths(_chunk.get_stage()))
+    menu.set_items(_camera_paths(_chunk.get_stage()))
 
 
 def execute(node):

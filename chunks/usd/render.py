@@ -38,7 +38,7 @@ try:
 except ImportError:
     UsdImagingGL = None
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 
 
 # Parented under "usd_chunks" rather than left at the bare module name. A chunk module
@@ -121,52 +121,6 @@ def _plugin_id(renderer_name):
     return None
 
 
-def parse_frames(spec):
-    """Frame numbers named by a usdrecord-style frame spec.
-
-    Accepts comma-separated entries, each a single frame, a "start:end" range, or a
-    "start:endxstride" strided range. An empty spec means a single render at the
-    stage's default values rather than at a frame, and is reported as an empty list.
-
-    A lone number is one frame. It arrives as a number rather than text when Frames is
-    wired to an integer -- a Wedge's Index, so each variant renders as its own frame -- and
-    index 0 would otherwise read as empty by being falsy.
-    """
-    if isinstance(spec, (int, float)):
-        return [float(spec)]
-    if not spec or not spec.strip():
-        return []
-
-    frames = []
-    for entry in spec.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-
-        stride = 1.0
-        if "x" in entry:
-            entry, _, stride_text = entry.partition("x")
-            stride = float(stride_text)
-        if stride <= 0:
-            raise ValueError(f"frame stride must be positive: {spec!r}")
-
-        if ":" not in entry:
-            frames.append(float(entry))
-            continue
-
-        start_text, _, end_text = entry.partition(":")
-        start, end = float(start_text), float(end_text)
-        if end < start:
-            raise ValueError(f"frame range ends before it starts: {entry!r}")
-
-        current = start
-        while current <= end + 1e-9:
-            frames.append(current)
-            current += stride
-
-    return frames
-
-
 def format_output_path(path, frame=None):
     """Substitute a frame number into an output path.
 
@@ -191,25 +145,6 @@ def _camera_at(stage, path):
         return None
     camera = UsdGeom.Camera(prim)
     return camera or None
-
-
-def _cwd_relative(path):
-    """Resolve a relative output path against the working directory.
-
-    The same base USD uses for a RenderProduct's productName, which is the point: when
-    the two disagree, a render writes its image in one place while the product it
-    declared is looked for in another, and only one of them is where the person who ran
-    the command was looking.
-
-    This deliberately replaces resolving against the scene file. Next to the scene reads
-    like the tidier answer, and for usdview it often is -- but it makes `usdchunks run
-    scene.usda -o out.exr` write beside scene.usda rather than beside the shell, which is
-    not what a command line means by a relative path anywhere else.
-    """
-    if not path or os.path.isabs(path):
-        return path
-
-    return os.path.normpath(os.path.join(os.getcwd(), path))
 
 
 def _ensure_parent_dir(path):
@@ -309,7 +244,7 @@ def _prepare_product_dirs(stage, settings_path):
     here is the directory the delegate writes into.
     """
     for name in _settings_product_names(stage, settings_path):
-        _ensure_parent_dir(_cwd_relative(name))
+        _ensure_parent_dir(chunk_utils.cwd_relative(name))
 
 
 def _resolve_settings_path(node, stage):
@@ -689,7 +624,7 @@ def _render_hydra(node, output_image):
         return
 
     try:
-        frames = parse_frames(node.get_param("frames").value)
+        frames = chunk_utils.parse_frames(node.get_param("frames").value)
     except ValueError as exc:
         logger.error("Render: %s", exc)
         return
@@ -754,7 +689,7 @@ def _render_hydra(node, output_image):
             frame_number = time_code.GetValue() if frames else 0
             path = ""
             if output_image:
-                path = _cwd_relative(format_output_path(output_image, frame_number))
+                path = chunk_utils.cwd_relative(format_output_path(output_image, frame_number))
                 _ensure_parent_dir(path)
             if not recorder.Record(stage, camera, time_code, path):
                 logger.error("Render: failed writing %s", path or "the render products")
@@ -763,7 +698,7 @@ def _render_hydra(node, output_image):
             # With no path of our own, what landed on disk is whatever the products
             # named -- report those, so Output still says where the images went.
             paths = [path] if path else [
-                _cwd_relative(format_output_path(name, frame_number)) for name in products
+                chunk_utils.cwd_relative(format_output_path(name, frame_number)) for name in products
             ]
             written.extend(paths)
             for wrote in paths:

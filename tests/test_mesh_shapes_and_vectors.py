@@ -76,6 +76,8 @@ def test_integer_vector_param_can_be_changed(scene):
 
 @pytest.mark.parametrize("spec, frames", [
     ("", []),
+    ("   ", []),
+    ("7", [7.0]),
     ("1:4", [1.0, 2.0, 3.0, 4.0]),
     ("1, 5,9", [1.0, 5.0, 9.0]),
     ("0:20x5", [0.0, 5.0, 10.0, 15.0, 20.0]),

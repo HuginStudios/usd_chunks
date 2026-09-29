@@ -415,12 +415,7 @@ def _refresh_characters(owner, _notice=None, _sender=None):
     stage = node.get_stage()
     if menu is None or stage is None:
         return
-    items = _skel_roots(stage)
-    current = menu.value or ""
-    if current and current not in items and not chunk_utils.has_expression(current):
-        items.append(current)
-    if list(menu.menu_items or []) != items:
-        menu.menu_items = items
+    menu.set_items(_skel_roots(stage))
 
 
 def _param_changed(owner, notice, _sender):

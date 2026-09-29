@@ -2261,6 +2261,26 @@ def clear_attr_connections(attr: Usd.Attribute) -> None:
     ChunkStageSync().clear_attr_connections(attr)
 
 
+def unwire_param(param) -> None:
+    """Drop a param's incoming wire and put it back to its default.
+
+    For a param the chunk has just hidden: a wire kept on it would come back, with
+    possibly the wrong meaning, when the param is shown again. A param with no wire is
+    left alone.
+
+    Args:
+        param: The param, or None.
+    """
+    if param is None:
+        return
+    raw = getattr(param, "raw_value", None)
+    if not (isinstance(raw, str) and chunk_utils.has_expression(raw)):
+        return
+    param.value = param.default_value
+    if attr := param.get_usd_prop():
+        clear_attr_connections(attr)
+
+
 def delete_attr_specs(prim: Usd.Prim, attr_name: str) -> None:
     """Remove attr_name from prim in every layer that has it, not just the edit target."""
     sync = ChunkStageSync()
@@ -2458,6 +2478,41 @@ def is_subnet(chunk: core.ChunkBase) -> bool:
         True for a subnet.
     """
     return is_chunkgroup(chunk) or is_network_host(chunk)
+
+
+def suggest_location_from_file(param) -> None:
+    """Fill a Reference or Payload chunk's primpath_location from its file_path.
+
+    Called when file_path changes: the location becomes /<file name>, made a valid prim
+    name and unique on the stage. A location holding an expression is left alone. A
+    network file is hosted, not placed: its location field is the namespace the
+    network's prim paths resolve under, and the default is none -- the paths as the
+    sequence wrote them. Suggesting /<file> there would namespace every hosted network.
+
+    Args:
+        param: The param that changed (file_path, or another param of the chunk).
+    """
+    chunk = param.get_chunk()
+    if param.name == "file_path" and param.value:
+        path = param.value
+    else:
+        file_param = chunk.get_param("file_path") if chunk else None
+        path = file_param.value if file_param else None
+    if not path:
+        return
+
+    location = chunk.get_param("primpath_location") if chunk else None
+    if not location or chunk_utils.has_expression(location.raw_value or ""):
+        return
+
+    import_param = chunk.get_param("import_primpath")
+    if network_target(path, import_param.value if import_param else ""):
+        if location.raw_value:
+            location.value = ""
+        return
+
+    name = Tf.MakeValidIdentifier(Path(path).stem)
+    location.value = chunk_utils.get_unique_path(param.get_stage(), f"/{name}")
 
 
 def network_target(asset_path: str, import_path: str = "") -> str | None:
