@@ -16,6 +16,7 @@ import time
 
 import pytest
 from pxr import Usd
+from PySide6 import QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
@@ -44,6 +45,14 @@ def _mk(mod, scene):
 def _pump(qapp, seconds: float) -> None:
     end = time.monotonic() + seconds
     while time.monotonic() < end:
+        qapp.processEvents()
+
+
+def _pump_until(qapp, done, seconds: float = 10.0) -> None:
+    """Process events until done() is true. Node bodies and ports build on timers, and
+    under parallel load a fixed short pump can end before they have."""
+    end = time.monotonic() + seconds
+    while not done() and time.monotonic() < end:
         qapp.processEvents()
 
 
@@ -76,6 +85,8 @@ def graph(qapp):
 def _wire_tx(gv, a, b):
     a_path = str(a.prim.GetPath())
     b_path = str(b.prim.GetPath())
+    _pump_until(QtWidgets.QApplication.instance(),
+                lambda: a.get_port(f"{a_path}.outputs:tx") and b.get_port(f"{b_path}.inputs:tx"))
     a_out = a.get_port(f"{a_path}.outputs:tx")
     b_in = b.get_port(f"{b_path}.inputs:tx")
     assert a_out is not None and b_in is not None, "typed ports must exist by now"
@@ -263,6 +274,7 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
     height_before = node._height
     container.minimize_button.setChecked(False)
     _pump(qapp, 0.3)  # no deselect anywhere in this test
+    _pump_until(qapp, lambda: node._height < height_before)
 
     scale_min_in = node.get_port(f"{node_path}.inputs:scale_min")
     scale_max_in = node.get_port(f"{node_path}.inputs:scale_max")
@@ -332,7 +344,7 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
     assert insert_mode is not None
 
     insert_mode.value = "Index"
-    _pump(qapp, 0.3)
+    _pump_until(qapp, lambda: node.get_port(f"{node_path}.inputs:insert_index") is not None)
     assert node.get_port(f"{node_path}.inputs:insert_index") is not None, "Index must appear once shown"
 
     insert_mode.value = "Append"

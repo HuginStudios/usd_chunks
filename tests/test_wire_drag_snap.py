@@ -8,9 +8,11 @@ tolerance (_PORT_SNAP_PIXELS) when the exact drop point misses.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from pxr import Usd
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry, chunk_utils
@@ -61,8 +63,15 @@ def _ports(gv, a, b, attr="tx"):
     b_node = gv.scene()._nodes[get_chunk_prim_path(b)]
     a_path = str(a_node.prim.GetPath())
     b_path = str(b_node.prim.GetPath())
-    a_out = a_node.get_port(f"{a_path}.outputs:{attr}")
-    b_in = b_node.get_port(f"{b_path}.inputs:{attr}")
+    # Typed ports come from the node body, which is built on a timer. Under parallel load
+    # that can take seconds, so wait for them rather than for a fixed time.
+    end = time.monotonic() + 10.0
+    while True:
+        a_out = a_node.get_port(f"{a_path}.outputs:{attr}")
+        b_in = b_node.get_port(f"{b_path}.inputs:{attr}")
+        if (a_out is not None and b_in is not None) or time.monotonic() > end:
+            break
+        QtWidgets.QApplication.processEvents()
     assert a_out is not None and b_in is not None, "typed ports must exist by now"
     return a_out, b_in
 

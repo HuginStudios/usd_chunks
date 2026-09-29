@@ -10,11 +10,13 @@ here.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from PySide6 import QtCore, QtGui, QtWidgets
 from pxr import Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, chunk_stage
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
@@ -59,6 +61,11 @@ def graph(qapp):
     mod = reg.get_chunk_module("transform")
     chunks = [_mk(mod, scene) for _ in range(3)]
     qapp.processEvents()
+    # The View is created on a timer and changes the selection when it lands. Wait for it,
+    # or it can land after a test has selected a node and undo that selection.
+    end = time.monotonic() + 10.0
+    while time.monotonic() < end and not any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()):
+        qapp.processEvents()
     # Creating a chunk selects it, and the graph auto-creates a View node beside them.
     # Start from "nothing selected", which is what the no-selection path means.
     scene.clear_chunk_selection()
