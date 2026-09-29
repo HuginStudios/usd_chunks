@@ -1,27 +1,21 @@
 """Property Editor authors edits inside the variant a Prim path selects.
 
-show_attribute binds each generated param straight to a REAL prim's attribute -- not to a
-chunk-prim storage attr -- so ChunkUsdAttributeSupport.data_changed's usual "wherever the
-spec already lives" resolution (get_attr_home_layer) can't help: a variant's content is
-keyed under a different internal Sdf path, invisible to a plain layer-stack walk, so an
-edit fell through to the session layer and applied to every variant at once instead of
-just the selected one. The fix records the variant selections active when the param was
-built and re-enters them (chunk_utils.author_in_variant_selections) on every later edit.
+A variant's content sits under its own internal Sdf path, so an edit written on the plain
+composed path lands outside the variant and changes every variant at once. The Property
+Editor writes inside the variant the Prim path names (author_in_variant_contexts).
 """
 from __future__ import annotations
 
-import importlib
 import pathlib
 
 import pytest
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.chunk_stage import save_scene
 
-property_editor = importlib.import_module("chunks.usd.property_editor")
 
 _ATTR = "weight"  # a plain custom Float attr -- usd_type_map has no entry for "double",
 # which rules out a schema's built-in scalar attrs (e.g. UsdGeomSphere.radius) for this test.
@@ -67,20 +61,29 @@ def scene(qapp):
     return sc
 
 
+def _editor(scene):
+    """From the registry, so the chunk has its module's execute(), which does the writing."""
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("property_editor")
+    node = (mod.create() if mod.loaded else mod.load())[0]
+    scene.add_chunk(node)
+    return node
+
+
+def _widget(node, name):
+    return next(p for _, p in node.get_param("dyn_grp").iter_hierarchy()
+                if getattr(p, "name", None) == name and "property_editor.prop" in p.user_data)
+
+
 def test_editing_a_variant_scoped_prims_attribute_lands_inside_that_variant(scene):
     stage = scene.get_stage()
-    node = property_editor.main()
-    scene.add_chunk(node)
+    node = _editor(scene)
 
     # Triggers build() itself: "prim" is wired with send_on_create=True as build's own
     # callback sender, so setting it fires the rebuild -- calling build() again here as
     # well would double-build and leave a stale connection behind from the first pass.
     node.get_param("prim").value = "/asset{color=red}/geo"
 
-    dyn_grp = node.get_param("dyn_grp", chunk.is_group)
-    geo_grp = next(g for g in dyn_grp.get_my_params() if g.name == "geo")
-    weight_param = geo_grp.get_param(_ATTR)
-    assert weight_param is not None
+    weight_param = _widget(node, _ATTR)
     assert weight_param.value == pytest.approx(1.0), "should read the red variant's weight, not blue's"
 
     weight_param.value = 9.0
@@ -109,13 +112,10 @@ def test_a_plain_non_variant_prim_is_unaffected(scene):
     loose = UsdGeom.Xform.Define(stage, "/loose").GetPrim()
     loose.CreateAttribute(_ATTR, Sdf.ValueTypeNames.Float).Set(3.0)
 
-    node = property_editor.main()
-    scene.add_chunk(node)
+    node = _editor(scene)
     node.get_param("prim").value = "/loose"
 
-    dyn_grp = node.get_param("dyn_grp", chunk.is_group)
-    loose_grp = next(g for g in dyn_grp.get_my_params() if g.name == "loose")
-    weight_param = loose_grp.get_param(_ATTR)
+    weight_param = _widget(node, _ATTR)
     assert weight_param.value == pytest.approx(3.0)
 
     weight_param.value = 7.0
@@ -136,14 +136,10 @@ def test_a_prim_only_in_one_variant_takes_the_edit_in_the_chunks_layer(scene):
         only.CreateAttribute(_ATTR, Sdf.ValueTypeNames.Float).Set(5.0)
     vset.SetVariantSelection("blue")
 
-    mod = chunk_registry.ChunkRegistry().get_chunk_module("property_editor")
-    node = (mod.create() if mod.loaded else mod.load())[0]
-    scene.add_chunk(node)
+    node = _editor(scene)
     node.get_param("prim").value = "/asset{color=red}/only_red"
 
-    dyn_grp = node.get_param("dyn_grp", chunk.is_group)
-    only_grp = next(g for g in dyn_grp.get_my_params() if g.name == "only_red")
-    only_grp.get_param(_ATTR).value = 8.0
+    _widget(node, _ATTR).value = 8.0
 
     assert not stage.GetPrimAtPath("/asset/only_red").IsValid(), "blue has no such prim"
     vset.SetVariantSelection("red")
@@ -169,13 +165,9 @@ def test_the_variant_scope_survives_a_save_and_reopen(scene, tmp_path):
     into the root layer, which the hand-copy of /asset below then carried across. A chunk's
     edits go into its own layer, so the reopened chunk has to put 9.0 back itself."""
     stage = scene.get_stage()
-    mod = chunk_registry.ChunkRegistry().get_chunk_module("property_editor")
-    node = (mod.create() if mod.loaded else mod.load())[0]
-    scene.add_chunk(node)
+    node = _editor(scene)
     node.get_param("prim").value = "/asset{color=red}/geo"
-    node.get_param("dyn_grp", chunk.is_group)
-    geo_grp = next(g for g in node.get_param("dyn_grp", chunk.is_group).get_my_params() if g.name == "geo")
-    geo_grp.get_param(_ATTR).value = 9.0
+    _widget(node, _ATTR).value = 9.0
 
     out = pathlib.Path(tmp_path) / "prop_editor_variant.usda"
     save_scene(scene, out)
@@ -253,13 +245,9 @@ def test_the_property_editor_never_nests_a_variant_inside_itself(scene) -> None:
     must declare the variant set once, however many times the reactive PARAM_ADDED chain
     re-entered the recorded scope while build() still held it open."""
     stage = scene.get_stage()
-    node = property_editor.main()
-    scene.add_chunk(node)
+    node = _editor(scene)
     node.get_param("prim").value = "/asset{color=red}/geo"
-
-    geo_grp = next(g for g in node.get_param("dyn_grp", chunk.is_group).get_my_params()
-                   if g.name == "geo")
-    geo_grp.get_param(_ATTR).value = 9.0
+    _widget(node, _ATTR).value = 9.0
 
     for layer in stage.GetLayerStack(includeSessionLayers=True):
         text = layer.ExportToString()
