@@ -2835,10 +2835,17 @@ class _ProxyKeyRouter(QtCore.QObject):
             event.accept()
             return True
         # Route to whichever child last had logical (not native) focus.
+        #
+        # target.event(), not QApplication.sendEvent: sendEvent runs the forwarded key back
+        # through every application-level filter, and usdview's AppEventFilter is one. It
+        # sees its MainWindow holding native focus -- not a text field -- and claims its
+        # nav keys for itself: Left/Right step the playhead, "f" frames the selection. So
+        # arrows never moved the cursor in a node's text field and a lowercase f was never
+        # typed, while the same field in the params panel (native focus) worked fine.
         target = self._active.focusWidget() or self._active
         self._busy = True
         try:
-            QtWidgets.QApplication.sendEvent(target, event)
+            target.event(event)
         finally:
             self._busy = False
         return True
