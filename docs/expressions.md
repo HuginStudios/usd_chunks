@@ -78,8 +78,8 @@ A number is written the way Python prints it. A float `3.0` becomes `3.0`, not `
   inside a ChunkGroup can't read a chunk outside it, or the other way round. To pass a
   value in or out, right-click the param's label and choose **Loft up** (see
   [ChunkGroup](core-chunks.md#chunkgroup)).
-- **Renames are followed in the file.** Renaming a chunk or a param rewrites the
-  expressions that point at it in the USD.
+- **Renames are followed.** Renaming a chunk or a param updates every expression that
+  points at it, right away and in the USD.
 - **Wrong names are ignored.** If `@Box.size@` can't be found, the log says
   `Expression ref @Box.size@ not found`. A lone `@Box.size@` then gives the param's
   default.
