@@ -1,75 +1,66 @@
 # USD Chunks
 
-usd_chunks is a toolkit for quickly creating ui plugins for USD. Initially intended for UsdView, this project aimed to make it easier for users to add custom tooling to UsdView, without the hassle of writing the UI logic and plugin registratioon each time. usd_chunks solves this by being a usd plugin itself, and loading the chunks (.py files) at runtime from specified locations.
+usd_chunks turns a short Python module into a node in a graph, a panel of widgets, and a
+command you can run from the terminal. Chunks are `.py` files that load at runtime from
+the folders you point it at, in usdview or another host.
 
-A Chunk is simply a python object with some information attached, and these are what the ChunkRegistry will look for when regirstering the chunks. The ChunkRegistry will load any .py file specified and run it's main() function. The main() function returns a Chunk objects and the ChunkRegistry will add it to the list of loaded chunks.
+New here? The [quick start](install.md#quick-start) takes you from nothing to a chunk on
+screen.
 
-A simple example for creating a button with a callback
+## Guides
 
-``` py
-from usd_chunks import chunk
+1. [Install](install.md): quick start, fixing things that don't show up, every
+   environment variable, building the docs.
+2. [Using the node graph](node-graph-basics.md): creating and connecting nodes, shortcuts.
+3. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
+   params and flags.
+4. [View and ChunkGroup](core-chunks.md): the two chunks that organise a graph instead of
+   changing the stage.
+5. [Expressions](expressions.md): make one param read another, like `@Box.size@ * 2`,
+   and use USD's `${NAME}` variables.
+6. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
+   `execute()` and `commit()`.
+7. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
+   interpreter before making it a module.
 
+> In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
+> the work, and `config()` holds details like its `description` and `category`.
 
-def clickedButton(owner, notice, sender):
-    print("Button clicked: ", owner.name)
+## The graph is USD
 
+usd_chunks has no file format of its own. The saved graph is plain USD:
 
-def main():
-    # An example of creating a button with a callback
-    button = chunk.Button("Button")
-    button.add_callback(clickedButton)
+- **A node is a prim.** Each chunk is a `Chunk`-typed prim. Its params are `inputs:`
+  attributes on the prim, and its position is stored with `UsdUINodeGraphNodeAPI`.
+- **A wire is a USD connection.** Execution order follows `inputs:chunk` → `outputs:chunk`.
+  Passing a value from one chunk's param to another is a connection plus an expression.
+- **Each chunk writes into its own layer.** The layers compose into the final result.
 
-    # Create the chunk and add the button parameter
-    myChunk = chunk.Chunk("My Chunk")
-    myChunk.add_param(button)
+At runtime usd_chunks also keeps a dependency graph in Python (`DagNode`) to know what
+needs to recook. It is rebuilt from the USD connections when a scene loads, so saving the
+stage saves the graph. What a chunk makes is ordinary USD, so a renderer,
+simulator or another DCC can read the result without usd_chunks installed.
 
-    # main returns the chunk object for the ChunkRegistry to use
-    return myChunk
+## Interactive or headless
+
+You write a chunk once and it runs as a panel, as a node, or from the command line with no
+UI at all:
 
 ```
-
-`main()` takes no arguments. The callback above uses the `(owner, notice, sender)` form,
-where `owner` is the object `add_callback` was called on — here, the button. A callback may
-instead declare `(notice, sender)`, matching USD's `Tf.Notice`; it receives whichever of the
-two it asks for.
-
-
-The ChunkRegistry will scan files and nested folders inside the directories defined in the environment variable **USD_CHUNK_DIRS**
-## Building a chunk at runtime
-
-A chunk does not have to come from a file. You can build one in the interpreter — usdview's
-Python panel, a script, a DCC's shell — and add it to the scene:
-
-``` py
-from usd_chunks import chunk
-
-s = chunk.get_scene()
-c = chunk.Chunk("hello")
-s.add_chunk(c)
-c.add_param(chunk.Slider("slider"))
+usdchunks run layout.usda Transform.tx=5 -o result.usda
+usdchunks run layout.usda --procedural -o network.usda
 ```
 
-The chunk appears in the graph immediately, wires up like any other, and its params behave
-the same. It is the quickest way to try an idea before it is worth a module.
+The first command flattens the result and removes the Chunk prims. The second keeps them,
+so the network can be opened again and re-cooked.
 
-### What a save keeps
+Procedural chunks rebuild their output when the file loads, so a saved network stores the
+steps, not a baked result. Chunks that write files to disk do it in a separate `commit`
+function. `usdchunks run` calls it once, after every chunk has cooked. See
+[`commit()`](writing-a-chunk.md#commit).
 
-A chunk with no module of its own is recorded as the `runtime` type, and comes back with
-its **name, params, values, wiring and position** intact. Params are rebuilt from the
-attributes on its prim, so this survives a reopen with nothing else to do:
+## Background
 
-``` py
-c.add_param(chunk.Slider("slider"))   # untouched, and still there next time
-```
-
-**Behaviour is not saved.** Callbacks are Python objects belonging to the session that made
-them, and a file records no code — deliberately, so that opening a network can never run
-any. A runtime chunk therefore reloads as its shape and its data; a chunk that *does*
-something needs its code re-run to do it again.
-
-One more limit worth knowing: an attribute records a param's type and value, not which
-widget it was built as. A `Slider` of floats comes back as whatever a float maps to, without
-its range or label. Names, values and wiring are exact.
-
-When a chunk is worth keeping, move it into a `.py` file on `USD_CHUNK_DIRS` with a `main()`
-that builds it — then its behaviour comes back too, because the code is what is loaded.
+usd_chunks started as a way to add tools to usdview without writing a `plugInfo.json` and
+Qt code for every one. It has grown past that: a chunk works on a USD stage, and usdview is
+one of several places you can run it.

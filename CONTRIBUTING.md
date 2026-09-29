@@ -78,6 +78,19 @@ them: a chunk module exposes `main()` (no arguments, returns a `Chunk`), optiona
 matching USD's `Tf.Notice`, or `(owner, notice, sender)`, receiving whichever it declares.
 Changing either is a breaking change for every chunk that exists.
 
+## Why attrs
+
+Chunk classes use [python-attrs](https://www.attrs.org/en/stable) instead of hand-written
+`__init__` methods. Chunk classes have a lot of attributes, and each level of the class
+hierarchy (base classes → `Chunk`/`Group` → the param types) adds more. attrs combines
+them into one generated `__init__`, so a subclass doesn't repeat its parent's attributes,
+and you get validation and conversion as well.
+
+The downside is that there's no `__init__` to read for the signature, so use static type
+checking (Pylance) to see it. Most of attrs is hidden away. Usually the only part you use
+directly is `attrs.field()` on a class attribute, and only when adding a new param type or
+extending `chunk_core`.
+
 ## Pull requests
 
 - Branch off `main` and open a PR against it.

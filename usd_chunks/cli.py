@@ -962,7 +962,7 @@ def main():
         epilog=(
             "Examples:\n"
             "  usdchunks plugin-path\n"
-            "  set PXR_PLUGINPATH_NAME=%usdchunks plugin-path%          (Windows)\n"
+            "  for /f \"delims=\" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   (Windows cmd)\n"
             '  export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"    (POSIX)\n'
         ),
         formatter_class=RawDescriptionHelpFormatter,
