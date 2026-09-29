@@ -290,10 +290,17 @@ def _click_through_graph(qapp, scene, docker):
     if not view.viewport().isVisible():
         pytest.skip("graph page not visible in this docker configuration")
 
-    view.centerOn(node)
-    qapp.processEvents()
-    local = field.text.mapTo(node._chunk_widget, field.text.rect().center())
-    at = view.mapFromScene(node._proxy.mapToScene(QtCore.QPointF(local)))
+    # The field exists before the node body is laid out: it is 0px tall at first, and a
+    # click then lands on empty canvas. Wait until the point under the field is the node.
+    at = None
+    end = time.monotonic() + 5.0
+    while time.monotonic() < end:
+        view.centerOn(node)
+        qapp.processEvents()
+        local = field.text.mapTo(node._chunk_widget, field.text.rect().center())
+        at = view.mapFromScene(node._proxy.mapToScene(QtCore.QPointF(local)))
+        if field.text.height() > 0 and view.itemAt(at) is not None:
+            break
     if not view.viewport().rect().contains(at):
         # Run on its own, the docker lays out at a size that puts the field outside the
         # viewport, and the click then lands on nothing -- which says nothing about who

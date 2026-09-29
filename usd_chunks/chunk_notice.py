@@ -1832,10 +1832,15 @@ class _SharedGlobalListener:
 
     def __init__(self, dispatch: _GlobalDispatch, connection: NoticeConnection):
         self._dispatch = dispatch
-        self._connection = connection
+        # Weak: the connection holds this object as its _listener, and a strong reference
+        # back made a cycle. A replaced connection then stayed subscribed until the cyclic
+        # GC ran, and every notice reached each stale copy -- after N re-initializations,
+        # ChunkStageSync handled every PARAM_ADDED N times.
+        self._connection = weakref.ref(connection)
 
     def Revoke(self):
-        self._dispatch.subscribers.discard(self._connection)
+        if (connection := self._connection()) is not None:
+            self._dispatch.subscribers.discard(connection)
 
 
 # One entry per alias, for the lifetime of the process -- never torn down, same as the
@@ -1928,12 +1933,12 @@ class NoticeConnection:
         if method and method.__name__ == "<lambda>":
             self._method = method
         elif inspect.ismethod(method):
-            self._method: Callable = weakref.WeakMethod(method, self._connection_broke)
+            self._method: Callable = weakref.WeakMethod(method, self._broke_callback())
         else:
-            self._method: Callable = weakref.ref(method, self._connection_broke)
+            self._method: Callable = weakref.ref(method, self._broke_callback())
 
-        self._sender: weakref.ReferenceType | None = weakref.ref(sender, self._connection_broke) if sender else None
-        self._owner: weakref.ReferenceType | None = weakref.ref(owner, self._connection_broke) if owner else None
+        self._sender: weakref.ReferenceType | None = weakref.ref(sender, self._broke_callback()) if sender else None
+        self._owner: weakref.ReferenceType | None = weakref.ref(owner, self._broke_callback()) if owner else None
 
         self.connect()
 
@@ -1955,7 +1960,7 @@ class NoticeConnection:
     @owner.setter
     def owner(self, obj: ChunkNoticePropagator | None):
         """Hold the owner weakly; the connection breaks when it is collected."""
-        self._owner = weakref.ref(obj, self._connection_broke) if obj else None
+        self._owner = weakref.ref(obj, self._broke_callback()) if obj else None
 
     @property
     def sender(self) -> Any | None:
@@ -1965,7 +1970,7 @@ class NoticeConnection:
     @sender.setter
     def sender(self, obj):
         """Hold the sender weakly; the connection breaks when it is collected."""
-        self._sender = None if obj is None else weakref.ref(obj, self._connection_broke)
+        self._sender = None if obj is None else weakref.ref(obj, self._broke_callback())
 
 
 
@@ -2087,7 +2092,7 @@ class NoticeConnection:
             self.disconnect()
 
         if sender is not None:
-            self._sender = weakref.ref(sender, self._connection_broke)
+            self._sender = weakref.ref(sender, self._broke_callback())
 
         if self.globally:
             self._listener = _register_global(self.alias, notice, self)
@@ -2099,6 +2104,21 @@ class NoticeConnection:
     def _connection_broke(self, ref):
         # This is called when any of the _sender, _owner or _method weakrefs is killed, and will in turn call disconnect()
         self.disconnect()
+
+    def _broke_callback(self) -> Callable:
+        """_connection_broke for a weakref callback, holding this connection weakly.
+
+        The bound method itself would hold it strongly, and the weakref holding the callback
+        is this connection's own attribute -- a cycle that kept a replaced connection
+        subscribed until the cyclic GC ran.
+        """
+        me = weakref.ref(self)
+
+        def broke(ref):
+            if (conn := me()) is not None:
+                conn._connection_broke(ref)
+
+        return broke
 
     def disconnect(self):
         """Revoke the stored Tf listener."""
