@@ -15,6 +15,8 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.frontends.qt import nodegraph
 
+from qt_wait import pump_until
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -77,13 +79,6 @@ def _pump(qapp, seconds: float) -> None:
     while time.monotonic() < end:
         qapp.processEvents()
 
-
-def _pump_until(qapp, done, seconds: float = 10.0) -> None:
-    """Process events until done() is true. The import and the script run are deferred,
-    and under parallel load a fixed short pump can end before they have."""
-    end = time.monotonic() + seconds
-    while not done() and time.monotonic() < end:
-        qapp.processEvents()
 
 
 def _exec_ports(node):
@@ -484,7 +479,7 @@ def test_import_as_reference_creates_prefilled_node(graph, tmp_path) -> None:
         prim = gv.scene()._stage.GetPrimAtPath(ref_chunks[0].get_param("primpath_location").value or "/")
         return prim.IsValid() and prim.HasAuthoredReferences()
 
-    _pump_until(qapp, _referenced)
+    pump_until(qapp, _referenced)
     ref = ref_chunks[0]
     assert ref.get_param("file_path").value == str(scene_path)
 
@@ -676,7 +671,7 @@ def _drop_script(graph, tmp_path, name, pos):
     """
     qapp, _reg, scene, _docker = graph
     _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
-    _pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
+    pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
     (view,) = [c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c)]
     script = tmp_path / name
     _write_script(script, "v1")
@@ -686,7 +681,7 @@ def _drop_script(graph, tmp_path, name, pos):
     stage = gv.scene()._stage
     chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(runner), get_chunk_prim_path(view))
     gv._recook_active_view()
-    _pump_until(qapp, lambda: runner.get_param("result").value == "v1")
+    pump_until(qapp, lambda: runner.get_param("result").value == "v1")
     return gv, script, runner
 
 

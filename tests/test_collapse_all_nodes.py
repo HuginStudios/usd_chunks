@@ -10,8 +10,6 @@ here.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 from PySide6 import QtCore, QtGui, QtWidgets
 from pxr import Usd
@@ -22,6 +20,8 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.graph import engine as chunk_graph
+
+from qt_wait import pump_until
 
 
 class _DummyScene(SceneSender):
@@ -63,9 +63,7 @@ def graph(qapp):
     qapp.processEvents()
     # The View is created on a timer and changes the selection when it lands. Wait for it,
     # or it can land after a test has selected a node and undo that selection.
-    end = time.monotonic() + 10.0
-    while time.monotonic() < end and not any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()):
-        qapp.processEvents()
+    pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
     # Creating a chunk selects it, and the graph auto-creates a View node beside them.
     # Start from "nothing selected", which is what the no-selection path means.
     scene.clear_chunk_selection()

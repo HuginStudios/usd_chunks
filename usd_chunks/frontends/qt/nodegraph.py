@@ -28,7 +28,7 @@ from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, ViewSlotState, pre_delete_hooks
+from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks
 
 # The clipboard model and its snapshot helpers live in the engine now; these aliases keep
 # the rest of this file reading as it did, and keep the two frontends on one format.
@@ -1942,17 +1942,15 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._scene_sender: chunk_scene.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
         self._edges: list[ChunkEdgeItem] = []
-        self._objects_changed_conn: NoticeConnection | None = None
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel -- tracks what context is currently rendered
         self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
         self._edge_timer: QtCore.QTimer | None = None
         self._proxy_busy_wait_since: float | None = None  # see _create_proxies_batch
-        # The stage listeners build() makes. Both are global, so a scene Qt has deleted kept
-        # reacting to every stage change, and a later one reached the dead scene. Dropped
-        # on destroyed, through a list the lambda holds rather than through self.
+        # The stage listeners build() makes. Both are global, so without this a scene Qt has
+        # deleted kept reacting to every stage change.
         self._stage_listeners: list[NoticeConnection] = []
-        self.destroyed.connect(lambda *_, _conns=self._stage_listeners: [c.disconnect() for c in _conns])
+        disconnect_when_destroyed(self, self._stage_listeners)
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -1972,13 +1970,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         for conn in self._stage_listeners:
             conn.disconnect()
-        self._objects_changed_conn = NoticeConnection(
-            self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
-        )
-        self._chunk_deleted_conn = NoticeConnection(
-            self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True
-        )
-        self._stage_listeners[:] = [self._objects_changed_conn, self._chunk_deleted_conn]
+        self._stage_listeners[:] = [
+            NoticeConnection(self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True),
+            NoticeConnection(self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True),
+        ]
 
         self._rebuild_nodes()
         # The context this graph was just built for is what the path row names, and a build
@@ -2940,6 +2935,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
         # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
         self._suppress_default_view = False
+        self._quiet_slot_change = False  # see _set_slot_quietly
         # Debounce state for build()'s post-build recook -- see _schedule_restore_active_view.
         self._restore_view_token = 0
         self._restore_view_changed_chunks: set | None = set()
@@ -4627,7 +4623,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._create_view_node_for_prim(prim_path)
 
     def _on_view_slot_changed(self, slot: int) -> None:
-        self._recook_active_view(select_view=not getattr(self, "_quiet_slot_change", False))
+        self._recook_active_view(select_view=not self._quiet_slot_change)
         self.viewport().update()
 
     def _set_slot_quietly(self, slot: int) -> None:

@@ -142,6 +142,21 @@ _SHEET_FLAG = "_chunk_sheet_applied"
 _SELF_STYLING = "_chunk_styles_self"
 
 
+def disconnect_when_destroyed(qobject: QtCore.QObject, connections) -> None:
+    """Disconnect these NoticeConnections when Qt deletes qobject.
+
+    Qt can delete a widget while its Python object lives on, still subscribed: it then kept
+    reacting to notices, and one arriving later reached a dead C++ object. The lambda holds
+    the connections, not qobject, so this does not keep qobject alive. connections may be a
+    list the caller refills later; whatever it holds at destroy time is disconnected.
+
+    Args:
+        qobject: The Qt object whose deletion ends the connections.
+        connections: The NoticeConnections to disconnect.
+    """
+    qobject.destroyed.connect(lambda *_, _conns=connections: [c.disconnect() for c in _conns])
+
+
 def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
     """Give widget CHUNK_STYLESHEET, unless something above it already covers it.
 
