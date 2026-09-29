@@ -1077,8 +1077,10 @@ class ChunkModule:
         if self.config:
             for c in loaded:
                 self.config.module = self.module_name
+                # The config's module name is all a chunk holds of its module: hooks are
+                # looked up in the registry by it (ChunkBase.get_chunk_module), so a chunk
+                # runs what its saved info:chunkType will run on reopen, and nothing else.
                 c._config = self.config
-                c._module = self.module
 
         return loaded
 

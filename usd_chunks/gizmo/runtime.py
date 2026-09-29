@@ -1230,10 +1230,10 @@ def _dispatch_solve_hook(chunk: core.ChunkBase, name: str, value: Any) -> bool:
     Note ``gizmo_changed`` is a reserved module-level name, in the same family as
     ``execute(node)``. A chunk module must not use it for anything else.
     """
-    # chunk._module is the registry's copy. Chunk modules exist twice in sys.modules under
-    # different keys, and the other copy is not the one the running chunk was built from --
-    # looking the hook up by import would find a function whose closure belongs to a
-    # different object graph.
+    # The registry's copy, found by the chunk's module name. Chunk modules exist twice in
+    # sys.modules under different keys, and the other copy is not the one the running chunk
+    # was built from -- looking the hook up by import would find a function whose closure
+    # belongs to a different object graph.
     # That copy is the one _module_hook reads.
     hook = chunk._module_hook(GIZMO_CHANGED_HOOK)
     if hook is None:
