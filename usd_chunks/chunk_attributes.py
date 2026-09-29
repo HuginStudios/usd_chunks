@@ -85,6 +85,45 @@ def _resolve_annotation(cls: type, name: str, annotation: Any) -> Any:
     return None
 
 
+#: Per class: field name -> (attrs.Attribute, convert?, validate?), for __setattr__.
+_setattr_fields: weakref.WeakKeyDictionary[type, dict[str, tuple]] = weakref.WeakKeyDictionary()
+
+#: Per class: field name -> the notice alias its AttributeSender sends, for every field
+#: that has one. See AttributesBase._attribute_sender.
+_sender_aliases: weakref.WeakKeyDictionary[type, dict] = weakref.WeakKeyDictionary()
+
+
+def _fields_for_setattr(cls: type) -> dict[str, tuple]:
+    """What __setattr__ needs to know about each field of cls, worked out once per class.
+
+    Every attribute set used to find its attrs field and read two metadata flags from
+    scratch -- a third of a million times while opening one network.
+    """
+    found = _setattr_fields.get(cls)
+    if found is None:
+        found = {
+            f.name: (f, f.metadata.get("convert", True), f.metadata.get("validate", True))
+            for f in attrs.fields(cls)
+        }
+        _setattr_fields[cls] = found
+    return found
+
+
+def _sending_fields(cls: type) -> dict:
+    """The fields of cls that send a notice when they change, with the alias each sends."""
+    found = _sender_aliases.get(cls)
+    if found is None:
+        found = {}
+        for name, attr in attrs.fields_dict(cls).items():
+            if attr.metadata.get("send_mode", SendMode.SEND) is SendMode.NO_SEND:
+                continue
+            alias = attr.metadata.get("sender_alias", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+            if alias:  # ChunkNoticeAlias.NONE sends nothing
+                found[name] = alias
+        _sender_aliases[cls] = found
+    return found
+
+
 def get_attr_index(cls, data):
     """The position `data` was first declared at in `cls`'s attrs fields, searching bases too.
 
@@ -179,19 +218,18 @@ class AttributesMetaclass(type):
 
             resval = value
 
-            # First run converters and validators
-            attrib = None
-            fields = attrs.fields(res)  # type: ignore
-            try:
-                attrib = getattr(fields, name)
-            except AttributeError:
+            # First run converters and validators, with the field as res declares it -- the
+            # class whose body named it, as attrs.fields(res) found it before this was cached.
+            entry = _fields_for_setattr(res).get(name)
+            if entry is None:
                 return super(res, inst).__setattr__(name, resval)
+            attrib, convert, validate = entry
 
             # Run conversion
-            if attrib and attrib.metadata.get("convert", True):
+            if convert:
                 resval = inst._safe_convert(attrib, value)
 
-            if attrib and attrib.metadata.get("validate", True):
+            if validate:
                 inst.validate_attr(attrib, resval)
 
             has_attr = hasattr(inst, name)
@@ -252,7 +290,11 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         self.alias: chunk_notice.ChunkNoticeAlias = alias
         self.old_value: ValueT | None = None
 
-        self.set_owner(owner)
+        # Joining does not dirty the owner: a sender is a handle on data the owner already
+        # has, not new data. It is created on first use (AttributesBase._attribute_sender),
+        # which is often the very change it is about to send -- dirtying here made a
+        # presentation change, such as hiding a param, read as a real one.
+        self.set_owner(owner, dirty=False)
 
     def get_notice_data(self) -> Self:
         """The notice data for an AttributeSender: the sender itself.
@@ -472,25 +514,32 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         print(f"{cls.__name__} __init__ signature: \n", msg)
 
     def __attrs_post_init__(self):
-        """Initialize the propagator and give each notifying field its own AttributeSender."""
+        """Initialize the propagator.
+
+        Each notifying field gets its own AttributeSender -- a separate sender per attribute
+        rather than one for the object -- but only when something first needs it: see
+        _attribute_sender.
+        """
         super().__init__()
+        self._resolve_failed_converters()
 
-        # Loop over all fields and add an AttributeSender for the attribute, which will be sent in value_changed. Doing this instead of
-        # get_notice_alias_for_attr in order to have a separate sender for each attribute
-        attr = attrs.fields_dict(type(self))
-        for name, attr in attr.items():
-            if attr.metadata.get("send_mode", SendMode.SEND) is SendMode.NO_SEND:
-                continue
+    def _attribute_sender(self, name: str) -> AttributeSender | None:
+        """The sender for field `name`, created the first time it is asked for.
 
-            alias = attr.metadata.get("sender_alias", chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
-            if not alias:
-                # Includes ChunkNoticeAlias.NONE
-                continue
+        A sender is needed for two things only: something subscribing to the field
+        (get_attribute_sender) and the field changing (value_changed). Creating one for
+        every field of every param up front made about thirteen per param, each a full
+        propagator with a node in the dependency graph -- the largest cost of opening a
+        network, for fields that almost never change after they are built.
 
+        Returns:
+            The sender, or None for a field that sends nothing.
+        """
+        sender = self._attr_senders.get(name)
+        if sender is None and (alias := _sending_fields(type(self)).get(name)) is not None:
             sender = AttributeSender(self, name, alias)
             self._attr_senders[name] = sender
-
-        self._resolve_failed_converters()
+        return sender
 
     def get_logger(self) -> logging.Logger:
         """A logger named after this class, created on first use."""
@@ -633,7 +682,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         Raises:
             AttributeError: If the attribute sender was not found
         """
-        if sender := self._attr_senders.get(attribname):
+        if sender := self._attribute_sender(attribname):
             return sender
         raise AttributeError(f"Attribute sender not found {attribname}")
 
@@ -641,9 +690,8 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         """Send a notice for an attribute that changed; called after every attrs __setattr__.
 
         This must not mutate self, to avoid infinite recursion; its purpose is only to send
-        notices for changed attributes. If the attribute has an AttributeSender in
-        self._attr_senders (added in __attrs_post_init__), that sender sends the notice;
-        otherwise self does. AttributesMetaclass injects the call into __setattr__.
+        notices for changed attributes. If the attribute sends notices, its AttributeSender
+        (see _attribute_sender) sends the notice; otherwise self does. AttributesMetaclass injects the call into __setattr__.
 
         Args:
             attrname (str): The name of the attribute that was changed
@@ -668,7 +716,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         if chunk_notice._loading_stage:
             return
 
-        if sender := self._attr_senders.get(attrname):
+        if sender := self._attribute_sender(attrname):
             sender.old_value = old_value
             sender.execute()
         else:
@@ -718,7 +766,7 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 chunk_notice.ChunkNoticeAlias.INPUT_CHANGED,
             ]:
                 for name, func in self._attrib_functions.items():
-                    attr_sender = self._attr_senders.get(name)
+                    attr_sender = self._attribute_sender(name)
 
                     if attr_sender and func:
                         self._solving_attributes = True

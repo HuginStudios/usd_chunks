@@ -2048,7 +2048,9 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if stage and self._param_attr_path:
             return stage.GetPropertyAtPath(self._param_attr_path)
 
-    def _connect_param_attr(self, attr: Usd.Property, var_selections: tuple | None = None) -> None:
+    def _connect_param_attr(
+        self, attr: Usd.Property, var_selections: tuple | None = None, *, read_back: bool = True
+    ) -> None:
         """Bind this param to its storage attribute for UI-to-USD sync.
 
         After binding, re-authors any pending USD connections to driven real attrs. Called by
@@ -2063,6 +2065,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 param was first built from a real prim's attribute (show_attribute). Only a
                 caller that actually knows the answer -- from_usd_attr -- passes a tuple,
                 even () for "bound outside any variant".
+            read_back: Take the attr's value into the param, which is what a load wants.
+                False for a caller that has just written the param's own value into the
+                attr: reading it back then only rounds a double through a float attr, and
+                the param announces a change it never had.
         """
         if var_selections is not None:
             self._var_selections = tuple(var_selections)
@@ -2082,7 +2088,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             except AttributeError:
                 pass
         self._author_driven_connections()
-        if isinstance(attr, Usd.Attribute):
+        if isinstance(attr, Usd.Attribute) and read_back:
             val = attr.Get(0)
             connections = attr.GetConnections()
             if not connections:
@@ -3584,14 +3590,22 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                             # variant (show_attribute) must re-enter it here rather than rely on
                             # the ambient edit target -- that is the ordinary case for a ChunkVectorBase
                             # too (displayColor, extent, ... are common on a variant-scoped prim).
-                            # Outside a variant this keeps the ambient edit target it always
-                            # used, unlike its scalar counterpart's get_attr_home_layer fallback
-                            # -- ChunkVectorBase never resolved one. Inside one, the chunk's own
-                            # layer, where a chunk's edits always go.
+                            # Inside one, the chunk's own layer, where a chunk's edits always go.
+                            #
+                            # Outside a variant, the attr's own home layer, as its scalar
+                            # counterpart resolves it. This used to keep the ambient edit
+                            # target, which is not where _sync_vector_input authors the attr
+                            # (the bookkeeping layer, session by default) -- so every edit
+                            # after the first landed in a weaker layer than the value it was
+                            # meant to replace, and a vector never changed again.
+                            home = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
+                                stage, self.get_chunk()
+                            )
                             if not is_expr:
                                 current = usd_attr.Get(0)
                                 if current != val:
-                                    usd_attr.Set(val)
+                                    with chunk_utils.edit_context_for(stage, self._var_selections, home):
+                                        usd_attr.Set(chunk_utils.as_attr_value(usd_attr, val))
                             else:
                                 chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
                                 usd_attr.SetConnections([
@@ -3692,6 +3706,12 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         Deliberately does NOT use set_blocked(), which is transitive to children via their
         owner-chain is_blocked() check -- that would also suppress each child's own notify,
         which their widgets rely on to refresh live as they're set.
+
+        Announces nothing while a load is restoring values, the same rule value_changed
+        follows. This call used to solve right there, cooking the chunk before the rest of
+        its inputs were back: a camera restored its clipping range, cooked with the default
+        target, and wrote its lens onto /cameras/camera1. The load cooks once, after
+        everything is restored.
         """
         self._suppress_storage_write = True
         try:
@@ -3699,7 +3719,8 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                 self[i] = val[i]
         finally:
             self._suppress_storage_write = False
-        self.get_attribute_sender("value").execute()
+        if not chunk_notice._loading_stage:
+            self.get_attribute_sender("value").execute()
 
     def _on_ref_changed(self, notice=None, sender=None):
         if self._resolving_ref:

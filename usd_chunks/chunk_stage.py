@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import functools
 import logging
 import math
 import weakref
@@ -571,6 +572,23 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prims = _iter_scoped_prims(stage, resyncs, info_changes)
         load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
 
+    @contextlib.contextmanager
+    def discarding_stage(self):
+        """Delete chunks inside this block without touching the stage they are on.
+
+        Deleting a chunk removes its prim, re-heals the exec chain around it and reconciles
+        Edit Targets across the scene -- right for a chunk deleted from a stage that lives
+        on, and wasted work, once per chunk, for a stage that is about to be thrown away
+        whole. File > Open already tears down that way (_reloading); this is the same for
+        any caller that owns the stage it is discarding, such as a script's Scene closing.
+        """
+        was_reloading = self._reloading
+        self._reloading = True
+        try:
+            yield
+        finally:
+            self._reloading = was_reloading
+
     def _on_chunk_deleted(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
@@ -1088,7 +1106,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_param_input(chunk, owner)
-                        self._refresh_gizmo_anchors(chunk)
+                        # Once per chunk per batch: a Wedge change writes hundreds of params,
+                        # and each refresh reads every param the chunk has.
+                        refresh = functools.partial(self._refresh_gizmo_anchors, chunk)
+                        if not chunk_notice.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
+                            refresh()
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
@@ -1546,7 +1568,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
                 else:
-                    attr.Set(vector.value)
+                    attr.Set(chunk_utils.as_attr_value(attr, vector.value))
 
         vector._connect_param_attr(attr)
 
@@ -1657,6 +1679,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             saved = prim.GetAttribute(attr_name)
         if saved.IsValid() and saved.Get() is not None:
             attr = saved
+            # The saved value predates whatever brought this param here -- a change to it,
+            # or a chunk unblocking with a value typed in while it was -- and binding reads
+            # the attr back into the param. Unwritten, that read undid the change: the first
+            # time a Wedge set a range after a network was opened, every param still bound
+            # to nothing went straight back to the value saved in the file, and whatever it
+            # drove kept the old variant until the next change.
+            self._store_in_saved_attr(chunk, param, attr, raw, is_expr, prim)
         else:
             # Chunk-prim bookkeeping -- the chunk's currently active Edit Target (session
             # by default, see chunk_utils.get_bookkeeping_layer).
@@ -1667,7 +1696,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk_utils.store_expression_text(attr, raw)
                 else:
                     attr.Set(raw)
-        param._connect_param_attr(attr)
+        # The attr holds the param's value either way now; nothing to read back.
+        param._connect_param_attr(attr, read_back=False)
 
         if existing and existing != str(attr.GetPath()):
             # Inside the variant the old binding was made in: a prim that only exists in
@@ -1689,6 +1719,33 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     # saved value at all, so a save/reload restores the pre-edit number.
                     # _drive_from_storage already read the old value above; safe to clear now.
                     param._var_selections = ()
+
+    def _store_in_saved_attr(self, chunk, param, attr, raw, is_expr, prim) -> None:
+        """Write param's current value into an attr it is about to be bound to.
+
+        Where update_usd_prop would write it once bound: the attr's home layer, so the edit
+        lands where the saved value lives rather than in a stronger layer over it.
+        """
+        stage = attr.GetStage()
+        home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, chunk)
+        prev_write = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True
+        try:
+            with Usd.EditContext(stage, home):
+                if is_expr:
+                    attr.SetConnections(self._expr_connections(prim, raw))
+                    chunk_utils.store_expression_text(attr, raw)
+                    value = raw if chunk_utils.attr_holds_text(attr) else param.value
+                else:
+                    chunk_utils.clear_expression_text(attr)
+                    value = raw
+                if isinstance(value, str) and not chunk_utils.attr_holds_text(attr):
+                    return  # an unresolved expression: the connections carry it
+                value = chunk_utils.as_attr_value(attr, value)
+                if attr.Get(0) != value:
+                    attr.Set(value)
+        finally:
+            chunk_notice._usd_write_active = prev_write
 
     def _delete_stale_attr_specs(self, prim: Usd.Prim, attr_name: str) -> None:
         """Remove attr_name's spec from every layer in the stack where it is found.
@@ -4925,8 +4982,16 @@ def _chunks_at(paths: Iterable[str]) -> list[core.ChunkBase]:
     paths = list(paths)
     if not paths:
         return []
+    # Only the chunks that can be at one of paths get their prim path worked out. A chunk's
+    # prim is named after it, so its name is the path's last element -- except a context
+    # with a prim_path of its own, which goes anywhere and so is always a candidate. Working
+    # out every chunk's path on each call was most of what a load spent here: this is asked
+    # once per notice by listeners that hear every chunk.
+    names = {path.rsplit("/", 1)[-1] for path in paths}
     by_path = {
-        get_chunk_prim_path(c): c for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        get_chunk_prim_path(c): c
+        for c in chunk_registry.ChunkRegistry().scene.get_chunks()
+        if c.name in names or c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
     }
     return [c for path in paths if (c := by_path.get(path)) is not None]
 
@@ -5448,211 +5513,219 @@ def _load_chunks(
         def _add_prim_mods(prim_mods):
             old_loading_stage = chunk_notice._loading_stage
             chunk_notice._loading_stage = stage
+            # Layers made while the chunks below are built and wired stay off the stage
+            # until the wiring is done; see ChunkLayerManager.defer_placement.
+            placing = ChunkLayerManager().defer_placement()
             try:
                 deferred = []  # (prim, chunk)
                 loaded.append(deferred)
                 top_level_chunk_ids: set[int] = set()
-                for prim, mod in prim_mods:
-                    # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
-                    ancestor_group = None
-                    p = prim.GetParent()
-                    while p and not p.IsPseudoRoot():
-                        # This pass's groups first, then the live scene: a host chunk
-                        # loaded earlier (or made live) whose children are arriving now.
-                        g = (group_chunk_by_path.get(str(p.GetPath()))
-                             or _live_context_at(scene, str(p.GetPath())))
-                        if g is not None:
-                            ancestor_group = g
-                            break
-                        p = p.GetParent()
+                # Building and wiring the chunks adds every dependency edge one at a time,
+                # and each edge dirtied -- and walked -- everything below it: quadratic in
+                # the size of the network, and most of a large network's load. Nothing
+                # below cooks, so the walk waits for the end of this block and runs once.
+                with chunk_scheduler.deferred_dirty():
+                    for prim, mod in prim_mods:
+                        # Walk up the prim's parent chain to find the nearest loaded ChunkGroup.
+                        ancestor_group = None
+                        p = prim.GetParent()
+                        while p and not p.IsPseudoRoot():
+                            # This pass's groups first, then the live scene: a host chunk
+                            # loaded earlier (or made live) whose children are arriving now.
+                            g = (group_chunk_by_path.get(str(p.GetPath()))
+                                 or _live_context_at(scene, str(p.GetPath())))
+                            if g is not None:
+                                ancestor_group = g
+                                break
+                            p = p.GetParent()
 
-                    # A chunk prim carrying a reference arc with Chunk children is a host
-                    # (host_network): the arc is in the file, so the children are already
-                    # composed, and the chunk takes the group flags before it is added so
-                    # the CONTEXT branch below nests them under it.
-                    hosts = _hosts_by_arc(prim) and any(
-                        child.GetTypeName() == _CHUNK_PRIM_TYPENAME
-                        for child in prim.GetFilteredChildren(_LOAD_INCLUDE_INACTIVE)
-                    )
-                    chunks = mod.create() if mod.loaded else mod.load()
-                    for c in chunks:
-                        if hosts and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-                            for flag in (ChunkFlags.GroupFlags.CONTEXT,
-                                         ChunkFlags.GroupFlags.COLLAPSABLE,
-                                         ChunkFlags.GroupFlags.LABELED):
-                                c.set_flag(flag)
-                        # Restore the saved chunk name from its prim (prims are authored at
-                        # <root>/<chunk.name>, so this is a lossless round-trip). Freshly
-                        # created chunks otherwise get default names uniquified in
-                        # traversal order, which need not match the prims -- two chunks of
-                        # the same type could swap identities, scrambling the name-keyed
-                        # wiring below into a cyclic DAG from a perfectly linear file.
-                        c.name = prim.GetName()
-                        if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-                            # Restore saved param values before scene.add_chunk, same as the
-                            # other two branches below -- a CONTEXT chunk is usually pure
-                            # structural scaffolding (a Tab/ChunkGroup) with nothing of its
-                            # own worth restoring, but one that ALSO has a real backing module
-                            # (e.g. AMD MaterialX Library, which uses CONTEXT purely for its
-                            # collapsible/embedded-widget node styling) can carry a full set of
-                            # its own inputs: attrs, which must be read back here or every
-                            # param reverts to its default on reload.
-                            _load_wire_inputs(prim, c)
-                            _restore_disabled_state(prim, c)
-                            _restore_collapsed_state(prim, c)
-                            c.prim_path = str(prim.GetPath())
-                            object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
-                            if ancestor_group is not None:
-                                # A chunkgroup inside another chunkgroup. scene.add_chunk
-                                # is the scene ROOT, so a nested group must not go there:
-                                # it would come back as a SIBLING of the group it was saved
-                                # in, lose the name collision with it, and be renamed,
-                                # taking its contents to a different address.
-                                #
-                                # Cook order depends on it too: a group's inner chunks cook
-                                # in prim-path depth order, so an upstream Sublayer runs
-                                # before a BindMaterial nested deeper that reads what it
-                                # brings onto the stage.
-                                #
-                                # The file holds the nesting; this is what reads it back.
-                                #
-                                # _parent_context is what _on_param_added derives a group's
-                                # prim root from; without it the group falls back to the
-                                # /chunks scope, computes the same path as the default group
-                                # and loses the collision, which is the rename itself.
-                                # _parent_context, then the SCENE container -- which is
-                                # where a nested group lives when one is made live, so a
-                                # reload rebuilds the same shape rather than a different one.
-                                #
-                                # Not ancestor_group.add_param: that applies the param naming
-                                # rules, and get_reserved_names() includes the group's OWN
-                                # name, so a group named the same as its parent came back
-                                # renamed with a "1" suffix. USD is perfectly happy with
-                                # /chunks/ChunkGroup/ChunkGroup, the file says that is where
-                                # it lives, and anything addressing it by name breaks when we
-                                # decide otherwise on load.
-                                # Enter the ancestor for the duration of the add, which is
-                                # exactly how a group nests when one is made live: add_chunk
-                                # reads _current_context and overwrites _parent_context from
-                                # it, so setting the latter directly is undone on the way in.
-                                #
-                                # Not ancestor_group.add_param either: that applies the param
-                                # naming rules, and get_reserved_names() includes the group's
-                                # OWN name, so a group named the same as its parent came back
-                                # renamed with a "1" suffix. USD is happy with
-                                # /chunks/ChunkGroup/ChunkGroup, the file says that is where it
-                                # lives, and anything addressing it by name breaks if we decide
-                                # otherwise on load.
-                                prev_ctx = scene._current_context
-                                scene._current_context = weakref.ref(ancestor_group)
-                                try:
+                        # A chunk prim carrying a reference arc with Chunk children is a host
+                        # (host_network): the arc is in the file, so the children are already
+                        # composed, and the chunk takes the group flags before it is added so
+                        # the CONTEXT branch below nests them under it.
+                        hosts = _hosts_by_arc(prim) and any(
+                            child.GetTypeName() == _CHUNK_PRIM_TYPENAME
+                            for child in prim.GetFilteredChildren(_LOAD_INCLUDE_INACTIVE)
+                        )
+                        chunks = mod.create() if mod.loaded else mod.load()
+                        for c in chunks:
+                            if hosts and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                                for flag in (ChunkFlags.GroupFlags.CONTEXT,
+                                             ChunkFlags.GroupFlags.COLLAPSABLE,
+                                             ChunkFlags.GroupFlags.LABELED):
+                                    c.set_flag(flag)
+                            # Restore the saved chunk name from its prim (prims are authored at
+                            # <root>/<chunk.name>, so this is a lossless round-trip). Freshly
+                            # created chunks otherwise get default names uniquified in
+                            # traversal order, which need not match the prims -- two chunks of
+                            # the same type could swap identities, scrambling the name-keyed
+                            # wiring below into a cyclic DAG from a perfectly linear file.
+                            c.name = prim.GetName()
+                            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                                # Restore saved param values before scene.add_chunk, same as the
+                                # other two branches below -- a CONTEXT chunk is usually pure
+                                # structural scaffolding (a Tab/ChunkGroup) with nothing of its
+                                # own worth restoring, but one that ALSO has a real backing module
+                                # (e.g. AMD MaterialX Library, which uses CONTEXT purely for its
+                                # collapsible/embedded-widget node styling) can carry a full set of
+                                # its own inputs: attrs, which must be read back here or every
+                                # param reverts to its default on reload.
+                                _load_wire_inputs(prim, c)
+                                _restore_disabled_state(prim, c)
+                                _restore_collapsed_state(prim, c)
+                                c.prim_path = str(prim.GetPath())
+                                object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
+                                if ancestor_group is not None:
+                                    # A chunkgroup inside another chunkgroup. scene.add_chunk
+                                    # is the scene ROOT, so a nested group must not go there:
+                                    # it would come back as a SIBLING of the group it was saved
+                                    # in, lose the name collision with it, and be renamed,
+                                    # taking its contents to a different address.
+                                    #
+                                    # Cook order depends on it too: a group's inner chunks cook
+                                    # in prim-path depth order, so an upstream Sublayer runs
+                                    # before a BindMaterial nested deeper that reads what it
+                                    # brings onto the stage.
+                                    #
+                                    # The file holds the nesting; this is what reads it back.
+                                    #
+                                    # _parent_context is what _on_param_added derives a group's
+                                    # prim root from; without it the group falls back to the
+                                    # /chunks scope, computes the same path as the default group
+                                    # and loses the collision, which is the rename itself.
+                                    # _parent_context, then the SCENE container -- which is
+                                    # where a nested group lives when one is made live, so a
+                                    # reload rebuilds the same shape rather than a different one.
+                                    #
+                                    # Not ancestor_group.add_param: that applies the param naming
+                                    # rules, and get_reserved_names() includes the group's OWN
+                                    # name, so a group named the same as its parent came back
+                                    # renamed with a "1" suffix. USD is perfectly happy with
+                                    # /chunks/ChunkGroup/ChunkGroup, the file says that is where
+                                    # it lives, and anything addressing it by name breaks when we
+                                    # decide otherwise on load.
+                                    # Enter the ancestor for the duration of the add, which is
+                                    # exactly how a group nests when one is made live: add_chunk
+                                    # reads _current_context and overwrites _parent_context from
+                                    # it, so setting the latter directly is undone on the way in.
+                                    #
+                                    # Not ancestor_group.add_param either: that applies the param
+                                    # naming rules, and get_reserved_names() includes the group's
+                                    # OWN name, so a group named the same as its parent came back
+                                    # renamed with a "1" suffix. USD is happy with
+                                    # /chunks/ChunkGroup/ChunkGroup, the file says that is where it
+                                    # lives, and anything addressing it by name breaks if we decide
+                                    # otherwise on load.
+                                    prev_ctx = scene._current_context
+                                    scene._current_context = weakref.ref(ancestor_group)
+                                    try:
+                                        scene.add_chunk(c)
+                                    finally:
+                                        scene._current_context = prev_ctx
+                                else:
                                     scene.add_chunk(c)
-                                finally:
-                                    scene._current_context = prev_ctx
+                                if c.get_config() and c.get_config().module:
+                                    group_chunk_by_path[str(prim.GetPath())] = c
+                            elif ancestor_group is not None:
+                                # Sub-chunk of a ChunkGroup: restore saved values before
+                                # add_param so PARAM_ADDED widgets see the correct values.
+                                _load_wire_inputs(prim, c)
+                                _restore_disabled_state(prim, c)
+                                _restore_collapsed_state(prim, c)
+                                # A composed-in child keeps the name its file gave it, whatever
+                                # the naming rules say: get_reserved_names() includes the host's
+                                # own name, so a Reference hosting a network with a Reference in
+                                # it renamed that child, and the renamed chunk authored a fresh
+                                # prim of its own beside the one it was loaded from.
+                                ancestor_group.add_param(
+                                    c, force_unique=not chunk_utils.is_composed_in(prim), notify=False
+                                )
+                                object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
+                                deferred.append((prim, c))
                             else:
-                                scene.add_chunk(c)
-                            if c.get_config() and c.get_config().module:
-                                group_chunk_by_path[str(prim.GetPath())] = c
-                        elif ancestor_group is not None:
-                            # Sub-chunk of a ChunkGroup: restore saved values before
-                            # add_param so PARAM_ADDED widgets see the correct values.
-                            _load_wire_inputs(prim, c)
-                            _restore_disabled_state(prim, c)
-                            _restore_collapsed_state(prim, c)
-                            # A composed-in child keeps the name its file gave it, whatever
-                            # the naming rules say: get_reserved_names() includes the host's
-                            # own name, so a Reference hosting a network with a Reference in
-                            # it renamed that child, and the renamed chunk authored a fresh
-                            # prim of its own beside the one it was loaded from.
-                            ancestor_group.add_param(
-                                c, force_unique=not chunk_utils.is_composed_in(prim), notify=False
-                            )
-                            object.__setattr__(c, '_exec_prim_path', str(prim.GetPath()))
-                            deferred.append((prim, c))
-                        else:
-                            # Restore saved param values before scene.add_chunk so the
-                            # PARAM_ADDED widget sees the correct values on creation.
-                            _load_wire_inputs(prim, c)
-                            _restore_disabled_state(prim, c)
-                            _restore_collapsed_state(prim, c)
-                            if added := scene.add_chunk(c, notify=False):
-                                object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
-                                deferred.append((prim, added))
-                                top_level_chunk_ids.add(id(added))
+                                # Restore saved param values before scene.add_chunk so the
+                                # PARAM_ADDED widget sees the correct values on creation.
+                                _load_wire_inputs(prim, c)
+                                _restore_disabled_state(prim, c)
+                                _restore_collapsed_state(prim, c)
+                                if added := scene.add_chunk(c, notify=False):
+                                    object.__setattr__(added, '_exec_prim_path', str(prim.GetPath()))
+                                    deferred.append((prim, added))
+                                    top_level_chunk_ids.add(id(added))
 
-                # Restore DAG dependencies from inputs:chunk connections so execution
-                # order is driven by the explicit graph, not just prim appearance order.
-                # Resolve connection targets by prim path -- names are scene-wide and can
-                # be uniquified/renamed, so a name lookup can bind to the wrong chunk.
-                #
-                # Containers are wire endpoints like any other node: a chunkgroup is a NODE
-                # in its parent graph, so `upstream -> group -> downstream` is two ordinary
-                # exec edges. A container never lands in `deferred` though -- it takes the
-                # CONTEXT branch above (or was recreated as a context before this loop) and
-                # is registered in group_chunk_by_path instead -- so a map built from
-                # `deferred` alone would resolve every edge with a group at either end to
-                # None and drop it, in BOTH directions.
-                #
-                # The Python DAG is what carries a change downstream, so such a gap would
-                # stop dirt at the group: on a reopened file nothing downstream of a
-                # chunkgroup would ever re-run. (Wiring a group interactively goes through
-                # reconcile_dag_dependencies, which reads the live scene and sees groups.)
-                chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
-                chunk_by_path.update(group_chunk_by_path)
-                chunks_with_dependencies: set[int] = set()
-                # A container carries no chunk of its own to cook, so it stays out of
-                # `deferred` (the cook/notify passes below are leaves only) and is walked
-                # here purely for the edges on its own prim. A tab context has no exec
-                # connections at all and falls straight through the `continue` below.
-                wired = deferred + [
-                    (prim, c)
-                    for path, c in group_chunk_by_path.items()
-                    if (prim := stage.GetPrimAtPath(Sdf.Path(path))).IsValid()
-                ]
-                for prim, chunk in wired:
-                    # Every slot, in slot order -- a reloaded merge must regain ALL its branches,
-                    # and regain them strongest-first so the restored DAG matches the saved file.
-                    exec_conns = exec_input_connections(prim)
-                    if not exec_conns:
-                        continue
-                    existing_deps = {id(d) for _, d in chunk.get_dependencies()}
-                    for conn_path in exec_conns:
-                        dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
-                        if dep is not None and id(dep) not in existing_deps:
-                            chunk.add_dependency(dep)
-                            chunks_with_dependencies.add(id(chunk))
+                    # Restore DAG dependencies from inputs:chunk connections so execution
+                    # order is driven by the explicit graph, not just prim appearance order.
+                    # Resolve connection targets by prim path -- names are scene-wide and can
+                    # be uniquified/renamed, so a name lookup can bind to the wrong chunk.
+                    #
+                    # Containers are wire endpoints like any other node: a chunkgroup is a NODE
+                    # in its parent graph, so `upstream -> group -> downstream` is two ordinary
+                    # exec edges. A container never lands in `deferred` though -- it takes the
+                    # CONTEXT branch above (or was recreated as a context before this loop) and
+                    # is registered in group_chunk_by_path instead -- so a map built from
+                    # `deferred` alone would resolve every edge with a group at either end to
+                    # None and drop it, in BOTH directions.
+                    #
+                    # The Python DAG is what carries a change downstream, so such a gap would
+                    # stop dirt at the group: on a reopened file nothing downstream of a
+                    # chunkgroup would ever re-run. (Wiring a group interactively goes through
+                    # reconcile_dag_dependencies, which reads the live scene and sees groups.)
+                    chunk_by_path = {str(p.GetPath()): c for p, c in deferred}
+                    chunk_by_path.update(group_chunk_by_path)
+                    chunks_with_dependencies: set[int] = set()
+                    # A container carries no chunk of its own to cook, so it stays out of
+                    # `deferred` (the cook/notify passes below are leaves only) and is walked
+                    # here purely for the edges on its own prim. A tab context has no exec
+                    # connections at all and falls straight through the `continue` below.
+                    wired = deferred + [
+                        (prim, c)
+                        for path, c in group_chunk_by_path.items()
+                        if (prim := stage.GetPrimAtPath(Sdf.Path(path))).IsValid()
+                    ]
+                    for prim, chunk in wired:
+                        # Every slot, in slot order -- a reloaded merge must regain ALL its branches,
+                        # and regain them strongest-first so the restored DAG matches the saved file.
+                        exec_conns = exec_input_connections(prim)
+                        if not exec_conns:
+                            continue
+                        existing_deps = {id(d) for _, d in chunk.get_dependencies()}
+                        for conn_path in exec_conns:
+                            dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
+                            if dep is not None and id(dep) not in existing_deps:
+                                chunk.add_dependency(dep)
+                                chunks_with_dependencies.add(id(chunk))
 
-                _restore_lofted_params(stage, deferred)
+                    _restore_lofted_params(stage, deferred)
 
-                # _load_wire_inputs (via _connect_param_attr) resolves @node.param@
-                # expressions to set up the live-update listener (_expression_connections),
-                # but the referenced chunk may not have been registered yet at that point
-                # in this same loop -- resolution fails and no listener gets attached, so
-                # later edits to the referenced chunk never notify this param/widget even
-                # though a fresh .value read is correct. Once every chunk in this batch
-                # is registered and every lofted value restored, retry once for anything
-                # still empty. This runs after _restore_lofted_params so a lofted param
-                # carrying an expression is covered by the same retry.
-                #
-                # This is the first of two passes. A param lofted inside a CHUNK_LOADED
-                # callback does not exist yet here -- that notice fires much further down --
-                # so an expression referring to one still resolves to nothing. The second
-                # pass runs after those notices and carries the warning; nothing is reported
-                # dangling until both have had a go.
-                _resolve_pending_expressions(deferred, warn=False)
+                    # _load_wire_inputs (via _connect_param_attr) resolves @node.param@
+                    # expressions to set up the live-update listener (_expression_connections),
+                    # but the referenced chunk may not have been registered yet at that point
+                    # in this same loop -- resolution fails and no listener gets attached, so
+                    # later edits to the referenced chunk never notify this param/widget even
+                    # though a fresh .value read is correct. Once every chunk in this batch
+                    # is registered and every lofted value restored, retry once for anything
+                    # still empty. This runs after _restore_lofted_params so a lofted param
+                    # carrying an expression is covered by the same retry.
+                    #
+                    # This is the first of two passes. A param lofted inside a CHUNK_LOADED
+                    # callback does not exist yet here -- that notice fires much further down --
+                    # so an expression referring to one still resolves to nothing. The second
+                    # pass runs after those notices and carries the warning; nothing is reported
+                    # dangling until both have had a go.
+                    _resolve_pending_expressions(deferred, warn=False)
 
-                # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
-                # Terminal nodes have no outputs so DagNode.should_solve() returns False by
-                # default, skipping them in the cascade. Setting the owner makes them solve.
-                chunks_that_are_deps: set[int] = set()
-                for _, c in deferred:
-                    for _, dep in c.get_dependencies():
-                        chunks_that_are_deps.add(id(dep))
-                for _, c in deferred:
-                    if id(c) not in chunks_that_are_deps:
-                        context = c.get_context()
-                        if context and isinstance(context, core.ChunkBase):
-                            c.get_dag_node().set_owner(context)
+                    # Wire the context (ChunkGroup) as DagNode owner of its terminal sub-chunks.
+                    # Terminal nodes have no outputs so DagNode.should_solve() returns False by
+                    # default, skipping them in the cascade. Setting the owner makes them solve.
+                    chunks_that_are_deps: set[int] = set()
+                    for _, c in deferred:
+                        for _, dep in c.get_dependencies():
+                            chunks_that_are_deps.add(id(dep))
+                    for _, c in deferred:
+                        if id(c) not in chunks_that_are_deps:
+                            context = c.get_context()
+                            if context and isinstance(context, core.ChunkBase):
+                                c.get_dag_node().set_owner(context)
 
                 # Trigger the DAG solve for root nodes (no upstream dependencies).
                 # The solve cascades to dependents in topological order via add_dependency.
@@ -5662,6 +5735,22 @@ def _load_chunks(
                 # wrong stage stack or call execute prematurely.
                 lm = ChunkLayerManager()
                 can_execute_sub_chunks = lm.initialized and lm.stage is stage
+
+                # The wiring is final, so every layer made so far can go straight into the
+                # graph layer it belongs in -- in the order it would have had if nothing had
+                # been deferred, because a new graph layer goes on top of the ones before it
+                # and the order of chunks at the same depth is kept by the re-sort below.
+                # Layers the loop below leaves alone (a chunkgroup's own) were placed the
+                # moment they were asked for, so before it; the loop places the rest.
+                held = lm.end_deferral() if placing else []
+                placing = False
+                looped = {
+                    id(c) for _, c in deferred
+                    if lm.initialized and (id(c) in top_level_chunk_ids or can_execute_sub_chunks)
+                }
+                for c in held:
+                    if id(c) not in looped:
+                        lm.get_or_create_layer(c)
 
                 # Ensure every chunk eligible to execute below already has its own layer
                 # registered before the re-sort pass. Most chunks' layers get created as a
@@ -5769,6 +5858,9 @@ def _load_chunks(
                         sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
             finally:
                 chunk_notice._loading_stage = old_loading_stage
+                # A load that failed part-way still leaves its layers on the stage.
+                if placing:
+                    ChunkLayerManager().place_deferred_layers()
 
         # Chunks already homed under a context recreated above -- no new tab needed, and
         # the context chunk already exists, so just process them directly.

@@ -17,12 +17,14 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, some_param, {"any": "data"})
 """
 from __future__ import annotations
 
+import collections
 import functools
 import inspect
 import itertools
 import logging
 import weakref
 from abc import abstractmethod
+from contextlib import contextmanager
 from enum import IntEnum, auto
 from collections.abc import Callable, Generator, Iterator
 from typing import (
@@ -61,6 +63,120 @@ _internal_layer_write_active: bool = False
 # authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
+
+# The propagators whose solve an enclosing batched_solve() is holding back, in the order they
+# asked, each with the batch clock at the time it asked; None outside a batch.
+_batched: list | None = None
+
+# Inside a batch, a clock that ticks once per queued solve and once per cook, and when each
+# chunk last cooked by it. None outside a batch. See _cooked_since.
+_batch_clock = 0
+_batch_cooked: dict | None = None
+
+# The batch clock when the solve now draining was queued; None when no queued solve is running.
+_solving_since: int | None = None
+
+# Follow-up work held until an enclosing batch has drained, by key; None outside a batch.
+_batch_deferred: dict | None = None
+
+
+def defer_to_batch_end(key, fn) -> bool:
+    """Run fn once when the enclosing batch has drained, instead of now.
+
+    For bookkeeping that only has to be right once the dust settles and costs something each
+    time -- refreshing a chunk's gizmo anchors reads every param it has, and a Wedge change
+    asked for it once per param written, hundreds of times. Deferred under the same key it
+    runs once, with the batch's final values.
+
+    Args:
+        key: Identifies the work, so asking twice runs it once.
+        fn: What to run.
+
+    Returns:
+        False outside a batch -- the caller runs fn itself, straight away.
+    """
+    if _batch_deferred is None:
+        return False
+    _batch_deferred[key] = fn
+    return True
+
+
+def _tick() -> int:
+    global _batch_clock
+    _batch_clock += 1
+    return _batch_clock
+
+
+def _cooked_since(prop) -> bool:
+    """Whether prop's chunk already cooked after the change the draining solve is for.
+
+    A batch solves the changes it held back one after another, and the first solve cooks
+    everything below them with every new value in place. Expression params re-announce their
+    value only once the param they read has changed -- which happens during that first solve,
+    so they are queued behind it, and solving them re-cooked every chunk below a second time
+    with the same values. A chunk that cooked after the queued change was made has read it
+    already: its module is skipped, while everything else the solve does -- widgets, the
+    param's own USD write -- still happens. A later change is queued with a later clock, and
+    cooks it again.
+    """
+    if _batch_cooked is None or _solving_since is None:
+        return False
+    return _batch_cooked.get(id(prop), -1) > _solving_since
+
+
+@contextmanager
+def batched_solve():
+    """Hold back every solve until the block ends, then solve once.
+
+    Setting a value solves everything downstream of it straight away, which is right for
+    one edit and wasteful for many: setting N values that feed the same chunks cooks those
+    chunks N times, each against a half-updated set of inputs, and only the last cook
+    counts. A Wedge cooking one variant sets every range it has -- dozens -- and that alone
+    cooked the chunks below it hundreds of times per variant.
+
+    Inside the block a value change only marks what it affects dirty. When the block ends,
+    each propagator that asked to solve is solved -- and the first solve already takes in
+    every dirty node it is connected to, in dependency order, so the rest are clean by the
+    time their turn comes and are skipped. Everything downstream cooks once, with all the
+    new values in place.
+
+    Solves asked for while the batch is being solved -- a param binding its storage
+    attribute sets its value, which asks for a solve -- are queued behind it rather than
+    run inside it. Run inside, each one nested a whole solve in the one before, and a batch
+    of dozens of changes nested deep enough to exhaust the stack.
+
+    Nested blocks join the outermost one.
+    """
+    global _batched, _batch_cooked, _solving_since, _batch_deferred
+    if _batched is not None:
+        yield
+        return
+    _batched = collections.deque()
+    _batch_cooked = {}
+    _batch_deferred = {}
+    try:
+        yield
+        while _batched or _batch_deferred:
+            while _batched:
+                prop, queued_at = _batched.popleft()
+                # Not re-dirtied: an earlier solve in this loop may have cleaned it along
+                # with everything else it reached, and dirtying it again would cook that twice.
+                if prop.get_dag_node().dirty:
+                    _solving_since = queued_at
+                    try:
+                        prop._solve_downstream()
+                    finally:
+                        _solving_since = None
+            # Deferred work runs once the solves have settled; anything it changes queues
+            # another round rather than being lost.
+            pending = list(_batch_deferred.values())
+            _batch_deferred.clear()
+            for fn in pending:
+                fn()
+    finally:
+        _batched = None
+        _batch_cooked = None
+        _batch_deferred = None
 
 
 def is_cook_stale(chunk) -> bool:
@@ -853,13 +969,15 @@ class DagNode:
         chunk_scheduler.topology_changed(self, node)
         return True
 
-    def set_owner(self, owner: ChunkNoticePropagator | None):
+    def set_owner(self, owner: ChunkNoticePropagator | None, *, dirty: bool = True):
         """Set the owner of this node.
 
         The owner is treated like an output, with some semantic differences; see DagConnections.
 
         Args:
             owner (ChunkNoticePropagator | None): The owner propagator
+            dirty (bool): Whether joining marks the owner dirty. A new child is new data for
+                its owner; an attribute's own sender is not -- see AttributeSender.
         """
         if owner == self.get_owner():
             return
@@ -886,7 +1004,8 @@ class DagNode:
             if node._owned is None:
                 node._owned = weakref.WeakSet()
             node._owned.add(self)
-            node.dirty = True
+            if dirty:
+                node.dirty = True
             node.set_graph_id(self)
 
     def get_inputs(self) -> Iterator[tuple[int, DagNode]]:
@@ -1210,7 +1329,7 @@ class ChunkNoticePropagator:
         """
         return self.get_dag_node().get_owner()
 
-    def set_owner(self, owner: ChunkNoticePropagator | None):
+    def set_owner(self, owner: ChunkNoticePropagator | None, *, dirty: bool = True):
         """Set the owner of this object: its parent in a parent-child relationship.
 
         Call this once the parent has actually taken ownership of this object, to update the
@@ -1218,8 +1337,9 @@ class ChunkNoticePropagator:
 
         Args:
             owner (ChunkNoticePropagator | None): The owning (parent) object that should receive notices when this instance is modified
+            dirty (bool): Whether joining marks the owner dirty; see DagNode.set_owner.
         """
-        self.get_dag_node().set_owner(owner)
+        self.get_dag_node().set_owner(owner, dirty=dirty)
 
     def is_presentation_change(self) -> bool:
         """Whether the change this propagator is being dirtied for is presentation only.
@@ -1311,11 +1431,18 @@ class ChunkNoticePropagator:
         """Dirty this object and solve everything downstream of it.
 
         Each solved object's data_changed() runs, and with it send_self(), which triggers any
-        connected callbacks.
+        connected callbacks. Inside batched_solve() the solve waits for the block to end.
         """
         node = self.get_dag_node()
         node.dirty = True
+        if _batched is not None:
+            _batched.append((self, _tick()))
+            return
+        self._solve_downstream()
 
+    def _solve_downstream(self):
+        """Solve this object's already-dirty node and everything downstream of it."""
+        node = self.get_dag_node()
         msg = "\n====== SOLVE ======\n"
         for n in node.solve_outputs():
             if not (prop := n.propagator):
@@ -1379,7 +1506,9 @@ class ChunkNoticePropagator:
                 # window -- usdview clears its stage before opening the next file while still
                 # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
                 # window, can reach here.
-                if (callable(getattr(module, 'execute', None)) and stage is not None
+                if _cooked_since(prop):
+                    prop._cook_stale = False
+                elif (callable(getattr(module, 'execute', None)) and stage is not None
                         and not getattr(prop, '_executing', False)
                         and not getattr(prop, '_deleting', False)
                         and not muted and not not_yet_in_stack and not prop.is_blocked()):
@@ -1440,6 +1569,8 @@ class ChunkNoticePropagator:
                         _usd_write_active = prev_usd_write_active
                         _executing_chunk = prev_executing_chunk
                         prop._executing = False
+                        if _batch_cooked is not None:
+                            _batch_cooked[id(prop)] = _tick()
 
         msg += "====== FINISHED ======\n"
         logger.debug(msg)

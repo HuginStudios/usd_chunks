@@ -12,6 +12,7 @@ my_chunk = reg.scene.get_chunk("my_chunk")  # or chunk.get_chunk("my_chunk")
 
 from __future__ import annotations
 
+import contextlib
 import weakref
 import os
 import functools
@@ -414,15 +415,45 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         return any(_satisfies(v, specifier) for v in versions)
 
 
+#: One source line with its ending, split where the parser splits: at \r\n, \r or \n and
+#: nowhere else (not at the form feeds and other separators str.splitlines also honours).
+_SOURCE_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
+
+
 class _ConfigTransformer(ast.NodeTransformer):
     def __init__(self, code, globs: dict, module: ChunkModule) -> None:
         self._code = code
         self._module = module
         self._globs = globs.copy()
         self._deferred_config: Callable | None = None
+        self._lines: list[str] | None = None
 
     def _get_node_source(self, node):
-        return ast.get_source_segment(self._code, node)
+        """The source text of node, as ast.get_source_segment returns it.
+
+        Not ast.get_source_segment itself: that splits the whole source into lines on
+        every call, and this is called for every import, config() and main() of every
+        chunk module, at discovery and again at load -- quadratic in a module's size, and
+        seconds of every process start. The lines are split once here instead. Column
+        offsets are UTF-8 byte offsets, as in the original.
+        """
+        try:
+            if node.end_lineno is None or node.end_col_offset is None:
+                return None
+            first, last = node.lineno - 1, node.end_lineno - 1
+            start, end = node.col_offset, node.end_col_offset
+        except AttributeError:
+            return None
+        if self._lines is None:
+            self._lines = _SOURCE_LINE.findall(self._code)
+        lines = self._lines
+        if first == last:
+            return lines[first].encode()[start:end].decode()
+        return "".join([
+            lines[first].encode()[start:].decode(),
+            *lines[first + 1:last],
+            lines[last].encode()[:end].decode(),
+        ])
 
     def _exec_node(self, node):
         if not (src := self._get_node_source(node)):
@@ -839,7 +870,11 @@ class ChunkModule:
 
         # Call _exec_module to lazily load the module. This runs the _ConfigTransformer. If module_file is .py and
         # module is not a RuntimeModule, _exec_module will create a _ChunkConfigLazyLoader
-        self._exec_module()
+        #
+        # Whether the file needs reading again before the next load: not after this read
+        # succeeds, until unload() says the file may have changed. Reading it twice parses and
+        # transforms it twice, and was half of what finding a scene's chunk modules cost.
+        self._needs_read = not self._exec_module()
 
     @staticmethod
     def from_chunk_definition(file: str | Path, name: str | None = None) -> list[ChunkModule]:
@@ -963,9 +998,10 @@ class ChunkModule:
         dep_reg.install_packages(self.config.requirements)
 
     def _pre_load(self):
-        if not self.loaded:
+        if not self.loaded and (self._needs_read or not self.module):
             if not self._exec_module():
                 return False
+            self._needs_read = False
 
         self._install_deps()
 
@@ -1008,6 +1044,8 @@ class ChunkModule:
     def unload(self):
         """Mark the module as not loaded."""
         self.loaded = False
+        # Reload Chunks unloads to pick up an edited file, so the next load reads it again.
+        self._needs_read = True
 
     def create(self) -> Sequence[core.ChunkBase]:
         """Run the module's main function and return the chunks it made, with its config attached.
@@ -1768,6 +1806,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
         # notice fired by the teardown itself can't resurrect one -- see _chunk_deleted.
         self._retired_chunks: set = set()
+        # Chunks whose layer exists but waits to be placed, while defer_placement is on; None
+        # when it is off.
+        self._deferred_placement: dict[core.ChunkHash, weakref.ReferenceType] | None = None
+        # Where those layers sit meanwhile; see defer_placement.
+        self._loading_layer: Sdf.Layer | None = None
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
         # can answer in one lookup. Maintained beside the two dicts rather than derived from
@@ -1796,6 +1839,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._chunk_target = {}
         self._chunk_graph_key = {}
         self._retired_chunks = set()
+        self._deferred_placement = None
+        self._loading_layer = None
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -1895,6 +1940,82 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.chunk_layers[h] = layer
         weakref.finalize(c, self._chunk_deleted, h)
 
+    def defer_placement(self) -> bool:
+        """Hold chunk layers made from now on in one loading layer, until the graph is wired.
+
+        A load restores each chunk's inputs before it restores the wiring between chunks, and
+        restoring an input asks for the chunk's layer. Placed then, every chunk looks like a
+        graph of its own: it got a graph layer of its own on the stage, and the wiring moved
+        it into the shared one a moment later and threw that graph layer away. Each of those
+        sublayer edits recomposes the stage -- a fifth of opening a 70-chunk network.
+
+        The held layers stay on the stage, in one loading layer, so a held layer behaves as a
+        placed one does. Off the stage it would not: Usd.EditContext raises for a layer
+        outside the stage's layer stack, and chunk_notice declines to cook a chunk whose
+        layer is not in it yet. A first version kept them off the stage, and that skipped a
+        cook the load used to run -- the same outcome, reached by accident, that a vector's
+        premature cook no longer has in the first place (see _set_children_blocked).
+
+        Returns:
+            bool: True if this call turned deferral on. Only that caller calls
+            place_deferred_layers; a nested caller gets False and leaves it to the outer one.
+        """
+        if self._deferred_placement is not None:
+            return False
+        self._deferred_placement = {}
+        return True
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _internal_sublayer_edit():
+        """Mark sublayer edits as this manager's own bookkeeping, as get_or_create_layer does.
+
+        A layer moved in or out here holds chunk results, never an Edit Target, so the stage
+        sync has nothing to react to -- see _internal_layer_write_active.
+        """
+        prev_w = chunk_notice._usd_write_active
+        prev_internal = chunk_notice._internal_layer_write_active
+        chunk_notice._usd_write_active = True
+        chunk_notice._internal_layer_write_active = True
+        try:
+            yield
+        finally:
+            chunk_notice._usd_write_active = prev_w
+            chunk_notice._internal_layer_write_active = prev_internal
+
+    def _holding_layer(self) -> Sdf.Layer:
+        """The layer defer_placement holds new chunk layers in, made on first use."""
+        if self._loading_layer is None:
+            self._loading_layer = Sdf.Layer.CreateAnonymous("loading")
+            self.internal_layer_ids.add(self._loading_layer.identifier)
+            with self._internal_sublayer_edit():
+                self.stage.GetSessionLayer().subLayerPaths.insert(0, self._loading_layer.identifier)
+        return self._loading_layer
+
+    def end_deferral(self) -> list[core.ChunkCommon]:
+        """Stop deferring, and return the chunks whose layer is still waiting to be placed.
+
+        The loading layer comes off the stage, so the returned chunks' layers are off it
+        until they are placed. The caller places them, in the order it wants: the order
+        layers go onto a graph layer breaks ties between chunks at the same depth, and a
+        load keeps the order it had before placement was deferred.
+        """
+        pending, self._deferred_placement = self._deferred_placement, None
+        if (loading := self._loading_layer) is not None:
+            self._loading_layer = None
+            self.internal_layer_ids.discard(loading.identifier)
+            with self._internal_sublayer_edit():
+                session = self.stage.GetSessionLayer() if self.stage else None
+                if session and loading.identifier in session.subLayerPaths:
+                    session.subLayerPaths.remove(loading.identifier)
+                loading.subLayerPaths = []
+        return [c for ref in (pending or {}).values() if (c := ref()) is not None]
+
+    def place_deferred_layers(self) -> None:
+        """Put every layer held back by defer_placement on the stage, and stop deferring."""
+        for c in self.end_deferral():
+            self.get_or_create_layer(c)
+
     def get_or_create_layer(self, c: core.ChunkCommon) -> Sdf.Layer | None:
         """Get a chunk's layer as get_layer() does, creating it if it does not exist yet.
 
@@ -1924,6 +2045,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             ctx_layer = self.chunk_layers.get(owner.get_hash())
             if ctx_layer and not ctx_layer.anonymous:
                 return ctx_layer
+
+        # While a load is still wiring its chunks, the layer is made in the loading layer;
+        # place_deferred_layers puts it where the finished wiring says. See defer_placement.
+        if self._deferred_placement is not None:
+            self._deferred_placement[c.get_hash()] = weakref.ref(c)
+            return self.get_layer(c) or self.add_layer(self._holding_layer(), c)
 
         # Resolve where this chunk's content should nest: the user's chosen Edit Target,
         # or the session layer by default -- the same resolution chunk-prim redirect

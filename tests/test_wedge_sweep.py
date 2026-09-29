@@ -408,3 +408,36 @@ def test_an_expression_onto_a_lofted_param_updates_live(network):
         "no live-update listener: the expression resolved to nothing because the wedge had "
         "not lofted its ranges yet when it was tried"
     )
+
+
+def test_sweep_hands_overrides_to_every_variant(network, tmp_path):
+    """`sweep` takes the same overrides as `run`, written anywhere on the line.
+
+    What makes a GPU sweep possible from the command line (`vray_render_device=7`). Written
+    after the options is the natural place for them, and the one argparse used to refuse.
+    """
+    plain, reseeded = tmp_path / "plain", tmp_path / "reseeded"
+    assert _sweep(network, plain, "--only", "1").returncode == 0
+    result = _sweep(network, reseeded, "--only", "1", "Wedge.seed=99")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert _tz(reseeded / "variant_00001" / "variant.usda") != _tz(plain / "variant_00001" / "variant.usda")
+
+
+def test_a_batched_sweep_writes_what_one_process_per_variant_does(network, tmp_path):
+    """Batching is the default; its variants have to be the per-variant ones, byte for byte."""
+    batched, separate = tmp_path / "batched", tmp_path / "separate"
+    result = _sweep(network, batched, "--only", "0,2,3")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "batched" in result.stdout, result.stdout
+    assert _sweep(network, separate, "--only", "0,2,3", "--per-variant").returncode == 0
+    # --jobs hands part of the preparing to worker processes; the stitch and commit stay one.
+    shared = tmp_path / "shared"
+    assert _sweep(network, shared, "--only", "0,2,3", "--jobs", "2").returncode == 0
+
+    for i in (0, 2, 3):
+        b = (separate / f"variant_{i:05d}" / "variant.usda").read_bytes()
+        for other in (batched, shared):
+            a = (other / f"variant_{i:05d}" / "variant.usda").read_bytes()
+            assert a == b, f"variant {i} differs between {other.name} and a per-variant sweep"
+    assert (batched / "stitched.usda").exists()

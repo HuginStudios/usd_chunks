@@ -11,7 +11,8 @@ import os
 import subprocess
 import sys
 import tempfile
-from argparse import ArgumentParser, RawDescriptionHelpFormatter
+import time
+from argparse import SUPPRESS, ArgumentParser, RawDescriptionHelpFormatter
 from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
@@ -19,8 +20,8 @@ from pathlib import Path
 from pxr import Usd
 from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
-from usd_chunks.chunk_scene import execute_roots
 from usd_chunks.chunk_script import Scene, flatten_without_chunks
 from usd_chunks.chunk_stage import (
     commit_order_from_stage,
@@ -77,6 +78,61 @@ def _coerce(param, raw):
         return None, f"cannot read {raw!r} as {getattr(first, '__name__', first)}"
 
 
+def _collapsed_groups(owner):
+    """The collapsed groups under owner, outermost first, not looking inside them."""
+    for child in getattr(owner, "get_my_params", lambda: [])():
+        if not hasattr(child, "get_my_params"):
+            continue
+        if child.has_state(chunk.ChunkFlags.State.COLLAPSED):
+            yield child
+        else:
+            yield from _collapsed_groups(child)
+
+
+def _expanded(group):
+    """Open group the way clicking its header does, then close it again.
+
+    A chunk may build a group's params only once it is first opened -- Render Settings
+    does, since V-Ray alone declares hundreds -- and a param that has not been built
+    cannot be found, let alone set. Closing it again afterwards keeps the saved network
+    as it was: the params stay built, only the header state goes back.
+    """
+    group.unset_state(chunk.ChunkFlags.State.COLLAPSED)
+    group.set_state(chunk.ChunkFlags.State.COLLAPSED)
+
+
+def _find_param(owner, name):
+    """owner's param at name, opening collapsed groups until it has been built.
+
+    The groups a dotted name passes through are opened first, since that is where the
+    param has to be. Failing that -- a bare name, or a path that skips a level -- the
+    collapsed groups are opened one at a time, outermost first, until the param exists,
+    so only as much is built as it takes to find it.
+    """
+    param = owner.get_param(name)
+    if param is not None:
+        return param
+
+    parts = name.split(".")
+    for depth in range(1, len(parts)):
+        group = owner.get_param(".".join(parts[:depth]))
+        if group is None:
+            break
+        if group.has_state(chunk.ChunkFlags.State.COLLAPSED):
+            _expanded(group)
+    if (param := owner.get_param(name)) is not None:
+        return param
+
+    pending = list(_collapsed_groups(owner))
+    while pending:
+        group = pending.pop(0)
+        _expanded(group)
+        if (param := owner.get_param(name)) is not None:
+            return param
+        pending[:0] = _collapsed_groups(group)
+    return None
+
+
 def _parse_param_overrides(scene, overrides):
     # Contexts first, in both lookups. get_chunks() omits plain tab contexts because they
     # are not executable, but a tab is exactly where a network's lofted interface lives --
@@ -103,6 +159,13 @@ def _parse_param_overrides(scene, overrides):
                 if p:
                     param = p
                     break
+            else:
+                # Not built yet in any chunk: look inside the collapsed groups too, once
+                # every chunk's already-built params have had their chance.
+                for c in searchable:
+                    if (p := _find_param(c, name)) is not None and chunk.is_param(p):
+                        param = p
+                        break
             if not param:
                 print(f"Param not found: {name!r}")
                 continue
@@ -112,7 +175,9 @@ def _parse_param_overrides(scene, overrides):
             if not c:
                 print(f"Chunk not found: {chunk_name!r}")
                 continue
-            param = c.get_param(param_path, chunk.is_param)
+            param = _find_param(c, param_path)
+            if param is not None and not chunk.is_param(param):
+                param = None
             if not param:
                 print(f"Param not found: {param_path!r} on chunk {chunk_name!r}")
                 continue
@@ -345,8 +410,11 @@ def cmd_run(args):
     scene = Scene(stage, "cli")
 
     if args.params:
+        # Each override solves what it reaches, as the same edit in the UI does -- no
+        # re-cook of every root afterwards. That re-cook only ever papered over the first
+        # change after a load reading its param's saved value back over the new one
+        # (fixed in ChunkStageSync._sync_param_input), and cooked the network twice over.
         _parse_param_overrides(scene, args.params)
-        execute_roots(scene.get_chunks())
 
     # Establish the active view, exactly as the UI does on focus. load_chunks has already
     # executed every dependency-free chunk by this point -- in the UI the view recook then
@@ -404,18 +472,22 @@ def _variant_dir(out, index):
     return os.path.join(out, f"variant_{index:05d}")
 
 
-def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False):
+def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False, params=()):
     """One variant, in its own process.
 
     A process per variant rather than a loop: the registry and stage-sync singletons hold
     the stage a network was loaded into, so a second load in one process returns the
     chunkgroup and none of its children -- variant 2 would silently re-export variant 1.
     It also stops one bad variant taking the batch down.
+
+    params are `run` overrides applied to every variant alike -- a render device, a
+    resolution -- ahead of the wedge's own index, so an override can never replace it.
     """
     directory = _variant_dir(out, index)
     os.makedirs(directory, exist_ok=True)
     cmd = [
         sys.executable, "-m", "usd_chunks.cli", "run", usda,
+        *params,
         f"{wedge_name}.current_index={index}",
         "--export", os.path.join(directory, "variant.usda"),
     ]
@@ -455,10 +527,20 @@ def cmd_sweep(args):
         return _verify(args, name, indices)
 
     os.makedirs(args.out, exist_ok=True)
+
+    if args.prepare_only:
+        return _prepare_only(args, name, indices)
+
+    if not (args.per_variant or args.procedural):
+        reason = _sweep_batched(args, name, indices)
+        if reason is None:
+            return
+        print(f"Not batching: {reason}. One process per variant instead.")
+
     print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}")
 
     def one(i):
-        return _run_variant(args.usda, name, i, args.out, args.procedural, args.all)
+        return _run_variant(args.usda, name, i, args.out, args.procedural, args.all, args.params)
 
     failed = []
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
@@ -474,6 +556,88 @@ def cmd_sweep(args):
         print(f"\n{RED}{len(failed)} of {len(indices)} failed{RESET}: {failed[:10]}")
         sys.exit(1)
     print(f"\n{GREEN}{len(indices)} variant(s){RESET} -> {args.out}")
+
+
+def _open_for_sweep(args):
+    """The network loaded as `run` loads it, overrides applied, and its active view."""
+    scene = Scene.open(args.usda, "cli")
+    if args.params:
+        _parse_param_overrides(scene, args.params)
+    stage = scene.get_stage()
+    view = None if args.all else _active_view(stage, scene)
+    return scene, view
+
+
+def _prepare_only(args, name, indices):
+    """A worker of a batched sweep: prepare these variants, commit nothing."""
+    scene, view = _open_for_sweep(args)
+    try:
+        failed = sweepmod.prepare(scene, sweepmod.find_wedge(scene, name), indices, args.out, view)
+    finally:
+        scene.close()
+    if failed:
+        sys.exit(1)
+
+
+def _sweep_batched(args, name, indices):
+    """Prepare every variant in one load, stitch them into frames, commit once.
+
+    See usd_chunks.sweep. --jobs splits the preparing between this process and workers;
+    the commit is always one.
+
+    Returns:
+        None when the sweep is done, or why this network cannot be batched -- the caller
+        then sweeps one process per variant.
+    """
+    started = time.perf_counter()
+    scene, view = _open_for_sweep(args)
+    try:
+        consumers, reason = sweepmod.frame_consumers(_all_chunks(scene.get_chunks()), name)
+        if reason:
+            return reason
+        wedge = sweepmod.find_wedge(scene, name)
+
+        slices = [indices[i::max(1, args.jobs)] for i in range(max(1, args.jobs))]
+        mine, others = slices[0], [s for s in slices[1:] if s]
+        print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}, batched")
+        workers = [
+            subprocess.Popen([
+                sys.executable, "-m", "usd_chunks.cli", "sweep", args.usda, *args.params,
+                "--out", args.out, "--only", ",".join(str(i) for i in part), "--prepare-only",
+                *(["--all"] if args.all else []),
+            ])
+            for part in others
+        ]
+        failed = sweepmod.prepare(scene, wedge, mine, args.out, view)
+        for worker, part in zip(workers, others):
+            if worker.wait() != 0:
+                failed.extend(i for i in part if not os.path.exists(sweepmod.variant_path(args.out, i)))
+        prepared = time.perf_counter()
+
+        done = [i for i in indices if i not in failed]
+        if not done:
+            print(f"{RED}Every variant failed{RESET}")
+            sys.exit(1)
+        stitched = os.path.join(args.out, sweepmod.STITCHED_NAME)
+        problems = sweepmod.stitch({i: sweepmod.variant_path(args.out, i) for i in done}, stitched)
+        if problems:
+            for problem in problems[:5]:
+                print(f"  {problem}")
+            return f"the variants cannot be stitched into frames ({len(problems)} difference(s) above)"
+
+        committed = sweepmod.commit_frames(scene, consumers, stitched, done)
+        finished = time.perf_counter()
+    finally:
+        scene.close()
+
+    print(f"\nPrepared {len(done)} variant(s) in {prepared - started:.1f}s, then "
+          f"{', '.join(c.name for c in committed) or 'nothing'} over all of them as frames "
+          f"in {finished - prepared:.1f}s")
+    if failed:
+        print(f"{RED}{len(failed)} of {len(indices)} failed{RESET}: {sorted(failed)[:10]}")
+        sys.exit(1)
+    print(f"{GREEN}{len(done)} variant(s){RESET} -> {args.out}")
+    return None
 
 
 def _verify(args, name, indices):
@@ -498,7 +662,7 @@ def _verify(args, name, indices):
     print(f"Verifying {len(indices)} variant(s) of {name} against {args.out}")
     with tempfile.TemporaryDirectory(prefix="usdchunks-verify-") as scratch:
         def one(i):
-            return _run_variant(args.usda, name, i, scratch, args.procedural, args.all)
+            return _run_variant(args.usda, name, i, scratch, args.procedural, args.all, args.params)
 
         identical, differing, errored = [], [], []
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
@@ -709,7 +873,13 @@ def main():
             "Cook a network once per wedge index and export each result.\n\n"
             "Every value a wedge produces is a pure function of (seed, index, range name),\n"
             "so variants are independent: --only regenerates one without producing the ones\n"
-            "before it, --jobs runs them concurrently, and --verify proves a rerun matches."
+            "before it, --jobs runs them concurrently, and --verify proves a rerun matches.\n\n"
+            "Batched by default: the network is loaded once and every variant cooked and\n"
+            "exported in turn, then the variants are stitched into one stage, variant i at\n"
+            "frame i, and the commit hooks (Render, KITTI Writer) run once over all of them.\n"
+            "A network that cannot be batched -- a commit that is not per frame, such as\n"
+            "Export USD, or variants that differ in more than attribute values -- falls back\n"
+            "to one `run` per variant and says why. --per-variant forces that."
         ),
         epilog=(
             "Examples:\n"
@@ -717,13 +887,25 @@ def main():
             "  usdchunks sweep drop.usda --out ./data --count 500 --jobs 4\n"
             "  usdchunks sweep drop.usda --out ./data --only 42,1337\n"
             "  usdchunks sweep drop.usda --out ./data --verify --only 0,7,19\n"
+            "  usdchunks sweep drop.usda --out ./data vray_render_device=7\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
     sweep_parser.add_argument("usda", help="Path to the .usda chunk network file")
     sweep_parser.add_argument(
+        "params", nargs="*",
+        help="Param overrides for every variant, as for run: ChunkName.param=value",
+    )
+    sweep_parser.add_argument(
         "--out", required=True, metavar="DIR", help="Where variant_NNNNN/ directories are written"
     )
+    sweep_parser.add_argument(
+        "--per-variant",
+        action="store_true",
+        help="One `run` process per variant, instead of preparing them all in one load and "
+             "committing (rendering, writing) once over all of them as frames",
+    )
+    sweep_parser.add_argument("--prepare-only", action="store_true", help=SUPPRESS)
     sweep_parser.add_argument(
         "--count", type=int, default=0, help="How many variants (default: the wedge's own count)"
     )
@@ -789,7 +971,16 @@ def main():
         "--host", choices=["usdview"], default="usdview", help="Which host integration (default: usdview)"
     )
 
-    args = parser.parse_args()
+    # Overrides are positionals after a positional, and argparse settles a trailing
+    # nargs="*" the moment it reads the file name -- so `sweep net.usda --out d x=1`
+    # rejected x=1 as unrecognised. Whatever is left that reads as name=value is an
+    # override, wherever on the line it was written.
+    args, extra = parser.parse_known_args()
+    overrides = [a for a in extra if "=" in a and not a.startswith("-")]
+    if extra != overrides or (overrides and not hasattr(args, "params")):
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    if overrides:
+        args.params = list(args.params) + overrides
 
     if args.command == "run":
         cmd_run(args)

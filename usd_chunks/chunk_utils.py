@@ -11,7 +11,7 @@ import logging
 import re
 import uuid
 from contextlib import contextmanager, ExitStack, nullcontext
-from pxr import Sdf, Usd
+from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
@@ -1447,3 +1447,84 @@ def _xform_order_layer_unused(stage, node):
             if own.identifier in parent.subLayerPaths:
                 return parent
     return own
+
+
+def parse_frames(spec: str) -> list[float]:
+    """Frame numbers named by a usdrecord-style frame spec.
+
+    The spelling the Render chunk's Frames param takes, so a chunk that authors or reads
+    something per frame can be wired to the same text and agree with it frame for frame:
+    comma-separated entries, each a single frame, a "start:end" range, or a
+    "start:endxstride" strided range. An empty spec is reported as an empty list.
+
+    Args:
+        spec: The frame spec, e.g. "1:100", "1,5,9" or "0:20x5".
+
+    Returns:
+        The frames, in the order the spec names them.
+
+    Raises:
+        ValueError: A stride that is not positive, or a range that ends before it starts.
+    """
+    # A lone number is a one-frame spec. It arrives as a number rather than text when the
+    # param is wired to an integer, a Wedge's Index being the case that matters -- and index
+    # 0 would otherwise read as "no frames" by being falsy.
+    if isinstance(spec, (int, float)):
+        return [float(spec)]
+    if not spec or not spec.strip():
+        return []
+
+    frames = []
+    for entry in spec.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+
+        stride = 1.0
+        if "x" in entry:
+            entry, _, stride_text = entry.partition("x")
+            stride = float(stride_text)
+        if stride <= 0:
+            raise ValueError(f"frame stride must be positive: {spec!r}")
+
+        if ":" not in entry:
+            frames.append(float(entry))
+            continue
+
+        start_text, _, end_text = entry.partition(":")
+        start, end = float(start_text), float(end_text)
+        if end < start:
+            raise ValueError(f"frame range ends before it starts: {entry!r}")
+
+        current = start
+        while current <= end + 1e-9:
+            frames.append(current)
+            current += stride
+
+    return frames
+
+
+#: Integer vector types, which USD will not narrow a tuple of floats into.
+_INT_VECTORS = (Gf.Vec2i, Gf.Vec3i, Gf.Vec4i)
+
+
+def as_attr_value(attr, value):
+    """`value` in the type `attr` holds, for writing a vector param into it.
+
+    A Vector param reports its components as floats even when its sliders are integer, and
+    USD will not narrow a float tuple into an int2/int3/int4 attribute: Set() raises a type
+    mismatch instead, so an integer vector (Render Settings' resolution) could not be
+    changed from its default at all. Other values pass through untouched.
+
+    Args:
+        attr: The attribute about to be written.
+        value: The value to write.
+
+    Returns:
+        The value, as the attribute's integer vector type where that is what it holds.
+    """
+    if isinstance(value, (tuple, list)):
+        gf_type = attr.GetTypeName().type.pythonClass
+        if gf_type in _INT_VECTORS:
+            return gf_type(*(int(round(v)) for v in value))
+    return value
