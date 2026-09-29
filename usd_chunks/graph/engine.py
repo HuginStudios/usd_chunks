@@ -717,7 +717,7 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
 
 
 def iter_copyable_params(chunk: core.ChunkCommon):
-    """`iter_connectable_params`, minus anything flagged State.HIDDEN.
+    """`iter_connectable_params`, minus anything flagged State.HIDDEN or TRANSIENT.
 
     A HIDDEN param is a chunk module's own internal bookkeeping, never meant for a user to
     see or set directly -- e.g. chunks/usd/layer.py's _new_layer_id/_layer_name_used/
@@ -741,7 +741,8 @@ def iter_copyable_params(chunk: core.ChunkCommon):
         Each param whose value a copy carries over.
     """
     for param in iter_connectable_params(chunk):
-        if param.has_state(ChunkFlags.State.HIDDEN):
+        # TRANSIENT is session state (see ParamFlags.TRANSIENT): a copy rebuilds its own.
+        if param.has_state(ChunkFlags.State.HIDDEN) or chunk_stage.is_transient_param(param):
             continue
         yield param
 

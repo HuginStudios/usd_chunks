@@ -1508,7 +1508,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         expression connection, mirroring _sync_param_input's pattern for scalars.
         """
         prim_path = self._chunk_prim_paths.get(id(chunk))
-        if not prim_path:
+        if not prim_path or is_transient_param(vector):
             return
 
         existing = getattr(vector, '_param_attr_path', None)
@@ -1624,7 +1624,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
 
         # Session state, deliberately never recorded: see ChunkFlags.ParamFlags.TRANSIENT.
-        if param.has_flag(ChunkFlags.ParamFlags.TRANSIENT):
+        if is_transient_param(param):
             return
 
         existing = getattr(param, '_param_attr_path', None)
@@ -1775,7 +1775,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         for path, param in _iter_chunk_params(chunk):
             raw = getattr(param, 'raw_value', None)
-            if raw is None:
+            if raw is None or is_transient_param(param):
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             type_source = getattr(param, 'default_value', None) if is_expr else raw
@@ -5190,6 +5190,17 @@ def _under_list_group(param: core.ChunkCommon, chunk: core.ChunkBase) -> bool:
     return False
 
 
+def is_transient_param(param) -> bool:
+    """Whether param is session state that is never recorded (ParamFlags.TRANSIENT).
+
+    A vector is transient when all of its components are: its own flags are group flags.
+    """
+    if isinstance(param, core.ChunkVectorBase):
+        parts = param.get_my_params()
+        return bool(parts) and all(is_transient_param(p) for p in parts)
+    return isinstance(param, core.ChunkParamBase) and param.has_flag(ChunkFlags.ParamFlags.TRANSIENT)
+
+
 def _iter_chunk_params(
     obj: core.ChunkCommon, prefix: str = ""
 ) -> Generator[tuple[str, core.ChunkParamBase], None, None]:
@@ -5226,13 +5237,14 @@ def _param_object_path(obj: core.ChunkCommon, target, prefix: tuple = ()) -> lis
 def _iter_chunk_vectors(
     obj: core.ChunkCommon, prefix: str = ""
 ) -> Generator[tuple[str, core.ChunkVectorBase], None, None]:
-    """Yield (path, vector) for every ChunkVectorBase reachable under obj."""
+    """Yield (path, vector) for every recorded ChunkVectorBase under obj. TRANSIENT ones are left out."""
     for param in obj.get_my_params():
         if isinstance(param, core.ChunkBase):
             continue  # a nested chunk's params are its own
         path = f"{prefix}.{param.name}" if prefix else param.name
         if isinstance(param, core.ChunkVectorBase):
-            yield path, param
+            if not is_transient_param(param):
+                yield path, param
         elif not isinstance(param, (core.ChunkParamBase, core.ChunkListGroupBase)):
             yield from _iter_chunk_vectors(param, path)
 
@@ -7282,7 +7294,7 @@ def _author_prim(
         store_value = param.raw_value
         if store_value is None:
             store_value = param.value  # proxy params delegate raw_value to the template (None); use value instead
-        if store_value is None:
+        if store_value is None or is_transient_param(param):
             continue
         if store_value == getattr(param, "default_value", None):
             continue
