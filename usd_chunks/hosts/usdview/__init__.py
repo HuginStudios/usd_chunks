@@ -9,9 +9,9 @@ import logging
 from pxr import Tf, Usd, Gf, Sdf, UsdGeom
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
-from pxr.Usdviewq.qt import QtCore
+from pxr.Usdviewq.qt import QtCore, QtGui
 
-from usd_chunks import chunk_registry, chunk_scene, shader_defs
+from usd_chunks import chunk_notice, chunk_registry, chunk_scene, shader_defs
 from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks.frontends.qt import window_state as chunk_window_state
 from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
@@ -91,6 +91,16 @@ class UsdviewScene(chunk_scene.SceneSender):
         self._camera_snap_timer.timeout.connect(self._on_snap_timer)
 
         super().__init__()
+
+        # A deleted chunk can take the camera the viewport is looking through with it.
+        self._deleted_listener = chunk_notice.NoticeConnection(
+            self._on_chunk_deleted, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, globally=True
+        )
+
+        # Shift+F: usdview's own F frames the selection, this one only turns to face it.
+        self._look_at_shortcut = QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F"), self.usdviewAPI.qMainWindow, self.look_at_selection
+        )
 
     def get_current_frame(self) -> float:
         return self.usdviewAPI.dataModel.currentFrame
@@ -225,6 +235,29 @@ class UsdviewScene(chunk_scene.SceneSender):
             return None
         return free_cam.computeGfCamera(Gf.BBox3d())
 
+    def look_at(self, point) -> None:
+        free_cam = self._get_free_camera()
+        if free_cam is None:
+            # A camera prim is in view; usdview makes a free camera from it when navigated.
+            stage_view = self._get_stage_view()
+            if stage_view is None:
+                return
+            stage_view.switchToFreeCamera(False)
+            free_cam = self._get_free_camera()
+            if free_cam is None:
+                return
+        cam = free_cam.computeGfCamera(Gf.BBox3d())
+        eye = cam.frustum.position
+        if (Gf.Vec3d(*point) - eye).GetLength() < 1e-9:
+            return
+        up = Gf.Vec3d(0, 0, 1) if UsdGeom.GetStageUpAxis(self.get_stage()) == UsdGeom.Tokens.z else Gf.Vec3d(0, 1, 0)
+        if abs(Gf.Dot((Gf.Vec3d(*point) - eye).GetNormalized(), up)) > 0.9999:
+            up = cam.frustum.ComputeUpVector()
+        # The camera's own transform, then the free camera reads its angles back from it.
+        free_cam._camera.transform = Gf.Matrix4d().SetLookAt(eye, Gf.Vec3d(*point), up).GetInverse()
+        free_cam._pullFromCameraTransform()
+        free_cam.signalFrustumChanged.emit()
+
     def _set_viewport_camera(self, prim):
         app = self.usdviewAPI._UsdviewApi__appController
         app._dataModel.viewSettings.cameraPrim = prim
@@ -347,6 +380,23 @@ class UsdviewScene(chunk_scene.SceneSender):
         # prim -- which, from a timer slot, takes the application down with it.
         if self._snap_prim is not None and self._snap_prim.IsValid():
             self._set_viewport_camera(self._snap_prim)
+
+    def _on_chunk_deleted(self, notice, sender) -> None:
+        # Next tick: the prim goes after the notice.
+        QtCore.QTimer.singleShot(0, self._drop_dead_camera)
+
+    def _drop_dead_camera(self) -> None:
+        """Go back to the free camera if the camera prim in view no longer exists."""
+        try:
+            prim = self.usdviewAPI.dataModel.viewSettings.cameraPrim
+        except Exception:  # noqa: BLE001 - usdview is shutting down
+            return
+        if prim is None or prim.IsValid():
+            return
+        self.release_viewport_camera()
+        stage_view = self._get_stage_view()
+        if stage_view is not None:
+            stage_view.switchToFreeCamera(False)
 
     def _on_stage_replaced(self):
         self.notify_stage_replaced(self.get_stage())
