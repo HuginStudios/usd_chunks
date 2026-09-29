@@ -44,7 +44,7 @@ differently:
   taking a step out of the middle doesn't break the rest. Value wires are just removed.
 - Connecting a value port writes a real `@Node.param@` expression, so it's an actual data
   connection, not just a line on screen (see [The graph is
-  USD](index.md#the-graph-is-usd)).
+  USD](index.md#the-graph-is-usd) and [Expressions](expressions.md)).
 
 ## Nothing cooks without a View
 

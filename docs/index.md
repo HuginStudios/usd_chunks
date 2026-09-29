@@ -16,9 +16,11 @@ screen.
    params and flags.
 4. [View and ChunkGroup](core-chunks.md): the two chunks that organise a graph instead of
    changing the stage.
-5. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
+5. [Expressions](expressions.md): make one param read another, like `@Box.size@ * 2`,
+   and use USD's `${NAME}` variables.
+6. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
    `execute()` and `commit()`.
-6. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
+7. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
    interpreter before making it a module.
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does

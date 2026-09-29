@@ -114,8 +114,8 @@ too, so `add_param`, `add_params`, `get_param` and `get_my_params` work at every
 
 - `Group`: a plain container.
 - `ListGroup`: items can be added and removed while it runs, for lists of any length.
-- `Vector`: a fixed set of params used as one value, like X, Y and Z. Expressions can refer
-  to the whole vector as `@Node.vecParam@`.
+- `Vector`: a fixed set of params used as one value, like X, Y and Z.
+  [Expressions](expressions.md) can refer to the whole vector as `@Node.vecParam@`.
 
 ```py
 transform = chunk.Group("transform", "Transform")
