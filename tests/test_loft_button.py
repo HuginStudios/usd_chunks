@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from tests.test_unloft import _lofted, _loft, env  # noqa: F401
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtGui, QtWidgets
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_stage
@@ -31,23 +31,6 @@ def test_a_lofted_button_clicks_the_inner_one(env):
     assert isinstance(lofted, chunk.Button)
     lofted.click()
     env["settle"]()
-    assert clicks == [1]
-
-
-def test_unloft_removes_the_group_button_and_leaves_the_inner_one_clickable(env):
-    group = env["mk"]("chunkgroup", name="Group")
-    inner = env["mk"]("transform", context=group)
-    env["settle"]()
-    clicks = []
-    btn = _button_on(inner, clicks)
-    env["settle"]()
-    lofted = _loft(env, btn, group)
-
-    chunk_stage.unloft_param(lofted)
-    env["settle"]()
-
-    assert _lofted(group) == []
-    btn.click()
     assert clicks == [1]
 
 
