@@ -174,7 +174,9 @@ _proxy_sink: QtWidgets.QWidget | None = None
 
 def _get_proxy_sink() -> QtWidgets.QWidget:
     global _proxy_sink
-    if _proxy_sink is None:
+    # Rebuilt if Qt deleted it (a host tearing down its windows): a dead sink raised on
+    # every node body built afterwards.
+    if _proxy_sink is None or not shiboken6.isValid(_proxy_sink):
         _proxy_sink = QtWidgets.QWidget()
         # Logically visible (so children inherit WA_WState_Visible and isVisible()
         # returns True for port placement) but physically suppressed so nothing renders.
@@ -1946,6 +1948,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._dirty: bool = True  # set by invalidate(); cleared by a (re)build
         self._edge_timer: QtCore.QTimer | None = None
         self._proxy_busy_wait_since: float | None = None  # see _create_proxies_batch
+        # The stage listeners build() makes. Both are global, so a scene Qt has deleted kept
+        # reacting to every stage change, and a later one reached the dead scene. Dropped
+        # on destroyed, through a list the lambda holds rather than through self.
+        self._stage_listeners: list[NoticeConnection] = []
+        self.destroyed.connect(lambda *_, _conns=self._stage_listeners: [c.disconnect() for c in _conns])
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -1963,12 +1970,15 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage = stage
         self._scene_sender = scene_sender
 
+        for conn in self._stage_listeners:
+            conn.disconnect()
         self._objects_changed_conn = NoticeConnection(
             self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
         )
         self._chunk_deleted_conn = NoticeConnection(
             self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True
         )
+        self._stage_listeners[:] = [self._objects_changed_conn, self._chunk_deleted_conn]
 
         self._rebuild_nodes()
         # The context this graph was just built for is what the path row names, and a build

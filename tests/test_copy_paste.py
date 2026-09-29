@@ -7,7 +7,7 @@ from pxr import Sdf, Usd
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
-from usd_chunks import chunk_registry, chunk_widget_api
+from usd_chunks import chunk_registry, chunk_stage, chunk_widget_api
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.frontends.qt import nodegraph
@@ -428,8 +428,11 @@ def test_duplicate_preserves_internal_wiring(graph) -> None:
     # 80ms timer when a context has no view yet, and it selects the view it creates -- which
     # lands in the middle of this test and takes the selection the duplicates should hold.
     # Previously masked by module-scoped fixtures: an earlier test in the file had already
-    # caused a view to exist, so the timer never fired here.
-    _pump(qapp, 0.3)
+    # caused a view to exist, so the timer never fired here. Waits for the view itself: a
+    # fixed pump ran out on a busy machine and the view then landed mid-duplicate.
+    end = time.monotonic() + 10.0
+    while time.monotonic() < end and not any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()):
+        qapp.processEvents()
 
     scene.set_selected_chunks([a.chunk, b.chunk])
     gv._duplicate_selected()

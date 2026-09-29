@@ -8,9 +8,9 @@ from usd_chunks.chunk_registry import ChunkLayerManager
 import chunk_stubs
 
 try:
-    from PySide6 import QtWidgets
+    from PySide6 import QtCore, QtWidgets
 except ImportError:  # the ui extra is optional; only Qt tests ask for qapp
-    QtWidgets = None
+    QtCore = QtWidgets = None
 
 # Qt widget tests (test_chunk_pin.py, test_filter_bar.py, ...) instantiate real
 # ChunkWidget/QMainWindow objects via the qapp fixture below -- without forcing Qt's
@@ -70,3 +70,29 @@ def unregister_stub_modules():
     """Drop the stub chunk modules a test registered (chunk_stubs), so none outlives it."""
     yield
     chunk_stubs.unregister_stub_modules()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def delete_widgets_left_by_the_file():
+    """Delete every widget a test file leaves behind, once the file is done.
+
+    Many Qt tests only close() their panel, and a deleteLater() never runs without an event
+    loop. The widgets then stay alive for the rest of the worker, and every Qt call in every
+    later file gets slower: after test_copy_paste.py left 1300 widgets, building the same 200
+    widgets took 235ms instead of 17ms. Per file, not per test: fixtures shared across a
+    file's tests still need their widgets until the file ends.
+    """
+    yield
+    app = QtWidgets.QApplication.instance() if QtWidgets is not None else None
+    if app is None:
+        return
+    from usd_chunks.frontends.qt import nodegraph
+
+    sink = nodegraph._proxy_sink  # shared by every graph for the whole process; keep it
+    for widget in app.topLevelWidgets():
+        if widget is sink:
+            continue
+        widget.close()
+        widget.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    app.processEvents()
