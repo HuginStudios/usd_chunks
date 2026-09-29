@@ -628,3 +628,28 @@ class TestDefaultContext:
         stage = self._open(tmp_path, SIDE_BY_SIDE)
         assert "/chunks/ChunkGroup" in chunk_graph.contexts(stage)
         assert chunk_graph.parent_context("/chunks/ChunkGroup", chunk_graph.contexts(stage)) == "/chunks"
+
+
+class TestPasteKeepsDisabled:
+    def test_a_disabled_chunk_pastes_disabled(self):
+        from graph_fixtures import _Scene
+        from usd_chunks import chunk_registry
+        from usd_chunks.chunk_stage import initialize as chunk_usd_init
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = _Scene(stage)
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        chunk_registry.ChunkLayerManager().initialize(stage)
+        chunk_usd_init(stage, scene)
+        module = chunk_registry.ChunkRegistry().get_chunk_module("transform")
+        original = (module.create() if module.loaded else module.load())[0]
+        scene.add_chunk(original)
+        original.set_state(ChunkFlags.State.DISABLED)
+
+        item = chunk_graph.snapshot_chunk_node(original, scene, stage, (0.0, 0.0))
+        made = chunk_graph.materialize(scene, [item], lambda x, y: (x, y))
+
+        pasted = made[0]
+        prim = stage.GetPrimAtPath(chunk_graph.chunk_stage.get_chunk_prim_path(pasted))
+        assert pasted.has_state(ChunkFlags.State.DISABLED)
+        assert chunk_graph.is_disabled(prim)

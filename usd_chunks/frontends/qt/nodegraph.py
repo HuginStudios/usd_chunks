@@ -38,9 +38,7 @@ _iter_prim_connections = chunk_graph.iter_prim_connections
 _iter_group_children = chunk_graph.iter_group_children
 _snapshot_chunk_node = chunk_graph.snapshot_chunk_node
 _snapshot_list_sizes = chunk_graph.snapshot_list_sizes
-_apply_list_sizes = chunk_graph.apply_list_sizes
 _snapshot_param_values = chunk_graph.snapshot_param_values
-_apply_param_values = chunk_graph.apply_param_values
 _iter_copyable_params = chunk_graph.iter_copyable_params
 _iter_chunk_param_paths = chunk_graph.iter_chunk_param_paths
 _node_clipboard = chunk_graph.node_clipboard
@@ -3364,17 +3362,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # VALUE_CHANGED notice that would otherwise have corrected it, leaving the
                 # field looking permanently blank despite the underlying param value being
                 # correct.
-                # Rows first: a list group starts empty on a fresh chunk, so its values
-                # have nowhere to land until the rows it had are back.
-                chunk_graph.apply_name(primary, item)
-                _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
-                _apply_param_values(primary, item.values)
+                chunk_graph.apply_clipboard_node(primary, item)
                 pos = (scene_pos.x() + item.rel_pos[0], scene_pos.y() + item.rel_pos[1])
                 # USD is Y-up, Qt is Y-down -- _create_node_pos is read by chunk_stage in USD
                 # space (see chunk_stage._create_node_pos usage elsewhere in this file).
                 with chunk_stage.creating_at((pos[0], -pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
+                    chunk_graph.apply_disabled(primary, item)
                     for c in guarded:
                         c._executing = False
                     if view_exists:
@@ -3477,14 +3472,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 # _materialize_at for why (a widget can be built synchronously as a side
                 # effect of add_chunk's own notice dispatch, and reads its initial value
                 # once, at construction).
-                # Rows first: a list group starts empty on a fresh chunk, so its values
-                # have nowhere to land until the rows it had are back.
-                chunk_graph.apply_name(primary, item)
-                _apply_list_sizes(primary, getattr(item, 'list_sizes', []))
-                _apply_param_values(primary, item.values)
+                chunk_graph.apply_clipboard_node(primary, item)
                 with chunk_stage.creating_at((item.rel_pos[0], -item.rel_pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
+                    chunk_graph.apply_disabled(primary, item)
                     for c in guarded:
                         c._executing = False
                     for c in blockable:
@@ -3605,11 +3597,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # just pasted are inside a group the graph is not currently showing -- so they have
         # no node, no ports, and nothing to wire. Going straight to the exec connection is
         # the same thing the ports would have authored.
+        param_edges = []
         for edge in edges:
             if edge.src_index >= len(pasted) or edge.dst_index >= len(pasted):
                 continue
             if not (edge.src_attr == _EXEC_OUTPUT and chunk_stage.is_exec_input_name(edge.dst_attr)):
-                continue  # a typed param wire; those go through ports and are left alone
+                param_edges.append(edge)
+                continue
             # Into the slot it came from, and stacked: a merge inside the selection keeps
             # its branches in order.
             chunk_stage.connect_exec(
@@ -3618,6 +3612,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 chunk_stage.get_chunk_prim_path(pasted[edge.dst_index]),
                 input_name=edge.dst_attr, append=True,
             )
+        # Param wires are read off the stage the same way, so they need no ports either.
+        chunk_graph.rewire_pasted(stage, dict(enumerate(pasted)), param_edges)
 
         # Put the group where the selection was in the chain, each consumer in the slot the
         # selection fed. Writing every consumer's plain inputs:chunk instead replaced the
