@@ -164,8 +164,8 @@ def main() -> chunk.Chunk:
     return chunk_api
 
 
-def config() -> chunk.DefaulConfig:
-    return chunk.DefaulConfig(
+def config() -> chunk.DefaultConfig:
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
         description=(
             "Makes a prim a collider, a spinning part (kinematic body on a revolute joint with a\n"

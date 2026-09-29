@@ -14,10 +14,10 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import export_chunks, initialize as _chunk_usd_init
 
-sa = importlib.import_module("scripts.usd.set_attributes")
+sa = importlib.import_module("chunks.usd.set_attributes")
 
 
 class _DummyScene(SceneSender):

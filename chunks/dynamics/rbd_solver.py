@@ -3292,7 +3292,7 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
     """Global CHUNK_CHANGED listener -- catches an upstream chunk (e.g. a Transform feeding
     the collider or target prim) changing, even though it's wired via a live-drawn graph
     connection rather than DagNode.add_dependency(). Real graph wiring (_author_connection in
-    chunk_qt_nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
+    frontends/qt/nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
     calls add_dependency, so ChunkNoticeAlias.INPUT_CHANGED (which is purely a DagNode concept)
     never fires between two chunks connected that way. view_cook_list walks the same
     real USD connections recook_for_view and get_upstream_stage already trust, so membership in

@@ -452,8 +452,8 @@ def main() -> chunk.Chunk:
     return chunk_api
 
 
-def config() -> chunk.DefaulConfig:
-    return chunk.DefaulConfig(
+def config() -> chunk.DefaultConfig:
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.EXAMPLES,
         description=(
             "A parametric double-roll rock crusher -- hopper, toothed rollers, chute, conveyor\n"

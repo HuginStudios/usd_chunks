@@ -126,8 +126,8 @@ def main() -> chunk.Chunk:
     return chunk_api
 
 
-def config() -> chunk.DefaulConfig:
-    return chunk.DefaulConfig(
+def config() -> chunk.DefaultConfig:
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.PROPERTIES,
         description=(
             "Writes named, typed attributes on prims and applies API schemas -- the general edit\n"

@@ -22,12 +22,12 @@ import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
-flow = importlib.import_module("scripts.dynamics.surface_flow")
-trails = importlib.import_module("scripts.modelling.trails")
-noise = importlib.import_module("scripts.modelling.noise_field")
+flow = importlib.import_module("chunks.dynamics.surface_flow")
+trails = importlib.import_module("chunks.modelling.trails")
+noise = importlib.import_module("chunks.modelling.noise_field")
 
 
 def _cylinder(stage, path="/Can", radius=0.05, height=0.2, nu=48, nv=24, capped=True):

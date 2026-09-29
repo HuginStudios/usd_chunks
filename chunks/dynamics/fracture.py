@@ -566,7 +566,7 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
 
 #: Authored results, keyed on everything that shapes them. Small: re-cooks of the same few
 #: settings are the whole point, and each entry holds a full layer.
-_CACHE: "dict[bytes, tuple]" = {}
+_CACHE: dict[bytes, tuple] = {}
 _CACHE_MAX = 6
 _PARAMS = ("source", "source_prims", "output_path", "generations", "jaggedness", "piece_shape", "bevel",
            "bevel_detail", "seed", "count", "size",
@@ -841,8 +841,8 @@ def main() -> chunk.Chunk:
     return chunk_api
 
 
-def config() -> chunk.DefaulConfig:
-    return chunk.DefaulConfig(
+def config() -> chunk.DefaultConfig:
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
         description=(
             "Pre-breaks a model -- or procedural rocks -- into a tree of pieces that exactly\n"

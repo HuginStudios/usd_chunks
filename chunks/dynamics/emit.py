@@ -204,8 +204,8 @@ def main() -> chunk.Chunk:
     return chunk_api
 
 
-def config() -> chunk.DefaulConfig:
-    return chunk.DefaulConfig(
+def config() -> chunk.DefaultConfig:
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
         description=(
             "Rewrites a PointInstancer's instances as a stream over time: where each appears, when\n"

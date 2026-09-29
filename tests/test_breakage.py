@@ -22,13 +22,13 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
-fr = importlib.import_module("scripts.dynamics.fracture")
-rig = importlib.import_module("scripts.dynamics.crusher_rig")
-emit = importlib.import_module("scripts.dynamics.emit")
-rbd = importlib.import_module("scripts.dynamics.rbd_solver")
+fr = importlib.import_module("chunks.dynamics.fracture")
+rig = importlib.import_module("chunks.dynamics.crusher_rig")
+emit = importlib.import_module("chunks.dynamics.emit")
+rbd = importlib.import_module("chunks.dynamics.rbd_solver")
 brk = rbd._breakage()
 
 needs_manifold = pytest.mark.skipif(not fr._HAS_MANIFOLD, reason="needs manifold3d")
