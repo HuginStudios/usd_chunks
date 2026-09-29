@@ -1,15 +1,16 @@
 """Particle Solver: the geometry helpers, and the chunk wired to Scatter Points and to an
 RBD-style bake. The solver runs on a coarse grid and a handful of frames to stay quick."""
+from __future__ import annotations
 
 import numpy as np
 import pytest
 from pxr import Gf, Usd, UsdGeom, UsdShade, Vt
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
-from scripts.dynamics import particle_solver as ps
+from chunks.dynamics import particle_solver as ps
 
 
 def _box(stage, path, lo, hi):

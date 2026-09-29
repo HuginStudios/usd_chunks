@@ -21,6 +21,7 @@ and stiffness are rescaled rather than the solver retuned per scene scale.
 Requires: pxr (OpenUSD), usd_chunks, taichi, numpy.
 """
 
+# ruff: noqa: I002
 # No `from __future__ import annotations`: it turns the kernels' `ti.f32` hints into strings,
 # which Taichi refuses to compile.
 
@@ -1453,8 +1454,8 @@ def _run(owner, notice, sender):
             driven = f"\ndriving {drive_instances.count} instances " + \
                 ("(each follows its own blob)" if follow_blobs else "(carried by the flow)")
         report(
-            f"{len(particles_w)} particles{subsampled} Â· {material} Â· grid {grid_res}Â³ Â· "
-            f"{result['substeps']} substeps/frame Â· {elapsed:.1f}s\n"
+            f"{len(particles_w)} particles{subsampled} · {material} · grid {grid_res}³ · "
+            f"{result['substeps']} substeps/frame · {elapsed:.1f}s\n"
             f"{len(surface)} surface points{driven}"
         )
         node.unset_state(chunk.ChunkFlags.State.STALE)
@@ -1639,7 +1640,7 @@ def main():
     sim.add_param(chunk.Spinbox("fps", "FPS", default_value=24.0))
     sim.add_param(chunk.Spinbox(
         "gravity", "Gravity", default_value=0.0,
-        tooltip="Along the up axis, in scene units/sÂ². 0 = Earth gravity in this stage's "
+        tooltip="Along the up axis, in scene units/s². 0 = Earth gravity in this stage's "
         "units (-981 in a centimetre scene, -9.81 in a metre one).",
     ))
     sim.add_param(chunk.Spinbox(
@@ -1673,7 +1674,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(
+    return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
         requirements=["taichi>=1.7,<2", "numpy>=2,<3"],
         description=(
