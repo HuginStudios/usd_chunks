@@ -192,3 +192,42 @@ def test_a_typed_focus_point_works_without_a_selection(qapp) -> None:
     qapp.processEvents()
 
     assert camera.get_param("focusDistance").value == pytest.approx(30.0)
+
+
+# ---------------------------------------------------------------------------
+# groups, deletion and look-at
+# ---------------------------------------------------------------------------
+
+def test_the_lens_params_sit_in_collapsed_groups(qapp) -> None:
+    _, _, camera = _camera_scene(qapp)
+
+    for group, member in (("lens_grp", "focalLength"), ("sensor_grp", "horizontalAperture"),
+                          ("focus_grp", "focusDistance"), ("clipping_grp", "clippingRange")):
+        grp = camera.get_param(group)
+        assert grp is not None and member in [p.name for p in grp.get_params()]
+        assert grp.has_state(chunk_registry.ChunkFlags.State.COLLAPSED)
+
+
+def test_a_freecam_move_after_the_chunk_is_deleted_does_not_raise(qapp) -> None:
+    """The global CAMERA_CHANGED listener outlives the chunk's params."""
+    _, scene, camera = _camera_scene(qapp)
+    owner = camera.get_param("lock_to_freecam")
+    camera.request_delete()
+
+    _module()._apply_freecam_transform(owner, None, scene)
+
+
+def test_look_at_selection_aims_the_scene_at_the_selection_centre(qapp) -> None:
+    stage, scene, _ = _camera_scene(qapp)
+    aimed = []
+    type(scene).look_at = lambda self, point: aimed.append(tuple(point))
+    scene.selected = [_cube(stage, "/world/a", (0, 0, -12)), _cube(stage, "/world/b", (0, 0, -18))]
+
+    try:
+        assert scene.look_at_selection() is True
+        scene.selected = []
+        assert scene.look_at_selection() is False
+    finally:
+        del type(scene).look_at
+
+    assert aimed == [pytest.approx((0.0, 0.0, -15.0))]

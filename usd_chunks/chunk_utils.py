@@ -10,8 +10,9 @@ import hashlib
 import logging
 import re
 import uuid
+from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
-from pxr import Gf, Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
@@ -1528,3 +1529,33 @@ def as_attr_value(attr, value):
         if gf_type in _INT_VECTORS:
             return gf_type(*(int(round(v)) for v in value))
     return value
+
+
+#: Purposes a selected prim's bound is measured with. Guides are left out: a light's or
+#: camera's own guide geometry is not what anyone focuses on.
+_FOCUS_PURPOSES = (UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy)
+
+
+def focus_point_of(
+    stage: Usd.Stage,
+    prims: Iterable[Usd.Prim],
+    time: Usd.TimeCode = Usd.TimeCode.Default(),
+    exclude: Sdf.Path | None = None,
+) -> Gf.Vec3d | None:
+    """The average world-space centre of `prims`, or None when nothing is measurable.
+
+    A prim with no extent counts from its origin. `exclude` is skipped (the camera itself).
+    """
+    cache = UsdGeom.BBoxCache(time, list(_FOCUS_PURPOSES), useExtentsHint=True)
+    points = []
+    for prim in prims:
+        if not prim or not prim.IsValid() or (exclude is not None and prim.GetPath() == exclude):
+            continue
+        bound = cache.ComputeWorldBound(prim)
+        if not bound.GetRange().IsEmpty():
+            points.append(bound.ComputeCentroid())
+        elif prim.IsA(UsdGeom.Xformable):
+            points.append(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(time).ExtractTranslation())
+    if not points:
+        return None
+    return sum(points, Gf.Vec3d(0, 0, 0)) / len(points)

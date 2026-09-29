@@ -675,6 +675,21 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Set the viewport to look through the given camera prim."""
         pass
 
+    def look_at(self, point: Gf.Vec3d) -> None:
+        """Turn the viewport camera in place to face the world-space `point`."""
+        pass
+
+    def look_at_selection(self) -> bool:
+        """Turn the viewport camera to face the selected prims. False if none is measurable."""
+        from usd_chunks import chunk_utils  # deferred: chunk_utils imports this package's model
+
+        stage = self.get_stage()
+        point = chunk_utils.focus_point_of(stage, self.get_selected_prims()) if stage else None
+        if point is None:
+            return False
+        self.look_at(point)
+        return True
+
     def release_viewport_camera(self) -> None:
         """The prim handed to set_viewport_camera no longer claims the viewport.
 

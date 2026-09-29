@@ -3,7 +3,7 @@ import os
 import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
-from usd_chunks import chunk, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_utils
 from usd_chunks.gizmo import runtime as chunk_gizmo
 
 #: The legacy shared transform op, from before each chunk owned a named one. Still read, so
@@ -74,8 +74,11 @@ def set_preset_values(owner, notice, sender):
 def _apply_freecam_transform(owner, notice, sender):
     _chunk = owner.get_chunk()
     scene = _chunk.get_scene()
-    do_lock = _chunk.get_param("lock_to_freecam").value
-    if not do_lock:
+    lock = _chunk.get_param("lock_to_freecam")
+    if lock is None:
+        # The chunk is mid-delete and its params are gone; this global listener outlives them.
+        return
+    if not lock.value:
         # Also reached on every camera move while the lock is off, so the host's release
         # must be (and is) idempotent. Here rather than only on the checkbox because the
         # checkbox callback is this same function.
@@ -174,33 +177,6 @@ def _without_legacy_op(node, stage, prim, order):
     return [op for op in order if op != _LEGACY_OP]
 
 
-#: Purposes a selected prim's bound is measured with. Guides are left out: a light's or
-#: camera's own guide geometry is not what anyone focuses on.
-_FOCUS_PURPOSES = (UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy)
-
-
-def focus_point_of(stage, prims, time=Usd.TimeCode.Default(), exclude=None):
-    """The world-space point `prims` focus on, or None when nothing is measurable.
-
-    Each prim counts from the centre of its world bound (its origin when it has no extent
-    -- a bare Xform, a light); several average, so a selection of two houses focuses
-    between them. `exclude` is the camera's own path: a camera is not its own subject.
-    """
-    cache = UsdGeom.BBoxCache(time, list(_FOCUS_PURPOSES), useExtentsHint=True)
-    points = []
-    for prim in prims:
-        if not prim or not prim.IsValid() or (exclude is not None and prim.GetPath() == exclude):
-            continue
-        bound = cache.ComputeWorldBound(prim)
-        if not bound.GetRange().IsEmpty():
-            points.append(bound.ComputeCentroid())
-        elif prim.IsA(UsdGeom.Xformable):
-            points.append(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(time).ExtractTranslation())
-    if not points:
-        return None
-    return sum(points, Gf.Vec3d(0, 0, 0)) / len(points)
-
-
 def focus_depth(stage, camera_path, point, time=Usd.TimeCode.Default()):
     """The focus distance that puts world-space `point` in focus for the camera at `camera_path`.
 
@@ -218,13 +194,11 @@ def focus_depth(stage, camera_path, point, time=Usd.TimeCode.Default()):
 
 
 def selection_focus_distance(stage, camera_path, prims, time=Usd.TimeCode.Default()):
-    """The focus distance for `prims` -- focus_depth of their focus_point_of. None when
-    nothing is measurable or there is no camera, so the caller leaves the value alone.
-    """
+    """The focus distance for `prims`, or None when nothing is measurable."""
     camera = stage.GetPrimAtPath(camera_path) if camera_path else None
     if camera is None or not camera.IsValid():
         return None
-    point = focus_point_of(stage, prims, time, exclude=camera.GetPath())
+    point = chunk_utils.focus_point_of(stage, prims, time, exclude=camera.GetPath())
     return None if point is None else focus_depth(stage, camera_path, point, time)
 
 
@@ -252,7 +226,7 @@ def _focus_on_selection(owner, notice, sender):
     camera = stage.GetPrimAtPath(camera_path) if camera_path else None
     if camera is None or not camera.IsValid():
         return
-    point = focus_point_of(stage, scene.get_selected_prims(), _time(scene), exclude=camera.GetPath())
+    point = chunk_utils.focus_point_of(stage, scene.get_selected_prims(), _time(scene), exclude=camera.GetPath())
     if point is None:
         return
     _chunk.get_param("focus_point").value = tuple(float(c) for c in point)
@@ -429,6 +403,16 @@ def _author_camera_transform(node, stage):
         _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
 
+def _section(name: str, label: str, gizmo: str | None = None) -> chunk.Group:
+    """A collapsed, labelled group."""
+    grp = chunk.Group(
+        name, label, gizmo=gizmo,
+        flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
+    )
+    grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
+    return grp
+
+
 def main():
     # gizmo="transform" gives the whole chunk one native manipulator, built from the three
     # groups below. The focus-distance handle is declared separately in config(), since it
@@ -463,44 +447,54 @@ def main():
     formats.add_callback(set_preset_values, send_on_create=False)
     chunk_api.add_param(formats)
 
-    
-    chunk_api.add_param(chunk.Slider("focalLength", "Focal Length", min_value=1.0, max_value=800.0))
-    chunk_api.add_param(chunk.Slider("horizontalAperture", "Horizontal Aperture", min_value=1.0, max_value=100.0))
-    chunk_api.add_param(chunk.Slider("horizontalApertureOffset", "Horizontal Aperture Offset", min_value=-50.0, max_value=50.0))
-    chunk_api.add_param(chunk.Slider("verticalAperture", "Vertical Aperture", min_value=1.0, max_value=100.0))
-    chunk_api.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
-    chunk_api.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
-    chunk_api.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
-    # One Vector, not two Sliders: UsdGeom.Camera keeps near and far together as the float2
-    # `clippingRange`, and a Vector is the one param shape connect_usd_attr binds to a float2
-    # whole. Two scalar sliders would each need their own write-half-the-tuple callback.
-    # Defaults are the schema's own (1, 1000000) so an untouched camera clips as USD would.
-    chunk_api.add_param(chunk.Vector(
-        "clippingRange", "Clipping Range",
-        param=chunk.Slider(min_value=0.001, max_value=100000.0), length=2, suffixes=("Near", "Far"),
-        default_value=(1.0, 1000000.0),
-        tooltip="Near and far clipping planes, in scene units. Geometry closer than Near or "
-        "further than Far is not drawn.",
-    ))
+
+    lens = _section("lens_grp", "Lens")
+    lens.add_param(chunk.Slider("focalLength", "Focal Length", min_value=1.0, max_value=800.0))
+    lens.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
+    chunk_api.add_param(lens)
+
+    sensor = _section("sensor_grp", "Sensor")
+    sensor.add_param(chunk.Slider("horizontalAperture", "Horizontal Aperture", min_value=1.0, max_value=100.0))
+    sensor.add_param(chunk.Slider("verticalAperture", "Vertical Aperture", min_value=1.0, max_value=100.0))
+    sensor.add_param(chunk.Slider("horizontalApertureOffset", "Horizontal Aperture Offset", min_value=-50.0, max_value=50.0))
+    sensor.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
+    chunk_api.add_param(sensor)
+
+    focus = _section("focus_grp", "Focus")
+    focus.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
     focus_btn = chunk.Button(
         "focus_on_selection", "Focus on Selection",
         tooltip="Remember the selected prim as the Focus Point (the average of several) and "
         "turn Autofocus on, so Focus Distance follows it as the camera moves.",
     )
     focus_btn.add_callback(_focus_on_selection, send_on_create=False)
-    chunk_api.add_param(focus_btn)
-    chunk_api.add_param(chunk.Checkbox(
+    focus.add_param(focus_btn)
+    focus.add_param(chunk.Checkbox(
         "autofocus", "Autofocus", default_value=False,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
         tooltip="Keep Focus Distance on the Focus Point from wherever the camera is -- flown, "
         "dragged or typed. Off, the distance stays where it was last set.",
     ))
-    chunk_api.add_param(chunk.Vector(
+    focus.add_param(chunk.Vector(
         "focus_point", "Focus Point",
         param=chunk.Slider(), length=3, suffixes="XYZ", default_value=(0.0, 0.0, 0.0),
         flags=chunk.ChunkFlags.GroupFlags.LABELED | chunk.ChunkFlags.GroupFlags.COLLAPSABLE,
         tooltip="World-space point Autofocus keeps in focus. Set by Focus on Selection, or type one.",
     ))
+    chunk_api.add_param(focus)
+
+    clipping = _section("clipping_grp", "Clipping")
+    # One Vector, not two Sliders: UsdGeom.Camera keeps near and far together as the float2
+    # `clippingRange`, and a Vector is the one param shape connect_usd_attr binds to a float2
+    # whole. Defaults are the schema's own (1, 1000000) so an untouched camera clips as USD would.
+    clipping.add_param(chunk.Vector(
+        "clippingRange", "Clipping Range",
+        param=chunk.Slider(min_value=0.001, max_value=100000.0), length=2, suffixes=("Near", "Far"),
+        default_value=(1.0, 1000000.0),
+        tooltip="Near and far clipping planes, in scene units. Geometry closer than Near or "
+        "further than Far is not drawn.",
+    ))
+    chunk_api.add_param(clipping)
 
     default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
     formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
@@ -513,11 +507,7 @@ def main():
         ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"), -180.0, 180.0, 0.0, "rotate"),
         ("scale_grp",     "Scale",     ("sx", "sy", "sz"),    0.0, 100.0, 1.0, "scale"),
     ]:
-        grp = chunk.Group(
-            grp_name, grp_label, gizmo=gizmo,
-            flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
-        )
-        grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
+        grp = _section(grp_name, grp_label, gizmo=gizmo)
         for name, label in zip(axes, ("X", "Y", "Z")):
             grp.add_param(chunk.Slider(
                 name, label, min_value=min_v, max_value=max_v, default_value=default,
@@ -591,6 +581,9 @@ def config():
         Camera chunk — creates a UsdGeom.Camera prim and exposes its lens
         parameters as live sliders, with optional real-world camera presets
         and freecam lock for DCC viewport alignment.
+
+        Parameters are grouped into collapsed Lens, Sensor, Focus, Clipping and
+        Transform sections. Shift+F in the viewport turns the view to face the selection.
 
         Parameters:
           - Prim Path: stage path for the camera prim. Auto-initialised to a
