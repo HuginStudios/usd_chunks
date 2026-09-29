@@ -88,8 +88,11 @@ def network(tmp_path):
 
 
 def _sweep(network, out, *extra):
+    # --jobs 4: a sweep that runs one process per variant runs them one at a time by
+    # default, which made this the slowest file in the suite. A test's own --jobs, in
+    # `extra`, comes later and wins.
     cmd = [sys.executable, "-m", "usd_chunks.cli", "sweep",
-           str(network), "--out", str(out), *extra]
+           str(network), "--out", str(out), "--jobs", "4", *extra]
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
 
 
