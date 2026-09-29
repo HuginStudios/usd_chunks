@@ -1,4 +1,4 @@
-"""Regression: reloading a saved multi-chunk scene (Sublayer -> Transform -> Create Layer ->
+"""Regression: reloading a saved multi-chunk scene (Sublayer -> Transform -> Layer ->
 Edit Target -> Scatter Points) re-executed the last chunk in the chain several times more than
 necessary. Root cause: load_chunks' "recreate each existing named top-level context" phase
 (scene.add_context, run before chunk_notice._loading_stage is ever set) can itself trigger
@@ -16,8 +16,9 @@ from __future__ import annotations
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import export_chunks, initialize as _chunk_usd_init
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init2
 
 
 class _DummyScene(SceneSender):
@@ -54,7 +55,7 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
 
     sub = _make(scene, "sublayer")
     tr = _make(scene, "transform")
-    cl = _make(scene, "create_layer")
+    cl = _make(scene, "layer")
     et = _make(scene, "edit_target")
     sc = _make(scene, "scatter_points")
 
@@ -64,8 +65,8 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
     sc.add_dependency(et)
 
     et_menu = et.get_param("edit_target")
-    if et_menu is not None and "(Follow Upstream Create Layer)" in (et_menu.menu_items or []):
-        et_menu.value = "(Follow Upstream Create Layer)"
+    if et_menu is not None and "(Follow Upstream Layer)" in (et_menu.menu_items or []):
+        et_menu.value = "(Follow Upstream Layer)"
 
     path = str(tmp_path / "chain.usda")
     export_chunks(scene, path)
@@ -79,8 +80,6 @@ def test_reload_bounds_downstream_reexecution_across_the_full_chain(tmp_path) ->
     scene2 = _StageScene2()
     chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage2)
-
-    from usd_chunks.chunk_stage import initialize as _chunk_usd_init2
 
     reg = chunk_registry.ChunkRegistry()
     mod_wrapper = reg.get_chunk_module("scatter_points")

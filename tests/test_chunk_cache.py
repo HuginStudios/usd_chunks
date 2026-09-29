@@ -1,16 +1,7 @@
 """The installed-package cache is plain JSON, and an unreadable one is thrown away.
 
-This cache used to ride on the chunk serialiser. That encoder falls back to pickle for
-anything it has no rule for, and a `set` of version strings is exactly that -- so a file
-named `..._chunk_package_cache.json` held, per package:
-
-    "absl-py": {"pickle": "gASVDQAAAAAAAACPlCiMBTIuNC4wlJAu\n"}
-
-base64 pickle, handed to pickle.loads on every startup, to recover {"2.4.0"}.
-
 Nothing depends on this cache being right -- update_cache rebuilds it from `pip list` on a
-miss -- so the correct answer to a file we cannot read is to drop it. That is also what
-retires the old format: it is never parsed, so its payloads never reach pickle.
+miss -- so the correct answer to a file we cannot read is to drop it.
 """
 
 from __future__ import annotations
@@ -41,22 +32,18 @@ def test_a_version_that_could_not_be_determined_round_trips_as_none(tmp_path):
 
 
 def test_the_file_is_plain_readable_json(tmp_path):
-    """No pickle, no base64 -- someone opening this file should see package names."""
+    """Someone opening this file should see package names and versions."""
     path = tmp_path / "cache.json"
     chunk_cache.write_package_cache(path, {"numpy": {"2.4.3"}})
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw == {"numpy": ["2.4.3"]}
-    assert "pickle" not in path.read_text(encoding="utf-8")
 
 
-def test_an_old_pickle_bearing_cache_is_dropped_rather_than_decoded(tmp_path):
-    """The old format is not migrated. It is not parsed at all."""
+def test_an_entry_that_is_not_a_version_list_drops_the_cache(tmp_path):
+    """Each package must map to a list; any other shape is not parsed at all."""
     path = tmp_path / "cache.json"
-    path.write_text(
-        json.dumps({"absl-py": {"pickle": "gASVDQAAAAAAAACPlCiMBTIuNC4wlJAu\n"}}),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps({"absl-py": {"version": "2.4.0"}}), encoding="utf-8")
 
     assert chunk_cache.read_package_cache(path) == {}
 

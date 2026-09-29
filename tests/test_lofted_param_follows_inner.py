@@ -6,7 +6,7 @@ the bridge existed in one direction only: loft_param_to_context forwards the gro
 param down into the inner one and nothing carries a change the other way.
 
 The gizmo is only the way it was noticed. It writes `param.value = item` on the inner
-param (chunk_gizmo.py, "writing the param is what dirties the chunk and propagates
+param (gizmo/runtime.py, "writing the param is what dirties the chunk and propagates
 downstream"), so this is the same gap for anything that writes an inner param -- a script,
 another chunk, a reload.
 """
@@ -16,13 +16,14 @@ import weakref
 
 import pytest
 from PySide6 import QtCore
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, Gf
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.gizmo import runtime as chunk_gizmo
 
 LOFTED = "Transform_tx"
 
@@ -145,9 +146,6 @@ def test_a_real_gizmo_drag_reaches_the_group(lofted):
     whole way round -- matrix in, decomposed, written to the component params -- rather
     than standing in for it with a param write that merely resembles one.
     """
-    from pxr import Gf
-
-    from usd_chunks import chunk_gizmo
 
     inner, group = lofted["inner"], lofted["group"]
 

@@ -21,7 +21,7 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 
 
 from usd_chunks import chunk  # noqa: E402
-from usd_chunks.plugins import chunk_flet  # noqa: E402
+from usd_chunks.frontends.flet import factory as chunk_flet  # noqa: E402
 
 
 def params():

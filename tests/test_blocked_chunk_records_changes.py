@@ -24,9 +24,9 @@ from pxr import Sdf, Usd
 from PySide6 import QtWidgets
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
-from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
+from usd_chunks.frontends.qt.widgets import ChunkWidget
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 

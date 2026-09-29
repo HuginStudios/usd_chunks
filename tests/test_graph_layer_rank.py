@@ -2,9 +2,8 @@
 
 Chunk layers were ranked only within their own graph layer, and the graph layers stayed in
 the order they were made, newest on top. A chunk that builds its own children can end up
-with them in a graph layer of its own, so in the kitchen layout four AMD MaterialX Library
-graph layers sat above the tab's, and AddMesh -- the last chunk before the view -- was
-outranked by all of them.
+with them in a graph layer of its own, so four AMD MaterialX Library graph layers could
+sit above the tab's and outrank the last chunk before the view.
 
 Tested on the ordering step itself, with graph layers set up by hand: which DAG component a
 chunk's layer lands in depends on the order a scene was loaded and cooked in, and that is

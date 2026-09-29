@@ -14,11 +14,12 @@ import sys
 import pytest
 
 from usd_chunks import chunk_registry, chunk_stage
+from usd_chunks.chunk_scene import SceneSender
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-#: The compatibility shim itself.
-_SHIM = "usd_chunks/plugins/chunk_usd.py"
+#: Where the old name is kept importable -- the alias table names it, by design.
+_SHIM = "usd_chunks/_moved.py"
 
 _PREDICATES = ["is_view_chunk", "is_group_chunk", "is_chunkgroup", "is_merge_chunk", "is_edit_target_chunk"]
 
@@ -34,7 +35,7 @@ def test_the_old_import_path_is_the_same_module():
 
 def test_nothing_here_imports_the_old_path():
     offenders = []
-    for folder in ("usd_chunks", "scripts", "tests"):
+    for folder in ("usd_chunks", "chunks", "tests"):
         for path in (REPO / folder).rglob("*.py"):
             rel = path.relative_to(REPO).as_posix()
             if rel == _SHIM or rel == "tests/test_chunk_stage_module.py":
@@ -50,7 +51,8 @@ def test_importing_core_loads_no_plugin():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")]))
     code = ("import sys, usd_chunks.chunk_stage; "
-            "print(sorted(m for m in sys.modules if m.startswith('usd_chunks.plugins')))")
+            "print(sorted(m for m in sys.modules "
+            "if m.startswith(('usd_chunks.plugins', 'usd_chunks.frontends', 'usd_chunks.hosts'))))")
     proc = subprocess.run([sys.executable, "-c", code], cwd=str(REPO), env=env,
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
@@ -59,8 +61,6 @@ def test_importing_core_loads_no_plugin():
 
 @pytest.fixture
 def registry(qapp):
-    from usd_chunks.chunk_core import SceneSender
-
     class _Scene(SceneSender):
         def get_stage(self):
             return None

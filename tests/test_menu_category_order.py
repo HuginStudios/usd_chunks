@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _NoScene(SceneSender):
@@ -39,7 +39,7 @@ def entries():
     registry.initialize(_NoScene(), "pytest")
     found = registry.get_menu_entries(sort_result=True)
     if not found:
-        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
     return found
 
 

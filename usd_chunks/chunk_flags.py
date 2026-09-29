@@ -1,5 +1,6 @@
+"""The flag enums that describe params and groups: their type, layout, state and behaviour."""
+from __future__ import annotations
 from enum import IntFlag, IntEnum, auto
-from typing import List
 from pxr import Gf, Sdf
 
 
@@ -9,10 +10,10 @@ class _FlagRepr(IntFlag):
 
 
 class ChunkFlags:
-    """Hold common flags for chunks"""
+    """Hold common flags for chunks."""
 
     class LayoutFlags(IntEnum):
-        """Flags for layout hinting parameters and groups
+        """Flags for layout hinting parameters and groups.
 
         Attributes:
             HORIZONTAL: Hint the ui to display this parameter or group horizontally
@@ -23,7 +24,7 @@ class ChunkFlags:
         VERTICAL = auto()
 
     class State(_FlagRepr):
-        """Store current state of parameters and containers
+        """Store current state of parameters and containers.
 
         Attributes:
             NONE: No specified state
@@ -44,13 +45,13 @@ class ChunkFlags:
         STALE = auto()
 
     class GroupFlags(_FlagRepr):
-        """Flags for chunk constainer type objects (Chunk, Group)
+        """Flags for chunk container type objects (Chunk, Group).
 
         Attributes:
             LABELED: If the group should have a label in the ui
             COLLAPSABLE: If the group should be able to collapse
             FRAMED: A simple style flag
-            LIST: Parameters on this group is treated as a list that can be extended and shrinked
+            LIST: Parameters on this group is treated as a list that can be extended and shrunk
             CONTEXT: The group should be displayed as a context rather than a node/chunk. A chunk 
                 context only displays the children of said chunk. In the QT plugin, this is a tab
         """
@@ -63,11 +64,11 @@ class ChunkFlags:
         CONTEXT = auto()
 
     class ParamFlags(_FlagRepr):
-        """Flags for chunk params
+        """Flags for chunk params.
 
         Attributes:
             LABELED: If the param should have a label in the ui
-            OUTPUT: The param is a computed output — hidden from the UI and not user-editable.
+            OUTPUT: The param is a computed output -- hidden from the UI and not user-editable.
                     Its inputs: attr on the chunk prim is still available for @ChunkName.param@ expressions.
             FILE_EXISTING: For FILE type params, this rule hints to the file browser that we can not create new files
             DIRECTORY: For FILE type params. Allows selection of folders
@@ -82,10 +83,10 @@ class ChunkFlags:
         OUTPUT = auto()
 
         # A handle to something that only exists in this session -- an anonymous layer's
-        # identifier is the case that asked for it. Saving one records an address that is
+        # identifier, typically. Saving one records an address that is
         # already dead by the time anything reads it back, which is worse than recording
         # nothing: the chunk reloads holding a plausible-looking value naming an object that
-        # no longer exists. Create Layer keeps three of these.
+        # no longer exists. Layer keeps three of these.
         TRANSIENT = auto()
 
         # FILE
@@ -101,12 +102,14 @@ class ChunkFlags:
         USD_SYNTAX_HIGHLIGHT = auto()
 
     class ParamType(_FlagRepr):
-        """Flags for parameters, describing their types. UI factories should use the param.get_type() to get these types, and
-        implement the UI based on these.
+        """Flags for parameters, describing their types.
+
+        UI factories should use param.get_type() to get these types, and implement the UI
+        based on them.
 
         The concrete types are combinations of any of NONE, EMPTY, FLOAT, STRING, INT, BOOL.
         As these are flags, they can be combined using bitwise operators to create more complex
-        parameters. It's up the the ui impelementation to handle these.
+        parameters. It's up to the ui implementation to handle these.
 
         Attributes:
             NONE : A default param type. Nothing will be drawn in the ui
@@ -124,7 +127,7 @@ class ChunkFlags:
             INT_SLIDER : The parameter is an int valued slider
             INT_SPINBOX : The parameter is an int valued spinbox
             LABEL : The parameter is a string valued label
-            LINEEDIT : The parameter is an editable stiring
+            LINEEDIT : The parameter is an editable string
             FILE : The parameter is a string value referring to a file
             STRING_MENU : The parameter is a string valued menu with multiple choices
         """
@@ -167,14 +170,15 @@ class ChunkFlags:
         COLOR_PICKER = VECTOR | (1 << 0)
 
     @staticmethod
-    def ParamTypeToTypes(t: ParamType) -> List[type]:
-        """Provides default values for ParamType enums. If t is a combination of multiple ParamTypes, returns all supported values
+    def ParamTypeToTypes(t: ParamType) -> list[type]:
+        """Provides default values for ParamType enums.
 
         Args:
             t (ParamType): Input ParamType which to request value for
 
         Returns:
-            Any: A default value for t
+            list[type]: The value types `t` supports; all of them when `t` combines several
+            ParamTypes.
         """
         result = []
 

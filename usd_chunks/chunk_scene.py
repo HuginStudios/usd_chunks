@@ -11,17 +11,19 @@ importing it still loads the whole model. What it buys is that the host-facing s
 is now one file you can read end to end, rather than the last 600 lines of a 4900-line
 one.
 
-chunk_core re-exports SceneSender lazily (see its module __getattr__) so the many
-existing `from usd_chunks.chunk_core import SceneSender` imports keep working.
+Import it from here. chunk_core used to re-export it lazily for older code; that alias is
+gone, because chunk_core cannot import this module without a cycle.
 """
 from __future__ import annotations
 
 import contextlib
+import re
 import logging
 import weakref
 from abc import abstractmethod
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from pxr import Gf, Usd, UsdGeom
 
@@ -29,8 +31,10 @@ from usd_chunks import chunk_notice, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
+    ChunkParamBase,
     ChunkHash,
     NameSyncedContainer,
+    check_chunk_type,
     is_inst,
 )
 
@@ -45,12 +49,11 @@ CHUNKGROUP_MODULE = "chunkgroup"
 
 
 class SceneSender(chunk_notice.ChunkNoticePropagator):
-    """
-    Abstract class for implementing scene access for different DCC's. Should have access to the UsdStage and send notices for scene changes.
-    See implementation in plugins/usdview/__init__.py for an example implementation.
+    """Scene access for one DCC: the stage, its selection and time, and notices for changes.
 
-    The class is not purely abstract, as most functions dealing with chunks are implemented. However, a subclass should implement all relevant
-    @abstractmethod functions.
+    A DCC host subclasses this; see hosts/usdview/__init__.py for an example. The
+    class is not purely abstract, as most functions dealing with chunks are implemented
+    here, but a subclass should implement every @abstractmethod.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -60,12 +63,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self._modified = False
         self._scene_file = Path()
-        self._current_context: Optional[weakref.ReferenceType[ChunkBase]] = None
+        self._current_context: weakref.ReferenceType[ChunkBase] | None = None
         self._selected_chunks: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
         self._stage_replaced_listeners: list = []
+        # Scripting: scene.create, and the `with chunk:` blocks open around it.
+        self._creator: Creator | None = None
+        self._scopes: list = []
+        self._upstream: list[ChunkBase | None] = []
 
     @property
-    def current_context(self) -> "ChunkBase | None":
+    def current_context(self) -> ChunkBase | None:
         """The chunk new chunks are parented to, or None for the scene root.
 
         add_chunk reads this. Both graph frontends have to set it -- creating a node while
@@ -75,16 +82,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self._current_context() if self._current_context else None
 
     @contextlib.contextmanager
-    def creating_in(self, context: "ChunkBase | None"):
+    def creating_in(self, context: ChunkBase | None):
         """Parent chunks created in this block to `context`.
 
-        Replaces the save-assign-restore each frontend wrote by hand around
-        _current_context: Qt's _push_nest_context and Flet's _nest were the same six lines
-        against a private attribute, and both had to remember the restore or every later
-        chunk would silently keep landing in the group.
+        Frontends use this instead of saving, assigning and restoring _current_context by hand,
+        where forgetting the restore would leave every later chunk silently landing in the group.
 
-        Passing None means the scene root. Nesting restores the previous context, not the
-        root, so a dive inside a paste inside a group unwinds correctly.
+        Nesting restores the previous context, not the root, so a dive inside a paste inside a
+        group unwinds correctly.
+
+        Args:
+            context: The context to create chunks in; None means the scene root.
+
+        Yields:
+            None, with `context` current.
         """
         previous = self._current_context
         self._current_context = weakref.ref(context) if context is not None else None
@@ -95,7 +106,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def add_stage_replaced_listener(self, callback) -> None:
         """Register a callback invoked when the DCC opens a new stage.
-        Called by chunk_stage.initialize so that reload_for_stage runs on file open."""
+
+        chunk_stage.initialize calls this so that reload_for_stage runs on file open.
+
+        Args:
+            callback: Called with no arguments after the stage is replaced.
+        """
         self._stage_replaced_listeners.append(callback)
 
     def notify_stage_replaced(self, stage) -> None:
@@ -105,10 +121,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
 
     def remove_chunk(self, chunk: str | ChunkHash):
-        """
-        Unload this module by deleting the associated chunk object
-        """
+        """Unload a chunk by deleting its chunk object.
 
+        Args:
+            chunk: The chunk's name or hash.
+        """
         if not (c := self.get_chunk(chunk)):
             return
 
@@ -119,24 +136,30 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # which asks for a root to parent the new context to.
     _creating_root_context = False
 
-    def peek_root_context(self) -> "ChunkBase | None":
+    def peek_root_context(self) -> ChunkBase | None:
         """The scene's outermost container if it exists, without creating one.
 
         get_root_context is find-or-CREATE, so read paths (get_chunks, and anything built
         on it) must not call it -- merely asking what the chunks are would author a context.
+
+        Returns:
+            The root context, or None.
         """
         for c in self.chunks.get_my_params():
             if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 return c
         return None
 
-    def get_root_context(self) -> "ChunkBase | None":
+    def get_root_context(self) -> ChunkBase | None:
         """The scene's default container, created on demand. Find-or-create.
 
         A chunkgroup carries a module config, so add_chunk restores _current_context after
         adding it (the group must not swallow whatever is created next). That makes this
         find-or-create rather than create: without the lookup every chunk added at the root
         would mint a group of its own.
+
+        Returns:
+            The root context, or None if the chunkgroup module is unavailable.
         """
         if (existing := self.peek_root_context()) is not None:
             return existing
@@ -158,15 +181,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # misconfigured USD_CHUNK_DIRS). Fall back to a plain context so a chunk still has
         # somewhere to go rather than being dropped.
         logger.warning(
-            f"chunk module {CHUNKGROUP_MODULE!r} unavailable; falling back to a plain context"
+            "chunk module %r unavailable; falling back to a plain context", CHUNKGROUP_MODULE
         )
         return self.add_context("Chunks")
 
-    def add_context(self, name: str, prim_path: Optional[str] = None) -> ChunkBase | None:
-        """
-        Adds a context chunk to the scene. Concrete chunks can be added to the context using add_param and similar. The returned
-        ChunkBase object is just a ChunkBase with the CONTEXT flag. This can be used as a organisatorial chunk that contains other chunks
-        under a shared layer
+    def add_context(self, name: str, prim_path: str | None = None) -> ChunkBase | None:
+        """Add a context chunk to the scene.
+
+        The returned ChunkBase is a plain ChunkBase with the CONTEXT flag: an organisational
+        chunk that holds other chunks under a shared layer. Concrete chunks can be added to it
+        with add_param and similar.
 
         Args:
             name (str): The name of the context
@@ -180,8 +204,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self.add_chunk(ChunkBase(name, flags=ChunkFlags.GroupFlags.CONTEXT, prim_path=path))
 
     def set_chunks(self, chunks: NameSyncedContainer[ChunkBase]):
-        """
-        Sets the container storing all the chunks. Will override all currently loaded chunks
+        """Set the container storing all the chunks, replacing every currently loaded chunk.
 
         Args:
             chunks (NameSyncedContainer[ChunkBase]): The container
@@ -210,8 +233,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._modified = True
 
     def add_chunk(self, c: ChunkBase, notify: bool = True) -> ChunkBase | None:
-        """
-        Adds a chunk to the root of the scene.
+        """Adds a chunk to the root of the scene.
 
         Args:
             c (ChunkBase): The chunk to add. Ideally this should be a context chunk, and nested chunks should live underneath
@@ -219,16 +241,25 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         Returns:
             ChunkBase | None: The added chunk
-        """
 
+        Raises:
+            UnregisteredChunkTypeError: c's class is defined outside the framework and outside
+                its registered chunk module, so a save and reopen would lose it. See
+                chunk_core.check_chunk_type.
+        """
+        # First, before a rename or a context is touched. A plain chunk is checked again as
+        # it enters its context (ChunkBase.add_param), which is the choke point every other
+        # way in goes through; a context itself never passes there -- it goes into the flat
+        # scene container below -- so it is checked here.
+        check_chunk_type(c)
         names = self.chunks.get_my_names()
         # The scene container is flat and keyed by name, but the model it holds is not: two
         # chunkgroups at different prim paths may legitimately share a name, and a live scene
         # already ends up that way (a group nested in another both default to "ChunkGroup").
         # Restoring one from a file must therefore not rename it -- the file is authoritative
         # about what it is called, its prim path already makes it unique, and the name is what
-        # expressions reference and what a saved file records. Renaming on load meant a scene
-        # came back with a group its own expressions no longer named.
+        # expressions reference and what a saved file records. Renaming on load would bring a
+        # scene back with a group its own expressions no longer name.
         restoring = (
             chunk_notice._loading_stage is not None
             and c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
@@ -245,9 +276,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             # A chunkgroup created with nothing dived into still belongs INSIDE the scene's
             # outermost container, exactly like a plain chunk does -- it is a node in that
-            # container's graph. Without this it fell back to the /chunks scope and became a
-            # SIBLING of the root instead (/chunks/Group next to /chunks/ChunkGroup), so it
-            # was a node in no graph at all and simply never appeared (live-reported).
+            # container's graph. Without this it would fall back to the /chunks scope and
+            # become a SIBLING of the root (/chunks/Group next to /chunks/ChunkGroup) -- a
+            # node in no graph at all, never shown.
             # peek_root_context is None while the root itself is being created, which is what
             # keeps the root from trying to parent itself.
             parent = self._current_context
@@ -268,10 +299,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             ):
                 # Find-or-CREATE: a chunkgroup made when the scene is still empty must not
                 # become the container itself -- it is a node dropped into the default
-                # group, exactly like one made later ("droppar du ned en chunkgroup i
-                # graphen ska den neatly under parentchunkgroupen"). Without this the very
-                # first group silently became the root, so whether a group was a node or a
-                # container depended on how empty the scene happened to be.
+                # group, exactly like one made later. Otherwise whether a group is a node
+                # or a container would depend on how empty the scene happened to be.
                 root = self.get_root_context()
                 if root is not None and root is not c:
                     parent = weakref.ref(root)
@@ -314,15 +343,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         elif ctx := self.get_root_context():
             ctx.add_param(c, notify=notify)
         else:
-            logger.error(f"Failed to add chunk {c}")
+            logger.error("Failed to add chunk %s", c)
             return
 
         self._modified = True
         return c
 
     def add_chunks(self, chunks: Sequence[ChunkBase]):
-        """
-        Add all chunks in the sequence
+        """Add all chunks in the sequence.
 
         Args:
             chunks (Sequence[ChunkBase]): The chunks to add to the scene
@@ -331,16 +359,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             self.add_chunk(c)
 
     def clear(self):
-        """
-        Clear the chunk container. This may not delete the chunks if string references to the chunks
-        are maintained elsewhere
+        """Clear the chunk container.
+
+        This may not delete the chunks if references to them are held elsewhere.
         """
         self.chunks.clear()
         self._modified = True
 
     def holds_chunk(self, chunk: str | ChunkHash) -> bool:
-        """
-        Check if the scene holds a chunk with name or hash
+        """Check if the scene holds a chunk with name or hash.
 
         Args:
             chunk (str | ChunkHash): The name or hash of the chunk to find
@@ -351,20 +378,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self.get_chunk(chunk) is not None
 
     def get_chunk(self, chunk: str | ChunkHash) -> ChunkBase | None:
-        """
-        Return a single chunk held by the scene. If no chunk is found, None is returned.
-        Contrary to get_chunks, this may return context chunks as well
+        """Return a single chunk held by the scene.
+
+        Unlike get_chunks, this may return context chunks as well.
 
         Args:
             chunk (str | ChunkHash): The name or hash of the chunk to find
 
         Returns:
-            ChunkBase | None: The found chunk or None
+            ChunkBase | None: The found chunk, or None
         """
         res = self.chunks.get_param(chunk)
         return res if isinstance(res, ChunkBase) else None
 
-    def get_context_for_prim_path(self, path: str) -> "ChunkBase | None":
+    def get_context_for_prim_path(self, path: str) -> ChunkBase | None:
         """Return the CONTEXT chunk whose prim_path matches path, or None."""
         for c in self.get_chunks():
             if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
@@ -372,7 +399,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                     return c
         return None
 
-    def get_contexts(self) -> Tuple[ChunkBase, ...]:
+    def get_contexts(self) -> tuple[ChunkBase, ...]:
         """Every container in the scene, including the ones get_chunks() leaves out.
 
         A container owns lofted interface params, and those are the names a tool presents
@@ -384,10 +411,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         and a plain module-less context never was one either. Both still hold interface
         params, which is the gap this fills.
 
-        Stated as "every container" rather than "every CONTEXT chunk including plain
-        tabs", because a plain tab is the legacy shape -- context == chunkgroup now, and
-        a new scene's default container is a real chunkgroup under the /chunks scope. This
-        stays correct as those disappear.
+        Stated as "every container" rather than "every CONTEXT chunk including plain tabs",
+        because a plain tab is the legacy shape: a new scene's default container is a real
+        chunkgroup under the /chunks scope.
+
+        Returns:
+            Every container chunk.
         """
         seen: set = set()
         res: list = []
@@ -402,16 +431,18 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             stack.extend(i.get_my_params())
         return tuple(res)
 
-    def get_chunks(self) -> Tuple[ChunkBase, ...]:
-        # The scene's outermost container is the one context that is not a node in any
-        # graph. Dan: "default chunkgroupen ska inte vara en chunk i graphen, den ska vara
-        # en upp" -- a chunkgroup is a node in its PARENT's graph, and this one has no
-        # parent graph to be a node in.
-        #
-        # Identity, not depth: add_chunk puts EVERY context straight into self.chunks, so a
-        # user-created chunkgroup sits at the same container depth as the root and a
-        # depth test hides all of them (live-reported: no chunkgroup visible in the graph,
-        # and none creatable).
+    def get_chunks(self) -> tuple[ChunkBase, ...]:
+        """Every chunk that is a node in some graph, nested chunkgroups included.
+
+        The scene's outermost container is the one context that is not a node in any graph: a
+        chunkgroup is a node in its PARENT's graph, and this one has no parent graph to be a
+        node in. It is left out by identity, not depth: add_chunk puts EVERY context straight
+        into self.chunks, so a user-created chunkgroup sits at the same container depth as the
+        root and a depth test would hide all of them.
+
+        Returns:
+            The chunks.
+        """
         root = self.peek_root_context()
         seen: set = set()
         res: list = []
@@ -437,25 +468,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return tuple(res)
 
     def clear_chunk_selection(self):
-        """
-        Clear the chunk selection
-        """
+        """Clear the chunk selection."""
         for i in self.get_selected_chunks():
             i.set_selected(False)
 
-    def get_selected_chunks(self) -> Tuple[ChunkBase, ...]:
-        """
-        get the currently selected chunks
+    def get_selected_chunks(self) -> tuple[ChunkBase, ...]:
+        """Get the currently selected chunks.
 
         Returns:
-            Tuple[ChunkBase, ...]: The selected chunks
+            tuple[ChunkBase, ...]: The selected chunks
         """
         return tuple(self._selected_chunks)
 
     def set_selected_chunks(self, selection: Sequence[ChunkBase]):
-        """
-        Deselects the currently selected chunks and sets the selection to the sequence of
-        chunks passed as selection
+        """Replace the current chunk selection.
 
         Args:
             selection (Sequence[ChunkBase]): The new selection to set
@@ -470,8 +496,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 c.set_selected(True)
 
     def is_modified(self) -> bool:
-        """
-        Returns whether the scene has been modified since created
+        """Return whether the scene has been modified since it was created.
 
         Returns:
             bool: True if the scene has been modified, False otherwise
@@ -479,6 +504,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return self._modified
 
     def data_changed(self, notice: chunk_notice.ChunkNotice | None = None) -> chunk_notice.ChunkNotice | None:
+        """Track chunk selection from STATE_CHANGED notices, and mark the scene modified.
+
+        A change to a chunk's SELECTED bit only updates the selection; it does not count as a
+        modification.
+
+        Args:
+            notice: The notice being handled.
+
+        Returns:
+            The notice to propagate.
+        """
         if (
             notice
             and chunk_notice.is_notice_type(notice, chunk_notice.ChunkNoticeAlias.STATE_CHANGED)
@@ -500,28 +536,37 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def send_self(
         self, alias: chunk_notice.ChunkNoticeAlias | None = None, data: Any = None
     ) -> chunk_notice.ChunkNotice | None:
+        """Send a notice from the scene, marking it modified.
+
+        Args:
+            alias: The notice alias to send.
+            data: The notice data.
+
+        Returns:
+            The notice that was sent.
+        """
         self._modified = True
         return super().send_self(alias, data)
 
     @abstractmethod
     def should_install_package(self, package_name: str) -> bool:
-        """
-        When a modules config has requirements to external pip packages, the packages may be installed automatically by the ChunkDependencyManager.
-        Before any package is installed though, the user should have the option to opt out of this. This method is called when packages can be installed,
-        and should return True if the package may be installed. Any installed package is put in the
+        """Whether a chunk's pip requirement may be installed automatically.
+
+        When a module's config requires external pip packages, the ChunkDependencyManager can
+        install them into the chunk package directory, but the user must be able to opt out.
+        This is called before each install; a host asks the user or applies its own policy.
 
         Args:
             package_name (str): The name of the package to install
 
         Returns:
-            bool: If the package can be installed
+            bool: True if the package may be installed
         """
         return False
 
     @abstractmethod
     def get_stage(self) -> Usd.Stage | None:
-        """
-        Get the current scene stage. Should be implemented by a plugin
+        """Get the current scene stage. Implemented by a host.
 
         Returns:
             Usd.Stage | None: The stage if available
@@ -530,8 +575,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_selected_prims(self) -> Sequence[Usd.Prim]:
-        """
-        Get the selected prims in the scene. Should be implemented by a plugin
+        """Get the selected prims in the scene. Implemented by a host.
 
         Returns:
             Sequence[Usd.Prim]: Selected prims
@@ -540,11 +584,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_selected_property(self) -> Usd.Property | None:
-        """
-        Get the selected property in the scene. Should be implemented by a plugin
+        """Get the selected property in the scene. Implemented by a host.
 
         Returns:
-            Usd.Property: Selected property
+            Usd.Property | None: Selected property
         """
         return None
 
@@ -559,6 +602,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         Used to decide which renderer's settings are worth sending: a delegate ignores a
         namespace it does not own, so sending it another renderer's is only wasted work.
+
+        Returns:
+            The plugin id.
         """
         return ""
 
@@ -584,38 +630,34 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def get_current_frame(self) -> float:
-        """
-        Get the current
+        """Get the current frame. Implemented by a host.
 
         Returns:
-            float: _description_
+            float: The current frame
         """
         raise NotImplementedError
 
     @abstractmethod
     def get_end_frame(self) -> float:
-        """
-        Get the current end frame
+        """Get the end frame of the playback range. Implemented by a host.
 
         Returns:
-            float: _description_
+            float: The end frame
         """
         raise NotImplementedError
 
     @abstractmethod
     def get_start_frame(self) -> float:
-        """
-        Get the current start frame
+        """Get the start frame of the playback range. Implemented by a host.
 
         Returns:
-            float: _description_
+            float: The start frame
         """
         raise NotImplementedError
 
     @abstractmethod
     def set_current_frame(self, frame: float):
-        """
-        In the plugin implementation, set the current frame
+        """Set the current frame. Implemented by a host.
 
         Args:
             frame (float): The frame to set
@@ -624,8 +666,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_end_frame(self, frame: float):
-        """
-        In the plugin implementation, set the end frame
+        """Set the end frame of the playback range. Implemented by a host.
 
         Args:
             frame (float): The frame to set
@@ -634,8 +675,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     @abstractmethod
     def set_start_frame(self, frame: float):
-        """
-        In the plugin implementation, set the start frame
+        """Set the start frame of the playback range. Implemented by a host.
 
         Args:
             frame (float): The frame to set
@@ -645,6 +685,21 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def set_viewport_camera(self, prim: UsdGeom.Camera) -> None:
         """Set the viewport to look through the given camera prim."""
         pass
+
+    def look_at(self, point: Gf.Vec3d) -> None:
+        """Turn the viewport camera in place to face the world-space `point`."""
+        pass
+
+    def look_at_selection(self) -> bool:
+        """Turn the viewport camera to face the selected prims. False if none is measurable."""
+        from usd_chunks import chunk_utils  # deferred: chunk_utils imports this package's model
+
+        stage = self.get_stage()
+        point = chunk_utils.focus_point_of(stage, self.get_selected_prims()) if stage else None
+        if point is None:
+            return False
+        self.look_at(point)
+        return True
 
     def release_viewport_camera(self) -> None:
         """The prim handed to set_viewport_camera no longer claims the viewport.
@@ -670,39 +725,160 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Whether this host can display chunk gizmos at all."""
         return False
 
-    def show_gizmos(self, chunk: "ChunkBase", gizmos: list) -> None:
+    def show_gizmos(self, chunk: ChunkBase, gizmos: list) -> None:
         """Ask the host to display these gizmos. See chunk_gizmo.resolve_gizmos."""
         pass
 
-    def hide_gizmos(self, chunk: "ChunkBase") -> None:
+    def hide_gizmos(self, chunk: ChunkBase) -> None:
         """Ask the host to stop displaying this chunk's gizmos."""
         pass
 
     def primSelectionChangedCallback(self, *args, **kwargs):
+        """Send PRIM_SELECTION_CHANGED with the host's selected prims."""
         chunk_notice.send_notice(
             chunk_notice.ChunkNoticeAlias.PRIM_SELECTION_CHANGED, sender=self, data=self.get_selected_prims()
         )
 
     def propSelectionChangedCallback(self, *args, **kwargs):
+        """Send PROP_SELECTION_CHANGED with the host's selected property."""
         chunk_notice.send_notice(
             chunk_notice.ChunkNoticeAlias.PROP_SELECTION_CHANGED, sender=self, data=self.get_selected_property()
         )
 
     def activeCameraChangedCallback(self, *args, **kwargs):
+        """Send CAMERA_CHANGED with the host's active camera."""
         chunk_notice.send_notice(
             chunk_notice.ChunkNoticeAlias.CAMERA_CHANGED, sender=self, data=self.get_active_camera()
         )
 
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
+        """The scene's own notices carry no alias."""
         return chunk_notice.ChunkNoticeAlias.NONE
+
+    # -- Scripting ------------------------------------------------------------------
+    # The same calls in any host: a script run headless (usd_chunks.Scene) and a line typed
+    # into usdview's interpreter (usd_chunks.current_scene()) build chunks the same way, and
+    # in a host with a graph they land in the network it is showing -- the frontend keeps
+    # current_context on it.
+
+    def __enter__(self) -> SceneSender:
+        """`with scene:` -- a host's scene is borrowed, so leaving the block keeps it."""
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    @property
+    def create(self) -> Creator:
+        """One function per chunk module and per menu variant: `scene.create.cube(...)`."""
+        if self._creator is None:
+            self._creator = Creator(self)
+        return self._creator
+
+    def add(self, chunk_type: str, *inputs: ChunkBase, **kwargs) -> ChunkBase:
+        """`scene.create.<chunk_type>(...)` with the type as a string, for types picked at
+        runtime."""
+        return getattr(self.create, chunk_type)(*inputs, **kwargs)
+
+    def place(
+        self,
+        new: ChunkBase,
+        inputs: Iterable[ChunkBase] = (),
+        name: str | None = None,
+        **params,
+    ) -> ChunkBase:
+        """Add a created chunk to the scene, wire it and set its params.
+
+        Args:
+            new: The chunk, fresh from its module or a menu entry.
+            inputs: The chunks wired into its input port -- the exec edge, so it runs
+                after them. None given, the innermost `with` chunk, if there is one.
+            name: The node's name; the module's own when omitted.
+            **params: See `set`.
+        """
+        if name:
+            new.name = name
+        # Plain values before the add, so the chunk's first cook -- the one add_chunk
+        # triggers -- already sees them, rather than cooking the defaults and then once more
+        # per param. Values only, no cook, under the same guard MenuEntry.create sets for
+        # its presets. A wire waits until after: connecting a param authors on the chunk's
+        # prim, which does not exist until the chunk is in the scene.
+        values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
+        wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
+        prev = getattr(new, "_executing", False)
+        new._executing = True
+        try:
+            self.set(new, **values)
+        finally:
+            new._executing = prev
+        self.add_chunk(new)
+        inputs = list(inputs)
+        if not inputs and self._upstream and self._upstream[-1] is not None:
+            inputs = [self._upstream[-1]]
+        for i in inputs:
+            new.add_dependency(i)
+        self.set(new, **wires)
+        return new
+
+    def set(self, target: ChunkBase, **params) -> None:
+        """Set a chunk's params by name.
+
+        A plain value is assigned. A param (`other.get_param("prim_path")`) connects this
+        one to it, so it follows that value from then on and the wire is saved with the
+        network.
+        """
+        for name, value in params.items():
+            param = target.get_param(name)
+            if param is None:
+                raise KeyError(f"{target.name} has no param {name!r}")
+            if isinstance(value, ChunkParamBase):
+                param.connect_value(value)
+            else:
+                param.value = value
+
+    def cook(self) -> None:
+        """Run every chunk, upstream first.
+
+        Setting a value already reruns what it affects, so this is only needed for chunks
+        whose work lives solely in their module's execute(), such as Light, which do
+        nothing until they are run.
+        """
+        execute_roots(self.get_chunks())
+
+    def enter_chunk(self, target: ChunkBase) -> None:
+        """`with target:` -- a chunkgroup takes what is created inside as its children;
+        any other chunk runs before it."""
+        cfg = target.get_config()
+        if cfg and cfg.module == CHUNKGROUP_MODULE:
+            scope = self.creating_in(target)
+            scope.__enter__()
+            # A chunk inside the group runs after nothing outside it: exec wires stay
+            # within one context, as the graph draws them.
+            self._scopes.append((scope, None))
+        else:
+            self._scopes.append((None, target))
+        self._upstream.append(self._scopes[-1][1])
+
+    def exit_chunk(self, target: ChunkBase) -> None:
+        """Leave the `with target:` block."""
+        scope, _ = self._scopes.pop()
+        self._upstream.pop()
+        if scope is not None:
+            scope.__exit__(None, None, None)
 
     # Optional DCC capability with a no-op default so hosts that don't support
     # it still work; usdview overrides it (ctrl+click on a prim path field).
     def select_prims(self, paths) -> bool:
         """Make `paths` the host's prim selection, replacing what was selected.
 
-        The other direction from get_selected_prims(). Returns False when the host has no
-        selection it can drive, so a caller can leave the click to do its normal job.
+        The other direction from get_selected_prims().
+
+        Args:
+            paths: Prim paths to select.
+
+        Returns:
+            False when the host has no selection it can drive, so a caller can leave the click
+            to do its normal job.
         """
         return False
 
@@ -710,3 +886,101 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # it still work; usdview overrides it (used by the RBD solver after baking).
     def refresh_timeline(self, start: float, end: float) -> None:
         """Update the host timeline range."""
+
+
+def current_scene() -> SceneSender | None:
+    """The live scene -- usdview's inside usdview, a script's Scene in a script."""
+    registry = chunk_registry.ChunkRegistry()
+    return registry.scene if registry.initialized else None
+
+
+class Creator:
+    """`scene.create`: one function per chunk module and per menu variant.
+
+    A module is found by its file name (`transform`, `edit_target`); a variant by its menu
+    label in snake_case ("Dome Light" -> `dome_light`). A module name wins over a variant
+    label, and a label two variants share is left out rather than guessed at.
+
+    Each function takes its input chunks positionally -- what is wired into its input
+    port -- then `name=` for the node's name and params by keyword; see SceneSender.place
+    and SceneSender.set.
+    """
+
+    def __init__(self, scene: SceneSender):
+        self._scene = scene
+        self._variants: dict[str, chunk_registry.MenuEntry | None] | None = None
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        entry = self._entry(name)
+
+        def create(*inputs: ChunkBase, name: str | None = None, **params):
+            # A module's main() may return helpers alongside its chunk; the first is the one
+            # the params are for, the rest go into the scene beside it.
+            primary, *extra = entry.create()
+            placed = self._scene.place(primary, inputs, name, **params)
+            for c in extra:
+                self._scene.add_chunk(c)
+            return placed
+
+        create.__name__ = name
+        create.__doc__ = entry.tooltip or None
+        return create
+
+    def __dir__(self):
+        registry = chunk_registry.ChunkRegistry()
+        modules = {m.module_name.split(".")[-1] for m in registry.get_chunk_modules()}
+        return sorted(modules | {k for k, v in self._variant_entries().items() if v is not None})
+
+    def _entry(self, name: str) -> chunk_registry.MenuEntry:
+        if module := chunk_registry.ChunkRegistry().get_chunk_module(name):
+            return chunk_registry.MenuEntry(
+                module=module, namespace=(name,),
+                tooltip=chunk_registry.clean_description(module.config.description),
+            )
+        variants = self._variant_entries()
+        if name not in variants:
+            raise AttributeError(f"No chunk module or variant called {name!r} -- is USD_CHUNK_DIRS set?")
+        if variants[name] is None:
+            raise AttributeError(
+                f"{name!r} names more than one variant; create its module and set the "
+                f"params that pick it instead"
+            )
+        return variants[name]
+
+    def _variant_entries(self) -> dict[str, chunk_registry.MenuEntry | None]:
+        # Built on first use only: a catalog-driven module can declare hundreds of variants,
+        # and a script that only makes modules should not pay for listing them.
+        if self._variants is None:
+            self._variants = {}
+            for entry in chunk_registry.ChunkRegistry().get_menu_entries(sort_result=False):
+                if entry.presets is None:
+                    continue
+                key = _script_name(entry.label)
+                self._variants[key] = None if key in self._variants else entry
+        return self._variants
+
+
+def _script_name(label: str) -> str:
+    """A menu label as a Python name: "Dome Light" -> "dome_light"."""
+    return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
+
+
+def all_chunks(chunks) -> list[ChunkBase]:
+    """Every chunk inside the given ones, groups excluded, at any depth."""
+    found = []
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        found.extend(all_chunks(sub) if sub else [c])
+    return found
+
+
+def execute_roots(chunks) -> None:
+    """Call execute() on every root node (no dependencies), recursing into groups."""
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        if sub:
+            execute_roots(sub)
+        elif not c.get_dependencies():
+            c.execute()

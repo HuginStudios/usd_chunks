@@ -9,10 +9,11 @@ ports and edges move with it.
 Settling is answered by the scene, not the node: measurements are event-driven, so a node
 that has simply not been re-measured yet is indistinguishable from one that has finished.
 """
+from __future__ import annotations
 import pytest
 from PySide6 import QtCore, QtWidgets
 
-from usd_chunks.plugins.chunk_qt_nodegraph import (
+from usd_chunks.frontends.qt.nodegraph import (
     ChunkGraphScene, ChunkNodeItem, _HEIGHT_SETTLE_MS)
 
 

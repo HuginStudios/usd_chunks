@@ -5,18 +5,22 @@ import importlib
 import io
 import time
 import zipfile
+import threading
 
 import pytest
 from pxr import Usd, UsdShade, Sdf
 
-from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _author_prim,
     _CHUNKS_ROOT,
     ChunkStageSync,
     get_chunk_prim_path,
     initialize as init_chunk_usd,
+    load_chunks,
+    save_scene,
 )
 
 
@@ -39,13 +43,28 @@ def _load(module_path: str):
     return importlib.import_module(module_path)
 
 
+def _registered_module(module_name: str):
+    """The module the registry runs a chunk's hooks from, loaded if it is not yet.
+
+    Not the same object _load returns: the registry loads a chunk's file under its short
+    name ("AMDMaterialXLibrary"), _load imports it under its package path, and the two
+    have independent globals. A cook -- including one nested inside the test's own
+    execute() call -- reads its hooks from the registry's copy, so a stub or a seeded
+    cache on the _load copy is invisible to it.
+    """
+    registered = chunk_registry.ChunkRegistry().get_chunk_module(module_name)
+    if not registered.loaded:
+        registered.load()
+    return registered.module
+
+
 # ---------------------------------------------------------------------------
 # dot
 # ---------------------------------------------------------------------------
 
 class TestDot:
     def setup_method(self):
-        self.mod = _load("scripts.core.dot")
+        self.mod = _load("chunks.core.dot")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -96,7 +115,7 @@ class TestDot:
 
 class TestBindMaterial:
     def setup_method(self):
-        self.mod = _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.bind_material")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -117,7 +136,7 @@ class TestBindMaterial:
         mat_path = "/materials/Gold"
         prim_path = "/geo/mesh"
 
-        # Define material and prim in the session layer — always in the composed
+        # Define material and prim in the session layer -- always in the composed
         # stack but never the root-layer edit target, so execute's layer.Clear()
         # leaves them intact.
         with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -170,17 +189,17 @@ class TestBindMaterial:
 
 
 # ---------------------------------------------------------------------------
-# AMDMaterialXLibrary — load-only (no network calls)
+# AMDMaterialXLibrary -- load-only (no network calls)
 # main() creates a MaterialGridWidget so it requires a running QApplication.
 # ---------------------------------------------------------------------------
 
 class TestAMDMaterialXLibrary:
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
 
     def test_main_returns_context_chunk(self):
         c = self.mod.main()
@@ -207,6 +226,10 @@ class TestAMDMaterialXLibrary:
         c = self.mod.main()
         ref = chunk.Chunk("Reference3")
         ref._config = ChunkConfig(module="reference")
+        # Attaching it can cook it through the real reference module when an earlier test
+        # left a live registry behind, and that execute() reads file_path first -- empty,
+        # it returns without authoring anything, instead of crashing on a missing param.
+        ref.add_param(chunk.LineEdit("file_path"))
         c.add_param(ref)
 
         assert self.mod._child_of_type(c, "reference") is ref
@@ -214,7 +237,7 @@ class TestAMDMaterialXLibrary:
 
 
 # ---------------------------------------------------------------------------
-# AMDMaterialXLibrary — child chunk creation (Reference / BindMaterial)
+# AMDMaterialXLibrary -- child chunk creation (Reference / BindMaterial)
 #
 # Reproduces the real-app wiring: a CONTEXT chunk attached to a live stage via
 # chunk_stage.initialize() (ChunkLayerManager + ChunkStageSync), then
@@ -243,8 +266,6 @@ def _chunk_path(name: str) -> str:
     add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
     parent is that group rather than the /chunks scope.
     """
-    from usd_chunks import chunk_registry
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
@@ -253,14 +274,14 @@ def _chunk_path(name: str) -> str:
 
 class TestAMDMaterialXLibraryChildCreation:
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """Ensure QApplication exists before creating Qt widgets in main()."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
         # Ensure the child chunk modules _create_child resolves are registered.
-        _load("scripts.usd.reference")
-        _load("scripts.materials.bind_material")
+        _load("chunks.usd.reference")
+        _load("chunks.materials.bind_material")
 
     @staticmethod
     def _fake_zip_bytes() -> bytes:
@@ -279,6 +300,8 @@ class TestAMDMaterialXLibraryChildCreation:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)  # wires ChunkLayerManager + ChunkStageSync, like the real app
+        # Stub and run the copy the registry cooks from -- see _registered_module.
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -340,7 +363,7 @@ class TestAMDMaterialXLibraryChildCreation:
         AMD's execute() runs inside a Usd.EditContext targeting AMD's own
         anonymous layer so that its USD output lands there. When add_param()
         creates child chunk prims via ChunkStageSync._define_prim() during
-        that context, those prims must still be routed to the session layer —
+        that context, those prims must still be routed to the session layer --
         otherwise they live in AMD's anon layer, which is Clear()ed on every
         execute() run, and they are never saved to disk.
         """
@@ -353,6 +376,7 @@ class TestAMDMaterialXLibraryChildCreation:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -421,7 +445,6 @@ class TestAMDMaterialXLibraryChildCreation:
         to restore, which is what made this gap invisible for every OTHER CONTEXT
         chunk in the project.
         """
-        from usd_chunks.chunk_stage import load_chunks, save_scene
 
         stage = Usd.Stage.CreateInMemory()
 
@@ -432,6 +455,7 @@ class TestAMDMaterialXLibraryChildCreation:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -477,7 +501,7 @@ class TestAMDMaterialXLibraryChildCreation:
         # self.mod is NOT the module load_chunks' reconstruction actually runs: the
         # registry resolves chunk modules by the short config name ("Foo"),
         # while this test file imported the same source under a different
-        # sys.modules key ("scripts.examples.Foo") via _load(). Those are two
+        # sys.modules key ("chunks.examples.Foo") via _load(). Those are two
         # distinct module objects with independent globals, so patches on self.mod
         # are invisible to code executing as the registry's copy -- reach through
         # the registry to patch the module identity that will actually run.
@@ -511,25 +535,19 @@ class TestBindMaterialResilience:
     driven execution mutes/unmutes layers one at a time) permanently destroyed a good
     binding, and nothing re-ran the chunk once the stage settled. Live-reported as the
     applied material reverting to the original one after navigating the node graph.
+
+    The framework now clears the layer before every cook, so the protection moved to what
+    runs a cook at all: recook_for_view reveals a chunk that is not stale without executing
+    it (see test_framework_clears_layers). These cook through the framework, as a session
+    does, rather than calling the module directly.
     """
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.bind_material")
-
-    @staticmethod
-    def _node(stage, chunk_obj):
-        class _FakeNode:
-            def get_stage(self):
-                return stage
-
-            def get_param(self, name, pred=None):
-                return chunk_obj.get_param(name, pred)
-
-        return _FakeNode()
+        self.mod = _load("chunks.materials.bind_material")
 
     def _setup(self):
-        """Content lives in the session layer so execute's own layer.Clear() (which targets
-        the root layer here) leaves it intact -- same arrangement as test_execute_binds_material."""
+        """Content lives in the session layer, not in the chunk's own layer that the
+        framework clears before each cook."""
         stage = Usd.Stage.CreateInMemory()
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             UsdShade.Material.Define(stage, "/mat")
@@ -549,7 +567,7 @@ class TestBindMaterialResilience:
         c.get_param("material_path").value = "/mat"
         c.get_param("primpath_location").value = "/geo/mesh"
         scene.add_chunk(c)
-        return stage, c, self._node(stage, c)
+        return stage, c
 
     @staticmethod
     def _bound(stage):
@@ -558,46 +576,30 @@ class TestBindMaterialResilience:
             return None
         return str(UsdShade.MaterialBindingAPI(prim).GetDirectBinding().GetMaterialPath())
 
-    def test_binding_survives_a_temporarily_missing_target(self):
-        stage, c, node = self._setup()
-        self.mod.execute(node)
-        assert self._bound(stage) == "/mat", "test setup must be faithful -- it must bind first"
+    def test_a_cook_binds_and_leaves_the_chunk_clean(self):
+        stage, c = self._setup()
+        c.execute()
+        assert self._bound(stage) == "/mat"
+        assert not chunk_notice.is_cook_stale(c), (
+            "a clean chunk is what recook_for_view leaves alone -- the whole of the protection"
+        )
 
-        # The mesh momentarily drops off the stage, exactly as it does while the layer
-        # that brings it in is muted for part of a recook.
+    def test_a_cook_with_nothing_to_bind_to_authors_nothing(self):
+        stage, c = self._setup()
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.RemovePrim("/geo/mesh")
-        self.mod.execute(node)
+        c.execute()
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.DefinePrim("/geo/mesh", "Mesh")
-
-        assert self._bound(stage) == "/mat", (
-            "binding must not be wiped by a run that happened while the target was absent"
-        )
-
-    def test_binding_survives_a_temporarily_missing_material(self):
-        stage, c, node = self._setup()
-        self.mod.execute(node)
-        assert self._bound(stage) == "/mat"
-
-        with Usd.EditContext(stage, stage.GetSessionLayer()):
-            stage.RemovePrim("/mat")
-        self.mod.execute(node)
-        with Usd.EditContext(stage, stage.GetSessionLayer()):
-            UsdShade.Material.Define(stage, "/mat")
-
-        assert self._bound(stage) == "/mat", (
-            "binding must not be wiped by a run that happened while the material was absent"
-        )
+        assert not self._bound(stage)
 
     def test_clearing_the_param_still_unbinds(self):
         """Companion check: an explicitly emptied field is a real instruction to unbind."""
-        stage, c, node = self._setup()
-        self.mod.execute(node)
+        stage, c = self._setup()
+        c.execute()
         assert self._bound(stage) == "/mat"
 
         c.get_param("material_path").value = ""
-        self.mod.execute(node)
         assert not self._bound(stage), "emptying the field must still clear the binding"
 
 
@@ -612,13 +614,13 @@ class TestAMDMaterialXCaching:
     """
 
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
-        _load("scripts.usd.reference")
-        _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
+        _load("chunks.usd.reference")
+        _load("chunks.materials.bind_material")
 
     def test_second_apply_hits_the_cache_and_makes_no_network_call(self, monkeypatch, tmp_path):
         stage = Usd.Stage.CreateInMemory()
@@ -630,6 +632,7 @@ class TestAMDMaterialXCaching:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -682,17 +685,15 @@ class TestAMDMaterialXAsyncApply:
     """
 
     @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 — injected for side-effect only
+    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
         """main() builds Qt widgets."""
 
     def setup_method(self):
-        self.mod = _load("scripts.materials.AMDMaterialXLibrary")
-        _load("scripts.usd.reference")
-        _load("scripts.materials.bind_material")
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
+        _load("chunks.usd.reference")
+        _load("chunks.materials.bind_material")
 
     def test_apply_downloads_off_thread_and_assigns_on_the_main_thread(self, monkeypatch, tmp_path, qapp):
-        import threading
-
         stage = Usd.Stage.CreateInMemory()
 
         class _StageScene(_DummyScene):
@@ -702,6 +703,7 @@ class TestAMDMaterialXAsyncApply:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -734,7 +736,12 @@ class TestAMDMaterialXAsyncApply:
         real_execute = self.mod.execute
 
         def _tracking_execute(node):
-            applied_on.append(threading.current_thread().ident)
+            # Only a cook with a title set is an assign. Cooks run from the registry's copy
+            # of the module, so this also sees the reactive ones _set_status sets off before
+            # the download finishes -- those return early with nothing to apply, and
+            # counting them ended the wait below before the assign had happened.
+            if node.get_param("picked_title").value:
+                applied_on.append(threading.current_thread().ident)
             return real_execute(node)
 
         monkeypatch.setattr(self.mod, "execute", _tracking_execute)
@@ -756,7 +763,9 @@ class TestAMDMaterialXAsyncApply:
         assert download_threads and main_thread not in download_threads, (
             "the download must run on a worker thread, not the main thread"
         )
-        assert applied_on == [main_thread], (
+        # Setting picked_title cooks the chunk and _finish then calls execute itself, so
+        # there can be more than one assign -- every one of them must be on the main thread.
+        assert applied_on and set(applied_on) == {main_thread}, (
             "the USD assign must hop back to the main thread"
         )
         assert c.get_param("picked_title").value == "Gold"

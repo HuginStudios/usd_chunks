@@ -64,7 +64,7 @@ def define_ancestors(layer: Sdf.Layer, defined_elsewhere=None) -> int:
     return len(todo)
 
 
-def broken_property_specs(layer: Sdf.Layer) -> "list[Sdf.Path]":
+def broken_property_specs(layer: Sdf.Layer) -> list[Sdf.Path]:
     """Property paths this layer lists but holds no usable spec for.
 
     A spec whose type never got set is invisible to GetObjectAtPath while Traverse still
@@ -73,23 +73,31 @@ def broken_property_specs(layer: Sdf.Layer) -> "list[Sdf.Path]":
     saved, one stub anywhere costs the user everything they have done since the last save.
 
     What creates one is not yet known -- see drop_broken_property_specs.
+
+    Args:
+        layer: The layer to scan.
+
+    Returns:
+        The stub property paths.
     """
-    found: "list[Sdf.Path]" = []
+    found: list[Sdf.Path] = []
     layer.Traverse(Sdf.Path("/"), lambda path: found.append(path))
     return [p for p in found if p.IsPropertyPath() and layer.GetObjectAtPath(p) is None]
 
 
-def drop_broken_property_specs(layers, logger=None) -> "list[str]":
+def drop_broken_property_specs(layers, logger=None) -> list[str]:
     """Remove every unusable property stub from layers, and say what was removed.
 
-    Deliberately loud rather than quiet: this is a rescue, not a repair. Something is
-    creating these and we have not found it yet -- reproducing it from the reported edits
-    (a light moved onto a new prim, values changed, a material chunk added) did not, so the
-    logged layer and path are the evidence for the next attempt. Dropping the stub is safe
-    in the meantime because it holds nothing: no value, no type, no connection.
+    Deliberately loud rather than quiet: this is a rescue, not a repair. What creates these
+    stubs is not yet known, so the logged layer and path are there to help find it.
+    Dropping the stub is safe because it holds nothing: no value, no type, no connection.
+
+    Args:
+        layers: The layers to clean.
+        logger: Where to report each removal; None reports nothing.
 
     Returns:
-        list[str]: "<layer>: <path>" for each stub removed
+        "<layer>: <path>" for each stub removed.
     """
     removed = []
     for layer in layers:

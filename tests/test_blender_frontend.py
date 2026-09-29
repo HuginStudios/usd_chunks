@@ -45,10 +45,11 @@ from usd_chunks import chunk_registry  # noqa: E402
 from usd_chunks.chunk_core import ChunkConfig  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.chunk_scene import SceneSender  # noqa: E402
-from usd_chunks.plugins import chunk_blender, chunk_graph  # noqa: E402
+from usd_chunks.frontends.blender import factory as chunk_blender  # noqa: E402
+from usd_chunks.graph import engine as chunk_graph  # noqa: E402
 from usd_chunks import chunk_stage  # noqa: E402
-from usd_chunks.plugins import chunk_blender_addon as addon  # noqa: E402
-from usd_chunks.plugins import chunk_blender_nodegraph as bg  # noqa: E402
+from usd_chunks.frontends.blender import addon  # noqa: E402
+from usd_chunks.frontends.blender import nodegraph as bg  # noqa: E402
 
 
 class _Scene(SceneSender):
@@ -82,7 +83,7 @@ def view():
     chunk_stage.ChunkStageSync().initialize(stage, scene)
     bg.register()
 
-    # Through the registry, which is what puts scripts/ on sys.path. A bare
+    # Through the registry, which is what puts chunks/ on sys.path. A bare
     # `import reference` here only worked when some earlier test file had already
     # initialised a registry, so this file errored out when run on its own.
     ref = _make(registry.get_chunk_module("reference"))
@@ -278,7 +279,7 @@ def test_the_menu_is_a_tree_of_registered_blender_menus():
     assert root._node["subs"], "the library has categories, so the menu must have submenus"
     for name in root._node["subs"]:
         child = bg._menu_classes.get((name,))
-        assert child is not None, "no menu class for the %s category" % name
+        assert child is not None, f"no menu class for the {name} category"
         assert child.is_registered
         assert child.bl_idname == bg._menu_id((name,))
 
@@ -609,10 +610,10 @@ def _add(view, module_name):
 
 
 def test_a_hidden_groups_params_are_hidden_with_it(view):
-    """add_mesh keeps cube, tube and grid groups and shows the one its menu names. The
+    """mesh keeps cube, tube and grid groups and shows the one its menu names. The
     params inside carry no HIDDEN bit of their own, so reading only theirs drew every
     group's fields at once and the Mesh Type menu visibly did nothing."""
-    node = _add(view, "add_mesh")
+    node = _add(view, "mesh")
     chunk = node.get_chunk()
     shown = [p.name for p in chunk_blender.iter_drawable(chunk)]
     assert shown == ["prim_path", "mesh_type"], shown
@@ -628,7 +629,7 @@ def test_a_hidden_groups_params_are_hidden_with_it(view):
 def test_the_write_guard_is_released_after_a_mirror(view):
     """sync_to_node takes the guard per param and must give it back: a leaked entry
     silently blocks every later edit of that param from the node."""
-    _add(view, "add_mesh")
+    _add(view, "mesh")
     assert not chunk_blender._writing
 
 
@@ -794,7 +795,7 @@ def test_publish_makes_a_group_host_its_own_file(view, tmp_path):
     chunk_stage.publish_network(group, out)
     assert view.stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(group)).HasAuthoredReferences()
     saved = Sdf.Layer.FindOrOpen(out)
-    assert saved.GetAttributeAtPath("/chunks/%s.info:chunkType" % group.name).default == "chunkgroup"
+    assert saved.GetAttributeAtPath(f"/chunks/{group.name}.info:chunkType").default == "chunkgroup"
 
 
 def test_the_verbs_are_wired_to_operators_that_get_registered():
@@ -814,9 +815,9 @@ def test_the_verbs_are_wired_to_operators_that_get_registered():
 # viewport handles: the host half of docs/gizmo-host-contract.md
 # ---------------------------------------------------------------------------
 
-from usd_chunks import chunk_gizmo  # noqa: E402
-from usd_chunks.plugins.chunk_blender_addon import gizmos as gz  # noqa: E402
-from usd_chunks.plugins.chunk_blender_addon import viewport as vp  # noqa: E402
+from usd_chunks.gizmo import runtime as chunk_gizmo  # noqa: E402
+from usd_chunks.frontends.blender.addon import gizmos as gz  # noqa: E402
+from usd_chunks.frontends.blender.addon import viewport as vp  # noqa: E402
 
 
 @pytest.fixture

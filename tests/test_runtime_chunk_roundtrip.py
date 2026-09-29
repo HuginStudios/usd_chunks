@@ -20,9 +20,10 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_flags import ChunkFlags
 
 
 class _DummyScene(SceneSender):
@@ -139,7 +140,6 @@ def test_a_module_less_context_is_not_given_the_runtime_type(qapp):
     Stamping the fallback onto one would have it rebuilt as a chunk inside itself, so the
     fallback deliberately stops at contexts.
     """
-    from usd_chunks.chunk_flags import ChunkFlags
 
     stage = Usd.Stage.CreateInMemory()
 

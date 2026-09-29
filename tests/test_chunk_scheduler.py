@@ -4,10 +4,13 @@ These build DAGs out of bare ChunkNoticePropagator subclasses rather than real c
 so the ordering, dirty propagation and change-reason behaviour can be asserted without
 dragging a USD stage into it.
 """
+from __future__ import annotations
+
+import random
 
 import pytest
 
-from usd_chunks import chunk_scheduler
+from usd_chunks import chunk_notice, chunk_scheduler
 from usd_chunks.chunk_notice import ChunkNoticeAlias, ChunkNoticePropagator
 
 
@@ -387,6 +390,42 @@ class TestSortKey:
 
         assert b.get_dag_node().get_sort_key() == 1
 
+    def test_cached_depths_survive_any_sequence_of_rewiring(self):
+        # Invalidation stops walking at the first node with no cached depth, which is only
+        # sound while nothing downstream of an uncached node is cached. Checked against an
+        # independent depth after every edit, over a few hundred random ones -- edges and
+        # owners both -- asking only a few nodes each time, so the cache stays part-filled
+        # the way a real load leaves it.
+        rng = random.Random(7)
+        nodes = [Node(f"n{i}") for i in range(40)]
+        edges = []
+
+        def expected(dag, memo):
+            if dag not in memo:
+                memo[dag] = max(
+                    [1 + expected(d, memo) for d in dag._connections.inputs.values()]
+                    + [expected(o, memo) for o in (dag._owned or ())],
+                    default=0,
+                )
+            return memo[dag]
+
+        for _ in range(300):
+            lo, hi = sorted(rng.sample(range(len(nodes)), 2))
+            action = rng.random()
+            if action < 0.45:
+                nodes[hi].add_dependency(nodes[lo])  # lower index upstream: stays acyclic
+                edges.append((hi, lo))
+            elif action < 0.65 and edges:
+                down, up = edges.pop(rng.randrange(len(edges)))
+                nodes[down].remove_dependency(nodes[up])
+            else:
+                nodes[lo].set_owner(nodes[hi])
+
+            memo = {}
+            for i in rng.sample(range(len(nodes)), 5):
+                dag = nodes[i].get_dag_node()
+                assert dag.get_sort_key() == expected(dag, memo), f"n{i}"
+
 
 class TestDependencyRemoval:
     """remove_dependency is the counterpart to add_dependency: it exists so a single wire
@@ -438,3 +477,136 @@ class TestDependencyRemoval:
         assert c.get_dependencies() == []
         assert list(b.get_dag_node().get_inputs()) == []
         assert list(b.get_dag_node().get_outputs()) == []
+
+
+def _reasons(*propagators):
+    """Each node's recorded change reasons, by name, for comparing two graphs."""
+    return {p.name: sorted((alias.name, n.propagator.name) for alias, n in p.get_dag_node()._changes)
+            for p in propagators}
+
+
+class TestDeferredDirty:
+    """chunk_scheduler.deferred_dirty: one downstream walk for many dirtied nodes."""
+
+    def test_nothing_below_is_dirtied_until_the_block_ends(self):
+        a, b, c = Node("a"), Node("b"), Node("c")
+        b.add_dependency(a)
+        c.add_dependency(b)
+        clean(a, b, c)
+
+        with chunk_scheduler.deferred_dirty():
+            a.get_dag_node().dirty = True
+            assert a.get_dag_node().dirty
+            assert not b.get_dag_node().dirty and not c.get_dag_node().dirty
+
+        assert b.get_dag_node().dirty and c.get_dag_node().dirty
+
+    def test_one_walk_records_what_a_walk_per_seed_would(self):
+        def graph():
+            a, b, c, d = Node("a"), Node("b"), Node("c"), Node("d")
+            c.add_dependency(a)
+            c.add_dependency(b)
+            d.add_dependency(c)
+            clean(a, b, c, d)
+            return a, b, c, d
+
+        walked = graph()
+        for seed in walked[:2]:
+            seed.get_dag_node().dirty = True
+
+        deferred = graph()
+        with chunk_scheduler.deferred_dirty():
+            for seed in deferred[:2]:
+                seed.get_dag_node().dirty = True
+
+        assert _reasons(*deferred) == _reasons(*walked)
+        assert [p.get_dag_node().dirty for p in deferred] == [p.get_dag_node().dirty for p in walked]
+
+    def test_wiring_a_graph_inside_the_block_leaves_it_ready_to_solve(self):
+        # What loading a network does: every edge added inside the block, one solve after.
+        with chunk_scheduler.deferred_dirty():
+            a, b, c = Node("a"), Node("b"), Node("c")
+            b.add_dependency(a)
+            c.add_dependency(b)
+
+        assert solve_order(a) == ["a", "b", "c"]
+
+    def test_presentation_changes_are_not_held_back(self):
+        owner, child = Node("owner"), PresentationNode("child")
+        child.set_owner(owner)
+        clean(owner, child)
+
+        with chunk_scheduler.deferred_dirty():
+            child.get_dag_node().dirty = True
+            assert owner.get_dag_node().dirty
+
+
+class Counting(Node):
+    """A node that records every time a solve reaches it."""
+
+    log: list = []
+
+    def send_self(self):
+        Counting.log.append(self.name)
+
+
+class TestBatchedSolve:
+    """chunk_notice.batched_solve: many changes, one solve of what they feed."""
+
+    def setup_method(self):
+        Counting.log = []
+
+    def graph(self):
+        a, b, c = Counting("a"), Counting("b"), Counting("c")
+        c.add_dependency(a)
+        c.add_dependency(b)
+        clean(a, b, c)
+        Counting.log = []
+        return a, b, c
+
+    def test_without_a_batch_each_change_solves_what_it_feeds(self):
+        a, b, _c = self.graph()
+        a.execute()
+        b.execute()
+        assert Counting.log.count("c") == 2
+
+    def test_a_batch_solves_what_its_changes_feed_once(self):
+        a, b, _c = self.graph()
+        with chunk_notice.batched_solve():
+            a.execute()
+            b.execute()
+            assert Counting.log == []  # nothing solves inside the block
+        assert Counting.log.count("c") == 1
+        assert sorted(Counting.log) == ["a", "b", "c"]
+
+    def test_nested_batches_join_the_outermost(self):
+        a, b, _c = self.graph()
+        with chunk_notice.batched_solve():
+            a.execute()
+            with chunk_notice.batched_solve():
+                b.execute()
+            assert Counting.log == []
+        assert Counting.log.count("c") == 1
+
+    def test_a_solve_asked_for_while_draining_is_queued_not_nested(self):
+        # A param binding its storage attr sets its value mid-solve, which asks for a solve.
+        # Run inside the current one, dozens of those nested deep enough to blow the stack.
+        depth = {"now": 0, "max": 0}
+        a, b, _c = self.graph()
+
+        class Reentrant(Counting):
+            def send_self(self):
+                depth["now"] += 1
+                depth["max"] = max(depth["max"], depth["now"])
+                super().send_self()
+                if self.name == "a":
+                    b.execute()  # asked for while a is being solved
+                depth["now"] -= 1
+
+        a.__class__ = Reentrant
+        b.__class__ = Reentrant
+        with chunk_notice.batched_solve():
+            a.execute()
+
+        assert depth["max"] == 1
+        assert Counting.log.count("c") == 1

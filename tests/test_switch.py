@@ -23,12 +23,13 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 switch_mod = importlib.import_module("switch")
 transform_mod = importlib.import_module("transform")
 
@@ -64,7 +65,6 @@ def scene():
 def _mk(sender, module, name, config_module):
     node = module.main()
     node._config = ChunkConfig(module=config_module)
-    node._module = module
     node.name = name
     sender.add_chunk(node)
     return node
@@ -293,7 +293,6 @@ def test_the_selected_branch_keeps_an_upstream_switchs_choice(scene):
 
     inner = expr_mod.main()
     inner._config = ChunkConfig(module="stage_expression_switch", exec_inputs=2)
-    inner._module = expr_mod
     inner.name = "ShotSwitch"
     sender.add_chunk(inner)
     chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010_day"})

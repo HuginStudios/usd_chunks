@@ -7,7 +7,7 @@ name = "usd-chunks"
 version = "0.1.0"
 description = "UI and execution interface for OpenUSD"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Hugin Studios", email = "info@huginstudios.com" }]
@@ -16,7 +16,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -45,11 +44,11 @@ standalone = ["usd-core"]
 # For hosts that do not already supply Qt. usdview and Houdini bring their own.
 ui = ["PySide6"]
 # The standalone graph frontends. Neither is imported unless you ask for its module by
-# name -- plugins/__init__.py imports nothing -- so a missing toolkit is not fatal to the
+# name -- frontends/__init__.py imports nothing -- so a missing toolkit is not fatal to the
 # rest of the package, but `usdchunks-flet`/`-imgui` need these.
 flet = ["flet>=0.28"]
 imgui = ["imgui-bundle>=1.6"]
-# `requests` is not a library dependency — the suite loads example chunks from scripts/
+# `requests` is not a library dependency — the suite loads example chunks from chunks/
 # that import it. Chunks whose imports fail are skipped by the registry, so the heavier
 # example deps (numpy, opencv) are deliberately left out.
 dev = ["pytest", "pytest-xdist", "ruff", "build", "types-usd", "requests", "usd-core",
@@ -66,7 +65,7 @@ docs = [
 ]
 
 [project.scripts]
-usdchunks = "usd_chunks.plugins.usdchunks_cli:main"
+usdchunks = "usd_chunks.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["usd_chunks*"]
@@ -74,12 +73,4 @@ namespaces = false
 
 [tool.setuptools.package-data]
 "usd_chunks" = ["resources/icons/*.png"]
-"usd_chunks.plugins.chunk_usdview" = ["plugInfo.json"]
-"usd_chunks.plugins.chunk_kraken" = ["plugInfo.json"]
-# chunk_houdini is a HOUDINI_PATH package directory, not an importable python package,
-# so its contents ship as data of the parent package.
-"usd_chunks.plugins" = [
-    "chunk_houdini/packages/*.json",
-    "chunk_houdini/toolbar/*.shelf",
-    "chunk_houdini/python3.11libs/*.py",
-]
+"usd_chunks.hosts.usdview" = ["plugInfo.json"]

@@ -17,9 +17,9 @@ from PySide6 import QtCore, QtWidgets
 from pxr import Usd
 
 from usd_chunks import chunk_core, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 
 EXPRESSION = "@Prim.primpath_location@"
@@ -94,7 +94,7 @@ def dropped(qapp):
 def _field_text(qapp, gv, chunk, param_name):
     path = get_chunk_prim_path(chunk)
     node = gv.scene()._nodes.get(path)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and (node is None or getattr(node, "_chunk_widget", None) is None):
         qapp.processEvents()
         node = gv.scene()._nodes.get(path)

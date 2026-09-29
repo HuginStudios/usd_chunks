@@ -2,7 +2,7 @@
 
 USD substitutes ${NAME} into asset paths and variant selections, from the root layer stack,
 and nowhere else. usd_chunks does not extend that: a param carrying ${NAME} keeps the text
-literally, and a chunk graph acts on a variable through a Stage Expression Filter, which is
+literally, and a chunk graph acts on a variable through a Stage Expression Switch, which is
 a mechanism of ours rather than a place USD's own rule is quietly widened.
 
 The Stage Expression chunk authors into the session layer, where an opinion composes over
@@ -18,8 +18,11 @@ import pytest
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import ChunkStageSync
+
+from chunk_stubs import attach_stub_module
 
 
 class _Scene(SceneSender):
@@ -36,7 +39,7 @@ class _Scene(SceneSender):
 
 def _mk(name: str) -> chunk.Chunk:
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     return c
 
 
@@ -176,7 +179,7 @@ def test_a_plain_value_is_untouched(scene) -> None:
 
 def _stage_expression(scene, *rows):
     """Build the chunk with one row per (name, type, value) triple."""
-    mod = importlib.import_module("scripts.utils.stage_expression")
+    mod = importlib.import_module("chunks.utils.stage_expression")
 
     node = mod.main()
     node._config = ChunkConfig(module="stage_expression")

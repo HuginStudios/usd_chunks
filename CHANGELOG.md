@@ -11,6 +11,15 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `from usd_chunks import Scene` builds and runs chunk networks from a plain script:
+  `scene.create.<chunk>()` for every chunk module and menu variant (`scene.create.cube()`,
+  `scene.create.rect_light()`), input chunks passed positionally, and `with chunk:` to
+  nest into a chunkgroup or run after any other chunk -- so `with
+  scene.create.edit_target(...)` authors what is inside into that layer. `save()` writes
+  the network, `export()` the plain-USD result. Examples in `examples/scripts/`.
+  The same calls work on any host's scene: `usd_chunks.current_scene()` inside usdview
+  builds into the network the graph is showing.
+- Mesh has one menu entry per shape: Cube, Grid, Tube and Ground.
 - Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
   own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors
   left in the queue by whoever drew last, and a click did nothing but print a traceback.
@@ -62,6 +71,50 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- The framework clears a procedural chunk's layer before every `execute()`, so a chunk
+  module no longer does. A cook always starts from nothing and authors its whole result:
+  a module that forgot to clear can no longer pile up prims or walk its own unique path up
+  by one on every cook. Only a layer the chunk owns (anonymous) is cleared; a chunk handed
+  its context's file layer, and an `interactive=True` chunk, are left alone. Callbacks are
+  not affected -- they still author on top of the cooked result. A chunk module that
+  cleared its layer at the top of `execute()` can drop the line.
+- View-driven recooks (`recook_for_view`, on every view switch, wire and delete) only
+  execute chunks that are stale -- ones a change reached while they could not cook, or
+  whose layer is new. The rest are revealed with the result they already hold. A clean
+  CAD, URDF or poly-reduce import upstream no longer redoes its work each time.
+- What a param drives (`connect_usd_attr`) is re-authored by the framework after each
+  cook, as the param's state rather than the cook's output.
+- A Light keeps its attribute params across a cook when its prim has the same attributes,
+  instead of deleting and rebuilding every one -- and its widget -- on each slider tick.
+- Emptying the path of a Reference, Payload, UV Texture or Curves to Mesh now removes its
+  output, as emptying Bind Material's already did, rather than leaving the last one.
+- Scatter Brush holds its paint on the chunk and authors it on every cook; the Camera
+  holds the placement the freecam gave it while locked. Neither keeps state in its layer
+  any more.
+- `chunk_utils.get_unique_path` is a pure lookup. It no longer clears the asking chunk's
+  layer, and takes `own_layer` so a prim only that layer defines is not a collision.
+
+- **Breaking:** the Create Layer and Add Mesh chunks are now Layer (`chunks/usd/layer.py`)
+  and Mesh (`chunks/modelling/mesh.py`). A saved network records a chunk's module name, so
+  one using either will not load them, and Edit Target's follow entry is now
+  "(Follow Upstream Layer)".
+- `usd_chunks/plugins/` is split by what each file is. Toolkit frontends moved to
+  `usd_chunks.frontends.{qt,flet,imgui,blender}` (`chunk_qt` -> `frontends.qt.factory`,
+  `chunk_qt_nodegraph` -> `frontends.qt.nodegraph`, and so on), host entry points to
+  `usd_chunks.hosts.{usdview,kraken,houdini}`, and the CLI to `usd_chunks.cli`. The core's
+  graph, gizmo and store modules are subpackages now: `chunk_graph` -> `graph.engine`,
+  `chunk_graph_layout` -> `graph.layout`, `chunk_gizmo` -> `gizmo.runtime`,
+  `chunk_gizmo_types` -> `gizmo.types`, `pin` -> `store.pin`, `stores` ->
+  `store.providers` (the `usd_chunks.stores` entry-point group keeps its name). Every old
+  module name still imports, as an alias of the same module (see `usd_chunks._moved`). **Host directories moved with no alias**: point
+  `PXR_PLUGINPATH_NAME` at `usd_chunks/hosts/usdview` (or `kraken`) and `HOUDINI_PATH` at
+  `usd_chunks/hosts/houdini`; `usdchunks plugin-path --host <host>` prints the new path.
+  The standalone graphs run as `python -m usd_chunks.frontends.flet.nodegraph` and
+  `python -m usd_chunks.frontends.imgui.nodegraph`.
+
+- The example chunk library moved from `scripts/` to `chunks/`. Point `USD_CHUNK_DIRS` at
+  `<repo>/chunks`; the test suite adds it itself.
+
 - A network brought in by composition is tweaked, never rewritten. Sublayer a sequence's
   network into a shot, or reference it under a chunkgroup, and editing a param in the shot
   authors a sparse `over` in the stage's edit target (the shot file itself, unless the
@@ -82,6 +135,12 @@ This file starts with the first release; development before that is in the commi
 - Minimum Python is 3.10, which is what the code has actually required.
 
 ### Fixed
+
+- Apply Schema and MDL to MaterialX never cleared their layers, so repeated cooks left
+  stale output behind.
+- A chunk with no layer of its own, or one in a context's file layer, bumped its claimed
+  prim path on every cook (`cam1`, `cam2`, ...) -- its own prim from the last cook read as
+  a collision.
 
 - Callbacks whose owner had been garbage collected were invoked with the wrong number of
   arguments, raising `missing 1 required positional argument` during teardown. Such

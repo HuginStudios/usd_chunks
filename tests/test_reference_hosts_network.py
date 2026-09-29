@@ -19,7 +19,7 @@ from usd_chunks.chunk_stage import (
     ChunkStageSync, export_chunks, get_chunk_prim_path, initialize, is_group_chunk,
     is_network_host, is_subnet,
 )
-from usd_chunks.plugins import chunk_graph
+from usd_chunks.graph import engine as chunk_graph
 
 _TX = "inputs:translate_grp:tx"
 
@@ -397,7 +397,6 @@ class TestPublish:
     """Publish = write a group out and make it the host of that file: the inverse."""
 
     def _group_with_chunks(self, scene):
-        from usd_chunks.plugins import chunk_graph
         a = _add(scene, "transform")
         b = _add(scene, "transform")
         b.add_dependency(a)
@@ -607,7 +606,6 @@ class TestOverridesBelongToTheHostNode:
         assert host.nameChildren["Transform"].attributes[_TX].default == 2.5
 
     def test_disabling_the_host_takes_its_network_and_overrides_out_of_effect(self, hosting):
-        from usd_chunks.plugins import chunk_graph
         stage, scene, reference, _ = hosting
         transform = next(c for c in scene.get_chunks() if c.name == "Transform")
         transform.get_param("tx").value = 2.5
@@ -672,7 +670,6 @@ class TestTheHostNodeInTheQtGraph:
 
     @pytest.fixture
     def graph(self, qapp, network_file):
-        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
         stage, scene = _open(None)
         reference = _add(scene, "reference")
         graph_scene = ChunkGraphScene()
@@ -709,6 +706,7 @@ class TestTheHostNodeInTheQtGraph:
 
 
 from usd_chunks.chunk_stage import loft_param_to_context
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene  # noqa: E402
 
 
 @pytest.fixture
@@ -760,7 +758,6 @@ class TestLoftedParamsOnTheHost:
     def test_the_qt_node_grows_the_public_param_when_the_file_is_set(self, qapp, lofted_network):
         """The node's widget exists before the file is set -- the order a user does it in.
         The public param arrives through the same PARAM_ADDED a live loft uses."""
-        from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphScene
         path, name = lofted_network
         stage, scene = _open(None)
         graph_scene = ChunkGraphScene()

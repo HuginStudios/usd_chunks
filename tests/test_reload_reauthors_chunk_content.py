@@ -7,7 +7,7 @@ param values -- restoring values themselves deliberately does NOT re-trigger add
 handlers (chunk_notice._loading_stage), so a chunk whose real authoring work lived only in
 an add_callback handler came back on reload with correct-looking param values but none of
 its actual authored content. Each chunk below got a matching reserved execute(node) hook,
-mirroring the fix scripts/usd/sublayer.py already had.
+mirroring the fix chunks/usd/sublayer.py already had.
 
 Shared pattern: build the chunk live, confirm it authors correctly; export just the chunk
 graph (export_chunks -- never the target content); reload into a fresh stage with whatever
@@ -21,7 +21,7 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import export_chunks, initialize as _chunk_usd_init
 
 
@@ -53,7 +53,7 @@ def _make(scene, module_name: str):
         # example dependency does not take the whole app down. A test built on such a
         # chunk then got an empty list and an IndexError several lines later, which reads
         # like a bug in the reload path rather than a chunk that was never there.
-        # modelling.add_mesh needs numpy, which CI deliberately does not install.
+        # modelling.mesh needs numpy, which CI deliberately does not install.
         pytest.skip(f"chunk module {module_name!r} is unavailable in this environment")
     primary = chunks[0]
     scene.add_chunk(primary)
@@ -220,7 +220,7 @@ def test_add_mesh_reapplies_correct_type_on_reload(tmp_path) -> None:
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
 
-    c = _make(scene, "add_mesh")
+    c = _make(scene, "mesh")
     c.get_param("prim_path").value = "/mycube"
     c.get_param("mesh_type").value = "cube"
     c.get_param("dimx").value = 3  # touching a cube-group param is what actually triggers the build
@@ -228,7 +228,7 @@ def test_add_mesh_reapplies_correct_type_on_reload(tmp_path) -> None:
     prim = stage.GetPrimAtPath("/mycube")
     assert prim.IsValid() and UsdGeom.Mesh(prim).GetPointsAttr().Get()  # sanity
 
-    scene2, stage2 = _reload(scene, tmp_path, "add_mesh")
+    scene2, stage2 = _reload(scene, tmp_path, "mesh")
     prim2 = stage2.GetPrimAtPath("/mycube")
     assert prim2.IsValid(), "the mesh must be rebuilt on reload, not left missing"
     pts2 = UsdGeom.Mesh(prim2).GetPointsAttr().Get()

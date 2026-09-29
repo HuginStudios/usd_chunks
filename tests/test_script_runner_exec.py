@@ -10,7 +10,8 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
 
@@ -39,13 +40,12 @@ def _make(mod, name: str):
     c = mod.main()
     c.name = name
     c._config = ChunkConfig(module=mod.__name__.rsplit(".", 1)[-1])
-    c._module = mod
     return c
 
 
 class TestScriptRunnerExecute:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.core.script_runner")
+        self.mod = importlib.import_module("chunks.core.script_runner")
 
     def test_no_run_button(self, scene):
         node = _make(self.mod, "Python")
@@ -91,7 +91,7 @@ class TestScriptRunnerExecute:
     def test_result_wires_into_downstream_chunk(self, scene):
         """The cross-chunk case the feature exists for: a computed name feeding another
         chunk's input via an @Node.param@ expression, auto-re-cooking on upstream change."""
-        dup_mod = importlib.import_module("scripts.usd.duplicate_prim")
+        dup_mod = importlib.import_module("chunks.usd.duplicate_prim")
 
         script_node = _make(self.mod, "Python")
         dup_node = _make(dup_mod, "Duplicate")

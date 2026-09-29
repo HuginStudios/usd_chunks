@@ -1,4 +1,4 @@
-"""Tests for chunk_stage.save_scene -- the "nice save flow" (Dan's request) -- and for the
+"""Tests for chunk_stage.save_scene and for the
 stage metadata (up-axis, units) that export_chunks, which it wraps, now carries itself.
 
 Previously wrote a bundled pair (the chunk graph plus a flattened snapshot of everything
@@ -21,7 +21,7 @@ from usd_chunks.chunk_stage import (
     save_scene,
 )
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -44,7 +44,7 @@ def _make_scene(stage: Usd.Stage) -> SceneSender:
     return scene
 
 
-def _build_stage_with_a_chunk() -> "tuple[Usd.Stage, SceneSender]":
+def _build_stage_with_a_chunk() -> tuple[Usd.Stage, SceneSender]:
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageMetersPerUnit(stage, 0.01)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)

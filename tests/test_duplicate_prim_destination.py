@@ -18,9 +18,9 @@ the more common problem in practice. If the rename reappears, execute()'s else b
 where to look, and the missing piece is something usdview does that a headless load does
 not -- extra cook passes from the graph, gizmos or debounced recooks.
 
-get_unique_path is given the PARAM, not its value: that way it clears this chunk's own
-layer before checking, so the copy it made last cook does not read as a collision and walk
-the suffix up on every execute.
+The copy made last cook does not read as a collision and walk the suffix up on every
+execute: the framework clears this chunk's layer before the cook, and get_unique_path is
+told which layer is the chunk's own for the case where nothing clears it.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import pytest
 from pxr import Usd, UsdGeom
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init, save_scene
 
 

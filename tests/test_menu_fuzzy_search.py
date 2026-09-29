@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkRegistry, MenuEntry, search_menu_entries
 
 
@@ -124,5 +124,5 @@ def test_trans_finds_transform_first_in_the_real_library():
     registry.initialize(_NoScene(), "pytest")
     entries = registry.get_menu_entries()
     if not entries:
-        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at scripts/")
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
     assert search_menu_entries(entries, "trans")[0].label == "transform"

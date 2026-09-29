@@ -11,8 +11,8 @@ from __future__ import annotations
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_stage, chunk_utils
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.widgets import ChunkWidget, ChunkParamWidgetBase, LabeledWidget
 
 
 class _Scene(SceneSender):
@@ -48,7 +48,6 @@ def _chunk_with_slider(scene, value):
 
 def _label_for(widget, param):
     """The LabeledWidget row's label for param, found in the built chunk widget."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkParamWidgetBase, LabeledWidget
 
     for row in widget.findChildren(LabeledWidget):
         inner = row.widget

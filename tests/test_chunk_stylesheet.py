@@ -4,12 +4,13 @@ setStyleSheet re-polishes the whole subtree beneath the widget, so where and *wh
 sheet is applied is a performance decision, not a cosmetic one: applied late, to a finished
 chunk tree, one call was the most expensive thing in building a node.
 """
+from __future__ import annotations
 
 from PySide6 import QtWidgets
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt_widgets import CHUNK_STYLESHEET, ChunkWidget, apply_chunk_stylesheet
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.widgets import CHUNK_STYLESHEET, ChunkWidget, apply_chunk_stylesheet
 
 
 class _Scene(SceneSender):

@@ -6,15 +6,14 @@ ChunkWidgetFactoryBase moved to chunk_widget_api and SceneSender to chunk_scene,
 three dead cross-references in docs/plugins.md that only a docs build would have surfaced.
 
 Resolution is checked the way mkdocstrings does it -- statically, by reading the source.
-That distinction matters here: chunk_core re-exports SceneSender through a module
-__getattr__, so the old path still works at runtime while the documentation link stays
-broken. Importing and calling hasattr() would have passed and proved nothing.
+That distinction matters: a name reached through a module __getattr__ or any other lazy
+re-export works at runtime while the documentation link stays broken, so importing and
+calling hasattr() would pass and prove nothing.
 """
 from __future__ import annotations
 
 import ast
 import importlib
-import io
 import re
 from pathlib import Path
 
@@ -38,7 +37,7 @@ def references():
     """(page, reference) for every mkdocstrings reference in the hand-written docs."""
     found = []
     for page in doc_pages():
-        text = io.open(page, encoding="utf-8").read()
+        text = open(page, encoding="utf-8").read()
         for ref in XREF.findall(text) + DIRECTIVE.findall(text):
             found.append((page.relative_to(REPO).as_posix(), ref))
     return found
@@ -54,7 +53,7 @@ def defined_in_source(module, name: str) -> bool:
     __getattr__, or something injected by a decorator -- is not documentable at that path,
     so hasattr() is the wrong question.
     """
-    tree = ast.parse(io.open(module.__file__, encoding="utf-8").read())
+    tree = ast.parse(open(module.__file__, encoding="utf-8").read())
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name == name:
@@ -105,13 +104,8 @@ class TestTheCheckWorks:
         """The failure this file exists for: a class that used to live somewhere else."""
         assert resolve("usd_chunks.chunk_core.ChunkParamWidgetBase")
 
-    def test_a_runtime_only_re_export_does_not_count(self):
-        """chunk_core re-exports SceneSender via module __getattr__, so it resolves at
-        runtime and is still undocumentable at that path. If this ever starts passing,
-        the check has quietly become a hasattr() and stops catching moves."""
-        import usd_chunks.chunk_core as core
-
-        assert core.SceneSender is not None, "the runtime re-export is gone; update this test"
+    def test_the_old_scene_sender_path_is_reported(self):
+        """SceneSender moved to chunk_scene; a page still linking to chunk_core must fail."""
         assert resolve("usd_chunks.chunk_core.SceneSender")
 
     def test_a_real_symbol_resolves(self):

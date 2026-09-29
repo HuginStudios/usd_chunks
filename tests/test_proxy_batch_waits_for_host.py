@@ -7,11 +7,12 @@ same widget costs right after (measured: 50s of start-up against 15s on a 21-nod
 The batch therefore waits for the cursor to be restored, for at most
 _PROXY_BUSY_WAIT_MAX_S so a host that stays busy still gets its graph.
 """
+from __future__ import annotations
 
 import pytest
 from PySide6 import QtCore, QtWidgets
 
-from usd_chunks.plugins import chunk_qt_nodegraph as ng
+from usd_chunks.frontends.qt import nodegraph as ng
 
 
 class _Node:

@@ -10,9 +10,10 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry, chunk_utils
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import connect_exec, get_chunk_prim_path
+from usd_chunks.graph import engine as chunk_graph
 
 
 class _DummyScene(SceneSender):
@@ -111,8 +112,6 @@ def test_exec_dependencies_ignore_param_wires_and_wired_dependencies_do_not(grap
 
 
 def test_exec_boundary_reports_the_slot_each_consumer_used(graph):
-    from usd_chunks.plugins import chunk_graph
-
     stage, scene, make, wire = graph
     a, b = make(2)
     mod = chunk_registry.ChunkRegistry().get_chunk_module("merge")

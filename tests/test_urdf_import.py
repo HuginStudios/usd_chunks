@@ -1,4 +1,4 @@
-"""URDF in, UsdPhysics out — and the RBD Solver reads back what URDF said.
+"""URDF in, UsdPhysics out -- and the RBD Solver reads back what URDF said.
 
 The round trip is the point. This chunk authors the exact attributes
 `rbd_solver.read_articulations` parses, so a robot can be imported and simulated without a
@@ -28,11 +28,12 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 urdf_import = importlib.import_module("urdf_import")
 rbd_solver = importlib.import_module("rbd_solver")
 
@@ -96,7 +97,6 @@ def _import(scene, urdf_text, tmp_path, **params):
 
     node = urdf_import.main()
     node._config = ChunkConfig(module="urdf_import")
-    node._module = urdf_import
     node.name = "Import"
     sender.add_chunk(node)
     node.get_param("file_path").value = str(source)

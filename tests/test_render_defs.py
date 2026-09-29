@@ -12,6 +12,8 @@ the correct answer there rather than an error.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from usd_chunks import render_defs
@@ -469,6 +471,98 @@ class TestDiscoveryIsCached:
         if first:
             assert first[0] is not second[0]
             assert first[0].key == second[0].key
+
+
+_SAMPLE = (
+    render_defs.RenderSettingsDef(
+        key="FooRendererSettingsAPI",
+        label="Foo",
+        namespace="foo",
+        source="schema",
+        props=[render_defs.RenderSettingProp(name="foo_samples", attr_name="foo:samples", default=4)],
+    ),
+)
+
+
+@pytest.fixture
+def disk_cache(tmp_path, monkeypatch):
+    """Discovery against a cache folder of its own, with a discovery that counts its calls."""
+    monkeypatch.setenv("USD_CHUNKS_CACHE_DIR", str(tmp_path))
+    calls = []
+
+    def discover():
+        calls.append(1)
+        return _SAMPLE
+
+    monkeypatch.setattr(render_defs, "_discover_uncached", discover)
+    render_defs.clear_cache()
+    yield tmp_path, calls
+    render_defs.clear_cache()
+
+
+class TestDiscoveryIsCachedOnDisk:
+    """The first discovery in a process was two seconds of Sdr discovering every shader,
+    and its answer only changes when USD, a plugin or this code does."""
+
+    def test_a_second_process_reads_the_first_ones_answer(self, disk_cache):
+        folder, calls = disk_cache
+        assert render_defs._discover() == _SAMPLE
+        render_defs.clear_cache()  # what a new process starts with
+
+        assert render_defs._discover() == _SAMPLE
+        assert len(calls) == 1, "should have been read back, not discovered again"
+        assert len(list(folder.glob("render_settings-*.pickle"))) == 1
+
+    def test_two_keys_in_use_keep_their_own_files(self, disk_cache, monkeypatch):
+        """Two checkouts have two keys; each must not delete the other's file on write,
+        or alternating between them pays the whole discovery on every run."""
+        folder, calls = disk_cache
+        this_checkout = render_defs._disk_cache_key
+        render_defs._discover()
+        render_defs.clear_cache()
+        monkeypatch.setattr(render_defs, "_disk_cache_key", lambda: "another-checkout")
+        render_defs._discover()
+        assert len(calls) == 2
+
+        monkeypatch.setattr(render_defs, "_disk_cache_key", this_checkout)
+        render_defs.clear_cache()
+        render_defs._discover()
+        assert len(calls) == 2, "the first key's file should still be there"
+        assert len(list(folder.glob("render_settings-*.pickle"))) == 2
+
+    def test_a_file_unread_for_a_month_is_removed(self, disk_cache, monkeypatch):
+        folder, calls = disk_cache
+        render_defs._discover()
+        old = next(folder.glob("render_settings-*.pickle"))
+        month_ago = old.stat().st_mtime - render_defs._DISK_CACHE_MAX_IDLE - 60
+        os.utime(old, (month_ago, month_ago))
+        render_defs.clear_cache()
+        monkeypatch.setattr(render_defs, "_disk_cache_key", lambda: "another-usd")
+
+        render_defs._discover()
+        assert [p.name for p in folder.glob("render_settings-*.pickle")] == [
+            "render_settings-another-usd.pickle"
+        ]
+
+    def test_a_torn_file_is_only_a_miss(self, disk_cache):
+        folder, calls = disk_cache
+        render_defs._discover()
+        render_defs.clear_cache()
+        for path in folder.glob("render_settings-*.pickle"):
+            path.write_bytes(b"not a pickle")
+
+        assert render_defs._discover() == _SAMPLE
+        assert len(calls) == 2
+
+    def test_an_empty_cache_dir_turns_it_off(self, disk_cache, monkeypatch):
+        folder, calls = disk_cache
+        monkeypatch.setenv("USD_CHUNKS_CACHE_DIR", "")
+        render_defs._discover()
+        render_defs.clear_cache()
+        render_defs._discover()
+
+        assert len(calls) == 2
+        assert not list(folder.iterdir())
 
 
 class TestLabels:

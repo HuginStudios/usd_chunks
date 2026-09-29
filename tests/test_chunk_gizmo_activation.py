@@ -10,8 +10,10 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk, chunk_gizmo, chunk_notice, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
 
@@ -191,7 +193,9 @@ def test_changed_fires_after_the_write_not_before() -> None:
     """So a listener can read the new value straight off the params."""
     c = _chunk()
     seen_values = []
-    chunk_notice.NoticeConnection(
+    # Held: a connection nobody references is collected whenever the garbage collector
+    # next runs, which made this pass alone and fail somewhere in the full suite.
+    connection = chunk_notice.NoticeConnection(
         lambda notice, sender: seen_values.append(c.get_param("amount").value),
         ChunkNoticeAlias.GIZMO_CHANGED,
         globally=True,
@@ -200,6 +204,7 @@ def test_changed_fires_after_the_write_not_before() -> None:
     chunk_gizmo.apply_bindings(c, "handle", 7.0)
 
     assert seen_values == [7.0]
+    del connection
 
 
 def test_a_rejected_value_writes_nothing_and_announces_nothing() -> None:
@@ -265,4 +270,5 @@ def test_resolve_returns_every_chunk_that_touched_the_prim() -> None:
     makes the upstream-editing problem look like a bug: two transform chunks in one chain
     would draw two identical handles in the same place, and picking between them is a
     selection question the host is already answering."""
-    assert "host filters" in chunk_gizmo.resolve_gizmos.__doc__
+    # Whitespace collapsed: the phrase is free to wrap onto a new line in the docstring.
+    assert "host filters" in " ".join(chunk_gizmo.resolve_gizmos.__doc__.split())

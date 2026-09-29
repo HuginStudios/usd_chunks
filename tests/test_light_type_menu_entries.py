@@ -5,13 +5,14 @@ applied its preset with a cook: the chunk cooked before it was in any context, i
 the stage had not adopted, and the real cook on add was then skipped by light.py's own
 'nothing changed' guard -- the right menu value, and no prim at all.
 """
+from __future__ import annotations
 
 from pxr import Usd, UsdLux
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
-from usd_chunks.plugins import chunk_graph
+from usd_chunks.graph import engine as chunk_graph
 
 
 class _Scene(SceneSender):

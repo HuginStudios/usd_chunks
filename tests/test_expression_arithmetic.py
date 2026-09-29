@@ -2,7 +2,7 @@
 operators survive a save/reload.
 
 Two halves used to be missing. The value read back was the substituted *string*
-("20.0 * 3.0"), and a non-String attr stored only its connections — so reload rebuilt the
+("20.0 * 3.0"), and a non-String attr stored only its connections -- so reload rebuilt the
 expression by joining the connection targets and dropped everything between them, turning
 "@a.x@ * @b.y@" into "@a.x@@b.y@".
 """
@@ -12,13 +12,16 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _INPUTS_PREFIX,
     _load_wire_inputs,
     _patch_expressions,
     ChunkStageSync,
+    get_chunk_prim_path,
 )
+
+from chunk_stubs import attach_stub_module
 
 
 def _chunk_path(name: str) -> str:
@@ -27,8 +30,6 @@ def _chunk_path(name: str) -> str:
     add_chunk routes a context-less chunk into the scene's default chunkgroup, so its
     parent is that group rather than the /chunks scope.
     """
-    from usd_chunks import chunk_registry
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     scene = chunk_registry.ChunkRegistry().scene
     ctx = scene.peek_root_context() if scene is not None else None
@@ -51,7 +52,7 @@ class _Scene(SceneSender):
 
 def _mk(name: str) -> chunk.Chunk:
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     return c
 
 
@@ -137,7 +138,7 @@ def test_single_ref_still_returns_the_typed_value(scene) -> None:
 
 
 def test_string_param_still_interpolates(scene) -> None:
-    """Path building is the reason multi-ref interpolation exists — don't compute it."""
+    """Path building is the reason multi-ref interpolation exists -- don't compute it."""
     a = _mk("chunkA")
     a.add_param(chunk.LineEdit("primpath_location"))
     scene.add_chunk(a)
@@ -154,7 +155,7 @@ def test_string_param_still_interpolates(scene) -> None:
 
 
 def test_unevaluable_text_on_numeric_param_falls_back(scene) -> None:
-    """Not arithmetic once substituted — keep the string rather than raising."""
+    """Not arithmetic once substituted -- keep the string rather than raising."""
     a = _mk("chunkA")
     a.add_param(chunk.LineEdit("name"))
     scene.add_chunk(a)
@@ -213,7 +214,7 @@ def test_rename_patches_stored_text(scene) -> None:
 
 
 def test_legacy_connection_only_attr_still_loads(scene) -> None:
-    """Files authored before the text was stored have connections and nothing else —
+    """Files authored before the text was stored have connections and nothing else --
     they must still come back as a (single-ref) expression, not as a bare number."""
     _two_sources(scene)
     dst = _mk("dst")
@@ -265,3 +266,66 @@ def test_eval_arithmetic_computes(text, expected) -> None:
 ])
 def test_eval_arithmetic_refuses(text) -> None:
     assert chunk_utils.eval_arithmetic(text) is None
+
+
+# ---------------------------------------------------------------------------
+# rename, live
+# ---------------------------------------------------------------------------
+
+def test_chunk_rename_updates_live_expressions(scene) -> None:
+    """Renaming a chunk must fix the expressions in memory too, not only in the USD --
+    otherwise "@chunkA.a@ * 3" keeps the old name and reads as " * 3" until a reload."""
+    a, _ = _two_sources(scene)
+    dst = _mk("dst")
+    num = chunk.Slider("num", default_value=0.0)
+    text = chunk.LineEdit("text")
+    dst.add_params([num, text])
+    scene.add_chunk(dst)
+    num.value = "@chunkA.a@ * 3"
+    text.value = "@chunkA.a@_suffix"
+
+    a.name = "renamedA"
+
+    assert num.raw_value == "@renamedA.a@ * 3"
+    assert text.raw_value == "@renamedA.a@_suffix"
+    assert num.value == pytest.approx(60.0)
+    a.get_param("a").value = 2.0
+    assert num.value == pytest.approx(6.0), "still follows the renamed chunk"
+
+
+def test_param_rename_updates_live_expressions(scene) -> None:
+    a, _ = _two_sources(scene)
+    dst = _mk("dst")
+    num = chunk.Slider("num", default_value=0.0)
+    dst.add_param(num)
+    scene.add_chunk(dst)
+    num.value = "@chunkA.a@ + @chunkB.a@"
+
+    a.get_param("a").name = "size"
+
+    assert num.raw_value == "@chunkA.size@ + @chunkB.a@", "only chunkA's param was renamed"
+    assert num.value == pytest.approx(23.0)
+
+
+def test_nested_param_rename_updates_expressions(scene) -> None:
+    """@node.param@ finds a param inside a group by its bare name, so renaming it must be
+    followed too, in memory and in the USD."""
+    src = _mk("src")
+    grp = chunk.Group("grp")
+    inner = chunk.Slider("inner", default_value=0.0)
+    grp.add_param(inner)
+    src.add_param(grp)
+    scene.add_chunk(src)
+    inner.value = 4.0
+    dst = _mk("dst")
+    num = chunk.Slider("num", default_value=0.0)
+    dst.add_param(num)
+    scene.add_chunk(dst)
+    num.value = "@src.inner@ * 2"
+
+    inner.name = "renamed"
+
+    assert num.raw_value == "@src.renamed@ * 2"
+    assert num.value == pytest.approx(8.0)
+    attr = scene.get_stage().GetPrimAtPath(_chunk_path("dst")).GetAttribute(f"{_INPUTS_PREFIX}num")
+    assert chunk_utils.read_expression_text(attr) == "@src.renamed@ * 2"
