@@ -1439,40 +1439,6 @@ class LabeledWidget(QtWidgets.QWidget):
                 param.value = param.default_value
 
 
-class ChunkArea(QtWidgets.QScrollArea):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setContentsMargins(6, 0, 10, 0)
-        self.flow.setSpacing(40)
-        self.flow.setContentsMargins(6, 0, 10, 0)
-        self.flow.setSpacing(40)
-        self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
-
-        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
-
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        self.widget_holder = QtWidgets.QWidget(self)
-        self.widget_holder.setLayout(self.flow)
-
-        self.setWidget(self.widget_holder)
-        self.setWidgetResizable(True)
-
-    def add_widget(self, w):
-        self.flow.addWidget(w)
-
-    def delete_chunks(self):
-        # Deletes all chunks in this ScrollArea. Currently undoable: TODO: add undo/redo
-        for i in range(self.flow.count()):
-            if item := self.flow.itemAt(i):
-                w = item.widget()
-                if isinstance(w, ChunkWidget):
-                    w.group.request_delete()
-
-
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QFrame
 ):
