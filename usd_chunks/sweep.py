@@ -67,7 +67,7 @@ def frame_consumers(chunks, wedge_name: str) -> tuple[list, str | None]:
         if id(c) in seen:
             continue
         seen.add(id(c))
-        if not callable(getattr(getattr(c, "_module", None), "commit", None)) or c.is_blocked():
+        if c._module_hook("commit") is None or c.is_blocked():
             continue
         frames = c.get_param("frames")
         raw = getattr(frames, "raw_value", None) if frames is not None else None

@@ -607,8 +607,8 @@ def commit_all(
         if c.is_blocked():
             continue
 
-        hook = getattr(getattr(c, "_module", None), "commit", None)
-        if not callable(hook):
+        hook = c._module_hook("commit")
+        if hook is None:
             continue
 
         hook(c)

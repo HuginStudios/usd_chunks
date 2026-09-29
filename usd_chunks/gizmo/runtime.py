@@ -991,9 +991,8 @@ def is_gizmo_hidden(chunk: core.ChunkBase, name: str) -> bool:
     Returns:
         True if the handle should not be shown. A hook that raises counts as False.
     """
-    module = getattr(chunk, "_module", None)
-    hook = getattr(module, GIZMO_HIDDEN_HOOK, None)
-    if not callable(hook):
+    hook = chunk._module_hook(GIZMO_HIDDEN_HOOK)
+    if hook is None:
         return False
     try:
         return bool(hook(chunk, name))
@@ -1031,9 +1030,8 @@ def gizmo_offset(chunk: core.ChunkBase, name: str, declared: tuple | None = None
         and the declared value stands -- *not* "clear it". A chunk with several handles would
         otherwise wipe the static offset on the ones its hook does not answer for.
     """
-    module = getattr(chunk, "_module", None)
-    hook = getattr(module, GIZMO_OFFSET_HOOK, None)
-    if not callable(hook):
+    hook = chunk._module_hook(GIZMO_OFFSET_HOOK)
+    if hook is None:
         return declared
 
     try:
@@ -1109,9 +1107,8 @@ def apply_offset(chunk: core.ChunkBase, name: str, world_point: Any) -> bool:
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
 
-    module = getattr(chunk, "_module", None)
-    hook = getattr(module, GIZMO_OFFSET_CHANGED_HOOK, None)
-    if not callable(hook):
+    hook = chunk._module_hook(GIZMO_OFFSET_CHANGED_HOOK)
+    if hook is None:
         return False
 
     prim = _anchor_prim(chunk, gizmo)
@@ -1186,9 +1183,8 @@ def apply_stroke(chunk: core.ChunkBase, name: str, samples: Any) -> bool:
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
 
-    module = getattr(chunk, "_module", None)
-    hook = getattr(module, GIZMO_STROKE_HOOK, None)
-    if not callable(hook):
+    hook = chunk._module_hook(GIZMO_STROKE_HOOK)
+    if hook is None:
         return False
 
     try:
@@ -1238,9 +1234,9 @@ def _dispatch_solve_hook(chunk: core.ChunkBase, name: str, value: Any) -> bool:
     # different keys, and the other copy is not the one the running chunk was built from --
     # looking the hook up by import would find a function whose closure belongs to a
     # different object graph.
-    module = getattr(chunk, "_module", None)
-    hook = getattr(module, GIZMO_CHANGED_HOOK, None)
-    if not callable(hook):
+    # That copy is the one _module_hook reads.
+    hook = chunk._module_hook(GIZMO_CHANGED_HOOK)
+    if hook is None:
         return False
 
     try:
