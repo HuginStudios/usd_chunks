@@ -5,10 +5,10 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
-import scripts.dynamics.rbd_solver as rbd_mod
+import chunks.dynamics.rbd_solver as rbd_mod
 
 
 class _DummyScene(SceneSender):

@@ -3,7 +3,7 @@
 Whether a callback gets (owner, notice, sender) or (notice, sender) is read from its
 signature. A decorator's wrapper is usually (*args, **kwargs), which reads as taking no
 arguments, so an (owner, notice, sender) callback under a decorator was called with two
-and failed -- scripts/examples/example.py does exactly this with its nice_print.
+and failed -- chunks/examples/example.py does exactly this with its nice_print.
 """
 from __future__ import annotations
 

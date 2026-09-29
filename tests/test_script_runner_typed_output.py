@@ -13,7 +13,8 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
@@ -43,13 +44,12 @@ def _make(mod, name: str):
     c = mod.main()
     c.name = name
     c._config = ChunkConfig(module=mod.__name__.rsplit(".", 1)[-1])
-    c._module = mod
     return c
 
 
 class TestTypedOutputs:
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.core.script_runner")
+        self.mod = importlib.import_module("chunks.core.script_runner")
 
     def test_all_typed_outputs_exist(self, scene):
         node = _make(self.mod, "Python")
@@ -136,7 +136,7 @@ class TestOnlySelectedOutputShows:
     """
 
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.core.script_runner")
+        self.mod = importlib.import_module("chunks.core.script_runner")
 
     @pytest.mark.parametrize(
         "chosen, kept",
@@ -183,7 +183,7 @@ class TestBlankOutputsKeepTheirType:
     """
 
     def setup_method(self):
-        self.mod = importlib.import_module("scripts.core.script_runner")
+        self.mod = importlib.import_module("chunks.core.script_runner")
 
     def test_clearing_leaves_a_float_holding_a_float(self, scene):
         node = _make(self.mod, "Python")

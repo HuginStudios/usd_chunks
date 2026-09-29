@@ -1,13 +1,13 @@
 """Expression cycles terminate instead of exhausting the stack.
 
-Two params referring to each other — a.p = "@b.p@" while b.p = "@a.p@" — used to recurse
+Two params referring to each other -- a.p = "@b.p@" while b.p = "@a.p@" -- used to recurse
 forever down two separate paths: the notice path (each ref installs a NoticeConnection back
 to _on_ref_changed) and the read path (resolving an expression reads the ref's .value, which
 resolves its own expression). Both are guarded now.
 
 The DagNode side raises CircularDependencyError from topo_order; the expression side
-deliberately does not. These fire from notice dispatch and from ordinary .value reads —
-including widget paint — where a settled value plus a logged warning beats an exception.
+deliberately does not. These fire from notice dispatch and from ordinary .value reads --
+including widget paint -- where a settled value plus a logged warning beats an exception.
 """
 from __future__ import annotations
 
@@ -17,8 +17,10 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_core, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import ChunkStageSync
+
+from chunk_stubs import attach_stub_module
 
 _LOGGER = chunk_core.logger.name
 
@@ -37,7 +39,7 @@ class _Scene(SceneSender):
 
 def _mk(name: str) -> chunk.Chunk:
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     return c
 
 
@@ -101,7 +103,7 @@ def test_self_reference_terminates(scene) -> None:
 
 
 def test_three_param_cycle_terminates(scene) -> None:
-    """Longer rings are the same problem — the guard is per param, not per pair."""
+    """Longer rings are the same problem -- the guard is per param, not per pair."""
     a, b = _pair(scene)
     c = _mk("c")
     c.add_param(chunk.Slider("p", default_value=0.0))
@@ -134,7 +136,7 @@ def test_acyclic_chain_still_resolves(scene) -> None:
 
 
 def test_repeated_reads_are_not_poisoned(scene) -> None:
-    """The flags must be cleared in a finally — a cycle read must not leave the param
+    """The flags must be cleared in a finally -- a cycle read must not leave the param
     permanently stuck returning its default."""
     a, b = _pair(scene)
     a.get_param("p").value = "@b.p@"

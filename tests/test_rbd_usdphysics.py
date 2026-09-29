@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 import rbd_solver as rbd  # noqa: E402
 
 

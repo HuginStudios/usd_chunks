@@ -9,8 +9,8 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.chunk_stage import initialize as _chunk_usd_init
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_stage import initialize as _chunk_usd_init, export_chunks
 
 
 class _Scene(SceneSender):
@@ -91,6 +91,23 @@ def test_the_menus_follow_the_stage(qapp, scene) -> None:
     assert node.get_param("variant_set").menu_items == ["season"]
 
 
+def test_the_menus_fill_on_a_blocked_chunk(qapp, scene) -> None:
+    """A node created in the graph while the context has a view is blocked until it is
+    wired in, and blocking suppresses its params' VALUE_CHANGED -- so the prim-path
+    callback never fires. The typed path is still recorded on the chunk prim, and that
+    stage edit is what has to fill the dropdowns. They used to stay empty until wired."""
+    node = _set_variant(qapp, scene, "/other")           # no sets on /other
+    node.set_blocked(True)
+
+    node.get_param("primpath_location").value = "/asset"
+    qapp.processEvents()
+    assert sorted(node.get_param("variant_set").menu_items) == ["LOD", "color"]
+
+    node.get_param("variant_set").value = "color"
+    qapp.processEvents()
+    assert node.get_param("variant_selection").menu_items == ["(none)", "blue", "red"]
+
+
 def test_none_clears_and_a_variant_selects(qapp, scene) -> None:
     stage = scene.get_stage()
     node = _set_variant(qapp, scene, "/asset")
@@ -128,7 +145,6 @@ def test_a_saved_selection_survives_a_reload_ahead_of_its_variant_set(qapp, tmp_
     value before the Add Variants chunk upstream has cooked the set it names. An empty menu
     accepts any value, the refresh is held off while loading, and the menus fill in once
     the stage settles -- with the saved value still selected."""
-    from usd_chunks.chunk_stage import export_chunks
 
     stage = Usd.Stage.CreateInMemory()
     sc = _Scene(stage)

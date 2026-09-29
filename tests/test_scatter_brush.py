@@ -1,7 +1,7 @@
 """The brush half: a gesture becomes a field, and scatter reads that field.
 
 `test_scatter_density.py` covers the reading end with a hand-authored primvar. This covers the
-writing end, and — more importantly — that the two agree. They are separate chunks that talk
+writing end, and -- more importantly -- that the two agree. They are separate chunks that talk
 only through `primvars:scatterDensity`, so a disagreement about interpolation, space or
 clamping would leave each half passing its own tests while painting did nothing.
 
@@ -14,10 +14,14 @@ import importlib
 import random
 
 import pytest
-from pxr import Gf, Usd, UsdGeom, Vt
+from pxr import Gf, Usd, UsdGeom, Vt, Sdf
 
-from usd_chunks import chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk_registry, chunk as chunk_api, chunk_scheduler
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+
+from chunk_stubs import attach_stub_module
 
 
 class _DummyScene(SceneSender):
@@ -30,8 +34,8 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
-scatter_mod = importlib.import_module("scripts.modelling.scatter_points")
+brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
+scatter_mod = importlib.import_module("chunks.modelling.scatter_points")
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +77,6 @@ def _stage_with_floor():
 def _brush(stage, target="/World/Floor", **params):
     c = brush_mod.main()
     c._config = ChunkConfig(module="scatter_brush", gizmos=brush_mod.config().gizmos)
-    c._module = brush_mod
     c.get_param("surface_prim").value = target
     for name, value in params.items():
         c.get_param(name).value = value
@@ -320,10 +323,7 @@ def test_a_chunk_without_the_hook_declines() -> None:
     _stage_with_floor()
     c = _brush(None)
 
-    class _NoHook:
-        pass
-
-    c._module = _NoHook
+    attach_stub_module(c)
     assert chunk_gizmo.apply_stroke(c, "paint", [Gf.Vec3d(0, 0, 0)]) is False
 
 
@@ -331,12 +331,10 @@ def test_a_failing_hook_is_treated_as_handled() -> None:
     _stage_with_floor()
     c = _brush(None)
 
-    class _Boom:
-        @staticmethod
-        def gizmo_stroke(node, gizmo, samples):
-            raise RuntimeError("nope")
+    def _boom(node, gizmo, samples):
+        raise RuntimeError("nope")
 
-    c._module = _Boom
+    attach_stub_module(c, gizmo_stroke=_boom)
     assert chunk_gizmo.apply_stroke(c, "paint", [Gf.Vec3d(0, 0, 0)]) is True
 
 
@@ -349,8 +347,6 @@ def test_an_unknown_handle_name_raises() -> None:
 
 
 def test_brush_is_a_known_gizmo_type() -> None:
-    from usd_chunks import chunk as chunk_api
-
     assert chunk_api.Gizmo("g", type="brush", driver="radius").type == "brush"
 
 
@@ -571,7 +567,6 @@ def _routing_of(change):
     cleared again the moment the node solves, so a test that checked it later would report
     "not dirtied" for everything and pass for entirely the wrong reason.
     """
-    from usd_chunks import chunk_scheduler
 
     seen = []
     real_dirty = chunk_scheduler.propagate_dirty
@@ -943,10 +938,8 @@ def test_wiring_painted_points_hides_the_distribution_settings() -> None:
     """Reported: with Painted Points connected, Auto Spacing, Spacing, Max Count and Seed all
     still sat there doing nothing. A control that cannot affect the result is worse than an
     absent one -- it invites you to reach for it when something looks wrong."""
-    import importlib
 
-    from usd_chunks import chunk as chunk_api
-    scatter_points = importlib.import_module("scripts.modelling.scatter_points")
+    scatter_points = importlib.import_module("chunks.modelling.scatter_points")
     sc = scatter_points.main()
 
     def hidden(name):
@@ -1176,7 +1169,6 @@ def test_the_painted_field_is_recorded_on_the_chunks_own_prim() -> None:
 def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
     """The other half: with the record on the prim and the surface's own field gone -- which is
     what a reopened scene looks like -- the cook restores it rather than authoring zeros."""
-    from pxr import Sdf
 
     stage = _stage_with_floor()
     c = _brush(stage, radius=4.0, strength=1.0)
@@ -1188,7 +1180,7 @@ def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
     c.stop_gizmo()
     before = _weights(stage)
 
-    # What a reopen leaves: the chunk prim and its record, and a surface with no field on it —
+    # What a reopen leaves: the chunk prim and its record, and a surface with no field on it --
     # the per-chunk layer that held the paint is not part of a chunk-only save.
     for spec_layer in stage.GetLayerStack():
         prim_spec = spec_layer.GetPrimAtPath(Sdf.Path("/World/Floor"))

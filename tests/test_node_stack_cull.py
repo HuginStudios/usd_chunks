@@ -5,9 +5,10 @@ network built programmatically arrives as one pile. Qt does no occlusion culling
 so without this it paints every body in that pile: 57 stacked nodes measured 141.6ms a frame
 against 8.7ms with only the topmost body live.
 """
+from __future__ import annotations
 from PySide6 import QtCore
 
-from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 
 
 class _FakeNode:

@@ -14,7 +14,7 @@ import gc
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
 
 

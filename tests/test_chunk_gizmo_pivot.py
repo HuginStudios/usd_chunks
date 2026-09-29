@@ -21,9 +21,13 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
+
+from chunk_stubs import attach_stub_module
 
 
 class _DummyScene(SceneSender):
@@ -36,7 +40,7 @@ class _DummyScene(SceneSender):
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
-transform_mod = importlib.import_module("scripts.transforms.transform")
+transform_mod = importlib.import_module("chunks.transforms.transform")
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +84,10 @@ def _stage_with_cube(path: str = "/World/Cube") -> Usd.Stage:
 
 def _transform_chunk(target: str = "/World/Cube"):
     c = transform_mod.main()
-    c._config = ChunkConfig(module="transform", gizmos=getattr(transform_mod.config(), "gizmos", None) or [])
-    # The registry's copy of the module is what the hooks are looked up on. Setting it is
-    # what makes gizmo_changed / gizmo_offset dispatch at all -- without it the write-back
+    # The module named here is what the hooks are looked up on, in the registry. Naming it
+    # is what makes gizmo_changed / gizmo_offset dispatch at all -- without it the write-back
     # silently falls through to the declarative path and the pivot is never consulted.
-    c._module = transform_mod
+    c._config = ChunkConfig(module="transform", gizmos=getattr(transform_mod.config(), "gizmos", None) or [])
     c.get_param("primpath_location").value = target
     return c
 
@@ -736,10 +739,7 @@ def test_a_chunk_with_no_offset_hook_declines() -> None:
     _stage_with_cube()   # for the side effect: points the registry's scene at a stage
     c = _transform_chunk()
 
-    class _NoHook:
-        pass
-
-    c._module = _NoHook
+    attach_stub_module(c)
 
     assert chunk_gizmo.apply_offset(c, "transform", Gf.Vec3d(1, 2, 3)) is False
 
@@ -758,12 +758,10 @@ def test_a_failing_offset_hook_is_treated_as_handled(caplog) -> None:
     _stage_with_cube()   # for the side effect: points the registry's scene at a stage
     c = _transform_chunk()
 
-    class _Boom:
-        @staticmethod
-        def gizmo_offset_changed(node, gizmo, value):
-            raise RuntimeError("nope")
+    def _boom(node, gizmo, value):
+        raise RuntimeError("nope")
 
-    c._module = _Boom
+    attach_stub_module(c, gizmo_offset_changed=_boom)
 
     assert chunk_gizmo.apply_offset(c, "transform", Gf.Vec3d(1, 2, 3)) is True
 
@@ -810,13 +808,11 @@ def test_a_chunk_without_the_hook_keeps_its_declared_offset() -> None:
 
 
 def test_a_failing_hook_falls_back_to_the_declaration(caplog) -> None:
-    class _Boom:
-        @staticmethod
-        def gizmo_offset(node, gizmo):
-            raise RuntimeError("nope")
+    def _boom(node, gizmo):
+        raise RuntimeError("nope")
 
     c = _transform_chunk()
-    c._module = _Boom
+    attach_stub_module(c, gizmo_offset=_boom)
 
     assert chunk_gizmo.gizmo_offset(c, "transform", declared=(0, 0, 7)) == (0, 0, 7)
 

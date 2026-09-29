@@ -15,6 +15,7 @@ from __future__ import annotations
 from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_registry
+from usd_chunks.chunk_naming import CHUNK_PRIM_TYPENAME
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import export_chunks, initialize as chunk_usd_init
 
@@ -103,3 +104,15 @@ def content_nodes(view):
         path for path, prim in view.prims.items()
         if (prim.GetAttribute("info:chunkType").Get() or "") != "view"
     )
+
+
+def chunk_prims(stage):
+    """Every Chunk-typed prim on the stage, wherever it lives.
+
+    Opening a file must produce exactly the chunks the file holds (plus the view the
+    frontend creates). A frontend that loaded the file twice put its second copy of every
+    chunk in a NEW chunkgroup, which `content_nodes` -- scoped to one context -- could not
+    see, so the duplicates cooked unnoticed for months. Count the whole stage.
+    """
+    return [str(p.GetPath()) for p in Usd.PrimRange(stage.GetPseudoRoot())
+            if p.GetTypeName() == CHUNK_PRIM_TYPENAME]

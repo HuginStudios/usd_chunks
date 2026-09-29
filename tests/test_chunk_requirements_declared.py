@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -26,7 +27,7 @@ REPO = Path(__file__).resolve().parent.parent
 NOT_FROM_PIP = {
     "pxr",
     "usd_chunks",
-    "scripts",
+    "chunks",
     "PySide2",
     "PySide6",
     "PyQt5",
@@ -44,12 +45,12 @@ def declared_requirements(path: Path) -> list[str]:
 def tracked_chunk_sources() -> list[Path]:
     """Chunk modules that are part of the repo.
 
-    Deliberately git-tracked only: scripts/ is also where a developer's own unfinished
+    Deliberately git-tracked only: chunks/ is also where a developer's own unfinished
     chunks sit, and this suite has no business failing over those.
     """
     try:
         out = subprocess.run(
-            ["git", "-C", str(REPO), "ls-files", "scripts/*.py", "scripts/**/*.py"],
+            ["git", "-C", str(REPO), "ls-files", "chunks/*.py", "chunks/**/*.py"],
             capture_output=True,
             text=True,
             check=True,
@@ -71,9 +72,9 @@ def tracked_chunk_sources() -> list[Path]:
 @pytest.mark.parametrize(
     "relpath, package",
     [
-        ("scripts/dynamics/rbd_solver.py", "mujoco"),
-        ("scripts/modelling/add_mesh.py", "numpy"),
-        ("scripts/modelling/add_curves.py", "numpy"),
+        ("chunks/dynamics/rbd_solver.py", "mujoco"),
+        ("chunks/modelling/mesh.py", "numpy"),
+        ("chunks/modelling/add_curves.py", "numpy"),
     ],
 )
 def test_requirement_is_legible_without_importing(relpath, package):
@@ -88,7 +89,7 @@ def test_rbd_solver_does_not_claim_its_optional_dependency():
     Listing it would make an optional look mandatory, and would ask the user to install a
     large package for a fallback they already have.
     """
-    assert "scipy" not in declared_requirements(REPO / "scripts/dynamics/rbd_solver.py")
+    assert "scipy" not in declared_requirements(REPO / "chunks/dynamics/rbd_solver.py")
 
 
 def test_no_tracked_chunk_imports_an_undeclared_package():
@@ -139,12 +140,10 @@ def test_the_scanner_sees_a_try_guarded_import():
         "except ImportError:\n"
         "    mujoco = None\n"
     )
-    path = REPO / "scripts/dynamics/rbd_solver.py"
+    path = REPO / "chunks/dynamics/rbd_solver.py"
     assert "mujoco" in chunk_registry.top_level_imports(path), (
         "the real case: rbd_solver guards mujoco and numpy in a try/except"
     )
-
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         guarded = Path(tmp) / "guarded.py"
@@ -156,7 +155,7 @@ def test_the_scanner_still_ignores_a_function_body_import():
     """rbd_solver imports scipy where it is used, as an optional fallback. That is the
     house rule the scan actually depends on, and it must stay skipped -- listing scipy
     would make an optional look mandatory."""
-    assert "scipy" not in chunk_registry.top_level_imports(REPO / "scripts/dynamics/rbd_solver.py")
+    assert "scipy" not in chunk_registry.top_level_imports(REPO / "chunks/dynamics/rbd_solver.py")
 
 
 def test_a_declared_requirement_reaches_the_installer(monkeypatch):
@@ -167,7 +166,7 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
     is covered in test_dependency_install_optin; all that matters here is that mujoco
     arrives somewhere the user can be told about it.
     """
-    path = REPO / "scripts/dynamics/rbd_solver.py"
+    path = REPO / "chunks/dynamics/rbd_solver.py"
     module = chunk_registry.ChunkModule(module_name=path.stem, module_file=path)
     chunk_registry._pre_load_module(path.read_text(encoding="utf-8"), {}, module)
 

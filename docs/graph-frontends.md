@@ -1,13 +1,13 @@
 # Writing a graph frontend
 
-The node graph is split in two. **The engine** (`usd_chunks.plugins.chunk_graph`) decides
+The node graph is split in two. **The engine** (`usd_chunks.graph.engine`) decides
 *what happens to the graph*; **a frontend** decides *what appears on screen* and how input
 arrives. The engine imports no toolkit — a test asserts that in a subprocess — so a
 frontend can be written for any of them.
 
 There are four today, deliberately different in shape:
 
-| | `chunk_qt_nodegraph` | `chunk_flet_nodegraph` | `chunk_imgui_nodegraph` | `chunk_blender_nodegraph` |
+| | `frontends.qt.nodegraph` | `frontends.flet.nodegraph` | `frontends.imgui.nodegraph` | `frontends.blender.nodegraph` |
 |---|---|---|---|---|
 | Drawing | `QGraphicsItem`s that place themselves | canvas primitives recomputed each refresh | redrawn every frame | **none** — Blender draws the tree |
 | Node bodies | real `ChunkWidget`s via proxy widgets | real Flet controls in a `Stack` | drawn inline per frame | RNA properties, on their input socket (rest via `draw_buttons`) |
@@ -17,7 +17,7 @@ There are four today, deliberately different in shape:
 
 Pick the closest model and read it first. Retained/scene-based toolkits look like Qt;
 immediate-mode looks like ImGui; Flet sits between the two. If your host already *has* a
-node editor, read Blender — it is the case where the frontend supplies the sixteen verbs
+node editor, read Blender — it is the case where the frontend supplies the seventeen verbs
 and draws nothing at all, which is the clearest illustration that the engine is not
 secretly shaped around a canvas.
 
@@ -31,7 +31,7 @@ Everything in this list already works and must not be reimplemented.
 - `contexts(stage)` / `default_context(stage)` — which graphs a file holds, and which one
   to open. A file whose top level holds one chunkgroup is asking to be opened *inside* it;
   reading at `CHUNKS_ROOT` shows one node and none of the work.
-- [`PortRef`][usd_chunks.plugins.chunk_graph.PortRef], `iter_ports`, `param_port_type`,
+- [`PortRef`][usd_chunks.graph.engine.PortRef], `iter_ports`, `param_port_type`,
   `sdf_to_port_type` — ports and their typing.
 - `node_position` / `graph_position` / `write_position` — see *Coordinates* below.
 
@@ -45,7 +45,7 @@ Everything in this list already works and must not be reimplemented.
   re-wire it. `rewire_pasted` reads ports off the stage, so it works before a reload.
 - `group_into_chunkgroup(...)` — the whole group operation: read the boundary, snapshot,
   delete, make the group, paste inside, wire it back into the chain.
-- `delete_chunks`, `toggle_disabled`, `apply_selection`, `chunks_for`.
+- `delete_chunks`, `toggle_disabled`, `collapse_or_expand`, `apply_selection`, `chunks_for`.
 
 **Clipboard**
 
@@ -68,11 +68,11 @@ shipped without it once and looked correct while doing nothing.
 
 ## What you must implement
 
-[`GraphFrontend`][usd_chunks.plugins.chunk_graph.GraphFrontend] names sixteen verbs:
+[`GraphFrontend`][usd_chunks.graph.engine.GraphFrontend] names seventeen verbs:
 
 ```
 set_selection      selected_chunks
-delete_selected    toggle_disable_selected
+delete_selected    toggle_disable_selected    collapse_selected_or_all
 copy_selection     cut_selection      paste_at    duplicate_selection
 group_selection    create_chunk
 can_dive           dive_into          dive_out
@@ -133,7 +133,7 @@ bits", catch `AttributeError` and let everything else surface.
 
 **5. Keyboard shortcuts collide with text entry.** If your toolkit dispatches keys at the
 window level, a `Delete` meant for a text field will delete the selected node. Flet solves
-this with `chunk_flet.FocusTracker`: widgets report focus, and the graph checks before
+this with `frontends.flet.factory.FocusTracker`: widgets report focus, and the graph checks before
 acting. Qt does not need it because its widgets consume keys first, and Blender and ImGui
 do not because their editors own key routing.
 
@@ -161,9 +161,31 @@ editor because it owns positions from then on, and Flet writes its own dict.
 `navigate_to_content`, Qt unions rects and calls `fitInView`, Flet solves a zoom and a pan
 by hand. There is nothing left in common once the toolkit has a viewport.
 
+**Node locking.** Qt and Blender mark nodes whose prim comes from an external or
+referenced layer (the rule is the same in both: the strongest non-anonymous, non-root
+opinion is not the edit target) and pass `is_locked` to `layout_graph` so auto-layout
+routes around them. Qt refuses the drag; Blender cannot, so it drops the dragged position
+when writing back and the next reload restores it. Flet and ImGui have no such concept
+yet, so a layout there can move a node the other two would have pinned. If your frontend
+can express it, implement it.
+
+**Staying honest between reloads.** A frontend whose toolkit owns the editing (Blender)
+must also catch what the toolkit does behind its back. Blender's frontend shadows the
+stock node operators (delete, duplicate, copy/paste, mute) with the chunk verbs inside its
+tree type, diffs the tree's links against the model's edges in `NodeTree.update` so a cut
+wire disconnects in USD, listens for chunk notices (value, state, param add/remove,
+delete, prim resync) and re-mirrors the touched nodes one tick later, and rebuilds from
+USD after every undo/redo -- because Blender's undo restores the `.blend`, never the
+stage. A canvas frontend gets all of this for free by being the only writer of its scene.
+
 **Node locking.** Qt marks nodes whose prim comes from an external or referenced layer and
-refuses to move them during auto-layout. The others have no such concept yet, so a layout
-there can move a node Qt would have pinned. If your frontend can express it, implement it.
+refuses to move them during auto-layout. Blender does the same, dropping the drag on write-back since it cannot refuse one. Flet
+and ImGui have no such concept yet, so a layout there can move a node Qt would have
+pinned. If your frontend can express it, implement it.
+Dive keys on `chunk_stage.is_subnet`: a chunkgroup, or a chunk hosting a referenced network
+(a Reference, Sublayer or Payload pointed at a saved network file). A lock is about position, not params: a locked node's params are meant to be edited, and
+the edit lands as an `over` in the stage's edit target (`chunk_utils.host_edit_layer`), so a
+shot can tweak a sequence's network without touching the sequence file.
 
 ## Param widgets
 

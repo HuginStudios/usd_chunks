@@ -32,14 +32,15 @@ exclude = [
 line-length = 120
 indent-width = 4
 
-# Assume Python 3.9
+# Matches requires-python in pyproject.toml.
 target-version = "py310"
 
 [lint]
-# Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`) codes by default.
-# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
-# McCabe complexity (`C901`) by default.
-select = ["E4", "E7", "E9", "F"]
+# Pyflakes (`F`) and a subset of pycodestyle (`E`), plus the house style:
+#   UP    -- modern syntax for the target version: `X | None`, builtin generics, f-strings
+#   G004  -- logging calls take %-style args, never an f-string, so formatting stays lazy
+#   I002  -- every module starts with `from __future__ import annotations`
+select = ["E4", "E7", "E9", "F", "UP", "G004", "I002"]
 ignore = []
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
@@ -48,6 +49,9 @@ unfixable = []
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[lint.isort]
+required-imports = ["from __future__ import annotations"]
 
 [format]
 # Like Black, use double quotes for strings.

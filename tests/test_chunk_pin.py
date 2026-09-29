@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import weakref
 from pxr import Usd, UsdUtils
 
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
+from PySide6 import QtWidgets
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.frontends.qt.factory import _focused_view_is_graph
+from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
+from usd_chunks.frontends.qt.widgets import ChunkWidget, ViewSlotState
+
+from chunk_stubs import attach_stub_module
 
 
 class _DummyScene(SceneSender):
@@ -16,9 +25,14 @@ class _DummyScene(SceneSender):
         return []
 
 
-def _chunk_with_module(name: str, module: str = "prim") -> chunk.Chunk:
+def _chunk_with_module(name: str, module: str | None = None) -> chunk.Chunk:
+    """A plain chunk backed by a registered module: by default a stub with no hooks
+    (chunk_stubs), so the test neither cooks nor depends on a module in chunks/."""
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module=module)
+    if module is None:
+        attach_stub_module(c)
+    else:
+        c._config = ChunkConfig(module=module)
     return c
 
 
@@ -35,11 +49,11 @@ def _make_scene(stage: Usd.Stage):
 
 def _make_legacy(stage: Usd.Stage, prim_path: str) -> None:
     """Strip chunk:pinned back off a prim to simulate a scene saved before this feature
-    shipped — issue 03 means every *newly* created chunk now gets the attribute explicitly
+    shipped -- issue 03 means every *newly* created chunk now gets the attribute explicitly
     authored (true or false), so 'absent' no longer occurs naturally in a fresh test chunk.
 
     Usd.Prim.RemoveProperty() only removes a spec from the stage's *ambient* edit
-    target (the root layer by default for a fresh stage) — chunk:pinned is chunk-prim
+    target (the root layer by default for a fresh stage) -- chunk:pinned is chunk-prim
     bookkeeping, authored via chunk_utils.get_bookkeeping_layer (session layer, absent
     an active Edit Target chunk), so RemoveProperty would silently no-op here. Search
     every layer directly instead, matching how the production code itself finds a
@@ -55,7 +69,10 @@ def _make_legacy(stage: Usd.Stage, prim_path: str) -> None:
 # persistence (ADR-0003)
 # ---------------------------------------------------------------------------
 
-def test_is_chunk_pinned_defaults_true_when_attribute_absent() -> None:
+def test_is_chunk_pinned_defaults_false_when_attribute_absent() -> None:
+    """Absent means unpinned. Pinning is the exception a user asks for, so it is the only
+    state worth authoring -- the alternative wrote chunk:pinned = 0 onto every chunk prim
+    in every scene to say nothing at all."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -63,7 +80,7 @@ def test_is_chunk_pinned_defaults_true_when_attribute_absent() -> None:
     scene.add_chunk(c)
     _make_legacy(stage, "/Tab1/c1")
 
-    assert chunk_stage.is_chunk_pinned(c) is True
+    assert chunk_stage.is_chunk_pinned(c) is False
 
 
 def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
@@ -73,25 +90,24 @@ def test_set_chunk_pinned_roundtrips_through_usd_attribute() -> None:
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
 
-    chunk_stage.set_chunk_pinned(c, False)
-    assert chunk_stage.is_chunk_pinned(c) is False
-
-    attr = stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned")
-    assert attr.IsValid()
-    assert attr.Get() is False
-
     chunk_stage.set_chunk_pinned(c, True)
     assert chunk_stage.is_chunk_pinned(c) is True
-    assert attr.Get() is True
+    assert stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned").Get() is True
+
+    chunk_stage.set_chunk_pinned(c, False)
+    assert chunk_stage.is_chunk_pinned(c) is False
+    assert not stage.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned").IsValid(), (
+        "unpinning removes the opinion rather than writing a false one"
+    )
 
 
-def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
+def test_pinned_true_survives_a_real_export_reload_cycle() -> None:
     """The actual save/reload path: export the *composed* stage to a .usda string and
     open a fresh stage from it, rather than reading the same in-memory attribute back.
 
     Chunk-prim bookkeeping (chunk:pinned included) is authored via
-    chunk_utils.get_bookkeeping_layer — the session layer, absent an active Edit
-    Target chunk — not the root layer. stage.GetRootLayer().ExportToString() alone
+    chunk_utils.get_bookkeeping_layer -- the session layer, absent an active Edit
+    Target chunk -- not the root layer. stage.GetRootLayer().ExportToString() alone
     would only ever capture root-layer content, missing it entirely; flatten the full
     layer stack first so this genuinely tests "the composed result survives a
     save/reload", regardless of which real layer bookkeeping happens to live in.
@@ -101,7 +117,7 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
     scene.add_context("Tab1")
     c = _chunk_with_module("c1")
     scene.add_chunk(c)
-    chunk_stage.set_chunk_pinned(c, False)
+    chunk_stage.set_chunk_pinned(c, True)
 
     usda = UsdUtils.FlattenLayerStack(stage).ExportToString()
 
@@ -109,7 +125,7 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
     reloaded.GetRootLayer().ImportFromString(usda)
     attr = reloaded.GetPrimAtPath("/Tab1/c1").GetAttribute("chunk:pinned")
     assert attr.IsValid()
-    assert attr.Get() is False
+    assert attr.Get() is True
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +133,6 @@ def test_pinned_false_survives_a_real_export_reload_cycle() -> None:
 # ---------------------------------------------------------------------------
 
 def test_params_page_filters_unpinned_chunks(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget, ViewSlotState
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -138,8 +152,6 @@ def test_params_page_filters_unpinned_chunks(qapp) -> None:
 
 
 def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget, ViewSlotState
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -163,10 +175,9 @@ def test_pin_changed_signal_shows_and_hides_live(qapp) -> None:
     assert c.get_hash() in w.group_widgets
 
 
-def test_migrated_scene_with_no_pin_attribute_shows_everything(qapp) -> None:
-    """A chunk saved before this feature shipped has no chunk:pinned attribute at all —
-    it must still render in the Params page (ADR-0003 migration decision)."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
+def test_a_chunk_with_no_pin_attribute_is_filtered_out(qapp) -> None:
+    """Absent means unpinned, so a chunk saved before pinning existed opens with an
+    unfiltered Params page rather than everything pinned."""
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -178,7 +189,7 @@ def test_migrated_scene_with_no_pin_attribute_shows_everything(qapp) -> None:
     assert not stage.GetPrimAtPath("/Tab1/legacy_chunk").GetAttribute("chunk:pinned").IsValid()
 
     w = ChunkWidget(ctx, is_tab_context=True)
-    assert c.get_hash() in w.group_widgets
+    assert c.get_hash() not in w.group_widgets
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +198,8 @@ def test_migrated_scene_with_no_pin_attribute_shows_everything(qapp) -> None:
 
 def test_new_chunk_defaults_to_not_pinned() -> None:
     """A chunk created with no auto-pin flag set (the Graph-page create menu's baseline)
-    is authored as pinned=false, not merely absent."""
+    authors nothing at all: unpinned is the default, and every line in the file should
+    carry information."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -195,14 +207,13 @@ def test_new_chunk_defaults_to_not_pinned() -> None:
     scene.add_chunk(c)
 
     attr = stage.GetPrimAtPath("/Tab1/graph_created").GetAttribute("chunk:pinned")
-    assert attr.IsValid()  # explicitly authored, not left absent
-    assert attr.Get() is False
+    assert not attr.IsValid(), "the default state writes nothing"
     assert chunk_stage.is_chunk_pinned(c) is False
 
 
 def test_pin_new_chunks_flag_marks_creation_as_pinned() -> None:
     """The Params-tab create menu (and a Params-surface paste) sets _pin_new_chunks around
-    the create call — mirrors _params_tab_create's existing flag-around-the-call pattern."""
+    the create call -- mirrors _params_tab_create's existing flag-around-the-call pattern."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     scene.add_context("Tab1")
@@ -222,24 +233,23 @@ def test_pin_new_chunks_flag_marks_creation_as_pinned() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PARAM_ADDED listener race (found after shipping issue 03 — real usdview testing)
+# PARAM_ADDED listener race (found after shipping issue 03 -- real usdview testing)
 # ---------------------------------------------------------------------------
 #
 # The Params-page widget and ChunkStageSync both react to the same PARAM_ADDED notice for a
 # newly-created chunk. Delivery order between two independent listeners on one notice isn't
-# guaranteed, and in the real app the widget's listener can run BEFORE ChunkStageSync's —
+# guaranteed, and in the real app the widget's listener can run BEFORE ChunkStageSync's --
 # meaning the widget can call is_chunk_pinned() before _define_prim has authored chunk:pinned
 # at all, read "absent", and fall back to the legacy pinned=true default. Nothing re-checks
 # after _define_prim's own (correct) write lands moments later, so the chunk stays visible in
 # Params despite ending up correctly unpinned on the stage. These tests build the tab's
-# ChunkWidget FIRST, then add the new chunk live — the ordering that actually exercises this,
+# ChunkWidget FIRST, then add the new chunk live -- the ordering that actually exercises this,
 # unlike test_params_page_filters_unpinned_chunks above which builds the widget after the chunk
 # already exists (no race possible there, which is why it didn't catch this).
 
 def test_graph_surface_flag_resolves_the_race_to_unpinned(qapp) -> None:
     """With _pin_new_chunks explicitly set False (what ChunkGraphView.contextMenuEvent now
     does), a racing widget-listener must resolve to unpinned, not the legacy True default."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -257,8 +267,6 @@ def test_graph_surface_flag_resolves_the_race_to_unpinned(qapp) -> None:
 
 
 def test_params_surface_flag_resolves_the_race_to_pinned(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
@@ -275,23 +283,22 @@ def test_params_surface_flag_resolves_the_race_to_pinned(qapp) -> None:
 
 
 def test_view_chunk_never_defaults_to_pinned(qapp) -> None:
-    """Views are graph-wiring utility nodes — never auto-pinned, regardless of which surface
+    """Views are graph-wiring utility nodes -- never auto-pinned, regardless of which surface
     (or none at all, e.g. _ensure_default_view's standalone auto-created default view) created
     them, and regardless of the listener race."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     w = ChunkWidget(ctx, is_tab_context=True)
 
-    # No flag set at all — matches _ensure_default_view's auto-created view, which doesn't
+    # No flag set at all -- matches _ensure_default_view's auto-created view, which doesn't
     # (and per this test, doesn't need to) touch _pin_new_chunks.
     v = chunk.Chunk("View1")
     v._config = ChunkConfig(module="view")
     scene.add_chunk(v)
 
-    assert stage.GetPrimAtPath("/Tab1/View1").GetAttribute("chunk:pinned").Get() is False
+    assert not stage.GetPrimAtPath("/Tab1/View1").GetAttribute("chunk:pinned").IsValid()
     assert chunk_stage.is_chunk_pinned(v) is False
     assert v.get_hash() not in w.group_widgets
 
@@ -317,11 +324,8 @@ def test_view_chunk_pinned_still_overridable_via_explicit_menu_action(qapp) -> N
 
 def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -> None:
     """Members created inside a chunkgroup's own dive-in tab go through the exact same
-    ChunkGraphView.contextMenuEvent as a top-level tab, so they hit the identical race — this
+    ChunkGraphView.contextMenuEvent as a top-level tab, so they hit the identical race -- this
     confirms the fix covers a chunkgroup's own Params page too, not just a top-level tab's."""
-    from usd_chunks.plugins.chunk_qt_widgets import ChunkWidget
-    from usd_chunks.chunk_flags import ChunkFlags
-    import weakref
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -331,7 +335,7 @@ def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -
     grp._config = ChunkConfig(module="group")
     scene.add_chunk(grp)
 
-    # Dive-in tab's own ChunkWidget, already open — matches the real app.
+    # Dive-in tab's own ChunkWidget, already open -- matches the real app.
     w = ChunkWidget(grp, is_tab_context=True)
 
     prev_ctx = scene._current_context
@@ -351,10 +355,6 @@ def test_chunkgroup_member_created_via_graph_not_shown_in_dive_in_params(qapp) -
 
 
 def test_focused_view_is_graph_detects_graph_page_ancestor(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt import _focused_view_is_graph
-    from usd_chunks.plugins.chunk_qt_nodegraph import ChunkGraphView
-    from PySide6 import QtWidgets
-
     plain = QtWidgets.QWidget()
     assert _focused_view_is_graph(plain) is False
     assert _focused_view_is_graph(None) is False

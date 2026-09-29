@@ -27,8 +27,9 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import _values_agree, initialize as _chunk_usd_init
+import usd_chunks.chunk_notice as cn
 
 
 class _DummyScene(SceneSender):
@@ -175,8 +176,6 @@ def test_a_change_arriving_mid_write_is_still_dropped() -> None:
     chunk.get_param("tx").value = 5.0
     chunk.get_param("ty").value = 4.0
     attr_path = chunk.get_param("tx")._param_attr_path
-
-    import usd_chunks.chunk_notice as cn
 
     previous = cn._usd_write_active
     cn._usd_write_active = True

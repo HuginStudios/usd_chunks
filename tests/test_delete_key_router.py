@@ -16,8 +16,9 @@ from pxr import Usd
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
 
 class _DummyScene(SceneSender):
@@ -38,7 +39,6 @@ def _key(key, text=""):
 def graph(qapp):
     """A real graph view with its router installed and the cursor parked over it (the
     fallback is gated on the cursor being inside the view, same as its siblings)."""
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 

@@ -26,9 +26,11 @@ from pathlib import Path
 import pytest
 from pxr import Usd, UsdGeom, UsdShade
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "modelling"))
-import add_mesh  # noqa: E402
+from usd_chunks import chunk_utils
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "modelling"))
+import mesh  # noqa: E402
 
 
 @pytest.fixture
@@ -48,25 +50,25 @@ def _texture_prims(stage):
 
 class TestUsableCheck:
     def test_a_real_file_is_usable(self):
-        real = str(Path(add_mesh.__file__).parent / "checker.png")
-        assert add_mesh.texture_file_is_usable(real) is True
+        real = str(Path(mesh.__file__).parent / "checker.png")
+        assert chunk_utils.texture_file_is_usable(real) is True
 
     def test_a_missing_file_is_not(self):
-        assert add_mesh.texture_file_is_usable("C:/definitely/not/here.png") is False
+        assert chunk_utils.texture_file_is_usable("C:/definitely/not/here.png") is False
 
     def test_an_empty_path_is_not(self):
-        assert add_mesh.texture_file_is_usable("") is False
+        assert chunk_utils.texture_file_is_usable("") is False
 
     def test_a_udim_pattern_is_left_alone(self):
         """UDIM sets never resolve as a single file and are meant not to -- treating one as
         missing would refuse to author a perfectly valid texture."""
-        assert add_mesh.texture_file_is_usable("C:/tex/diffuse.<UDIM>.exr") is True
+        assert chunk_utils.texture_file_is_usable("C:/tex/diffuse.<UDIM>.exr") is True
 
 
 class TestAuthoring:
     def test_a_missing_texture_authors_no_texture_network(self, prim):
         """The regression: no UsdUVTexture, and so no UsdTransform2d connection into one."""
-        add_mesh.add_texture(prim, texture_file="C:/definitely/not/here.png")
+        mesh.add_texture(prim, texture_file="C:/definitely/not/here.png")
 
         stage = prim.GetStage()
         assert _texture_prims(stage) == []
@@ -75,7 +77,7 @@ class TestAuthoring:
 
     def test_a_missing_texture_still_binds_a_usable_material(self, prim):
         """Falling back must leave the prim shaded, not unbound."""
-        add_mesh.add_texture(prim, texture_file="C:/definitely/not/here.png")
+        mesh.add_texture(prim, texture_file="C:/definitely/not/here.png")
 
         bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
         assert bound, "the prim must still get a material"
@@ -87,8 +89,8 @@ class TestAuthoring:
 
     def test_a_real_texture_still_authors_the_full_chain(self, prim):
         """The normal path is unchanged -- reader -> transform2d -> texture.st."""
-        real = str(Path(add_mesh.__file__).parent / "checker.png")
-        add_mesh.add_texture(prim, texture_file=real)
+        real = str(Path(mesh.__file__).parent / "checker.png")
+        mesh.add_texture(prim, texture_file=real)
 
         stage = prim.GetStage()
         assert len(_texture_prims(stage)) == 1

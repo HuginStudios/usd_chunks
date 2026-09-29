@@ -1,23 +1,28 @@
-"""Stage expression variables: ${NAME} resolves in any param, and studio-authored
-variables keep working.
+"""Stage expression variables: declared here, resolved by USD where USD resolves them.
 
-USD substitutes ${NAME} into asset paths and variant selections only, and only from the
-root layer stack -- a sublayer's expressionVariables is ignored outright. Chunk layers are
-sublayers, so both halves of this feature exist because of that: usd_chunks resolves the
-variables itself at param-read time (which is what makes a prim path work at all), and the
-Stage Expression chunk authors into the session layer, where an opinion composes and
-overrides the root layer instead of being dropped.
+USD substitutes ${NAME} into asset paths and variant selections, from the root layer stack,
+and nowhere else. usd_chunks does not extend that: a param carrying ${NAME} keeps the text
+literally, and a chunk graph acts on a variable through a Stage Expression Switch, which is
+a mechanism of ours rather than a place USD's own rule is quietly widened.
+
+The Stage Expression chunk authors into the session layer, where an opinion composes over
+the root layer instead of being dropped (a sublayer's expressionVariables is ignored
+outright, and chunk layers are sublayers).
 """
+
 from __future__ import annotations
 
 import importlib
 
 import pytest
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import ChunkStageSync
+
+from chunk_stubs import attach_stub_module
 
 
 class _Scene(SceneSender):
@@ -34,7 +39,7 @@ class _Scene(SceneSender):
 
 def _mk(name: str) -> chunk.Chunk:
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     return c
 
 
@@ -49,7 +54,7 @@ def scene():
 
 
 # ---------------------------------------------------------------------------
-# chunk_utils: reading, resolving, authoring
+# chunk_utils: reading and authoring
 # ---------------------------------------------------------------------------
 
 def test_session_variables_are_read_back():
@@ -71,47 +76,67 @@ def test_session_overrides_a_root_layer_variable():
     assert stage.GetRootLayer().expressionVariables["SHOT"] == "sh010", "their file is untouched"
 
 
-def test_bare_reference_substitutes_inside_a_path():
-    """The form USD itself never substitutes into, and the one a prim path needs."""
-    stage = Usd.Stage.CreateInMemory()
+# ---------------------------------------------------------------------------
+# where a variable applies -- USD's rule, not ours
+# ---------------------------------------------------------------------------
+
+def test_usd_resolves_a_variable_in_an_asset_path(tmp_path) -> None:
+    """The place this feature is actually for. Composition does the substituting, so
+    switching the variable recomposes the stage with nothing re-running."""
+    for name, radius in (("a", 1.0), ("b", 5.0)):
+        asset = Usd.Stage.CreateNew(str(tmp_path / f"asset_{name}.usda"))
+        sphere = UsdGeom.Sphere.Define(asset, "/Root")
+        sphere.GetRadiusAttr().Set(radius)
+        asset.SetDefaultPrim(asset.GetPrimAtPath("/Root"))
+        asset.GetRootLayer().Save()
+
+    stage = Usd.Stage.CreateNew(str(tmp_path / "main.usda"))
+    stage.GetRootLayer().expressionVariables = {"WHICH": "a"}
+    prim = stage.DefinePrim("/World/thing")
+    prim.GetReferences().AddReference('`"./asset_${WHICH}.usda"`')
+    assert UsdGeom.Sphere(stage.GetPrimAtPath("/World/thing")).GetRadiusAttr().Get() == 1.0
+
+    stage.GetRootLayer().expressionVariables = {"WHICH": "b"}
+
+    assert UsdGeom.Sphere(stage.GetPrimAtPath("/World/thing")).GetRadiusAttr().Get() == 5.0
+
+
+def test_a_param_keeps_the_text_literally(scene) -> None:
+    """A prim path is not one of the fields USD substitutes into, so usd_chunks must not
+    substitute either -- making ${SHOT} work in places OpenUSD says it does not is how a
+    scene stops being readable by anything but us."""
+    stage = scene.get_stage()
     chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010"})
-    assert chunk_utils.resolve_stage_expression("/World/${SHOT}/geo", stage) == "/World/sh010/geo"
+    c = _mk("dst")
+    p = chunk.LineEdit("primpath", default_value="")
+    c.add_param(p)
+    scene.add_chunk(c)
+
+    p.value = "/World/${SHOT}/geo"
+
+    assert p.value == "/World/${SHOT}/geo"
+    assert p.raw_value == "/World/${SHOT}/geo"
 
 
-def test_usd_delimited_expression_uses_usds_own_evaluator():
-    """Studio syntax evaluates by USD's rules, not by a reimplementation of them."""
-    stage = Usd.Stage.CreateInMemory()
+def test_an_asset_path_param_round_trips_its_expression(scene) -> None:
+    """A FileBrowser hands the text to USD untouched, so the attr holds the expression --
+    which is exactly what makes composition able to evaluate it."""
+    stage = scene.get_stage()
     chunk_utils.set_stage_expression_variables(stage, {"ASSET": "hero"})
-    assert chunk_utils.resolve_stage_expression('`"./${ASSET}.usda"`', stage) == "./hero.usda"
-    assert chunk_utils.resolve_stage_expression("`${ASSET}`", stage) == "hero"
+    c = _mk("ref")
+    p = chunk.FileBrowser("file_path", default_value="")
+    c.add_param(p)
+    scene.add_chunk(c)
+
+    p.value = '`"./${ASSET}.usda"`'
+
+    assert p.value == '`"./${ASSET}.usda"`'
+    assert stage.GetAttributeAtPath(p._param_attr_path).Get() == '`"./${ASSET}.usda"`'
 
 
-def test_unknown_variable_is_left_visible():
-    """Blanking it would author into the wrong place and read as a typo in the field."""
-    stage = Usd.Stage.CreateInMemory()
-    assert chunk_utils.resolve_stage_expression("/World/${SHOT}/geo", stage) == "/World/${SHOT}/geo"
-
-
-def test_clearing_removes_the_metadata():
-    stage = Usd.Stage.CreateInMemory()
-    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010"})
-    chunk_utils.set_stage_expression_variables(stage, {})
-    assert chunk_utils.stage_expression_variables(stage) == {}
-
-
-def test_has_stage_expression_recognises_both_forms_and_nothing_else():
-    assert chunk_utils.has_stage_expression("/World/${SHOT}/geo")
-    assert chunk_utils.has_stage_expression("`${SHOT}`")
-    assert not chunk_utils.has_stage_expression("/World/geo")
-    assert not chunk_utils.has_stage_expression(None)
-
-
-# ---------------------------------------------------------------------------
-# param resolution
-# ---------------------------------------------------------------------------
-
-def test_lineedit_resolves_a_variable(scene) -> None:
-    chunk_utils.set_stage_expression_variables(scene.get_stage(), {"SHOT": "sh010"})
+def test_a_variable_on_an_ordinary_param_is_reported(scene, caplog) -> None:
+    """It stays exactly as typed -- but silently reading back as the literal text is worse
+    than saying, once, where expression variables do resolve."""
     c = _mk("dst")
     p = chunk.LineEdit("primpath", default_value="")
     c.add_param(p)
@@ -119,81 +144,21 @@ def test_lineedit_resolves_a_variable(scene) -> None:
 
     p.value = "/World/${SHOT}/geo"
 
-    assert p.value == "/World/sh010/geo"
-    assert p.raw_value == "/World/${SHOT}/geo", "the authored text is what's stored"
-
-
-def test_value_follows_the_variable(scene) -> None:
-    """Nothing is cached, so changing a variable takes effect everywhere at once."""
-    stage = scene.get_stage()
-    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010"})
-    c = _mk("dst")
-    p = chunk.LineEdit("primpath", default_value="")
-    c.add_param(p)
-    scene.add_chunk(c)
-    p.value = "/World/${SHOT}/geo"
-    assert p.value == "/World/sh010/geo"
-
-    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh020"})
-
-    assert p.value == "/World/sh020/geo"
-
-
-def test_param_wire_resolves_before_the_variable_does(scene) -> None:
-    """A wire can deliver a string that itself carries a ${NAME}; the refs must be
-    substituted first or the variable arrives unexpanded."""
-    chunk_utils.set_stage_expression_variables(scene.get_stage(), {"SHOT": "sh010"})
-    src = _mk("src")
-    src.add_param(chunk.LineEdit("base", default_value=""))
-    scene.add_chunk(src)
-    src.get_param("base").value = "/World/${SHOT}"
-
-    dst = _mk("dst")
-    p = chunk.LineEdit("primpath", default_value="")
-    dst.add_param(p)
-    scene.add_chunk(dst)
-
-    p.value = "@src.base@/geo"
-
-    assert p.value == "/World/sh010/geo"
-
-
-def test_numeric_param_reads_back_as_a_number(scene) -> None:
-    """A Slider holding a variable has to come back typed, or the USD attr write and every
-    consumer downstream gets a str."""
-    chunk_utils.set_stage_expression_variables(scene.get_stage(), {"COUNT": "12"})
-    c = _mk("dst")
-    p = chunk.Slider("count", default_value=0, is_int=True)
-    c.add_param(p)
-    scene.add_chunk(c)
-
-    p.value = "${COUNT}"
-
-    assert p.value == 12
-    assert isinstance(p.value, int)
-
-
-def test_numeric_param_keeps_its_text_in_usd(scene) -> None:
-    """A Float attr cannot hold "${COUNT}" as its value, so the text goes to customData --
-    the same split a numeric param wire already makes. Without it the param reloads holding
-    whatever the variable resolved to when it was saved and stops tracking it."""
-    stage = scene.get_stage()
-    chunk_utils.set_stage_expression_variables(stage, {"COUNT": "12"})
-    c = _mk("dst")
-    p = chunk.Slider("count", default_value=0, is_int=True)
-    c.add_param(p)
-    scene.add_chunk(c)
-
-    p.value = "${COUNT}"
-
-    attr = next(
-        (a for prim in stage.TraverseAll() for a in prim.GetAttributes()
-         if a.GetName() == "inputs:count"),
-        None,
+    assert any("asset paths" in (r.getMessage() or "") for r in caplog.records), (
+        "the warning should name where they do resolve"
     )
-    assert attr is not None, "the param should have an inputs: attr on its chunk prim"
-    assert attr.GetTypeName() != Sdf.ValueTypeNames.String, "typed by the param's default"
-    assert chunk_utils.read_expression_text(attr) == "${COUNT}"
+
+
+def test_a_numeric_param_refuses_a_variable(scene) -> None:
+    """Nothing resolves it any more, so a Slider holding "${COUNT}" would just be a string
+    where a number belongs. Refusing is the honest answer."""
+    c = _mk("dst")
+    p = chunk.Slider("count", default_value=0, is_int=True)
+    c.add_param(p)
+    scene.add_chunk(c)
+
+    with pytest.raises(ValueError):
+        p.value = "${COUNT}"
 
 
 def test_a_plain_value_is_untouched(scene) -> None:
@@ -212,42 +177,74 @@ def test_a_plain_value_is_untouched(scene) -> None:
 # the Stage Expression chunk
 # ---------------------------------------------------------------------------
 
-def _stage_expression(scene, spec: str):
-    stage_expression = importlib.import_module("scripts.utils.stage_expression")
+def _stage_expression(scene, *rows):
+    """Build the chunk with one row per (name, type, value) triple."""
+    mod = importlib.import_module("chunks.utils.stage_expression")
 
-    node = stage_expression.main()
+    node = mod.main()
     node._config = ChunkConfig(module="stage_expression")
     scene.add_chunk(node)
-    node.get_param("variables").value = spec
-    stage_expression._sync_variables(node)
-    stage_expression.execute(node)
-    return node, stage_expression
+    group = node.get_param(mod.ROWS_PARAM)
+    group.size = len(rows)
+    for i, (name, type_name, value) in enumerate(rows):
+        group.get_indexed_param(mod.NAME_COLUMN, i).value = name
+        group.get_indexed_param(mod.TYPE_COLUMN, i).value = type_name
+        group.get_indexed_param(mod.VALUE_COLUMN, i).value = value
+    mod.execute(node)
+    return node, mod
 
 
 def test_chunk_declares_its_variables(scene) -> None:
-    node, _ = _stage_expression(scene, "SHOT = sh010\nASSET = hero")
+    _stage_expression(scene, ("SHOT", "string", "sh010"), ("ASSET", "string", "hero"))
 
     assert chunk_utils.stage_expression_variables(scene.get_stage()) == {
         "SHOT": "sh010", "ASSET": "hero",
     }
-    assert node.get_param("SHOT") is not None, "each line becomes a connectable port"
 
 
-def test_editing_a_lofted_param_changes_the_variable(scene) -> None:
-    """The port is the control -- the spec only declares the name and its default."""
-    node, mod = _stage_expression(scene, "SHOT = sh010")
+def test_every_type_usd_expressions_have(scene) -> None:
+    """Strings, whole numbers, booleans and lists -- and deliberately no float, which USD
+    expression variables do not have."""
+    _stage_expression(
+        scene,
+        ("SHOT", "string", "sh010"),
+        ("IDENTIFIER", "int", "3254"),
+        ("UseProxyModel", "bool", "false"),
+        ("renderPassList", "string[]", "foreground, background, FX"),
+    )
 
-    node.get_param("SHOT").value = "sh020"
+    variables = chunk_utils.stage_expression_variables(scene.get_stage())
+    assert variables["SHOT"] == "sh010"
+    assert variables["IDENTIFIER"] == 3254
+    assert variables["UseProxyModel"] is False
+    assert list(variables["renderPassList"]) == ["foreground", "background", "FX"]
+
+
+def test_a_typed_variable_evaluates_in_a_usd_expression(scene) -> None:
+    """The point of the types: USD's own evaluator has to accept what we authored."""
+    _stage_expression(scene, ("USE_LOW_POLY", "bool", "true"))
+    variables = chunk_utils.stage_expression_variables(scene.get_stage())
+
+    result = Sdf.VariableExpression(
+        '`if(${USE_LOW_POLY}, "assetsLow/hero.usda", "assets/hero.usda")`'
+    ).Evaluate(dict(variables))
+
+    assert result.value == "assetsLow/hero.usda", result.errors
+
+
+def test_editing_a_row_changes_the_variable(scene) -> None:
+    node, mod = _stage_expression(scene, ("SHOT", "string", "sh010"))
+
+    node.get_param(mod.ROWS_PARAM).get_indexed_param(mod.VALUE_COLUMN, 0).value = "sh020"
     mod.execute(node)
 
     assert chunk_utils.stage_expression_variables(scene.get_stage())["SHOT"] == "sh020"
 
 
-def test_removing_a_line_removes_the_variable(scene) -> None:
-    node, mod = _stage_expression(scene, "SHOT = sh010\nASSET = hero")
+def test_removing_a_row_removes_the_variable(scene) -> None:
+    node, mod = _stage_expression(scene, ("SHOT", "string", "sh010"), ("ASSET", "string", "hero"))
 
-    node.get_param("variables").value = "SHOT = sh010"
-    mod._sync_variables(node)
+    node.get_param(mod.ROWS_PARAM).size = 1
     mod.execute(node)
 
     assert chunk_utils.stage_expression_variables(scene.get_stage()) == {"SHOT": "sh010"}
@@ -256,8 +253,8 @@ def test_removing_a_line_removes_the_variable(scene) -> None:
 def test_two_chunks_do_not_erase_each_other(scene) -> None:
     """Each drops only the names it recorded owning, so a second chunk's variables survive
     a re-execute of the first."""
-    a, mod = _stage_expression(scene, "SHOT = sh010")
-    b, _ = _stage_expression(scene, "ASSET = hero")
+    a, mod = _stage_expression(scene, ("SHOT", "string", "sh010"))
+    _stage_expression(scene, ("ASSET", "string", "hero"))
 
     mod.execute(a)
 
@@ -266,36 +263,22 @@ def test_two_chunks_do_not_erase_each_other(scene) -> None:
     }
 
 
-def test_studio_variables_survive_and_are_reported(scene) -> None:
+def test_studio_variables_survive(scene) -> None:
     stage = scene.get_stage()
     stage.GetRootLayer().expressionVariables = {"SHOW": "hydra"}
 
-    node, _ = _stage_expression(scene, "SHOT = sh010")
+    _stage_expression(scene, ("SHOT", "string", "sh010"))
 
     assert stage.GetRootLayer().expressionVariables == {"SHOW": "hydra"}, "their file is untouched"
-    assert "SHOW = hydra" in node.get_param("composed").value
-    assert "SHOT = sh010" in node.get_param("composed").value
+    assert chunk_utils.stage_expression_variables(stage) == {"SHOW": "hydra", "SHOT": "sh010"}
 
 
-def test_reserved_and_malformed_names_are_skipped(scene) -> None:
-    node, _ = _stage_expression(scene, "variables = x\n1BAD = y\nGOOD = z")
+def test_a_malformed_row_is_skipped(scene) -> None:
+    _stage_expression(
+        scene,
+        ("1BAD", "string", "y"),
+        ("NOT_A_NUMBER", "int", "twelve"),
+        ("GOOD", "string", "z"),
+    )
 
     assert chunk_utils.stage_expression_variables(scene.get_stage()) == {"GOOD": "z"}
-    assert node.get_param("variables").value.startswith("variables"), "the spec itself is intact"
-
-
-def test_load_lofts_the_variables_back(scene) -> None:
-    """The spec restores as a string; the params it declares do not restore at all."""
-    stage_expression = importlib.import_module("scripts.utils.stage_expression")
-
-    node = stage_expression.main()
-    node._config = ChunkConfig(module="stage_expression")
-    scene.add_chunk(node)
-    node.get_param("variables").value = "SHOT = sh010"
-    for p in list(stage_expression._variables(node)):
-        node.remove_param_or_group(p)
-    assert node.get_param("SHOT") is None
-
-    stage_expression._chunk_loaded(node, None, None)
-
-    assert node.get_param("SHOT") is not None

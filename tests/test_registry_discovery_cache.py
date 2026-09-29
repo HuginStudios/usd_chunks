@@ -10,6 +10,7 @@ time on.
 from __future__ import annotations
 
 import textwrap
+import os
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_registry import ChunkRegistry
@@ -24,7 +25,7 @@ def main():
 
 
 def config():
-    return chunk.DefaulConfig(category="{label}")
+    return chunk.DefaultConfig(category="{label}")
 """
 
 
@@ -55,7 +56,6 @@ def test_edited_file_is_rediscovered(tmp_path, monkeypatch):
     assert first[0].config.category == "First"
 
     _write_chunk(tmp_path, "cachetest_b", "Second")
-    import os
     stamp = path.stat().st_mtime_ns + 1_000_000
     os.utime(path, ns=(stamp, stamp))
 

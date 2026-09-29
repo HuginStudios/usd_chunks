@@ -1,12 +1,12 @@
 include README.md
 include NOTICE
 recursive-include usd_chunks/resources *.png
-recursive-include usd_chunks/plugins *.json *.shelf
+recursive-include usd_chunks/hosts *.json *.shelf
 
 exclude build_docs.bat
 recursive-exclude tests *
 recursive-exclude docs *
-recursive-exclude scripts *
+recursive-exclude chunks *
 recursive-exclude chunkgroups *
 
 # The web client is shelved and not part of a release.

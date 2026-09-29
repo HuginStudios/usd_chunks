@@ -1,0 +1,16 @@
+{
+    "Plugins": [
+        {
+            "Type": "python",
+            "Name": "usd_chunks.hosts.usdview",
+            "Info": {
+                "Types": {
+                    "usd_chunks.hosts.usdview.ChunksPluginContainer": {
+                        "bases": ["pxr.Usdviewq.plugin.PluginContainer"],
+                        "displayName": "Usd Chunks"
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -15,7 +15,8 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_core import ChunkBase
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
@@ -48,7 +49,6 @@ def scene(qapp):
 
 
 def _contexts(scene):
-    from usd_chunks.chunk_core import ChunkBase
     return [
         c for c in scene.chunks.get_my_params()
         if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
@@ -169,7 +169,7 @@ def test_peeking_at_the_root_never_creates_one(scene):
 
 
 def test_the_chunks_root_is_a_scope_not_a_chunk(scene):
-    """/chunks is "bara ett scope" (Dan) -- like /lights or /render.
+    """/chunks is just a scope -- like /lights or /render.
 
     It was authored with the Chunk typename, the same as the chunks hanging under it, so
     the scope looked like a chunk prim to anything reading the stage back.

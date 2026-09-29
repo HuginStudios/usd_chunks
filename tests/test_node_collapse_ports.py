@@ -16,14 +16,17 @@ import time
 
 import pytest
 from pxr import Usd
+from PySide6 import QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins.chunk_qt_widgets import ContainerWidget
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt.widgets import ContainerWidget
+from usd_chunks.frontends.qt import nodegraph
+
+from qt_wait import pump_until
 
 
 class _DummyScene(SceneSender):
@@ -45,6 +48,7 @@ def _pump(qapp, seconds: float) -> None:
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         qapp.processEvents()
+
 
 
 @pytest.fixture
@@ -76,6 +80,8 @@ def graph(qapp):
 def _wire_tx(gv, a, b):
     a_path = str(a.prim.GetPath())
     b_path = str(b.prim.GetPath())
+    pump_until(QtWidgets.QApplication.instance(),
+                lambda: a.get_port(f"{a_path}.outputs:tx") and b.get_port(f"{b_path}.inputs:tx"))
     a_out = a.get_port(f"{a_path}.outputs:tx")
     b_in = b.get_port(f"{b_path}.inputs:tx")
     assert a_out is not None and b_in is not None, "typed ports must exist by now"
@@ -195,7 +201,7 @@ def _expanded_container(qapp, node, group):
     """The group's ContainerWidget, expanded and settled.
 
     scatter_points ships its param groups collapsed (it is a tall chunk), so a test about
-    *collapsing* one has to open it first — otherwise the click below is a no-op and the
+    *collapsing* one has to open it first -- otherwise the click below is a no-op and the
     params never get the ports the test is checking.
     """
     container = _container_for(node, group)
@@ -263,6 +269,7 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
     height_before = node._height
     container.minimize_button.setChecked(False)
     _pump(qapp, 0.3)  # no deselect anywhere in this test
+    pump_until(qapp, lambda: node._height < height_before)
 
     scale_min_in = node.get_port(f"{node_path}.inputs:scale_min")
     scale_max_in = node.get_port(f"{node_path}.inputs:scale_max")
@@ -272,12 +279,12 @@ def test_collapsing_an_inner_group_updates_immediately_and_spaces_wired_ports(gr
 
 
 def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
-    """Regression: reported live -- a fresh Create Layer node showed two extra ports well
+    """Regression: reported live -- a fresh Layer node showed two extra ports well
     below the node's own body, disconnected from anything drawn.
 
     _place_param_ports's rewrite for the collapsed-group case (see the other tests in
     this file) accidentally dropped the widget.isVisible() check for every OTHER param --
-    Create Layer's Index field (insert_index) is HIDDEN by default (only shown once
+    Layer's Index field (insert_index) is HIDDEN by default (only shown once
     Insert == "Index"), is not inside any group at all, so _nearest_collapsed_group finds
     nothing for it, and it fell straight into the "just use the widget's own position"
     branch. Qt stops laying out a hidden widget, so that position is stale/meaningless
@@ -286,7 +293,7 @@ def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
     nearest visible ContainerWidget ancestor (skipping entirely if there isn't one, as a
     top-level hidden param like this has none), same as it did before that rewrite."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     chunk = _mk(mod, scene)
     qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()
@@ -307,7 +314,7 @@ def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
 
 
 def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> None:
-    """Regression: reported live -- switching Create Layer's Insert from Append to Index
+    """Regression: reported live -- switching Layer's Insert from Append to Index
     (showing the Index field) and back to Append (hiding it again) left the Index port
     on screen until something unrelated (deselecting the node) forced a fresh layout
     pass. Showing it worked fine; only re-hiding didn't update promptly.
@@ -320,7 +327,7 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
     layout change -- which, like the group-collapse case, does not reliably happen for a
     widget disappearing specifically."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     chunk = _mk(mod, scene)
     qapp.processEvents()
     gv = docker.tab_widget.get_current_graph_view()
@@ -332,7 +339,7 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
     assert insert_mode is not None
 
     insert_mode.value = "Index"
-    _pump(qapp, 0.3)
+    pump_until(qapp, lambda: node.get_port(f"{node_path}.inputs:insert_index") is not None)
     assert node.get_port(f"{node_path}.inputs:insert_index") is not None, "Index must appear once shown"
 
     insert_mode.value = "Append"

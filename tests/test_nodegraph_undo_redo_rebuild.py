@@ -30,9 +30,11 @@ import time
 
 from pxr import Usd, UsdGeom
 
-from usd_chunks import chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks import chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
 
 class _DummyScene(SceneSender):
@@ -76,8 +78,6 @@ def _restore(stage, snap):
 
 
 def test_redo_brings_the_node_back(qapp) -> None:
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-
     stage = Usd.Stage.CreateInMemory()
 
     class _StageScene(_DummyScene):

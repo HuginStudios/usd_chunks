@@ -14,8 +14,9 @@ from pathlib import Path
 import pytest
 from pxr import Sdf, Usd
 
+from usd_chunks import chunk
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.plugins import chunk_graph
+from usd_chunks.graph import engine as chunk_graph
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -73,7 +74,7 @@ class TestNoToolkit:
         """
         source = (
             "import sys;"
-            "import usd_chunks.plugins.chunk_graph;"
+            "import usd_chunks.graph.engine;"
             "leaked=sorted(m for m in sys.modules if 'PySide' in m or 'shiboken' in m);"
             "print(','.join(leaked))"
         )
@@ -135,6 +136,56 @@ class TestPorts:
         port = next(p for p in chunk_graph.iter_ports(prim)
                     if p.name == "primpath_location")
         assert port.port_type == chunk_graph.PORT_STRING
+
+
+class _CustomStr(chunk.ChunkParamBase[str]):
+    """The custom param example from chunk.py's docs: not a LineEdit subclass."""
+
+    @classmethod
+    def get_type(cls):
+        return ChunkFlags.ParamType.LINEEDIT
+
+
+class _CustomNumber(chunk.ChunkParamBase[float]):
+    @classmethod
+    def get_type(cls):
+        return ChunkFlags.ParamType.INT_SLIDER | ChunkFlags.ParamType.FLOAT_SLIDER
+
+    def evaluate_type(self):
+        return ChunkFlags.ParamType.INT_SLIDER
+
+
+class TestPortTypesFromParamType:
+    """Ports come from evaluate_type(), so a chunk's own param classes get them too."""
+
+    def _ports(self, *params):
+        c = chunk.Chunk("c")
+        group = c.add_param(chunk.Group("g"))
+        for p in params:
+            group.add_param(p)
+        return {p.name: chunk_graph.param_port_type(p)
+                for p in chunk_graph.iter_connectable_params(c)}
+
+    def test_custom_params_get_ports(self):
+        ports = self._ports(_CustomStr("text"), _CustomNumber("count"))
+        assert ports == {"text": chunk_graph.PORT_STRING, "count": chunk_graph.PORT_INT}
+
+    def test_builtin_params(self):
+        ports = self._ports(
+            chunk.Slider("f"), chunk.Slider("i", is_int=True), chunk.Checkbox("b"),
+            chunk.Menu("m", menu_items=["a"]), chunk.ColorPicker("col"),
+            # Slider components: VECTOR | FLOAT_SLIDER carries every bit of COLOR_PICKER.
+            chunk.Vector("v", param=chunk.Slider(), length=3),
+        )
+        assert ports == {
+            "f": chunk_graph.PORT_FLOAT, "i": chunk_graph.PORT_INT,
+            "b": chunk_graph.PORT_BOOL, "m": chunk_graph.PORT_STRING,
+            "col": chunk_graph.PORT_COLOR, "v": chunk_graph.PORT_VECTOR,
+        }
+
+    def test_params_without_a_value_get_no_port(self):
+        ports = self._ports(chunk.Button("btn"), chunk.Label("lbl"), chunk.Separator("sep"))
+        assert ports == {}
 
 
 class TestEdges:
@@ -577,3 +628,28 @@ class TestDefaultContext:
         stage = self._open(tmp_path, SIDE_BY_SIDE)
         assert "/chunks/ChunkGroup" in chunk_graph.contexts(stage)
         assert chunk_graph.parent_context("/chunks/ChunkGroup", chunk_graph.contexts(stage)) == "/chunks"
+
+
+class TestPasteKeepsDisabled:
+    def test_a_disabled_chunk_pastes_disabled(self):
+        from graph_fixtures import _Scene
+        from usd_chunks import chunk_registry
+        from usd_chunks.chunk_stage import initialize as chunk_usd_init
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = _Scene(stage)
+        chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+        chunk_registry.ChunkLayerManager().initialize(stage)
+        chunk_usd_init(stage, scene)
+        module = chunk_registry.ChunkRegistry().get_chunk_module("transform")
+        original = (module.create() if module.loaded else module.load())[0]
+        scene.add_chunk(original)
+        original.set_state(ChunkFlags.State.DISABLED)
+
+        item = chunk_graph.snapshot_chunk_node(original, scene, stage, (0.0, 0.0))
+        made = chunk_graph.materialize(scene, [item], lambda x, y: (x, y))
+
+        pasted = made[0]
+        prim = stage.GetPrimAtPath(chunk_graph.chunk_stage.get_chunk_prim_path(pasted))
+        assert pasted.has_state(ChunkFlags.State.DISABLED)
+        assert chunk_graph.is_disabled(prim)

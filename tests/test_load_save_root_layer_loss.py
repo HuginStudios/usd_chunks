@@ -25,8 +25,8 @@ from __future__ import annotations
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.chunk_stage import export_chunks, initialize, load_chunks
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_stage import ChunkStageSync, export_chunks, initialize, load_chunks
 
 
 class _Scene(SceneSender):
@@ -119,3 +119,41 @@ class TestRoundTripKeepsTheFile:
         in_memory = _open_and_save(path)
         assert in_memory >= before, "the stage should still resolve every chunk"
         assert _count(path) == before, "the root layer lost specs the stage still showed"
+
+
+def _open_the_way_usdview_does_and_save(path: str) -> int:
+    """usdview registers the plugin before it has a stage, so ChunkStageSync.initialize
+    sees None and the actual load runs later from signalStageReplaced ->
+    reload_for_stage. A different code path from _open_and_save, with its own reconcile."""
+    stage = Usd.Stage.Open(path)
+    scene = _Scene(stage)
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    sync = ChunkStageSync()
+    sync.initialize(None, scene)
+    sync.reload_for_stage(stage)
+    in_memory = sum(1 for p in stage.Traverse() if p.GetTypeName() == "Chunk")
+    stage.GetRootLayer().Save()
+    return in_memory
+
+
+class TestTheHostHandingOverItsStageLater:
+    """The same guarantee on the reload path. reload_for_stage reconciled WITHOUT
+    protect_root_layer -- the initialize() fix never reached it -- so the usdview open of a
+    34-chunk network left 6 Chunk specs in the file's root layer (measured), and re-cooked
+    every chunk it had just moved."""
+
+    def test_an_edit_target_network_survives_the_reload_path(self, tmp_path):
+        path = str(tmp_path / "et_reload.usda")
+        before = _build(path, ("transform", "edit_target"))
+        in_memory = _open_the_way_usdview_does_and_save(path)
+        assert in_memory >= before, "the stage should still resolve every chunk"
+        assert _count(path) == before, "the root layer lost specs the stage still showed"
+
+    def test_a_chained_network_survives_the_reload_path(self, tmp_path):
+        """No Edit Target needed: with the session layer as every chunk's resolved target,
+        the unprotected pass still moved each chunk's bookkeeping out of the root layer."""
+        path = str(tmp_path / "chain_reload.usda")
+        before = _build(path, ("transform", "transform", "reference"))
+        _open_the_way_usdview_does_and_save(path)
+        assert _count(path) == before

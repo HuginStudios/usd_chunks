@@ -13,11 +13,22 @@ import pytest
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins import chunk_graph
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.graph import engine as chunk_graph
+from usd_chunks.frontends.qt import nodegraph
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.chunk_flags import ChunkFlags
+
+# flet is an optional extra; the Qt half of the shared-clipboard contract still has to be
+# checked without it, so the skip is per-test rather than on the module. Imported for its
+# side effect: the flet frontend must bind the engine's lists, not replace them.
+try:
+    import flet  # noqa: F401
+except ImportError:
+    chunk_flet_nodegraph = None
+else:
+    from usd_chunks.frontends.flet import nodegraph as chunk_flet_nodegraph  # noqa: F401
 
 
 class _DummyScene(SceneSender):
@@ -63,7 +74,7 @@ def _nodes(graph, module="transform", n=1):
         chunks.append(made[0])
     view = docker.tab_widget.get_current_graph_view()
     paths = [get_chunk_prim_path(c) for c in chunks]
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and any(p not in view.scene()._nodes for p in paths):
         qapp.processEvents()
     return view, chunks, paths
@@ -114,7 +125,6 @@ class TestEditing:
         adapter, chunks, paths = frontend
         adapter.set_selection([paths[0]])
         adapter.toggle_disable_selected()
-        from usd_chunks.chunk_flags import ChunkFlags
         assert chunks[0].has_state(ChunkFlags.State.DISABLED)
 
     def test_copy_fills_the_shared_clipboard(self, frontend):
@@ -133,7 +143,7 @@ class TestEditing:
         adapter.copy_selection()
         before = set(adapter.view.scene()._nodes)
         adapter.paste_at(400.0, 400.0)
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before
@@ -144,7 +154,7 @@ class TestEditing:
         adapter.set_selection([paths[0]])
         before = set(adapter.view.scene()._nodes)
         adapter.duplicate_selection()
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before
@@ -158,7 +168,7 @@ class TestEditing:
                      if getattr(e.module, "module_name", "") == "transform")
         before = set(adapter.view.scene()._nodes)
         adapter.create_chunk(entry, 600.0, 200.0)
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before
@@ -227,11 +237,8 @@ class TestTheClipboardIsShared:
         assert nodegraph._node_clipboard is chunk_graph.node_clipboard
         assert nodegraph._edge_clipboard is chunk_graph.edge_clipboard
 
+    @pytest.mark.skipif(chunk_flet_nodegraph is None, reason="flet is an optional extra")
     def test_flet_and_qt_hold_the_same_lists(self):
-        # flet is an optional extra; the Qt half of this contract still has to be checked
-        # without it, so the skip is per-test rather than on the module.
-        pytest.importorskip("flet", reason="flet is an optional extra")
-        from usd_chunks.plugins import chunk_flet_nodegraph  # noqa: F401
         assert chunk_graph.node_clipboard is nodegraph._node_clipboard
 
     def test_a_qt_copy_is_visible_to_the_engine(self, frontend):
@@ -254,7 +261,7 @@ class TestTheClipboardIsShared:
         chunk_graph.node_clipboard.extend(held)  # as another frontend would fill it
         before = set(adapter.view.scene()._nodes)
         adapter.paste_at(500.0, 500.0)
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before

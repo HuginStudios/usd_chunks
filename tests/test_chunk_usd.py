@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import time
 import types as _types
+import weakref
 from pathlib import Path
+import gc
+import importlib
 
 import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
-from usd_chunks.chunk_stage import get_chunk_prim_path as _get_chunk_prim_path
+from usd_chunks.chunk_stage import get_chunk_prim_path as _get_chunk_prim_path, recook_for_view
 from usd_chunks.chunk_stage import (
     _CHUNK_PRIM_TYPENAME,
     _CHUNK_TYPE_ATTR,
@@ -24,10 +27,22 @@ from usd_chunks.chunk_stage import (
     load_chunks,
     loft_param_to_context,
     rename_context_prim_path,
+    _migrate_chunk_bookkeeping,
+    get_chunk_prim_path,
+    recook_focus,
+    view_cook_list,
+    get_upstream_stage,
+    exec_output_path,
 )
 from usd_chunks.chunk_utils import get_unique_path
-from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks import chunk, chunk_registry, chunk_scheduler
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.gizmo import runtime as chunk_gizmo
+import usd_chunks.chunk_stage as chunk_usd_mod
+
+from chunk_stubs import attach_stub_module, register_stub_module
 
 
 class _DummyScene(SceneSender):
@@ -52,9 +67,18 @@ def _default_root(scene) -> str:
     return _get_chunk_prim_path(ctx) if ctx is not None else _CHUNKS_ROOT
 
 
-def _chunk_with_module(name: str, module: str = "prim") -> chunk.Chunk:
+def _chunk_with_module(name: str, module: str | None = None) -> chunk.Chunk:
+    """A plain chunk backed by a registered module, so it saves with an info:chunkType.
+
+    By default a stub module with no hooks (chunk_stubs): these tests are about the
+    framework, not any one chunk, so they neither cook nor depend on a module in chunks/.
+    Pass module to name a real one.
+    """
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module=module)
+    if module is None:
+        attach_stub_module(c)
+    else:
+        c._config = ChunkConfig(module=module)
     return c
 
 
@@ -72,7 +96,7 @@ def test_export_chunk_creates_prim() -> None:
     prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/{c.name}")
     assert prim.IsValid()
     assert prim.GetTypeName() == "Chunk"
-    assert prim.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "prim"
+    assert prim.GetAttribute(_CHUNK_TYPE_ATTR).Get() == c.get_config().module
     assert prim.GetAttribute(_EXEC_OUTPUT).IsValid()
 
 
@@ -352,8 +376,7 @@ def test_chunk_stage_sync_live_update() -> None:
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     ChunkStageSync().initialize(stage, scene)
 
-    c = chunk.Chunk("live")
-    c._config = ChunkConfig(module="prim")
+    c = _chunk_with_module("live")
     slider = chunk.Slider("p", default_value=0.0)
     c.add_param(slider)
     scene.add_chunk(c)
@@ -387,18 +410,22 @@ def test_export_load_roundtrip(tmp_path) -> None:
     # so the stage must actually be wired up to author those prims in the first place.
     _chunk_usd_init(stage_src, scene_src)
 
-    c = chunk.Chunk("testChunk")
-    c._config = ChunkConfig(module="prim")
-    prim_type = chunk.Menu("prim_type", menu_items=["Xform", "Scope", "Class"])
-    prim_type.value = "Scope"
-    c.add_param(prim_type)
+    # Reopening rebuilds the chunk with its module's main(), so the module has to be one
+    # that builds the param whose value the roundtrip carries.
+    def _main():
+        built = chunk.Chunk("testChunk")
+        built.add_param(chunk.Menu("prim_type", menu_items=["Xform", "Scope", "Class"]))
+        return built
+
+    (c,) = register_stub_module(main=_main).load()
+    c.get_param("prim_type").value = "Scope"
     scene_src.add_chunk(c)
 
     out = tmp_path / "chunks.usda"
     export_chunks(scene_src, out)
     assert out.exists()
 
-    # ChunkLayerManager is a singleton — reset it before switching to the destination
+    # ChunkLayerManager is a singleton -- reset it before switching to the destination
     # stage, or its state from stage_src (graph_layers, etc.) leaks in and load_chunks'
     # execute() cascade tries to use layers that aren't part of stage_dst's stack.
     chunk_registry.ChunkLayerManager().reset()
@@ -426,8 +453,8 @@ def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
     """Re-exporting to the same path and reloading it (a common iteration workflow)
     gives a genuinely new Usd.Stage whose root layer nonetheless shares the same
     identifier (Sdf's layer registry caches by identifier/path) as the previously
-    loaded one. reload_for_stage must still reset in that case — comparing stage
-    *object identity*, not the identifier string — or the previous file's chunk
+    loaded one. reload_for_stage must still reset in that case -- comparing stage
+    *object identity*, not the identifier string -- or the previous file's chunk
     objects stay registered, orphaned, alongside the freshly loaded content.
     """
     out = tmp_path / "roundtrip.usda"
@@ -448,8 +475,7 @@ def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
     sync = ChunkStageSync()
     _chunk_usd_init(stage1, scene)
 
-    a = chunk.Chunk("first")
-    a._config = ChunkConfig(module="prim")
+    a = _chunk_with_module("first")
     scene.add_chunk(a)
     assert any(c.name == "first" for c in scene.get_chunks())
 
@@ -468,7 +494,7 @@ def test_reload_for_stage_leaves_the_opened_files_prims_alone(tmp_path) -> None:
     """File > Open must not let the OUTGOING graph's teardown edit the INCOMING file.
 
     reload_for_stage switches self._stage to the new stage before dropping the previous
-    file's chunks, and _on_chunk_deleted addresses prims by path — so with the same paths
+    file's chunks, and _on_chunk_deleted addresses prims by path -- so with the same paths
     on both sides (the usual case: the file being opened was exported from this very tab)
     the teardown deleted the new file's own prim specs and heal_exec_chain_on_delete
     rewired its exec chain, all before load_chunks ever read it. The file came up with
@@ -523,10 +549,9 @@ def test_migrate_bookkeeping_keeps_connection_held_by_a_weaker_spec() -> None:
 
     Loading a file authors chunk-prim attrs into the session layer while the connection
     itself is still only in the (weaker) root layer. _migrate_chunk_bookkeeping resolved
-    per property, so the session's connection-less inputs:chunk won and the root spec —
-    the one holding the wire — was pruned, silently unwiring the chunk.
+    per property, so the session's connection-less inputs:chunk won and the root spec --
+    the one holding the wire -- was pruned, silently unwiring the chunk.
     """
-    from usd_chunks.chunk_stage import _migrate_chunk_bookkeeping
 
     root = Sdf.Layer.CreateAnonymous(".usda")
     session = Sdf.Layer.CreateAnonymous(".usda")
@@ -538,7 +563,7 @@ def test_migrate_bookkeeping_keeps_connection_held_by_a_weaker_spec() -> None:
         prim = stage.DefinePrim(view_path, _CHUNK_PRIM_TYPENAME)
         prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections([conn])
     with Usd.EditContext(stage, session):
-        # A bare CreateAttribute, no connection authored — what load does on the way in.
+        # A bare CreateAttribute, no connection authored -- what load does on the way in.
         stage.GetPrimAtPath(view_path).CreateAttribute(
             _EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
         )
@@ -553,7 +578,7 @@ def test_migrate_bookkeeping_keeps_connection_held_by_a_weaker_spec() -> None:
 
 def test_load_chunks_preserves_named_tab_context_on_reload(tmp_path) -> None:
     """A named top-level Tab context (e.g. "Tab1"), saved via export_chunks and
-    reloaded into a fresh session/stage, must come back as that same context — not
+    reloaded into a fresh session/stage, must come back as that same context -- not
     get orphaned into a brand-new tab named after whatever file happens to be open.
 
     load_chunks only ever recognized two cases: a chunk with a chunkType (a real
@@ -606,7 +631,7 @@ def test_load_chunks_preserves_named_tab_context_on_reload(tmp_path) -> None:
 def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> None:
     """export_chunks must follow each chunk's LIVE inputs:chunk connection (the real
     wiring, as authored by the node-graph UI's drag-to-connect) rather than falling
-    back to scene.get_chunks() iteration order — which is what happened before this
+    back to scene.get_chunks() iteration order -- which is what happened before this
     fix, since chunk.get_dependencies() (the Python DAG) stays empty for a graph
     wired live: drag-to-connect authors the USD-level connection directly and never
     calls add_dependency(), that reconstruction only happens on load_chunks().
@@ -622,7 +647,7 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
     _chunk_usd_init(stage, scene)
 
     # Registered in scrambled order (b, c, a) relative to the intended exec chain
-    # (a -> b -> c) — the old scene.get_chunks()-order fallback would export b -> c -> a.
+    # (a -> b -> c) -- the old scene.get_chunks()-order fallback would export b -> c -> a.
     b = _chunk_with_module("b")
     scene.add_chunk(b)
     c = _chunk_with_module("c")
@@ -631,7 +656,7 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
     scene.add_chunk(a)
 
     # Wire a -> b -> c directly on the USD prims, exactly like the node-graph UI's
-    # drag-to-connect — never calling add_dependency().
+    # drag-to-connect -- never calling add_dependency().
     b_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/b")
     c_prim = stage.GetPrimAtPath(f"{_default_root(scene)}/c")
     b_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
@@ -640,7 +665,7 @@ def test_export_chunks_preserves_live_exec_order_not_scene_order(tmp_path) -> No
     c_prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False).SetConnections(
         [Sdf.Path(f"{_default_root(scene)}/b.{_EXEC_OUTPUT}")]
     )
-    # The Python DAG now mirrors the connection the moment it is authored — the stage is the
+    # The Python DAG now mirrors the connection the moment it is authored -- the stage is the
     # authority for chunk-level exec wiring, and ChunkStageSync reconciles off ObjectsChanged
     # (see reconcile_dag_dependencies). Before that, these were all still [] here and only
     # got reconstructed by a save+reload, which is what made the export fallback below matter.
@@ -683,10 +708,10 @@ def test_second_mutation_propagates() -> None:
 
     prim = stage.GetPrimAtPath(f"{_default_root(scene)}/n")
 
-    slider.value = 3.7  # first write — _sync_param_input creates attr + wires _connect_param_attr
+    slider.value = 3.7  # first write -- _sync_param_input creates attr + wires _connect_param_attr
     assert prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == pytest.approx(3.7)
 
-    slider.value = 9.1  # second write — update_usd_prop writes directly to existing attr
+    slider.value = 9.1  # second write -- update_usd_prop writes directly to existing attr
     assert prim.GetAttribute(f"{_INPUTS_PREFIX}p").Get() == pytest.approx(9.1)
 
 
@@ -740,10 +765,10 @@ def test_chunk_stage_sync_rename_no_duplicate() -> None:
 
 
 def test_chunk_stage_sync_rename_anonymous_edit_target() -> None:
-    """Rename must work with no Edit Target chunk in play — bookkeeping then resolves to the
+    """Rename must work with no Edit Target chunk in play -- bookkeeping then resolves to the
     session layer (nearest_upstream_edit_layer's default). If the rename bails when the prim
     can't be pre-resolved instead of falling back to the current edit target, the chunk is
-    renamed but its prim isn't — the paths diverge and the node vanishes from the graph."""
+    renamed but its prim isn't -- the paths diverge and the node vanishes from the graph."""
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -851,7 +876,6 @@ def test_delete_chunk_removes_anonymous_layer() -> None:
     removal of the sublayer.  This test verifies that after request_delete() + del the
     anonymous layer is no longer reachable via stage.GetLayerStack().
     """
-    import gc
 
     stage = Usd.Stage.CreateInMemory()
     scene = _DummyScene()
@@ -1000,8 +1024,6 @@ def test_delete_context_with_children_does_not_reenter_load_chunks(monkeypatch) 
     for c in children:
         scene.add_chunk(c)
 
-    import usd_chunks.chunk_stage as chunk_usd_mod
-
     calls: list = []
     orig_load_chunks = chunk_usd_mod.load_chunks
 
@@ -1122,7 +1144,7 @@ def test_chunk_stage_sync_disable_enable() -> None:
 
 def test_blocked_chunk_does_not_execute_on_creation() -> None:
     """A chunk blocked before it's added (view-driven: created out of the active view's tree)
-    must not run its module on creation — not via param-resolve and not via execute-on-creation.
+    must not run its module on creation -- not via param-resolve and not via execute-on-creation.
     Unblocking and cooking it (as recook does when it joins the view's tree) runs it."""
     stage = Usd.Stage.CreateInMemory()
 
@@ -1136,12 +1158,8 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
 
     calls = []
 
-    class _Mod:
-        def execute(self, prop):
-            calls.append(1)
-
     c = _chunk_with_module("blk")
-    c._module = _Mod()
+    attach_stub_module(c, execute=lambda prop: calls.append(1))
     c.set_blocked(True)
     scene.add_chunk(c)
     assert calls == []  # blocked → no execute on creation
@@ -1155,10 +1173,9 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
 
 
 def test_recook_no_active_view_blocks_all() -> None:
-    """With no active view (view_chunk=None), recook must block every chunk so nothing cooks —
+    """With no active view (view_chunk=None), recook must block every chunk so nothing cooks --
     not run the whole graph (which used to unblock + execute all nodes, so toggling the active
     view off ran everything, including unconnected nodes)."""
-    from usd_chunks.chunk_stage import recook_for_view
 
     stage = Usd.Stage.CreateInMemory()
     scene = _DummyScene()
@@ -1177,7 +1194,7 @@ def test_recook_no_active_view_blocks_all() -> None:
 
 def test_state_change_keeps_view_blocked_layer_muted() -> None:
     """A view-blocked chunk's layer is muted (hidden). A state change (e.g. selecting the node)
-    must NOT un-mute it — _flags_changed used to un-mute any non-disabled muted layer on every
+    must NOT un-mute it -- _flags_changed used to un-mute any non-disabled muted layer on every
     state change, so selecting an out-of-view node showed its output."""
     stage = Usd.Stage.CreateInMemory()
 
@@ -1417,11 +1434,10 @@ def test_expression_listener_reconnects_after_reload() -> None:
     fine on a fresh read, but the live-update listener (_expression_connections),
     rebuilt during _load_wire_inputs's _connect_param_attr, failed to attach because
     the *referenced* chunk (MathOps) wasn't registered with the scene yet at that
-    point in load_chunks's loop — so no notice ever reached MathOps1's widget.
+    point in load_chunks's loop -- so no notice ever reached MathOps1's widget.
     load_chunks must retry the listener setup once every chunk in the batch is
     registered, and the retry must actually restore live propagation."""
-    import importlib
-    mo = importlib.import_module("scripts.utils.math_ops")
+    mo = importlib.import_module("chunks.utils.math_ops")
 
     stage = Usd.Stage.CreateInMemory()
     stage.GetRootLayer().ImportFromString(
@@ -1709,7 +1725,7 @@ def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
     """rename_context_prim_path must update ChunkStageSync._chunk_prim_paths.
 
     Regression: after rename the tracking dict still pointed to the old path so
-    state sync and active-state detection silently stopped working — the prim
+    state sync and active-state detection silently stopped working -- the prim
     appeared to 'disappear' from the sync's perspective even though it moved.
     """
     stage = Usd.Stage.CreateInMemory()
@@ -1717,7 +1733,7 @@ def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     _chunk_usd_init(stage, scene)
 
-    # A named tab context gets its own prim root ("/MyTab") — sub-chunks nest under it.
+    # A named tab context gets its own prim root ("/MyTab") -- sub-chunks nest under it.
     ctx = scene.add_context("MyTab")
     c1 = _chunk_with_module("c1")
     scene.add_chunk(c1)  # → ctx.add_param(c1) → prim at /MyTab/c1
@@ -1786,59 +1802,59 @@ def test_load_chunks_subchunk_in_group() -> None:
     sub = [p for p in ctx.get_my_params() if isinstance(p, ChunkBase)]
     assert len(sub) == 1
     # The chunk's name is restored from its prim (prims are authored at
-    # <root>/<chunk.name>), not reset to the module default — otherwise two
+    # <root>/<chunk.name>), not reset to the module default -- otherwise two
     # chunks of the same type can swap identities on load.
     assert sub[0].name == "c1"
 
 
 # ---------------------------------------------------------------------------
-# get_unique_path: expression path clears stale anonymous layer prim
+# get_unique_path: a pure lookup that does not count the asking chunk's own prim
 # ---------------------------------------------------------------------------
 
-class _LayerChunk:
-    """Minimal chunk stub whose get_edit_context returns a controlled anonymous layer."""
-    def __init__(self, layer: Sdf.Layer) -> None:
-        self._layer = layer
-
-    def get_edit_context(self) -> Sdf.Layer:
-        return self._layer
-
-
 class _ExprParam:
-    """Minimal param stub with a pre-resolved expression value and a stale anonymous layer."""
-    def __init__(self, resolved_path: str, layer: Sdf.Layer) -> None:
+    """Minimal param stub holding an expression and its resolved value."""
+    def __init__(self, resolved_path: str) -> None:
         self.raw_value = "@A.primpath_location@/geo"
         self._resolved = resolved_path
-        self._chunk = _LayerChunk(layer)
 
     @property
     def value(self) -> str:
         return self._resolved
 
-    def get_chunk(self) -> _LayerChunk:
-        return self._chunk
 
+def test_get_unique_path_returns_an_expression_resolved_and_touches_no_layer() -> None:
+    """An expression defines an explicit path, so it comes back resolved, never bumped.
 
-def test_get_unique_path_clears_layer_on_expression() -> None:
-    """get_unique_path clears the chunk's anonymous layer even when raw_value is an expression.
-
-    Bug: previously the layer.Clear() call was guarded by the non-expression branch, so a stale
-    prim authored during a previous execution (e.g. /geo) would persist after the primpath_location
-    was changed to an expression like @A.primpath_location@/geo.
+    get_unique_path used to clear the asking chunk's layer as a side effect, so its own prim
+    from the last cook would not read as a collision. The framework now clears that layer
+    before every cook, so a lookup has no business editing anything.
     """
     stage = Usd.Stage.CreateInMemory()
+    layer = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(layer, Sdf.Path("/geo"))
 
-    # Stale anonymous layer simulating a prim left over from a previous execution
-    old_layer = Sdf.Layer.CreateAnonymous()
-    Sdf.CreatePrimInLayer(old_layer, Sdf.Path("/geo"))
-    assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is not None
+    assert get_unique_path(stage, _ExprParam("/prim/geo")) == "/prim/geo"
+    assert layer.GetPrimAtPath(Sdf.Path("/geo")) is not None, "a lookup must not clear anything"
 
-    param = _ExprParam("/prim/geo", old_layer)
 
-    result = get_unique_path(stage, param)
+def test_get_unique_path_does_not_count_the_chunks_own_prim() -> None:
+    """A layer the framework does not clear (a context's file layer) still holds the prim a
+    chunk made last cook. Counted as a collision, it would walk the suffix up every cook."""
+    stage = Usd.Stage.CreateInMemory()
+    own = stage.GetRootLayer()
+    stage.DefinePrim("/cameras/cam1", "Camera")
 
-    assert result == "/prim/geo"
-    assert old_layer.GetPrimAtPath(Sdf.Path("/geo")) is None  # stale prim was cleared
+    assert get_unique_path(stage, "/cameras/cam1") == "/cameras/cam2", "someone else's prim is taken"
+    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam1"
+
+    # Authored straight into the layer: DefinePrim over an already-defined prim of the same
+    # type authors nothing, so it would not give the other layer a spec at all.
+    other = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(other, Sdf.Path("/cameras/cam1")).specifier = Sdf.SpecifierDef
+    stage.GetSessionLayer().subLayerPaths.append(other.identifier)
+    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam2", (
+        "defined by another layer as well, it is a real collision"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1875,8 +1891,7 @@ def test_load_chunks_restores_light_dynamic_params() -> None:
 
 def test_loft_default_valued_param_creates_attr() -> None:
     """Loft up must work right after creating a chunk, when the param is still at its default
-    and has no USD attribute yet — it force-creates the storage attr and promotes it."""
-    import weakref
+    and has no USD attribute yet -- it force-creates the storage attr and promotes it."""
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -1921,8 +1936,7 @@ def test_loft_default_valued_param_creates_attr() -> None:
 
 def test_loft_output_param_creates_outputs_attr() -> None:
     """Lofting an OUTPUT-flagged param exposes it as a data OUTPUT on the group (outputs:name),
-    so a chunkgroup can surface computed results — not just inputs."""
-    import weakref
+    so a chunkgroup can surface computed results -- not just inputs."""
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -1970,7 +1984,6 @@ def test_two_chunks_lofting_the_same_param_name_stay_separate() -> None:
     add_param uniquified the Python side to base_color1 while still binding it to the
     first attribute (a control that looked real and drove nothing), and only one of the
     two inner params was actually driven."""
-    import weakref
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2031,15 +2044,205 @@ def test_two_chunks_lofting_the_same_param_name_stay_separate() -> None:
     assert len(targets) == 2, f"each loft needs its own attribute, got {targets}"
 
 
+def test_lofted_params_show_which_chunk_they_came_from() -> None:
+    """The qualifier that keeps two lofted Prim Paths from colliding (Reference1_primpath_location)
+    lives on the USD attribute name, but the params panel shows a param's LABEL
+    (get_label()), not its name -- clone() carried the inner param's own label ("Prim
+    Path") over verbatim, so three lofted Prim Paths showed as three identical rows with
+    no way to tell which chunk each one actually drives."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    leaves = [_mk(primmod) for _ in range(3)]
+    scene._current_context = None
+
+    for leaf in leaves:
+        loft_param_to_context(leaf.get_param("primpath_location"), grp)
+
+    labels = {leaf.name: next(
+        x.get_label() for x in grp.get_my_params() if x.name == f"{leaf.name}_primpath_location"
+    ) for leaf in leaves}
+    for leaf in leaves:
+        assert labels[leaf.name] == f"{leaf.name}: Prim Path", (
+            f"expected the label to name its chunk, got {labels}"
+        )
+    assert len(set(labels.values())) == 3, f"all three labels must be distinguishable, got {labels}"
+
+
+def test_a_lofted_labels_qualifier_is_a_one_time_default_not_a_live_rename() -> None:
+    """The qualifier prefixed onto a lofted param's label ("Transform1: Prim Path") is a
+    default set once at loft time, the same as the USD attribute name it fronts
+    (Transform1_primpath_location) -- not kept live against a later rename of the source
+    chunk. A lofted param's label is an ordinary editable field: a user can rename it to
+    whatever they want, same as any other param, and that has to stick -- silently
+    rewriting it out from under them on every unrelated chunk rename would make "rename the
+    lofted param" not really mean anything."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod)
+    scene._current_context = weakref.ref(grp)
+    leaf = _mk(primmod)
+    scene._current_context = None
+
+    loft_param_to_context(leaf.get_param("primpath_location"), grp)
+    lofted = next(x for x in grp.get_my_params() if x.name.endswith("primpath_location"))
+    original_name = leaf.name
+    assert lofted.get_label() == f"{original_name}: Prim Path"
+
+    # Renaming the source chunk afterwards must not touch a label already handed out.
+    leaf.name = "MyImportantAsset"
+    assert lofted.get_label() == f"{original_name}: Prim Path", (
+        "a chunk rename must not silently rewrite a lofted param's label"
+    )
+
+    # And the user must be free to rename the lofted param itself -- an ordinary edit,
+    # unrelated to anything the source chunk does afterwards.
+    lofted.label = "Key Light Position"
+    assert lofted.get_label() == "Key Light Position"
+    leaf.name = "SomethingElseEntirely"
+    assert lofted.get_label() == "Key Light Position", (
+        "a user's own rename of the lofted param must not be overwritten either"
+    )
+
+
+def test_a_renamed_lofted_params_label_survives_a_reopen(tmp_path) -> None:
+    """A rename via chunk_qt_widgets' "Rename..." (param.label = ...) is stored as
+    customData on the lofted interface attribute (chunk_utils.store_lofted_label) and read
+    back by _restore_lofted_params in preference to the generated default -- without it, a
+    reload silently discarded the rename and showed the auto-qualified label again."""
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod, sc):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            sc.add_chunk(c)
+        return cs[0]
+
+    grp = _mk(grpmod, scene)
+    scene._current_context = weakref.ref(grp)
+    leaf = _mk(primmod, scene)
+    scene._current_context = None
+
+    loft_param_to_context(leaf.get_param("primpath_location"), grp)
+    lofted = next(x for x in grp.get_my_params() if x.name.endswith("primpath_location"))
+    lofted.label = "Key Light Position"
+
+    out = tmp_path / "lofted_rename.usda"
+    export_chunks(scene, out)
+
+    stage2 = Usd.Stage.Open(str(out))
+
+    class _Stage2Scene(SceneSender):
+        def get_stage(self):
+            return stage2
+
+        def get_selected_prims(self):
+            return []
+
+    scene2 = _Stage2Scene()
+    chunk_registry.ChunkLayerManager().reset()
+    reg.initialize(scene2, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage2)
+    _chunk_usd_init(stage2, scene2)
+
+    grp2 = next(c for c in scene2.get_chunks() if c.name == grp.name)
+    lofted2 = next(x for x in grp2.get_my_params() if x.name.endswith("primpath_location"))
+    assert lofted2.get_label() == "Key Light Position", (
+        f"the rename must survive a reopen, got {lofted2.get_label()!r}"
+    )
+
+    # And it must keep surviving a SECOND reopen after being renamed again post-reload.
+    lofted2.label = "Even Better Name"
+    out2 = tmp_path / "lofted_rename2.usda"
+    export_chunks(scene2, out2)
+
+    stage3 = Usd.Stage.Open(str(out2))
+
+    class _Stage3Scene(SceneSender):
+        def get_stage(self):
+            return stage3
+
+        def get_selected_prims(self):
+            return []
+
+    scene3 = _Stage3Scene()
+    chunk_registry.ChunkLayerManager().reset()
+    reg.initialize(scene3, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage3)
+    _chunk_usd_init(stage3, scene3)
+
+    grp3 = next(c for c in scene3.get_chunks() if c.name == grp.name)
+    lofted3 = next(x for x in grp3.get_my_params() if x.name.endswith("primpath_location"))
+    assert lofted3.get_label() == "Even Better Name", (
+        f"a rename made AFTER a reopen must survive the next one too, got {lofted3.get_label()!r}"
+    )
+
+
 def test_loft_group_param_up_to_parent_group() -> None:
     """A lofted param must be able to loft AGAIN up to the parent group (nested groups) instead
     of duplicating onto the same group. clone() carried over the source param's cached
     _chunk_parent (the inner chunk), so the lofted param's get_chunk() still pointed at the inner
-    chunk — the Loft-up resolver ('param sits on a group → target its parent') couldn't fire and
+    chunk -- the Loft-up resolver ('param sits on a group → target its parent') couldn't fire and
     re-lofted onto the same group. loft_param_to_context must clear the cache so get_chunk()
     re-resolves to the group the param now lives on."""
-    import weakref
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2105,8 +2308,6 @@ def test_loft_translate_from_whole_chunk_transform_does_not_break_gizmos() -> No
     routing through the whole-chunk-transform's real 9-param collection -- raising
     "a transform handle drives 9 params ... got 1" from inside a context-menu callback.
     """
-    import weakref
-    from usd_chunks import chunk_gizmo
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2156,10 +2357,8 @@ def test_loft_translate_from_whole_chunk_transform_does_not_break_gizmos() -> No
 
 
 def test_recook_recurses_into_group() -> None:
-    """A group has no execute() of its own — cooking a group (in the parent view's tree) must
+    """A group has no execute() of its own -- cooking a group (in the parent view's tree) must
     cook its inner active view's tree; a hidden group mutes its whole inner tree."""
-    import weakref
-    from usd_chunks.chunk_stage import recook_for_view, get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2229,8 +2428,6 @@ def test_focusing_a_group_keeps_its_own_upstream_composed() -> None:
     Muting a focused group's upstream was never the point of that pass -- it exists to
     stop the parent tab's active view and unrelated sibling branches bleeding through.
     """
-    import weakref
-    from usd_chunks.chunk_stage import get_chunk_prim_path, recook_focus
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2343,8 +2540,6 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
     siblings, while the children's own correct relative order (from the group's inner recook)
     survives via the stable sort.
     """
-    import weakref
-    from usd_chunks.chunk_stage import recook_for_view, get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2444,7 +2639,7 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
 
 def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode() -> None:
     """Three sibling ChunkGroups chained by exec -- group1(asd1) -> group2(asd2) ->
-    group3(asd3) -> a real outer View -- each owning an independent Create Layer chunk
+    group3(asd3) -> a real outer View -- each owning an independent Layer chunk
     with insert_mode="Prepend" (which alone would just mean "whoever executes most
     recently wins position 0", nothing to do with graph position). The group closest to
     the view (group3/asd3) must still end up strongest once recooked.
@@ -2457,11 +2652,9 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
     - A group with no inner View chunk of its own (the normal case -- view chunks are
       excluded from group copy/paste) must still cook via a synthesized exec tail once
       it's reachable from an active view, not stay permanently blocked.
-    - Create Layer's _view_ranked_index must override Prepend's raw index=0 once a view
+    - Layer's _view_ranked_index must override Prepend's raw index=0 once a view
       is reachable, not just the default Append mode.
     """
-    import weakref
-    from usd_chunks.chunk_stage import get_chunk_prim_path, recook_for_view
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2479,7 +2672,7 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
 
     grpmod = reg.get_chunk_module("chunkgroup")
     viewmod = reg.get_chunk_module("view")
-    create_mod = reg.get_chunk_module("create_layer")
+    create_mod = reg.get_chunk_module("layer")
 
     def _mk(mod):
         cs = mod.create() if mod.loaded else mod.load()
@@ -2523,7 +2716,7 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
     ids = [cl.get_param("_new_layer_id").value for cl in layers]
     order = [i for i in session.subLayerPaths if i in ids]
     assert order == [ids[2], ids[1], ids[0]], (
-        "closest-to-view chunkgroup's Create Layer must win strongest, regardless of "
+        "closest-to-view chunkgroup's Layer must win strongest, regardless of "
         "Prepend mode or creation order"
     )
 
@@ -2545,8 +2738,6 @@ def test_recook_for_view_reveals_upstream_incrementally(qapp) -> None:
     reproduce this (the live bug depends on state accumulated by the real view-activation
     path -- ChunkGraphView._activate_menu_view's view:slot attribute + _view_state.set_slot
     -- not just wiring the exec chain by hand)."""
-    from usd_chunks.chunk_stage import get_chunk_prim_path, view_cook_list
-    from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2690,8 +2881,6 @@ def test_recook_focus_group_mutes_outside_subtree() -> None:
     only its inner active view drives the shared stage. recook_for_view alone only manages the
     focused context's own children, so a parent-tab chunk stayed unmuted and bled through when
     switching into a group tab ('switch tabs, still see the previous view')."""
-    import weakref
-    from usd_chunks.chunk_stage import recook_focus, get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2741,10 +2930,8 @@ def test_recook_focus_group_mutes_outside_subtree() -> None:
 
 def test_recook_focus_does_not_block_ancestor_container() -> None:
     """Focusing a nested group must NOT block its ancestor container. is_blocked() climbs the
-    owner chain, so blocking an ancestor propagates down and blocks the focused inner tree —
+    owner chain, so blocking an ancestor propagates down and blocks the focused inner tree --
     'nothing in the chunkgroups gets cooked'. Ancestors (all context chunks) must be left alone."""
-    import weakref
-    from usd_chunks.chunk_stage import recook_focus, get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2785,7 +2972,7 @@ def test_recook_focus_does_not_block_ancestor_container() -> None:
     _wire(inner_view, inner_node)
     scene._current_context = None
 
-    # Focus the inner group — the outer container must not be blocked, so the inner tree cooks.
+    # Focus the inner group -- the outer container must not be blocked, so the inner tree cooks.
     recook_focus(stage, scene, inner_grp, inner_view)
     assert not outer.is_blocked()        # ancestor container left alone
     assert not inner_node.is_blocked()   # inner active view's tree cooks
@@ -2795,7 +2982,6 @@ def test_delete_middle_node_heals_exec_chain() -> None:
     """Deleting a node in the middle of an exec chain (A -> X -> B) must leave A -> B, not a
     broken chain. Regression: removing a chunk wired between a chunkgroup and a view left the
     view with a dangling connection and the chunkgroup unconsumed."""
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2853,7 +3039,6 @@ def test_delete_middle_node_heals_on_the_connections_actual_home_layer() -> None
     original opinion (still pointing at the deleted node) in charge: the "healed" edge
     is silently shadowed away by composition instead of taking effect, so the connection
     just disappears rather than reconnecting."""
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2907,9 +3092,7 @@ def test_delete_middle_node_heals_on_the_connections_actual_home_layer() -> None
 
 def test_rename_group_is_sibling_and_rebases_children() -> None:
     """Renaming a chunkgroup must rename it in place (sibling), not nest it inside itself
-    (/G -> /G/new — the get_context()-returns-self bug), and must move + rebase its children."""
-    import weakref
-    from usd_chunks.chunk_stage import get_chunk_prim_path
+    (/G -> /G/new -- the get_context()-returns-self bug), and must move + rebase its children."""
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2954,9 +3137,7 @@ def test_rename_group_is_sibling_and_rebases_children() -> None:
 def test_can_create_chunk_inside_blocked_group() -> None:
     """Editing inside a group must work even when the group is view-driven blocked (hidden). A
     blocked group used to swallow its children's structural notices (PARAM_ADDED), so a child's
-    prim was never created — you couldn't add nodes inside a group not wired to an active view."""
-    import weakref
-    from usd_chunks.chunk_stage import get_chunk_prim_path
+    prim was never created -- you couldn't add nodes inside a group not wired to an active view."""
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -2992,8 +3173,6 @@ def test_inner_view_cooks_when_group_hidden_at_parent() -> None:
     the inner tree even when the group itself is hidden at the parent (not wired to a parent
     view). Previously the group's block propagated to its children via the owner chain, so the
     inner view was inert unless the group had a parent view."""
-    import weakref
-    from usd_chunks.chunk_stage import recook_for_view, get_chunk_prim_path
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -3055,7 +3234,6 @@ def test_inner_view_cooks_when_group_hidden_at_parent() -> None:
 
 def _group_scene():
     """A stage-backed scene with the sync initialised, plus the chunkgroup/prim modules."""
-    import weakref
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -3085,7 +3263,6 @@ def test_two_groups_get_unique_prim_paths() -> None:
         return cs[0]
 
     g1, g2 = _mkgrp(), _mkgrp()
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     assert get_chunk_prim_path(g1) != get_chunk_prim_path(g2)
     assert stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(g1))).IsValid()
@@ -3094,7 +3271,6 @@ def test_two_groups_get_unique_prim_paths() -> None:
 
 def test_nested_group_prim_paths() -> None:
     """A group nested in a group gets a prim under the parent group; a leaf in it nests deeper."""
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     stage, scene, reg, weakref = _group_scene()
     grpmod = reg.get_chunk_module("chunkgroup")
@@ -3120,7 +3296,6 @@ def test_nested_group_prim_paths() -> None:
 
 def test_delete_group_removes_its_subtree() -> None:
     """Deleting a chunkgroup removes the group prim and everything under it."""
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     stage, scene, reg, weakref = _group_scene()
     grpmod = reg.get_chunk_module("chunkgroup")
@@ -3155,7 +3330,6 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
     for their shared prim was being decided by creation order instead of the real, already-
     correct order (the same sort-key/view-driven ranking recook_for_view relies on elsewhere).
     Included layers must keep their real relative strength order -- filtered, not rebuilt."""
-    from usd_chunks.chunk_stage import get_upstream_stage
 
     stage = Usd.Stage.CreateInMemory()
 
@@ -3257,7 +3431,6 @@ def test_get_upstream_stage_preserves_real_relative_order_among_included_chunks(
 def _wire_exec(stage, dst, src) -> None:
     """Author dst.inputs:chunk -> src.outputs:chunk the way drag-to-connect does: straight
     onto the USD prim, never via add_dependency()."""
-    from usd_chunks.chunk_stage import get_chunk_prim_path
 
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dst)))
     attr = prim.GetAttribute(_EXEC_INPUT) or prim.CreateAttribute(
@@ -3287,7 +3460,7 @@ def _exec_wiring_scene():
 def test_authoring_exec_connection_creates_the_dag_dependency() -> None:
     """The node graph authors inputs:chunk directly and never calls add_dependency(), so
     without reconciliation the Python DAG holds no edge at all for a graph the user visibly
-    wired — and INPUT_CHANGED never fires between those two chunks."""
+    wired -- and INPUT_CHANGED never fires between those two chunks."""
     stage, _scene, a, b = _exec_wiring_scene()
 
     assert b.get_dependencies() == []
@@ -3315,8 +3488,6 @@ def test_clearing_exec_connection_removes_the_dag_dependency() -> None:
     _wire_exec(stage, b, a)
     assert [d.name for _, d in b.get_dependencies()] == ["a"]
 
-    from usd_chunks.chunk_stage import get_chunk_prim_path
-
     attr = stage.GetAttributeAtPath(Sdf.Path(f"{get_chunk_prim_path(b)}.{_EXEC_INPUT}"))
     attr.ClearConnections()
 
@@ -3325,12 +3496,99 @@ def test_clearing_exec_connection_removes_the_dag_dependency() -> None:
 
 def test_exec_output_path_of_a_chunkgroup_is_the_group_prim() -> None:
     """A ChunkGroup is its own prim root, so its exec output lives on the group prim.
-    Resolving it through _resolve_chunk_root instead yields /Root/Group/Group.outputs:chunk —
+    Resolving it through _resolve_chunk_root instead yields /Root/Group/Group.outputs:chunk --
     a path that does not exist, which silently broke exec-chain healing around the group."""
-    from usd_chunks.chunk_stage import exec_output_path
 
     group = _chunk_with_module("Group", module="chunkgroup")
     group.set_flag(ChunkFlags.GroupFlags.CONTEXT)
     group.prim_path = f"{_CHUNKS_ROOT}/Group"
 
     assert exec_output_path(group) == f"{_CHUNKS_ROOT}/Group.{_EXEC_OUTPUT}"
+
+
+def test_reload_restores_the_dag_edges_that_cross_a_chunkgroup(tmp_path) -> None:
+    """Reopening a file must bring back the exec edges that run INTO and OUT OF a group.
+
+    A chunkgroup is a node in its parent graph, so `upstream -> group -> downstream` is
+    two ordinary exec edges. load_chunks resolved those edges against a path->chunk map
+    built from `deferred`, which only ever holds leaf chunks -- a group takes the CONTEXT
+    branch and is registered in `group_chunk_by_path` instead. Every edge with a group at
+    either end therefore resolved to None and was silently dropped, in BOTH directions.
+
+    The Python DAG is what carries a change downstream, so the gap meant dirt died at the
+    group: on a reopened file nothing downstream of a chunkgroup ever re-ran. Live-reported
+    as a Stage Expression Switch behind a render group that never gated its light when the
+    shot changed -- and as "the same setup in a fresh scene works", because wiring a group
+    up interactively goes through reconcile_dag_dependencies, which does see groups.
+    """
+
+    stage = Usd.Stage.CreateInMemory()
+
+    class _StageScene(SceneSender):
+        def get_stage(self):
+            return stage
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    grpmod = reg.get_chunk_module("chunkgroup")
+    primmod = reg.get_chunk_module("prim")
+
+    def _mk(mod):
+        cs = mod.create() if mod.loaded else mod.load()
+        for c in cs:
+            scene.add_chunk(c)
+        return cs[0]
+
+    upstream = _mk(primmod)
+    group = _mk(grpmod)
+    scene._current_context = weakref.ref(group)
+    _mk(primmod)  # a group with no content of its own is not the reported shape
+    scene._current_context = None
+    downstream = _mk(primmod)
+
+    _wire_exec(stage, group, upstream)
+    _wire_exec(stage, downstream, group)
+
+    out = tmp_path / "across_a_group.usda"
+    export_chunks(scene, out)
+
+    stage2 = Usd.Stage.Open(str(out))
+
+    class _Stage2Scene(SceneSender):
+        def get_stage(self):
+            return stage2
+
+        def get_selected_prims(self):
+            return []
+
+    scene2 = _Stage2Scene()
+    chunk_registry.ChunkLayerManager().reset()
+    reg.initialize(scene2, "pytest")
+    chunk_registry.ChunkLayerManager().initialize(stage2)
+    _chunk_usd_init(stage2, scene2)
+
+    by_path = {get_chunk_prim_path(c): c for c in scene2.get_chunks()}
+    upstream2 = by_path[get_chunk_prim_path(upstream)]
+    group2 = by_path[get_chunk_prim_path(group)]
+    downstream2 = by_path[get_chunk_prim_path(downstream)]
+
+    assert [d.name for _, d in group2.get_dependencies()] == [upstream2.name], (
+        "the group's own exec input must come back as a DAG edge"
+    )
+    assert [d.name for _, d in downstream2.get_dependencies()] == [group2.name], (
+        "a chunk wired to the group's output must come back depending on the group"
+    )
+
+    # The point of the edges: a change upstream of the group has to reach what is
+    # downstream of it.
+    reached = chunk_scheduler.downstream_closure(upstream2.get_dag_node())
+    assert downstream2.get_dag_node() in reached, (
+        "dirtying the chunk upstream of a group must cascade past the group"
+    )

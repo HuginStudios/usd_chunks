@@ -14,10 +14,11 @@ import pytest
 
 pytest.importorskip("imgui_bundle", reason="imgui-bundle is an optional extra")
 
-from graph_fixtures import content_nodes, make_network  # noqa: E402
+from graph_fixtures import chunk_prims, content_nodes, make_network  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
-from usd_chunks.plugins import chunk_graph  # noqa: E402
-from usd_chunks.plugins.chunk_imgui_nodegraph import ImGuiGraphView  # noqa: E402
+from usd_chunks.graph import engine as chunk_graph  # noqa: E402
+from usd_chunks.frontends.imgui.nodegraph import ImGuiGraphView  # noqa: E402
+from usd_chunks.frontends.imgui import factory as chunk_imgui  # noqa: E402
 
 
 @pytest.fixture
@@ -39,6 +40,12 @@ class TestReading:
     def test_it_reads_the_network(self, view):
         assert len(content_nodes(view)) == 2
         assert len(view.edges) >= 1
+
+    def test_opening_loads_each_chunk_once(self, view):
+        """ChunkStageSync.initialize already loads the file; a second load_chunks after it
+        (which every non-Qt frontend did) had no dedup set and made a copy of every
+        chunk in a fresh chunkgroup: the group, two transforms and a view, twice over."""
+        assert len(chunk_prims(view.stage)) == 4, chunk_prims(view.stage)
 
     def test_positions_come_from_usd_before_the_editor_has_seen_them(self, view, first):
         """No editor session headless, so positions fall back to what USD stores --
@@ -180,7 +187,6 @@ class TestImmediateModeWidgets:
     """
 
     def test_visible_params_flattens_groups_and_drops_hidden(self, view, first):
-        from usd_chunks.plugins import chunk_imgui
         params = chunk_imgui.visible_params(view.chunks[first])
         assert params, "no params found"
         assert not any(p.has_state(ChunkFlags.State.HIDDEN) for p in params)
@@ -190,7 +196,6 @@ class TestImmediateModeWidgets:
         """Stated as a test so the absence reads as a decision, not an omission: an
         immediate-mode frontend has nothing to subscribe, so ChunkWidgetFactoryBase does
         not apply to it."""
-        from usd_chunks.plugins import chunk_imgui
         assert not hasattr(chunk_imgui, "ChunkImGuiWidgetFactory")
         assert callable(chunk_imgui.draw_param)
 
@@ -207,7 +212,6 @@ class TestParamLayout:
         """A Transform models a vector as a GROUP of three sliders. Flattened, that is
         twelve labelled rows and a node taller than the window; kept as groups it is four
         inline rows."""
-        from usd_chunks.plugins import chunk_imgui
         chunk = view.chunks[first]
         top = [p for p in chunk.get_my_params() if hasattr(p, "get_my_params")]
         assert top, "fixture chunk has no groups, so this proves nothing"

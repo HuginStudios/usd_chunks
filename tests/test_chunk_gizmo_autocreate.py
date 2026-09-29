@@ -5,7 +5,7 @@ not in the graph, so it does not survive the next cook and is not what gets save
 scene. Dragging a prim nothing owns therefore has to create the chunk that will own it --
 the same move Houdini makes when editing geometry drops an Edit node in front of you.
 
-Uses the real scripts/transforms/transform.py rather than a stand-in: the point is partly that its
+Uses the real chunks/transforms/transform.py rather than a stand-in: the point is partly that its
 param names and gizmo names are the ones the auto-create path reaches for.
 """
 from __future__ import annotations
@@ -15,11 +15,15 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
-from usd_chunks import chunk, chunk_gizmo, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, SceneSender
+from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 
-transform_mod = importlib.import_module("scripts.transforms.transform")
+from chunk_stubs import attach_stub_module
+
+transform_mod = importlib.import_module("chunks.transforms.transform")
 
 
 # ---------------------------------------------------------------------------
@@ -41,22 +45,24 @@ class _Scene(SceneSender):
 class _StubModule:
     """Stands in for a registered ChunkModule.
 
-    Only the three things _create_chunk_at_tail touches. Registering the real module would
-    drag in directory scanning and plugin filters, none of which is what is under test.
+    Only the things _create_chunk_at_tail touches, plus the module the chunks' hooks are
+    looked up in. Registering the real module would drag in directory scanning and plugin
+    filters, none of which is what is under test.
     """
 
     def __init__(self, factory):
         self._factory = factory
         self.loaded = True
         self.creates = 0
+        # Registered under "transform", so this is where the chunks it creates find their
+        # hooks (ChunkBase.get_chunk_module). Without it the chunk has no module to run:
+        # execute() finds no hook and cooks nothing, silently.
+        self.module = transform_mod
 
     def create(self):
         self.creates += 1
         c = self._factory()
         c._config = ChunkConfig(module="transform")
-        # The real ChunkModule.create sets this too, and without it the chunk has no module
-        # to run: execute() finds no `_module` and cooks nothing, silently.
-        c._module = transform_mod
         return [c]
 
     def load(self):
@@ -204,7 +210,9 @@ def _pos(stage, prim_path):
 def _existing_node(registry, stage, name, x):
     """A chunk already in the chain, sitting at a known place on the canvas."""
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="sublayer")
+    # A module of its own with no hooks: naming the real sublayer would cook it as one,
+    # and a plain chunk has none of the params sublayer's execute() reads.
+    attach_stub_module(c)
     registry.scene.add_chunk(c)
     prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(c)))
     # Through the bookkeeping layer, as the node graph does when you drag a node. A plain

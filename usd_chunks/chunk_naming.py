@@ -43,6 +43,14 @@ INPUTS_PREFIX = "inputs:"
 EXEC_INPUT = "inputs:chunk"
 EXEC_OUTPUT = "outputs:chunk"
 
+# An Edit Target chunk publishes the identifier of the layer it currently points at onto
+# its own prim under this attribute. The presence of the attr marks an exec-chain boundary
+# for chunk_utils.get_edit_layer's upstream walk; its value names the layer everything
+# downstream of it authors into. Publishing it (rather than importing the Edit Target
+# script's resolution logic into core) keeps core decoupled from the script -- same
+# published-marker pattern as chunk:pinned / set_chunk_pinned.
+EDIT_TARGET_MARKER = "chunk:editTargetLayer"
+
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
 # keeps the plain EXEC_INPUT name, so any consumer that only ever looks up inputs:chunk
@@ -68,12 +76,18 @@ def exec_input_name(index: int) -> str:
     return EXEC_INPUT if index <= 0 else f"inputs:chunk{index}"
 
 
-def iter_exec_inputs(prim: "Usd.Prim") -> list:
+def iter_exec_inputs(prim: Usd.Prim) -> list:
     """A prim's exec inputs, ordered by slot -- strongest branch first.
 
     Sorted by the PARSED index, never by name: GetAttributes() is alphabetical, which puts
     inputs:chunk10 before inputs:chunk2. Slot order decides which branch's opinion wins, so
     a string sort would silently mis-rank a merge with ten or more inputs.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        The exec input attributes, in slot order.
     """
     if not (prim and prim.IsValid()):
         return []

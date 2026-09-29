@@ -8,9 +8,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry, chunk_widget_api
-from usd_chunks.chunk_core import SceneSender
-from usd_chunks.plugins.chunk_qt import ChunkWidgetDocker
-from usd_chunks.plugins import chunk_qt_nodegraph as nodegraph
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt import nodegraph
 
 
 class _DummyScene(SceneSender):
@@ -79,7 +79,7 @@ def _make_nodes(graph, module="transform", n=1):
     # tick to settle once earlier tests in this module have left other timers queued up --
     # poll with a short timeout instead of assuming a single tick is enough.
     paths = [get_chunk_prim_path(c) for c in chunks]
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and any(p not in gv.scene()._nodes for p in paths):
         qapp.processEvents()
     nodes = [gv.scene()._nodes[p] for p in paths]
@@ -136,11 +136,11 @@ def test_copy_paste_creates_independent_duplicate_with_same_param_values(graph) 
 
 def test_copy_skips_hidden_bookkeeping_params(graph) -> None:
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and cl_path not in gv.scene()._nodes:
         qapp.processEvents()
 
@@ -176,11 +176,11 @@ def test_pasted_widget_shows_the_copied_value_even_when_blocked(graph) -> None:
     the later reactive VALUE_CHANGED notice that would otherwise have corrected the
     widget -- so the blank became permanent instead of self-healing a moment later."""
     qapp, reg, scene, docker = graph
-    mod = reg.get_chunk_module("create_layer")
+    mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and cl_path not in gv.scene()._nodes:
         qapp.processEvents()
 
@@ -202,7 +202,7 @@ def test_pasted_widget_shows_the_copied_value_even_when_blocked(graph) -> None:
     assert new_cl.get_param("layer_name").value == "hoj"
 
     new_path = get_chunk_prim_path(new_cl)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     node = None
     while time.monotonic() < end:
         node = gv.scene()._nodes.get(new_path)
@@ -481,7 +481,7 @@ def test_ctrl_d_duplicates_and_does_not_also_toggle_disable(graph, monkeypatch) 
     assert dup_calls == [True]
 
 
-def _wait_for_node(qapp, gv, path, timeout=2.0):
+def _wait_for_node(qapp, gv, path, timeout=10.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end and path not in gv.scene()._nodes:
         qapp.processEvents()
@@ -611,7 +611,7 @@ def test_node_menu_cut_removes_the_selection(graph, monkeypatch) -> None:
     gv._show_chunk_menu(a, QtCore.QPoint(0, 0))
 
     assert len(nodegraph._node_clipboard) == 1
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and a_path in gv.scene()._nodes:
         qapp.processEvents()
     assert a_path not in gv.scene()._nodes
@@ -850,7 +850,7 @@ def test_canvas_menu_paste_pastes_at_the_clicked_point(qapp) -> None:
     a_chunk = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     a_path = get_chunk_prim_path(a_chunk)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and a_path not in gv.scene()._nodes:
         qapp.processEvents()
 

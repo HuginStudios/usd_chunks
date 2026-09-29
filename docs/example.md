@@ -102,7 +102,7 @@ def main():
     # A simple callback. This is called whenever anything on the checkbox is changed
     #     checkbox.add_callback(paramChanged)
 
-    # A more excplicit callback. Only triggers paramChanged when checkbox.value changes
+    # A more explicit callback. Only triggers paramChanged when checkbox.value changes
     #     checkbox.add_callback(paramValueChanged, sender=checkbox.get_attribute_sender("value"))
 
     # A slider with horizontal layout
@@ -140,7 +140,7 @@ def main():
 
     # In order to add the same param multiple times to a chunk, use clone(). This will copy the param and its
     # attributes. Connections / callbacks will not be copied.
-    # In order to retrive the new instances of the slider, you'll need to retrive it from the group as such:
+    # In order to retrieve the new instances of the slider, you'll need to retrieve it from the group as such:
     #    slider = sliderGroup.getParam("slider1")
     # Duplicate param names will be suffixed with an index. First instance of a param will not be suffixed.
     # This results in these params on the group:
@@ -163,7 +163,7 @@ def main():
     # Accessing the scene in this function may result in some errors as the stage is not properly loaded at the time this function
     # runs. So access in to the reg.scene should be reserved to callbacks 
 
-    # A label - Not directly modifyable in the UI
+    # A label - Not directly modifiable in the UI
     label = chunk.Label("label")
 
     # Add the updateLabel as a callback - this will be called whenever the prim selection changes in UsdView. Any UsdView notices will be sent from
@@ -189,10 +189,10 @@ def main():
     # By default, the menu enforces its value to exist in the menu_items list, so menu.value = "hello3" would fail
     # validation and revert to default value of menu_items[0]
 
-    # A seperator holds no value, is just there for the UI.
+    # A separator holds no value, is just there for the UI.
     sep = chunk.Separator(layout=chunk.ChunkFlags.LayoutFlags.HORIZONTAL)
 
-    # Create the actual chunk - this is in practice just a chunk.Group with some addiditional behaviour
+    # Create the actual chunk - this is in practice just a chunk.Group with some additional behaviour
     myChunk = chunk.Chunk("Hello World", category="Examples")
     myChunk.add_params([label, checkbox, button, sep, textEdit, menu, fileBrowse, sliderGroup, sliderVec])
 

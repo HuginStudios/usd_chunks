@@ -28,7 +28,7 @@ import pytest
 # skipping, taking the whole run down with it.
 pytest.importorskip("pxr.Usdviewq", reason="usdview is not part of the usd-core wheel")
 
-from usd_chunks.plugins.chunk_usdview import UsdviewScene  # noqa: E402
+from usd_chunks.hosts.usdview import UsdviewScene  # noqa: E402
 
 
 class _FreeCamera:
@@ -61,6 +61,7 @@ def scene():
     s = UsdviewScene.__new__(UsdviewScene)
     s._snap_prim = None
     s._free_camera_fov = None
+    s._free_camera_clip = None
     s._restore_lens = False
     return s
 
@@ -198,6 +199,7 @@ def _snapping_scene(camera_prim, free_cam):
     s = UsdviewScene.__new__(UsdviewScene)
     s._snap_prim = None
     s._free_camera_fov = None
+    s._free_camera_clip = None
     s._restore_lens = False
     s.usdviewAPI = _Api(camera_prim)
     s._get_free_camera = lambda: free_cam
@@ -248,8 +250,110 @@ def test_a_host_that_cannot_answer_does_not_raise() -> None:
     s = UsdviewScene.__new__(UsdviewScene)
     s._snap_prim = None
     s._free_camera_fov = None
+    s._free_camera_clip = None
     s._restore_lens = False
     s.usdviewAPI = _Broken()
 
     s._remember_free_camera_lens()      # must not raise
     assert s._free_camera_fov is None
+
+
+# ---------------------------------------------------------------------------
+# clipping: the one thing usdview's copy of the prim does not carry
+# ---------------------------------------------------------------------------
+#
+# FromGfCamera takes the prim's clippingRange along, but the next computeGfCamera resets
+# near and far to usdview's defaults unless the free camera holds an override. So while
+# our prim is viewed, the prim's range goes on as the override; on release the user's own
+# overrides (or none) come back with their lens.
+
+from pxr import Gf, Usd, UsdGeom  # noqa: E402
+
+
+class _ClippingFreeCamera(_FreeCamera):
+    """usdview's FreeCamera has override setters that emit nothing; None clears one."""
+
+    def __init__(self, fov, near=None, far=None):
+        super().__init__(fov)
+        self.overrideNear = near
+        self.overrideFar = far
+
+
+#: The in-memory stages behind _camera_prim, kept alive: a prim dies with its stage.
+_STAGES = []
+
+
+def _camera_prim(near, far):
+    stage = Usd.Stage.CreateInMemory()
+    _STAGES.append(stage)
+    cam = UsdGeom.Camera.Define(stage, "/cameras/camera1")
+    cam.GetClippingRangeAttr().Set(Gf.Vec2f(near, far))
+    return cam.GetPrim()
+
+
+def test_a_rebuild_while_our_camera_is_viewed_wears_its_clipping(scene) -> None:
+    scene._reconcile_free_camera_lens(_ClippingFreeCamera(60.0))
+    scene._snap_prim = _camera_prim(0.1, 50.0)
+
+    rebuilt = _ClippingFreeCamera(15.15)
+    scene._reconcile_free_camera_lens(rebuilt)
+
+    assert (rebuilt.overrideNear, rebuilt.overrideFar) == pytest.approx((0.1, 50.0))
+    assert rebuilt.writes == 0, "the lens is still left as the copy made it"
+
+
+def test_the_prims_current_clipping_is_read_on_every_rebuild(scene) -> None:
+    """The sliders drive the prim live; each navigation's free camera takes what it says now."""
+    prim = _camera_prim(0.1, 50.0)
+    scene._snap_prim = prim
+    scene._reconcile_free_camera_lens(_ClippingFreeCamera(15.15))
+
+    UsdGeom.Camera(prim).GetClippingRangeAttr().Set(Gf.Vec2f(2.0, 900.0))
+    rebuilt = _ClippingFreeCamera(15.15)
+    scene._reconcile_free_camera_lens(rebuilt)
+
+    assert (rebuilt.overrideNear, rebuilt.overrideFar) == pytest.approx((2.0, 900.0))
+
+
+def test_releasing_the_lock_puts_the_users_clipping_back(scene) -> None:
+    scene._reconcile_free_camera_lens(_ClippingFreeCamera(60.0, near=0.5, far=3000.0))
+    scene._snap_prim = _camera_prim(0.1, 50.0)
+    scene._reconcile_free_camera_lens(_ClippingFreeCamera(15.15))
+    scene._camera_snap_timer = _Timer()
+
+    scene.release_viewport_camera()
+    first = _ClippingFreeCamera(15.15)
+    scene._reconcile_free_camera_lens(first)
+
+    assert (first.overrideNear, first.overrideFar) == pytest.approx((0.5, 3000.0))
+
+
+def test_releasing_clears_the_prims_clipping_when_the_user_had_none(scene) -> None:
+    """Even a user whose lens was never learned gets the override taken off again: it was ours,
+    and left on it would clip their free camera at the prim's range for good."""
+    scene._snap_prim = _camera_prim(0.1, 50.0)
+    scene._camera_snap_timer = _Timer()
+    scene.release_viewport_camera()
+
+    arrived = _ClippingFreeCamera(15.15, near=0.1, far=50.0)
+    scene._reconcile_free_camera_lens(arrived)
+
+    assert (arrived.overrideNear, arrived.overrideFar) == (None, None)
+    assert arrived.writes == 0, "a fov never learned is still not invented"
+
+
+def test_the_users_clipping_is_remembered_with_their_lens() -> None:
+    s = _snapping_scene(camera_prim=None, free_cam=_ClippingFreeCamera(35.0, near=0.25, far=800.0))
+
+    s._remember_free_camera_lens()
+
+    assert s._free_camera_clip == pytest.approx((0.25, 800.0))
+
+
+def test_a_snap_prim_that_is_not_a_camera_puts_nothing_on(scene) -> None:
+    scene._snap_prim = "/cameras/camera1"
+
+    rebuilt = _ClippingFreeCamera(15.15)
+    scene._reconcile_free_camera_lens(rebuilt)
+
+    assert (rebuilt.overrideNear, rebuilt.overrideFar) == (None, None)

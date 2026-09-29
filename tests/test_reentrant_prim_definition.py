@@ -8,7 +8,8 @@ import importlib
 from pxr import Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 import usd_chunks.chunk_stage as chunk_stage
 
@@ -28,7 +29,6 @@ class _DummyScene(SceneSender):
 def _make(scene, mod, module_name):
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
-    c._module = mod
     # Auto-chain prev -> new (Params-tab behavior), same as a user repeatedly clicking
     # "add chunk" in the Params tab -- this is what wires each new chunk's inputs:chunk
     # connection to its predecessor, the trigger for the reentrancy below.
@@ -42,11 +42,11 @@ def _make(scene, mod, module_name):
 
 
 def test_chaining_several_create_layer_edit_target_pairs_does_not_crash():
-    """Building N chained Create Layer -> Edit Target pairs one at a time (the Params
+    """Building N chained Layer -> Edit Target pairs one at a time (the Params
     tab's auto-chain behavior) must not crash, however many pairs.
 
     Wiring a new chunk's inputs:chunk connection to its predecessor changes exec
-    topology -- and Create Layer's own execute() reactively re-ranks its layer against
+    topology -- and Layer's own execute() reactively re-ranks its layer against
     the active view on any exec-chain change, reentrant, before _define_prim (still
     building the NEW chunk's own prim) has returned. That reentrant run reassigns
     subLayerPaths (repositioning itself), forcing a stage recomposition that can
@@ -55,8 +55,8 @@ def test_chaining_several_create_layer_edit_target_pairs_does_not_crash():
     Live-reproduced building a 3rd chained pair (crashed with "RuntimeError: Accessed
     invalid expired 'Chunk' prim"); this goes to 8 to stay well clear of that edge.
     """
-    create_mod = importlib.import_module("scripts.usd.create_layer")
-    edit_mod = importlib.import_module("scripts.usd.edit_target")
+    create_mod = importlib.import_module("chunks.usd.layer")
+    edit_mod = importlib.import_module("chunks.usd.edit_target")
 
     scene = _DummyScene()
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")

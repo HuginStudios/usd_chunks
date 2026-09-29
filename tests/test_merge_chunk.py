@@ -12,7 +12,8 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkBase, ChunkConfig, SceneSender
+from usd_chunks.chunk_core import ChunkBase, ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,
@@ -46,14 +47,14 @@ def _load(module_path: str):
 
 def _mk_chunk(module_name: str):
     """A chunk built from its module, configured as if discovery had loaded it."""
-    mod = _load(f"scripts.core.{module_name}")
+    mod = _load(f"chunks.core.{module_name}")
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
     return c
 
 
 # ---------------------------------------------------------------------------
-# Slot naming helpers — pure functions, no stage needed
+# Slot naming helpers -- pure functions, no stage needed
 # ---------------------------------------------------------------------------
 
 class TestSlotNaming:
@@ -90,7 +91,7 @@ class TestSlotNaming:
 
 class TestMergeModule:
     def setup_method(self):
-        self.mod = _load("scripts.core.merge")
+        self.mod = _load("chunks.core.merge")
 
     def test_main_returns_chunk(self):
         c = self.mod.main()
@@ -104,7 +105,7 @@ class TestMergeModule:
         assert self.mod.config().category == chunk.StandardCategory.CORE
 
     def test_execute_authors_nothing(self):
-        """A merge is a pure topology marker — execute must not raise and must not leave an
+        """A merge is a pure topology marker -- execute must not raise and must not leave an
         opinion behind."""
         layer = Sdf.Layer.CreateAnonymous()
 
@@ -248,7 +249,43 @@ class TestCompaction:
 
 
 # ---------------------------------------------------------------------------
-# Live wiring — exercises ChunkStageSync's authoring and DAG reconciliation
+# Dynamic exec inputs shared with Switch
+#
+# A Switch needs the same growing-numbered-slot machinery as Merge -- one port per wired
+# branch, dense and compacted -- so the Qt node graph doesn't fall back to drawing it with a
+# single fixed exec port (where a second wire dropped on it silently overwrites the first).
+# ---------------------------------------------------------------------------
+
+class TestDynamicExecInputsGeneralizesToSwitch:
+    def test_switch_has_dynamic_exec_inputs(self):
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/S", "Chunk")
+        prim.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token).Set("switch")
+        assert chunk_stage.has_dynamic_exec_inputs_prim(prim)
+
+    def test_an_ordinary_chunk_does_not(self):
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/N", "Chunk")
+        prim.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token).Set("transform")
+        assert not chunk_stage.has_dynamic_exec_inputs_prim(prim)
+
+    def test_a_switchs_slots_compact_the_same_way_a_merges_do(self):
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/S", "Chunk")
+        prim.CreateAttribute("info:chunkType", Sdf.ValueTypeNames.Token).Set("switch")
+        for i, src in enumerate(["/A", "/B", "/C"]):
+            attr = prim.CreateAttribute(exec_input_name(i), Sdf.ValueTypeNames.Token, custom=False)
+            attr.SetConnections([Sdf.Path(f"{src}.outputs:chunk")])
+        prim.GetAttribute("inputs:chunk1").ClearConnections()
+
+        assert normalize_merge_slots(stage, prim) is True
+        assert [a.GetName() for a in iter_exec_inputs(prim)] == ["inputs:chunk", "inputs:chunk1"]
+        assert prim.GetAttribute("inputs:chunk").GetConnections() == [Sdf.Path("/A.outputs:chunk")]
+        assert prim.GetAttribute("inputs:chunk1").GetConnections() == [Sdf.Path("/C.outputs:chunk")]
+
+
+# ---------------------------------------------------------------------------
+# Live wiring -- exercises ChunkStageSync's authoring and DAG reconciliation
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -256,7 +293,7 @@ def wired_merge():
     """A merge fed by three chunks, wired the way the node graph wires: the connection is
     authored straight onto the stage, and the Python DAG is expected to follow from it.
 
-    That direction is deliberate — it is the primary authoring path (ChunkGraphView's
+    That direction is deliberate -- it is the primary authoring path (ChunkGraphView's
     drag-to-connect never calls add_dependency; chunk_stage mirrors the stage into the DAG
     instead), and it is the direction the numbered slots had to be taught.
     """
@@ -309,7 +346,7 @@ class TestLiveWiring:
     def test_every_branch_becomes_a_real_dag_dependency(self, wired_merge):
         """The regression guard for the silent bug: exec_dependencies read only
         inputs:chunk, so a branch wired into slot 1 or 2 authored USD and drew an edge while
-        the Python DAG never gained the edge — no INPUT_CHANGED, so editing that branch never
+        the Python DAG never gained the edge -- no INPUT_CHANGED, so editing that branch never
         recooked the merge."""
         _stage, _scene, merge, branches, _prim = wired_merge
         deps = {id(d) for _, d in merge.get_dependencies()}
@@ -317,7 +354,7 @@ class TestLiveWiring:
             assert id(branch) in deps
 
     def test_reconcile_drops_a_branch_when_its_slot_is_cleared(self, wired_merge):
-        """Reconciliation is a diff, not an append — clearing slot 1 must remove exactly that
+        """Reconciliation is a diff, not an append -- clearing slot 1 must remove exactly that
         dependency and leave the others."""
         _stage, _scene, merge, branches, prim = wired_merge
         with Usd.EditContext(_stage, _stage.GetSessionLayer()):
@@ -336,7 +373,7 @@ class TestLiveWiring:
 
     def test_first_input_is_cooked_last_so_it_wins(self, wired_merge):
         """Layer strength is cook_list position (recook_for_view ranks later = stronger), and
-        visit() appends a node after its sources — so slot 0 must be visited LAST."""
+        visit() appends a node after its sources -- so slot 0 must be visited LAST."""
         stage, scene, merge, branches, _prim = wired_merge
         order = view_cook_list(merge, stage, scene)
         positions = [order.index(b) for b in branches]

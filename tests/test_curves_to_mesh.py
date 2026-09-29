@@ -16,7 +16,7 @@ import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_core import SceneSender
+from usd_chunks.chunk_scene import SceneSender
 
 
 class _DummyScene(SceneSender):
@@ -28,7 +28,7 @@ class _DummyScene(SceneSender):
 
 
 chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
-ctm = importlib.import_module("scripts.modelling.curves_to_mesh")
+ctm = importlib.import_module("chunks.modelling.curves_to_mesh")
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ def _line(n=8, length=7.0):
 
 
 def _arc(n=24, radius=5.0):
-    """A quarter turn in XY — a curve with real curvature for the frame to cope with."""
+    """A quarter turn in XY -- a curve with real curvature for the frame to cope with."""
     t = np.linspace(0.0, math.pi / 2.0, n)
     return np.stack([np.cos(t) * radius, np.sin(t) * radius, np.zeros(n)], axis=1)
 

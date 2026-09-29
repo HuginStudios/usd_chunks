@@ -12,10 +12,12 @@ import importlib
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
-from usd_chunks import chunk_gizmo, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig, SceneSender
+from usd_chunks import chunk_registry
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.chunk_core import ChunkConfig
+from usd_chunks.chunk_scene import SceneSender
 
-brush_mod = importlib.import_module("scripts.modelling.scatter_brush")
+brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
 
 
 class _DummyScene(SceneSender):
@@ -57,7 +59,6 @@ def _textured_stage():
 def _brush(stage, **params):
     c = brush_mod.main()
     c._config = ChunkConfig(module="scatter_brush", gizmos=brush_mod.config().gizmos)
-    c._module = brush_mod
     c.get_param("surface_prim").value = "/World/Rock"
     for name, value in params.items():
         c.get_param(name).value = value
