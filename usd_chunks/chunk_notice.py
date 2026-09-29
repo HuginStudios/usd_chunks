@@ -204,6 +204,36 @@ def mark_cook_stale(chunk) -> None:
     chunk._cook_stale = True
 
 
+@contextmanager
+def executing(prop):
+    """The execution scope around one chunk's module.execute(): what a cook sets while it runs.
+
+    Marks prop as executing (its own guard against being cooked re-entrantly), raises
+    _usd_write_active so the stage listeners skip the writes the module makes, and names the
+    chunk in _executing_chunk so an Edit Target resolves from its place in the graph.
+    ChunkBase.cook is the one caller; the state lives here because every listener reads it
+    from this module.
+
+    Args:
+        prop: The chunk about to run its module.
+    """
+    global _usd_write_active, _executing_chunk
+    prev_executing_chunk = _executing_chunk
+    prev_usd_write_active = _usd_write_active
+    prop._executing = True
+    _usd_write_active = True
+    _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
+    try:
+        yield
+    finally:
+        # Restored, not cleared: a cook can be reached from inside a guarded
+        # write (a rename triggers one), and clearing outright unsuppressed
+        # that outer write for whatever it still had left to do.
+        _usd_write_active = prev_usd_write_active
+        _executing_chunk = prev_executing_chunk
+        prop._executing = False
+
+
 _T = TypeVar("_T")
 Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
 
@@ -1470,107 +1500,27 @@ class ChunkNoticePropagator:
             # the aliases: a `presentation_only` param raises PARAM_CHANGED, not
             # STATE_CHANGED, so testing the alias would call it a data change and re-cook.
             state_only = n.only_presentation_changed()
-            if not state_only and (module := getattr(prop, '_module', None)):
+            # Only a chunk made from a module has a _module: ChunkModule.create sets it on
+            # each chunk it creates, and those are ChunkBase. A module without execute()
+            # (a chunkgroup) still counts here -- it goes stale below.
+            if not state_only and getattr(prop, '_module', None):
                 # Stale until the module actually runs below. Every reason this dispatch has
                 # for not running it -- blocked, muted, no layer yet, no stage -- leaves the
                 # layer holding a result the change never reached, and recook_for_view cooks
                 # a chunk again on exactly that. A chunk with no execute() (a chunkgroup)
                 # stays stale, which tells recook_for_view its inside needs cooking.
                 mark_cook_stale(prop)
-                stage = prop.get_stage()
-                ctx = prop.get_edit_context()
-                # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
-                # layer stack. Don't re-run its module: authoring into a muted layer raises
-                # ("Layer ... is not in the local LayerStack"), and a disabled chunk must not
-                # execute anyway.
-                muted = bool(stage and ctx and stage.IsLayerMuted(ctx.identifier))
-                # Separately: a chunk's own edit layer may not be inserted into the stage's
-                # local layer stack YET at all -- not muted (present-but-disabled), just not
-                # there yet. Hit live during load_chunks's bulk restore: a ListGroup proxy
-                # row's value setter (chunk_core.py's ProxyParam.__setattr__, "value" case)
-                # calls straight through to this same dispatch, bypassing the
-                # chunk_notice._loading_stage guard that suppresses every OTHER reactive path
-                # during that restore -- reaching here before get_or_create_layer has run for
-                # this specific chunk, same "not in the local LayerStack" raise as the muted
-                # case. load_chunks's own later, correctly-ordered explicit .execute() call
-                # (after every chunk's layer is properly registered) still runs normally.
-                not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
-                # A blocked chunk (view-driven: not in the active view's tree -- e.g. connected to
-                # an inactive view) must never run its module, whatever triggered the solve. recook
-                # unblocks the active view's tree before executing it, so cooking is unaffected.
-                # A chunk being deleted must not run its module -- teardown notices can land
-                # back here after its params are already detached (see request_delete).
-                # With no stage there is nothing for a module to author into: every chunk module
-                # works through get_stage(), so running one stage-less is never useful and
-                # crashes on the first stage call. The host can genuinely have no stage for a
-                # window -- usdview clears its stage before opening the next file while still
-                # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
-                # window, can reach here.
                 if _cooked_since(prop):
                     prop._cook_stale = False
-                elif (callable(getattr(module, 'execute', None)) and stage is not None
-                        and not getattr(prop, '_executing', False)
-                        and not getattr(prop, '_deleting', False)
-                        and not muted and not not_yet_in_stack and not prop.is_blocked()):
-                    global _usd_write_active, _executing_chunk
-                    prev_executing_chunk = _executing_chunk
-                    prev_usd_write_active = _usd_write_active
-                    prop._executing = True
-                    _usd_write_active = True
-                    _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
-                    try:
-                        if ctx:
-                            try:
-                                with Usd.EditContext(stage, ctx):
-                                    # A cook starts from an empty layer, so a module
-                                    # authors its whole result every time and never reads
-                                    # its own last one back. Anonymous only: that is a
-                                    # layer this chunk alone owns and rebuilds on load.
-                                    # A chunk in a context with a file layer is handed
-                                    # that file layer, shared and the user's own.
-                                    if ctx.anonymous:
-                                        ctx.Clear()
-                                    module.execute(prop)
-                                    # What a param drives is its own state, not the cook's
-                                    # output -- see ChunkBase.reauthor_driven_attrs.
-                                    if ctx.anonymous and (reauthor := getattr(prop, "reauthor_driven_attrs", None)):
-                                        reauthor()
-                                prop._cook_stale = False
-                            except Tf.ErrorException:
-                                # The layer left the stage's local layer stack between the
-                                # check above and here. It can: a cook reached from inside
-                                # another cook mutes layers (a gate suppressing a branch),
-                                # and this dispatch is reached re-entrantly -- a module
-                                # setting a param during its own execute lands straight back
-                                # here for whatever that param drives.
-                                #
-                                # Re-checked rather than swallowed: only the "not in the
-                                # local LayerStack" case is skipped, and any other error a
-                                # module raises still surfaces. Skipping is right because it
-                                # is what the guards above already decided -- a chunk whose
-                                # layer is not in the stack has nowhere to author, and the
-                                # cook that put it back will run it.
-                                if stage.IsLayerMuted(ctx.identifier) or not stage.HasLocalLayer(ctx):
-                                    logger.debug(
-                                        "skipped cooking %s: its layer left the stage's "
-                                        "layer stack mid-solve",
-                                        getattr(prop, "name", prop),
-                                    )
-                                else:
-                                    raise
-                        else:
-                            # No edit layer of its own -- author into the stage's current target.
-                            module.execute(prop)
-                            prop._cook_stale = False
-                    finally:
-                        # Restored, not cleared: a cook can be reached from inside a guarded
-                        # write (a rename triggers one), and clearing outright unsuppressed
-                        # that outer write for whatever it still had left to do.
-                        _usd_write_active = prev_usd_write_active
-                        _executing_chunk = prev_executing_chunk
-                        prop._executing = False
-                        if _batch_cooked is not None:
-                            _batch_cooked[id(prop)] = _tick()
+                # The cook itself -- and every guard on whether it may run now -- is
+                # ChunkBase.cook. A propagator with a _module but no cook() has nothing to
+                # run and stays stale.
+                elif (cook := getattr(prop, 'cook', None)) is not None and cook():
+                    # True once cook() got past its guards, including when the layer left
+                    # the stack mid-cook. A module that raises ends the whole batch, and
+                    # this record with it, so there is nothing to note on that path.
+                    if _batch_cooked is not None:
+                        _batch_cooked[id(prop)] = _tick()
 
         msg += "====== FINISHED ======\n"
         logger.debug(msg)

@@ -1958,8 +1958,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         chunk = notice.data
         if not isinstance(chunk, core.ChunkBase):
             return
-        module = getattr(chunk, "_module", None)
-        if not callable(getattr(module, "execute", None)):
+        if not chunk.can_cook():
             return
         # A blocked chunk (view-driven: created out of the active view's tree) must not execute --
         # it cooks only once wired in and unblocked by recook.
@@ -4526,7 +4525,7 @@ def recook_for_view(
             continue
         if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
-            if not callable(getattr(getattr(c, "_module", None), "execute", None)):
+            if not c.can_cook():
                 # Nothing to cook -- a chunk that works through callbacks (Property Editor).
                 # Nothing ever clears its stale mark either, so executing it would push a
                 # DAG solve to everything downstream on every recook. Whatever a change

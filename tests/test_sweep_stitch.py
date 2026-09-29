@@ -69,6 +69,9 @@ class _Chunk:
     def get_param(self, name):
         return self._frames if name == "frames" else None
 
+    def _module_hook(self, name):
+        return getattr(self._module, name, None)
+
     def is_blocked(self):
         return False
 
