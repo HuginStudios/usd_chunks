@@ -26,6 +26,8 @@ from usd_chunks.chunk_stage import export_chunks
 from usd_chunks.chunk_stage import initialize as init_chunk_usd
 from usd_chunks.cli import cmd_run
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def __init__(self):
@@ -54,7 +56,6 @@ def _make(scene, mod, module_name):
     so chunks have to actually be wired into the chain."""
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
-    c._module = mod
     prev = chunk_stage._params_tab_create
     chunk_stage._params_tab_create = True
     try:
@@ -69,11 +70,10 @@ class TestCommitDispatch:
 
     def _chunk(self, name, calls, with_commit=True):
         c = chunk.Chunk(name)
-        c._config = ChunkConfig(module=name)
         if with_commit:
-            c._module = types.SimpleNamespace(commit=lambda node: calls.append(node.name))
+            attach_stub_module(c, commit=lambda node: calls.append(node.name))
         else:
-            c._module = types.SimpleNamespace()
+            attach_stub_module(c)
         return c
 
     def test_runs_hook_once_per_chunk_defining_it(self):
@@ -299,11 +299,10 @@ class TestCommitOrderFromStage:
 
     def _chunk(self, scene, name, calls, with_commit=True):
         c = chunk.Chunk(name)
-        c._config = ChunkConfig(module="prim")
         if with_commit:
-            c._module = types.SimpleNamespace(commit=lambda node: calls.append(node.name))
+            attach_stub_module(c, commit=lambda node: calls.append(node.name))
         else:
-            c._module = types.SimpleNamespace()
+            attach_stub_module(c)
         c.add_param(chunk.Slider("p", default_value=0.0))
         scene.add_chunk(c)
         return c

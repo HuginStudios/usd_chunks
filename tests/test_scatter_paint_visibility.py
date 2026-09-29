@@ -59,7 +59,6 @@ def _textured_stage():
 def _brush(stage, **params):
     c = brush_mod.main()
     c._config = ChunkConfig(module="scatter_brush", gizmos=brush_mod.config().gizmos)
-    c._module = brush_mod
     c.get_param("surface_prim").value = "/World/Rock"
     for name, value in params.items():
         c.get_param(name).value = value

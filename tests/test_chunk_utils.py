@@ -259,14 +259,12 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
     try:
         cl = create_mod.main()
         cl._config = ChunkConfig(module="layer")
-        cl._module = create_mod
         scene.add_chunk(cl)
         cl.get_param("layer_name").value = "layerA"
         cl.execute()
 
         et = edit_mod.main()
         et._config = ChunkConfig(module="edit_target")
-        et._module = edit_mod
         scene.add_chunk(et)
         et.get_param("edit_target").value = "layerA"
         et.execute()

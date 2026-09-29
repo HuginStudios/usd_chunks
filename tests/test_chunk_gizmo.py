@@ -21,6 +21,8 @@ from usd_chunks.chunk_stage import (
     ChunkStageSync,
 )
 
+from chunk_stubs import attach_stub_module, register_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -52,7 +54,7 @@ def _transform_chunk(name: str = "Transform", target: str = "/World/Cube") -> ch
     for axis in ("tx", "ty", "tz"):
         grp.add_param(chunk.Slider(axis, axis.upper(), min_value=-100.0, max_value=100.0, default_value=0.0))
     c.add_param(grp)
-    c._config = ChunkConfig(module="transform", gizmos=[_body_gizmo()])
+    c._config = ChunkConfig(module=register_stub_module().module_name, gizmos=[_body_gizmo()])
     return c
 
 
@@ -215,7 +217,7 @@ def test_a_scalar_handle_authors_one_connection() -> None:
     c = chunk.Chunk("Camera")
     c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cube"))
     c.add_param(chunk.Slider("focusDistance", min_value=0.0, max_value=1000.0))
-    c._config = ChunkConfig(module="camera", gizmos=[
+    c._config = ChunkConfig(module=register_stub_module().module_name, gizmos=[
         chunk.Gizmo("zdist", type="cube", driver="focusDistance", axis="Z"),
     ])
 
@@ -232,7 +234,7 @@ def test_omitted_axis_authors_no_attr() -> None:
 
 def test_chunk_without_gizmos_authors_nothing() -> None:
     c = chunk.Chunk("Plain")
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     _, prim = _authored(c)
 
     assert not [a for a in prim.GetAttributes() if a.GetName().startswith("ui:gizmo:")]
@@ -242,7 +244,7 @@ def test_two_gizmos_of_the_same_type_coexist() -> None:
     """The namespace segment is the gizmo's name, never its type -- a camera wants a body
     handle and a distance handle, and both may be cubes."""
     c = _transform_chunk()
-    c._config = ChunkConfig(module="transform", gizmos=[
+    c._config = ChunkConfig(module=register_stub_module().module_name, gizmos=[
         chunk.Gizmo("a", type="cube", anchor="primpath_location", driver="translate_grp.tx"),
         chunk.Gizmo("b", type="cube", anchor="primpath_location", driver="translate_grp.ty"),
     ])
@@ -255,7 +257,7 @@ def test_two_gizmos_of_the_same_type_coexist() -> None:
 def test_one_bad_gizmo_does_not_take_the_chunk_prim_down() -> None:
     """The rest of the prim's bookkeeping is what makes the chunk work at all."""
     c = _transform_chunk()
-    c._config = ChunkConfig(module="transform", gizmos=[
+    c._config = ChunkConfig(module=register_stub_module().module_name, gizmos=[
         chunk.Gizmo("broken", type="translate", anchor="nope", driver="translate_grp.tx"),
         _body_gizmo(),
     ])
@@ -436,7 +438,7 @@ def test_apply_bindings_writes_a_scalar_through_the_value_slot() -> None:
     c = chunk.Chunk("Camera")
     c.add_param(chunk.LineEdit("primpath_location", default_value="/World/Cube"))
     c.add_param(chunk.Slider("focusDistance", min_value=0.0, max_value=1000.0))
-    c._config = ChunkConfig(module="camera", gizmos=[
+    c._config = ChunkConfig(module=register_stub_module().module_name, gizmos=[
         chunk.Gizmo("zdist", type="cube", driver="focusDistance"),
     ])
 

@@ -97,7 +97,6 @@ def _import(scene, urdf_text, tmp_path, **params):
 
     node = urdf_import.main()
     node._config = ChunkConfig(module="urdf_import")
-    node._module = urdf_import
     node.name = "Import"
     sender.add_chunk(node)
     node.get_param("file_path").value = str(source)

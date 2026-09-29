@@ -44,7 +44,6 @@ def _make_vector_math_ops(mod, name: str):
     c = mod.main()
     c.name = name
     c._config = ChunkConfig(module="vector_math_ops")
-    c._module = mod
     return c
 
 

@@ -21,6 +21,8 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -75,7 +77,6 @@ def _stage_with_floor():
 def _brush(stage, target="/World/Floor", **params):
     c = brush_mod.main()
     c._config = ChunkConfig(module="scatter_brush", gizmos=brush_mod.config().gizmos)
-    c._module = brush_mod
     c.get_param("surface_prim").value = target
     for name, value in params.items():
         c.get_param(name).value = value
@@ -322,10 +323,7 @@ def test_a_chunk_without_the_hook_declines() -> None:
     _stage_with_floor()
     c = _brush(None)
 
-    class _NoHook:
-        pass
-
-    c._module = _NoHook
+    attach_stub_module(c)
     assert chunk_gizmo.apply_stroke(c, "paint", [Gf.Vec3d(0, 0, 0)]) is False
 
 
@@ -333,12 +331,10 @@ def test_a_failing_hook_is_treated_as_handled() -> None:
     _stage_with_floor()
     c = _brush(None)
 
-    class _Boom:
-        @staticmethod
-        def gizmo_stroke(node, gizmo, samples):
-            raise RuntimeError("nope")
+    def _boom(node, gizmo, samples):
+        raise RuntimeError("nope")
 
-    c._module = _Boom
+    attach_stub_module(c, gizmo_stroke=_boom)
     assert chunk_gizmo.apply_stroke(c, "paint", [Gf.Vec3d(0, 0, 0)]) is True
 
 

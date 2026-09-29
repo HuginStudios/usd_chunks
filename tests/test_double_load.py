@@ -16,13 +16,14 @@ from __future__ import annotations
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _CHUNK_PRIM_TYPENAME,
     export_chunks,
     initialize as chunk_usd_init,
 )
+
+from chunk_stubs import attach_stub_module
 
 
 class _Scene(SceneSender):
@@ -51,7 +52,7 @@ def _authored_network(path) -> list[str]:
     scene = _session(stage)
     for i in range(3):
         c = chunk.Chunk(f"node{i}")
-        c._config = ChunkConfig(module="prim")
+        attach_stub_module(c)
         scene.add_chunk(c)
     export_chunks(scene, path)
     return sorted(c.name for c in scene.get_chunks())

@@ -41,7 +41,6 @@ class _DummyScene(SceneSender):
 def _make(scene, mod, module_name):
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
-    c._module = mod
     # Auto-chain prev -> new (Params-tab behavior) so the exec chain that resolution walks
     # actually exists.
     prev = chunk_stage._params_tab_create
@@ -105,14 +104,12 @@ class TestEditTargetMigration:
         self._scenes.append(scene)
         return scene, stage
 
-    def _create_layer(self, scene, name, module_name=None):
-        # module_name is what gets written to the prim as info:chunkType. The reload test
-        # passes the real "layer" so the registry can rebuild a working chunk from it
-        # and the layer this authors exists again on the other side of a reload; the rest
-        # pass nothing and get a per-layer stand-in, which no module backs -- they only care
-        # about where edits land, and a name the registry can't resolve keeps their chunks
-        # from re-running module code as unrelated notices cascade past.
-        c = _make(scene, self.create_mod, module_name or f"cl_{name}")
+    def _create_layer(self, scene, name):
+        # "layer" is what gets written to the prim as info:chunkType, and it is also where
+        # the chunk's hooks are looked up: a chunk runs only what the registered module its
+        # config names defines, so the registry can rebuild a working chunk from it and the
+        # layer this authors exists again on the other side of a reload.
+        c = _make(scene, self.create_mod, "layer")
         c.get_param("layer_name").value = name
         c.execute()
         return c, Sdf.Layer.Find(c.get_param("_new_layer_id").value)
@@ -184,11 +181,11 @@ class TestEditTargetMigration:
         # Layer(A) -> EditTarget(->A) -> Layer(B) -> EditTarget(->B) -> Prim.
         # Real module names (layer/edit_target/prim) so the registry can rebuild the
         # chunks from info:chunkType on reload.
-        self._create_layer(scene, "A", "layer")
+        self._create_layer(scene, "A")
         et_a = _make(scene, self.edit_mod, "edit_target")
         et_a.get_param("edit_target").value = "A"
         et_a.execute()
-        self._create_layer(scene, "B", "layer")
+        self._create_layer(scene, "B")
         et_b = _make(scene, self.edit_mod, "edit_target")
         et_b.get_param("edit_target").value = "B"
         et_b.execute()

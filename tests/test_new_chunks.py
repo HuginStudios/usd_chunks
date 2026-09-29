@@ -541,7 +541,6 @@ class TestBindMaterialResilience:
 
         c = self.mod.main()
         c._config = ChunkConfig(module="bind_material")
-        c._module = self.mod
         c.get_param("material_path").value = "/mat"
         c.get_param("primpath_location").value = "/geo/mesh"
         scene.add_chunk(c)

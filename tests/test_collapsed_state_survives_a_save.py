@@ -17,7 +17,6 @@ import pytest
 from pxr import Usd, UsdUI
 
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import (
@@ -25,6 +24,8 @@ from usd_chunks.chunk_stage import (
     initialize as chunk_stage_initialize,
     save_scene,
 )
+
+from chunk_stubs import attach_stub_module
 
 EXPANSION = UsdUI.Tokens.uiNodegraphNodeExpansionState
 
@@ -51,7 +52,7 @@ def _scene_for(stage):
 
 def _add(scene, name):
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     c.add_param(chunk.LineEdit("primpath_location", default_value=f"/{name}"))
     scene.add_chunk(c)
     return c

@@ -59,7 +59,6 @@ def _make(scene, mod, module_name):
     """Create a chunk and chain it onto the previous one, as the Params tab does."""
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
-    c._module = mod
     prev = chunk_stage._params_tab_create
     chunk_stage._params_tab_create = True
     try:

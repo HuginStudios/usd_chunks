@@ -85,7 +85,6 @@ def _scene_for(stage):
 def _mk(sender, module, name, config_module, **config_kwargs):
     node = module.main()
     node._config = ChunkConfig(module=config_module, **config_kwargs)
-    node._module = module
     node.name = name
     sender.add_chunk(node)
     return node

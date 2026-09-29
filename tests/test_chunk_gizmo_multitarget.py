@@ -22,6 +22,8 @@ from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -248,7 +250,7 @@ def test_refresh_is_a_no_op_for_a_chunk_without_gizmos() -> None:
     a chunk with no gizmos at all -- has to cost nothing and touch nothing."""
     stage = _stage_with_cubes("/World/A")
     c = chunk.Chunk("Plain")
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     prim = _authored(stage, c)
 
     chunk_gizmo.refresh_gizmo_anchors(stage, prim, c)

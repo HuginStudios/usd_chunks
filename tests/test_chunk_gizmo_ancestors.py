@@ -45,12 +45,14 @@ class _StubModule:
     def __init__(self):
         self.loaded = True
         self.creates = 0
+        # Registered under "transform", so this is where the chunks it creates find their
+        # hooks (ChunkBase.get_chunk_module): the real transform module's.
+        self.module = transform_mod
 
     def create(self):
         self.creates += 1
         c = transform_mod.main()
         c._config = ChunkConfig(module="transform")
-        c._module = transform_mod
         return [c]
 
     load = create

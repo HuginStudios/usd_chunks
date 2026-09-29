@@ -42,6 +42,8 @@ from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.gizmo import runtime as chunk_gizmo
 import usd_chunks.chunk_stage as chunk_usd_mod
 
+from chunk_stubs import attach_stub_module, register_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -65,9 +67,18 @@ def _default_root(scene) -> str:
     return _get_chunk_prim_path(ctx) if ctx is not None else _CHUNKS_ROOT
 
 
-def _chunk_with_module(name: str, module: str = "prim") -> chunk.Chunk:
+def _chunk_with_module(name: str, module: str | None = None) -> chunk.Chunk:
+    """A plain chunk backed by a registered module, so it saves with an info:chunkType.
+
+    By default a stub module with no hooks (chunk_stubs): these tests are about the
+    framework, not any one chunk, so they neither cook nor depend on a module in chunks/.
+    Pass module to name a real one.
+    """
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module=module)
+    if module is None:
+        attach_stub_module(c)
+    else:
+        c._config = ChunkConfig(module=module)
     return c
 
 
@@ -85,7 +96,7 @@ def test_export_chunk_creates_prim() -> None:
     prim = stage.GetPrimAtPath(f"{_CHUNKS_ROOT}/{c.name}")
     assert prim.IsValid()
     assert prim.GetTypeName() == "Chunk"
-    assert prim.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "prim"
+    assert prim.GetAttribute(_CHUNK_TYPE_ATTR).Get() == c.get_config().module
     assert prim.GetAttribute(_EXEC_OUTPUT).IsValid()
 
 
@@ -365,8 +376,7 @@ def test_chunk_stage_sync_live_update() -> None:
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     ChunkStageSync().initialize(stage, scene)
 
-    c = chunk.Chunk("live")
-    c._config = ChunkConfig(module="prim")
+    c = _chunk_with_module("live")
     slider = chunk.Slider("p", default_value=0.0)
     c.add_param(slider)
     scene.add_chunk(c)
@@ -400,11 +410,15 @@ def test_export_load_roundtrip(tmp_path) -> None:
     # so the stage must actually be wired up to author those prims in the first place.
     _chunk_usd_init(stage_src, scene_src)
 
-    c = chunk.Chunk("testChunk")
-    c._config = ChunkConfig(module="prim")
-    prim_type = chunk.Menu("prim_type", menu_items=["Xform", "Scope", "Class"])
-    prim_type.value = "Scope"
-    c.add_param(prim_type)
+    # Reopening rebuilds the chunk with its module's main(), so the module has to be one
+    # that builds the param whose value the roundtrip carries.
+    def _main():
+        built = chunk.Chunk("testChunk")
+        built.add_param(chunk.Menu("prim_type", menu_items=["Xform", "Scope", "Class"]))
+        return built
+
+    (c,) = register_stub_module(main=_main).load()
+    c.get_param("prim_type").value = "Scope"
     scene_src.add_chunk(c)
 
     out = tmp_path / "chunks.usda"
@@ -461,8 +475,7 @@ def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
     sync = ChunkStageSync()
     _chunk_usd_init(stage1, scene)
 
-    a = chunk.Chunk("first")
-    a._config = ChunkConfig(module="prim")
+    a = _chunk_with_module("first")
     scene.add_chunk(a)
     assert any(c.name == "first" for c in scene.get_chunks())
 
@@ -1145,12 +1158,8 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
 
     calls = []
 
-    class _Mod:
-        def execute(self, prop):
-            calls.append(1)
-
     c = _chunk_with_module("blk")
-    c._module = _Mod()
+    attach_stub_module(c, execute=lambda prop: calls.append(1))
     c.set_blocked(True)
     scene.add_chunk(c)
     assert calls == []  # blocked → no execute on creation

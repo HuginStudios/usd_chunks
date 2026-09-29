@@ -14,6 +14,8 @@ from usd_chunks.frontends.qt.factory import _focused_view_is_graph
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphView
 from usd_chunks.frontends.qt.widgets import ChunkWidget, ViewSlotState
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -23,9 +25,14 @@ class _DummyScene(SceneSender):
         return []
 
 
-def _chunk_with_module(name: str, module: str = "prim") -> chunk.Chunk:
+def _chunk_with_module(name: str, module: str | None = None) -> chunk.Chunk:
+    """A plain chunk backed by a registered module: by default a stub with no hooks
+    (chunk_stubs), so the test neither cooks nor depends on a module in chunks/."""
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module=module)
+    if module is None:
+        attach_stub_module(c)
+    else:
+        c._config = ChunkConfig(module=module)
     return c
 
 

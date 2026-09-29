@@ -10,9 +10,10 @@ from usd_chunks.graph.layout import (
 )
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks import chunk, chunk_registry
-from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene
+
+from chunk_stubs import attach_stub_module
 
 
 def _sizes(sizes: dict) -> callable:
@@ -219,11 +220,11 @@ def test_layout_nodes_spreads_a_connected_chain_and_persists_positions(qapp) -> 
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     a = chunk.Chunk("a")
-    a._config = ChunkConfig(module="prim")
+    attach_stub_module(a)
     b = chunk.Chunk("b")
-    b._config = ChunkConfig(module="prim")
+    attach_stub_module(b)
     c = chunk.Chunk("c")
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     scene.add_chunk(a)
     scene.add_chunk(b)
     scene.add_chunk(c)
@@ -251,11 +252,11 @@ def test_layout_nodes_with_one_selected_grows_to_the_whole_chain(qapp) -> None:
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     a = chunk.Chunk("a")
-    a._config = ChunkConfig(module="prim")
+    attach_stub_module(a)
     b = chunk.Chunk("b")
-    b._config = ChunkConfig(module="prim")
+    attach_stub_module(b)
     c = chunk.Chunk("c")
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     scene.add_chunk(a)
     scene.add_chunk(b)
     scene.add_chunk(c)
@@ -278,9 +279,9 @@ def test_layout_nodes_never_moves_a_locked_node(qapp) -> None:
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     a = chunk.Chunk("a")
-    a._config = ChunkConfig(module="prim")
+    attach_stub_module(a)
     b = chunk.Chunk("b")
-    b._config = ChunkConfig(module="prim")
+    attach_stub_module(b)
     scene.add_chunk(a)
     scene.add_chunk(b)
     _wire_exec(stage, "/Tab1/b", "/Tab1/a")

@@ -16,6 +16,8 @@ from usd_chunks.frontends.qt.widgets import (
     _PARAMS_HEADER_BG,
 )
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -25,9 +27,14 @@ class _DummyScene(SceneSender):
         return []
 
 
-def _chunk_with_module(name: str, module: str = "prim") -> chunk.Chunk:
+def _chunk_with_module(name: str, module: str | None = None) -> chunk.Chunk:
+    """A plain chunk backed by a registered module: by default a stub with no hooks
+    (chunk_stubs), so the test neither cooks nor depends on a module in chunks/."""
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module=module)
+    if module is None:
+        attach_stub_module(c)
+    else:
+        c._config = ChunkConfig(module=module)
     return c
 
 
@@ -295,7 +302,7 @@ def test_search_box_live_filters_by_name(qapp) -> None:
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     c1 = _chunk_with_module("transform_a", module="xform")
-    c2 = _chunk_with_module("light_b", module="light")
+    c2 = _chunk_with_module("light_b", module="lamp")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
     chunk_stage.set_chunk_pinned(c1, True)
@@ -322,7 +329,7 @@ def test_scope_combo_narrows_search_to_type_only(qapp) -> None:
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     c1 = _chunk_with_module("transform_a", module="xform")
-    c2 = _chunk_with_module("light_b", module="light")
+    c2 = _chunk_with_module("light_b", module="lamp")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
     chunk_stage.set_chunk_pinned(c1, True)
@@ -356,7 +363,7 @@ def test_search_filter_ands_with_pin_filter(qapp) -> None:
     ctx = scene.add_context("Tab1")
     c_pinned_match = _chunk_with_module("transform_a", module="xform")
     c_unpinned_match = _chunk_with_module("transform_b", module="xform")
-    c_pinned_nomatch = _chunk_with_module("light_a", module="light")
+    c_pinned_nomatch = _chunk_with_module("light_a", module="lamp")
     scene.add_chunk(c_pinned_match)
     scene.add_chunk(c_unpinned_match)
     scene.add_chunk(c_pinned_nomatch)

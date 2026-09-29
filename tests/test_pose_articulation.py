@@ -102,7 +102,6 @@ def scene():
 def _mk(sender, module, name, module_name):
     node = module.main()
     node._config = ChunkConfig(module=module_name)
-    node._module = module
     node.name = name
     sender.add_chunk(node)
     return node

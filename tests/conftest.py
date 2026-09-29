@@ -5,6 +5,8 @@ import pathlib
 import pytest
 from usd_chunks.chunk_registry import ChunkLayerManager
 
+import chunk_stubs
+
 try:
     from PySide6 import QtWidgets
 except ImportError:  # the ui extra is optional; only Qt tests ask for qapp
@@ -61,3 +63,10 @@ def reset_chunk_layer_manager():
     """
     yield
     ChunkLayerManager().reset()
+
+
+@pytest.fixture(autouse=True)
+def unregister_stub_modules():
+    """Drop the stub chunk modules a test registered (chunk_stubs), so none outlives it."""
+    yield
+    chunk_stubs.unregister_stub_modules()
