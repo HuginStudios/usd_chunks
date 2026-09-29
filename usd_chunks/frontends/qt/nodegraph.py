@@ -53,19 +53,29 @@ _NODE_HEADER_H = 40
 # ChunkNodeItem paints itself -- when either of these says so. The node keeps its size
 # either way, so layout, edges and framing are unaffected.
 #
-# Zoom alone decides this: below this scale a body's text is unreadable, so it is replaced
-# by the cheap flat form, and above it every body stays live no matter how many are on
-# screen. There is deliberately no cap on the number drawn.
+# Below this scale a body's text is hard to read, so it is replaced by the cheap flat form.
+# There is deliberately no cap on the number drawn above it.
 #
-# Culling by viewport position as well was tried and reverted. A body reports no height
+# Culling by viewport position as well was tried and reverted once. A body reports no height
 # until it has been through one visible layout cycle, and a node's height is what its ports,
 # edges, framing and auto-layout all measure from. Per-node culling hides bodies constantly
 # and early -- proxies are built in deferred batches while the view is still moving -- and a
 # body hidden before it was ever laid out freezes the node at its bare header height.
 # sizeHint(), adjustSize() and an explicit layout activate() all return 0 for such a widget,
-# so it cannot be measured ahead of time; making this work needs a real "has been laid out
-# at least once" gate on the node, not just careful ordering.
-_LOD_BODY_MIN_SCALE = 0.25
+# so it cannot be measured ahead of time. It is back now that the "has been laid out" gate
+# exists: set_body_visible declines every hide until ChunkGraphScene.heights_settled, and
+# _on_heights_settled re-runs LOD, so an offscreen body is only flattened once its height
+# is real. See _LOD_VIEWPORT_MARGIN.
+_LOD_BODY_MIN_SCALE = 0.1
+
+# Nodes outside the visible area also get the flat form. The visible rect is grown by this
+# fraction of the viewport's size on every side, so a node panned toward the edge is
+# already live by the time it arrives rather than popping in (a re-shown proxy can flash
+# blank for a frame while it re-lays out).
+_LOD_VIEWPORT_MARGIN = 0.5
+# Throttle for re-running LOD while panning/resizing: often enough to keep up with a drag,
+# rarely enough that a pan isn't a per-node walk per mouse move.
+_LOD_PAN_THROTTLE_MS = 50
 
 # Quiet period before ports are re-placed after the node's geometry changes. Placement
 # re-measures every param widget, so it must not run per animation frame.
@@ -2960,6 +2970,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
         self._anchor_breadcrumb()
+        self._schedule_lod()
 
     def scrollContentsBy(self, dx: int, dy: int):
         """Keep the context path pinned to the corner while the canvas moves under it.
@@ -2968,9 +2979,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         a widget parented to the viewport pans with the graph -- the path drifted off with
         the nodes and read as one of them. Panning is the only thing that moves it, so
         putting it back here costs a move per scroll and nothing else.
+
+        Panning also changes which nodes are on screen, so LOD is re-run (throttled).
         """
         super().scrollContentsBy(dx, dy)
         self._anchor_breadcrumb()
+        self._schedule_lod()
+
+    def _schedule_lod(self) -> None:
+        """Re-run _apply_lod soon; a throttle, not a debounce, so a long pan keeps updating."""
+        timer = getattr(self, "_lod_pan_timer", None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(_LOD_PAN_THROTTLE_MS)
+            timer.timeout.connect(self._apply_lod)
+            self._lod_pan_timer = timer
+        if not timer.isActive():
+            timer.start()
 
     def _anchor_breadcrumb(self) -> None:
         """Top-left of the canvas, above whatever is drawn there."""
@@ -3720,16 +3746,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._apply_lod()
 
     def _apply_lod(self) -> None:
-        """Swap node bodies for the flat far-zoom form below _LOD_BODY_MIN_SCALE.
+        """Swap node bodies for the flat form below _LOD_BODY_MIN_SCALE, and for nodes
+        outside the (margin-grown) visible area.
 
-        Called after anything that changes the view transform, and only that -- panning and
-        resizing move nodes through the viewport but change nothing about how legible a body
-        is, so they cannot flip this. Qt already skips painting offscreen nodes on its own
-        (measured: 0 on screen repaints in 2.8ms against 66ms for 33), so there is nothing
-        to win by tracking position here either.
-
-        The per-node walk runs only when the decision actually flips, so a wheel spin inside
-        one band costs a single float comparison.
+        Called after anything that changes the view transform, and (throttled, via
+        _schedule_lod) after panning and resizing, which change which nodes are on screen.
+        Qt already skips painting offscreen nodes on its own (measured: 0 on screen repaints
+        in 2.8ms against 66ms for 33), but a live offscreen body still costs layout and
+        widget updates, so it is flattened too.
         """
         # Toggling item visibility schedules updates, which can re-enter here through Qt's
         # own handling -- keep it strictly one deep.
@@ -3749,12 +3773,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # requested state, so the repeat costs one attribute compare per node.
         self._lod_bodies_shown = show_bodies
         buried = self._buried_nodes(nodes) if show_bodies else frozenset()
+        live_rect = self._lod_live_rect() if show_bodies else QtCore.QRectF()
         self._lod_busy = True
         try:
             for node in nodes:
-                node.set_body_visible(show_bodies and node not in buried)
+                node.set_body_visible(
+                    show_bodies
+                    and node not in buried
+                    and live_rect.intersects(node.sceneBoundingRect())
+                )
         finally:
             self._lod_busy = False
+
+    def _lod_live_rect(self) -> QtCore.QRectF:
+        """The scene area whose nodes keep a live body: what's on screen plus a margin.
+
+        A view with no size yet (hidden page, not laid out) culls nothing -- it would
+        otherwise flatten every node until its first resize.
+        """
+        vp_rect = self.viewport().rect()
+        if vp_rect.isEmpty():
+            e = self._SCENE_EXTENT
+            return QtCore.QRectF(-e, -e, e * 2, e * 2)
+        visible = self.mapToScene(vp_rect).boundingRect()
+        mx = visible.width() * _LOD_VIEWPORT_MARGIN
+        my = visible.height() * _LOD_VIEWPORT_MARGIN
+        return visible.adjusted(-mx, -my, mx, my)
 
     @staticmethod
     def _buried_nodes(nodes: list) -> frozenset:
