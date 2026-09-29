@@ -343,9 +343,12 @@ def _ranges(node):
     get_my_params, not get_params: the latter walks the nested ChainMap and would reach into
     params this chunk does not own.
     """
+    # Every kind of group, not just Group: the Ranges ListGroup is collapsable, and
+    # COLLAPSABLE is the bit OUTPUT is on -- read as a range, it was removed as one no row
+    # asked for, taking every row with it.
     return [
         p for p in node.get_my_params()
-        if not isinstance(p, chunk.Group)
+        if not isinstance(p, chunk.ChunkGroupBase)
         and hasattr(p, "has_flag")
         and p.has_flag(chunk.ChunkFlags.ParamFlags.OUTPUT)
     ]
@@ -574,11 +577,20 @@ def main():
     rows = chunk.ListGroup(
         "range_rows",
         "Ranges",
+        flags=(
+            chunk.ChunkFlags.GroupFlags.LABELED
+            | chunk.ChunkFlags.GroupFlags.FRAMED
+            | chunk.ChunkFlags.GroupFlags.LIST
+            | chunk.ChunkFlags.GroupFlags.COLLAPSABLE
+        ),
         tooltip="One row per range. Name is the outport. Number samples between Min and Max "
         "(Integer rounds); Colour samples each channel between Min Colour and Max Colour; "
         "Variants picks one of a variantSet's variants read off Prim -- wire it to a Set "
         "Variant chunk.",
     )
+    # Folded by default: a dataset wedge carries dozens of ranges, each row ten params, and
+    # the lofted outports below are what the rest of the network is wired to.
+    rows.set_state(chunk.ChunkFlags.State.COLLAPSED)
     rows.add_param(chunk.LineEdit("r_name", "Name", flags=chunk.ChunkFlags.ParamFlags.LABELED,
                                   tooltip="Name of the range. Shows on its outport."))
     rows.add_param(chunk.Menu("r_kind", "Kind", menu_items=list(KINDS), default_value=KIND_NUMBER,

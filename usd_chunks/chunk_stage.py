@@ -9,7 +9,7 @@ import logging
 import math
 import weakref
 from pathlib import Path
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
@@ -792,7 +792,29 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         finally:
             chunk_notice._usd_write_active = prev_w
 
+    def _is_foreign_stage(self, stage: Usd.Stage | None) -> bool:
+        """Whether a notice's stage is known to be some other stage than the scene's.
+
+        Only a definite no: without a scene, a scene stage or a notice stage, nothing is
+        known, and the notice is handled as it always was. Compared by root layer, as the
+        rest of the sync does, since the Python wrapper of one stage is not unique.
+        """
+        if stage is None or not self._scene:
+            return False
+        scene_stage = self._scene.get_stage()
+        if not scene_stage:
+            return False
+        return stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier
+
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
+        # The listener is global, so it hears every stage in the process -- including ones
+        # nothing here owns. Opening a .mtlx builds its material on a private stage of the
+        # MaterialX file format plugin's, and that alone is ~700 change rounds per material:
+        # each one dropped the edit layer memo (a notice from another stage looks like a
+        # replaced stage to edit_layer_memo_affected) and queued that stage's paths as
+        # resyncs of ours. Nothing below is about any stage but the scene's.
+        if self._is_foreign_stage(notice.GetStage()):
+            return
         # Before the guards, since a prim appearing or an inputs:chunk connection changing
         # is exactly what the memo is keyed against, and those arrive here regardless of
         # which flag is set. Only when the change can actually move an answer, though: a
@@ -4552,7 +4574,10 @@ def recook_for_view(
                 # DAG solve to everything downstream on every recook. Whatever a change
                 # upstream of it means for those, their own marks already say.
                 c._cook_stale = False
-            elif _force or chunk_notice.is_cook_stale(c):
+            # _force is for the group's own inside. A group's cook_list also reaches back
+            # through its input into the parent graph, and those chunks are the parent's
+            # to cook -- forcing them re-ran the whole upstream chain on every stale group.
+            elif (_force and in_context(c)) or chunk_notice.is_cook_stale(c):
                 c.execute()
 
     if not cook_list:
@@ -5359,6 +5384,101 @@ def _iter_scoped_prims(
             yield prim
 
 
+def _unseen_by_active_views(
+    stage: Usd.Stage, scene: chunk_scene.SceneSender
+) -> Callable[[core.ChunkBase], bool]:
+    """A test for the chunks a load can leave uncooked: those no active view reaches.
+
+    What each outermost context's active view cooks, worked out the way recook_for_view
+    walks it -- the view's cook_list, and for every group on it, whatever drives that
+    group's output, recursively. The recook the graph runs straight after a load mutes
+    everything outside that, so a load that cooks it too does work nobody sees. What is
+    skipped stays stale, and recook_for_view cooks it when its view is activated.
+
+    Only for a host that opts in (SceneSender.load_cooks_active_views_only), and only in a
+    context that has an active view: one without cooks as before, since there is no view
+    yet to say what matters. Views themselves are never skipped.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+
+    Returns:
+        A test, True for a chunk the load need not cook.
+    """
+    if not scene.load_cooks_active_views_only:
+        return lambda chunk: False
+
+    contexts = [c for c in scene.get_contexts() if getattr(c, "prim_path", None)]
+    paths = [c.prim_path for c in contexts]
+    reached: set[int] = set()
+    gated: list[str] = []
+
+    def walk(view: core.ChunkBase, synthetic: bool) -> None:
+        cook_list = view_cook_list(view, stage, scene)
+        if synthetic:
+            cook_list.append(view)
+        for c in cook_list:
+            if id(c) in reached:
+                continue
+            reached.add(id(c))
+            if is_group_chunk(c):
+                inner, inner_synthetic = _group_output_driver(stage, scene, c)
+                if inner is not None:
+                    walk(inner, inner_synthetic)
+
+    for context in contexts:
+        path = context.prim_path
+        if any(path.startswith(p + "/") for p in paths):
+            continue  # a group -- walked from the outermost context that holds it
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        attr = prim.GetAttribute("chunk:activeView") if prim and prim.IsValid() else None
+        slot = attr.Get() if attr and attr.IsValid() else None
+        view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
+        if view is None:
+            continue
+        gated.append(path + "/")
+        walk(view, False)
+
+    def unseen(chunk: core.ChunkBase) -> bool:
+        if id(chunk) in reached or is_view_chunk(chunk):
+            return False
+        return get_chunk_prim_path(chunk).startswith(tuple(gated)) if gated else False
+
+    return unseen
+
+
+def _clear_cooked_groups(chunks: list[core.ChunkBase]) -> None:
+    """Clear the stale mark of each group whose inside a load has just cooked.
+
+    A group with no execute() of its own stays stale through a solve -- that mark is what
+    tells recook_for_view to force its inside -- and only recook_for_view clears it. A load
+    cooks through the solve instead, so every such group came out of the load still stale,
+    and the first recook forced its whole inside again for nothing.
+
+    Only when everything inside that can cook came out clean: a chunk that could not run
+    (blocked, no layer yet) is left stale by its own dispatch, and the group stays stale
+    with it. Views are markers that never cook, and a disabled chunk does not cook either.
+
+    Args:
+        chunks: Every chunk in the scene, groups and their insides together. A chunkgroup
+            is recreated as a context before the load cooks, so it is not among the chunks
+            the load itself created.
+    """
+    disabled = ChunkFlags.State.DISABLED
+    for group in chunks:
+        if not is_group_chunk(group) or group.can_cook() or not chunk_notice.is_cook_stale(group):
+            continue
+        prefix = get_chunk_prim_path(group) + "/"
+        if all(
+            not chunk_notice.is_cook_stale(c)
+            for c in chunks
+            if get_chunk_prim_path(c).startswith(prefix)
+            and c.can_cook() and not is_view_chunk(c) and not c.has_state(disabled)
+        ):
+            group._cook_stale = False
+
+
 def _restore_disabled_state(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
     """Carry a prim's authored deactivation back onto the chunk it belongs to.
 
@@ -5858,10 +5978,11 @@ def _load_chunks(
                 # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
                 # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
                 # chunks at the same depth keep their existing relative order.
+                unseen = _unseen_by_active_views(stage, scene)
                 for prim, added in sorted(
                     deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
                 ):
-                    if id(added) not in chunks_with_dependencies:
+                    if id(added) not in chunks_with_dependencies and not unseen(added):
                         is_top_level = id(added) in top_level_chunk_ids
                         if is_top_level or can_execute_sub_chunks:
                             if lm.initialized:
@@ -5894,6 +6015,11 @@ def _load_chunks(
                 if getattr(sync, "_chunk_prim_paths", None) is not None:
                     for prim, added in deferred:
                         sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
+
+                # Last, after CHUNK_LOADED and the restores above: those can cook again (Render
+                # Settings recooks once its renderer groups exist), and a cook solves up the
+                # ownership chain, which marks a group stale all over again.
+                _clear_cooked_groups(list(scene.get_chunks()))
             finally:
                 chunk_notice._loading_stage = old_loading_stage
                 # A load that failed part-way still leaves its layers on the stage.

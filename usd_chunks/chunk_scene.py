@@ -56,6 +56,13 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     here, but a subclass should implement every @abstractmethod.
     """
 
+    #: Whether a load cooks only what the active views reach. A host whose graph recooks
+    #: for its active view straight after a load sets this: that recook mutes everything the
+    #: view cannot reach, so cooking it during the load is work nobody sees. The rest stays
+    #: stale and cooks when its view is activated. Off by default, because a script or the
+    #: CLI never runs that recook and relies on the load to cook the whole network.
+    load_cooks_active_views_only: bool = False
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 

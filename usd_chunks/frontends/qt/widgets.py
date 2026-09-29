@@ -1464,6 +1464,10 @@ class ContainerWidget(
 
     group_height_changed = QtCore.Signal(float)
 
+    # A folded group builds its contents on first expand: set_expanded builds before it
+    # measures the height it animates to.
+    defer_collapsed_children = True
+
     def __init__(
         self,
         group,
@@ -1689,6 +1693,9 @@ class ContainerWidget(
         # is a presentation bit, so the state change stops at the ownership chain instead of
         # being propagated as a cook (AttributeSender.is_presentation_change).
         if checked:
+            # Before the measurement below: a group folded since it was built has no
+            # contents yet, and would open onto a height of nothing.
+            self.ensure_children_built()
             self.group.unset_state(ChunkFlags.State.COLLAPSED)
         else:
             self.group.set_state(ChunkFlags.State.COLLAPSED)
@@ -2100,6 +2107,16 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     # Overridden per-instance in __init__; here so any path that reads it before
     # construction finishes finds a value rather than an AttributeError.
     _defer_stylesheet = False
+
+    @property
+    def defer_collapsed_children(self) -> bool:  # type: ignore[override]
+        """Defer for the groups inside a chunk, never for a chunk itself.
+
+        Asked of the group rather than the class, because _add_group_layout builds every
+        nested container as this same class. A chunk's own body is always built: a
+        collapsed node already hides it whole, and the node graph measures ports off it.
+        """
+        return not isinstance(self.group, chunk.ChunkBase)
 
     def __init__(
         self,

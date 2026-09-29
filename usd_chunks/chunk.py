@@ -560,6 +560,10 @@ class Label(ChunkParamBase[str]):
     Its name or label attribute is the text displayed.
     """
 
+    # Text shown to the user, never an input: a module setting its own status line during
+    # execute() must not recook everything downstream (AttributeSender.is_presentation_change).
+    presentation_only = True
+
     @classmethod
     @override
     def get_type(cls) -> ChunkFlags.ParamType:

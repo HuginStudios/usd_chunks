@@ -1086,11 +1086,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         }
         scene = self.scene()
         if isinstance(scene, ChunkGraphScene):
-            my_path = str(self.prim.GetPath())
-            for node in scene._nodes.values():
-                for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
-                    if src_prim_path == my_path and src_attr_suffix.startswith("outputs:"):
-                        names.add(src_attr_suffix[len("outputs:"):])
+            names |= scene.fed_outputs(str(self.prim.GetPath()))
         return names
 
     def _nearest_collapsed_group(self, param) -> core.ChunkCommon | None:
@@ -1187,12 +1183,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 widget = vector_widgets.get(param)
             else:
                 widget = param_widgets.get(param)
-            if widget is None:
+            collapsed_group = self._nearest_collapsed_group(param)
+            # A collapsed group builds its contents only once it is first opened
+            # (ContainerWidget.ensure_children_built), so a param inside one may have no
+            # widget yet. It does not need one: its port anchors at the group's header.
+            if widget is None and collapsed_group is None:
                 continue
 
             ptype = _param_port_type(param)
 
-            collapsed_group = self._nearest_collapsed_group(param)
             if collapsed_group is not None:
                 if param.name not in connected:
                     continue
@@ -1951,6 +1950,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage: Usd.Stage | None = None
         self._scene_sender: chunk_scene.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
+        # Source prim path -> names of its outputs that some node in the scene is wired to.
+        # Built on demand by fed_outputs and dropped whenever a wire or the node set can
+        # have changed; see there.
+        self._fed_outputs_index: dict[str, set[str]] | None = None
         self._edges: list[ChunkEdgeItem] = []
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel -- tracks what context is currently rendered
@@ -1961,6 +1964,25 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # deleted kept reacting to every stage change.
         self._stage_listeners: list[NoticeConnection] = []
         disconnect_when_destroyed(self, self._stage_listeners)
+
+    def fed_outputs(self, prim_path: str) -> set[str]:
+        """Names of prim_path's outputs that a node in this scene has a wire from.
+
+        The reverse half of ChunkNodeItem._connected_param_names: a wire lives on the
+        downstream prim's inputs:, so finding the ones that start at a node means reading
+        every other node. Each node asked that on every port placement, which is every
+        node times every placement -- 84k connection scans and over a second to dive into
+        an 86-node group. Read once here instead, and dropped by _on_objects_changed when a
+        wire can have moved and by _rebuild_nodes when the node set does.
+        """
+        if self._fed_outputs_index is None:
+            index: dict[str, set[str]] = {}
+            for node in self._nodes.values():
+                for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
+                    if src_attr_suffix.startswith("outputs:"):
+                        index.setdefault(src_prim_path, set()).add(src_attr_suffix[len("outputs:"):])
+            self._fed_outputs_index = index
+        return self._fed_outputs_index.get(prim_path, set())
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -2107,6 +2129,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._rebuild_retries = 0
 
         self._dirty = False
+        self._fed_outputs_index = None  # the node set and its prim handles are about to change
         # Bump the build generation so any in-flight deferred proxy batch from a superseded
         # rebuild aborts instead of creating a ghost proxy on a node that got torn down below.
         self._build_gen = getattr(self, "_build_gen", 0) + 1
@@ -2456,6 +2479,14 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             return
         if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
             return
+        # Before any early return below. A wire is an inputs: property, so an edit to one or
+        # any resync can move it; a cook's hundreds of plain attribute writes cannot.
+        if self._fed_outputs_index is not None and (
+            notice.GetResyncedPaths()
+            or any(p.IsPropertyPath() and p.name.startswith("inputs:")
+                   for p in notice.GetChangedInfoOnlyPaths())
+        ):
+            self._fed_outputs_index = None
         # A prim-level resync under our chunks root means a chunk was added/removed/enabled/
         # disabled. Rebuild the whole graph from scratch -- only active chunks survive --
         # instead of editing nodes in place around expired or inactive prims. Property-level
