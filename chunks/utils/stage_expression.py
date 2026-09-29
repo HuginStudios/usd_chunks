@@ -19,7 +19,7 @@ adds to it, and leaves everything it did not author alone.
 
 A chunk param is not one of those places, so usd_chunks does not resolve ${NAME} in one --
 a Prim Path field holding one keeps the text, literally. Acting on a variable anywhere else
-in a chunk graph is the Stage Expression Filter's job: that is a usd_chunks mechanism,
+in a chunk graph is the Stage Expression Switch's job: that is a usd_chunks mechanism,
 honestly named, rather than an extension of USD's that would appear to work in fields where
 OpenUSD says it does not.
 
@@ -171,8 +171,8 @@ def main():
     rows.add_param(chunk.LineEdit(
         NAME_COLUMN, "Name",
         tooltip="The variable name. Spell it ${NAME} in an asset path or a variant "
-                "selection -- the two places USD substitutes -- or gate a branch on it "
-                "with a Stage Expression Filter.",
+                "selection -- the two places USD substitutes -- or branch on it "
+                "with a Stage Expression Switch.",
     ))
     rows.add_param(chunk.Menu(
         TYPE_COLUMN, "Type",
@@ -206,8 +206,8 @@ def config():
             "USD substitutes ${NAME} into asset paths and variant selections and nowhere "
             "else, so `if(${USE_LOW_POLY}, \"low/hero.usda\", \"hero.usda\")` in a file "
             "field is evaluated by composition itself. A chunk param is not one of those "
-            "places and keeps the text literally -- gate on the variable with a Stage "
-            "Expression Filter instead.\n"
+            "places and keeps the text literally -- branch on the variable with a Stage "
+            "Expression Switch instead.\n"
             "Variables the opened file already declares are added to rather than replaced; "
             "a name set here overrides a studio default of the same name via the session "
             "layer, leaving their file untouched.\n"
