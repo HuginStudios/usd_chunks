@@ -247,7 +247,12 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     UsdGeom.Cube.Define(scratch, "/vanished_proto")
     monkeypatch.setattr(_chunk_usd, "get_upstream_stage", lambda *a, **k: scratch)
 
-    scatter_mod.module.execute(scatter)  # must not raise
+    # Cooked the way the framework cooks: cook() clears the chunk's layer before execute().
+    # Calling execute() bare ran against the proto_0 an earlier cook had already typed as a
+    # Cube, so the "typeless means unresolved" check never fired. It only ever passed
+    # because the readout Label written at the end of execute() re-cooked the chunk -- a
+    # Label no longer does (it is presentation_only).
+    assert scatter.cook(), "precondition: the chunk is allowed to cook"  # must not raise
 
     proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
     assert proto.IsValid()

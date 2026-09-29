@@ -2019,6 +2019,15 @@ class NoticeConnection:
             # to the correct layer
 
             stage = owner.get_stage()
+            # A global USD listener hears every stage in the process, and a chunk acts on
+            # its own. Dropped before the edit context, which is the expensive part: opening
+            # one .mtlx sends hundreds of change rounds from the MaterialX plugin's private
+            # stage, and resolving the context for each cost more than the file itself.
+            # Compared by root layer, since the Python wrapper of one stage is not unique.
+            notice_stage = getattr(notice, "GetStage", None)
+            if stage and notice_stage is not None and (other := notice_stage()) is not None \
+                    and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
+                return
             ctx = owner.get_edit_context()
             try:
                 if stage and ctx and context:

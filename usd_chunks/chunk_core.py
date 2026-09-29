@@ -166,6 +166,12 @@ class UsdSyntaxHighlightMapping(SyntaxHighlightMapping):
 class ChunkContainerWidgetBase(Generic[GroupT]):
     """Chunk is a base class for creating UI representation of chunk containers."""
 
+    #: Build a collapsed group's child widgets only when it is first expanded. Whether a
+    #: toolkit can is its own question -- expanding must call ensure_children_built before it
+    #: measures anything -- so a subclass opts in. Worth it for big folded groups: a Wedge's
+    #: Ranges list is ~6,600 widgets and ~5 s to build, all of it hidden until opened.
+    defer_collapsed_children: bool = False
+
     def __init__(self, group: GroupT, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -239,7 +245,13 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         # Initialize everything
         self.factory = self.get_widget_factory()
         self.build_collapsable()
-        self._build_param_widgets(self.group)
+        self._children_built = not (
+            self.defer_collapsed_children
+            and self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
+            and self.group.has_state(ChunkFlags.State.COLLAPSED)
+        )
+        if self._children_built:
+            self._build_param_widgets(self.group)
         self.update_from_layout()
         self.update_from_flags()
         self.update_from_state()
@@ -294,6 +306,17 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             NotImplementedError: A subclass does not implement it.
         """
         raise NotImplementedError
+
+    def ensure_children_built(self) -> None:
+        """Build the child widgets a collapsed group deferred (see defer_collapsed_children).
+
+        Built from the group's params as they are now, so rows added while it was folded
+        (a ListGroup grown by a load) arrive with the rest. Does nothing once built.
+        """
+        if self._children_built:
+            return
+        self._children_built = True
+        self._build_param_widgets(self.group)
 
     def is_collapsed(self) -> bool:
         """Whether the group widget should be collapsed, because it or its parent is.
@@ -485,6 +508,8 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.delete_self()
 
     def _param_added_callback(self, notice, sender: GroupT):
+        if not self._children_built:
+            return  # built with everything else when the group is first expanded
         h = notice.data
         if not h:
             return

@@ -185,6 +185,22 @@ class TestColour:
             assert all(0.5 <= c <= 1.0 for c in wedge.sample(node, i)["Tint"])
 
 
+def test_the_ranges_list_starts_folded_and_survives_a_sync():
+    """A dataset wedge carries dozens of rows, so the list starts collapsed. Collapsable is
+    the bit ParamFlags.OUTPUT sits on: _ranges read the folded list as a range, and
+    _sync_ranges removed it as one no row asked for -- every row went with it."""
+    node = _wedge()
+    rows = node.get_param("range_rows")
+    assert rows.has_flag(chunk.ChunkFlags.GroupFlags.COLLAPSABLE)
+    assert rows.has_state(chunk.ChunkFlags.State.COLLAPSED)
+
+    _row(node, "tz", low=1.0, high=2.0)
+    wedge._sync_ranges(node)
+
+    assert node.get_param("range_rows") is rows
+    assert [p.name for p in wedge._ranges(node)] == ["tz"]
+
+
 def test_execute_writes_the_sample_onto_the_range_params():
     node = _wedge(index=4)
     _row(node, "tz", low=1.6, high=2.9)
