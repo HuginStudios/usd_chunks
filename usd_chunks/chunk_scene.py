@@ -34,6 +34,7 @@ from usd_chunks.chunk_core import (
     ChunkParamBase,
     ChunkHash,
     NameSyncedContainer,
+    check_chunk_type,
     is_inst,
 )
 
@@ -240,7 +241,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         Returns:
             ChunkBase | None: The added chunk
+
+        Raises:
+            UnregisteredChunkTypeError: c's class is defined outside the framework and outside
+                its registered chunk module, so a save and reopen would lose it. See
+                chunk_core.check_chunk_type.
         """
+        # First, before a rename or a context is touched. A plain chunk is checked again as
+        # it enters its context (ChunkBase.add_param), which is the choke point every other
+        # way in goes through; a context itself never passes there -- it goes into the flat
+        # scene container below -- so it is checked here.
+        check_chunk_type(c)
         names = self.chunks.get_my_names()
         # The scene container is flat and keyed by name, but the model it holds is not: two
         # chunkgroups at different prim paths may legitimately share a name, and a live scene

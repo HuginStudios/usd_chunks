@@ -34,7 +34,9 @@ def _param(node, suffix):
 def _count_cooks(monkeypatch, *nodes):
     """{chunk name: number of module executes} for these chunks, from here on."""
     counts = {n.name: 0 for n in nodes}
-    for module in {id(n._module): n._module for n in nodes}.values():
+    # The registered module each chunk's hooks are looked up on (ChunkBase.get_chunk_module).
+    modules = [n.get_chunk_module().module for n in nodes]
+    for module in {id(m): m for m in modules}.values():
         original = module.execute
 
         def traced(node, original=original):

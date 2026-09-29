@@ -9,7 +9,6 @@ its handle has a meaningful direction.
 from __future__ import annotations
 
 import importlib
-import types as _types
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
@@ -19,6 +18,8 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig, ChunkFlags
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
+
+from chunk_stubs import attach_stub_module
 
 
 class _DummyScene(SceneSender):
@@ -52,6 +53,9 @@ def _camera_like(gizmos=None, target: str = "/World/Cam"):
                                flags=ChunkFlags.ParamFlags.LABELED))
     c.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
     c._config = ChunkConfig(module="camera", gizmos=gizmos or [])
+    # The shape, not camera.py itself: hooks come from the module a config names, so naming
+    # the real camera would run its gizmo hooks. A stub module has none unless a test adds one.
+    attach_stub_module(c)
     return c
 
 
@@ -504,10 +508,9 @@ def _camera_chunk_and_stage():
 
     chunk_registry.ChunkRegistry().initialize(_StagedScene(), "pytest")
     c = camera_mod.main()
+    # Module-level hooks like gizmo_hidden and gizmo_changed are looked up on the registered
+    # module this names, so without it they are simply never found.
     c._config = ChunkConfig(module="camera", gizmos=camera_mod.config().gizmos)
-    # The framework attaches the chunk's module; module-level hooks like gizmo_hidden and
-    # gizmo_changed are looked up on it, so without this they are simply never found.
-    c._module = camera_mod
     return camera_mod, c, stage
 
 
@@ -707,13 +710,11 @@ def test_a_failing_hook_leaves_the_handle_visible() -> None:
     appears at all."""
 
     c = _camera_like([chunk.Gizmo("zdist", type="cube", driver="focusDistance")])
-    module = _types.ModuleType("chunks.camera_stub")
 
     def gizmo_hidden(node, gizmo):
         raise RuntimeError("boom")
 
-    module.gizmo_hidden = gizmo_hidden
-    c._module = module
+    attach_stub_module(c, gizmo_hidden=gizmo_hidden)
 
     assert chunk_gizmo.is_gizmo_hidden(c, "zdist") is False
 

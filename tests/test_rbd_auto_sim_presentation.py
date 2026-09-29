@@ -24,6 +24,7 @@ import importlib
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry
+from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 
@@ -71,7 +72,8 @@ def _probe(source):
 def _brush():
     brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
     c = brush_mod.main()
-    c._module = brush_mod
+    # Its hooks are looked up in the registry by the module its config names.
+    c._config = ChunkConfig(module="scatter_brush")
     return c
 
 

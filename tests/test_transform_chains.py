@@ -74,7 +74,6 @@ def _chunk_path(name: str) -> str:
 def _mk(sender, module, name):
     chunk = module.main()
     chunk._config = ChunkConfig(module="transform")
-    chunk._module = module
     chunk.name = name
     sender.add_chunk(chunk)
     chunk.get_param("primpath_location").value = "/cube"

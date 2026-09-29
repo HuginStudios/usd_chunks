@@ -65,7 +65,6 @@ def scene():
 def _mk(sender, module, name, config_module):
     node = module.main()
     node._config = ChunkConfig(module=config_module)
-    node._module = module
     node.name = name
     sender.add_chunk(node)
     return node
@@ -294,7 +293,6 @@ def test_the_selected_branch_keeps_an_upstream_switchs_choice(scene):
 
     inner = expr_mod.main()
     inner._config = ChunkConfig(module="stage_expression_switch", exec_inputs=2)
-    inner._module = expr_mod
     inner.name = "ShotSwitch"
     sender.add_chunk(inner)
     chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh010_day"})

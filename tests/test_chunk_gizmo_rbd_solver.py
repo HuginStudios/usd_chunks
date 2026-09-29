@@ -53,7 +53,6 @@ def solver():
 
     node = rbd_mod.main()
     node._config = ChunkConfig(module="rbd_solver")
-    node._module = rbd_mod
     sender.add_chunk(node)
     node.get_param("prim_path").value = "/World/Cube"
     return stage, node

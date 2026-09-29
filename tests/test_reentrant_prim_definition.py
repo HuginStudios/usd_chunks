@@ -29,7 +29,6 @@ class _DummyScene(SceneSender):
 def _make(scene, mod, module_name):
     c = mod.main()
     c._config = ChunkConfig(module=module_name)
-    c._module = mod
     # Auto-chain prev -> new (Params-tab behavior), same as a user repeatedly clicking
     # "add chunk" in the Params tab -- this is what wires each new chunk's inputs:chunk
     # connection to its predecessor, the trigger for the reentrancy below.

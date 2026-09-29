@@ -32,6 +32,7 @@ from typing import (
     TypeAlias,
     TypeVar,
     TYPE_CHECKING,
+    cast,
     overload,
     TypeGuard,
     Literal,
@@ -238,7 +239,7 @@ _T = TypeVar("_T")
 Predicate: TypeAlias = Callable[[Any], TypeGuard[_T]]
 
 if TYPE_CHECKING:
-    from usd_chunks import chunk_core, chunk_widget_api
+    from usd_chunks import chunk_core, chunk_registry, chunk_widget_api
 
 
 class ChunkNoticeAlias(IntEnum):
@@ -1330,6 +1331,18 @@ class ChunkNoticePropagator:
         """
         raise NotImplementedError
 
+    def get_chunk_module(self) -> chunk_registry.ChunkModule | None:
+        """The registered chunk module this object's behaviour comes from, or None.
+
+        Only a chunk has one -- ChunkBase overrides this to look its module up in the
+        registry. Declared here so the solve can ask any propagator whether it has
+        behaviour to run without knowing the chunk classes, which this module cannot import.
+
+        Returns:
+            Always None here.
+        """
+        return None
+
     @abstractmethod
     def is_blocked(self) -> bool:
         """Check whether this instance should be blocked from sending notices.
@@ -1500,22 +1513,26 @@ class ChunkNoticePropagator:
             # the aliases: a `presentation_only` param raises PARAM_CHANGED, not
             # STATE_CHANGED, so testing the alias would call it a data change and re-cook.
             state_only = n.only_presentation_changed()
-            # Only a chunk made from a module has a _module: ChunkModule.create sets it on
-            # each chunk it creates, and those are ChunkBase. A module without execute()
-            # (a chunkgroup) still counts here -- it goes stale below.
-            if not state_only and getattr(prop, '_module', None):
+            # Only a chunk made from a module has a module: ChunkModule.create names it in
+            # the config of each chunk it creates, and those are ChunkBase. A module without
+            # execute() (a chunkgroup) still counts here -- it goes stale below.
+            # The module is not attached to the chunk: ChunkBase.get_chunk_module looks it
+            # up in the registry by that name, and only a ChunkBase answers anything but
+            # None -- which is what makes the cast below sound.
+            if not state_only and prop.get_chunk_module() is not None:
+                chunk = cast("chunk_core.ChunkBase", prop)
                 # Stale until the module actually runs below. Every reason this dispatch has
                 # for not running it -- blocked, muted, no layer yet, no stage -- leaves the
                 # layer holding a result the change never reached, and recook_for_view cooks
                 # a chunk again on exactly that. A chunk with no execute() (a chunkgroup)
                 # stays stale, which tells recook_for_view its inside needs cooking.
-                mark_cook_stale(prop)
-                if _cooked_since(prop):
-                    prop._cook_stale = False
+                mark_cook_stale(chunk)
+                if _cooked_since(chunk):
+                    chunk._cook_stale = False
                 # The cook itself -- and every guard on whether it may run now -- is
-                # ChunkBase.cook. A propagator with a _module but no cook() has nothing to
-                # run and stays stale.
-                elif (cook := getattr(prop, 'cook', None)) is not None and cook():
+                # ChunkBase.cook. A chunk whose module has no execute() has nothing to run
+                # and stays stale.
+                elif chunk.cook():
                     # True once cook() got past its guards, including when the layer left
                     # the stack mid-cook. A module that raises ends the whole batch, and
                     # this record with it, so there is nothing to note on that path.

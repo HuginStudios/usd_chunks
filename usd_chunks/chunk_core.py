@@ -3383,12 +3383,37 @@ class ChunkBase(ChunkGroupBase):
             if getattr(param, "_driven_attr_paths", None) and param.get_chunk() is self:
                 param._author_driven_connections()
 
+    @override
+    def get_chunk_module(self) -> chunk_registry.ChunkModule | None:
+        """The registered module this chunk's type names, or None.
+
+        Looked up in the registry by config.module -- the same name a saved file records as
+        info:chunkType -- rather than held on the chunk. A chunk can therefore only ever run
+        what a registered module defines, which is exactly what reopening the file will run:
+        a saved file is the whole description of what the network does.
+
+        The registry's module is the copy chunks are built from. A chunk module can exist
+        twice in sys.modules under different keys (its bare name, and a package path when
+        its folder is importable), so it is found by the registry's name, never by import.
+
+        A dict lookup (ChunkRegistry.get_chunk_module does no discovery), so it is cheap
+        enough for the gizmo hooks, which are asked per draw and per drag tick.
+
+        Returns:
+            The ChunkModule, or None for a chunk no module made (a plain Chunk built in the
+            interpreter, a tab context) or whose module is not registered.
+        """
+        if not (cfg := self._config) or not cfg.module:
+            return None
+        return chunk_registry.ChunkRegistry().get_chunk_module(cfg.module)
+
     def _module_hook(self, name: str) -> Callable | None:
         """The function this chunk's module defines under name, or None.
 
         The single place a chunk's behaviour hooks -- execute, commit, the gizmo hooks -- are
         resolved: everything that runs module code for a chunk asks here rather than reading
-        the module itself. It reads the module ChunkModule.create attached as _module.
+        the module itself. It reads the module get_chunk_module finds in the registry, so
+        whatever the registry holds -- after ChunkRegistry.reload_modules too -- is what runs.
 
         Args:
             name: The hook's name in the module, e.g. "execute".
@@ -3397,7 +3422,8 @@ class ChunkBase(ChunkGroupBase):
             The callable, or None when the chunk has no module or its module defines no
             callable of that name.
         """
-        hook = getattr(getattr(self, "_module", None), name, None)
+        module = getattr(self.get_chunk_module(), "module", None)
+        hook = getattr(module, name, None)
         return hook if callable(hook) else None
 
     def can_cook(self) -> bool:
@@ -3516,7 +3542,20 @@ class ChunkBase(ChunkGroupBase):
 
     @override
     def add_param(self, param: ChunkT, force_unique: bool = True, notify: bool = True) -> ChunkT:
-        do_context_setup = notify and self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and isinstance(param, ChunkBase)
+        into_context = isinstance(param, ChunkBase) and self.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+        if into_context:
+            # A context is what a scene holds, so this is where a chunk enters one -- every
+            # path does: SceneSender.add_chunk, a paste, a load, grouping into a chunkgroup.
+            # Before anything is added, so a refused chunk leaves nothing half-wired.
+            check_chunk_type(param)
+        elif isinstance(param, ChunkBase) and self.get_context() is not None:
+            # Nested into a chunk that is already in a scene, so it enters the scene here
+            # instead -- after the check its owner passed on the way in. Lacking a module of
+            # its own, it answers to its owner's, as check_chunk_type does for a chunk nested
+            # before entry. A chunk being built outside any scene (a module's main()) is not
+            # checked yet: it is, whole, when it enters one.
+            check_chunk_type(param, self.get_chunk_module())
+        do_context_setup = notify and into_context
         if do_context_setup:
             # Clear the chunk's edit layer to a fresh slate BEFORE adding -- adding fires
             # PARAM_ADDED, which can trigger the chunk's execute() (e.g. via _wire_inputs);
@@ -3539,6 +3578,69 @@ class ChunkBase(ChunkGroupBase):
                 return owner
             owner = owner.get_owner()
         return None
+
+
+class UnregisteredChunkTypeError(TypeError):
+    """A chunk whose class is defined outside the framework and outside its registered module.
+
+    Raised when such a chunk is added to a scene; see check_chunk_type.
+    """
+
+
+def _is_framework_class(cls: type) -> bool:
+    """Whether cls is defined in usd_chunks itself (Chunk, ChunkBase, a context)."""
+    return cls.__module__ == "usd_chunks" or cls.__module__.startswith("usd_chunks.")
+
+
+def check_chunk_type(c: ChunkBase, fallback: chunk_registry.ChunkModule | None = None) -> None:
+    """Refuse a chunk whose behaviour a saved file could not bring back.
+
+    A chunk can't do anything its module doesn't define, so a saved file is always the whole
+    description of what the network does: behaviour comes only from a registered chunk
+    module, and data lives in USD. The one way round that is a chunk *class* -- a subclass
+    of Chunk with methods, callbacks wired in __init__ or overrides -- defined somewhere a
+    reopen never runs: a script, the interpreter, a test. It would work for this session
+    and come back from the file as its registered type (or a plain runtime chunk), silently
+    without whatever the class added.
+
+    So a chunk entering a scene must be one of:
+
+    - a framework class (Chunk, ChunkBase, a context -- anything in usd_chunks). It has no
+      behaviour of its own: its hooks are looked up in its registered module, and one with
+      no module has none (a chunk built in the interpreter, a tab context). Callbacks a
+      script adds to it are session-only by design, like a script editor's.
+    - a class defined in the registered module its config names. That is the module a
+      reopen runs, so the class comes back with it.
+
+    Compared by the registry's module name, not by module object: a chunk module can exist
+    twice in sys.modules under different keys (its bare name, and a package path), and both
+    resolve to one registered module. ChunkBase nested inside c are checked too, against
+    their own module or, lacking one, c's -- the module whose main() built them.
+
+    Args:
+        c: The chunk being added.
+        fallback: The module c answers to when it has none of its own: that of the chunk it
+            is being nested into, when that one is already in a scene.
+
+    Raises:
+        UnregisteredChunkTypeError: c, or a chunk nested in it, has such a class.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    outer = c.get_chunk_module() or fallback
+    for _, obj in c.iter_hierarchy():
+        if not isinstance(obj, ChunkBase) or _is_framework_class(cls := type(obj)):
+            continue
+        own = obj.get_chunk_module() or outer
+        if own is None or registry.get_chunk_module(cls.__module__) is not own:
+            where = f"registered module {own.module_name!r}" if own else "no registered module"
+            raise UnregisteredChunkTypeError(
+                f"Cannot add chunk {obj.name!r}: its class {cls.__qualname__} is defined in "
+                f"{cls.__module__!r}, and the chunk has {where}. A chunk type must live in a "
+                "registered chunk module (a .py on USD_CHUNK_DIRS with main() and config()): "
+                "a saved file records only the module's name, so a class defined anywhere "
+                "else would not survive a save and reopen. Move the class into its chunk "
+                "module, or build a plain chunk.Chunk and wire session callbacks onto it."
+            )
 
 
 class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):

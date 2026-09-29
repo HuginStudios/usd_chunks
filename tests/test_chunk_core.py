@@ -8,6 +8,8 @@ from usd_chunks.chunk_core import ProxyParam
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -406,15 +408,11 @@ def test_state_change_does_not_reexecute_module():
 
     calls = []
 
-    class _Mod:
-        def execute(self, prop):
-            calls.append(1)
-
     c = chunk.Chunk("c")
     slider = chunk.Slider("s", default_value=0.0)
     c.add_param(slider)
     scene.add_chunk(c)
-    c._module = _Mod()
+    attach_stub_module(c, execute=lambda prop: calls.append(1))
 
     calls.clear()
     c.set_state(chunk.ChunkFlags.State.SELECTED)
@@ -426,14 +424,9 @@ def test_state_change_does_not_reexecute_module():
 
 
 def _module_call_counter(chunk_obj):
-    """Attach a counting stub module to chunk_obj and return the call list."""
+    """Give chunk_obj a registered stub module that counts its cooks; return the call list."""
     calls = []
-
-    class _Mod:
-        def execute(self, prop):
-            calls.append(1)
-
-    chunk_obj._module = _Mod()
+    attach_stub_module(chunk_obj, execute=lambda prop: calls.append(1))
     return calls
 
 
@@ -539,15 +532,11 @@ def test_module_does_not_execute_without_a_stage():
 
     calls = []
 
-    class _Mod:
-        def execute(self, prop):
-            calls.append(1)
-
     c = chunk.Chunk("stageless")
     slider = chunk.Slider("s", default_value=0.0)
     c.add_param(slider)
     scene.add_chunk(c)
-    c._module = _Mod()
+    attach_stub_module(c, execute=lambda prop: calls.append(1))
 
     calls.clear()
     slider.value = 5.0

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import math
-import types
 
 import pytest
 from pxr import Gf
@@ -22,6 +21,8 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias
+
+from chunk_stubs import attach_stub_module
 
 
 class _DummyScene(SceneSender):
@@ -44,10 +45,9 @@ def _camera_chunk(hook=None, gizmos=None):
     c._config = ChunkConfig(module="camera", gizmos=gizmos or [
         chunk.Gizmo("aim", type="cube", anchor="primpath_location", driver="focusDistance"),
     ])
-    if hook is not None:
-        module = types.ModuleType("chunks.camera_stub")
-        module.gizmo_changed = hook
-        c._module = module
+    # Hooks come from the module the config names, so a stub rather than the real camera:
+    # the test's hook, or none at all.
+    attach_stub_module(c, **({"gizmo_changed": hook} if hook is not None else {}))
     return c
 
 
@@ -104,9 +104,7 @@ def test_handled_is_signalled_not_inferred() -> None:
 
 def test_a_non_callable_attribute_is_ignored() -> None:
     c = _camera_chunk()
-    module = types.ModuleType("chunks.camera_stub")
-    module.gizmo_changed = "not a function"
-    c._module = module
+    attach_stub_module(c, gizmo_changed="not a function")
 
     chunk_gizmo.apply_bindings(c, "aim", 3.0)
 

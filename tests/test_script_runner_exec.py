@@ -40,7 +40,6 @@ def _make(mod, name: str):
     c = mod.main()
     c.name = name
     c._config = ChunkConfig(module=mod.__name__.rsplit(".", 1)[-1])
-    c._module = mod
     return c
 
 

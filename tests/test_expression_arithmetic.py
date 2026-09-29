@@ -12,7 +12,6 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _INPUTS_PREFIX,
@@ -21,6 +20,8 @@ from usd_chunks.chunk_stage import (
     ChunkStageSync,
     get_chunk_prim_path,
 )
+
+from chunk_stubs import attach_stub_module
 
 
 def _chunk_path(name: str) -> str:
@@ -51,7 +52,7 @@ class _Scene(SceneSender):
 
 def _mk(name: str) -> chunk.Chunk:
     c = chunk.Chunk(name)
-    c._config = ChunkConfig(module="prim")
+    attach_stub_module(c)
     return c
 
 
