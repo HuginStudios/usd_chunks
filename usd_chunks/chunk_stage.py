@@ -1242,6 +1242,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # wire would drop. Repoint every chunk-prim connection from old_path to new_path.
             self._fixup_connection_targets(old_path, new_path)
             _patch_expressions(self._stage, f"@{old_name}.", f"@{new_name}.")
+            _patch_param_expressions(self._scene.get_chunks(), f"@{old_name}.", f"@{new_name}.")
             self._loaded_prim_paths.discard(old_path)
             self._loaded_prim_paths.add(new_path)
         finally:
@@ -1329,11 +1330,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             elif not is_leaf and name.startswith(old_attr + ":"):
                 renames[name] = f"{_INPUTS_PREFIX}{new_ns}{name[len(old_attr):]}"
 
-        # Expressions can only name a top-level param (@node.param@). Patched whether or not
-        # the param has an attribute of its own: one still at its default has none, and other
-        # chunks can refer to it all the same.
-        if len(segments) == 1:
-            _patch_expressions(self._stage, f".{old_name}@", f".{new_name}@")
+        # An expression names a param by its bare name (@node.param@), at any depth, so
+        # match the whole token with this chunk's name: ".a@" alone would also rewrite
+        # another chunk's param of the same name. Patched whether or not the param has an
+        # attribute of its own: one still at its default has none, and other chunks can
+        # refer to it all the same.
+        old_ref, new_ref = f"@{chunk.name}.{old_name}@", f"@{chunk.name}.{new_name}@"
+        _patch_expressions(self._stage, old_ref, new_ref)
+        _patch_param_expressions(self._scene.get_chunks(), old_ref, new_ref)
         if not renames:
             return
 
@@ -2293,6 +2297,24 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
 
 
 
+def _patch_param_expressions(chunks, old: str, new: str) -> None:
+    """Replace old with new in the expression text of every loaded param.
+
+    _patch_expressions fixes the USD; this fixes the params already in memory, which
+    otherwise keep the old name and stop resolving until the scene is reloaded.
+
+    Args:
+        chunks: The chunks to patch, nested ones included.
+        old: The text to replace.
+        new: The replacement.
+    """
+    for c in chunks:
+        for param in c.get_params():
+            raw = getattr(param, "raw_value", None)
+            if isinstance(raw, str) and old in raw:
+                param.value = raw.replace(old, new)
+
+
 def _define_chunk_parent(stage: Usd.Stage, path: str) -> Usd.Prim:
     """Define the parent prim a chunk hangs under, typed for what it actually is.
 
@@ -2804,8 +2826,8 @@ def exec_input_slots(chunk: core.ChunkBase) -> int:
 
     1 for almost everything -- one inputs:chunk that several wires may stack on. Above 1
     the slots mean different things and each gets its own port, which is what a Stage
-    Expression Filter needs: forwarding slot 0 and gating slot 1 is not a property a merge
-    ordering can express.
+    Expression Switch needs: slot 0 is the normal path and slot 1 the matched one, which is
+    not a property a merge ordering can express.
 
     A dynamic-slot chunk (has_dynamic_exec_inputs) answers 1 here and is handled by that
     predicate instead: its slots grow with what is wired in, so a fixed count is the wrong

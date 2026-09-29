@@ -2516,11 +2516,11 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                     # Not an error and not rewritten -- the text is kept exactly as typed --
                     # but it will never resolve, and silently reading back as the literal
                     # "${SHOT}" is worse than saying so. USD substitutes expression variables
-                    # into asset paths and variant selections only; a Stage Expression Filter
+                    # into asset paths and variant selections only; a Stage Expression Switch
                     # is how a chunk graph acts on one anywhere else.
                     logger.warning(
                         "%s: expression variables only resolve in asset paths, so %r stays "
-                        "literal here. Gate on it with a Stage Expression Filter instead.",
+                        "literal here. Branch on it with a Stage Expression Switch instead.",
                         self.name, value,
                     )
             self._expression_connections = []
@@ -4070,9 +4070,9 @@ class ChunkConfig(AttributesBase):
     terminal: bool = attrs.field(default=False)  # no outputs:chunk authored; chunk terminates the exec chain
     # How many exec input slots the chunk has. 1 is the ordinary case: one inputs:chunk
     # port, which may still carry several wires stacked on it. Above 1 the slots are
-    # POSITIONAL and each gets its own port -- Stage Expression Filter's slot 0 is the
-    # stream it always forwards and slot 1 the branch it gates, so which wire landed where
-    # is the whole meaning. A dynamic-slot chunk (dynamic_exec_inputs) is neither: its slot
+    # POSITIONAL and each gets its own port -- Stage Expression Switch's slot 0 is the
+    # normal path and slot 1 the matched one, so which wire landed where is the whole
+    # meaning. A dynamic-slot chunk (dynamic_exec_inputs) is neither: its slot
     # count grows with what is wired into it, which is that field's business, not this one's.
     exec_inputs: int = attrs.field(default=1)
     # Grows a fresh numbered exec input slot (inputs:chunk, inputs:chunk1, ...) per branch

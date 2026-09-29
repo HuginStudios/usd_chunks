@@ -266,3 +266,66 @@ def test_eval_arithmetic_computes(text, expected) -> None:
 ])
 def test_eval_arithmetic_refuses(text) -> None:
     assert chunk_utils.eval_arithmetic(text) is None
+
+
+# ---------------------------------------------------------------------------
+# rename, live
+# ---------------------------------------------------------------------------
+
+def test_chunk_rename_updates_live_expressions(scene) -> None:
+    """Renaming a chunk must fix the expressions in memory too, not only in the USD --
+    otherwise "@chunkA.a@ * 3" keeps the old name and reads as " * 3" until a reload."""
+    a, _ = _two_sources(scene)
+    dst = _mk("dst")
+    num = chunk.Slider("num", default_value=0.0)
+    text = chunk.LineEdit("text")
+    dst.add_params([num, text])
+    scene.add_chunk(dst)
+    num.value = "@chunkA.a@ * 3"
+    text.value = "@chunkA.a@_suffix"
+
+    a.name = "renamedA"
+
+    assert num.raw_value == "@renamedA.a@ * 3"
+    assert text.raw_value == "@renamedA.a@_suffix"
+    assert num.value == pytest.approx(60.0)
+    a.get_param("a").value = 2.0
+    assert num.value == pytest.approx(6.0), "still follows the renamed chunk"
+
+
+def test_param_rename_updates_live_expressions(scene) -> None:
+    a, _ = _two_sources(scene)
+    dst = _mk("dst")
+    num = chunk.Slider("num", default_value=0.0)
+    dst.add_param(num)
+    scene.add_chunk(dst)
+    num.value = "@chunkA.a@ + @chunkB.a@"
+
+    a.get_param("a").name = "size"
+
+    assert num.raw_value == "@chunkA.size@ + @chunkB.a@", "only chunkA's param was renamed"
+    assert num.value == pytest.approx(23.0)
+
+
+def test_nested_param_rename_updates_expressions(scene) -> None:
+    """@node.param@ finds a param inside a group by its bare name, so renaming it must be
+    followed too, in memory and in the USD."""
+    src = _mk("src")
+    grp = chunk.Group("grp")
+    inner = chunk.Slider("inner", default_value=0.0)
+    grp.add_param(inner)
+    src.add_param(grp)
+    scene.add_chunk(src)
+    inner.value = 4.0
+    dst = _mk("dst")
+    num = chunk.Slider("num", default_value=0.0)
+    dst.add_param(num)
+    scene.add_chunk(dst)
+    num.value = "@src.inner@ * 2"
+
+    inner.name = "renamed"
+
+    assert num.raw_value == "@src.renamed@ * 2"
+    assert num.value == pytest.approx(8.0)
+    attr = scene.get_stage().GetPrimAtPath(_chunk_path("dst")).GetAttribute(f"{_INPUTS_PREFIX}num")
+    assert chunk_utils.read_expression_text(attr) == "@src.renamed@ * 2"

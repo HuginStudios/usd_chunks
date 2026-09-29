@@ -2,7 +2,7 @@
 
 USD substitutes ${NAME} into asset paths and variant selections, from the root layer stack,
 and nowhere else. usd_chunks does not extend that: a param carrying ${NAME} keeps the text
-literally, and a chunk graph acts on a variable through a Stage Expression Filter, which is
+literally, and a chunk graph acts on a variable through a Stage Expression Switch, which is
 a mechanism of ours rather than a place USD's own rule is quietly widened.
 
 The Stage Expression chunk authors into the session layer, where an opinion composes over
