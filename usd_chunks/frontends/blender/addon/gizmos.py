@@ -64,17 +64,6 @@ def _active_view():
     return addon.get_view()
 
 
-def preset_kwargs(select_id) -> dict:
-    """The extra arguments for a `draw_preset_*` call.
-
-    `select_id` is how Blender tells a gizmo which pick buffer id to draw into, and it is
-    only meaningful in the select pass -- the ordinary draw has none. Passing None anyway
-    is not "no id": the argument is typed int and rejects it, so every redraw raised and
-    nothing was drawn at all.
-    """
-    return {} if select_id is None else {"select_id": select_id}
-
-
 def _picked_prim(stage):
     """The prim a handle should hang off, or None.
 

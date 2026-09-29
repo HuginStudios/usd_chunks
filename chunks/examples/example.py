@@ -81,30 +81,6 @@ def updateLabel(owner: chunk.Label, notice: chunk_notice.PrimSelectionChangedNot
     owner.value = str(path)
 
 
-@nice_print
-def listChanged(owner: chunk.Chunk, notice, sender):
-    for i in owner.get_params(chunk.is_param):
-        owner.get_logger().info(i.name, i.value, isinstance(i, chunk_core.ProxyParam))
-
-
-def validate_name(param: chunk.LineEdit, sender: chunk_core.AttributeSender):
-    if not sender.value:
-        return sender.old_value
-    return sender.value
-
-
-def nameChanged1(owner: chunk.LineEdit, notice, sender):
-    if not (s := notice.data) or s.name != "value":
-        return
-
-    if not (c := owner.get_chunk()):
-        return
-
-    param_name = s.old_value if s.old_value else "listSlider"
-    if p := c.get_param(param_name):
-        p.name = s.value
-
-
 def nameChanged2(owner: chunk.Slider, attrsender):
     nameEdit = owner.get_dependency(0, chunk.is_param_t(str))
     if nameEdit.value:
@@ -255,8 +231,6 @@ def main():
     # These are examples of how to modify an attribute of a parameter based on another parameter. In both cases, the name of listSlider is modified
     # when the nameEdit's value is cja
 
-    # nameEdit.add_callback(nameChanged1, notice_alias=chunk.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
-    # nameEdit.set_function("value", validate_name)
 
     listSlider.add_dependency(nameEdit)
     listSlider.set_function("name", nameChanged2)

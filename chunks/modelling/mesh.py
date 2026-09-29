@@ -89,21 +89,8 @@ def build_plane(stage, name="/plane", divx=2, divy=2, width=1.0, height=1.0, pos
         py += height / (divy - 1)
 
     for i in range(ipf * nfaces):
-        if False:
-            uoffset = (i // ipf) % (w - 1)
-            voffset = (i // (ipf * (w - 1))) % (h - 1)
-
-            pt = i % ipf
-            p = pts[ids[pt]]
-
-            u = p[0] - round(p[0] - 0.5) + uoffset
-            v = p[1] - round(p[1] - 0.5) + voffset
-        else:
-            p = pts[ids[i]]
-            u = p[0]
-            v = p[1]
-
-        uvs[i] = (u, v)
+        p = pts[ids[i]]
+        uvs[i] = (p[0], p[1])
 
     primpath = Sdf.Path(name)
     mesh = UsdGeom.Mesh.Define(stage, primpath)

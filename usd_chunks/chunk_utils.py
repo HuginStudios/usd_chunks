@@ -626,14 +626,13 @@ def read_lofted_label(attr: Usd.Attribute) -> str | None:
 # 1. The variables are read from the composed stage (root layer + session layer, session
 #    winning), so variables a studio already authored in the file they opened are visible
 #    and usable exactly as they are. usd_chunks adds to that set rather than owning it.
-# 2. Prim paths are not one of the fields USD substitutes into, so ${NAME} in a chunk's
-#    Prim Path param has to be expanded here, at param-read time, alongside @Node.param@.
-#    That is what makes "use it in a LineEdit like a prim path" work at all.
+# 2. Nothing here substitutes into other fields. A ${NAME} in a param that is not an asset
+#    path stays literal (ChunkParamBase warns); a Stage Expression Switch is how a chunk
+#    graph branches on a variable anywhere else.
 
 #: A bare ${NAME} reference anywhere inside a string. USD proper only accepts a `${NAME}`
-#: expression as the *whole* field, delimited by backticks; this looser form is what makes
-#: a prim path like "/World/${SHOT}/geo" -- a field USD never substitutes into -- usable.
-#: Both are supported: resolve_stage_expression dispatches on which one it is looking at.
+#: expression as the *whole* field, delimited by backticks; has_stage_expression spots
+#: both forms, so a param can say when one will stay literal.
 _STAGE_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
 #: Layer metadata key holding the variable dict. Named by USD, not by us.
@@ -666,43 +665,6 @@ def has_stage_expression(text) -> bool:
     return bool(_STAGE_VAR_RE.search(text)) or Sdf.VariableExpression.IsExpression(text)
 
 
-def resolve_stage_expression(text, stage: Usd.Stage):
-    """Substitute stage expression variables into text.
-
-    A fully-delimited USD expression (`${SHOT}` or `"./${ASSET}.usda"` in backticks) goes
-    through Sdf.VariableExpression, so the studio syntax already in their files evaluates
-    by USD's own rules -- including the typed and function forms this module makes no
-    attempt to reimplement. Anything else is treated as text with bare ${NAME} references
-    substituted into it, which is the form a prim path needs.
-
-    An unknown variable is left as written rather than blanked. A path that silently
-    became "/World//geo" would author into the wrong place and look like a typo in the
-    field; leaving ${SHOT} visible in the value says which variable is missing.
-
-    Args:
-        text (str): The value to resolve
-        stage (Usd.Stage): The stage whose variables apply
-
-    Returns:
-        The evaluated value -- typed for a full USD expression, a string otherwise
-    """
-    if not isinstance(text, str):
-        return text
-    variables = stage_expression_variables(stage)
-
-    if Sdf.VariableExpression.IsExpression(text):
-        result = Sdf.VariableExpression(text).Evaluate(variables)
-        if result.errors:
-            logger.warning("Stage expression %r: %s", text, "; ".join(result.errors))
-            return text
-        return text if result.value is None else result.value
-
-    def sub(match):
-        return str(variables.get(match.group(1), match.group(0)))
-
-    return _STAGE_VAR_RE.sub(sub, text)
-
-
 def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
     """Author variables into the stage's session layer, replacing what is there.
 
@@ -716,8 +678,7 @@ def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
     exist when the stage was opened does not: an arc whose ${NAME} failed to resolve
     records no dependency on NAME, so defining it later leaves that arc unresolved until
     the stage is reopened (true of the root layer too -- it is a property of Pcp's
-    dependency tracking, not of the layer chosen here). Params resolved through
-    resolve_stage_expression are unaffected; they read the dict on every access.
+    dependency tracking, not of the layer chosen here).
 
     Args:
         stage (Usd.Stage): The stage to author on

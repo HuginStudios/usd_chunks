@@ -732,9 +732,6 @@ class GraphView:
 
     # -- view slots --------------------------------------------------------
 
-    def _context_prim(self):
-        return chunk_graph.context_prim(self.stage, self.context)
-
     def active_slot(self) -> int:
         """The view slot driving execution in this context, 0 for none.
 

@@ -1298,9 +1298,6 @@ class BlenderGraphView:
 
     # -- views -------------------------------------------------------------
 
-    def _context_prim(self):
-        return chunk_graph.context_prim(self.stage, self.context)
-
     def active_slot(self) -> int:
         return chunk_graph.read_active_slot(self.stage, self.context)
 

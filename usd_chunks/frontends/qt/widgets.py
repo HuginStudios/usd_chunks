@@ -2555,17 +2555,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             prim_path = f"/chunks/{self.group.name}"
         vs.show_chunk_menu(self.group, prim_path, event.globalPos())
 
-    def get_category(self) -> str:
-        """Get the category of this Chunk
-
-        Returns:
-            str: Category of this Chunk
-        """
-        if isinstance(self.group, chunk_core.ChunkBase):
-            if config := self.group.get_config():
-                return config.category
-        return chunk.DefaultConfig().category
-
     def set_selected(self, val: bool):
         selected = bool(
             val and (not self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) or self._is_group_chunk())

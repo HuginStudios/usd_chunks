@@ -16,7 +16,6 @@ ChunkContainerWidgetBase had to stay with the model it presents.
 from __future__ import annotations
 
 import copy
-import inspect
 import logging
 import sys
 import types
@@ -392,20 +391,6 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             return owner.get_usd_prop()
         return None
 
-    def _copy_connection(
-        self,
-        conn: chunk_notice.NoticeConnection,
-        src: chunk_notice.ChunkNoticePropagator,
-    ):
-        # Add connections to the copy by creating new NoticeConnection objects
-        # Rewire the connection to the copy if conn.sender is the source of the copy (self)
-        if meth := conn.get_method():
-            sender = self if conn.sender == src else conn.sender
-            new_conn = chunk_notice.NoticeConnection(
-                meth, conn.alias, sender, conn.globally, self if conn.owner is not None else None
-            )
-            self._callbacks.add(new_conn)
-
 
 class CopyMode(IntEnum):
     """How a parameter's attributes are carried over when it is copied.
@@ -502,16 +487,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         default=None,
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
-
-    @classmethod
-    def print_init_signature(cls):
-        """Print the generated __init__ signature, for debugging."""
-        signature = inspect.signature(cls.__init__)
-        msg = "__init__("
-        for param in signature.parameters.keys():
-            msg += "\n    " + param + ","
-        msg += "\n)"
-        print(f"{cls.__name__} __init__ signature: \n", msg)
 
     def __attrs_post_init__(self):
         """Initialize the propagator.
@@ -647,17 +622,6 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
         copied.set_owner(self.get_owner())
         # Copy any connections to self over to the copy
         return copied
-
-    @classmethod
-    def inspect_class(cls) -> attrs.ClassProps:  # type: ignore
-        """Wrapper around attrs.inspect, for debugging the class attributes.
-
-        Returns:
-            attrs.ClassProps: ClassProps of this class, or None on attrs older than 25.4
-        """
-        if not _ATTRS_SUPPORT_INSPECT:
-            return None  # type: ignore
-        return attrs.inspect(cls)  # type: ignore
 
     def get_attribute_sender(self, attribname: str) -> AttributeSender:
         """Get the sender for one attribute on this instance.

@@ -279,7 +279,7 @@ def _unbind(chunk):
     Not a contrivance -- it is what `_restore_dynamic_params` leaves behind by design. Its
     own comment says so: "a chunk gated off already has its layer muted, so the real prim is
     not on the stage to hand over as an attribute", so `stage.GetAttributeAtPath` finds
-    nothing and the rebind is skipped, with `set_chunk_muted` expected to push the value
+    nothing and the rebind is skipped, with `set_chunks_muted` expected to push the value
     later. Pushing walks the bindings, so with none there is nothing to push.
 
     Reached here directly because the load ORDER that produces it needs the whole cast --

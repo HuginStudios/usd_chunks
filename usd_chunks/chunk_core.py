@@ -107,10 +107,6 @@ class SyntaxHighlightMapping:
         """Style every match of `pattern` with `style`."""
         self._mappings[pattern] = style
 
-    def get_mappings(self):
-        """The (pattern, style) pairs."""
-        return self._mappings.items()
-
     def match_text(self, text: str) -> Generator[tuple[int, int, SyntaxHighlightStyle], None, None]:
         """Every styled span in `text`.
 
@@ -447,24 +443,6 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         Args:
             widget (ChunkContainerWidgetBase | ChunkParamWidgetBase): The widget to add
             label (str, optional): An optional label of the widget. Defaults to None.
-
-        Raises:
-            NotImplementedError: A subclass does not implement it.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def add_list_widget(
-        self, widget: ChunkContainerWidgetBase | ChunkParamWidgetBase, label: str | None = None, list_index=0
-    ):
-        """Add a list row's widget to the group's layout. Implemented by a subclass.
-
-        Called after a param has been added to a list group.
-
-        Args:
-            widget (ChunkContainerWidgetBase | ChunkParamWidgetBase): The widget to add
-            label (str, optional): An optional label of the widget. Defaults to None.
-            list_index (int, optional): The row the widget belongs to. Defaults to 0.
 
         Raises:
             NotImplementedError: A subclass does not implement it.
@@ -1020,23 +998,6 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         # We are only interested in hijacking data_changed, and should not send any signals.
         return chunk_notice.ChunkNoticeAlias.NONE
 
-    def update_names(self):
-        """Rebuild the names map at every level from the params' current names.
-
-        A brute-force way to make the mapping correct again.
-        """
-        invalid = []
-        for i, mapping in enumerate(self._names.maps):
-            for name, idx in mapping.items():
-                obj = self.get_param(idx)
-
-                if obj and obj.name != name:
-                    invalid.append((i, name, obj.name))
-
-        for i, old_name, new_name in invalid:
-            idx = self._names.maps[i].pop(old_name)
-            self._names.maps[i][new_name] = idx
-
     def name_changed(self, old_name: str):
         """Re-key a renamed child in this level's names map.
 
@@ -1154,14 +1115,6 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
             if not predicate or predicate(res):
                 return res
             raise ValueError(f"get_by_name predicate {predicate} failed for parameter {key}")
-
-    def get_names(self) -> tuple[str, ...]:
-        """Get every name at this level and all nested levels.
-
-        Returns:
-            tuple[str, ...]: All param names on this level and under
-        """
-        return tuple(self._names.keys())
 
     def get_my_names(self) -> tuple[str, ...]:
         """Get the names at this level only.
@@ -1461,10 +1414,6 @@ class ChunkCommon(AttributesBase):
             if layer and layer.IsMuted():
                 return None
             return layer
-
-    def reset_state(self):
-        """Clear the DISABLED and HIDDEN states."""
-        self.unset_state(ChunkFlags.State.DISABLED | ChunkFlags.State.HIDDEN)
 
     @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
@@ -1910,7 +1859,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             return
         chunk_layer = self.get_edit_context()
         # USD refuses to author into a muted layer (a chunk gated off by a Switch or a
-        # filter); chunk_stage.set_chunk_muted re-pushes these values on un-mute.
+        # filter); chunk_stage.set_chunks_muted re-pushes these values on un-mute.
         if not chunk_layer or stage.IsLayerMuted(chunk_layer.identifier):
             return
         for path in self._driven_attr_paths:
