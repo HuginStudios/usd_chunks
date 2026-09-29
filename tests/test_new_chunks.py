@@ -43,6 +43,21 @@ def _load(module_path: str):
     return importlib.import_module(module_path)
 
 
+def _registered_module(module_name: str):
+    """The module the registry runs a chunk's hooks from, loaded if it is not yet.
+
+    Not the same object _load returns: the registry loads a chunk's file under its short
+    name ("AMDMaterialXLibrary"), _load imports it under its package path, and the two
+    have independent globals. A cook -- including one nested inside the test's own
+    execute() call -- reads its hooks from the registry's copy, so a stub or a seeded
+    cache on the _load copy is invisible to it.
+    """
+    registered = chunk_registry.ChunkRegistry().get_chunk_module(module_name)
+    if not registered.loaded:
+        registered.load()
+    return registered.module
+
+
 # ---------------------------------------------------------------------------
 # dot
 # ---------------------------------------------------------------------------
@@ -211,6 +226,10 @@ class TestAMDMaterialXLibrary:
         c = self.mod.main()
         ref = chunk.Chunk("Reference3")
         ref._config = ChunkConfig(module="reference")
+        # Attaching it can cook it through the real reference module when an earlier test
+        # left a live registry behind, and that execute() reads file_path first -- empty,
+        # it returns without authoring anything, instead of crashing on a missing param.
+        ref.add_param(chunk.LineEdit("file_path"))
         c.add_param(ref)
 
         assert self.mod._child_of_type(c, "reference") is ref
@@ -281,6 +300,8 @@ class TestAMDMaterialXLibraryChildCreation:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)  # wires ChunkLayerManager + ChunkStageSync, like the real app
+        # Stub and run the copy the registry cooks from -- see _registered_module.
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -355,6 +376,7 @@ class TestAMDMaterialXLibraryChildCreation:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -433,6 +455,7 @@ class TestAMDMaterialXLibraryChildCreation:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -609,6 +632,7 @@ class TestAMDMaterialXCaching:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -679,6 +703,7 @@ class TestAMDMaterialXAsyncApply:
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
         init_chunk_usd(stage, scene)
+        self.mod = _registered_module("AMDMaterialXLibrary")
 
         c = self.mod.main()
         c._config = ChunkConfig(module="AMDMaterialXLibrary")
@@ -711,7 +736,12 @@ class TestAMDMaterialXAsyncApply:
         real_execute = self.mod.execute
 
         def _tracking_execute(node):
-            applied_on.append(threading.current_thread().ident)
+            # Only a cook with a title set is an assign. Cooks run from the registry's copy
+            # of the module, so this also sees the reactive ones _set_status sets off before
+            # the download finishes -- those return early with nothing to apply, and
+            # counting them ended the wait below before the assign had happened.
+            if node.get_param("picked_title").value:
+                applied_on.append(threading.current_thread().ident)
             return real_execute(node)
 
         monkeypatch.setattr(self.mod, "execute", _tracking_execute)
@@ -733,7 +763,9 @@ class TestAMDMaterialXAsyncApply:
         assert download_threads and main_thread not in download_threads, (
             "the download must run on a worker thread, not the main thread"
         )
-        assert applied_on == [main_thread], (
+        # Setting picked_title cooks the chunk and _finish then calls execute itself, so
+        # there can be more than one assign -- every one of them must be on the main thread.
+        assert applied_on and set(applied_on) == {main_thread}, (
             "the USD assign must hop back to the main thread"
         )
         assert c.get_param("picked_title").value == "Gold"
