@@ -270,35 +270,6 @@ def _smooth_mesh(stage, name, pts, normals, indices, counts):
     return mesh
 
 
-def build_sphere(stage, name="/sphere", rows=16, columns=32, radius=1.0):
-    """A UV sphere centred on the origin: quads between the rings, triangle fans at the poles."""
-    rows = max(int(rows), 3)
-    columns = max(int(columns), 3)
-
-    normals = [(0.0, 1.0, 0.0), (0.0, -1.0, 0.0)]
-    for i in range(1, rows):
-        theta = np.pi * i / rows
-        for j in range(columns):
-            phi = 2.0 * np.pi * j / columns
-            normals.append((np.sin(theta) * np.cos(phi), np.cos(theta), np.sin(theta) * np.sin(phi)))
-    normals = np.array(normals)
-
-    def ring(i, j):
-        return 2 + (i - 1) * columns + (j % columns)
-
-    indices, counts = [], []
-    for j in range(columns):
-        indices += [0, ring(1, j + 1), ring(1, j)]
-        indices += [1, ring(rows - 1, j), ring(rows - 1, j + 1)]
-        counts += [3, 3]
-    for i in range(1, rows - 1):
-        for j in range(columns):
-            indices += [ring(i, j), ring(i, j + 1), ring(i + 1, j + 1), ring(i + 1, j)]
-            counts.append(4)
-
-    return _smooth_mesh(stage, name, normals * radius, normals, indices, counts)
-
-
 def build_torus(stage, name="/torus", rings=48, sides=20, radius=1.0, tube_radius=0.4):
     """A closed torus centred on the origin, lying in the XZ plane around +Y.
 
@@ -432,6 +403,64 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
     return mesh
 
 
+def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
+    dimx = max(int(dimx), 3)
+    dimy = max(int(dimy), 3)
+    rc = dimx * dimy - (dimx - 1) * 2
+    indices = []
+    counts = []
+
+    pts = np.zeros((rc, 3))
+    for i in range(dimx):
+        row = (i / dimx) * np.pi * 2
+        for j in range(dimy):
+            offset = 0 if i == 0 else i + (i - 1)
+            idx = int(i * dimy + j - offset)
+            nbr = dimy - 1 if i == 0 else dimy - 2
+
+            if j == 0:
+                indices.append(0)
+                indices.append(idx + 1)
+                indices.append(idx + 1 + nbr if i != dimx - 1 else 1)
+                counts.append(3)
+
+            elif j == dimy - 2:
+                indices.append(idx)
+                indices.append(dimy - 1)
+                indices.append(idx + nbr if i != dimx - 1 else dimy - 2)
+                counts.append(3)
+
+            elif j < dimy - 2:
+                indices.append(idx)
+                indices.append(idx + 1)
+                indices.append(idx + nbr + 1 if i != dimx - 1 else j + 1)
+                indices.append(idx + nbr if i != dimx - 1 else j)
+                counts.append(4)
+
+            if (j == 0 or j == dimy - 1) and i > 0:
+                continue
+
+            theta = (j % dimy) / (dimy - 1) * np.pi
+            y = pos[1] + radius * np.sin(theta) * np.sin(row)
+            x = pos[0] + radius * np.sin(theta) * np.cos(row)
+            z = pos[2] + radius * np.cos(theta)
+            pts[idx] = (x, y, z)
+
+    mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(name))
+    mesh.CreateFaceVertexIndicesAttr(indices)
+    mesh.CreateFaceVertexCountsAttr(counts)
+    # Polygons, not a subdivision cage -- see _POLYGONS.
+    mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
+
+    mesh.CreatePointsAttr(pts)
+
+    pv = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+    rest = pv.CreatePrimvar("rest", Sdf.ValueTypeNames.Vector3fArray, "vertex", len(pts))
+    rest.Set(pts)
+
+    return mesh
+
+
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     selected = sender.value
 
@@ -440,6 +469,9 @@ def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
             g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:
             g.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
+
+    if selected == "none":
+        clear_layer(owner)
 
 
 def add_texture(prim: Usd.Prim, texture_file: str | None = None):
@@ -570,25 +602,6 @@ def tube_changed(owner: chunk.Group, notice, sender):
         build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
 
 
-def sphere_changed(owner: chunk.Group, notice, sender):
-    stage = owner.get_stage()
-    if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return
-
-    clear_layer(owner)
-
-    if not (c := owner.get_chunk()):
-        return
-
-    rows = owner.get_param("sphere_rows", chunk.is_param_t(int))
-    cols = owner.get_param("sphere_cols", chunk.is_param_t(int))
-    radius = owner.get_param("sphere_radius", chunk.is_param_t(float))
-
-    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
-    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
-        build_sphere(stage, path, rows.value, cols.value, radius.value)
-
-
 def torus_changed(owner: chunk.Group, notice, sender):
     stage = owner.get_stage()
     if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
@@ -661,6 +674,29 @@ def grid_changed(owner: chunk.Group, notice, sender):
             add_texture(grid.GetPrim())
 
 
+def sphere_changed(owner: chunk.Group, notice, sender):
+    stage = owner.get_stage()
+
+    if not stage:
+        return
+
+    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
+        return
+
+    clear_layer(owner)
+
+    dimx = owner.get_param("dimx2", chunk.is_param_t(int))
+    dimy = owner.get_param("dimy2", chunk.is_param_t(int))
+    rad = owner.get_param("radius1", chunk.is_param_t(float))
+
+    raw_path = "/sphere"
+    if c := owner.get_chunk():
+        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
+
+    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
+        build_sphere(stage, path, dimx.value, dimy.value, rad.value)
+
+
 def execute(node: chunk.Chunk) -> None:
     """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
     bulk-restoring its param values, so a reloaded Mesh actually rebuilds its shape
@@ -711,20 +747,20 @@ def main():
     cube_group.add_callback(cube_changed)
     cube_group.add_callback(cube_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
-    # Params named per shape: get_param by bare name returns the first match, and the
-    # tube already has a "radius".
     sphere_group = chunk.Group("sphere", "Sphere")
     sphere_group.add_params(
         [
-            chunk.Slider("sphere_rows", "rows", min_value=3, max_value=128, default_value=16, is_int=True),
-            chunk.Slider("sphere_cols", "columns", min_value=3, max_value=256, default_value=32, is_int=True),
-            chunk.Slider("sphere_radius", "radius", min_value=0.001, max_value=1000.0, default_value=1.0),
+            chunk.Spinbox("dimx2", "dimx", min_value=3, default_value=10, is_int=True),
+            chunk.Spinbox("dimy2", "dimy", min_value=3, default_value=10, is_int=True),
+            chunk.Slider("radius1", "radius", default_value=1),
         ]
     )
     sphere_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
     sphere_group.add_callback(sphere_changed)
     sphere_group.add_callback(sphere_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
+    # Params named per shape: get_param by bare name returns the first match, and the
+    # tube already has a "radius".
     torus_group = chunk.Group("torus", "Torus")
     torus_group.add_params(
         [

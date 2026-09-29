@@ -26,7 +26,7 @@ def _points(node, path):
 
 
 def test_mesh_builds_a_sphere(scene):
-    node = scene.create.mesh(prim_path="/World/ball", mesh_type="sphere", sphere_radius=2.0)
+    node = scene.create.mesh(prim_path="/World/ball", mesh_type="sphere", radius1=2.0)
     assert np.linalg.norm(_points(node, "/World/ball"), axis=1) == pytest.approx(2.0)
 
 
