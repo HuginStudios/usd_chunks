@@ -299,9 +299,7 @@ def test_smoothing_pins_both_ends() -> None:
 
 def test_vines_grow_only_where_the_surface_was_painted(host) -> None:
     _paint(host.mesh, _stripe(3.0, 7.0))
-    node = host.vine()
-
-    node.execute()
+    host.vine()
     points = host.points()
 
     assert len(points)
@@ -317,16 +315,12 @@ def test_a_wired_but_unpainted_field_grows_nothing(host) -> None:
     _paint(host.mesh, lambda p: 0.0)
     node = host.vine()
 
-    node.execute()
-
     assert not len(host.points())
     assert "nothing painted" in node.get_param("readout").value
 
 
 def test_with_no_field_wired_the_whole_mesh_is_fair_game(host) -> None:
-    node = host.vine(density_primvar="")
-
-    node.execute()
+    host.vine(density_primvar="")
     points = host.points()
 
     assert len(points)
@@ -337,8 +331,6 @@ def test_the_readout_says_what_grew(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(root_count=3)
 
-    node.execute()
-
     assert "3 vines" in node.get_param("readout").value
 
 
@@ -347,32 +339,49 @@ def test_the_readout_says_what_grew(host) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_curves_are_well_formed(host) -> None:
-    _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine()
+_DEFAULT_VINE = {}
 
-    node.execute()
-    curves = host.curves()
-    counts = list(curves.GetCurveVertexCountsAttr().Get())
-    points = curves.GetPointsAttr().Get()
-    widths = curves.GetWidthsAttr().Get()
 
-    assert sum(counts) == len(points) == len(widths)
-    assert curves.GetTypeAttr().Get() == UsdGeom.Tokens.cubic
-    assert curves.GetBasisAttr().Get() == UsdGeom.Tokens.bspline
+def _default_vine():
+    """The vine grown on a wall painted between x=2 and x=8, with every setting at its default.
+
+    Grown once and kept as plain data: several tests only read one property of this same
+    vine, and growing it again for each of them was most of this file's time.
+    """
+    if not _DEFAULT_VINE:
+        host = _Harness()
+        _paint(host.mesh, _stripe(2.0, 8.0))
+        host.vine()
+        curves = host.curves()
+        cloud = host.leaves()
+        _DEFAULT_VINE.update(
+            counts=list(curves.GetCurveVertexCountsAttr().Get()),
+            points=host.points(),
+            widths=list(curves.GetWidthsAttr().Get()),
+            type=curves.GetTypeAttr().Get(),
+            basis=curves.GetBasisAttr().Get(),
+            widths_interpolation=curves.GetWidthsInterpolation(),
+            leaf_points=list(cloud.GetPointsAttr().Get()),
+            leaf_normals=list(cloud.GetNormalsAttr().Get()),
+        )
+    return _DEFAULT_VINE
+
+
+def test_the_curves_are_well_formed() -> None:
+    v = _default_vine()
+
+    assert sum(v["counts"]) == len(v["points"]) == len(v["widths"])
+    assert v["type"] == UsdGeom.Tokens.cubic
+    assert v["basis"] == UsdGeom.Tokens.bspline
     # A cubic B-spline needs four control points before it is a curve at all.
-    assert min(counts) >= 4
-    assert curves.GetWidthsInterpolation() == UsdGeom.Tokens.vertex
+    assert min(v["counts"]) >= 4
+    assert v["widths_interpolation"] == UsdGeom.Tokens.vertex
 
 
-def test_a_smooth_vine_still_starts_where_it_grew(host) -> None:
+def test_a_smooth_vine_still_starts_where_it_grew() -> None:
     """A B-spline stays inside its hull, so without pinned ends every root lifts off the ground."""
-    _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine()
-
-    node.execute()
-    counts = list(host.curves().GetCurveVertexCountsAttr().Get())
-    points = host.points()
+    v = _default_vine()
+    counts, points = v["counts"], v["points"]
 
     first = points[0]
     assert np.allclose(points[1], first)
@@ -383,18 +392,14 @@ def test_a_smooth_vine_still_starts_where_it_grew(host) -> None:
 
 def test_linear_form_authors_the_polyline_itself(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine(curve_form="Linear")
-
-    node.execute()
+    host.vine(curve_form="Linear")
 
     assert host.curves().GetTypeAttr().Get() == UsdGeom.Tokens.linear
 
 
 def test_a_vine_is_thickest_at_its_base(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine(thickness=0.5, taper=0.1)
-
-    node.execute()
+    host.vine(thickness=0.5, taper=0.1)
     widths = list(host.curves().GetWidthsAttr().Get())
 
     # Thickness and Taper name the two ends of the range, and the vine reaches both of them.
@@ -402,15 +407,12 @@ def test_a_vine_is_thickest_at_its_base(host) -> None:
     assert min(widths) == pytest.approx(max(widths) * 0.1, rel=1e-3)
 
 
-def test_the_vines_sit_on_the_surface_rather_than_in_it(host) -> None:
+def test_the_vines_sit_on_the_surface_rather_than_in_it() -> None:
     """The wall is the plane y=0. A vine has to clear it -- a tube lifted by less than its own
     radius is half buried, and on a flat surface seen face-on that is z-fighting."""
-    _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine()
-
-    node.execute()
-    off_wall = np.abs(host.points()[:, 1])
-    widest = max(host.curves().GetWidthsAttr().Get())
+    v = _default_vine()
+    off_wall = np.abs(v["points"][:, 1])
+    widest = max(v["widths"])
 
     assert off_wall.max() > widest * 0.5
     assert off_wall.max() < widest * 3.0
@@ -427,8 +429,6 @@ def test_step_decides_how_smoothly_a_vine_curves_and_not_how_thick_it_is(host) -
     """
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(auto_step=False, step=0.1)
-
-    node.execute()
     fine = max(host.curves().GetWidthsAttr().Get())
     node.get_param("step").value = 0.4
     node.execute()
@@ -437,16 +437,13 @@ def test_step_decides_how_smoothly_a_vine_curves_and_not_how_thick_it_is(host) -
     assert fine == pytest.approx(coarse)
 
 
-def test_a_vine_is_a_visible_fraction_of_what_it_grew_on(host) -> None:
+def test_a_vine_is_a_visible_fraction_of_what_it_grew_on() -> None:
     """The figure that was wrong when this could not be seen. A stem near a hundredth of the
     painted region reads as a vine in a viewport; a five-hundredth is a sub-pixel line."""
-    _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine()
-
-    node.execute()
-    points = host.points()
+    v = _default_vine()
+    points = v["points"]
     region = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
-    widest = max(host.curves().GetWidthsAttr().Get())
+    widest = max(v["widths"])
 
     assert 1 / 250.0 < widest / region < 1 / 30.0
 
@@ -454,8 +451,6 @@ def test_a_vine_is_a_visible_fraction_of_what_it_grew_on(host) -> None:
 def test_a_recook_replaces_the_previous_vine_rather_than_adding_to_it(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine()
-
-    node.execute()
     first = len(host.points())
     node.execute()
 
@@ -465,8 +460,6 @@ def test_a_recook_replaces_the_previous_vine_rather_than_adding_to_it(host) -> N
 def test_the_same_seed_grows_the_same_vine(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(seed=7)
-
-    node.execute()
     once = host.points()
     node.execute()
 
@@ -476,8 +469,6 @@ def test_the_same_seed_grows_the_same_vine(host) -> None:
 def test_a_different_seed_grows_a_different_vine(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(seed=1)
-
-    node.execute()
     first = host.points()
     node.get_param("seed").value = 2
     node.execute()
@@ -490,8 +481,6 @@ def test_the_vine_path_moves_the_result(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(vine_path="/Growth/Ivy")
 
-    node.execute()
-
     assert node.get_param("out_curves").value == "/Growth/Ivy/Curves"
     assert len(host.points("/Growth/Ivy/Curves"))
 
@@ -501,16 +490,11 @@ def test_the_vine_path_moves_the_result(host) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_every_leaf_point_carries_the_surface_normal(host) -> None:
+def test_every_leaf_point_carries_the_surface_normal() -> None:
     """The same shape a Scatter Brush publishes, which is what lets Scatter Points instance
     along a vine with the code it already has."""
-    _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine()
-
-    node.execute()
-    cloud = host.leaves()
-    points = cloud.GetPointsAttr().Get()
-    normals = cloud.GetNormalsAttr().Get()
+    v = _default_vine()
+    points, normals = v["leaf_points"], v["leaf_normals"]
 
     assert len(points) > 0
     assert len(normals) == len(points)
@@ -520,8 +504,6 @@ def test_every_leaf_point_carries_the_surface_normal(host) -> None:
 def test_wider_leaf_spacing_leaves_fewer_leaves(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(leaf_spacing=2.0)
-
-    node.execute()
     dense = len(host.leaves().GetPointsAttr().Get())
     node.get_param("leaf_spacing").value = 8.0
     node.execute()
@@ -533,9 +515,7 @@ def test_the_leaf_cloud_exists_even_with_leaves_turned_off(host) -> None:
     """Wiring an output is how you decide to use it, so it cannot require having used it --
     the same reason the brush publishes its points path before anything is painted."""
     _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine(leaves=False)
-
-    node.execute()
+    host.vine(leaves=False)
 
     assert host.leaves().GetPrim().IsValid()
     assert not len(host.leaves().GetPointsAttr().Get() or [])
