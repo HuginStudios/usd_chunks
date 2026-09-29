@@ -1,13 +1,13 @@
 """Loft a button: the group gets a button that clicks the inner one."""
 from __future__ import annotations
 
-import pytest
-
 from tests.test_unloft import _lofted, _loft, env  # noqa: F401
+from PySide6 import QtCore, QtGui, QtWidgets
 from pxr import Usd
 
 from usd_chunks import chunk, chunk_stage
 from usd_chunks.chunk_stage import export_chunks
+from usd_chunks.frontends.qt.widgets import ChunkPushButtonWidget, LabeledWidget
 from tests.test_lofted_menu_follows_inner import _init, _mk, _settle
 
 
@@ -74,3 +74,26 @@ def test_a_reopened_lofted_button_still_clicks_the_inner_one(qapp, tmp_path):
     lofted2.click()
     _settle(qapp)
     assert clicks == [1]
+
+
+def test_right_clicking_a_button_offers_loft_up(env, qapp, monkeypatch):
+    group = env["mk"]("chunkgroup", name="Group")
+    inner = env["mk"]("transform", context=group)
+    env["settle"]()
+    btn = _button_on(inner, [])
+    offered = []
+
+    def _capture(menu, *args):
+        offered.extend(a.text() for a in menu.actions())
+
+    monkeypatch.setattr(QtWidgets.QMenu, "exec_", _capture)
+    row = LabeledWidget(ChunkPushButtonWidget(btn))
+    row.resize(200, 40)
+    row.show()
+    qapp.processEvents()
+    click_at = row.widget.geometry().center()
+    row.contextMenuEvent(
+        QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Reason.Mouse, click_at)
+    )
+
+    assert "Loft up" in offered

@@ -1379,7 +1379,7 @@ class LabeledWidget(QtWidgets.QWidget):
 
         menu = QtWidgets.QMenu()
         value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())
-        # A button is all value, with no label beside it to right-click, so anywhere on it counts.
+        # A button has no label to right-click, so a click anywhere on it counts.
         on_label = not value_rect.contains(event.pos()) or ChunkFlags.ParamType.BUTTON in t
         loft_action = menu.addAction("Loft up") if context and on_label else None
         # Lofted params only, via the _lofted marker (set once by loft_param_to_context /

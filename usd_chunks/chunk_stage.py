@@ -1639,8 +1639,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         type_source = getattr(param, 'default_value', None) if is_expr else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
         if is_button:
-            # A button holds no value, so it only gets an attribute to be lofted: the
-            # attribute is the wire the group's button finds its inner one by.
+            # A button has no value. Its attribute exists only so Loft up can wire to it.
             sdf_type = Sdf.ValueTypeNames.Bool
         # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
         # type -- there is no tuple entry, so without this a colour param resolves to no
@@ -6641,14 +6640,14 @@ def _mirror_menu_items(inner_param: core.ChunkParamBase, context_param: core.Chu
 
 
 def _forward_button_click(inner_param: core.ChunkParamBase, context_param: core.ChunkParamBase) -> None:
-    """Make a lofted button click the inner button it stands for."""
+    """Make the group's button click the inner button."""
     if ChunkFlags.ParamType.BUTTON not in context_param.evaluate_type():
         return
 
     def _click_inner(_owner=None, _notice=None, _sender=None):
         inner_param.click()
 
-    context_param._loft_click = _click_inner  # strong-ref pin, see _forward_to_inner
+    context_param._loft_click = _click_inner  # strong-ref pin: callbacks are held weakly
     context_param.add_callback(
         _click_inner,
         sender=context_param.get_attribute_sender("value"),
