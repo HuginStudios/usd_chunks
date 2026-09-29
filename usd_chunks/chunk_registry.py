@@ -34,7 +34,7 @@ from typing import (
 from typing_extensions import override
 from enum import Enum
 
-from pxr import Sdf, Usd, UsdUtils
+from pxr import Sdf, Usd
 
 try:
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -926,14 +926,6 @@ class ChunkModule:
 
         return namespace
 
-    def get_menu_name(self) -> str:
-        """Get a path-like string referring to where this module can be found in a menu.
-
-        Returns:
-            str: A path-like string to where this module can be found in a menu.
-        """
-        return os.pathsep.join(self.get_menu_path())
-
     def _exec_module(self):
         if not self.module_file.exists():
             logger.error("Could not load module from file %s", self.module_file)
@@ -1310,11 +1302,6 @@ class MenuEntry:
     def label(self) -> str:
         """The text this entry shows in a menu."""
         return self.namespace[-1] if self.namespace else self.module.module_name
-
-    @property
-    def search_terms(self) -> set[str]:
-        """Lowercased namespace elements, for substring matching in a search field."""
-        return {x.lower() for x in self.namespace}
 
     def create(self) -> list:
         """Create this entry's chunk(s), applying any variant presets.
@@ -1891,25 +1878,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             layers[file.as_posix()] = key
         return layers
 
-    def open_layer(self, path: str | Path):
-        """Open a layer file, or None if it does not exist."""
-        p = Path(path)
-        if not p.exists():
-            return
-        return Sdf.Layer.FindOrOpen(str(path))
-
-    def stitch_layers(self, layer_a, layer_b):
-        """Merge layer_b's opinions into layer_a, where layer_a's are stronger."""
-        UsdUtils.StitchLayers(layer_a, layer_b)
-
-    def get_layer_usda(self, layer: Sdf.Layer):
-        """A layer's contents as usda text."""
-        return layer.ExportToString()
-
-    def get_stage_root(self) -> Sdf.Layer:
-        """The managed stage's root layer."""
-        return self.stage.GetRootLayer()
-
     def get_layer(self, c: core.ChunkHash) -> Sdf.Layer | None:
         """Get the layer associated with a chunk.
 
@@ -1935,12 +1903,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             The layer, or None if the chunk has none yet.
         """
         return self._chunk_target.get(c)
-
-    def register_chunk_layer(self, c: core.ChunkCommon, layer: Sdf.Layer) -> None:
-        """Associate an existing layer as this chunk's edit layer."""
-        h = c.get_hash()
-        self.chunk_layers[h] = layer
-        weakref.finalize(c, self._chunk_deleted, h)
 
     def defer_placement(self) -> bool:
         """Hold chunk layers made from now on in one loading layer, until the graph is wired.
@@ -2221,8 +2183,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.chunk_layers[h] = layer
         target_layer.subLayerPaths.insert(index, layer.identifier)
         # An empty layer holds no result, so the chunk must cook before recook_for_view can
-        # count on its layer. Covers a load and reload_all, which make every layer afresh
-        # for chunk objects that may have cooked into the old ones.
+        # count on its layer. Covers a load, which makes every layer afresh for chunk objects
+        # that may have cooked into the old ones.
         chunk_notice.mark_cook_stale(c)
 
         # We must make sure to delete the layer of the chunk AFTER all other notices are sent.
@@ -2231,22 +2193,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         weakref.finalize(c, self._chunk_deleted, h)
 
         return layer
-
-    def clear_all_layers(self):
-        """Clear every chunk layer and detach every graph layer from its target."""
-        for c, lay in self.chunk_layers.items():
-            self.clear_layer(lay.identifier)
-
-        for gkey, g_layer in list(self.graph_layers.items()):
-            target = self._graph_layer_target.pop(gkey, None)
-            if target and g_layer.identifier in target.subLayerPaths:
-                target.subLayerPaths.remove(g_layer.identifier)
-
-        self.graph_layers.clear()
-        self.chunk_layers.clear()
-        self._chunk_target.clear()
-        self._chunk_graph_key.clear()
-        self.internal_layer_ids.clear()
 
     def clear_layer(self, layer_id: str | core.ChunkBase):
         """Clear a layer's contents.
@@ -2261,22 +2207,6 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         else:
             return
         layer.Clear()
-
-    def reload_all(self):
-        """Drop every chunk and graph layer and create them again."""
-        for gkey, g_layer in list(self.graph_layers.items()):
-            target = self._graph_layer_target.pop(gkey, None)
-            if target and g_layer.identifier in target.subLayerPaths:
-                target.subLayerPaths.remove(g_layer.identifier)
-
-        self.graph_layers.clear()
-        self.chunk_layers.clear()
-        self._chunk_target.clear()
-        self._chunk_graph_key.clear()
-        self.internal_layer_ids.clear()
-
-        for c in ChunkRegistry().scene.get_chunks():
-            self.get_or_create_layer(c)
 
     def _edit_target_changed(self, notice: Usd.Notice.StageEditTargetChanged, sender):
         """Adopt the stage whose edit target moved -- but only when there is none yet.

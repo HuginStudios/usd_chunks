@@ -1127,17 +1127,6 @@ class DagNode:
             return True
         return False
 
-    def get_owned(self) -> Iterator[DagNode]:
-        """The nodes that have this node as their owner.
-
-        The reverse of get_owner_node(), maintained by set_owner() so the scheduler can walk
-        ownership downward without a global registry of nodes.
-
-        Returns:
-            Iterator[DagNode]: An iterator over the owned nodes
-        """
-        return iter(() if self._owned is None else list(self._owned))
-
     def get_sort_key(self) -> int:
         """This node's position in the dependency order: the longest chain of dependencies ending here.
 
@@ -1159,14 +1148,6 @@ class DagNode:
         Each one records which change caused it. See chunk_scheduler.propagate_dirty.
         """
         chunk_scheduler.propagate_dirty(self)
-
-    def is_inputs_dirty(self) -> bool:
-        """Check if any dependency (input) is dirty.
-
-        Returns:
-            bool: True if any dependency is dirty
-        """
-        return any([x.dirty for _, x in self.get_inputs()])
 
     def solve_outputs(self) -> Generator[DagNode, None, None]:
         """Solve this node, then everything downstream of it and its owner.

@@ -290,7 +290,7 @@ def _push_driven_values(stage: Usd.Stage, param, layer: Sdf.Layer | None = None)
         return
     value = param.value
     layer = layer or param.get_edit_context()
-    # USD refuses to author into a muted layer; set_chunk_muted re-pushes on un-mute.
+    # USD refuses to author into a muted layer; set_chunks_muted re-pushes on un-mute.
     if value is None or layer is None or stage.IsLayerMuted(layer.identifier):
         return
     driven_var_selections = getattr(param, "_driven_var_selections", {})
@@ -2770,7 +2770,7 @@ def _storage_attr(param: core.ChunkParamBase) -> Usd.Attribute | None:
 def is_merge_chunk(chunk: core.ChunkBase) -> bool:
     """Whether chunk is specifically a Merge chunk (chunks/core/merge.py).
 
-    Narrower than has_dynamic_exec_inputs: Merge's slot order also decides composition
+    Narrower than has_dynamic_exec_inputs_prim: Merge's slot order also decides composition
     strength ("first input wins"), which is a Merge-only meaning that a dynamic-slot chunk
     with no such ranking (a Switch) does not share.
 
@@ -2784,29 +2784,16 @@ def is_merge_chunk(chunk: core.ChunkBase) -> bool:
     return bool(cfg and cfg.module == "merge")
 
 
-def has_dynamic_exec_inputs(chunk: core.ChunkBase) -> bool:
-    """Whether chunk's exec input slots grow with what is wired in.
+def has_dynamic_exec_inputs_prim(prim: Usd.Prim) -> bool:
+    """Whether a chunk prim's exec input slots grow with what is wired in.
 
     Such a chunk gets one numbered port (inputs:chunk, inputs:chunk1, ...) per branch wired
     in -- Merge and Switch, and whatever else declares config.dynamic_exec_inputs. See
-    exec_input_slots for the other kind, where the count is fixed and positional instead.
+    exec_input_slots_for_prim for the other kind, where the count is fixed and positional.
 
-    Args:
-        chunk: The chunk.
-
-    Returns:
-        True for a dynamic-slot chunk.
-    """
-    cfg = chunk.get_config()
-    return bool(cfg and getattr(cfg, "dynamic_exec_inputs", False))
-
-
-def has_dynamic_exec_inputs_prim(prim: Usd.Prim) -> bool:
-    """has_dynamic_exec_inputs for a bare prim, when there is no live chunk object to ask.
-
-    The node graph builds ports from the stage and may have no chunk object. See
-    exec_input_slots_for_prim for why this reads the registry's discovery-time config rather
-    than importing the module.
+    Takes the prim: the node graph builds ports from the stage and may have no chunk
+    object. See exec_input_slots_for_prim for why this reads the registry's discovery-time
+    config rather than importing the module.
 
     Args:
         prim: The chunk prim.
@@ -2825,35 +2812,22 @@ def has_dynamic_exec_inputs_prim(prim: Usd.Prim) -> bool:
     return bool(cfg and getattr(cfg, "dynamic_exec_inputs", False))
 
 
-def exec_input_slots(chunk: core.ChunkBase) -> int:
-    """How many positional exec input ports this chunk has.
+def exec_input_slots_for_prim(prim: Usd.Prim) -> int:
+    """How many positional exec input ports a chunk prim has.
 
     1 for almost everything -- one inputs:chunk that several wires may stack on. Above 1
     the slots mean different things and each gets its own port, which is what a Stage
     Expression Switch needs: slot 0 is the normal path and slot 1 the matched one, which is
     not a property a merge ordering can express.
 
-    A dynamic-slot chunk (has_dynamic_exec_inputs) answers 1 here and is handled by that
-    predicate instead: its slots grow with what is wired in, so a fixed count is the wrong
-    question for it.
+    A dynamic-slot chunk (has_dynamic_exec_inputs_prim) answers 1 here and is handled by
+    that predicate instead: its slots grow with what is wired in, so a fixed count is the
+    wrong question for it.
 
-    Args:
-        chunk: The chunk.
-
-    Returns:
-        The slot count, at least 1.
-    """
-    cfg = chunk.get_config()
-    return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
-
-
-def exec_input_slots_for_prim(prim: Usd.Prim) -> int:
-    """exec_input_slots for a bare prim, when there is no live chunk object to ask.
-
-    The node graph builds ports from the stage and may have no chunk object. Read off the
-    registry's discovery-time config rather than by importing the module: the config is
-    parsed when chunks are found, so this costs a dict lookup and never triggers a module
-    load while a scene is being built.
+    Takes the prim: the node graph builds ports from the stage and may have no chunk
+    object. Read off the registry's discovery-time config rather than by importing the
+    module: the config is parsed when chunks are found, so this costs a dict lookup and
+    never triggers a module load while a scene is being built.
 
     Args:
         prim: The chunk prim.
@@ -2870,46 +2844,6 @@ def exec_input_slots_for_prim(prim: Usd.Prim) -> int:
     module = chunk_registry.ChunkRegistry().get_chunk_module(str(module_name))
     cfg = getattr(module, "config", None) if module else None
     return max(1, int(getattr(cfg, "exec_inputs", 1) or 1)) if cfg else 1
-
-
-def set_chunk_muted(stage: Usd.Stage, target: core.ChunkBase, muted: bool) -> bool:
-    """Block or unblock one chunk and mute or unmute its layer.
-
-    Blocking is the engine's own lever, deliberately not the DISABLED state: DISABLED
-    belongs to the user, who sets it by hand and expects it to stay. A chunk reaching in to
-    set and clear it on chunks it does not own means every flip risks undoing theirs.
-    ChunkLayerManager already guards the two against each other, so a blocked layer is never
-    un-muted by the disable path.
-
-    Never a context (a tab or group): is_blocked() climbs the owner chain, so blocking a
-    container would propagate down and block its whole subtree, including branches the
-    caller meant to keep. Containers author nothing of their own -- their leaves are handled
-    individually by the caller's loop, exactly as recook_for_view does it.
-
-    Args:
-        stage: The stage whose layer mute state changes.
-        target: The chunk.
-        muted: True blocks and mutes; False unblocks and unmutes.
-
-    Returns:
-        bool: True if target was a chunk this can act on (i.e. not a context)
-    """
-    if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-        return False
-
-    target.set_blocked(muted)
-    layer = chunk_registry.ChunkLayerManager().get_layer(target)
-    if stage is None or layer is None:
-        return True
-    # stage.Mute/UnmuteLayer, not layer.SetMuted: SetMuted recomposes lazily and expires
-    # prims, which is the "chunk layers disappear" bug the rest of the codebase avoids the
-    # same way.
-    if muted:
-        stage.MuteLayer(layer.identifier)
-    elif stage.IsLayerMuted(layer.identifier):
-        stage.UnmuteLayer(layer.identifier)
-        push_chunk_values(stage, target)
-    return True
 
 
 def set_chunks_muted(stage: Usd.Stage, to_mute, to_unmute) -> tuple[set, set]:
@@ -2929,6 +2863,11 @@ def set_chunks_muted(stage: Usd.Stage, to_mute, to_unmute) -> tuple[set, set]:
     MuteAndUnmuteLayers does both lists in one operation, so the stage recomposes once and
     watchers get one resync however many branches the gate moved.
 
+    Blocking is the engine's own lever, deliberately not the DISABLED state: DISABLED
+    belongs to the user, who sets it by hand and expects it to stay. ChunkLayerManager
+    guards the two against each other, so a blocked layer is never un-muted by the disable
+    path.
+
     Args:
         stage: The stage whose layer mute state changes.
         to_mute: Chunks to block and mute.
@@ -2943,7 +2882,8 @@ def set_chunks_muted(stage: Usd.Stage, to_mute, to_unmute) -> tuple[set, set]:
 
     for target in to_mute:
         # Never a context: is_blocked() climbs the owner chain, so blocking a container
-        # blocks its whole subtree -- see set_chunk_muted.
+        # would block its whole subtree, including branches the caller meant to keep.
+        # Containers author nothing of their own; their leaves come through here one by one.
         if target.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             continue
         target.set_blocked(True)
@@ -7055,7 +6995,7 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
             param._connect_param_attr(attr)
             if existing:
                 # By path: a chunk gated off already has its layer muted, so the real prim
-                # is not on the stage to hand over as an attribute. set_chunk_muted pushes
+                # is not on the stage to hand over as an attribute. set_chunks_muted pushes
                 # the value once it is.
                 #
                 # Through connect_usd_attr, not a hand-rolled append + _author_driven_connections:

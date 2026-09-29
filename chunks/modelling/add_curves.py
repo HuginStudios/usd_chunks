@@ -94,25 +94,6 @@ def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces
     return hair
 
 
-def curl_hair(curves: UsdGeom.BasisCurves, freq: float, amp: float):
-    curve_cnt = curves.GetCurveVertexCountsAttr().Get()
-    curve_pts = curves.GetPointsAttr().Get()
-
-    offset = 0
-    for i, c in enumerate(curve_cnt):
-        for j in range(1, c):
-            curl = i + (j / (c - 1)) * 3.14 * amp
-
-            pt = curve_pts[offset + j]
-            pt[0] += (np.cos(curl) - np.sin(curl)) * freq
-            pt[1] += (np.sin(curl) + np.cos(curl)) * freq
-
-            curve_pts[offset + j] = pt
-
-        offset += c
-    curves.GetPointsAttr().Set(curve_pts)
-
-
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
     param = notice.data
 

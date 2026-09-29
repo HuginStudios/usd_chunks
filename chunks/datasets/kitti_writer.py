@@ -37,7 +37,7 @@ import shutil
 import numpy as np
 import OpenEXR
 from PIL import Image, ImageDraw
-from pxr import CameraUtil, Gf, Sdf, Usd, UsdGeom, UsdRender
+from pxr import CameraUtil, Sdf, Usd, UsdGeom, UsdRender
 
 from usd_chunks import chunk, chunk_utils
 

@@ -573,36 +573,3 @@ class BlenderParamWidget(chunk_widget_api.ChunkParamWidgetBase):
             setattr(self._node, name, value)
         else:
             self._node[name] = value
-
-
-class ChunkBlenderWidgetFactory:
-    """Maps a ParamType to its Blender binding.
-
-    Every type resolves to the same class because Blender's difference between a slider and
-    a text field is the RNA property, not the widget -- `property_for` is where the mapping
-    actually happens. The factory exists to satisfy `ChunkWidgetFactoryBase` and to give a
-    custom chunk somewhere to register an override.
-    """
-
-    def __init__(self):
-        self.widget_map = {t: BlenderParamWidget for t in (
-            PT.FLOAT, PT.FLOAT_SLIDER, PT.FLOAT_SPINBOX,
-            PT.INT, PT.INT_SLIDER, PT.INT_SPINBOX,
-            PT.BOOL, PT.CHECKBOX,
-            PT.STRING, PT.LINEEDIT, PT.TEXTEDIT, PT.LABEL, PT.FILE, PT.STRING_MENU,
-            PT.VECTOR, PT.COLOR_PICKER,
-            PT.BUTTON, PT.SEPARATOR,
-        )}
-
-    def get_map(self):
-        return self.widget_map
-
-    def add_mapping(self, key, widget_type):
-        self.widget_map[key] = widget_type
-
-    def has_mapping(self, key) -> bool:
-        return key in self.widget_map
-
-    def create_widget(self, param, node=None):
-        cls = self.widget_map.get(param.get_type(), BlenderParamWidget)
-        return cls(param, node=node)
