@@ -7044,6 +7044,81 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                     bound.Set(val)
 
 
+def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_path: str):
+    """The inner chunk and param whose attribute is lofted to context_attr_path.
+
+    Args:
+        stage: The stage.
+        context: The group the param is lofted onto.
+        context_attr_path: The group attribute's path.
+
+    Returns:
+        (inner chunk, inner param), or (None, None) if nothing inside feeds it.
+    """
+    for inner_chunk in context.get_my_params():
+        if not isinstance(inner_chunk, core.ChunkBase):
+            continue
+        for _, param in _iter_chunk_params(inner_chunk):
+            if not param._param_attr_path:
+                continue
+            inner_attr = stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path))
+            if not (inner_attr and inner_attr.IsValid()):
+                continue
+            if any(str(c) == context_attr_path for c in inner_attr.GetConnections()):
+                return inner_chunk, param
+    return None, None
+
+
+def unloft_param(context_param: core.ChunkParamBase) -> None:
+    """Remove a lofted param from its group. The inner param keeps its current value.
+
+    A copy lofted further up is removed first, and nothing is left connected to the
+    group's attribute.
+
+    Args:
+        context_param: The lofted param on the group.
+    """
+    sync = ChunkStageSync()
+    if not (sync.initialized and sync._stage and getattr(context_param, "_lofted", False)):
+        return
+    stage = sync._stage
+    context = context_param.get_chunk()
+    attr_path = context_param._param_attr_path
+    context_attr = stage.GetAttributeAtPath(Sdf.Path(attr_path)) if attr_path else None
+    if context is None or not (context_attr and context_attr.IsValid()):
+        return
+
+    chunks = list(sync._scene.get_chunks()) if sync._scene else []
+
+    # A copy lofted one level up is fed by this one, so it goes first.
+    targets = {str(c) for c in context_attr.GetConnections()}
+    for outer in chunks if targets else ():
+        for upper in [p for p in outer.get_my_params()
+                      if getattr(p, "_lofted", False) and p._param_attr_path in targets]:
+            unloft_param(upper)
+
+    _, inner = _find_lofted_inner(stage, context, attr_path)
+    if inner is not None:
+        sync.clear_attr_connections(stage.GetAttributeAtPath(Sdf.Path(inner._param_attr_path)))
+        if hasattr(inner, "_loft_back"):
+            del inner._loft_back  # drops the inner -> group sync callback
+
+    # Break wires out of the lofted port: the attribute they read is about to go.
+    expr = f"@{context.name}.{context_param.name}@"
+    for chunk in chunks:
+        for _, param in _iter_chunk_params(chunk):
+            if isinstance(param.raw_value, str) and expr in param.raw_value:
+                param.value = param.value
+    root = stage.GetPrimAtPath(_CHUNKS_ROOT)
+    for prim in Usd.PrimRange(root) if root else ():
+        for attr in prim.GetAttributes():
+            if any(str(c) == attr_path for c in attr.GetConnections()):
+                sync.clear_attr_connections(attr)
+
+    context_param.request_delete()
+    sync._delete_stale_attr_specs(context_attr.GetPrim(), context_attr.GetName())
+
+
 def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
     """Recreate Python-side lofted context params that were saved to USD.
 
@@ -7078,24 +7153,7 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
                    for p in context.get_my_params()):
                 continue
 
-            context_attr_path_str = str(context_attr.GetPath())
-
-            inner_param = None
-            for inner_chunk in context.get_my_params():
-                if not isinstance(inner_chunk, core.ChunkBase):
-                    continue
-                for _, param in _iter_chunk_params(inner_chunk):
-                    if not param._param_attr_path:
-                        continue
-                    inner_attr = stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path))
-                    if not (inner_attr and inner_attr.IsValid()):
-                        continue
-                    if any(str(c) == context_attr_path_str for c in inner_attr.GetConnections()):
-                        inner_param = param
-                        break
-                if inner_param:
-                    break
-
+            inner_chunk, inner_param = _find_lofted_inner(stage, context, str(context_attr.GetPath()))
             if not inner_param:
                 continue
 
