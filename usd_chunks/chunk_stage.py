@@ -1632,11 +1632,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return  # already wired; data_changed already wrote the value
 
         raw = getattr(param, 'raw_value', None)
-        if raw is None:
+        is_button = ChunkFlags.ParamType.BUTTON in param.evaluate_type()
+        if raw is None and not (is_button and force):
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
         type_source = getattr(param, 'default_value', None) if is_expr else raw
         sdf_type = _SDF_TYPE_MAP.get(type(type_source))
+        if is_button:
+            # A button holds no value, so it only gets an attribute to be lofted: the
+            # attribute is the wire the group's button finds its inner one by.
+            sdf_type = Sdf.ValueTypeNames.Bool
         # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
         # type -- there is no tuple entry, so without this a colour param resolves to no
         # type at all and never gets a chunk-prim attr, leaving its value unable to
@@ -1694,7 +1699,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if is_expr:
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                else:
+                elif raw is not None:
                     attr.Set(raw)
         # The attr holds the param's value either way now; nothing to read back.
         param._connect_param_attr(attr, read_back=False)
@@ -6635,6 +6640,23 @@ def _mirror_menu_items(inner_param: core.ChunkParamBase, context_param: core.Chu
     _mirror()
 
 
+def _forward_button_click(inner_param: core.ChunkParamBase, context_param: core.ChunkParamBase) -> None:
+    """Make a lofted button click the inner button it stands for."""
+    if ChunkFlags.ParamType.BUTTON not in context_param.evaluate_type():
+        return
+
+    def _click_inner(_owner=None, _notice=None, _sender=None):
+        inner_param.click()
+
+    context_param._loft_click = _click_inner  # strong-ref pin, see _forward_to_inner
+    context_param.add_callback(
+        _click_inner,
+        sender=context_param.get_attribute_sender("value"),
+        send_on_create=False,
+        private=True,
+    )
+
+
 def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -6787,6 +6809,7 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
         private=True,
     )
     _mirror_menu_items(param, context_param)
+    _forward_button_click(param, context_param)
 
     # A rename (chunk_qt_widgets' "Rename..." on a lofted param, or any other code setting
     # .label) has to survive a save/reload -- without this it only lived in the Python
@@ -7232,6 +7255,7 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # before the execute pass, so the first cook already sees the real value.
             _forward_to_inner(None, None)
             _mirror_menu_items(inner_param, context_param)
+            _forward_button_click(inner_param, context_param)
 
 
 def _author_prim(
