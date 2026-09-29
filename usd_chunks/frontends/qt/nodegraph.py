@@ -3715,7 +3715,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # Zoom
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
-        factor = 1.08 if event.angleDelta().y() > 0 else 1 / 1.08
+        factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         self.scale(factor, factor)
         self._apply_lod()
 
