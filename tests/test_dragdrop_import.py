@@ -669,13 +669,23 @@ def _write_script(path, tag, bump_ns=0):
 
 
 def _drop_script(graph, tmp_path, name, pos):
+    """Drop a script and wire it into the view, which is when a dropped script runs.
+
+    The graph adds a View on a timer after the first nodes. Whether it landed before the
+    drop decided whether the script ran at all, so wait for it and wire the script in.
+    """
     qapp, _reg, scene, _docker = graph
     _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
+    _pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
+    (view,) = [c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c)]
     script = tmp_path / name
     _write_script(script, "v1")
     gv._handle_dropped_file(str(script), QtCore.QPointF(pos, pos), QtCore.QPoint(0, 0))
     _pump(qapp, 0.3)
     (runner,) = _script_runners(scene)
+    stage = gv.scene()._stage
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(runner), get_chunk_prim_path(view))
+    gv._recook_active_view()
     _pump_until(qapp, lambda: runner.get_param("result").value == "v1")
     return gv, script, runner
 

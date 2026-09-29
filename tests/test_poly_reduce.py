@@ -546,12 +546,14 @@ def _live_module():
 
 
 @needs_simplify
-def test_an_unchanged_recook_does_not_redo_the_reduction(wired) -> None:
+def test_an_unchanged_recook_does_not_redo_the_reduction(wired, monkeypatch) -> None:
     """The graph re-runs a chunk's execute far more often than its inputs change -- a view
     switch, a new node, a fresh wire all trigger a view-driven recook of the whole upstream
     tree. Live-reported as usdview freezing on unrelated edits, because a 4M-triangle
-    reduction is 40s and was being redone every time. Proven here by tampering with the
-    authored result: an unchanged recook must leave it exactly as it was."""
+    reduction is 40s and was being redone every time.
+
+    The layer is cleared before every cook, so the result is written again each time; what
+    must not run again is the reduction itself (_plan_mesh)."""
     stage, make = wired
     points, counts, indices = _grid(30)
     _define_mesh(stage, "/Mesh", points, counts, indices)
@@ -562,12 +564,15 @@ def test_an_unchanged_recook_does_not_redo_the_reduction(wired) -> None:
     reduced_count = _triangle_count(stage)
     assert reduced_count < len(counts)
 
-    with Usd.EditContext(stage, node.get_edit_context()):
-        UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh")).GetFaceVertexCountsAttr().Set(Vt.IntArray([3]))
+    module = _live_module()
+    plans = []
+    real_plan = module._plan_mesh
+    monkeypatch.setattr(module, "_plan_mesh", lambda *a, **k: plans.append(1) or real_plan(*a, **k))
 
-    _live_module().execute(node)
+    assert node.cook()
 
-    assert _triangle_count(stage) == 1  # the tamper survived: nothing was recomputed
+    assert plans == [], "an unchanged recook reduced the mesh again"
+    assert _triangle_count(stage) == reduced_count, "and the result is written back"
 
 
 @needs_simplify
