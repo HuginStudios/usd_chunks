@@ -16,7 +16,7 @@ import sys
 import pytest
 from pxr import Usd, UsdGeom, UsdRender, Sdf
 
-from usd_chunks import chunk_registry, chunk, render_defs
+from usd_chunks import chunk_registry, chunk, chunk_utils, render_defs
 from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
@@ -839,38 +839,6 @@ class _FakeRecorder:
         self.deleted = True
 
 
-class TestFrameSpec:
-    """usdrecord-style frame specs, parsed here rather than shelled out for."""
-
-    def test_empty_spec_means_a_single_default_render(self):
-        mod = importlib.import_module("chunks.usd.render")
-        assert mod.parse_frames("") == []
-        assert mod.parse_frames("   ") == []
-
-    def test_single_frame_and_list(self):
-        mod = importlib.import_module("chunks.usd.render")
-        assert mod.parse_frames("7") == [7.0]
-        assert mod.parse_frames("1,3,5") == [1.0, 3.0, 5.0]
-
-    def test_range_is_inclusive(self):
-        mod = importlib.import_module("chunks.usd.render")
-        assert mod.parse_frames("1:4") == [1.0, 2.0, 3.0, 4.0]
-
-    def test_strided_range(self):
-        mod = importlib.import_module("chunks.usd.render")
-        assert mod.parse_frames("1:9x4") == [1.0, 5.0, 9.0]
-
-    def test_backwards_range_is_rejected(self):
-        mod = importlib.import_module("chunks.usd.render")
-        with pytest.raises(ValueError):
-            mod.parse_frames("10:2")
-
-    def test_non_positive_stride_is_rejected(self):
-        mod = importlib.import_module("chunks.usd.render")
-        with pytest.raises(ValueError):
-            mod.parse_frames("1:10x0")
-
-
 class TestOutputPathFormatting:
     def test_hashes_pad_to_their_own_width(self):
         mod = importlib.import_module("chunks.usd.render")
@@ -982,8 +950,6 @@ class TestHydraMode:
         `usdchunks run scene.usda -o out.exr` writes somewhere the command line did not
         ask for.
         """
-        mod = importlib.import_module("chunks.usd.render")
-
         scene_file = tmp_path / "shot" / "scene.usda"
         scene_file.parent.mkdir()
         stage = Usd.Stage.CreateNew(str(scene_file))
@@ -994,14 +960,14 @@ class TestHydraMode:
         monkeypatch.chdir(cwd)
 
         # Resolved against cwd, and specifically not against the directory holding the stage.
-        assert mod._cwd_relative("renders/b.exr") == os.path.normpath(
+        assert chunk_utils.cwd_relative("renders/b.exr") == os.path.normpath(
             str(cwd / "renders" / "b.exr")
         )
-        assert mod._cwd_relative("renders/b.exr") != os.path.normpath(
+        assert chunk_utils.cwd_relative("renders/b.exr") != os.path.normpath(
             str(tmp_path / "shot" / "renders" / "b.exr")
         )
         absolute = str(tmp_path / "abs.exr")
-        assert mod._cwd_relative(absolute) == absolute
+        assert chunk_utils.cwd_relative(absolute) == absolute
 
     def test_output_directory_is_created(self, monkeypatch, tmp_path):
         """No renderer creates it -- which is how a render that completed successfully

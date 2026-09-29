@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, mesh_math
 from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
@@ -176,36 +176,6 @@ class _TriangleSoup:
         return first, last
 
 
-def _world_points(prim, points):
-    """A mesh's points in world space, as an (N, 3) array."""
-    matrix = np.asarray(UsdGeom.XformCache().GetLocalToWorldTransform(prim), dtype=np.float64)
-    # Row-vector convention, which is what Gf.Matrix4d.Transform uses: p * M, with the
-    # translation in the last row.
-    return np.asarray(points, dtype=np.float64) @ matrix[:3, :3] + matrix[3, :3]
-
-
-def _fan_triangulate(counts, indices):
-    """Fan-triangulate every face at once: three index arrays, or None if there are no faces.
-
-    The fan a per-face loop would walk -- (v0, vi, vi+1) for i in 1..count-2 -- as index
-    arithmetic, so USD's flat face buffers are never unpacked a face at a time. Faces with
-    fewer than three vertices contribute nothing.
-    """
-    if not len(counts):
-        return None
-    per_face = np.maximum(counts - 2, 0)
-    total = int(per_face.sum())
-    if total == 0:
-        return None
-    face_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
-    fan_start = np.concatenate(([0], np.cumsum(per_face)[:-1]))
-    # Which face each triangle came from, and how far into that face's fan it is.
-    face_of = np.repeat(np.arange(len(counts)), per_face)
-    within = np.arange(total) - np.repeat(fan_start, per_face)
-    base = face_start[face_of]
-    return indices[base], indices[base + within + 1], indices[base + within + 2]
-
-
 def _collect_triangles(prim):
     """World-space triangles from prim and its descendants, as a `_TriangleSoup`."""
     if not prim or not prim.IsValid():
@@ -221,12 +191,11 @@ def _collect_triangles(prim):
         indices = mesh.GetFaceVertexIndicesAttr().Get()
         if not counts or not indices:
             continue
-        fan = _fan_triangulate(
-            np.asarray(counts, dtype=np.int64), np.asarray(indices, dtype=np.int64)
-        )
-        if fan is None:
+        triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
+        if not len(triangles):
             continue
-        parts.append(_TriangleSoup.from_arrays(_world_points(p, points), *fan))
+        fan = tuple(triangles.T)
+        parts.append(_TriangleSoup.from_arrays(mesh_math.world_points(p, points), *fan))
 
     if len(parts) == 1:
         return parts[0]
@@ -644,7 +613,7 @@ def _density_mask(prim, primvar_name=None):
             )
             continue
 
-        point_parts.append(_world_points(p, mesh_points))
+        point_parts.append(mesh_math.world_points(p, mesh_points))
         weight_parts.append(values[:len(mesh_points)])
 
     if not point_parts:

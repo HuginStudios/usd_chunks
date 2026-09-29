@@ -1,8 +1,8 @@
 from __future__ import annotations
 import math
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks.chunk_stage import clear_attr_connections
+from usd_chunks import chunk, chunk_registry
+from usd_chunks.chunk_stage import unwire_param
 
 Vec3 = tuple
 
@@ -173,21 +173,6 @@ _OPS: dict = {
 }
 
 
-def _clear_connection(param: chunk.ChunkParamBase) -> None:
-    """Reset param to its default and drop any USD-level connection. A param hidden by
-    the current operation is no longer meaningful -- keeping a stale connection around
-    would silently reappear (with possibly wrong semantics) if the op is switched back.
-    """
-    if param is None:
-        return
-    raw = getattr(param, "raw_value", None)
-    if not (isinstance(raw, str) and chunk_utils.has_expression(raw)):
-        return
-    param.value = param.default_value
-    if attr := param.get_usd_prop():
-        clear_attr_connections(attr)
-
-
 def _clear_matching_params(obj, target: str) -> None:
     """Recursively walk obj's params (into groups/vectors) and clear any whose raw_value
     references target (an "@OwnerName.attrName@" token).
@@ -198,7 +183,7 @@ def _clear_matching_params(obj, target: str) -> None:
     for param in get_children():
         raw = getattr(param, "raw_value", None)
         if isinstance(raw, str) and target in raw:
-            _clear_connection(param)
+            unwire_param(param)
         else:
             _clear_matching_params(param, target)
 
@@ -234,7 +219,7 @@ def _update_inputs(owner: chunk.Chunk, operation: str) -> None:
             param.label = labels[name]
             param.unset_state(chunk.ChunkFlags.State.HIDDEN)
         else:
-            _clear_connection(param)
+            unwire_param(param)
             param.set_state(chunk.ChunkFlags.State.HIDDEN)
 
     is_float_output = entry[1] == "float" if entry else False

@@ -1,44 +1,11 @@
 from __future__ import annotations
-import os
 from pxr import Sdf
 from usd_chunks import chunk, chunk_stage, chunk_utils
-from usd_chunks.chunk_utils import get_unique_path
 
 
 def file_changed(owner, notice, sender):
-    """Callback for changing Payload paths."""
-    param = notice.data
-    _chunk = param.get_chunk()
-
-    if param.name == "file_path" and param.value:
-        Payload_path = param.value
-    else:
-        fp = _chunk.get_param("file_path") if _chunk else None
-        Payload_path = fp.value if fp else None
-
-    if not Payload_path:
-        return
-
-    primpath_param = _chunk.get_param("primpath_location") if _chunk else None
-    if not primpath_param:
-        return
-    
-    if chunk_utils.has_expression(primpath_param.raw_value or ""):
-        return
-
-    # A network file is hosted, not placed: its location field is the namespace the
-    # network's prim paths resolve under, and the default is none -- the paths as the
-    # sequence wrote them. Suggesting /<file> here would namespace every hosted network.
-    import_param = _chunk.get_param("import_primpath")
-    if chunk_stage.network_target(Payload_path, import_param.value if import_param else ""):
-        if primpath_param.raw_value:
-            primpath_param.value = ""
-        return
-
-    asset_name = os.path.splitext(os.path.basename(Payload_path))[0]
-    stage = param.get_stage()
-    unique_path = get_unique_path(stage, f"/{asset_name}")
-    primpath_param.value = unique_path
+    """Callback for changing payload paths: suggest a prim location from the file name."""
+    chunk_stage.suggest_location_from_file(notice.data)
 
 
 def execute(node):

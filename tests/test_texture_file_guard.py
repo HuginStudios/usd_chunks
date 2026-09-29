@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 from pxr import Usd, UsdGeom, UsdShade
 
+from usd_chunks import chunk_utils
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "modelling"))
 import mesh  # noqa: E402
@@ -49,18 +51,18 @@ def _texture_prims(stage):
 class TestUsableCheck:
     def test_a_real_file_is_usable(self):
         real = str(Path(mesh.__file__).parent / "checker.png")
-        assert mesh.texture_file_is_usable(real) is True
+        assert chunk_utils.texture_file_is_usable(real) is True
 
     def test_a_missing_file_is_not(self):
-        assert mesh.texture_file_is_usable("C:/definitely/not/here.png") is False
+        assert chunk_utils.texture_file_is_usable("C:/definitely/not/here.png") is False
 
     def test_an_empty_path_is_not(self):
-        assert mesh.texture_file_is_usable("") is False
+        assert chunk_utils.texture_file_is_usable("") is False
 
     def test_a_udim_pattern_is_left_alone(self):
         """UDIM sets never resolve as a single file and are meant not to -- treating one as
         missing would refuse to author a perfectly valid texture."""
-        assert mesh.texture_file_is_usable("C:/tex/diffuse.<UDIM>.exr") is True
+        assert chunk_utils.texture_file_is_usable("C:/tex/diffuse.<UDIM>.exr") is True
 
 
 class TestAuthoring:

@@ -377,6 +377,27 @@ class Menu(ChunkParamBase[str]):
         except ValueError:
             return 0
 
+    def set_items(self, items) -> None:
+        """Replace menu_items with items, keeping the current value listed.
+
+        The current value stays in the list even when items no longer has it: a saved
+        choice arrives before the upstream chunk that makes it has cooked, and a view-driven
+        recook mutes layers one at a time, so "not there right now" is routinely transient.
+        Dropping it would lose the choice for good.
+
+        Only assigned when something changed: menu_items is a plain field, and writing it
+        re-triggers the chunk's execute() whether or not anything differs.
+
+        Args:
+            items: The new choices.
+        """
+        current = self.value or ""
+        items = list(items)
+        if current and current not in items and not chunk_utils.has_expression(current):
+            items.append(current)
+        if list(self.menu_items or []) != items:
+            self.menu_items = items
+
 
 class Button(ChunkParamBase):
     """A button param.

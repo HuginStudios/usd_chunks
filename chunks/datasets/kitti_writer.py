@@ -95,14 +95,7 @@ def frame_path(pattern, frame):
     number = int(round(frame))
     path = pattern.replace("{frame}", str(number))
     path = _FRAME_PLACEHOLDER.sub(lambda m: str(number).zfill(len(m.group(0))), path)
-    return _cwd_relative(path)
-
-
-def _cwd_relative(path):
-    """Relative paths resolve against the working directory, as the Render chunk's do."""
-    if not path or os.path.isabs(path):
-        return path
-    return os.path.normpath(os.path.join(os.getcwd(), path))
+    return chunk_utils.cwd_relative(path)
 
 
 def read_layers(path):
@@ -841,7 +834,7 @@ def write_dataset(node):
         return 0
 
     pattern = (node.get_param("input_images").value or "").strip()
-    out_dir = _cwd_relative((node.get_param("output_dir").value or "").strip())
+    out_dir = chunk_utils.cwd_relative((node.get_param("output_dir").value or "").strip())
     if not pattern or not out_dir:
         logger.error("KITTI Writer: set both Input Images and Output Dir.")
         return 0
