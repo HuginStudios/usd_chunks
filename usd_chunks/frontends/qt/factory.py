@@ -14,6 +14,7 @@ from usd_chunks import chunk_stage
 
 from usd_chunks.frontends.qt.widgets import (
     ChunkWidget,
+    disconnect_when_destroyed,
     source_code_dial,
     FilterableChunkMenu,
     file_dial,
@@ -618,6 +619,7 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         self._chunk_deleted_listener = chunk_notice.NoticeConnection(
             self._deleted_chunk_callback, chunk_notice.ChunkNoticeAlias.CHUNK_DELETED, globally=True
         )
+        disconnect_when_destroyed(self, (self._chunk_loaded_listener, self._chunk_deleted_listener))
         self.build()
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):

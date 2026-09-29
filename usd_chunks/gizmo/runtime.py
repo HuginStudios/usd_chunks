@@ -1586,44 +1586,6 @@ def _target_prim(chunk: core.ChunkBase, prim: Usd.Prim) -> None:
         param.value = str(prim.GetPath())
 
 
-def _local_transform(prim: Usd.Prim) -> Gf.Matrix4d | None:
-    """The prim's current local transform, or None if it has none worth carrying over."""
-    xformable = UsdGeom.Xformable(prim)
-    if not xformable:
-        return None
-    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
-    # The signature differs across USD versions: some return the matrix, some
-    # (matrix, resetsXformStack).
-    if isinstance(local, tuple):
-        local = local[0]
-    return None if local == Gf.Matrix4d(1.0) else local
-
-
-def _seed(chunk: core.ChunkBase, matrix: Gf.Matrix4d) -> None:
-    """Start the chunk where the prim already was, so creating it moves nothing."""
-    by_type = {g.type: g.name for g in get_gizmos(chunk)}
-
-    # A chunk declaring gizmo="transform" absorbs its translate/rotate/scale groups into one
-    # handle, and get_gizmos then reports only that one -- so seeding per part would match
-    # nothing. The whole-chunk handle takes the matrix as-is, which is also the lossless
-    # route: no decompose, no Euler convention to agree on.
-    if (whole := by_type.get(core.GIZMO_TRANSFORM_TYPE)) is not None:
-        apply_bindings(chunk, whole, matrix)
-        return
-
-    # decompose() keys by gizmo *type*; apply_bindings takes a gizmo *name*. In transform.py
-    # those differ ("translate" vs "translate_grp"), and a host is told to map between them
-    # -- so do the same here rather than assuming this module's naming.
-    for gizmo_type, value in decompose(matrix).items():
-        name = by_type.get(gizmo_type)
-        if name is None:
-            # A module declaring only some of translate/rotate/scale is fine; seed the
-            # handles it does declare rather than refusing to seed at all.
-            logger.debug("No %r handle to seed on %r", gizmo_type, chunk.name)
-            continue
-        apply_bindings(chunk, name, value)
-
-
 # ---------------------------------------------------------------------------
 # xformOpOrder, derived from the graph
 # ---------------------------------------------------------------------------

@@ -142,6 +142,21 @@ _SHEET_FLAG = "_chunk_sheet_applied"
 _SELF_STYLING = "_chunk_styles_self"
 
 
+def disconnect_when_destroyed(qobject: QtCore.QObject, connections) -> None:
+    """Disconnect these NoticeConnections when Qt deletes qobject.
+
+    Qt can delete a widget while its Python object lives on, still subscribed: it then kept
+    reacting to notices, and one arriving later reached a dead C++ object. The lambda holds
+    the connections, not qobject, so this does not keep qobject alive. connections may be a
+    list the caller refills later; whatever it holds at destroy time is disconnected.
+
+    Args:
+        qobject: The Qt object whose deletion ends the connections.
+        connections: The NoticeConnections to disconnect.
+    """
+    qobject.destroyed.connect(lambda *_, _conns=connections: [c.disconnect() for c in _conns])
+
+
 def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
     """Give widget CHUNK_STYLESHEET, unless something above it already covers it.
 
@@ -1438,40 +1453,6 @@ class LabeledWidget(QtWidgets.QWidget):
                     param.value = text
             elif clear_expr_action and action == clear_expr_action:
                 param.value = param.default_value
-
-
-class ChunkArea(QtWidgets.QScrollArea):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.flow = QtWidgets.QVBoxLayout()
-        self.flow.setContentsMargins(6, 0, 10, 0)
-        self.flow.setSpacing(40)
-        self.flow.setContentsMargins(6, 0, 10, 0)
-        self.flow.setSpacing(40)
-        self.flow.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
-
-        self.flow.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
-
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        self.widget_holder = QtWidgets.QWidget(self)
-        self.widget_holder.setLayout(self.flow)
-
-        self.setWidget(self.widget_holder)
-        self.setWidgetResizable(True)
-
-    def add_widget(self, w):
-        self.flow.addWidget(w)
-
-    def delete_chunks(self):
-        # Deletes all chunks in this ScrollArea. Currently undoable: TODO: add undo/redo
-        for i in range(self.flow.count()):
-            if item := self.flow.itemAt(i):
-                w = item.widget()
-                if isinstance(w, ChunkWidget):
-                    w.group.request_delete()
 
 
 class ContainerWidget(

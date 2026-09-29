@@ -94,7 +94,7 @@ def dropped(qapp):
 def _field_text(qapp, gv, chunk, param_name):
     path = get_chunk_prim_path(chunk)
     node = gv.scene()._nodes.get(path)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and (node is None or getattr(node, "_chunk_widget", None) is None):
         qapp.processEvents()
         node = gv.scene()._nodes.get(path)

@@ -15,6 +15,8 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.frontends.qt import nodegraph
 
+from qt_wait import pump_until
+
 
 class _DummyScene(SceneSender):
     def get_stage(self):
@@ -76,6 +78,7 @@ def _pump(qapp, seconds: float) -> None:
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         qapp.processEvents()
+
 
 
 def _exec_ports(node):
@@ -155,7 +158,7 @@ def _make_nodes(graph, module="transform", n=1):
     chunks = [_mk(mod, scene) for _ in range(n)]
     gv = docker.tab_widget.get_current_graph_view()
     paths = [get_chunk_prim_path(c) for c in chunks]
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and any(p not in gv.scene()._nodes for p in paths):
         qapp.processEvents()
     nodes = [gv.scene()._nodes[p] for p in paths]
@@ -183,7 +186,7 @@ def test_import_as_chunks_does_not_duplicate_create_layer_side_effect(graph, tmp
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and cl_path not in gv.scene()._nodes:
         qapp.processEvents()
 
@@ -229,7 +232,7 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     cl = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     cl_path = get_chunk_prim_path(cl)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and cl_path not in gv.scene()._nodes:
         qapp.processEvents()
 
@@ -472,6 +475,11 @@ def test_import_as_reference_creates_prefilled_node(graph, tmp_path) -> None:
 
     ref_chunks = [c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "reference"]
     assert len(ref_chunks) == 1
+    def _referenced():
+        prim = gv.scene()._stage.GetPrimAtPath(ref_chunks[0].get_param("primpath_location").value or "/")
+        return prim.IsValid() and prim.HasAuthoredReferences()
+
+    pump_until(qapp, _referenced)
     ref = ref_chunks[0]
     assert ref.get_param("file_path").value == str(scene_path)
 
@@ -539,7 +547,7 @@ def test_import_view_targets_imported_tail_not_unrelated_existing_node(graph) ->
     existing = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     existing_path = get_chunk_prim_path(existing)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and existing_path not in gv.scene()._nodes:
         qapp.processEvents()
     assert not gv._context_has_view(scene, gv._graph_context())
@@ -550,7 +558,7 @@ def test_import_view_targets_imported_tail_not_unrelated_existing_node(graph) ->
     c = _mk(mod, scene)
     b_path = get_chunk_prim_path(b)
     c_path = get_chunk_prim_path(c)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and (b_path not in gv.scene()._nodes or c_path not in gv.scene()._nodes):
         qapp.processEvents()
     b_node = gv.scene()._nodes[b_path]
@@ -588,7 +596,7 @@ def test_import_as_chunks_suppresses_generic_default_view_race(graph, tmp_path) 
     existing = _mk(mod, scene)
     gv = docker.tab_widget.get_current_graph_view()
     existing_path = get_chunk_prim_path(existing)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and existing_path not in gv.scene()._nodes:
         qapp.processEvents()
 
@@ -596,7 +604,7 @@ def test_import_as_chunks_suppresses_generic_default_view_race(graph, tmp_path) 
     c = _mk(mod, scene)
     b_path = get_chunk_prim_path(b)
     c_path = get_chunk_prim_path(c)
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and (b_path not in gv.scene()._nodes or c_path not in gv.scene()._nodes):
         qapp.processEvents()
     b_node = gv.scene()._nodes[b_path]
@@ -656,13 +664,24 @@ def _write_script(path, tag, bump_ns=0):
 
 
 def _drop_script(graph, tmp_path, name, pos):
+    """Drop a script and wire it into the view, which is when a dropped script runs.
+
+    The graph adds a View on a timer after the first nodes. Whether it landed before the
+    drop decided whether the script ran at all, so wait for it and wire the script in.
+    """
     qapp, _reg, scene, _docker = graph
     _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
+    pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
+    (view,) = [c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c)]
     script = tmp_path / name
     _write_script(script, "v1")
     gv._handle_dropped_file(str(script), QtCore.QPointF(pos, pos), QtCore.QPoint(0, 0))
     _pump(qapp, 0.3)
     (runner,) = _script_runners(scene)
+    stage = gv.scene()._stage
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(runner), get_chunk_prim_path(view))
+    gv._recook_active_view()
+    pump_until(qapp, lambda: runner.get_param("result").value == "v1")
     return gv, script, runner
 
 

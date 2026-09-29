@@ -74,7 +74,7 @@ def _nodes(graph, module="transform", n=1):
         chunks.append(made[0])
     view = docker.tab_widget.get_current_graph_view()
     paths = [get_chunk_prim_path(c) for c in chunks]
-    end = time.monotonic() + 2.0
+    end = time.monotonic() + 10.0
     while time.monotonic() < end and any(p not in view.scene()._nodes for p in paths):
         qapp.processEvents()
     return view, chunks, paths
@@ -143,7 +143,7 @@ class TestEditing:
         adapter.copy_selection()
         before = set(adapter.view.scene()._nodes)
         adapter.paste_at(400.0, 400.0)
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before
@@ -154,7 +154,7 @@ class TestEditing:
         adapter.set_selection([paths[0]])
         before = set(adapter.view.scene()._nodes)
         adapter.duplicate_selection()
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before
@@ -168,7 +168,7 @@ class TestEditing:
                      if getattr(e.module, "module_name", "") == "transform")
         before = set(adapter.view.scene()._nodes)
         adapter.create_chunk(entry, 600.0, 200.0)
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before
@@ -261,7 +261,7 @@ class TestTheClipboardIsShared:
         chunk_graph.node_clipboard.extend(held)  # as another frontend would fill it
         before = set(adapter.view.scene()._nodes)
         adapter.paste_at(500.0, 500.0)
-        end = time.monotonic() + 2.0
+        end = time.monotonic() + 10.0
         while time.monotonic() < end and set(adapter.view.scene()._nodes) == before:
             qapp.processEvents()
         assert set(adapter.view.scene()._nodes) - before

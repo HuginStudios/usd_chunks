@@ -12,13 +12,14 @@ from __future__ import annotations
 import collections
 import sys
 
-from usd_chunks import Scene, chunk_notice
+from usd_chunks import Scene, chunk_notice, chunk_registry
 
 
 def _count_cooks(module_name, counts):
-    module = next(m for m in list(sys.modules.values())
-                  if (getattr(m, "__file__", "") or "").replace("\\", "/").endswith(f"/{module_name}.py")
-                  and callable(getattr(m, "execute", None)))
+    # The registry's copy: the one it calls execute on. Scanning sys.modules instead
+    # touched every lazily imported module there, and loading kitti_writer that way fails
+    # without OpenEXR.
+    module = chunk_registry.ChunkRegistry().get_chunk_module(module_name).module
     original = module.execute
 
     def counted(node, *args, **kwargs):
