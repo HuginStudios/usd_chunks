@@ -10,9 +10,17 @@ chunk dirty too, and the next edit anywhere below it walked up and cooked it aga
 
 from __future__ import annotations
 
+import pytest
 from chunk_stubs import register_stub_module
 
-from usd_chunks import Scene, chunk
+from usd_chunks import Scene, chunk, skip_cook
+
+
+@pytest.fixture(autouse=True)
+def _every_cook_runs(monkeypatch):
+    # What is held and when it cooks, not whether: Down reads nothing Up writes, and with
+    # skipping on it would rightly not cook at all.
+    monkeypatch.delenv(skip_cook.ENV, raising=False)
 
 
 def _add(scene, module):

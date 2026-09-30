@@ -1311,7 +1311,7 @@ def existing_xform_op_name(node):
     suffix = getattr(node, "_xform_op_suffix", None)
     if suffix:
         return _XFORM_OP_PREFIX + suffix
-    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
     prim = _chunk_prim_of(stage, node) if stage is not None else None
     if prim is None:
         return None
@@ -1374,7 +1374,7 @@ def _stable_suffix(node) -> str:
     if cached:
         return cached
 
-    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
     prim = _chunk_prim_of(stage, node) if stage is not None else None
 
     suffix = None

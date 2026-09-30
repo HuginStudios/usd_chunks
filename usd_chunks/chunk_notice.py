@@ -41,7 +41,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self, override
-from usd_chunks import chunk_scheduler
+from usd_chunks import chunk_scheduler, skip_cook
 
 logger = logging.getLogger(__name__)
 
@@ -969,6 +969,9 @@ class DagNode:
         # whatever depth it had, since gaining a dependant says nothing about its own
         # distance from the roots.
         chunk_scheduler.topology_changed(self)
+        # A new chunk above self: what it and everything below it cooked on is gone.
+        if skip_cook.enabled():
+            skip_cook.inputs_rewired(self)
 
         if connect_reverse:
             node.add_dependant(self)
@@ -1011,6 +1014,8 @@ class DagNode:
         for key in keys:
             del self._connections.inputs[key]
         chunk_scheduler.topology_changed(self, node)
+        if skip_cook.enabled():
+            skip_cook.inputs_rewired(self)
 
         if disconnect_reverse:
             node.remove_dependant(self)
@@ -1551,7 +1556,22 @@ class ChunkNoticePropagator:
                 ):
                     n._dirty = True
                     _held_cooks[chunk] = None
+                    # Its reasons go with it: the solve that holds it clears them, and
+                    # the skip decision when it is solved later needs them.
+                    if skip_cook.enabled():
+                        skip_cook.hold_reasons(chunk, changes)
                     continue
+                if skip_cook.enabled():
+                    skip_cook.note_state(chunk)
+                    # Dirtied only by chunks above it cooking, and none of what they
+                    # changed is anything it reads: its layer already holds the result.
+                    # Not stale either -- there is nothing for recook_for_view to redo.
+                    if skip_cook.should_skip(chunk, changes):
+                        continue
+                    # A chunk with no cook of its own (a chunkgroup) changes what is
+                    # below it without a cook to say what: everything.
+                    if not chunk.can_cook():
+                        skip_cook.hand_down(chunk, skip_cook.EVERYTHING)
                 # Stale until the module actually runs below. Every reason this dispatch has
                 # for not running it -- blocked, muted, no layer yet, no stage -- leaves the
                 # layer holding a result the change never reached, and recook_for_view cooks

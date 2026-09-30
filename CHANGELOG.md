@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Experimental: `USD_CHUNKS_SKIP_COOKS=1` skips the cooks nothing reached. A chunk that
+  only the chunks above it changed doesn't cook unless one of them changed a prim it reads.
+  What it reads is not declared: each cook runs on a stage holding only its inputs and its
+  last output, and a cook that looks up anything else is cooked on the whole stage from then
+  on. On an interior set with a 5000-instance Scatter below a Transform and a Light, an
+  edit of either takes 18 ms instead of 270 ms, with an identical result. Framework code
+  that works on the scene during a cook uses the new `get_scene_stage()`.
 - A cook cache for slow chunks. A module that sets `cache_cook=True` in its config has its
   cooked layer kept on disk and read back when its params, the files they name, its code
   and the stage's units all match, including on reopen; a `cache_key(node)` hook adds
