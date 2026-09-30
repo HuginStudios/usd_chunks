@@ -4958,18 +4958,27 @@ def _connected_source_paths(prim: Usd.Prim) -> set[str]:
     return sources
 
 
-def _is_placeholder_prim(prim: Usd.Prim) -> bool:
+def _is_placeholder_prim(prim: Usd.Prim, has_chunk: Callable[[str], bool]) -> bool:
     """Whether prim is a chunk prim no module backs -- a type missing, renamed or off
     USD_CHUNK_DIRS. load_chunks leaves it without a chunk, so the graph shows it by its
     USD type alone and nothing in the DAG stands where it is.
+
+    Both halves are needed. A chunk whose config names an unregistered module still has
+    a prim carrying that type, and it is a real node: walking past it would drop it from
+    its downstream's dependencies. So the registry is asked first, being cheap, and only
+    a type it does not know is checked against has_chunk.
     """
     if not prim or not prim.IsValid() or prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
         return False
     chunk_type = prim.GetAttribute(_CHUNK_TYPE_ATTR).Get()
-    return bool(chunk_type) and chunk_registry.ChunkRegistry().get_chunk_module(str(chunk_type)) is None
+    if not chunk_type or chunk_registry.ChunkRegistry().get_chunk_module(str(chunk_type)):
+        return False
+    return not has_chunk(str(prim.GetPath()))
 
 
-def _through_placeholders(stage: Usd.Stage | None, paths: Iterable[str]) -> list[str]:
+def _through_placeholders(
+    stage: Usd.Stage | None, paths: Iterable[str], has_chunk: Callable[[str], bool]
+) -> list[str]:
     """paths, with every placeholder chunk prim replaced by what feeds its exec slots.
 
     A placeholder has no chunk, so an edge to it resolves to nothing and is dropped -- and
@@ -4980,6 +4989,7 @@ def _through_placeholders(stage: Usd.Stage | None, paths: Iterable[str]) -> list
     order the file says -- only minus whatever the missing chunk would have authored.
 
     Transitive, since placeholders can be chained, and in order, strongest branch first.
+    has_chunk says whether a chunk stands at a prim path (see _is_placeholder_prim).
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -4989,7 +4999,7 @@ def _through_placeholders(stage: Usd.Stage | None, paths: Iterable[str]) -> list
             return
         seen.add(path)
         prim = stage.GetPrimAtPath(Sdf.Path(path)) if stage else None
-        if prim is not None and _is_placeholder_prim(prim):
+        if prim is not None and _is_placeholder_prim(prim, has_chunk):
             for conn in exec_input_connections(prim):
                 visit(str(conn.GetPrimPath()))
         else:
@@ -5204,7 +5214,9 @@ def _wired_dependencies(chunk: core.ChunkBase) -> list:
     prim = _live_prim(chunk)
     if prim is None:
         return []
-    return _chunks_at(_through_placeholders(prim.GetStage(), _connected_source_paths(prim)))
+    return _chunks_at(_through_placeholders(
+        prim.GetStage(), _connected_source_paths(prim), lambda path: bool(_chunks_at([path]))
+    ))
 
 
 def _would_cycle(chunk: core.ChunkBase, dep: core.ChunkBase) -> bool:
@@ -5983,7 +5995,9 @@ def _load_chunks(
                         # Through any placeholder: a wire into one must still order this
                         # chunk after the chain behind it (see _through_placeholders).
                         for source in _through_placeholders(
-                            stage, [str(conn.GetPrimPath()) for conn in exec_conns]
+                            stage,
+                            [str(conn.GetPrimPath()) for conn in exec_conns],
+                            lambda path: path in chunk_by_path or bool(_chunks_at([path])),
                         ):
                             dep = chunk_by_path.get(source)
                             if dep is not None and id(dep) not in existing_deps:
