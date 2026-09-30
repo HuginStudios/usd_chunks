@@ -3477,6 +3477,7 @@ class ChunkBase(ChunkGroupBase):
                         if ctx.anonymous:
                             self.reauthor_driven_attrs()
                     self._cook_stale = False
+                    chunk_utils.stamp_module_hash(stage, self)
                 except Tf.ErrorException:
                     # The layer left the stage's local layer stack between the
                     # check above and here. It can: a cook reached from inside
@@ -3504,6 +3505,7 @@ class ChunkBase(ChunkGroupBase):
                 # No edit layer of its own -- author into the stage's current target.
                 execute(self)
                 self._cook_stale = False
+                chunk_utils.stamp_module_hash(stage, self)
         return True
 
     @override

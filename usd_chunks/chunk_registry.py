@@ -49,6 +49,7 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, Registry
 import usd_chunks.chunk_core as core
 import usd_chunks.chunk_notice as chunk_notice
 from usd_chunks import chunk_utils
+from usd_chunks.store import pin
 # from usd_chunks.chunk_core import ChunkBase, ChunkCommon, ChunkConfig, ChunkHash
 
 if TYPE_CHECKING:
@@ -509,8 +510,6 @@ class _ConfigTransformer(ast.NodeTransformer):
                     self._deferred_config = func
         if node.name == "main":
             self._module._has_main = True
-            if src := self._get_node_source(node):
-                self._module._checksum = chunk_cache.compute_checksum("".join(src.split()))
         return node
 
     def visit_Import(self, node: ast.Import) -> Any:
@@ -560,6 +559,7 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
     def exec_module(self, module: types.ModuleType) -> None:
         source_bytes = self.get_data(self.get_filename(self.fullname))
         source = source_bytes.decode("utf-8")
+        self._module.source_hash = pin.hash_file(self.path)
 
         _pre_load_module(source, module.__dict__, self._module)
 
@@ -844,6 +844,12 @@ class ChunkModule:
         module_file (str): The original, absolute, path to the python module
     """
 
+    #: pin.hash_file of the source as the loader last read it -- what
+    #: info:moduleHash is stamped with and compared against. Set when the file is read, so it
+    #: is the code this module runs and not whatever the file holds now. None until then, and
+    #: for a module built without a file.
+    source_hash: str | None = None
+
     def __init__(
         self,
         module: types.ModuleType | None = None,
@@ -863,11 +869,6 @@ class ChunkModule:
         # This is set by the _ConfigTransformer when parsing the module (before loading) if the module
         # defines a config() function
         self.config: core.ChunkConfig = core.ChunkConfig()
-        # This is set by the _ConfigTransformer when parsing the module (before loading). The value is
-        # the checksum of the main() function, used for comparing if it has changed when loading a scene
-        # file
-        self._checksum: int = -1
-
         # Call _exec_module to lazily load the module. This runs the _ConfigTransformer. If module_file is .py and
         # module is not a RuntimeModule, _exec_module will create a _ChunkConfigLazyLoader
         #

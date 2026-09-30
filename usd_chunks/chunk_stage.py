@@ -5546,6 +5546,7 @@ def _load_chunks(
     # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
+    changed_code: dict[str, dict[str, int]] = {}  # chunkType -> {saved hash: prim count}
     for prim in (stage.Traverse(_LOAD_INCLUDE_INACTIVE) if prims is None else prims):
         # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
         # It is typed Scope, so it must be recognised here explicitly: with the saved
@@ -5578,7 +5579,22 @@ def _load_chunks(
                 "(missing/renamed/not on USD_CHUNK_DIRS?) -- loading as an empty placeholder",
                 prim.GetPath(), chunk_type)
             continue
+        if chunk_utils.module_changed_since_cook(prim, mod):
+            saved = chunk_utils.recorded_module_hash(prim)
+            counts = changed_code.setdefault(str(chunk_type), {})
+            counts[saved] = counts.get(saved, 0) + 1
         to_load.append((prim, mod))
+
+    # One line per type, not per prim: a network of a hundred of one chunk is one change.
+    for chunk_type, saved_counts in sorted(changed_code.items()):
+        module = chunk_registry.ChunkRegistry().get_chunk_module(chunk_type)
+        logger.warning(
+            "load_chunks: %d %r chunk(s) were saved with different code than is loaded now "
+            "-- saved with %s, loaded %s (%s from %s); their results may not be what it "
+            "would produce",
+            sum(saved_counts.values()), chunk_type,
+            ", ".join(h[:19] for h in sorted(saved_counts)),
+            module.source_hash[:19], chunk_naming.MODULE_HASH_ATTR, module.module_file)
 
     if not to_load:
         return
@@ -6369,6 +6385,8 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
         for name in list(spec.properties.keys()):
             if name.startswith(_INPUTS_PREFIX) and name != chunk_naming.EXEC_INPUT:
                 del spec.properties[name]
+            elif name == chunk_naming.MODULE_HASH_ATTR:
+                del spec.properties[name]
         chunk_type = spec.properties.get(_CHUNK_TYPE_ATTR) or Sdf.AttributeSpec(
             spec, _CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, Sdf.VariabilityUniform)
         chunk_type.default = "chunkgroup"
@@ -6383,7 +6401,7 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
             for name in list(other_spec.properties.keys()):
                 if name.startswith(_INPUTS_PREFIX) and name != chunk_naming.EXEC_INPUT:
                     del other_spec.properties[name]
-                elif name == _CHUNK_TYPE_ATTR:
+                elif name in (_CHUNK_TYPE_ATTR, chunk_naming.MODULE_HASH_ATTR):
                     del other_spec.properties[name]
     finally:
         chunk_notice._usd_write_active = prev
