@@ -12,7 +12,7 @@ import pytest
 from chunk_stubs import register_stub_module
 from pxr import Sdf
 
-from usd_chunks import Scene, chunk, cook_cache
+from usd_chunks import Scene, chunk, chunk_registry, cook_cache
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +87,25 @@ def test_the_same_inputs_are_read_back_instead_of_cooked():
         assert _out_size(scene) == 1.0
         # What the cook wrote comes back with the layer.
         assert c.get_param("readout").value == "size 1.0"
+
+
+def test_a_new_version_of_a_required_package_cooks_again(monkeypatch):
+    """A new mujoco moves the physics with every param and every line of the chunk the same."""
+    versions = {"numpy": "2.0.0"}
+    monkeypatch.setattr(chunk_registry, "installed_version", versions.get)
+    cooks: list = []
+    with Scene() as scene:
+        module = _cached_module(cooks)
+        module.config.requirements = ["numpy>=2"]
+        c = _add(scene, module)
+        assert c.cook() is True
+        assert len(cooks) == 1, "the same version reads back"
+
+        versions["numpy"] = "2.1.0"
+        cook_cache._packages.cache_clear()  # a restart, as after a real upgrade
+        c.cook()
+
+        assert len(cooks) == 2
 
 
 def test_a_changed_param_cooks_again():

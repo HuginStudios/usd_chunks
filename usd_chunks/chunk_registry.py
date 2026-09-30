@@ -1037,6 +1037,19 @@ class ChunkModule:
         logger.info("loaded module: %s. Load took %s seconds", self.module_name, end - start)
         return res
 
+    def installed_packages(self) -> dict[str, str]:
+        """The installed version of each package config.requirements names.
+
+        Returns:
+            {package: installed version}; a package that is not installed is left out.
+        """
+        packages = {}
+        for requirement in self.config.requirements or []:
+            name, _ = split_requirement(requirement)
+            if name not in packages and (installed := installed_version(name)) is not None:
+                packages[name] = installed
+        return packages
+
     def unload(self):
         """Mark the module as not loaded."""
         self.loaded = False
