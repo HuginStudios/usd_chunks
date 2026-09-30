@@ -65,6 +65,7 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias  # noqa: F401
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
+    Checkbox,
     ChunkConfig as _cfg,
     GizmoBase as _gizmo,
     check_gizmo_sugar as _check_gizmo_sugar,
@@ -413,17 +414,6 @@ class Button(ChunkParamBase):
     def click(self):
         """Click the button, triggering its connected callbacks."""
         self.get_attribute_sender("value").execute()
-
-
-class Checkbox(ChunkParamBase[bool]):
-    """A checkbox param holding a bool."""
-
-    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
-
-    @classmethod
-    @override
-    def get_type(cls) -> ChunkFlags.ParamType:
-        return ChunkFlags.ParamType.CHECKBOX
 
 
 class LineEdit(ChunkParamBase[str]):

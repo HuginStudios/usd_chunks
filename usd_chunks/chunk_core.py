@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils, cook_cache
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -2708,6 +2708,22 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return bool(types) and all(t in (int, float) for t in types)
 
 
+class Checkbox(ChunkParamBase[bool]):
+    """A checkbox param holding a bool.
+
+    Here rather than in chunk.py, which re-exports it, because the framework adds one itself:
+    ChunkModule.create gives every chunk of a cache_cook module its cache_result toggle, and
+    chunk_registry cannot import chunk.py, which imports it.
+    """
+
+    flags: IntFlag = attrs.field(default=ChunkFlags.ParamFlags.LABELED)
+
+    @classmethod
+    @override
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.CHECKBOX
+
+
 class ChunkContainerBase(ChunkCommon):
     """Base class for containers: Vectors, Groups and Chunks.
 
@@ -3516,11 +3532,20 @@ class ChunkBase(ChunkGroupBase):
                         # that file layer, shared and the user's own.
                         if ctx.anonymous:
                             ctx.Clear()
-                        execute(self)
+                        # A module that declared cache_cook may have this exact
+                        # cook on disk already -- read it back instead. Anonymous
+                        # only, for the same reason as the Clear above.
+                        cached = cook_cache.lookup(self) if ctx.anonymous else None
+                        if cached is None or not cached.restore(self, ctx):
+                            if cached is not None:
+                                cached.before_cook(self)
+                            execute(self)
                         # What a param drives is its own state, not the cook's
                         # output -- see ChunkBase.reauthor_driven_attrs.
                         if ctx.anonymous:
                             self.reauthor_driven_attrs()
+                        if cached is not None:
+                            cached.after_cook(self, ctx)
                     self._cook_stale = False
                     chunk_utils.stamp_module_hash(stage, self)
                 except Tf.ErrorException:
@@ -4082,6 +4107,12 @@ class ChunkConfig(AttributesBase):
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
+    # The module vouches that a cook's result depends only on its params, the files they
+    # name, its code, and whatever its cache_key() hook returns -- so a result cooked before
+    # can be read back from disk instead of cooked again. Each chunk of it gets a
+    # cache_result checkbox to opt out one node; USD_CHUNKS_COOK_CACHE=0 opts out all of
+    # them. See cook_cache.
+    cache_cook: bool = attrs.field(default=False)
     # Kept out of the chunk menu. For a type that exists so something can be SAVED and read
     # back rather than created by hand -- `runtime`, the type a chunk built in the
     # interpreter is written as. It still has to be a registered module, since that is how

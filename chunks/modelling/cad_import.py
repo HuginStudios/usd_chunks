@@ -943,6 +943,7 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         requirements=["cadquery-ocp>=7.8,<9"],
+        cache_cook=True,
         description=(
             "Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.\n\n"
             "Keeps the three things a converter usually drops: the assembly hierarchy (as\n"
