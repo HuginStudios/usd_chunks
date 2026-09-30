@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 from pxr import Gf, Sdf, Usd
 
@@ -153,6 +153,10 @@ class PortRef:
     attr_path: str
     port_type: str
     is_input: bool
+    #: The exact param the port stands for, when the view knows it. A list-group row has the
+    #: same attribute name as its template and as every other row, so the name alone would
+    #: wire the template -- which no widget shows -- instead of the row that was dragged to.
+    param: Any = field(default=None, compare=False, repr=False)
 
     @property
     def name(self) -> str:
@@ -648,7 +652,7 @@ def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None
     if src.port_type != PORT_EXEC:
         dst_chunk = chunks.get(dst.node_path)
         if dst_chunk is not None:
-            param = dst_chunk.get_param(dst.name)
+            param = dst.param if dst.param is not None else dst_chunk.get_param(dst.name)
             if param is not None:
                 src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
                 try:
@@ -709,7 +713,7 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     if port.port_type != PORT_EXEC and port.is_input:
         chunk = chunks.get(port.node_path)
         if chunk is not None:
-            param = chunk.get_param(port.param_name)
+            param = port.param if port.param is not None else chunk.get_param(port.param_name)
             if param is not None:
                 param.value = param.default_value
 

@@ -670,6 +670,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
         self.__hashable = HashVal()
         self.__param_ref = weakref.ref(param, self._param_died)
+        self._expression_connections: list = []
 
         if isinstance(param, ChunkParamBase):
             self._value = param.value
@@ -699,6 +700,40 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     def _ref_child_added(self, notice, sender):
         if isinstance(notice.data, ChunkParamBase):
             self._children.add(ProxyParam(notice.data))
+
+    def _follow_expression_refs(self, value: Any) -> None:
+        """Listen to every param an expression value names, so this row follows them.
+
+        The template does this for its own value in ChunkParamBase.value_changed. A row
+        keeps its value on itself, so it has to do it for itself.
+        """
+        self._expression_connections = []
+        if not (isinstance(value, str) and chunk_utils.has_expression(value)):
+            return
+        template = self._param_ref
+        for node_name, param_name in chunk_utils.parse_expression(value):
+            ref = template._resolve_expression_ref(node_name, param_name)
+            if ref is None:
+                continue
+            self._expression_connections.append(
+                chunk_notice.NoticeConnection(
+                    method=self._proxy_ref_changed,
+                    alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
+                    sender=ref.get_attribute_sender("value"),
+                )
+            )
+
+    def _proxy_ref_changed(self, notice=None, sender=None):
+        """A param this row's expression reads changed: announce the row's new value."""
+        if self.__value_sender:
+            self.__value_sender.old_value = self._value
+            self.__value_sender.execute()
+
+    def _resolved_value(self) -> Any:
+        raw = self._value
+        if isinstance(raw, str) and chunk_utils.has_expression(raw):
+            return self._param_ref._resolve_expression_string(raw)
+        return raw
 
     def _ref_child_removed(self, notice, sender):
         if isinstance(notice.data, ChunkCommon):
@@ -810,10 +845,12 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
     @override
     def __getattribute__(self, name: str) -> Any:
-        if name in ("value", "raw_value"):
-            # Return the value stored on the proxy so widgets display the proxy's own value,
-            # not the template's default.
+        if name == "raw_value":
             return super().__getattribute__("_value")
+        if name == "value":
+            # The proxy's own value, not the template's default -- with an expression
+            # (a wire from another chunk) resolved, as the template's own value is.
+            return super().__getattribute__("_resolved_value")()
         if name == "iter_hierarchy":
             return super().__getattribute__("_iter_hierarchy")
         if name == "get_my_params":
@@ -829,7 +866,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name == "request_delete":
             return super().__getattribute__("request_delete")
 
-        if name in ["_dag_node", "_callbacks", "_blocked"]:
+        if name in ["_dag_node", "_callbacks", "_blocked", "_expression_connections"]:
             return super().__getattribute__(name)
 
         if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
@@ -854,7 +891,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
             return super().__setattr__(name, value)
 
-        if name in ["_dag_node", "_callbacks", "_blocked"]:
+        if name in ["_dag_node", "_callbacks", "_blocked", "_expression_connections"]:
             return super().__setattr__(name, value)
 
         if name == "children":
@@ -866,6 +903,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # of through the original param ownership channel.
             self.__value_sender.old_value = self._value
             self._value = value
+            self._follow_expression_refs(value)
             # A list-group row (e.g. Sublayer's imports:sublayer_path) is a ProxyParam, so
             # _load_wire_inputs' bulk restore reaches this setattr directly -- not through
             # ChunkBase.value_changed, the only place chunk_notice._loading_stage is normally

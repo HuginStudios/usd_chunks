@@ -243,6 +243,43 @@ def _sdf_type_and_value(val):
     return sdf_type, val
 
 
+def _list_row_array(values: list):
+    """(Sdf type, Vt array) for a list group's row values, expressions included.
+
+    A row wired to another chunk holds `@Node.param@` text where its siblings hold numbers,
+    and a Vt array has one element type -- so a mix is written as text throughout.
+    """
+    if len({type(v) for v in values}) > 1:
+        values = [v if isinstance(v, str) else repr(v) for v in values]
+    return _sdf_type_and_value(values)
+
+
+def _set_list_row_attr(prim: Usd.Prim, attr_name: str, sdf_type, usd_value) -> None:
+    """Write a list group's array, replacing the attribute if its type has to change.
+
+    An attribute's type is fixed once authored, and a row gaining or losing a wire flips the
+    array between numbers and text.
+    """
+    attr = prim.GetAttribute(attr_name)
+    if attr.IsValid() and attr.GetTypeName() != sdf_type:
+        prim.RemoveProperty(attr_name)
+    prim.CreateAttribute(attr_name, sdf_type, custom=False).Set(usd_value)
+
+
+def _restore_list_row_value(row, value) -> None:
+    """Put a saved value back on a list row.
+
+    A mixed array is saved as text (_list_row_array), so a plain number among the
+    expressions comes back as text and has to be turned back into one.
+    """
+    if isinstance(value, str) and not chunk_utils.has_expression(value) and row._expression_is_numeric():
+        try:
+            value = float(value)
+        except ValueError:
+            pass
+    row.value = value
+
+
 def sdf_type_for_param(param) -> Sdf.ValueTypeName | None:
     """The USD type an attribute backing this param should have, or None if unmappable.
 
@@ -1458,11 +1495,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         values = [
             v for i in range(list_group.size)
             if (px := list_group.get_indexed_param(template_name, i)) is not None
-            for v in [px.value] if v is not None
+            for v in [px.raw_value] if v is not None
         ]
         if not values:
             return
-        sdf_type, usd_value = _sdf_type_and_value(values)
+        sdf_type, usd_value = _list_row_array(values)
         if sdf_type is None:
             return
         attr_name = f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{template_name}"
@@ -1476,8 +1513,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             home = chunk_utils.get_attr_home_layer(existing) if existing.IsValid() else None
             ctx = Usd.EditContext(self._stage, home) if home else self._chunk_prim_edit_context(chunk)
             with ctx:
-                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-                attr.Set(usd_value)
+                _set_list_row_attr(prim, attr_name, sdf_type, usd_value)
         finally:
             chunk_notice._usd_write_active = prev_write
 
@@ -7069,7 +7105,7 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                         if i >= len(parent.get_my_params()):
                             break
                         if px := parent.get_indexed_param(template_name, i):
-                            px.value = v
+                            _restore_list_row_value(px, v)
                 continue
 
         if param := chunk.get_param(param_path):
@@ -7212,7 +7248,7 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                     template_name = parts[-1]
                     for i, v in enumerate(values):
                         if px := parent.get_indexed_param(template_name, i):
-                            px.value = v
+                            _restore_list_row_value(px, v)
                 continue
 
         param = chunk.get_param(param_path)
@@ -7595,13 +7631,14 @@ def _author_prim(
             values = [
                 v for i in range(list_group.size)
                 if (px := list_group.get_indexed_param(proxy_param.name, i)) is not None
-                for v in [px.value]
+                for v in [px.raw_value]
                 if v is not None
             ]
             if not values:
                 continue
-            sdf_type, usd_value = _sdf_type_and_value(values)
+            sdf_type, usd_value = _list_row_array(values)
             if sdf_type is None:
                 continue
-            attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, custom=False)
-            attr.Set(usd_value)
+            _set_list_row_attr(
+                prim, f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, usd_value
+            )

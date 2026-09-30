@@ -228,10 +228,15 @@ _PORT_TYPE_COLOR = {
 class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
     """A connection dot on a node."""
 
-    def __init__(self, attr_path: str, port_type: str, parent: ChunkNodeItem, show_label: bool = False):
+    def __init__(
+        self, attr_path: str, port_type: str, parent: ChunkNodeItem, show_label: bool = False, param=None
+    ):
         r = _PORT_RADIUS
         super().__init__(-r, -r, r * 2, r * 2, parent)
         self.attr_path = attr_path
+        # The param this port stands for; a list-group row's port names the same attribute as
+        # its siblings, so this is what tells them apart.
+        self.param = param
         self.port_type = port_type
         self.is_input = ".inputs:" in attr_path
         self.setBrush(_PORT_TYPE_COLOR[port_type])
@@ -1124,11 +1129,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 continue
             y += _STEP
             ptype = _param_port_type(param)
-            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self)
+            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self, param=param)
             in_port.setPos(0, y)
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
-            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
+            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self, param=param)
             out_port.setPos(_NODE_WIDTH, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
@@ -1230,12 +1235,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
             y = _NODE_HEADER_H + local.y()
 
-            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self)
+            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self, param=param)
             in_port.setPos(0, y)
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
 
-            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
+            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self, param=param)
             out_port.setPos(_NODE_WIDTH, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
@@ -4379,6 +4384,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             attr_path=item.attr_path,
             port_type=item.port_type,
             is_input=item.is_input,
+            param=item.param,
         )
 
     def _can_connect(self, a: ChunkPortItem, b: ChunkPortItem) -> bool:
