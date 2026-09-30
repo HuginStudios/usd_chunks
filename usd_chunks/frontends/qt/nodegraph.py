@@ -2375,9 +2375,33 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     self.addItem(edge)
                     self._edges.append(edge)
 
+        if self._show_param_edges:
+            self._build_list_row_edges()
+
         for node in self._nodes.values():
             if node.prim.IsValid():
                 node._sync_vector_states()
+
+    def _build_list_row_edges(self) -> None:
+        """Draw the wires into list rows, which live in each row's expression, not in USD.
+
+        See chunk_graph.connect for why a row has no connection of its own.
+        """
+        by_name = {n.prim.GetName(): n for n in self._nodes.values() if n.prim.IsValid()}
+        for node in by_name.values():
+            for dst_port in node._typed_ports:
+                if not (dst_port.is_input and chunk_graph.is_list_row(dst_port.param)):
+                    continue
+                raw = dst_port.param.raw_value
+                if not chunk_utils.is_expression_text(raw):
+                    continue
+                for src_name, src_param in chunk_utils.parse_expression(raw):
+                    src_node = by_name.get(src_name)
+                    src_port = src_node.get_port(f"{src_node.prim.GetPath()}.outputs:{src_param}") if src_node else None
+                    if src_port is not None:
+                        edge = ChunkEdgeItem(src_port, dst_port, raw)
+                        self.addItem(edge)
+                        self._edges.append(edge)
 
     def update_edges_for(self, node: ChunkNodeItem):
         node_ports = set(node._ports)
@@ -4183,9 +4207,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if isinstance(graph_scene, ChunkGraphScene) and graph_scene._stage:
                 attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
                 conns = list(attr.GetConnections()) if attr and attr.IsValid() else []
-                if conns:
+                row_edge = None
+                if not conns and chunk_graph.is_list_row(port.param):
+                    # A row's wire is its expression, drawn as an edge with no USD connection.
+                    row_edge = next((e for e in graph_scene._edges if e.dst_port is port), None)
+                if conns or row_edge:
                     self._drag_detach_attr = attr
-                    self._drag_detach_source_port = self._find_sibling_output_port(conns[0], graph_scene)
+                    self._drag_detach_source_port = (
+                        row_edge.src_port if row_edge else self._find_sibling_output_port(conns[0], graph_scene)
+                    )
                     # Drag the real edge itself (its src end stays put, dst end follows
                     # the cursor) instead of a separate rubber-band line on top of it.
                     for edge in graph_scene._edges:

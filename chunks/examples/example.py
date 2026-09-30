@@ -111,8 +111,8 @@ def main():
     # A more explicit callback. Only called when checkbox.value changes:
     #     checkbox.add_callback(my_callback, sender=checkbox.get_attribute_sender("value"))
 
-    # A float slider. A whole-number default (or none) makes an int slider, so give it a float default.
-    slider = chunk.Slider("slider", default_value=0.0)
+    # A float slider
+    slider = chunk.Slider("slider")
 
     # Change the layout flag to modify the layout
     #   slider = chunk.Slider("slider", layout=chunk.ChunkFlags.LayoutFlags.VERTICAL)
@@ -214,8 +214,7 @@ def main():
     # modify all proxies, with the exception of the 'value' attribute
     listGroup = chunk.ListGroup("listGroup")
 
-    # A float default, so a float param can be wired to the row (a whole default makes an int slider)
-    listSlider = chunk.Slider("listSlider", default_value=0.0)
+    listSlider = chunk.Slider("listSlider")
     listGroup.add_param(listSlider)
 
     # Setting the size of the ListGroup will create N proxies of the params held by the ListGroup
