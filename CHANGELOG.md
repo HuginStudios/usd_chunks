@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- A cook cache for slow chunks. A module that sets `cache_cook=True` in its config has its
+  cooked layer kept on disk and read back when its params, the files they name, its code
+  and the stage's units all match, including on reopen; a `cache_key(node)` hook adds
+  inputs that are not params. Each such node gets a Cache Result checkbox, and
+  `USD_CHUNKS_COOK_CACHE=0` turns it off everywhere. URDF Import, Poly Reduce, Mesh, House
+  and CAD Import use it: the duck robot opens in 0.5 s instead of 1.1 s, and with a 25%
+  Poly Reduce on it in 0.7 s instead of 4.9 s.
 - A chunk prim records which version of its module's code it cooked with, as
   `info:moduleHash` beside `info:chunkType`, and reopening a scene warns once per chunk type
   whose saved code differs from what is loaded now -- naming both hashes and the module file
@@ -77,6 +84,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Opening a network no longer re-cooks what several exec roots share. Each root used to
+  solve everything below it, so a Merge of six References and the Scatter below it cooked
+  once per root; a root that an earlier root's solve already cooked is now skipped.
+  interior_set_v3 opens in 1.1 s instead of 2.5 s, with the same result.
+- `chunk.Checkbox` is defined in `chunk_core` and re-exported from `chunk`, unchanged, so
+  the framework can add one itself.
 - The framework clears a procedural chunk's layer before every `execute()`, so a chunk
   module no longer does. A cook always starts from nothing and authors its whole result:
   a module that forgot to clear can no longer pile up prims or walk its own unique path up

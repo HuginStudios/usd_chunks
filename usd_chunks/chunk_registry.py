@@ -42,7 +42,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = None
 
-from usd_chunks import chunk_cache
+from usd_chunks import chunk_cache, cook_cache
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
@@ -1074,6 +1074,15 @@ class ChunkModule:
                 # looked up in the registry by it (ChunkBase.get_chunk_module), so a chunk
                 # runs what its saved info:chunkType will run on reopen, and nothing else.
                 c._config = self.config
+                # Here, at creation, so a load restores a saved untick onto it like any
+                # other param -- values are read back before the chunk joins the scene.
+                if self.config.cache_cook and c.get_param(cook_cache.TOGGLE) is None:
+                    c.add_param(core.Checkbox(
+                        cook_cache.TOGGLE, "Cache Result", default_value=True,
+                        tooltip="Read this node's result back from the cook cache when "
+                        "nothing it depends on has changed, instead of cooking it again. "
+                        "USD_CHUNKS_COOK_CACHE=0 turns the cache off for every node.",
+                    ))
 
         return loaded
 
