@@ -132,6 +132,21 @@ In any case, using the chunks for any application require some initialization fr
 
 The UsdviewScene is an implementation of the abstract [SceneSender][usd_chunks.chunk_scene.SceneSender] class, which provides access to the scene as well as sends notices upon selection changes. Any application plugin should provide a similar scene proxy. This is important as some chunks will rely on prim selections, or other scene specific functionality. The scene proxy also provide a handle to the UsdStage, which the underlying application usually provides.
 
+To let scripts build networks in your app with [`Scene.current()`](scripting.md), also
+inherit `ScriptingMixin`, before `SceneSender`:
+
+```python
+from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_script import ScriptingMixin
+
+
+class MyAppScene(ScriptingMixin, SceneSender):
+    ...
+```
+
+Set `is_app = True` on the class too. Then `Scene.new()` refuses to start in your app and
+points the user at `Scene.current()`.
+
 The ChunkRegistry is responsible for finding and loading any chunks in the environment, and the ChunkLayerManager is responsible for managing the SdfLayers of the chunks. Both of these need to be initialized in order to get proper functionality
 
 In the case of the usdview plugin, we can use the chunk_qt ui plugin, as usdview uses Qt as well. This is expressed simply by calling the **chunk_qt.build_chunk_docker** function (`chunk_qt` being `usd_chunks.frontends.qt.factory`). For other applications not using Qt, an additional ui plugin would be needed to get the param widgets

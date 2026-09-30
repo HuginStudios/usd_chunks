@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from usd_chunks import Scene, chunk_registry, current_scene
-from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_script import ScriptingMixin
 
 
 class _App(Scene):
@@ -18,7 +18,7 @@ class _App(Scene):
 
     is_app = True
     # An app's scene is borrowed: leaving a `with` block keeps it, as for usdview's.
-    __exit__ = SceneSender.__exit__
+    __exit__ = ScriptingMixin.__exit__
 
 
 @pytest.fixture

@@ -9,12 +9,12 @@ from __future__ import annotations
 import pytest
 from PySide6 import QtCore
 
-from usd_chunks import Scene, chunk_scene, chunk_stage
-from usd_chunks.chunk_scene import SceneSender
+from usd_chunks import Scene, chunk_script, chunk_stage
+from usd_chunks.chunk_script import ScriptingMixin
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.graph import engine as chunk_graph
 
-_STEP = chunk_scene._SCRIPT_NODE_STEP
+_STEP = chunk_script._SCRIPT_NODE_STEP
 
 
 class _App(Scene):
@@ -22,13 +22,13 @@ class _App(Scene):
 
     is_app = True
     # An app's scene is borrowed: leaving a `with` block keeps it, as for usdview's.
-    __enter__ = SceneSender.__enter__
-    __exit__ = SceneSender.__exit__
+    __enter__ = ScriptingMixin.__enter__
+    __exit__ = ScriptingMixin.__exit__
 
 
 @pytest.fixture
 def app(qapp, monkeypatch):
-    monkeypatch.setattr(chunk_scene, "graph_center_hook", None)
+    monkeypatch.setattr(chunk_script, "graph_center_hook", None)
     host = _App(host_name="app")
     docker = ChunkWidgetDocker()
     docker.resize(700, 700)

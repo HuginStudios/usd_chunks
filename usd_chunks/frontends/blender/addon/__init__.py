@@ -35,6 +35,7 @@ from pxr import Gf, Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_script import ScriptingMixin
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.frontends.blender.addon import gizmos
@@ -43,7 +44,7 @@ from usd_chunks.frontends.blender.addon import viewport
 logger = logging.getLogger(__name__)
 
 
-class BlenderScene(SceneSender):
+class BlenderScene(ScriptingMixin, SceneSender):
     """The host interface, backed by Blender.
 
     Most of what a SceneSender exposes is about a *viewer* -- the active camera, the

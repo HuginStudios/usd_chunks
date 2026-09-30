@@ -1,7 +1,8 @@
-"""save and export work on any scene, not only on a script's own Scene.
+"""save and export work on an app's scene, not only on a script's own Scene.
 
 In usdview, Scene.current() is usdview's scene, and `scene.save(...)` raised
-AttributeError: the methods were only on the script's Scene class.
+AttributeError: the methods were only on the script's Scene class. An app's scene mixes in
+ScriptingMixin, as usdview's does.
 """
 
 from __future__ import annotations
@@ -10,10 +11,11 @@ from pxr import Usd, UsdGeom
 
 from usd_chunks import Scene, chunk_naming, chunk_registry, chunk_stage
 from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_script import ScriptingMixin
 
 
-class _Host(SceneSender):
-    """A host's scene, like usdview's: a SceneSender that is not a Scene."""
+class _Host(ScriptingMixin, SceneSender):
+    """A host's scene, like usdview's: not a Scene, but with the scripting calls."""
 
     def __init__(self, stage):
         super().__init__()

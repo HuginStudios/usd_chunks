@@ -29,6 +29,7 @@ from pxr import Usd
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_script import ScriptingMixin
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.frontends.imgui import factory as chunk_imgui
 from usd_chunks.graph import engine as chunk_graph
@@ -79,7 +80,7 @@ def _socket(port_type: str, connected: bool) -> None:
         draw.add_circle(centre, SOCKET_R, colour, 0, 1.6)
 
 
-class _Scene(SceneSender):
+class _Scene(ScriptingMixin, SceneSender):
     """Enough of a host for the registry to load chunks against a stage."""
 
     is_app = True
