@@ -161,6 +161,16 @@ scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=0.5
 A chunk you make without an input starts a new, separate chain. It stays off until a View
 points at it. This is on purpose, so you can build a side branch and view it later.
 
+To point the View at a chunk, use `scene.view()`:
+
+``` py
+lift = scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
+scene.view(lift)      # the View now shows lift, and it cooks
+```
+
+It does what dragging a wire into the View does in the graph: the View's old input is
+replaced, and what the View now reaches cooks. If the graph has no View, it makes one.
+
 A script's own `Scene.new()` has no View, so all its chunks cook. Build one chain there
 too: the saved network then works when you open it in usdview.
 
@@ -214,9 +224,9 @@ Edit Target is what sends edits to it.
 - Leaving the `with` block does not close usdview's scene.
 - If the graph has no View yet, it adds one at the end of your chain.
 - If the graph already has a View, your new chain is not part of it and switches off the
-  next time the graph cooks. To see it, select its last node in the graph and press
-  **V**. That makes a View for it and makes it the active one. Press **1**, **2** or **3**
-  to switch between Views.
+  next time the graph cooks. To see it, call `scene.view(last)` with the chain's last
+  chunk. In the graph, you can instead select that node and press **V**, which makes a
+  second View. Press **1**, **2** or **3** to switch between Views.
 
 ## Examples
 

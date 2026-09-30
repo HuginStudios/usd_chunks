@@ -932,6 +932,43 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
         )
 
+    def view(self, target: ChunkBase) -> ChunkBase | None:
+        """Make the active View show `target`, and cook what it now reaches.
+
+        The same as dragging a wire from `target` into the View in the graph: the View's
+        old input is replaced. A graph with no View gets one. Nothing else is rewired.
+
+        Args:
+            target: The chunk to view, usually the last one in a chain.
+
+        Returns:
+            The View chunk, or None if no View could be made.
+        """
+        from pxr import Sdf
+
+        from usd_chunks import chunk_stage
+        from usd_chunks.graph import engine
+
+        stage = self.get_stage()
+        target_path = chunk_stage.get_chunk_prim_path(target)
+        context_path = str(Sdf.Path(target_path).GetParentPath())
+        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in (*self.get_contexts(), *self.get_chunks())}
+        context = by_path.get(context_path)
+
+        slot = engine.read_active_slot(stage, context_path)
+        view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
+        if view is None:
+            # Reuses a View already wired to target, or makes one.
+            slot = engine.create_view_for(stage, self, target_path)
+            view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
+            if view is None:
+                return None
+        else:
+            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(view))
+        engine.write_active_slot(stage, context_path, slot)
+        chunk_stage.recook_for_view(stage, self, context, view)
+        return view
+
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
         any other chunk runs before it."""
