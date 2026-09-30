@@ -257,6 +257,66 @@ def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
     return not layer.anonymous and layer != stage.GetRootLayer()
 
 
+def stamp_module_hash(stage: Usd.Stage, chunk) -> None:
+    """Record on the chunk's prim which module source it just cooked with.
+
+    Called by the cook, not by a save: a chunk that loaded without re-running has output
+    made by the code the file was saved with, and stamping it at save time would relabel that
+    output with whatever code is loaded now. Written where the rest of the chunk's
+    bookkeeping lives (get_bookkeeping_layer) -- never the cook layer, which is cleared on
+    the next cook -- and updated in place when it already exists, like any other
+    bookkeeping attribute. Skipped when the value is already right, so a re-cook of
+    unchanged code writes nothing.
+
+    Args:
+        stage: The stage.
+        chunk: The chunk that cooked; nothing is written for one whose module has no source
+            hash (a module built without a file).
+    """
+    module = chunk.get_chunk_module()
+    digest = module.source_hash if module is not None else None
+    if not digest:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return
+    attr = prim.GetAttribute(chunk_naming.MODULE_HASH_ATTR)
+    if attr and attr.IsValid() and attr.Get() == digest:
+        return
+    home = get_attr_home_layer(attr) if attr and attr.IsValid() else None
+    target = home or get_bookkeeping_layer(stage, chunk)
+    with Usd.EditContext(stage, target):
+        attr = prim.CreateAttribute(
+            chunk_naming.MODULE_HASH_ATTR, Sdf.ValueTypeNames.String, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(digest)
+    logger.debug("%s cooked with %s %s", prim.GetPath(), module.module_name, digest)
+
+
+def recorded_module_hash(prim: Usd.Prim) -> str | None:
+    """The module hash a chunk prim was saved with (MODULE_HASH_ATTR), or None if it has none."""
+    attr = prim.GetAttribute(chunk_naming.MODULE_HASH_ATTR)
+    return (attr.Get() or None) if attr and attr.IsValid() else None
+
+
+def module_changed_since_cook(prim: Usd.Prim, module) -> bool:
+    """Whether a chunk prim's recorded module hash differs from the module now registered.
+
+    True means the result this prim was saved with came from other code than the code that
+    would run it now. No opinion is a no, not a yes: a prim that never cooked, one from a file
+    older than the attribute, and a module with no source hash all have nothing to compare.
+
+    Args:
+        prim: The chunk prim.
+        module: The registered ChunkModule its info:chunkType names.
+
+    Returns:
+        True if both hashes exist and differ.
+    """
+    saved = recorded_module_hash(prim)
+    return bool(saved and module.source_hash and saved != module.source_hash)
+
+
 def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     """The layer to update an existing attribute in.
 

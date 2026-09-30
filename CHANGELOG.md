@@ -11,6 +11,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- A chunk prim records which version of its module's code it cooked with, as
+  `info:moduleHash` beside `info:chunkType`, and reopening a scene warns once per chunk type
+  whose saved code differs from what is loaded now -- naming both hashes and the module file
+  to diff. Written by the cook, not by a save, so output that was never re-made keeps the
+  hash it was made with; a file from before this, or a chunk that never cooked, is not
+  treated as changed.
 - `from usd_chunks import Scene` builds and runs chunk networks from a plain script:
   `scene.create.<chunk>()` for every chunk module and menu variant (`scene.create.cube()`,
   `scene.create.rect_light()`), input chunks passed positionally, and `with chunk:` to
