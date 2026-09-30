@@ -656,7 +656,14 @@ def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None
         prim = stage.GetPrimAtPath(Sdf.Path(dst.attr_path).GetPrimPath())
         if not prim.IsValid():
             return None
-        sdf_type = Sdf.ValueTypeNames.Token if dst.port_type == PORT_EXEC else Sdf.ValueTypeNames.String
+        # Typed like the param, not as text: the wire's expression is text, but it goes
+        # beside a number attribute's value (chunk_utils.store_expression_text), and a
+        # String attr made here refused every plain number typed in once the wire was gone.
+        if dst.port_type == PORT_EXEC:
+            sdf_type = Sdf.ValueTypeNames.Token
+        else:
+            sdf_type = (dst.param is not None and chunk_stage.param_sdf_type(dst.param)) \
+                or Sdf.ValueTypeNames.String
         dst_attr = prim.CreateAttribute(dst.attr_path.rsplit(".", 1)[-1], sdf_type, custom=False)
         if not dst_attr.IsValid():
             return None

@@ -526,6 +526,31 @@ def attr_holds_text(attr: Usd.Attribute) -> bool:
     return attr.GetTypeName() in _TEXT_TYPES
 
 
+#: The attribute type a param value of each Python type is stored as.
+SDF_TYPE_MAP = {
+    bool: Sdf.ValueTypeNames.Bool,
+    int: Sdf.ValueTypeNames.Int,
+    float: Sdf.ValueTypeNames.Float,
+    str: Sdf.ValueTypeNames.String,
+    Gf.Matrix4d: Sdf.ValueTypeNames.Matrix4d,
+}
+
+
+def retype_attr(attr: Usd.Attribute, type_name: Sdf.ValueTypeName) -> None:
+    """Change attr's type in every layer that has a spec for it, dropping the old value.
+
+    Its connections stay: they name where a value comes from, whatever its type.
+
+    Args:
+        attr: The attribute.
+        type_name: Its new type.
+    """
+    for spec in attr.GetPropertyStack():
+        if spec.typeName != type_name:
+            spec.SetInfo("typeName", str(type_name))
+            spec.ClearDefaultValue()
+
+
 # Where the authored expression text is kept for an attr that cannot hold it as its own
 # value. Connections carry only the @refs@; the operators and literals between them live
 # nowhere else, so a Float attr storing just the resolved number loses "* 2" on reload.

@@ -184,13 +184,30 @@ def _values_agree(usd_value, param_value) -> bool:
     return all(_values_agree(a, b) for a, b in pairs)
 
 
-_SDF_TYPE_MAP = {
-    bool: Sdf.ValueTypeNames.Bool,
-    int: Sdf.ValueTypeNames.Int,
-    float: Sdf.ValueTypeNames.Float,
-    str: Sdf.ValueTypeNames.String,
-    Gf.Matrix4d: Sdf.ValueTypeNames.Matrix4d,
-}
+_SDF_TYPE_MAP = chunk_utils.SDF_TYPE_MAP
+
+
+def param_sdf_type(param: core.ChunkParamBase) -> Sdf.ValueTypeName | None:
+    """The type a param's chunk-prim attribute is created with, or None if it has none.
+
+    From the value, or from the default while the value is a @Node.param@ expression -- the
+    expression text is not the param's type, and a Slider wired to another chunk must still
+    get a number attribute, or the first plain number typed into it after the wire is gone
+    cannot be written.
+    """
+    raw = getattr(param, "raw_value", None)
+    is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+    type_source = getattr(param, "default_value", None) if is_expr or raw is None else raw
+    if ChunkFlags.ParamType.BUTTON in param.evaluate_type():
+        # A button has no value. Its attribute exists only so Loft up can wire to it.
+        return Sdf.ValueTypeNames.Bool
+    # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
+    # type -- there is no tuple entry, so without this a colour param resolves to no
+    # type at all and never gets a chunk-prim attr, leaving its value unable to
+    # round-trip through USD.
+    if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+        return Sdf.ValueTypeNames.Color3f
+    return _SDF_TYPE_MAP.get(type(type_source))
 
 _VECTOR_TYPE_MAP: dict = {
     (float, 2): (Sdf.ValueTypeNames.Float2, Gf.Vec2f),
@@ -1715,17 +1732,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if raw is None and not (is_button and force):
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        type_source = getattr(param, 'default_value', None) if is_expr else raw
-        sdf_type = _SDF_TYPE_MAP.get(type(type_source))
-        if is_button:
-            # A button has no value. Its attribute exists only so Loft up can wire to it.
-            sdf_type = Sdf.ValueTypeNames.Bool
-        # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
-        # type -- there is no tuple entry, so without this a colour param resolves to no
-        # type at all and never gets a chunk-prim attr, leaving its value unable to
-        # round-trip through USD.
-        if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
-            sdf_type = Sdf.ValueTypeNames.Color3f
+        sdf_type = param_sdf_type(param)
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
