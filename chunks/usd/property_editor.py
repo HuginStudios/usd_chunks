@@ -10,6 +10,10 @@ cook writes the list onto every prim the Prim param names, into the chunk's own 
 The widgets are only a view of that list. They show the first target prim's attributes,
 with the edited value where there is one. They are session state (TRANSIENT): nothing about
 them is saved or copied. The list is saved and copied, as the "edits" text param.
+
+An edit can also make an attribute the prim does not have yet: put its type before the name,
+as in a .usda file (`bool vray:env:bg:tex:use = true`). Without a type, a prim that lacks the
+attribute is skipped.
 """
 from __future__ import annotations
 
@@ -62,32 +66,49 @@ def _jsonable(value):
         return str(value)
 
 
-def read_edits(node) -> dict:
-    """The chunk's edits, {property name: value}, in the order they were made.
+def _parse_edits(node) -> tuple[dict, dict]:
+    """The chunk's edits and the types written before their names.
 
-    One line per edit, `name = <json value>`. A line that does not parse is skipped, so a
-    typo in the text drops that edit rather than all of them.
+    One line per edit, `name = <json value>`, or `type name = <json value>` to create the
+    attribute where a prim lacks it. A line that does not parse is skipped, so a typo in the
+    text drops that edit rather than all of them.
+
+    Returns:
+        ({name: value}, {name: type name}), in the order the edits were made.
     """
     import json
 
-    edits = {}
+    edits, types = {}, {}
     for line in (node.get_param("edits").value or "").splitlines():
-        name, sep, raw = line.partition("=")
-        name = name.strip()
-        if not sep or not name:
+        head, sep, raw = line.partition("=")
+        words = head.split()
+        if not sep or len(words) not in (1, 2):
             continue
+        name = words[-1]
         try:
             edits[name] = json.loads(raw.strip())
         except ValueError:
             logger.warning("Property Editor %s: skipped an edit it could not read: %r", node.name, line)
-    return edits
+            continue
+        if len(words) == 2:
+            types[name] = words[0]
+    return edits, types
+
+
+def read_edits(node) -> dict:
+    """The chunk's edits, {property name: value}, in the order they were made."""
+    return _parse_edits(node)[0]
 
 
 def write_edits(node, edits: dict) -> None:
-    """Store the edits on the chunk. Setting the text cooks the chunk."""
+    """Store the edits on the chunk, keeping any type written before a name. Setting the
+    text cooks the chunk."""
     import json
 
-    text = "\n".join(f"{name} = {json.dumps(value)}" for name, value in edits.items())
+    types = _parse_edits(node)[1]
+    text = "\n".join(
+        f"{types[name] + ' ' if name in types else ''}{name} = {json.dumps(value)}" for name, value in edits.items()
+    )
     param = node.get_param("edits")
     if param.value != text:
         param.value = text
@@ -306,12 +327,19 @@ def _as_usd_value(attr: Usd.Attribute, value):
     return value
 
 
-def _apply(prim: Usd.Prim, name: str, value) -> None:
-    """Author one edit on one prim, if the prim has that property."""
+def _apply(prim: Usd.Prim, name: str, value, type_name: str | None = None) -> None:
+    """Author one edit on one prim. A missing attribute is created when type_name is given,
+    else the prim is skipped."""
     if rel := prim.GetRelationship(name):
         rel.SetTargets([Sdf.Path(p.strip()) for p in str(value).split(",") if p.strip()])
         return
     attr = prim.GetAttribute(name)
+    if not attr and type_name:
+        value_type = Sdf.ValueTypeNames.Find(type_name)
+        if not value_type:
+            logger.warning("Property Editor: unknown type %r for %s", type_name, name)
+            return
+        attr = prim.CreateAttribute(name, value_type, custom=True)
     if not attr:
         return  # this prim has no such attribute; the edit is for the others
     try:
@@ -324,7 +352,7 @@ def execute(node: chunk.Chunk) -> None:
     """Write every edit onto every target prim. The framework has already cleared the layer."""
     _sync_widgets(node)
     stage = node.get_stage()
-    edits = read_edits(node)
+    edits, types = _parse_edits(node)
     if not stage or not edits:
         return
     for path in chunk_utils.author_in_variant_contexts(stage, node.get_param("prim")):
@@ -332,7 +360,7 @@ def execute(node: chunk.Chunk) -> None:
         if not prim.IsValid():
             continue
         for name, value in edits.items():
-            _apply(prim, name, value)
+            _apply(prim, name, value, types.get(name))
 
 
 def main():
@@ -357,7 +385,8 @@ def main():
         "edits",
         "Edits",
         default_value="",
-        tooltip="One edit per line, `name = value`. Delete a line to drop that edit.",
+        tooltip="One edit per line, `name = value`. Put a type first, `float name = value`, to "
+        "create the attribute where a prim lacks it. Delete a line to drop that edit.",
     )
     edits_grp.add_param(edits)
     clear = chunk.Button("clear_edits", "Clear Edits", tooltip="Drop every edit.")
