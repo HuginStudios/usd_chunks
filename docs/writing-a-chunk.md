@@ -3,6 +3,9 @@
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
 > the work, and `config()` holds details like its `description` and `category`.
 
+This page is about writing a new chunk. To make and wire chunks you already have from
+Python, see [Scripting](scripting.md).
+
 A chunk module is a plain `.py` file. Put it anywhere in a
 [`USD_CHUNK_DIRS`](install.md#environment-variables) folder and it's found automatically.
 You don't need to register it, write a `plugInfo.json`, or import it anywhere.

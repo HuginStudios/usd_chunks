@@ -41,6 +41,8 @@ usdchunks run layout.usda Transform.tx=5 -o result.usda
 4. **[View and ChunkGroup](docs/core-chunks.md)**: the two chunks that organise a graph.
 5. **[Write your own chunk](docs/writing-a-chunk.md)**: `main()`, `config()`, `execute()`
    and `commit()`.
+6. **[Build a network from Python](docs/scripting.md)**: make chunks, set params and wire
+   them with `Scene`, in a script or in usdview.
 
 ## 📦 What comes with it
 

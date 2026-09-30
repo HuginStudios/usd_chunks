@@ -22,6 +22,8 @@ screen.
    `execute()` and `commit()`.
 7. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
    interpreter before making it a module.
+8. [Scripting](scripting.md): build a network from Python with `Scene`, in a script or
+   in usdview.
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
 > the work, and `config()` holds details like its `description` and `category`.

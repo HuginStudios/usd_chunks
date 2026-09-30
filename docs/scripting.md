@@ -1,8 +1,12 @@
 # Scripting
 
-Networks can be built from Python as well as in the node graph. A script makes the same
-chunks the graph does, so what it builds opens as a graph, and a graph can be extended by
-a script.
+You can build a network from Python instead of the node graph. A script makes the same
+chunks the graph does. What it builds opens as a graph, and a script can add to a graph
+you already have.
+
+## Quick start
+
+**In a script of your own:**
 
 ``` py
 from usd_chunks import Scene
@@ -11,109 +15,136 @@ with Scene.new() as scene:
     box = scene.create.cube(prim_path="/geo/box", width=2.0)
     scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
 
-    scene.save("box_network.usda")   # the network: reopens as a graph
+    scene.save("box_network.usda")   # the network: opens as a graph
     scene.export("box.usda")         # the result: plain USD, no Chunk prims
 ```
 
-Inside usdview, use `Scene.current()` instead of `Scene.new()`. See
-[Inside usdview](#inside-usdview).
+Run it with `USD_CHUNK_DIRS` set to your chunk folders, the same as for usdview:
 
-Run it with `USD_CHUNK_DIRS` pointing at the folders your chunks live in, the same as for
-usdview. More examples are in `examples/scripts/`.
+```
+set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
+python box.py
+```
 
-## The scene
+**Inside usdview**, in its Python interpreter, use `Scene.current()` instead:
 
-There are three ways to get a scene:
+``` py
+from usd_chunks import Scene
 
-| Call | Gives |
+with Scene.current() as scene:
+    box = scene.create.cube(prim_path="/geo/box", width=2.0)
+    scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
+```
+
+The box shows up in the viewport, and the nodes show up in the graph.
+
+## Get a scene
+
+| Call | Gives you |
 | --- | --- |
-| `Scene.new()` | A new scene of your own, on a new in-memory stage. |
-| `Scene.open(path)` | A saved network, with its chunks loaded. |
+| `Scene.new()` | A new, empty scene of your own. |
+| `Scene.open(path)` | A saved network, loaded and cooked. |
 | `Scene.current()` | The scene that is running now, such as usdview's. `None` if there is none. |
 
-`Scene()` is the same as `Scene.new()`. `Scene(stage)` works on a stage you already have.
+- `Scene()` is the same as `Scene.new()`.
+- `Scene(stage)` works on a stage you already have.
+- Only one scene can be live at a time. Leaving the `with` block closes a scene from
+  `Scene.new()` or `Scene.open()`. Without `with`, call `scene.close()` when you are done.
+- Inside usdview, `Scene.new()` and `Scene.open()` raise an error. Use `Scene.current()`.
 
-Only one scene is live at a time, as in any host. Leaving the `with` block closes it;
-without `with`, call `scene.close()` before making the next.
-
-| Call | Does |
-| --- | --- |
-| `scene.save(path)` | Writes the network: Chunk prims and wires. It reopens as a graph and re-cooks. |
-| `scene.export(path)` | Writes the result as plain USD, with the Chunk prims stripped out. |
-| `scene.cook()` | Runs every chunk, upstream first. Rarely needed: chunks cook when they are created and when a value changes. |
-| `scene.commit()` | Runs the chunks that write files, such as Export USD. |
-
-## Creating chunks
+## Make chunks
 
 `scene.create` has one function per chunk:
 
 - **Every chunk module, by its file name.** `transform.py` is `scene.create.transform()`.
-  Your own chunks are found the same way, from `USD_CHUNK_DIRS`, the next time the scene
-  starts.
-- **Every menu variant, by its label in snake_case.** Mesh's "Cube" entry is
-  `scene.create.cube()`, and Light's "Rect Light" is `scene.create.rect_light()`. A
-  variant is its module with some params preset.
+  Your own chunks in `USD_CHUNK_DIRS` work the same way.
+- **Every menu entry, by its label in snake_case.** Mesh's "Cube" entry is
+  `scene.create.cube()`. Light's "Rect Light" is `scene.create.rect_light()`.
 
-A module name wins over a variant label, and a label two variants share is left out
-rather than guessed at. `dir(scene.create)` lists what is there.
-
-When the name is only known at runtime, `scene.add("transform", ...)` takes it as a
-string. A file name that is not a Python identifier (`my-node.py`) is reachable that way
-too.
-
-Each function returns the chunk it made. Its arguments are:
+Each function returns the chunk it made.
 
 ``` py
 scene.create.transform(
-    box,                                          # its input: box is wired into it
-    name="Lift",                                  # the node's name; the chunk's own if left out
+    box,                                          # input: box runs first
+    name="Lift",                                  # node name (optional)
     primpath_location=box.get_param("prim_path"), # a param: wired to follow it
     ty=3.0,                                       # a value: set
 )
 ```
 
-Params are found by name, inside groups too. Plain values are set before the chunk joins
-the scene, so its first cook already uses them.
+To find what you can make and set:
 
-## Connecting chunks
+| To see | Use |
+| --- | --- |
+| Every chunk you can make | `dir(scene.create)` |
+| What a chunk is for | `help(scene.create.transform)` |
+| A chunk's param names | `[p.name for p in chunk.get_params()]` (group names are in the list too) |
 
-There are two kinds of connection, and they are the same two the graph draws: a node's
-input port, and its params.
+If the chunk name is in a string, use `scene.add("transform", box, ty=3.0)`. This also
+works for a file name that is not a Python name, like `my-node.py`.
 
-**The input port** takes the chunks that come before it -- as in Nuke, where a Read feeds
-the Blur after it, or Houdini's `setInput`. It decides the order chunks cook in, and which
-layer a chunk authors into (see Edit Target below). Pass a chunk's inputs positionally
-when creating it; several are fine, and it runs after all of them. To wire chunks that
-already exist, call `add_dependency` on the one that comes after:
+If a module and a menu entry have the same name, you get the module. If two menu entries
+have the same label, neither is in `scene.create`. Make the module and set its params
+instead.
+
+## Set params
+
+Pass params by name when you make the chunk. Params inside groups are found by name too.
 
 ``` py
-xform = scene.create.transform(box)   # box -> Transform
-merge = scene.create.merge(a, b)      # a and b -> Merge
-c.add_dependency(b)                   # b -> c, for chunks that already exist
+lift = scene.create.transform(box, ty=3.0)
 ```
 
-**A param wire** says one param follows another's value. It is saved with the network
-and draws in the graph. Pass the param as the value, when creating or later:
+To change them later:
+
+``` py
+scene.set(lift, ty=5.0)
+lift.get_param("ty").value = 5.0     # the same thing
+```
+
+Chunks cook again by themselves when a value changes.
+
+## Connect chunks
+
+There are two kinds of wire, the same two the graph draws.
+
+**The input port** sets the order chunks run in. Pass a chunk's inputs first when you make
+it. You can pass more than one.
+
+``` py
+lift = scene.create.transform(box)      # box -> Transform
+both = scene.create.merge(a, b)         # a and b -> Merge
+c.add_dependency(b)                     # b -> c, for chunks that already exist
+```
+
+**A param wire** makes one param follow another's value. Pass the param as the value:
 
 ``` py
 scene.create.transform(box, primpath_location=box.get_param("prim_path"))
-scene.set(xform, primpath_location=box.get_param("prim_path"))
-xform.get_param("primpath_location").connect_value(box.get_param("prim_path"))
+scene.set(lift, primpath_location=box.get_param("prim_path"))
+lift.get_param("primpath_location").connect_value(box.get_param("prim_path"))
 ```
 
-A positional input calls `add_dependency`, and a param as a value calls `connect_value`.
-Calling them directly is fine: the scene only saves the typing.
+All three lines do the same thing. Both kinds of wire are saved with the network.
 
 ## `with` blocks
 
-`with chunk:` says where the chunks created inside it go.
+`with chunk:` says where the chunks made inside it go.
 
-- **A chunkgroup takes them in as its children.**
-- **Any other chunk becomes their input**: each chunk created inside, unless given
-  inputs of its own, is wired after it.
+- **A chunkgroup**: they go inside the group.
+- **Any other chunk**: it becomes their input. Each chunk made inside runs after it, unless
+  you give it inputs of your own.
 
-The second is how a script authors into a layer. The layer a chunk writes to comes from
-the nearest Edit Target upstream of it, so:
+Use a group to keep chunks together:
+
+``` py
+props = scene.create.chunkgroup(name="Props")
+with props:
+    crate = scene.create.cube(prim_path="/props/crate")
+```
+
+Use an Edit Target to write into a layer. The chunks after an Edit Target write into its
+layer:
 
 ``` py
 shot = scene.create.layer(layer_name="shot")
@@ -123,32 +154,94 @@ with scene.create.edit_target(shot, edit_target="shot"):
     scene.create.rect_light(ground, primpath_location="/set/key")
 ```
 
-puts the ground and the light in the `shot` layer. Layer on its own only makes a layer;
-the Edit Target is what points edits at it, in a script as in the graph.
+The ground and the light go into the `shot` layer. A Layer chunk only makes the layer. The
+Edit Target is what sends edits to it.
+
+## Save and cook
+
+| Call | Does |
+| --- | --- |
+| `scene.save(path)` | Writes the network: Chunk prims and wires. It opens as a graph. |
+| `scene.export(path)` | Writes the result as plain USD, without the Chunk prims. |
+| `scene.cook()` | Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes. |
+| `scene.commit()` | Runs the chunks that write files, such as Export USD. |
 
 ## Inside usdview
 
-The same calls work on the scene a host is already running. In usdview's interpreter:
+`Scene.current()` gives you the scene usdview is running. What you make goes into it:
+
+- The chunks go into the graph you are looking at. If you have gone into a chunkgroup,
+  they go into that group.
+- The first node goes to the middle of the graph view. The next ones go in a row to its
+  right. Each `with` block starts a new row.
+- Leaving the `with` block does not close usdview's scene.
+
+## Examples
+
+### Five boxes in a row
 
 ``` py
 from usd_chunks import Scene
 
-with Scene.current() as scene:
-    box = scene.create.cube(prim_path="/box")
+with Scene.new() as scene:
+    for i in range(5):
+        box = scene.create.cube(prim_path=f"/geo/box{i}")
+        scene.create.transform(box, primpath_location=box.get_param("prim_path"), tx=i * 3.0)
+    scene.export("boxes.usda")
 ```
 
-`Scene.new()` and `Scene.open()` raise an error here. A scene of your own would build on
-a stage usdview does not show.
+### Open a saved network and change it
 
-The chunks land in the network the graph is showing, including a chunkgroup you have
-dived into. Leaving the block leaves usdview's scene as it was; only a `Scene` of your own
-is closed by it.
+``` py
+from usd_chunks import Scene
+
+with Scene.open("box_network.usda") as scene:
+    lift = scene.get_chunk("Transform")
+    scene.set(lift, ty=10.0)
+    scene.export("box_high.usda")
+```
+
+`scene.get_chunk(name)` finds a chunk by its node name.
+
+### A light with its values set
+
+``` py
+from usd_chunks import Scene
+
+with Scene.new() as scene:
+    scene.create.rect_light(primpath_location="/set/key", intensity=5.0, exposure=2.0)
+    scene.export("light.usda")
+```
+
+### A small set
+
+Ground, three colored boxes, a sky light and a camera:
+
+``` py
+from usd_chunks import Scene
+
+colors = [(1.0, 0.2, 0.2), (0.2, 1.0, 0.2), (0.2, 0.4, 1.0)]
+
+with Scene.new() as scene:
+    scene.create.ground(prim_path="/set/ground")
+    for i, (r, g, b) in enumerate(colors):
+        box = scene.create.cube(prim_path=f"/set/box{i}")
+        path = box.get_param("prim_path")
+        moved = scene.create.transform(box, primpath_location=path, tx=i * 2.0 - 2.0, ty=0.5)
+        scene.create.set_display_color(moved, prim_path=path, color_r=r, color_g=g, color_b=b)
+    scene.create.dome_light(primpath_location="/set/sky")
+    scene.create.camera(primpath_location="/set/cam", ty=2.0, tz=10.0)
+
+    scene.save("set_network.usda")
+    scene.export("set.usda")
+```
+
+More examples are in `examples/scripts/`.
 
 ## Under the hood
 
-`scene.create` is a layer over the lower-level calls the loader, paste and the graph
-frontends use: `ChunkRegistry().get_chunk_module(name)`, then the module's `create()` or
-`load()`, then `scene.add_chunk(chunk)`. Those stay, for code that needs what they give
-and scripting does not -- building a chunk without adding it (`chunk.create_chunks(name,
-anonymous=True)`), or restoring a saved chunk's values before it exists in the scene.
-To build a network, use `scene.create`.
+`scene.create` is a short way to make chunks. It calls
+`ChunkRegistry().get_chunk_module(name)`, then the module's `create()` or `load()`, then
+`scene.add_chunk(chunk)`. The loader, paste and the graph use these calls too. Use them
+directly if you need to make a chunk without adding it to the scene
+(`chunk.create_chunks(name, anonymous=True)`). To build a network, use `scene.create`.
