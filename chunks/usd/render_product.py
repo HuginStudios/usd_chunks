@@ -137,7 +137,10 @@ def main():
             "camera", "Camera",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         ),
-        chunk.LineEdit("ordered_vars", "Ordered Vars"),
+        chunk.LineEdit(
+            "ordered_vars", "Ordered Vars",
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
+        ),
     ])
     return chunk_api
 

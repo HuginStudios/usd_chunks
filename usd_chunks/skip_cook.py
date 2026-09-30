@@ -279,12 +279,13 @@ def input_paths(chunk) -> set[Sdf.Path]:
     """The prim paths chunk's prim path params name, as they are now.
 
     A prim path param is one flagged PRIM_SELECTION, or a primpath_location
-    (ChunkParamBase._is_prim_path_param).
+    (ChunkParamBase._is_prim_path_param), or one flagged PRIM_PATHS -- prim paths the
+    chunk reads that are not a selection, like a Render Product's vars.
     """
     paths: set[Sdf.Path] = set()
     for param in _iter_params(chunk):
         is_prim_path = getattr(param, "_is_prim_path_param", None)
-        if is_prim_path is not None and is_prim_path():
+        if (is_prim_path is not None and is_prim_path()) or param.has_flag(ChunkFlags.ParamFlags.PRIM_PATHS):
             paths.update(_paths_in(getattr(param, "value", None)))
     return paths
 

@@ -74,6 +74,8 @@ class ChunkFlags:
             DIRECTORY: For FILE type params. Allows selection of folders
             PRIM_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdPrim selections
             PROP_SELECTION: For LINEEDIT type params, this says that the param is meant for UsdProperty selections
+            PRIM_PATHS: For LINEEDIT type params: it holds prim paths the chunk reads, without
+                    PRIM_SELECTION's filling from the host's selection
             TRANSIENT: The param holds session state, not a value. It is kept off the chunk prim,
                     so it is not written into a saved scene and comes back empty on reload.
         """
@@ -100,6 +102,11 @@ class ChunkFlags:
         # TEXTEDIT
         PY_SYNTAX_HIGHLIGHT = auto()
         USD_SYNTAX_HIGHLIGHT = auto()
+
+        # LINEEDIT. Last, so no flag before it changes value. Prim paths the chunk reads, like
+        # PRIM_SELECTION but not filled from the host's selection when created: a Render
+        # Product's var list is not whatever mesh happened to be selected.
+        PRIM_PATHS = auto()
 
     class ParamType(_FlagRepr):
         """Flags for parameters, describing their types.
