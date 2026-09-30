@@ -6,7 +6,33 @@ you already have.
 
 ## Quick start
 
-**In a script of your own:**
+### In usdview
+
+Open the Python interpreter (**Window > Interpreter**) and paste this:
+
+``` py
+from usd_chunks import Scene
+
+with Scene.current() as scene:
+    box = scene.create.cube(prim_path="/geo/box", width=2.0)
+    scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
+```
+
+The box shows up in the viewport, and the nodes show up in the graph. There is nothing to
+set up: if the Chunks panel works, this works too.
+
+### In a terminal
+
+Before you run a script, you need:
+
+1. **A Python with USD.** Use usdview's own Python, or install usd_chunks with
+   `python -m pip install -e "./usd_chunks[standalone]"`, which adds `usd-core`. See
+   [Install](install.md#quick-start).
+2. **`USD_CHUNK_DIRS` set** to your chunk folders, the same as for usdview. Without it,
+   `scene.create.cube` fails with "No chunk module or variant called 'cube' -- is
+   USD_CHUNK_DIRS set?".
+
+Save this as `box.py`:
 
 ``` py
 from usd_chunks import Scene
@@ -19,24 +45,18 @@ with Scene.new() as scene:
     scene.export("box.usda")         # the result: plain USD, no Chunk prims
 ```
 
-Run it with `USD_CHUNK_DIRS` set to your chunk folders, the same as for usdview:
+Then run it:
 
 ```
 set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 python box.py
 ```
 
-**Inside usdview**, in its Python interpreter, use `Scene.current()` instead:
+In PowerShell, use `$env:USD_CHUNK_DIRS = "C:\path\to\usd_chunks\chunks"`. On Linux or
+macOS, use `export USD_CHUNK_DIRS=/path/to/usd_chunks/chunks`.
 
-``` py
-from usd_chunks import Scene
-
-with Scene.current() as scene:
-    box = scene.create.cube(prim_path="/geo/box", width=2.0)
-    scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
-```
-
-The box shows up in the viewport, and the nodes show up in the graph.
+Use `Scene.current()` in usdview and `Scene.new()` in a script. See
+[Get a scene](#get-a-scene).
 
 ## Get a scene
 
