@@ -243,6 +243,30 @@ def _sdf_type_and_value(val):
     return sdf_type, val
 
 
+def _store_row_expressions(attr: Usd.Attribute, list_group, template_name: str) -> None:
+    """Keep a list group's row expressions with its array, one entry per row.
+
+    The array holds resolved values, like any typed attr, so the text goes to customData
+    under the same key chunk_utils.store_expression_text uses. A row with none gets "".
+    """
+    rows = [list_group.get_indexed_param(template_name, i) for i in range(list_group.size)]
+    texts = [r.raw_value if r is not None and chunk_utils.is_expression_text(r.raw_value) else "" for r in rows]
+    if any(texts):
+        attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, Vt.StringArray(texts))
+    else:
+        chunk_utils.clear_expression_text(attr)
+
+
+def _restore_row_expressions(attr: Usd.Attribute, list_group, template_name: str) -> None:
+    """Put the row expressions _store_row_expressions saved back on their rows."""
+    texts = attr.GetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY)
+    if isinstance(texts, str):  # a plain expression, not row text
+        return
+    for i, text in enumerate(texts or ()):
+        if text and (row := list_group.get_indexed_param(template_name, i)):
+            row.value = text
+
+
 def sdf_type_for_param(param) -> Sdf.ValueTypeName | None:
     """The USD type an attribute backing this param should have, or None if unmappable.
 
@@ -1454,11 +1478,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         )
         if lg_path is None:
             return
+        if not isinstance(proxy_param, core.ChunkParamBase):
+            return  # a vector row: no array type holds its tuples
         template_name = proxy_param.name
         values = [
             v for i in range(list_group.size)
             if (px := list_group.get_indexed_param(template_name, i)) is not None
-            for v in [px.value] if v is not None
+            # In the param's own number type: the array's type is taken from its values, and
+            # a float row holding a whole number (or wired to an int) would make it int[].
+            for v in [px._as_own_number(px.value)] if v is not None
         ]
         if not values:
             return
@@ -1478,6 +1506,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             with ctx:
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 attr.Set(usd_value)
+                _store_row_expressions(attr, list_group, template_name)
         finally:
             chunk_notice._usd_write_active = prev_write
 
@@ -5375,6 +5404,14 @@ def _iter_chunk_vectors(
             yield from _iter_chunk_vectors(param, path)
 
 
+def _iter_list_rows(obj: core.ChunkCommon) -> Generator[tuple[str, core.ProxyParam], None, None]:
+    """Yield (path, row) for every list-group row, which _iter_chunk_params skips."""
+    for lg_path, list_group in _iter_list_group_arrays(obj):
+        for i, row_group in enumerate(list_group.proxy_params):
+            for row in row_group.get_my_params():
+                yield f"{lg_path}.{i}.{row.name}", row
+
+
 def _iter_list_group_arrays(
     obj: core.ChunkCommon, prefix: str = ""
 ) -> Generator[tuple[str, core.ChunkListGroupBase], None, None]:
@@ -7116,6 +7153,7 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                             break
                         if px := parent.get_indexed_param(template_name, i):
                             px.value = v
+                    _restore_row_expressions(attr, parent, template_name)
                 continue
 
         if param := chunk.get_param(param_path):
@@ -7139,7 +7177,7 @@ def _resolve_pending_expressions(deferred, warn: bool) -> None:
     that is merely waiting for a chunk further down the file.
     """
     for _, c in deferred:
-        for path, param in _iter_chunk_params(c):
+        for path, param in [*_iter_chunk_params(c), *_iter_list_rows(c)]:
             raw = getattr(param, "raw_value", None)
             if (
                 isinstance(raw, str)
@@ -7259,6 +7297,7 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                     for i, v in enumerate(values):
                         if px := parent.get_indexed_param(template_name, i):
                             px.value = v
+                    _restore_row_expressions(attr, parent, template_name)
                 continue
 
         param = chunk.get_param(param_path)
@@ -7641,7 +7680,7 @@ def _author_prim(
             values = [
                 v for i in range(list_group.size)
                 if (px := list_group.get_indexed_param(proxy_param.name, i)) is not None
-                for v in [px.value]
+                for v in [px._as_own_number(px.value)]  # see _sync_list_proxy_to_usd
                 if v is not None
             ]
             if not values:
@@ -7651,3 +7690,4 @@ def _author_prim(
                 continue
             attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, custom=False)
             attr.Set(usd_value)
+            _store_row_expressions(attr, list_group, proxy_param.name)

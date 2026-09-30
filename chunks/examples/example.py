@@ -65,12 +65,12 @@ def clickedButton(owner: chunk.Button, notice, sender):
 
 
 def updateLabel(owner: chunk.Label, notice: chunk_notice.PrimSelectionChangedNotice, sender: chunk_scene.SceneSender):
-    """An example callback function that updates the value of the chunkItem to the selected prim path when a new selection occurs
+    """Show the selected prim path on the label when the selection changes.
 
     Args:
-        chunkItem (chunk.ChunkParam): The ChunkParamaBase object that was used to to add this callback
-        notice (chunk_notice.PropSelectionChangedNotice): The notice object. This is just an identifier for the type of notice sent
-        sender (chunk_notice.UsdviewSelectionNotice): The actual sender
+        owner (chunk.Label): The label this callback was added to
+        notice (chunk_notice.PrimSelectionChangedNotice): The notice. Its data holds the selected prims
+        sender (chunk_scene.SceneSender): The scene that sent it
     """
     if not notice.data:
         return
@@ -81,7 +81,7 @@ def updateLabel(owner: chunk.Label, notice: chunk_notice.PrimSelectionChangedNot
     owner.value = str(path)
 
 
-def nameChanged2(owner: chunk.Slider, attrsender):
+def nameChanged(owner: chunk.Slider, attrsender):
     nameEdit = owner.get_dependency(0, chunk.is_param_t(str))
     if nameEdit.value:
         return nameEdit.value
@@ -105,11 +105,11 @@ def main():
     # Add a parameter to the chunk
     myChunk.add_param(checkbox)
 
-    # A simple callback. This is called whenever anything on the checkbox is changed
-    #     checkbox.add_callback(paramChanged)
+    # A callback on a param is called whenever anything on it changes:
+    #     checkbox.add_callback(my_callback)
 
-    # A more explicit callback. Only triggers paramChanged when checkbox.value changes
-    #     checkbox.add_callback(paramValueChanged, sender=checkbox.get_attribute_sender("value"))
+    # A more explicit callback. Only called when checkbox.value changes:
+    #     checkbox.add_callback(my_callback, sender=checkbox.get_attribute_sender("value"))
 
     # A float slider
     slider = chunk.Slider("slider")
@@ -121,14 +121,14 @@ def main():
     sliderGroup = chunk.Group("SliderGroup")
 
     # Adding a callback on a group will by default call method when anything on the group changes, i.e any child params updated
-    #   sliderGroup.add_callback(groupChanged)
+    #   sliderGroup.add_callback(my_callback)
 
     # One can also be more explicit when adding callbacks, for example only listening to attribute changed notices.
     # Any child of this group will send this notice, and iteratively send it again with every owner as a sender.
     # Sending the notice through the hierarchy allows doing this:
-    #   sliderGroup.add_callback(paramValueChanged, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
+    #   sliderGroup.add_callback(my_callback, notice_alias=chunk_notice.ChunkNoticeAlias.ATTRIBUTE_CHANGED)
     # instead of this:
-    #   sliderGroup.add_callback(paramValueChanged, sender=sliderGroup.get_param("slider").get_attribute_sender("value"))
+    #   sliderGroup.add_callback(my_callback, sender=sliderGroup.get_param("slider").get_attribute_sender("value"))
     # The difference being we can subscribe to all ATTRIBUTE_CHANGED notices in the notice chain instead of only the ones from the specified sender.
 
     ####################
@@ -150,7 +150,7 @@ def main():
     # In order to add the same param multiple times to a chunk, use clone(). This will copy the param and its
     # attributes. Connections / callbacks will not be copied.
     # In order to retrieve the new instances of the slider, you'll need to retrieve it from the group as such:
-    #    slider = sliderGroup.getParam("slider1")
+    #    slider = sliderGroup.get_param("slider1")
     # Duplicate param names will be suffixed with an index. First instance of a param will not be suffixed.
     # This results in these params on the group:
     #   ('slider', 'slider1', 'slider2')
@@ -228,15 +228,16 @@ def main():
     # A text edit is a parameter for editing strings. In this case, the callback will rename the listSlider, showing how the proxies will update.
     nameEdit = chunk.LineEdit("list_name")
 
-    # These are examples of how to modify an attribute of a parameter based on another parameter. In both cases, the name of listSlider is modified
-    # when the nameEdit's value is cja
-
-
+    # This shows how to drive an attribute of a param from another param. The name of listSlider
+    # follows nameEdit: add_dependency makes nameEdit an input, and set_function("name", ...) says
+    # that the return value of nameChanged is the new name whenever an input changes.
     listSlider.add_dependency(nameEdit)
-    listSlider.set_function("name", nameChanged2)
+    listSlider.set_function("name", nameChanged)
 
-    # Add a function to be called whenever the 'value' attribute changes. The return value of the function will be the new value of the param
     myChunk.add_params([nameEdit, listGroup])
+
+    # A row of the list can be wired to a param on another chunk in the node graph, like any other
+    # slider. The row then follows that param. The other rows keep their own values.
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
     # myChunk.print_hierarchy()

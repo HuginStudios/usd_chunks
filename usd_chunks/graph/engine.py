@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 from pxr import Gf, Sdf, Usd
 
@@ -153,6 +153,10 @@ class PortRef:
     attr_path: str
     port_type: str
     is_input: bool
+    #: The exact param the port stands for, when the view knows it. A list-group row has the
+    #: same attribute name as its template and as every other row, so the name alone would
+    #: wire the template -- which no widget shows -- instead of the row that was dragged to.
+    param: Any = field(default=None, compare=False, repr=False)
 
     @property
     def name(self) -> str:
@@ -589,6 +593,34 @@ def set_param_visibly(chunk_obj, param, value) -> None:
         chunk_obj._executing = prev_executing
 
 
+def is_list_row(param) -> bool:
+    """Whether param is a row of a list group rather than a param of its own."""
+    return isinstance(param, core.ProxyParam)
+
+
+def _write_wire_expression(src: PortRef, dst: PortRef, chunks: dict) -> str:
+    """Write the @Node.param@ expression a typed wire stands for onto its destination param.
+
+    A param that validates its value can reject the text (a prim-path LineEdit wants a real
+    path). The wire stands either way, so the error is returned for the view to show.
+
+    Returns:
+        The error text, or "" if none.
+    """
+    dst_chunk = chunks.get(dst.node_path)
+    if dst_chunk is None:
+        return ""
+    param = dst.param if dst.param is not None else dst_chunk.get_param(dst.name)
+    if param is None:
+        return ""
+    src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
+    try:
+        set_param_visibly(dst_chunk, param, f"@{src_node_name}.{src.name}@")
+    except Exception as exc:  # noqa: BLE001 -- the wire stands either way
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
 def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None) -> GraphChange | None:
     """Wire two ports.
 
@@ -609,6 +641,13 @@ def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None
         return None
     chunks = chunks or {}
     src, dst = (b, a) if a.is_input else (a, b)
+
+    if is_list_row(dst.param):
+        # Every row shares its template's attribute name, so a row has no attribute of its
+        # own to hold a connection. Its wire is the expression text alone, which
+        # chunk_stage saves per row with the list's array.
+        return GraphChange(touched_nodes={dst.node_path},
+                           expression_error=_write_wire_expression(src, dst, chunks))
 
     dst_attr = stage.GetAttributeAtPath(Sdf.Path(dst.attr_path))
     if not (dst_attr and dst_attr.IsValid()):
@@ -637,25 +676,8 @@ def connect(stage: Usd.Stage, a: PortRef, b: PortRef, chunks: dict | None = None
     with Usd.EditContext(stage, target):
         dst_attr.SetConnections([src_conn_path])
 
-    # A typed wire also writes the expression that makes the value resolve at runtime. The
-    # wiring and the expression are separate concerns -- clearing the text keeps the wire --
-    # and they can fail separately too: a param that validates its value rejects the
-    # expression text outright (a prim-path LineEdit checks the path exists, and
-    # "@Node.param@" is not a path). The connection is already authored by this point, so
-    # raising would leave the wire in place and the caller holding an exception. Report it
-    # instead and let the view say so.
-    expression_error = ""
-    if src.port_type != PORT_EXEC:
-        dst_chunk = chunks.get(dst.node_path)
-        if dst_chunk is not None:
-            param = dst_chunk.get_param(dst.name)
-            if param is not None:
-                src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
-                try:
-                    set_param_visibly(dst_chunk, param, f"@{src_node_name}.{src.name}@")
-                except Exception as exc:  # noqa: BLE001 -- the wire stands either way
-                    expression_error = f"{type(exc).__name__}: {exc}"
-
+    # A typed wire also writes the expression that makes the value resolve at runtime.
+    expression_error = _write_wire_expression(src, dst, chunks) if src.port_type != PORT_EXEC else ""
     return GraphChange(touched_nodes={dst.node_path},
                        exec_changed=src.port_type == PORT_EXEC,
                        expression_error=expression_error)
@@ -683,6 +705,11 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     """
     chunks = chunks or {}
     touched = {port.node_path}
+    if port.is_input and is_list_row(port.param):
+        # A row's wire is only its expression (see connect).
+        port.param.value = port.param.default_value
+        return GraphChange(touched_nodes=touched)
+
     attr = stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
     if not (attr and attr.IsValid()):
         return GraphChange(edges_dirty=False, touched_nodes=set())
