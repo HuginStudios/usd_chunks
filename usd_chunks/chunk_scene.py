@@ -816,9 +816,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return (x + (self._script_count - 1) * _SCRIPT_NODE_STEP, y)
 
     def _add_scripted(self, chunk: ChunkBase) -> None:
-        """add_chunk, at the position _next_node_position picks."""
-        from usd_chunks import chunk_stage  # deferred: chunk_stage imports this module
+        """add_chunk, at the position _next_node_position picks.
 
+        Like a node made in the graph, a chunk made while its graph has a View starts
+        blocked: it is not in the View's chain yet, so it must not cook. scene.view() on it,
+        or on a chunk after it, is what lets it cook.
+        """
+        # deferred: both modules import this one
+        from usd_chunks import chunk_stage
+        from usd_chunks.graph import engine
+
+        context = self.current_context or self.peek_root_context()
+        if (engine.context_has_view(self, context)
+                and not chunk_stage.is_view_chunk(chunk) and not chunk_stage.is_group_chunk(chunk)):
+            chunk.set_blocked(True)
         with chunk_stage.creating_at(self._next_node_position()):
             self.add_chunk(chunk)
 
@@ -931,6 +942,43 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             self.get_chunks(),
             order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
         )
+
+    def view(self, target: ChunkBase) -> ChunkBase | None:
+        """Make the active View show `target`, and cook what it now reaches.
+
+        The same as dragging a wire from `target` into the View in the graph: the View's
+        old input is replaced. A graph with no View gets one. Nothing else is rewired.
+
+        Args:
+            target: The chunk to view, usually the last one in a chain.
+
+        Returns:
+            The View chunk, or None if no View could be made.
+        """
+        from pxr import Sdf
+
+        from usd_chunks import chunk_stage
+        from usd_chunks.graph import engine
+
+        stage = self.get_stage()
+        target_path = chunk_stage.get_chunk_prim_path(target)
+        context_path = str(Sdf.Path(target_path).GetParentPath())
+        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in (*self.get_contexts(), *self.get_chunks())}
+        context = by_path.get(context_path)
+
+        slot = engine.read_active_slot(stage, context_path)
+        view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
+        if view is None:
+            # Reuses a View already wired to target, or makes one.
+            slot = engine.create_view_for(stage, self, target_path)
+            view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
+            if view is None:
+                return None
+        else:
+            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(view))
+        engine.write_active_slot(stage, context_path, slot)
+        chunk_stage.recook_for_view(stage, self, context, view)
+        return view
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
