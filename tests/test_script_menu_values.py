@@ -1,4 +1,4 @@
-"""A value given to scene.create is kept, even for a menu that fills its choices later.
+"""A value given to scene.create is kept, even when the chunk fills a menu or makes a param later.
 
 The Edit Target's menu lists the stage's layers, and it only gets them once the chunk is
 in the scene. A value set before that was lost, so `edit_target="shot"` fell back to
@@ -7,6 +7,7 @@ in the scene. A value set before that was lost, so `edit_target="shot"` fell bac
 
 from __future__ import annotations
 
+import pytest
 from pxr import Sdf
 
 from usd_chunks import Scene
@@ -42,3 +43,18 @@ def test_chunks_after_the_edit_target_write_into_its_layer() -> None:
             scene.create.ground(prim_path="/set/ground")
 
         assert "shot" in _layers_holding(scene.get_stage(), "/set/ground")
+
+
+def test_a_param_built_when_the_chunk_joins_the_scene_is_set() -> None:
+    """Light makes its params only once it is in the scene."""
+    with Scene() as scene:
+        scene.create.rect_light(primpath_location="/set/key", intensity=5.0)
+
+        light = scene.get_stage().GetPrimAtPath("/set/key")
+        assert light.GetAttribute("inputs:intensity").Get() == 5.0
+
+
+def test_a_name_no_param_has_still_raises() -> None:
+    with Scene() as scene:
+        with pytest.raises(KeyError, match="no_such_param"):
+            scene.create.transform(no_such_param=1.0)
