@@ -61,3 +61,19 @@ def test_view_replaces_the_view_input_and_switches_branches() -> None:
         scene.view(lift)
         assert _y(scene, "/box") == 3.0 and not _is_off(scene, lift)
         assert _is_off(scene, raised)
+
+
+def test_a_chunk_made_outside_the_view_does_not_cook() -> None:
+    """Like a node made in the graph: blocked while it is not in the View's chain."""
+    with Scene.new() as scene:
+        box = scene.create.cube(prim_path="/box")
+        view = scene.view(box)
+        lift = scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
+
+        assert _wires(scene, view) == ["Mesh"], "the View is not moved"
+        assert lift.is_blocked()
+        assert _y(scene, "/box") == 0.0, "the viewport matches the graph: the box has not moved"
+
+        scene.view(lift)
+        assert not lift.is_blocked()
+        assert _y(scene, "/box") == 3.0

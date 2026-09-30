@@ -171,7 +171,8 @@ scene.view(lift)      # the View now shows lift, and it cooks
 It does what dragging a wire into the View does in the graph: the View's old input is
 replaced, and what the View now reaches cooks. If the graph has no View, it makes one.
 
-A script's own `Scene.new()` has no View, so all its chunks cook. Build one chain there
+A script's own `Scene.new()` has no View, so all its chunks cook, until you call
+`scene.view()`. Build one chain there
 too: the saved network then works when you open it in usdview.
 
 ## `with` blocks
@@ -223,9 +224,9 @@ Edit Target is what sends edits to it.
   right. Each `with` block starts a new row.
 - Leaving the `with` block does not close usdview's scene.
 - If the graph has no View yet, it adds one at the end of your chain.
-- If the graph already has a View, your new chain is not part of it and switches off the
-  next time the graph cooks. To see it, call `scene.view(last)` with the chain's last
-  chunk. In the graph, you can instead select that node and press **V**, which makes a
+- If the graph already has a View, new chunks start switched off, the same as nodes you
+  make in the graph: they are not in the View's chain yet. To see them, call
+  `scene.view(last)` with the chain's last chunk. In the graph, you can instead select that node and press **V**, which makes a
   second View. Press **1**, **2** or **3** to switch between Views.
 
 ## Examples

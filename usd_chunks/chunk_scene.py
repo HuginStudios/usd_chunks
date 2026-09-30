@@ -816,9 +816,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return (x + (self._script_count - 1) * _SCRIPT_NODE_STEP, y)
 
     def _add_scripted(self, chunk: ChunkBase) -> None:
-        """add_chunk, at the position _next_node_position picks."""
-        from usd_chunks import chunk_stage  # deferred: chunk_stage imports this module
+        """add_chunk, at the position _next_node_position picks.
 
+        Like a node made in the graph, a chunk made while its graph has a View starts
+        blocked: it is not in the View's chain yet, so it must not cook. scene.view() on it,
+        or on a chunk after it, is what lets it cook.
+        """
+        # deferred: both modules import this one
+        from usd_chunks import chunk_stage
+        from usd_chunks.graph import engine
+
+        context = self.current_context or self.peek_root_context()
+        if (engine.context_has_view(self, context)
+                and not chunk_stage.is_view_chunk(chunk) and not chunk_stage.is_group_chunk(chunk)):
+            chunk.set_blocked(True)
         with chunk_stage.creating_at(self._next_node_position()):
             self.add_chunk(chunk)
 
