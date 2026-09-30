@@ -1855,6 +1855,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     # Don't write a string to a typed (numeric) attr -- an unresolved
                                     # forwarded value can arrive as text and raise a type-mismatch.
                                     bad_str = isinstance(val, str) and not chunk_utils.attr_holds_text(usd_attr)
+                                    # And the other way round: a number for a String attr.
+                                    # A wire used to make a number param's attr a String
+                                    # (to hold its expression), and the first plain number
+                                    # typed in once the wire was gone could not be written.
+                                    # A file saved like that is healed here, where it hurts.
+                                    if (
+                                        not isinstance(val, str)
+                                        and usd_attr.GetTypeName() == Sdf.ValueTypeNames.String
+                                        and (typed := chunk_utils.SDF_TYPE_MAP.get(type(val))) is not None
+                                    ):
+                                        chunk_utils.retype_attr(usd_attr, typed)
+                                        current = None
                                     if not bad_str and current != val:
                                         usd_attr.Set(val)
                                 if is_expr:
