@@ -625,6 +625,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_prim_paths.discard(prim_path_str)
         self._chunk_prim_paths.pop(id(sender), None)
 
+        # Read who was downstream before healing rewires them off this chunk: nothing after
+        # this point can tell, and they are the only chunks whose Edit Target can change.
+        successor_paths = _exec_successor_paths(self._stage, prim_path_str)
+
         # Heal the exec chain while the prim (and its inputs:chunk predecessor) still exists:
         # deleting a middle node A -> X -> B must leave A -> B, not a broken chain.
         heal_exec_chain_on_delete(self._stage, prim_path_str)
@@ -677,7 +681,27 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # Deleting an Edit Target chunk changes the target that now applies to everything
         # that was downstream of it (heal_exec_chain_on_delete has just rewired the chain
         # around it) -- re-home those chunks to the target that survives at their position.
-        reconcile_edit_targets(self._stage, self._scene)
+        # Only they can have changed, so the pass is scoped to them rather than run over the
+        # whole scene: a delete used to re-home and re-cook every chunk in the graph.
+        # protect_root_layer, as on load: a chunk opened from a file keeps its bookkeeping in
+        # that file's root layer, and migrating deletes the original spec -- the first delete
+        # after opening would empty the file's own layer, which Sdf then hands back to the
+        # next open of the same path.
+        successors = [
+            c for c in chunk_scene.all_chunks(self._scene.get_chunks())
+            if get_chunk_prim_path(c) in successor_paths
+        ]
+        if not successors:
+            return
+        # The delete itself is done. A cook downstream failing here (say on an expression
+        # that referenced the chunk just deleted) must not escape and abort the rest of the
+        # CHUNK_DELETED dispatch, which would leave the chunk half torn down.
+        try:
+            reconcile_edit_targets(
+                self._stage, self._scene, roots=successors, protect_root_layer=True
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Re-homing chunks after deleting %s failed", sender.name)
 
     def _delete_nested_contexts(self, group_path: Sdf.Path) -> None:
         """Delete the chunkgroups nested inside the group being deleted.
@@ -3675,6 +3699,20 @@ def heal_exec_chain_on_delete(stage: Usd.Stage, deleted_path: str) -> None:
     # Healing rewrites inputs:chunk across the graph with notices suppressed -- every
     # memoised answer below the deleted node is now measured against an edge that is gone.
     invalidate_edit_layer_memo()
+
+
+def _exec_successor_paths(stage: Usd.Stage, node_path: str) -> set[str]:
+    """Prim paths of every chunk whose exec input (any slot) is wired to node_path."""
+    out_path = f"{node_path}.{_EXEC_OUTPUT}"
+    found: set[str] = set()
+    for prim in stage.Traverse():
+        if str(prim.GetPath()) == node_path:
+            continue
+        for attr in iter_exec_inputs(prim):
+            if any(str(c) == out_path for c in attr.GetConnections()):
+                found.add(str(prim.GetPath()))
+                break
+    return found
 
 
 def _remove_attr_spec(stage: Usd.Stage, prim: Usd.Prim, name: str) -> None:
