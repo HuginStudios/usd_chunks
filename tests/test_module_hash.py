@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from pxr import Sdf
+from pxr import Sdf, Usd
 
 from usd_chunks import Scene, chunk_naming, chunk_registry, chunk_utils
 from usd_chunks.chunk_topology import get_chunk_prim_path
@@ -23,6 +23,22 @@ WARNING = "were saved with different code"
 
 def _prim(scene, chunk):
     return scene.get_stage().GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+
+
+def _in_home_layer(prim, edit):
+    # The stamp lives in the chunk's bookkeeping layer, stronger than the default edit target:
+    # a test that writes or removes it elsewhere is shadowed and changes nothing.
+    home = chunk_utils.get_attr_home_layer(prim.GetAttribute(ATTR))
+    with Usd.EditContext(prim.GetStage(), home):
+        edit()
+
+
+def _set_hash(prim, value):
+    _in_home_layer(prim, lambda: prim.GetAttribute(ATTR).Set(value))
+
+
+def _clear_hash(prim):
+    _in_home_layer(prim, lambda: prim.RemoveProperty(ATTR))
 
 
 def _module(name="transform"):
@@ -56,7 +72,7 @@ def test_a_recook_restamps_a_prim_whose_recorded_code_is_out_of_date():
     with Scene() as scene:
         node = scene.create.transform()
         prim = _prim(scene, node)
-        prim.GetAttribute(ATTR).Set(OLD)
+        _set_hash(prim, OLD)
 
         assert node.cook() is True
 
@@ -71,11 +87,9 @@ def test_the_module_hash_is_pins_hash_of_the_module_file():
 
 def test_a_comment_changes_the_hash(tmp_path):
     source = tmp_path / "chunk.py"
-    source.write_text("x = 1
-", encoding="utf-8")
+    source.write_text("x = 1\n", encoding="utf-8")
     before = pin.hash_file(source)
-    source.write_text("x = 1  # note
-", encoding="utf-8")
+    source.write_text("x = 1  # note\n", encoding="utf-8")
 
     assert pin.hash_file(source) != before
 
@@ -149,7 +163,7 @@ def test_a_recorded_hash_is_read_back_from_the_prim():
 
         assert chunk_utils.recorded_module_hash(prim) == _module().source_hash
 
-        prim.RemoveProperty(ATTR)
+        _clear_hash(prim)
 
         assert chunk_utils.recorded_module_hash(prim) is None
 
@@ -158,7 +172,7 @@ def test_no_recorded_hash_is_not_a_change():
     with Scene() as scene:
         node = scene.create.transform()
         prim = _prim(scene, node)
-        prim.RemoveProperty(ATTR)
+        _clear_hash(prim)
 
         assert chunk_utils.module_changed_since_cook(prim, _module()) is False
 
@@ -167,6 +181,6 @@ def test_a_differing_recorded_hash_is_a_change():
     with Scene() as scene:
         node = scene.create.transform()
         prim = _prim(scene, node)
-        prim.GetAttribute(ATTR).Set(OLD)
+        _set_hash(prim, OLD)
 
         assert chunk_utils.module_changed_since_cook(prim, _module()) is True
