@@ -2024,7 +2024,9 @@ class NoticeConnection:
             # one .mtlx sends hundreds of change rounds from the MaterialX plugin's private
             # stage, and resolving the context for each cost more than the file itself.
             # Compared by root layer, since the Python wrapper of one stage is not unique.
-            notice_stage = getattr(notice, "GetStage", None)
+            # An on-create trigger passes the notice class, not a notice, and a class's
+            # GetStage is unbound -- calling it raised for every Layer and Edit Target made.
+            notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
             if stage and notice_stage is not None and (other := notice_stage()) is not None \
                     and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
                 return
