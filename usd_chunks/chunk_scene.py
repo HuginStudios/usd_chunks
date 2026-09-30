@@ -22,8 +22,8 @@ import logging
 import weakref
 from abc import abstractmethod
 from pathlib import Path
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Callable
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 from pxr import Gf, Usd, UsdGeom
 
@@ -907,6 +907,31 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         nothing until they are run.
         """
         execute_roots(self.get_chunks())
+
+    # save, export and commit live here rather than on the script's Scene, so they work on
+    # usdview's scene too (Scene.current()). Deferred imports: both modules import this one.
+
+    def save(self, path: str) -> None:
+        """Write the network itself -- Chunk prims and wires -- so it reopens as a graph."""
+        from usd_chunks import chunk_stage
+
+        chunk_stage.export_chunks(self, path)
+
+    def export(self, path: str) -> None:
+        """Write the result as plain USD, with the Chunk prims stripped out."""
+        from usd_chunks import chunk_script
+
+        chunk_script.flatten_without_chunks(self.get_stage()).Export(path)
+
+    def commit(self) -> None:
+        """Run every chunk's commit hook -- the ones that write files, like Export USD."""
+        from usd_chunks import chunk_scheduler, chunk_stage
+
+        stage = self.get_stage()
+        chunk_scheduler.commit_all(
+            self.get_chunks(),
+            order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
+        )
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
