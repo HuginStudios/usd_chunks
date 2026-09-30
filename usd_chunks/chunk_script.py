@@ -69,6 +69,26 @@ def flatten_without_chunks(stage):
         else:
             del flat.pseudoRoot.nameChildren[spec.name]
 
+    # Chunks connect the attributes they drive to their own params (a camera's focalLength
+    # to Camera.inputs:...:focalLength). The values are already flattened in, so the links
+    # would only point at prims this file no longer has.
+    def drop_links_to_chunks(path):
+        if not path.IsPropertyPath():
+            return
+        prop = flat.GetPropertyAtPath(path)
+        links = prop.connectionPathList if isinstance(prop, Sdf.AttributeSpec) else prop.targetPathList
+        items = list(links.GetAddedOrExplicitItems())
+        kept = [t for t in items if not any(t.HasPrefix(c) for c in chunk_paths)]
+        if len(kept) == len(items):
+            return
+        if kept:
+            for target in set(items) - set(kept):
+                links.RemoveItemEdits(target)
+        else:
+            links.ClearEdits()  # no `.connect = None` left behind
+
+    flat.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
+
     # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
     # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
     # left in a file whose whole point is to carry none -- and it is enough to make a
