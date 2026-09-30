@@ -147,6 +147,23 @@ lift.get_param("primpath_location").connect_value(box.get_param("prim_path"))
 
 All three lines do the same thing. Both kinds of wire are saved with the network.
 
+## Build one chain
+
+In usdview, only the chunks wired into the active View cook. The rest are switched off.
+So build your network as one chain: give each chunk the one before it as its input.
+
+``` py
+ground = scene.create.ground(prim_path="/set/ground")
+box = scene.create.cube(ground, prim_path="/set/box")                              # ground -> box
+scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=0.5)  # box -> Transform
+```
+
+A chunk you make without an input starts a new, separate chain. It stays off until a View
+points at it. This is on purpose, so you can build a side branch and view it later.
+
+A script's own `Scene.new()` has no View, so all its chunks cook. Build one chain there
+too: the saved network then works when you open it in usdview.
+
 ## `with` blocks
 
 `with chunk:` says where the chunks made inside it go.
@@ -195,6 +212,11 @@ Edit Target is what sends edits to it.
 - The first node goes to the middle of the graph view. The next ones go in a row to its
   right. Each `with` block starts a new row.
 - Leaving the `with` block does not close usdview's scene.
+- If the graph has no View yet, it adds one at the end of your chain.
+- If the graph already has a View, your new chain is not part of it and switches off the
+  next time the graph cooks. To see it, select its last node in the graph and press
+  **V**. That makes a View for it and makes it the active one. Press **1**, **2** or **3**
+  to switch between Views.
 
 ## Examples
 
@@ -204,9 +226,10 @@ Edit Target is what sends edits to it.
 from usd_chunks import Scene
 
 with Scene.new() as scene:
-    for i in range(5):
-        box = scene.create.cube(prim_path=f"/geo/box{i}")
-        scene.create.transform(box, primpath_location=box.get_param("prim_path"), tx=i * 3.0)
+    last = scene.create.cube(prim_path="/geo/box0")
+    for i in range(1, 5):
+        box = scene.create.cube(last, prim_path=f"/geo/box{i}")
+        last = scene.create.transform(box, primpath_location=box.get_param("prim_path"), tx=i * 3.0)
     scene.export("boxes.usda")
 ```
 
@@ -235,7 +258,7 @@ with Scene.new() as scene:
 
 ### A small set
 
-Ground, three colored boxes, a sky light and a camera:
+Ground, three colored boxes, a sky light and a camera, in one chain:
 
 ``` py
 from usd_chunks import Scene
@@ -243,14 +266,14 @@ from usd_chunks import Scene
 colors = [(1.0, 0.2, 0.2), (0.2, 1.0, 0.2), (0.2, 0.4, 1.0)]
 
 with Scene.new() as scene:
-    scene.create.ground(prim_path="/set/ground")
+    last = scene.create.ground(prim_path="/set/ground")
     for i, (r, g, b) in enumerate(colors):
-        box = scene.create.cube(prim_path=f"/set/box{i}")
+        box = scene.create.cube(last, prim_path=f"/set/box{i}")
         path = box.get_param("prim_path")
         moved = scene.create.transform(box, primpath_location=path, tx=i * 2.0 - 2.0, ty=0.5)
-        scene.create.set_display_color(moved, prim_path=path, color_r=r, color_g=g, color_b=b)
-    scene.create.dome_light(primpath_location="/set/sky")
-    scene.create.camera(primpath_location="/set/cam", ty=2.0, tz=10.0)
+        last = scene.create.set_display_color(moved, prim_path=path, color_r=r, color_g=g, color_b=b)
+    sky = scene.create.dome_light(last, primpath_location="/set/sky")
+    scene.create.camera(sky, primpath_location="/set/cam", ty=2.0, tz=10.0)
 
     scene.save("set_network.usda")
     scene.export("set.usda")

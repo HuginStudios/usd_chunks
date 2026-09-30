@@ -902,9 +902,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def cook(self) -> None:
         """Run every chunk, upstream first.
 
-        Setting a value already reruns what it affects, so this is only needed for chunks
-        whose work lives solely in their module's execute(), such as Light, which do
-        nothing until they are run.
+        Making a chunk and setting a value already run what they affect, so this is rarely
+        needed.
         """
         execute_roots(self.get_chunks())
 
