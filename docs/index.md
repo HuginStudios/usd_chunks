@@ -12,18 +12,18 @@ screen.
 1. [Install](install.md): quick start, fixing things that don't show up, every
    environment variable, building the docs.
 2. [Using the node graph](node-graph-basics.md): creating and connecting nodes, shortcuts.
-3. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
-   params and flags.
-4. [View and ChunkGroup](core-chunks.md): the two chunks that organise a graph instead of
+3. [View and ChunkGroup](core-chunks.md): the two chunks that organise a graph instead of
    changing the stage.
-5. [Expressions](expressions.md): make one param read another, like `@Box.size@ * 2`,
+4. [Expressions](expressions.md): make one param read another, like `@Box.size@ * 2`,
    and use USD's `${NAME}` variables.
-6. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
-   `execute()` and `commit()`.
-7. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
-   interpreter before making it a module.
-8. [Scripting](scripting.md): build a network from Python with `Scene`, in a script or
+5. [Scripting](scripting.md): build a network from Python with `Scene`, in a script or
    in usdview.
+6. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
+   params and flags.
+7. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
+   `execute()` and `commit()`.
+8. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
+   interpreter before making it a module.
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
 > the work, and `config()` holds details like its `description` and `category`.

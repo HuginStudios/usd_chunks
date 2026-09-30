@@ -37,12 +37,12 @@ usdchunks run layout.usda Transform.tx=5 -o result.usda
    The install page covers other shells, every environment variable, and what to do if
    something doesn't show up.
 2. **[Use the node graph](docs/node-graph-basics.md)**: add and connect your first chunk.
-3. **[Learn what a Chunk is](docs/chunk-basics.md)**: params, groups, flags and an example.
-4. **[View and ChunkGroup](docs/core-chunks.md)**: the two chunks that organise a graph.
-5. **[Write your own chunk](docs/writing-a-chunk.md)**: `main()`, `config()`, `execute()`
-   and `commit()`.
-6. **[Build a network from Python](docs/scripting.md)**: make chunks, set params and wire
+3. **[View and ChunkGroup](docs/core-chunks.md)**: the two chunks that organise a graph.
+4. **[Build a network from Python](docs/scripting.md)**: make chunks, set params and wire
    them with `Scene`, in a script or in usdview.
+5. **[Learn what a Chunk is](docs/chunk-basics.md)**: params, groups, flags and an example.
+6. **[Write your own chunk](docs/writing-a-chunk.md)**: `main()`, `config()`, `execute()`
+   and `commit()`.
 
 ## 📦 What comes with it
 
