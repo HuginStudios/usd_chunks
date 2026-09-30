@@ -4,7 +4,7 @@
 """
 from usd_chunks import Scene
 
-with Scene() as scene:
+with Scene.new() as scene:
     box = scene.create.cube(prim_path="/geo/box", width=2.0)
     path = box.get_param("prim_path")
 

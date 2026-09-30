@@ -63,6 +63,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     #: CLI never runs that recook and relies on the load to cook the whole network.
     load_cooks_active_views_only: bool = False
 
+    #: Whether this scene belongs to an app the user works in, like usdview. A script's own
+    #: Scene refuses to start while one is live: it would build on a stage nobody sees and
+    #: take the registry away from the app. Scene.current() is the way in instead.
+    is_app: bool = False
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 

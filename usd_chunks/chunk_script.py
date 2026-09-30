@@ -7,7 +7,7 @@ module and per menu variant:
 
     from usd_chunks import Scene
 
-    with Scene() as scene:
+    with Scene.new() as scene:
         shot = scene.create.layer(layer_name="shot")
         with scene.create.edit_target(shot, edit_target="shot"):
             box = scene.create.cube(prim_path="/geo/box")
@@ -20,7 +20,9 @@ children; any other chunk goes before them, so they run after it -- which, for a
 Target, is what puts their edits in its layer.
 
 The registry and layer manager are process-wide singletons, so one scene is live at a
-time, as in any host: close it (or leave the `with` block) before making the next.
+time, as in any host: close it (or leave the `with` block) before making the next. Inside
+an app like usdview, the app's scene is the live one: Scene.current() gets it, and a new
+Scene refuses to start.
 """
 from __future__ import annotations
 
@@ -94,6 +96,12 @@ class Scene(chunk_scene.SceneSender):
     """
 
     def __init__(self, stage: Usd.Stage | None = None, host_name: str = "script", *, sync: bool = True):
+        live = chunk_scene.current_scene()
+        if live is not None and live.is_app:
+            raise RuntimeError(
+                f"{type(live).__name__} is already running a scene. "
+                "Use Scene.current() to build in it."
+            )
         super().__init__()
         # Whether the stage is this Scene's own -- made here, or opened by Scene.open -- and
         # so goes when the Scene does. A stage passed in belongs to the caller.
@@ -106,6 +114,16 @@ class Scene(chunk_scene.SceneSender):
             # network loads, which is what binds params a chunk builds during its own
             # execute to their prims, and it restores Edit Target selections.
             chunk_stage_init(self._stage, self)
+
+    @classmethod
+    def new(cls, host_name: str = "script") -> Scene:
+        """Start a scene of your own, on a new in-memory stage. The same as Scene()."""
+        return cls(host_name=host_name)
+
+    @staticmethod
+    def current() -> chunk_scene.SceneSender | None:
+        """The scene that is running now: usdview's inside usdview, or None if there is none."""
+        return chunk_scene.current_scene()
 
     @classmethod
     def open(cls, path: str, host_name: str = "script") -> Scene:
