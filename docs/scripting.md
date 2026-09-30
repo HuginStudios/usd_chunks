@@ -7,7 +7,7 @@ a script.
 ``` py
 from usd_chunks import Scene
 
-with Scene() as scene:
+with Scene.new() as scene:
     box = scene.create.cube(prim_path="/geo/box", width=2.0)
     scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
 
@@ -15,14 +15,23 @@ with Scene() as scene:
     scene.export("box.usda")         # the result: plain USD, no Chunk prims
 ```
 
+Inside usdview, use `Scene.current()` instead of `Scene.new()`. See
+[Inside usdview](#inside-usdview).
+
 Run it with `USD_CHUNK_DIRS` pointing at the folders your chunks live in, the same as for
 usdview. More examples are in `examples/scripts/`.
 
 ## The scene
 
-`Scene()` sets up everything a chunk needs to run, on a new in-memory stage.
-`Scene(stage)` works on a stage you already have, and `Scene.open(path)` opens a saved
-network and loads its chunks.
+There are three ways to get a scene:
+
+| Call | Gives |
+| --- | --- |
+| `Scene.new()` | A new scene of your own, on a new in-memory stage. |
+| `Scene.open(path)` | A saved network, with its chunks loaded. |
+| `Scene.current()` | The scene that is running now, such as usdview's. `None` if there is none. |
+
+`Scene()` is the same as `Scene.new()`. `Scene(stage)` works on a stage you already have.
 
 Only one scene is live at a time, as in any host. Leaving the `with` block closes it;
 without `with`, call `scene.close()` before making the next.
@@ -122,11 +131,14 @@ the Edit Target is what points edits at it, in a script as in the graph.
 The same calls work on the scene a host is already running. In usdview's interpreter:
 
 ``` py
-from usd_chunks import current_scene
+from usd_chunks import Scene
 
-with current_scene() as scene:
+with Scene.current() as scene:
     box = scene.create.cube(prim_path="/box")
 ```
+
+`Scene.new()` and `Scene.open()` raise an error here. A scene of your own would build on
+a stage usdview does not show.
 
 The chunks land in the network the graph is showing, including a chunkgroup you have
 dived into. Leaving the block leaves usdview's scene as it was; only a `Scene` of your own

@@ -4,7 +4,7 @@
 """
 from usd_chunks import Scene
 
-with Scene() as scene:
+with Scene.new() as scene:
     shot = scene.create.layer(layer_name="shot")
 
     # Everything created inside runs after the Edit Target, so its edits land in "shot".

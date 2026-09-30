@@ -82,6 +82,8 @@ def _socket(port_type: str, connected: bool) -> None:
 class _Scene(SceneSender):
     """Enough of a host for the registry to load chunks against a stage."""
 
+    is_app = True
+
     def __init__(self, stage):
         super().__init__()
         self._stage = stage

@@ -93,6 +93,8 @@ CHUNK_TYPE_ATTR = "info:chunkType"
 class _Scene(SceneSender):
     """The minimum a chunk session needs to exist: a stage and a selection."""
 
+    is_app = True
+
     def __init__(self, stage):
         super().__init__()
         self._stage = stage
