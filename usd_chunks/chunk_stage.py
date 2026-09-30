@@ -6129,11 +6129,26 @@ def _load_chunks(
                 # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
                 # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
                 # chunks at the same depth keep their existing relative order.
+                #
+                # A root an earlier root's solve already cooked is not run again. Everything is
+                # dirty after the build, so the first solve takes in every dirty node connected
+                # to it, the other roots of a shared downstream included -- a Merge of six
+                # References pulls in all six, and the Scatter below cooks once, with every
+                # input in place. Running the next five roots anyway re-dirtied and re-cooked
+                # that whole chain five more times, each identical to the last. Only a cook in
+                # this loop counts: a root that was already clean before it runs as it always
+                # did. Not batched_solve: a solve does not walk from an owner back down to its
+                # dirty children, so a batch let one group's queued inner roots be reached late
+                # and cooked their group before them -- a car configurator's glass binding came
+                # out empty. Run in turn, each root still dirties its group itself.
                 unseen = _unseen_by_active_views(stage, scene)
+                stale_before = {id(c) for _, c in deferred if chunk_notice.is_cook_stale(c)}
                 for prim, added in sorted(
                     deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
                 ):
                     if id(added) not in chunks_with_dependencies and not unseen(added):
+                        if id(added) in stale_before and not chunk_notice.is_cook_stale(added):
+                            continue
                         is_top_level = id(added) in top_level_chunk_ids
                         if is_top_level or can_execute_sub_chunks:
                             if lm.initialized:
