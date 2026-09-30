@@ -23,7 +23,7 @@ import weakref
 from abc import abstractmethod
 from pathlib import Path
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Callable
 
 from pxr import Gf, Usd, UsdGeom
 
@@ -46,6 +46,14 @@ logger = logging.getLogger(__name__)
 # scope (plugins-layer _CHUNKS_ROOT), like /lights or /render -- nothing lives at it, and the
 # default chunkgroup sits under it at /chunks/<name>.
 CHUNKGROUP_MODULE = "chunkgroup"
+
+
+#: Set by a graph frontend: returns the USD position at the center of the graph it shows, or
+#: None. Nodes a script makes in an app start there, so they land where the user is looking.
+graph_center_hook: Callable[[], tuple[float, float] | None] | None = None
+
+#: Space between two nodes a script makes, in a row. The same as the default layout's.
+_SCRIPT_NODE_STEP = 260.0
 
 
 class SceneSender(chunk_notice.ChunkNoticePropagator):
@@ -82,6 +90,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._creator: Creator | None = None
         self._scopes: list = []
         self._upstream: list[ChunkBase | None] = []
+        # Where this script's nodes go in an app's graph: the first node's position (None
+        # for the default row), whether it has been looked up yet, and how many have been
+        # placed in the row since.
+        self._script_origin: tuple[float, float] | None = None
+        self._script_origin_found = False
+        self._script_count = 0
 
     @property
     def current_context(self) -> ChunkBase | None:
@@ -775,10 +789,38 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def __enter__(self) -> SceneSender:
         """`with scene:` -- a host's scene is borrowed, so leaving the block keeps it."""
+        self._script_origin_found = False
         return self
 
     def __exit__(self, *exc) -> None:
-        pass
+        self._script_origin_found = False
+
+    def _next_node_position(self) -> tuple[float, float] | None:
+        """Where the next scripted node goes in an app's graph, or None for the default.
+
+        The first goes at the center of the graph view, the rest in a row to its right.
+        Each `with` block starts a new row.
+        """
+        if not self.is_app:
+            return None
+        if not self._script_origin_found:
+            # Looked up once per block: with no view yet, the whole block keeps the default
+            # row rather than jumping to the view once the first node has made one.
+            self._script_origin_found = True
+            self._script_origin = graph_center_hook() if graph_center_hook else None
+            self._script_count = 0
+        if self._script_origin is None:
+            return None
+        x, y = self._script_origin
+        self._script_count += 1
+        return (x + (self._script_count - 1) * _SCRIPT_NODE_STEP, y)
+
+    def _add_scripted(self, chunk: ChunkBase) -> None:
+        """add_chunk, at the position _next_node_position picks."""
+        from usd_chunks import chunk_stage  # deferred: chunk_stage imports this module
+
+        with chunk_stage.creating_at(self._next_node_position()):
+            self.add_chunk(chunk)
 
     @property
     def create(self) -> Creator:
@@ -825,7 +867,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             self.set(new, **early)
         finally:
             new._executing = prev
-        self.add_chunk(new)
+        self._add_scripted(new)
         # A menu that gets its choices only once the chunk is in the scene (Edit Target's
         # layer list) drops a value set before that, so set any value that did not stick.
         late = {
@@ -942,7 +984,7 @@ class Creator:
             primary, *extra = entry.create()
             placed = self._scene.place(primary, inputs, name, **params)
             for c in extra:
-                self._scene.add_chunk(c)
+                self._scene._add_scripted(c)
             return placed
 
         create.__name__ = name

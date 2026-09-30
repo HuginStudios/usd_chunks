@@ -4971,6 +4971,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # None = always recook (a relevant chunk was deleted); () = definitely irrelevant, skip.
         self._recook_active_view(None if force_full else ())
 
+    def center_position(self) -> tuple[float, float]:
+        """The USD node position that puts a default-size node in the middle of the view."""
+        center = self.mapToScene(self.viewport().rect().center())
+        w, h = chunk_graph.DEFAULT_NODE_SIZE
+        # Node positions are the top-left corner, and USD is Y-up where the canvas is Y-down.
+        return (center.x() - w / 2, -(center.y() - h / 2))
+
     def _graph_context(self) -> core.ChunkBase | None:
         graph_scene = self.scene()
         return graph_scene._built_context if isinstance(graph_scene, ChunkGraphScene) else None

@@ -7,7 +7,7 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from pxr import Tf
 
 from usd_chunks import chunk, chunk_notice, chunk_registry
-from usd_chunks import chunk_core
+from usd_chunks import chunk_core, chunk_scene
 from usd_chunks.chunk_flags import ChunkFlags
 
 from usd_chunks import chunk_stage
@@ -621,6 +621,15 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         )
         disconnect_when_destroyed(self, (self._chunk_loaded_listener, self._chunk_deleted_listener))
         self.build()
+
+        # Nodes a script makes start at the center of the graph shown here. Weak, so a
+        # closed docker does not stay alive through the hook.
+        graph_center = weakref.WeakMethod(self._graph_center)
+        chunk_scene.graph_center_hook = lambda: (m := graph_center()) and m()
+
+    def _graph_center(self) -> tuple[float, float] | None:
+        view = self.tab_widget.get_current_graph_view()
+        return view.center_position() if view is not None else None
 
     def _loaded_module_callback(self, notice: Tf.Notice, sender: chunk.Chunk):
         """Called whenever CHUNK_LOADED notice was received - will in turn add a new chunk widget
