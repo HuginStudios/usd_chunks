@@ -819,6 +819,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         finally:
             new._executing = prev
         self.add_chunk(new)
+        # A menu that gets its choices only once the chunk is in the scene (Edit Target's
+        # layer list) drops a value set before that, so set any value that did not stick.
+        lost = {k: v for k, v in values.items() if new.get_param(k).value != v}
+        self.set(new, **lost)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
