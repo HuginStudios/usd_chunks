@@ -30,12 +30,10 @@ import contextlib
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk_naming, chunk_registry, chunk_scene, chunk_scheduler
+from usd_chunks import chunk_naming, chunk_registry, chunk_scene
 from usd_chunks.chunk_stage import (
     ChunkLayerManager,
     ChunkStageSync,
-    commit_order_from_stage,
-    export_chunks,
     initialize as chunk_stage_init,
 )
 
@@ -144,21 +142,6 @@ class Scene(chunk_scene.SceneSender):
     def __exit__(self, *exc) -> None:
         # Unlike a host's scene, this one is the script's own, so the block ends it.
         self.close()
-
-    def commit(self) -> None:
-        """Run every chunk's commit hook -- the ones that write files, like Export USD."""
-        chunk_scheduler.commit_all(
-            self.get_chunks(),
-            order=lambda cs: commit_order_from_stage(cs, self._stage),
-        )
-
-    def save(self, path: str) -> None:
-        """Write the network itself -- Chunk prims and wires -- so it reopens as a graph."""
-        export_chunks(self, path)
-
-    def export(self, path: str) -> None:
-        """Write the result as plain USD, with the Chunk prims stripped out."""
-        flatten_without_chunks(self._stage).Export(path)
 
     def close(self) -> None:
         """Delete the chunks and reset the layer manager, ready for the next scene.
