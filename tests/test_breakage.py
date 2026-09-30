@@ -602,29 +602,10 @@ def test_emit_writes_a_stream_onto_the_instancer(scene):
 
 @needs_mujoco
 @needs_manifold
-def test_an_identical_setup_loads_its_bake_from_the_cache_file(qapp, tmp_path, monkeypatch):
-    """Like a File Cache node: the bake is tagged with a digest of everything that made it,
-    and the same setup -- after a reload, or a change undone -- is read back, not re-run."""
-    stage = Usd.Stage.CreateNew(str(tmp_path / "shot.usda"))
-    UsdGeom.SetStageUpAxis(stage, "Y")
-
-    class _StageScene(_DummyScene):
-        def get_stage(self):
-            return stage
-
-    s = _StageScene()
-    reg = chunk_registry.ChunkRegistry()
-    reg.initialize(s, "pytest")
-    chunk_registry.ChunkLayerManager().initialize(stage)
-    _chunk_usd_init(stage, s)
-
-    def mk(key):
-        mod = reg.get_chunk_module(key)
-        made = mod.create() if mod.loaded else mod.load()
-        for c in made:
-            s.add_chunk(c)
-        return made[0]
-
+def test_an_identical_setup_reads_its_bake_back_from_the_cook_cache(scene, monkeypatch):
+    """Like a File Cache node: the bake is keyed on everything that made it, and the same
+    setup -- a change undone, or the bake lost -- is read back, not run again."""
+    qapp, stage, mk = scene
     _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (300.0, 4.0, 300.0))
     fr.author(stage, Sdf.Path("/Rocks"), _rock_trees(count=1, generations=1, at=(0.0, 20.0, 0.0)),
               uv_scale=0.05)
@@ -634,29 +615,64 @@ def test_an_identical_setup_loads_its_bake_from_the_cache_file(qapp, tmp_path, m
     solver.get_param("frame_count").value = 12
     solver.get_param("substeps").value = 4
     rbd._run(solver, None, None)
-    cache = tmp_path / "cache" / f"shot_{solver.name}.usdc"
-    assert cache.is_file() and "cached to" in solver.get_param("readout").value
+    assert list(cook_cache.cache_dir().glob("*.usdc")), "the bake went into the cook cache"
+    readout = solver.get_param("readout").value
 
-    # Reopened: no bake in the layer, no memory of one -- only the file.
+    # The bake gone from the layer and from memory: only the cook cache has it.
     solver.get_edit_context().Clear()
     solver._rbd_bake_key = None
     mod = rbd._breakage()
 
     def no_sim(*a, **k):
-        raise AssertionError("simulated although an identical bake was on disk")
+        raise AssertionError("simulated although an identical bake was cached")
 
     monkeypatch.setattr(mod, "dispatch", no_sim)
     rbd._run(solver, None, None)
-    assert "loaded from cache" in solver.get_param("readout").value
+    assert solver.get_param("readout").value == readout + "\nread back from the cook cache"
     inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Rocks"))
     assert inst.GetPositionsAttr().GetNumTimeSamples() == 12
 
-    # A real change is a different digest: it simulates.
+    # A real change is a different key: it simulates.
     calls = []
     monkeypatch.setattr(mod, "dispatch", lambda *a, **k: calls.append(1))
     solver.get_param("strength").value = 11.0
     rbd._run(solver, None, None)
     assert calls
+
+    # Cache Result unticked: nothing is read back.
+    calls.clear()
+    solver.get_param("strength").value = 10.0
+    solver._rbd_bake_key = None
+    solver.get_param(cook_cache.TOGGLE).value = False
+    rbd._run(solver, None, None)
+    assert calls
+
+
+@needs_mujoco
+@needs_manifold
+def test_a_reopened_scene_comes_back_simulated(qapp, tmp_path, monkeypatch):
+    # Inline, as under test: the "script" host would otherwise bake on a worker thread.
+    monkeypatch.setattr(rbd._breakage(), "in_background", lambda: False)
+    path = str(tmp_path / "shot.usda")
+    with Scene() as scene:
+        frac = scene.create.fracture(source=fr.SOURCE_ROCKS, count=1, generations=1)
+        solver = scene.create.rbd_solver(frac, prim_path="/Fractured", frame_count=12, substeps=4)
+        rbd._run(solver, None, None)
+        assert "not simulated" not in solver.get_param("readout").value
+        scene.save(path)
+
+    mod = rbd._breakage()
+
+    def no_sim(*a, **k):
+        raise AssertionError("simulated on reopen although the bake was cached")
+
+    monkeypatch.setattr(mod, "dispatch", no_sim)
+    with Scene(Usd.Stage.Open(path)) as scene:
+        stage = scene.get_stage()
+        solver = next(c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "rbd_solver")
+        assert "read back from the cook cache" in solver.get_param("readout").value
+        inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured"))
+        assert inst.GetPositionsAttr().GetNumTimeSamples() == 12
 
 
 @needs_manifold

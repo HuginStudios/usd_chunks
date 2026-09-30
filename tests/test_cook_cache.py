@@ -89,6 +89,31 @@ def test_the_same_inputs_are_read_back_instead_of_cooked():
         assert c.get_param("readout").value == "size 1.0"
 
 
+def test_a_result_stored_outside_a_cook_is_read_back_by_the_next_one():
+    """A bake from a button: stored under the entry taken when it started, and a later
+    change to the params does not relabel it."""
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _cached_module(cooks, cache_key=lambda node: "baked"))
+        c.get_param("size").value = 5.0
+        entry = cook_cache.lookup(c)
+        c.get_param("size").value = 6.0  # changed while the "bake" ran
+
+        baked = Sdf.Layer.CreateAnonymous(".usda")
+        prim = Sdf.CreatePrimInLayer(baked, "/Out")
+        prim.specifier = Sdf.SpecifierDef
+        Sdf.AttributeSpec(prim, "size", Sdf.ValueTypeNames.Double).default = 50.0
+        c.get_param("readout").value = "baked"
+        entry.store(c, baked)
+        count = len(cooks)
+
+        c.get_param("size").value = 5.0
+
+        assert len(cooks) == count, "read back, not cooked"
+        assert _out_size(scene) == 50.0
+        assert c.get_param("readout").value == "baked"
+
+
 def test_a_changed_param_cooks_again():
     cooks: list = []
     with Scene() as scene:

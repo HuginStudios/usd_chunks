@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_stage
 
@@ -3029,75 +3029,23 @@ def _bake_key(*parts) -> str:
     return h.hexdigest()
 
 
-def _cache_file(_chunk, stage) -> str:
-    """Where this solver's bake is kept on disk: the Cache File param, or -- when that is
-    empty -- ``cache/<scene>_<chunk>.usdc`` beside the scene. None for an unsaved scene."""
-    explicit = _chunk.get_param("cache_file", chunk.is_param_t(str)).value.strip()
-    if explicit:
-        return explicit
-    root = stage.GetRootLayer().realPath if stage else ""
-    if not root:
-        return ""
-    scene = Path(root)
-    return str(scene.parent / "cache" / f"{scene.stem}_{_chunk.name}.usdc")
+def cache_key(node) -> str | None:
+    """What the cook cache keys a breakable bake on, beyond the params: the bake's inputs.
 
-
-#: What a bake is made from, in groups -- a cache that does not match says which ones moved.
-_BAKE_PARTS = {
-    "world": ("statics", "belts", "drivers"),
-    "bodies": ("starts",),
-    "pieces": ("pieces",),
-    "settings": ("up_idx", "gravity", "fps", "frames", "substeps", "iterations", "friction", "restitution",
-                 "density", "lin_damping", "ang_damping", "floor_drop", "breakage", "seed"),
-}
-
-
-def _bake_parts(job, proto_index, target_path, start_frame, spins) -> dict:
-    parts = {name: _bake_key(*(job.get(k) for k in keys)) for name, keys in _BAKE_PARTS.items()}
-    parts["target"] = _bake_key(proto_index, target_path, start_frame, spins)
-    return parts
-
-
-def _load_cached_bake(_chunk, stage, layer, key: str, parts: dict | None = None):
-    """Load the bake from disk if it was made from exactly this input.
-
-    Returns (file, why-not): the file on a hit; on a miss, "" and -- when there is a cache
-    that simply is not for this input -- which groups of inputs differ from it, so the
-    readout can say what made it out of date instead of silently ignoring it.
+    None -- no automatic caching -- unless _cache_entry is asking. A bake is made by Run (or
+    a headless cook) and stored by _run_breakable itself, and working out its inputs costs a
+    second or two, too much for every cook.
     """
-    path = _cache_file(_chunk, stage)
-    if not path or not Path(path).is_file():
-        return "", ""
-    try:
-        cached = Sdf.Layer.OpenAsAnonymous(path)
-    except Exception:  # noqa: BLE001 - an unreadable cache is a miss, not an error
-        return "", "the cache file could not be read"
-    data = cached.customLayerData if cached else {}
-    if data.get("rbd:bakeKey") != key:
-        old = data.get("rbd:bakeParts") or {}
-        changed = [name for name, digest in (parts or {}).items() if old.get(name) != digest]
-        return "", f"the cache on disk was made from different {', '.join(changed) or 'input'}"
-    layer.TransferContent(cached)
-    return path, ""
+    return getattr(node, "_rbd_input_key", None)
 
 
-def _save_bake(_chunk, stage, layer, key: str, parts: dict | None = None) -> str:
-    path = _cache_file(_chunk, stage)
-    if not path:
-        return ""
+def _cache_entry(node, key: str):
+    """The cook cache's entry for a bake made from input key, or None when caching is off."""
+    node._rbd_input_key = key
     try:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        out = Sdf.Layer.CreateAnonymous(".usdc")
-        out.TransferContent(layer)
-        data = dict(out.customLayerData)
-        data["rbd:bakeKey"] = key
-        data["rbd:bakeParts"] = dict(parts or {})
-        out.customLayerData = data
-        out.Export(path)
-        return path
-    except Exception as e:  # noqa: BLE001 - a failed cache write loses no work
-        logger.warning("RBD Solver: could not write the bake cache %s: %s", path, e)
-        return ""
+        return cook_cache.lookup(node)
+    finally:
+        node._rbd_input_key = None
 
 
 def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_value, forces) -> bool:
@@ -3230,31 +3178,32 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         except Exception:  # noqa: BLE001 - a timeline refresh is a courtesy
             pass
         _chunk._rbd_bake_key = key
-        saved = _save_bake(_chunk, stage, layer, key, parts)
-        _report(_chunk, brk.summary(result) + (f" · cached to {Path(saved).name}" if saved else "") + note)
+        _report(_chunk, brk.summary(result) + note)
+        if entry is not None:
+            entry.store(_chunk, layer)
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
     # Nothing that shapes the bake changed: keep it. A bake made from exactly this input
-    # before -- this session or an earlier one -- comes back from disk instead of being
-    # simulated again, the way a File Cache node would.
-    parts = _bake_parts(job, proto_index, str(target_path), start_frame, spins)
-    key = _bake_key(parts)
+    # before -- this session or an earlier one -- comes back from the cook cache instead of
+    # being simulated again, the way a File Cache node would.
+    key = _bake_key(job, proto_index, str(target_path), start_frame, spins)
     if key == getattr(_chunk, "_rbd_bake_key", None) and layer.GetPrimAtPath(target_path):
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
         return True
-    loaded, why_not = _load_cached_bake(_chunk, stage, layer, key, parts)
-    if loaded:
+    # Taken now, not when the bake lands: a param changed while it runs must not relabel it.
+    entry = _cache_entry(_chunk, key)
+    if entry is not None and entry.restore(_chunk, layer):
         _chunk._rbd_bake_key = key
         _promote_bake_layer(layer, _chunk)
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
             stage.SetEndTimeCode(start_frame + frame_count - 1)
-        _report(_chunk, f"loaded from cache: {Path(loaded).name}" + note)
+        _report(_chunk, _chunk.get_param("readout").value + "\nread back from the cook cache")
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
         return True
     if getattr(_chunk, "_rbd_cache_only", False):
         _chunk.set_state(chunk.ChunkFlags.State.STALE)
-        _report(_chunk, "not simulated -- press Run Simulation" + (f"\n({why_not})" if why_not else ""))
+        _report(_chunk, "not simulated -- press Run Simulation")
         return True
 
     def live(partial):
@@ -3288,7 +3237,7 @@ _STALE_IGNORE_PARAMS = {
     "clear_collision",
     "cancel_sim",
     "readout",
-    "cache_file",
+    cook_cache.TOGGLE,
 }
 
 
@@ -3383,8 +3332,8 @@ def execute(node) -> None:
     """Bake on cook -- headless; interactively, only fetch a cached bake.
 
     Interactively a bake is expensive, so it waits for Run or Auto Simulate -- but the first
-    cook of a session (opening the scene) loads a bake from the cache file if one was made
-    from exactly this input, so a saved scene reopens simulated. Later cooks leave the bake
+    cook of a session (opening the scene) reads a bake back from the cook cache if one was
+    made from exactly this input, so a scene reopens simulated. Later cooks leave the bake
     alone: gathering the inputs to check costs a second or two, too much for every tweak.
     Under ``usdchunks run`` or a sweep nobody can press anything, and a network that cooked
     without baking renders a motionless scene that looks entirely plausible -- so it bakes,
@@ -3793,12 +3742,6 @@ def main() -> chunk.Chunk:
                                     "cannot shatter a body to gravel within a single step."))
     brk_grp.add_param(chunk.Spinbox("break_kick", "Break Kick", default_value=10.0,
                                     tooltip="Speed the pieces spring apart with, scene units/s."))
-    brk_grp.add_param(chunk.LineEdit(
-        "cache_file", "Cache File", flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="Where a breakable bake is kept on disk. Empty = cache/<scene>_<this chunk>.usdc beside "
-        "the saved scene. A bake is tagged with a digest of everything that made it; an identical "
-        "setup -- after a reload, or a change undone -- loads from here instead of simulating.",
-    ))
     chunk_api.add_param(brk_grp)
 
 
@@ -3878,4 +3821,5 @@ def config() -> chunk.DefaultConfig:
         # scipy is deliberately absent: a genuine optional, imported inside the functions
         # that want it, with a documented fallback when it is missing.
         requirements=["mujoco>=3.1,<4", "numpy>=2,<3"],
+        cache_cook=True,
     )
