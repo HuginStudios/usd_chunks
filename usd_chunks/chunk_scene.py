@@ -812,13 +812,22 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # prim, which does not exist until the chunk is in the scene.
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
+        # A param the chunk only builds once it is in the scene (Light's) waits until then.
+        early = {k: v for k, v in values.items() if new.get_param(k) is not None}
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
-            self.set(new, **values)
+            self.set(new, **early)
         finally:
             new._executing = prev
         self.add_chunk(new)
+        # A menu that gets its choices only once the chunk is in the scene (Edit Target's
+        # layer list) drops a value set before that, so set any value that did not stick.
+        late = {
+            k: v for k, v in values.items()
+            if k not in early or new.get_param(k).value != v
+        }
+        self.set(new, **late)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
