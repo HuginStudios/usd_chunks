@@ -1763,6 +1763,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        cache_cook=True,
         description="""
         Swedish House — builds a Falu-red cottage from a box.
 
