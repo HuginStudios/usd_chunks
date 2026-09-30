@@ -449,10 +449,12 @@ def test_fracture_does_not_recut_when_nothing_changed(scene, monkeypatch):
     frac = mk("fracture")
     frac.get_param("source_prims").value = "/Torus"
     frac.get_param("generations").value = 1
-    frac.execute()
     # Chunk modules load twice under different names; patch the copy execute() runs in.
-    mod = frac._module
-    mod._CACHE.clear()  # an earlier test may have cut this very torus
+    mod = frac.get_chunk_module().module
+    # Emptied before the first cook: an earlier test may have cut this very torus. A cook
+    # starts from a cleared layer, so the recooks below are free only through this cache.
+    mod._CACHE.clear()
+    frac.execute()
     real = mod.build_trees
     calls = []
     monkeypatch.setattr(mod, "build_trees", lambda *a, **k: calls.append(1) or real(*a, **k))
@@ -665,7 +667,7 @@ def test_fracture_reloads_its_pieces_from_the_cache_file(qapp, tmp_path, monkeyp
     assert (tmp_path / "cache" / f"shot_{frac.name}.usdc").is_file()
 
     # Reopened: nothing in memory, nothing in the layer -- only the file.
-    code = frac._module
+    code = frac.get_chunk_module().module
     code._CACHE.clear()
     frac._fracture_key = None
     frac.get_edit_context().Clear()
@@ -706,7 +708,7 @@ def test_adding_a_chunk_downstream_recooks_nothing_upstream(scene, monkeypatch):
     assert not solver.has_state(chunk.ChunkFlags.State.STALE)
 
     cut, sims = [], []
-    monkeypatch.setattr(frac._module, "build_trees", lambda *a, **k: cut.append(1) or ([], [], []))
+    monkeypatch.setattr(frac.get_chunk_module().module, "build_trees", lambda *a, **k: cut.append(1) or ([], [], []))
     monkeypatch.setattr(rbd._breakage(), "dispatch", lambda *a, **k: sims.append(1))
     after = mk("transform")
     after.add_dependency(solver)

@@ -1151,6 +1151,7 @@ def _write_prim_results(
             xf_attr.Set(_local(all_mats[0]) * inv_upstream)
             for frame_idx, mat in enumerate(all_mats):
                 xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
+    _keep_bake(node, layer)
     if settle_only:
         logger.debug("Settled %s", prim.GetPath())
         return
@@ -1821,12 +1822,26 @@ def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim
 
 
 def _clear_chunk_bake(owner) -> None:
+    if (node := owner.get_chunk()) is not None:
+        node._rbd_kept_bake = None  # or the next cook would put it back
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
 
 
-def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
+def _keep_bake(node, layer: Sdf.Layer | None) -> None:
+    """Keep a copy of the bake in layer on node, for execute() to put back.
+
+    The framework clears this chunk's layer before every cook, and a bake is too expensive
+    to redo on each one. Kept on the chunk, so it goes when the chunk does.
+    """
+    if node is not None and layer is not None:
+        kept = Sdf.Layer.CreateAnonymous("rbd_bake")
+        kept.TransferContent(layer)
+        node._rbd_kept_bake = kept
+
+
+def _promote_bake_layer(layer: Sdf.Layer | None, node=None) -> None:
     """Make the bake layer the strongest chunk layer for its target prim.
 
     Chunk layers are ordered so the earlier-added sibling wins. When the solver
@@ -1834,7 +1849,10 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
     ScatterPoints), that source chunk's static values would otherwise override the
     baked time samples. Move the bake layer -- and its parent graph layer -- to the
     front of their containers so the simulation wins.
+
+    With node, also keeps a copy of the bake on it (_keep_bake).
     """
+    _keep_bake(node, layer)
     lreg = chunk.get_layer_manager()
     if not lreg or not layer:
         return
@@ -2756,7 +2774,8 @@ def _run(owner, notice, sender) -> None:
     if not stage:
         return
 
-    prim_paths = _chunk.get_param("prim_path").resolve_paths()
+    target = _chunk.get_param("prim_path")
+    prim_paths = target.resolve_paths() if target is not None else []
     if not prim_paths:
         logger.warning("No target prim selected")
         return
@@ -2950,7 +2969,7 @@ def _run(owner, notice, sender) -> None:
 
     # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
     # the target prim, otherwise its static values win and playback shows nothing.
-    _promote_bake_layer(layer)
+    _promote_bake_layer(layer, _chunk)
 
     try:
         scene = chunk_registry.ChunkRegistry().scene
@@ -3203,7 +3222,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
             stage.SetEndTimeCode(start_frame + frame_count - 1)
-        _promote_bake_layer(layer)
+        _promote_bake_layer(layer, _chunk)
         try:
             host = chunk_registry.ChunkRegistry().scene
             if host is not None:
@@ -3226,7 +3245,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     loaded, why_not = _load_cached_bake(_chunk, stage, layer, key, parts)
     if loaded:
         _chunk._rbd_bake_key = key
-        _promote_bake_layer(layer)
+        _promote_bake_layer(layer, _chunk)
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
             stage.SetEndTimeCode(start_frame + frame_count - 1)
@@ -3247,7 +3266,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
             lreg.clear_layer(layer.identifier)
         with Usd.EditContext(stage, layer):
             brk.author_result(stage, stage.GetPrimAtPath(target_path), partial, proto_index, start_frame, spins)
-        _promote_bake_layer(layer)
+        _promote_bake_layer(layer, _chunk)
 
     brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text), live=live)
     return True
@@ -3375,6 +3394,12 @@ def execute(node) -> None:
         _run(node, None, None)
         return
     if getattr(node, "_rbd_cache_checked", False):
+        # The framework cleared this layer for the cook; put the last bake back. Baking
+        # again would cost a full simulation on every tweak upstream.
+        kept = getattr(node, "_rbd_kept_bake", None)
+        if kept is not None and (layer := node.get_edit_context()) is not None:
+            layer.TransferContent(kept)
+            _promote_bake_layer(layer)
         return
     node._rbd_cache_checked = True
     node._rbd_cache_only = True

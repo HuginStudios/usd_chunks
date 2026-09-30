@@ -13,7 +13,7 @@ from pxr import Usd
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
-from usd_chunks.plugins.chunk_qt_widgets import ChunkLabelWidget
+from usd_chunks.frontends.qt.widgets import ChunkLabelWidget
 
 
 class _Scene(SceneSender):
