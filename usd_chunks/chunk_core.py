@@ -2133,7 +2133,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if context:
             return context.get_param(f"{node_name}.{param_name}")
         try:
-            scene = chunk_registry.ChunkRegistry().get_scene()
+            scene = chunk_registry.ChunkRegistry().scene
             target = scene.get_chunk(node_name)
             return target.get_param(param_name) if target else None
         except Exception:
