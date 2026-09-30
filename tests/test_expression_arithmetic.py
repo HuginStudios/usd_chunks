@@ -137,6 +137,16 @@ def test_single_ref_still_returns_the_typed_value(scene) -> None:
     assert p.value == pytest.approx(20.0)
 
 
+def test_ref_resolves_through_the_scene_outside_a_context(scene) -> None:
+    """A chunk with no context finds the chunk a ref names through the registry's scene."""
+    a, _ = _two_sources(scene)
+    loose = _mk("loose")  # never added to the scene, so it has no context
+    loose.add_param(chunk.Slider("r", default_value=0.0))
+    assert loose.get_context() is None
+    loose.get_param("r").value = "@chunkA.a@"
+    assert loose.get_param("r").value == 20.0
+
+
 def test_string_param_still_interpolates(scene) -> None:
     """Path building is the reason multi-ref interpolation exists -- don't compute it."""
     a = _mk("chunkA")

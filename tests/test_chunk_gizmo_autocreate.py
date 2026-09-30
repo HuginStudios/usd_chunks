@@ -53,6 +53,7 @@ class _StubModule:
     def __init__(self, factory):
         self._factory = factory
         self.loaded = True
+        self.source_hash = None
         self.creates = 0
         # Registered under "transform", so this is where the chunks it creates find their
         # hooks (ChunkBase.get_chunk_module). Without it the chunk has no module to run:

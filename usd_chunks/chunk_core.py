@@ -670,6 +670,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
         self.__hashable = HashVal()
         self.__param_ref = weakref.ref(param, self._param_died)
+        self._expression_connections: list = []
 
         if isinstance(param, ChunkParamBase):
             self._value = param.value
@@ -699,6 +700,18 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     def _ref_child_added(self, notice, sender):
         if isinstance(notice.data, ChunkParamBase):
             self._children.add(ProxyParam(notice.data))
+
+    def _on_row_ref_changed(self, notice=None, sender=None):
+        """A param this row's expression reads changed: announce the row's new value."""
+        self.__value_sender.old_value = self._value
+        self.__value_sender.execute()
+
+    def _resolved_value(self) -> Any:
+        """The row's value, with an expression resolved the way the template resolves its own."""
+        raw = self._value
+        if isinstance(raw, str) and chunk_utils.has_expression(raw):
+            return self._param_ref._resolve_expression_string(raw)
+        return raw
 
     def _ref_child_removed(self, notice, sender):
         if isinstance(notice.data, ChunkCommon):
@@ -810,10 +823,12 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
     @override
     def __getattribute__(self, name: str) -> Any:
-        if name in ("value", "raw_value"):
-            # Return the value stored on the proxy so widgets display the proxy's own value,
-            # not the template's default.
+        if name == "raw_value":
             return super().__getattribute__("_value")
+        if name == "value":
+            # The proxy's own value, not the template's default -- with an expression
+            # (a wire from another chunk) resolved, as the template's own value is.
+            return super().__getattribute__("_resolved_value")()
         if name == "iter_hierarchy":
             return super().__getattribute__("_iter_hierarchy")
         if name == "get_my_params":
@@ -829,7 +844,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name == "request_delete":
             return super().__getattribute__("request_delete")
 
-        if name in ["_dag_node", "_callbacks", "_blocked"]:
+        if name in ["_dag_node", "_callbacks", "_blocked", "_expression_connections"]:
             return super().__getattribute__(name)
 
         if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
@@ -854,7 +869,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
             return super().__setattr__(name, value)
 
-        if name in ["_dag_node", "_callbacks", "_blocked"]:
+        if name in ["_dag_node", "_callbacks", "_blocked", "_expression_connections"]:
             return super().__setattr__(name, value)
 
         if name == "children":
@@ -866,6 +881,9 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # of through the original param ownership channel.
             self.__value_sender.old_value = self._value
             self._value = value
+            self._expression_connections = self._param_ref._listen_to_expression_refs(
+                value, self._on_row_ref_changed
+            )
             # A list-group row (e.g. Sublayer's imports:sublayer_path) is a ProxyParam, so
             # _load_wire_inputs' bulk restore reaches this setattr directly -- not through
             # ChunkBase.value_changed, the only place chunk_notice._loading_stage is normally
@@ -2115,7 +2133,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if context:
             return context.get_param(f"{node_name}.{param_name}")
         try:
-            scene = chunk_registry.ChunkRegistry().get_scene()
+            scene = chunk_registry.ChunkRegistry().scene
             target = scene.get_chunk(node_name)
             return target.get_param(param_name) if target else None
         except Exception:
@@ -2497,29 +2515,43 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                         "literal here. Branch on it with a Stage Expression Switch instead.",
                         self.name, value,
                     )
-            self._expression_connections = []
-            if isinstance(value, str) and chunk_utils.has_expression(value):
-                for node_name, param_name in chunk_utils.parse_expression(value):
-                    ref = self._resolve_expression_ref(node_name, param_name)
-                    if ref is None:
-                        # During a load this is the expected first outcome, not a fault:
-                        # values are restored before their chunk is registered, so a
-                        # sibling ref cannot resolve yet. load_chunks retries once the
-                        # batch is registered and reports whatever is still dangling
-                        # then, so warning here would only ever be a false alarm.
-                        if chunk_notice._loading_stage is not None:
-                            logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
-                        else:
-                            logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
-                        continue
-                    conn = chunk_notice.NoticeConnection(
-                        method=self._on_ref_changed,
-                        alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
-                        sender=ref.get_attribute_sender("value"),
-                    )
-                    self._expression_connections.append(conn)
+            self._expression_connections = self._listen_to_expression_refs(value, self._on_ref_changed)
 
         return super().value_changed(attrname, old_value, value)
+
+    def _listen_to_expression_refs(self, value: Any, method) -> list:
+        """Connect method to every param an expression value names.
+
+        Args:
+            value: The value, expression or not.
+            method: Called when a named param's value changes.
+
+        Returns:
+            The NoticeConnections. Keep them alive; dropping them stops the listening.
+        """
+        connections = []
+        if not (isinstance(value, str) and chunk_utils.has_expression(value)):
+            return connections
+        for node_name, param_name in chunk_utils.parse_expression(value):
+            ref = self._resolve_expression_ref(node_name, param_name)
+            if ref is None:
+                # During a load this is the expected first outcome, not a fault:
+                # values are restored before their chunk is registered, so a
+                # sibling ref cannot resolve yet. load_chunks retries once the
+                # batch is registered and reports whatever is still dangling
+                # then, so warning here would only ever be a false alarm.
+                if chunk_notice._loading_stage is not None:
+                    logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
+                else:
+                    logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
+                continue
+            conn = chunk_notice.NoticeConnection(
+                method=method,
+                alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
+                sender=ref.get_attribute_sender("value"),
+            )
+            connections.append(conn)
+        return connections
 
     def _on_ref_changed(self, notice=None, sender=None):
         if self._resolving_ref:
@@ -2637,7 +2669,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         tokens = chunk_utils.parse_expression(expr)
         if len(tokens) == 1 and expr.strip() == f"@{tokens[0][0]}.{tokens[0][1]}@":
             ref = self._resolve_expression_ref(*tokens[0])
-            return ref.value if ref is not None else self.__dict__.get("default_value")
+            return self._as_own_number(ref.value) if ref is not None else self.__dict__.get("default_value")
         result = expr
         for node_name, param_name in tokens:
             ref = self._resolve_expression_ref(node_name, param_name)
@@ -2653,9 +2685,22 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         # unevaluable still falls through to the substituted text rather than raising.
         if self._expression_is_numeric():
             if (number := chunk_utils.eval_arithmetic(result)) is not None:
-                types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
-                return int(number) if types and types[0] is int else float(number)
+                return self._as_own_number(number)
         return result
+
+    def _as_own_number(self, value: Any) -> Any:
+        """value as this param's number type, so a float param wired to an int reads a float.
+
+        Args:
+            value: What the expression resolved to.
+
+        Returns:
+            The cast number, or value unchanged if either side is not a number.
+        """
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not self._expression_is_numeric():
+            return value
+        types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
+        return int(value) if types[0] is int else float(value)
 
     def _expression_is_numeric(self) -> bool:
         """True if this param holds a number, so an expression on it should be computed."""

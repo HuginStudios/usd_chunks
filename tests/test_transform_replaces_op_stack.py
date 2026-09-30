@@ -44,6 +44,7 @@ class _Scene(SceneSender):
 
 class _StubModule:
     loaded = True
+    source_hash = None
     # Registered under "transform", so this is where the chunks it creates find their hooks
     # (ChunkBase.get_chunk_module): the real transform module's.
     module = transform_mod

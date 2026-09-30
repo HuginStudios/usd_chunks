@@ -25,6 +25,8 @@ from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as init_chunk_usd, get_chunk_prim_path
 import usd_chunks.chunk_stage as chunk_stage
 
+from chunk_stubs import attach_stub_module
+
 
 class _DummyScene(SceneSender):
     def __init__(self):
@@ -368,17 +370,18 @@ class TestFollowUpstreamUsesExecEdgesOnly:
     def _pair(self, scene):
         """A Layer stand-in and an Edit Target stand-in, deliberately NOT chained.
 
-        Bare chunks rather than the real modules: this pins the topology question, and a
-        stand-in keeps unrelated notices from re-running module code.
+        Stub modules rather than the real ones: this pins the topology question, and a
+        stub keeps unrelated notices from re-running module code. Registered, because a
+        chunk prim whose type no module backs is a placeholder, and wires run through it.
         """
         cl = chunk.Chunk("cl")
-        cl._config = ChunkConfig(module="cl_standin")
+        attach_stub_module(cl)
         cl.add_param(chunk.LineEdit("_new_layer_id", default_value=""))
         cl.add_param(chunk.LineEdit("layer_name", default_value="L"))
         scene.add_chunk(cl)
 
         et = chunk.Chunk("et")
-        et._config = ChunkConfig(module="et_standin")
+        attach_stub_module(et)
         et.add_param(chunk.LineEdit("probe", default_value=""))
         scene.add_chunk(et)
         return cl, et

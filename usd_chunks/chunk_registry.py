@@ -152,6 +152,9 @@ class ChunkEnvVar(Generic[_T]):
 
 
 USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
+
+# Said once per process: each new Scene registers the directories again.
+_warned_no_chunk_dirs = False
 # A chunk module is a Python file. This is the only file extension the framework loads.
 PY_MODULE_EXT = ".py"
 
@@ -1402,6 +1405,14 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             The registered directories, in precedence order.
         """
         dirs = list(USD_CHUNK_DIRS())
+        global _warned_no_chunk_dirs
+        if not dirs and not _warned_no_chunk_dirs:
+            _warned_no_chunk_dirs = True
+            logger.warning(
+                "Set USD_CHUNK_DIRS! It is empty, so your chunk folders are not loaded. "
+                "Set it to your chunk folders, like C:\\path\\to\\usd_chunks\\chunks. "
+                "See docs/install.md#environment-variables."
+            )
         # Append the marketplace install dir last (lowest precedence). Skip it
         # when it doesn't exist yet (nothing installed) to avoid a spurious
         # "directory not found" warning on a clean machine.
