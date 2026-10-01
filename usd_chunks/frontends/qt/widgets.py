@@ -641,7 +641,23 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
         """Show text, wrapping a long path too: Qt only breaks a line at whitespace, so a
         zero-width space after each separator gives it somewhere to break."""
         self._shown = "" if text is None else str(text)
-        return super().setText(self._shown.replace("\\", "\\​").replace("/", "/​"))
+        result = super().setText(self._shown.replace("\\", "\\​").replace("/", "/​"))
+        self._fit_height()
+        return result
+
+    def _fit_height(self):
+        """Ask for the height the wrapped text needs at this width, as a minimum height.
+
+        Height-for-width alone was not enough: a node graph's panel sits in a graphics proxy
+        whose layouts go by minimum sizes, so the row stayed one height and the text spilled
+        over its neighbours. A minimum height travels up every layout to the panel.
+        """
+        if self.wordWrap() and self.width() > 0:
+            self.setMinimumHeight(self.heightForWidth(self.width()))
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt's name
+        super().resizeEvent(event)
+        self._fit_height()
 
     def set_value(self, value):
         return self.setText("" if value is None else str(value))
