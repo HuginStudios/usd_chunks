@@ -373,14 +373,22 @@ def _file_stat(value: str, root: Sdf.Layer | None):
     return (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
 
 
-@functools.cache
+#: _packages' answers, by module name and requirements.
+_PACKAGES: dict[tuple, tuple] = {}
+
+
 def _packages(module) -> tuple:
     """The module's required packages and their installed versions, sorted.
 
-    Once per module per process, like _code_fingerprint: a package upgraded mid-session is
-    not the one already imported, so it needs a restart anyway.
+    Once per module and requirements list per process, like _code_fingerprint: a package
+    upgraded mid-session is not the one already imported, so it needs a restart anyway.
+    Keyed on the requirements too, so a config() that adds a package mid-session is counted,
+    and on the name rather than the module, so no module object is held for good.
     """
-    return tuple(sorted(module.installed_packages().items()))
+    key = (module.module_name, tuple(module.config.requirements or ()))
+    if key not in _PACKAGES:
+        _PACKAGES[key] = tuple(sorted(module.installed_packages().items()))
+    return _PACKAGES[key]
 
 
 @functools.cache

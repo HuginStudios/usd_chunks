@@ -102,7 +102,24 @@ def test_a_new_version_of_a_required_package_cooks_again(monkeypatch):
         assert len(cooks) == 1, "the same version reads back"
 
         versions["numpy"] = "2.1.0"
-        cook_cache._packages.cache_clear()  # a restart, as after a real upgrade
+        cook_cache._PACKAGES.clear()  # a restart, as after a real upgrade
+        c.cook()
+
+        assert len(cooks) == 2
+
+
+def test_a_package_added_to_the_requirements_mid_session_counts(monkeypatch):
+    """Dan's review on #333: the same module object with new requirements is a new key."""
+    monkeypatch.setattr(chunk_registry, "installed_version", {"numpy": "2.0.0", "scipy": "1.0"}.get)
+    cooks: list = []
+    with Scene() as scene:
+        module = _cached_module(cooks)
+        module.config.requirements = ["numpy>=2"]
+        c = _add(scene, module)
+        assert c.cook() is True
+        assert len(cooks) == 1
+
+        module.config.requirements = ["numpy>=2", "scipy"]
         c.cook()
 
         assert len(cooks) == 2
