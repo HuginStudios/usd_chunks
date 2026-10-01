@@ -241,6 +241,60 @@ def test_an_animated_collider_drags_rather_than_teleports():
 
 @needs_mujoco
 @needs_manifold
+def test_a_body_dropped_from_rest_falls_in_a_metre_scene():
+    """Sleep is judged on speed in scene units: a flat 0.5/s put a rock dropped from rest in a
+    metre scene to sleep in mid-air, where it stayed."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (600.0, 4.0, 600.0))
+    job, _world = _one_rock_job(stage, ["/World"], start=(0.0, 30.0, 0.0))
+    job["gravity"] = -9.81
+    res = brk.simulate(job)
+    assert res["positions"][0, 0, 1] - res["positions"][-1, 0, 1] > 10.0  # ~19.6 in 2 s
+
+
+def _overlap_job(rest):
+    """Two rocks resting on a floor, one inside the other; a third falls onto them."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (600.0, 4.0, 600.0))
+    fr.author(stage, Sdf.Path("/Fractured"), _rock_trees(count=3, generations=1, at=(0.0, 0.0, 0.0)), uv_scale=0.05)
+    frac = brk.read_fracture(stage, stage.GetPrimAtPath("/Fractured"))
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 48, 1, 24.0, 0.0, 3.0)
+    roots = sorted(k for k, p in frac["pieces"].items() if p["generation"] == 0)
+    base = [-float(np.min(frac["pieces"][k]["points"][:, 1])) - 0.05 for k in roots]  # sunk a hair: touching
+    at = [(0.0, base[0], 0.0), (6.0, base[1], 0.0), (3.0, 200.0, 0.0)]
+    starts = [dict(key=k, pos=np.asarray(p), quat=np.array([1.0, 0, 0, 0])) for k, p in zip(roots, at)]
+    job = dict(
+        up_idx=1, gravity=-981.0, fps=24.0, frames=48, substeps=8, friction=0.8, restitution=0.0,
+        density=1.0, statics=world["statics"], belts=world["belts"], drivers=world["drivers"],
+        pieces=frac["pieces"], starts=starts, breakage=dict(strength=0.0), seed=0, rest_until_hit=rest,
+    )
+    return brk.simulate(job)
+
+
+@needs_mujoco
+@needs_manifold
+def test_rest_until_hit_holds_overlapping_bodies_until_something_lands():
+    """A model fractured part by part starts with its parts' hulls inside each other. Left
+    alone they are pushed apart on the first frames; with Rest Until Hit they wait, still,
+    for the falling rock -- and then move."""
+    pushed = _overlap_job(rest=False)
+    held = _overlap_job(rest=True)
+    before = slice(0, 10)  # the third rock is still falling: it lands at ~frame 15
+
+    def moved(res, frames):
+        return np.linalg.norm(res["positions"][frames, :2] - res["positions"][0, :2], axis=2).max()
+
+    assert moved(pushed, before) > 1.0
+    assert moved(held, before) < 1e-3
+    assert held["stats"]["resting"] == 2 and held["stats"]["overlap_groups"] == 1
+    assert moved(held, slice(0, 48)) > 1.0  # woken by the landing
+    assert held["positions"][-1, 2, 1] < 100.0  # and the falling one did fall
+
+
+@needs_mujoco
+@needs_manifold
 def test_a_joint_drive_spins_its_body_and_the_spin_is_baked():
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageUpAxis(stage, "Y")
