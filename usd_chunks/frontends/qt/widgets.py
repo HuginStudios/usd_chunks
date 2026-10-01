@@ -620,6 +620,17 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
     def get_value(self):
         return self._shown
 
+    def setSizePolicy(self, *args):  # noqa: N802 - Qt's name
+        """Keep height-for-width on whatever policy the panel gives this label.
+
+        A container sets every param widget's policy fresh (add_widget), which drops the flag
+        word wrap sets -- and without it the layout never asks how tall the wrapped text is:
+        the first line hid under the button above and the last was cut off.
+        """
+        policy = args[0] if len(args) == 1 else QtWidgets.QSizePolicy(*args)
+        policy.setHeightForWidth(self.wordWrap())
+        return super().setSizePolicy(policy)
+
     def contextMenuEvent(self, event):  # noqa: N802 - Qt's name
         """Right-click Copy: the exact text, without the break points setText adds."""
         menu = QtWidgets.QMenu(self)
