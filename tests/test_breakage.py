@@ -446,6 +446,15 @@ def test_fracture_rig_and_rbd_solver_crush_rock(scene, tmp_path):
     # of 7 pieces.
     assert len(inst.GetProtoIndicesAttr().Get()) == 14
     assert "bodies" in solver.get_param("readout").value
+    # Nothing per instance keeps Emit's count: Storm sizes the instancer by any of them.
+    count = len(inst.GetPositionsAttr().Get(10))
+    for pv in UsdGeom.PrimvarsAPI(inst).GetPrimvars():
+        if pv.GetInterpolation() not in (UsdGeom.Tokens.constant, UsdGeom.Tokens.uniform):
+            value = pv.Get(10)
+            assert value is None or len(value) == count, f"{pv.GetName()} has {len(value)}, not {count}"
+    for attr in (inst.GetVelocitiesAttr(), inst.GetAngularVelocitiesAttr(), inst.GetScalesAttr()):
+        value = attr.Get(10)
+        assert value is None or len(value) == count, f"{attr.GetName()} has {len(value)}, not {count}"
     # The bake's layer must win over the rig's, or the rollers' spin hides under its order.
     order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/CrusherRig/RollerA")).GetXformOpOrderAttr().Get())
     assert "xformOp:orient:rbdSpin" in order
