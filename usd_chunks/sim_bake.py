@@ -45,7 +45,7 @@ import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
-from pxr import Sdf
+from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
 
@@ -401,6 +401,33 @@ def _child(source: str, function: str, job: str, out: str) -> None:
 # ------------------------------------------------------------------------------------------
 # The bake's layer
 # ------------------------------------------------------------------------------------------
+
+_NO_DEFAULT = object()
+
+
+def write_samples(attr: Usd.Attribute, samples, default=_NO_DEFAULT) -> None:
+    """Author many time samples on attr at once, in its stage's edit target layer.
+
+    attr.Set(value, time) once per frame sends one change notice per call, and everything
+    listening -- the framework's scan for new chunks, usdview's prim tree -- runs for each:
+    a breakable bake's live preview spent 3 s a time on 7,000 notices, all on the main thread.
+    Written straight into the layer inside one change block, it is one notice.
+
+    Args:
+        attr: The attribute, already created (Create...Attr) so it has a spec to write into.
+        samples: (time, value) pairs; time a float or Usd.TimeCode.
+        default: Also set the default value, when given.
+    """
+    target = attr.GetStage().GetEditTarget()
+    layer = target.GetLayer()
+    path = target.MapToSpecPath(attr.GetPath())
+    with Sdf.ChangeBlock():
+        for time_code, value in samples:
+            t = time_code.GetValue() if isinstance(time_code, Usd.TimeCode) else float(time_code)
+            layer.SetTimeSample(path, t, value)
+        if default is not _NO_DEFAULT:
+            layer.GetAttributeAtPath(path).default = default
+
 
 
 def promote(layer: Sdf.Layer | None) -> None:
