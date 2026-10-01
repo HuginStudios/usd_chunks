@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from pathlib import Path
 
 import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdShade, Vt
@@ -564,27 +563,17 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
     return trees, problems, sources
 
 
-#: Authored results, keyed on everything that shapes them. Small: re-cooks of the same few
-#: settings are the whole point, and each entry holds a full layer.
-_CACHE: dict[bytes, tuple] = {}
-_CACHE_MAX = 6
-_PARAMS = ("source", "source_prims", "output_path", "generations", "jaggedness", "piece_shape", "bevel",
-           "bevel_detail", "seed", "count", "size",
-           "size_variation", "roughness", "flatness", "detail", "rock_origin", "uv_scale",
-           "outside_material", "inside_material", "preview_generation", "explode")
+def cache_key(node) -> str:
+    """What the cook cache keys a fracture on, beyond the params: the source geometry.
 
-
-def _cache_key(upstream, node) -> bytes:
-    """A digest of every param plus, for meshes, the source geometry as it composes upstream.
-
-    Hashing what is read rather than tracking edits makes it safe: a moved, edited or
-    swapped source is a different digest with no invalidation to get wrong.
+    Hashed as it composes upstream, so a moved, edited or swapped source is a different key
+    with no invalidation to get wrong. Procedural rocks are made from the params alone.
     """
     h = hashlib.blake2b(digest_size=16)
-    for name in _PARAMS:
-        param = node.get_param(name)
-        h.update(f"{name}={getattr(param, 'value', None)!r};".encode())
     if node.get_param("source").value != SOURCE_ROCKS:
+        stage = node.get_stage()
+        scene = node.get_scene()
+        upstream = chunk_stage.get_upstream_stage(stage, scene, node) if scene is not None else stage
         for prim in node.get_param("source_prims").get_prims():
             for p in Usd.PrimRange(upstream.GetPrimAtPath(prim.GetPath())):
                 if not p.IsA(UsdGeom.Mesh):
@@ -600,18 +589,16 @@ def _cache_key(upstream, node) -> bytes:
                 if pv and pv.HasValue():
                     h.update(np.asarray(pv.Get()).tobytes())
                 h.update(np.asarray(UsdGeom.Xformable(p).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).tobytes())
-    return h.digest()
+    return h.hexdigest()
 
 
 def execute(node) -> None:
-    """Rebuild the fracture -- only when something it depends on changed.
+    """Cut the sources and write the pieces.
 
-    A cook reaches this for many reasons that change nothing here: an upstream chunk
-    re-cooking, a wire connected downstream, a reload. Each one used to re-cut and re-write
-    every piece. Now the params and the source geometry are hashed first: the same hash as
-    the last cook does nothing, and one seen before restores its result from the cache.
+    Only runs when the inputs are new: the cook cache (cache_cook, cache_key) reads back a
+    fracture made from the same params and source geometry, this session or an earlier one.
 
-    New results are written to a scratch layer rather than into the live stage -- writing
+    Results are written to a scratch layer rather than into the live stage -- writing
     hundreds of meshes into a composed stage costs three times as much, every edit a
     recomposition -- and then moved into this chunk's layer in one transfer.
     """
@@ -628,101 +615,35 @@ def execute(node) -> None:
     # Read the sources without this chunk's own layer, which hides them.
     scene = node.get_scene()
     upstream = chunk_stage.get_upstream_stage(stage, scene, node) if scene is not None else stage
-    key = _cache_key(upstream, node)
-    if key == getattr(node, "_fracture_key", None) and layer.GetPrimAtPath(out_path):
+    trees, problems, sources = build_trees(upstream, node)
+    if not trees:
+        _report(node, "nothing to fracture -- pick a closed mesh, or use Procedural Rocks")
         return
-    digest = key.hex()
-    cached = _CACHE.get(key) or _load_from_disk(node, stage, digest)
-    if cached is not None:
-        _CACHE[key] = cached
-    if cached is None:
-        trees, problems, sources = build_trees(upstream, node)
-        if not trees:
-            if lreg := chunk.get_layer_manager():
-                lreg.clear_layer(layer.identifier)
-            node._fracture_key = None
-            _report(node, "nothing to fracture -- pick a closed mesh, or use Procedural Rocks")
-            return
-        scratch = Usd.Stage.CreateInMemory()
-        if out_path.GetParentPath() != Sdf.Path.absoluteRootPath:
-            UsdGeom.Xform.Define(scratch, out_path.GetParentPath())
-        count = author(
-            scratch, out_path, trees,
-            uv_scale=node.get_param("uv_scale", is_f).value,
-            preview_generation=max(0, node.get_param("preview_generation", is_i).value),
-            explode=max(0.0, node.get_param("explode", is_f).value),
-            inside_material=node.get_param("inside_material", is_s).value.strip(),
-            outside_material=node.get_param("outside_material", is_s).value.strip(),
-            bevel=max(0.0, node.get_param("bevel", is_f).value),
-            bevel_detail=max(2, node.get_param("bevel_detail", is_i).value),
-        )
-        for p in sources:
-            # The instancer stands in for the source from here on.
-            UsdGeom.Imageable(scratch.OverridePrim(p.GetPath())).MakeInvisible()
-        total = sum(len(t.pieces) for t in trees)
-        smallest = min(p.volume for t in trees for p in t.pieces)
-        largest = max(t.pieces[0].volume for t in trees)
-        text = f"{len(trees)} source{'s' if len(trees) != 1 else ''} · {total} pieces · {count} instances\n" \
-               f"smallest piece {100.0 * smallest / max(largest, 1e-12):.1f}% of the largest source"
-        if problems:
-            text += "\n" + "\n".join(problems)
-        # A layer of our own: the scratch stage's root layer comes back as a weak handle,
-        # which expires with the stage -- a cache hit on it later is a use-after-free.
-        owned = Sdf.Layer.CreateAnonymous(".usda")
-        owned.TransferContent(scratch.GetRootLayer())
-        cached = (owned, text)
-        _CACHE[key] = cached
-        _save_to_disk(node, stage, owned, text, digest)
-        while len(_CACHE) > _CACHE_MAX:
-            _CACHE.pop(next(iter(_CACHE)))
-    layer.TransferContent(cached[0])
-    node._fracture_key = key
-    _report(node, cached[1])
-
-
-def _cache_file(node, stage) -> str:
-    """Where this chunk's result is kept on disk: the Cache File param, or -- when empty --
-    ``cache/<scene>_<chunk>.usdc`` beside the saved scene. "" for an unsaved scene."""
-    explicit = node.get_param("cache_file").value.strip() if node.get_param("cache_file") else ""
-    if explicit:
-        return explicit
-    root = stage.GetRootLayer().realPath if stage else ""
-    if not root:
-        return ""
-    scene = Path(root)
-    return str(scene.parent / "cache" / f"{scene.stem}_{node.name}.usdc")
-
-
-def _load_from_disk(node, stage, digest: str):
-    """(layer, readout) of a result made from exactly this input before, or None."""
-    path = _cache_file(node, stage)
-    if not path or not Path(path).is_file():
-        return None
-    try:
-        layer = Sdf.Layer.OpenAsAnonymous(path)
-    except Exception:  # noqa: BLE001 - an unreadable cache is a miss
-        return None
-    data = layer.customLayerData if layer else {}
-    if data.get("fracture:key") != digest:
-        return None
-    return layer, data.get("fracture:readout", "") + "\nloaded from cache"
-
-
-def _save_to_disk(node, stage, layer, readout: str, digest: str) -> None:
-    path = _cache_file(node, stage)
-    if not path:
-        return
-    try:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        out = Sdf.Layer.CreateAnonymous(".usdc")
-        out.TransferContent(layer)
-        data = dict(out.customLayerData)
-        data["fracture:key"] = digest
-        data["fracture:readout"] = readout
-        out.customLayerData = data
-        out.Export(path)
-    except Exception as e:  # noqa: BLE001 - a failed cache write loses no work
-        logger.warning("Fracture: could not write the cache %s: %s", path, e)
+    scratch = Usd.Stage.CreateInMemory()
+    if out_path.GetParentPath() != Sdf.Path.absoluteRootPath:
+        UsdGeom.Xform.Define(scratch, out_path.GetParentPath())
+    count = author(
+        scratch, out_path, trees,
+        uv_scale=node.get_param("uv_scale", is_f).value,
+        preview_generation=max(0, node.get_param("preview_generation", is_i).value),
+        explode=max(0.0, node.get_param("explode", is_f).value),
+        inside_material=node.get_param("inside_material", is_s).value.strip(),
+        outside_material=node.get_param("outside_material", is_s).value.strip(),
+        bevel=max(0.0, node.get_param("bevel", is_f).value),
+        bevel_detail=max(2, node.get_param("bevel_detail", is_i).value),
+    )
+    for p in sources:
+        # The instancer stands in for the source from here on.
+        UsdGeom.Imageable(scratch.OverridePrim(p.GetPath())).MakeInvisible()
+    total = sum(len(t.pieces) for t in trees)
+    smallest = min(p.volume for t in trees for p in t.pieces)
+    largest = max(t.pieces[0].volume for t in trees)
+    text = f"{len(trees)} source{'s' if len(trees) != 1 else ''} · {total} pieces · {count} instances\n" \
+           f"smallest piece {100.0 * smallest / max(largest, 1e-12):.1f}% of the largest source"
+    if problems:
+        text += "\n" + "\n".join(problems)
+    layer.TransferContent(scratch.GetRootLayer())
+    _report(node, text)
 
 
 def _sync_visibility(node) -> None:
@@ -821,12 +742,6 @@ def main() -> chunk.Chunk:
     surf.add_param(chunk.LineEdit("inside_material", "Inside Material", flags=labeled,
                                   tooltip="Bound to the fracture surfaces. Empty uses the outside's."))
     chunk_api.add_param(surf)
-    chunk_api.add_param(chunk.LineEdit(
-        "cache_file", "Cache File", flags=labeled,
-        tooltip="Where the result is kept on disk. Empty = cache/<scene>_<this chunk>.usdc beside the "
-        "saved scene. Tagged with a digest of every setting and the source geometry: the same input "
-        "-- after a reload, or a change undone -- loads from here instead of cutting again.",
-    ))
 
     prev = chunk.Group("Preview", "Start State", flags=_GF)
     prev.add_param(chunk.Spinbox("preview_generation", "Start Broken", default_value=0, is_int=True,
@@ -850,4 +765,5 @@ def config() -> chunk.DefaultConfig:
             "Solver with Breakable on."
         ),
         requirements=["numpy>=2,<3", "manifold3d>=3"],
+        cache_cook=True,
     )

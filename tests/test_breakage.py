@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import Scene, chunk, chunk_registry, cook_cache
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -34,6 +34,15 @@ brk = rbd._breakage()
 
 needs_manifold = pytest.mark.skipif(not fr._HAS_MANIFOLD, reason="needs manifold3d")
 needs_mujoco = pytest.mark.skipif(not brk._HAS_MUJOCO, reason="needs mujoco")
+
+
+@pytest.fixture(autouse=True)
+def _cook_cache_in_tmp(tmp_path, monkeypatch):
+    """Fracture caches its cooks: keep each test's entries to itself, and store even a
+    small test fracture, which cuts faster than the cache's floor."""
+    monkeypatch.setenv(cook_cache.ENV_DIR, str(tmp_path / "cook_cache"))
+    monkeypatch.delenv(cook_cache.ENV, raising=False)
+    monkeypatch.setattr(cook_cache, "_MIN_COOK_S", 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -470,9 +479,6 @@ def test_fracture_does_not_recut_when_nothing_changed(scene, monkeypatch):
     frac.get_param("generations").value = 1
     # Chunk modules load twice under different names; patch the copy execute() runs in.
     mod = frac.get_chunk_module().module
-    # Emptied before the first cook: an earlier test may have cut this very torus. A cook
-    # starts from a cleared layer, so the recooks below are free only through this cache.
-    mod._CACHE.clear()
     frac.execute()
     real = mod.build_trees
     calls = []
@@ -663,37 +669,33 @@ def test_an_identical_setup_loads_its_bake_from_the_cache_file(qapp, tmp_path, m
 
 
 @needs_manifold
-def test_fracture_reloads_its_pieces_from_the_cache_file(qapp, tmp_path, monkeypatch):
-    stage = Usd.Stage.CreateNew(str(tmp_path / "shot.usda"))
-    UsdGeom.SetStageUpAxis(stage, "Y")
+def test_a_reopened_scene_reads_its_fracture_back_instead_of_cutting(tmp_path, monkeypatch):
+    path = str(tmp_path / "shot.usda")
+    with Scene() as scene:
+        frac = scene.create.fracture()
+        frac.get_param("source").value = fr.SOURCE_ROCKS
+        frac.get_param("count").value = 2
+        frac.get_param("generations").value = 2
+        readout = frac.get_param("readout").value
+        assert "pieces" in readout
+        scene.save(path)
 
-    class _StageScene(_DummyScene):
-        def get_stage(self):
-            return stage
+    # Reopened: a new layer, nothing kept in memory -- the entry on disk is all there is.
+    hits = []
+    restore = cook_cache.CookEntry.restore
 
-    s = _StageScene()
-    reg = chunk_registry.ChunkRegistry()
-    reg.initialize(s, "pytest")
-    chunk_registry.ChunkLayerManager().initialize(stage)
-    _chunk_usd_init(stage, s)
-    mod = reg.get_chunk_module("fracture")
-    frac = (mod.create() if mod.loaded else mod.load())[0]
-    s.add_chunk(frac)
-    frac.get_param("source").value = fr.SOURCE_ROCKS
-    frac.get_param("count").value = 2
-    frac.get_param("generations").value = 2
-    frac.execute()
-    assert (tmp_path / "cache" / f"shot_{frac.name}.usdc").is_file()
+    def counted(self, c, layer):
+        found = restore(self, c, layer)
+        hits.append((c.get_config().module, found))
+        return found
 
-    # Reopened: nothing in memory, nothing in the layer -- only the file.
-    code = frac.get_chunk_module().module
-    code._CACHE.clear()
-    frac._fracture_key = None
-    frac.get_edit_context().Clear()
-    monkeypatch.setattr(code, "build_trees", lambda *a, **k: pytest.fail("cut again despite the cache"))
-    frac.execute()
-    assert "loaded from cache" in frac.get_param("readout").value
-    assert len(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPrototypesRel().GetTargets()) == 14
+    monkeypatch.setattr(cook_cache.CookEntry, "restore", counted)
+    with Scene(Usd.Stage.Open(path)) as scene:
+        stage = scene.get_stage()
+        frac = next(c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "fracture")
+        assert ("fracture", True) in hits
+        assert frac.get_param("readout").value == readout
+        assert len(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPrototypesRel().GetTargets()) == 14
 
 
 @needs_mujoco
