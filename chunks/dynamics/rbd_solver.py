@@ -7,11 +7,14 @@ Optional: scipy -- smoother/denser heightfield colliders; falls back gracefully 
 from __future__ import annotations
 
 import collections
+import importlib.util
 import hashlib
 import logging
 import math
 import random
+import sys
 from collections.abc import Generator
+from pathlib import Path
 
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
@@ -1148,6 +1151,7 @@ def _write_prim_results(
             xf_attr.Set(_local(all_mats[0]) * inv_upstream)
             for frame_idx, mat in enumerate(all_mats):
                 xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
+    _keep_bake(node, layer)
     if settle_only:
         logger.debug("Settled %s", prim.GetPath())
         return
@@ -1818,12 +1822,26 @@ def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim
 
 
 def _clear_chunk_bake(owner) -> None:
+    if (node := owner.get_chunk()) is not None:
+        node._rbd_kept_bake = None  # or the next cook would put it back
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
 
 
-def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
+def _keep_bake(node, layer: Sdf.Layer | None) -> None:
+    """Keep a copy of the bake in layer on node, for execute() to put back.
+
+    The framework clears this chunk's layer before every cook, and a bake is too expensive
+    to redo on each one. Kept on the chunk, so it goes when the chunk does.
+    """
+    if node is not None and layer is not None:
+        kept = Sdf.Layer.CreateAnonymous("rbd_bake")
+        kept.TransferContent(layer)
+        node._rbd_kept_bake = kept
+
+
+def _promote_bake_layer(layer: Sdf.Layer | None, node=None) -> None:
     """Make the bake layer the strongest chunk layer for its target prim.
 
     Chunk layers are ordered so the earlier-added sibling wins. When the solver
@@ -1831,7 +1849,10 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
     ScatterPoints), that source chunk's static values would otherwise override the
     baked time samples. Move the bake layer -- and its parent graph layer -- to the
     front of their containers so the simulation wins.
+
+    With node, also keeps a copy of the bake on it (_keep_bake).
     """
+    _keep_bake(node, layer)
     lreg = chunk.get_layer_manager()
     if not lreg or not layer:
         return
@@ -1864,6 +1885,7 @@ def _promote_bake_layer(layer: Sdf.Layer | None) -> None:
 
 
 def reset(owner, notice, sender) -> None:
+    owner.get_chunk()._rbd_bake_key = None
     _clear_chunk_bake(owner)
     owner.get_chunk().set_state(chunk.ChunkFlags.State.STALE)
     logger.info("Reset - bake cleared.")
@@ -2752,7 +2774,8 @@ def _run(owner, notice, sender) -> None:
     if not stage:
         return
 
-    prim_paths = _chunk.get_param("prim_path").resolve_paths()
+    target = _chunk.get_param("prim_path")
+    prim_paths = target.resolve_paths() if target is not None else []
     if not prim_paths:
         logger.warning("No target prim selected")
         return
@@ -2791,6 +2814,16 @@ def _run(owner, notice, sender) -> None:
 
     layer = owner.get_edit_context()
     if not layer:
+        return
+    # A fractured instancer with Breakable on bakes through the breakage path instead -- on a
+    # worker thread, keeping the last bake on screen until the new one is ready.
+    if _chunk.get_param("breakable", chunk.is_param_t(bool)).value and _run_breakable(
+        owner, _chunk, stage, layer, prim_paths[0], collision_path_value, forces
+    ):
+        return
+    if getattr(_chunk, "_rbd_cache_only", False):
+        # Only looking for a cached breakable bake (opening a scene): anything else waits
+        # for Run, as it always has.
         return
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
@@ -2936,7 +2969,7 @@ def _run(owner, notice, sender) -> None:
 
     # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
     # the target prim, otherwise its static values win and playback shows nothing.
-    _promote_bake_layer(layer)
+    _promote_bake_layer(layer, _chunk)
 
     try:
         scene = chunk_registry.ChunkRegistry().scene
@@ -2949,6 +2982,300 @@ def _run(owner, notice, sender) -> None:
     _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
 
+def _breakage():
+    """The breakage module beside this file (it has no main, so it is not a chunk).
+
+    Loaded by path rather than imported: chunk folders are not packages, and this module is
+    itself loaded under different names inside and outside the repo.
+    """
+    name = "usd_chunks_rbd_breakage"
+    mod = sys.modules.get(name)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("rbd_breakage.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _report(node, text: str) -> None:
+    if (readout := node.get_param("readout")) is not None and readout.value != text:
+        readout.value = text
+    logger.info("[RBD Solver] %s", text.replace("\n", " | "))
+
+
+def _bake_key(*parts) -> str:
+    """A digest of everything that shapes a bake -- the whole job, arrays and all."""
+    h = hashlib.blake2b(digest_size=16)
+
+    def feed(v):
+        if isinstance(v, dict):
+            for k in sorted(v, key=str):
+                h.update(repr(k).encode())
+                feed(v[k])
+        elif isinstance(v, (list, tuple)):
+            h.update(b"[")
+            for x in v:
+                feed(x)
+            h.update(b"]")
+        elif _np is not None and isinstance(v, _np.ndarray):
+            h.update(str(v.shape).encode())
+            h.update(_np.ascontiguousarray(v).tobytes())
+        else:
+            h.update(repr(v).encode())
+
+    for part in parts:
+        feed(part)
+    return h.hexdigest()
+
+
+def _cache_file(_chunk, stage) -> str:
+    """Where this solver's bake is kept on disk: the Cache File param, or -- when that is
+    empty -- ``cache/<scene>_<chunk>.usdc`` beside the scene. None for an unsaved scene."""
+    explicit = _chunk.get_param("cache_file", chunk.is_param_t(str)).value.strip()
+    if explicit:
+        return explicit
+    root = stage.GetRootLayer().realPath if stage else ""
+    if not root:
+        return ""
+    scene = Path(root)
+    return str(scene.parent / "cache" / f"{scene.stem}_{_chunk.name}.usdc")
+
+
+#: What a bake is made from, in groups -- a cache that does not match says which ones moved.
+_BAKE_PARTS = {
+    "world": ("statics", "belts", "drivers"),
+    "bodies": ("starts",),
+    "pieces": ("pieces",),
+    "settings": ("up_idx", "gravity", "fps", "frames", "substeps", "iterations", "friction", "restitution",
+                 "density", "lin_damping", "ang_damping", "floor_drop", "breakage", "seed"),
+}
+
+
+def _bake_parts(job, proto_index, target_path, start_frame, spins) -> dict:
+    parts = {name: _bake_key(*(job.get(k) for k in keys)) for name, keys in _BAKE_PARTS.items()}
+    parts["target"] = _bake_key(proto_index, target_path, start_frame, spins)
+    return parts
+
+
+def _load_cached_bake(_chunk, stage, layer, key: str, parts: dict | None = None):
+    """Load the bake from disk if it was made from exactly this input.
+
+    Returns (file, why-not): the file on a hit; on a miss, "" and -- when there is a cache
+    that simply is not for this input -- which groups of inputs differ from it, so the
+    readout can say what made it out of date instead of silently ignoring it.
+    """
+    path = _cache_file(_chunk, stage)
+    if not path or not Path(path).is_file():
+        return "", ""
+    try:
+        cached = Sdf.Layer.OpenAsAnonymous(path)
+    except Exception:  # noqa: BLE001 - an unreadable cache is a miss, not an error
+        return "", "the cache file could not be read"
+    data = cached.customLayerData if cached else {}
+    if data.get("rbd:bakeKey") != key:
+        old = data.get("rbd:bakeParts") or {}
+        changed = [name for name, digest in (parts or {}).items() if old.get(name) != digest]
+        return "", f"the cache on disk was made from different {', '.join(changed) or 'input'}"
+    layer.TransferContent(cached)
+    return path, ""
+
+
+def _save_bake(_chunk, stage, layer, key: str, parts: dict | None = None) -> str:
+    path = _cache_file(_chunk, stage)
+    if not path:
+        return ""
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        out = Sdf.Layer.CreateAnonymous(".usdc")
+        out.TransferContent(layer)
+        data = dict(out.customLayerData)
+        data["rbd:bakeKey"] = key
+        data["rbd:bakeParts"] = dict(parts or {})
+        out.customLayerData = data
+        out.Export(path)
+        return path
+    except Exception as e:  # noqa: BLE001 - a failed cache write loses no work
+        logger.warning("RBD Solver: could not write the bake cache %s: %s", path, e)
+        return ""
+
+
+def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_value, forces) -> bool:
+    """Bake a fractured PointInstancer with breakage. False when the target is not one.
+
+    Reads everything from the upstream stage -- this chunk's own layer holds the last bake,
+    which rewrites the very instancer being read -- and only replaces that bake once the new
+    one is ready.
+    """
+    brk = _breakage()
+    scene = owner.get_scene()
+    upstream = chunk_stage.get_upstream_stage(stage, scene, _chunk) if scene is not None else stage
+    target = upstream.GetPrimAtPath(target_path)
+    if not target or not target.IsA(UsdGeom.PointInstancer):
+        return False
+    frac = brk.read_fracture(upstream, target)
+    if not frac:
+        return False
+    if brk.is_running(_chunk):
+        _report(_chunk, "already simulating -- wait, or press Cancel")
+        return True
+
+    is_f, is_i = chunk.is_param_t(float), chunk.is_param_t(int)
+    frame_count = max(2, _chunk.get_param("frame_count", is_i).value)
+    fps = max(1.0, _chunk.get_param("fps", is_f).value)
+    start_frame = _chunk.get_param("start_frame", is_i).value
+    up_idx = {"X": 0, "Y": 1, "Z": 2}.get(UsdGeom.GetStageUpAxis(stage).upper(), 1)
+    up = _np.zeros(3)
+    up[up_idx] = 1.0
+    pieces = frac["pieces"]
+    radius = min(float(_np.linalg.norm(p["points"], axis=1).max()) for p in pieces.values() if len(p["points"]))
+
+    colliders = _parse_collision_prims(collision_path_value, upstream)
+    world = brk.gather_world(upstream, colliders, frame_count, start_frame, fps,
+                             _chunk.get_param("collider_thickness", is_f).value, radius)
+
+    # Every instance is a body, read entirely off the instancer: where it is, how it moves
+    # (USD's own velocities / angularVelocities), and -- if something like the Emit chunk
+    # wrote one -- the frame it enters (primvars:rbd:emitFrame). The Initial State params
+    # stand in for instances that carry no velocities of their own.
+    inst = UsdGeom.PointInstancer(target)
+    xf = _np.array(UsdGeom.Xformable(target).ComputeLocalToWorldTransform(start_frame), dtype=_np.float64)
+    rot = Gf.Matrix4d(xf.tolist()).RemoveScaleShear().ExtractRotationQuat()
+
+    def per_instance(attr, width=3):
+        v = attr.Get(start_frame) if attr else None
+        return _np.asarray(v, dtype=_np.float64).reshape(-1, width) if v is not None and len(v) else None
+
+    positions = per_instance(inst.GetPositionsAttr())
+    positions = positions if positions is not None else _np.zeros((0, 3))
+    orients = inst.GetOrientationsAttr().Get(start_frame) or []
+    indices = list(inst.GetProtoIndicesAttr().Get(start_frame) or [])
+    velocities = per_instance(inst.GetVelocitiesAttr())
+    spins = per_instance(inst.GetAngularVelocitiesAttr())
+    frames_pv = UsdGeom.PrimvarsAPI(target).GetPrimvar("rbd:emitFrame")
+    emit_frames = _np.asarray(frames_pv.Get(), dtype=_np.float64) if frames_pv and frames_pv.HasValue() else None
+    keys = [frac["proto_key"][i] if 0 <= i < len(frac["proto_key"]) else None for i in indices]
+    lin_default = _np.asarray(_vec3(_chunk, "initial_velocity"), dtype=_np.float64)
+    ang_default = _np.asarray(_vec3(_chunk, "angular_velocity"), dtype=_np.float64)
+    starts = []
+    for i, key in enumerate(keys):
+        if key is None or i >= len(positions):
+            continue
+        q = Gf.Quatd(orients[i]) if i < len(orients) else Gf.Quatd(1.0)
+        wq = (rot * q).GetNormalized()
+        wi = wq.GetImaginary()
+        lin = velocities[i] @ xf[:3, :3] if velocities is not None and i < len(velocities) else lin_default
+        ang = (_np.radians(spins[i]) @ xf[:3, :3] if spins is not None and i < len(spins) else ang_default)
+        when = 0.0
+        if emit_frames is not None and i < len(emit_frames):
+            when = max(0.0, (emit_frames[i] - start_frame) / fps)
+        starts.append(dict(key=key, pos=positions[i] @ xf[:3, :3] + xf[3, :3],
+                           quat=_np.array([wq.GetReal(), wi[0], wi[1], wi[2]]), lin=lin, ang=ang, time=when))
+    skipped = len(indices) - len(starts)
+    if not starts:
+        _report(_chunk, "nothing to simulate -- the instancer has no fractured instances")
+        return True
+
+    job = dict(
+        up_idx=up_idx,
+        gravity=_chunk.get_param("gravity", is_f).value,
+        fps=fps,
+        frames=frame_count,
+        substeps=max(1, _chunk.get_param("substeps", is_i).value),
+        iterations=20,
+        friction=_chunk.get_param("friction", is_f).value,
+        restitution=_chunk.get_param("restitution", is_f).value,
+        density=1.0,
+        lin_damping=_chunk.get_param("lin_damping", is_f).value,
+        ang_damping=_chunk.get_param("ang_damping", is_f).value,
+        floor_drop=_chunk.get_param("floor_drop", is_f).value,
+        statics=world["statics"],
+        belts=world["belts"],
+        drivers=world["drivers"],
+        pieces=pieces,
+        starts=starts,
+        breakage=dict(
+            strength=_chunk.get_param("strength", is_f).value,
+            variation=_chunk.get_param("strength_variation", is_f).value,
+            max_generation=max(0, _chunk.get_param("max_generations", is_i).value),
+            cooldown=max(0.0, _chunk.get_param("break_delay", is_f).value),
+            kick=_chunk.get_param("break_kick", is_f).value,
+        ),
+        seed=_chunk.get_param("turb_seed", is_i).value,
+    )
+    if any(forces.get("wind", ())) or forces.get("turbulence"):
+        logger.info("RBD Solver: Wind and Turbulence are not applied to breakable bodies yet")
+    proto_index = frac["proto"]
+    spins = world["spins"]
+    note = f" · {skipped} unfractured instances left out" if skipped else ""
+    if emit_frames is not None:
+        note += f"\nemitted over frames {int(emit_frames.min())}-{int(emit_frames.max())} (primvars:rbd:emitFrame)"
+    note += "\n" + brk.describe_world(world)
+
+    def finish(result):
+        if _chunk.get_edit_context() is None:
+            return  # the chunk went away while it was simulating
+        if lreg := chunk.get_layer_manager():
+            lreg.clear_layer(layer.identifier)
+        with Usd.EditContext(stage, layer):
+            brk.author_result(stage, stage.GetPrimAtPath(target_path), result, proto_index, start_frame, spins)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.SetStartTimeCode(start_frame)
+            stage.SetEndTimeCode(start_frame + frame_count - 1)
+        _promote_bake_layer(layer, _chunk)
+        try:
+            host = chunk_registry.ChunkRegistry().scene
+            if host is not None:
+                host.refresh_timeline(start_frame, start_frame + frame_count - 1)
+        except Exception:  # noqa: BLE001 - a timeline refresh is a courtesy
+            pass
+        _chunk._rbd_bake_key = key
+        saved = _save_bake(_chunk, stage, layer, key, parts)
+        _report(_chunk, brk.summary(result) + (f" · cached to {Path(saved).name}" if saved else "") + note)
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+
+    # Nothing that shapes the bake changed: keep it. A bake made from exactly this input
+    # before -- this session or an earlier one -- comes back from disk instead of being
+    # simulated again, the way a File Cache node would.
+    parts = _bake_parts(job, proto_index, str(target_path), start_frame, spins)
+    key = _bake_key(parts)
+    if key == getattr(_chunk, "_rbd_bake_key", None) and layer.GetPrimAtPath(target_path):
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+        return True
+    loaded, why_not = _load_cached_bake(_chunk, stage, layer, key, parts)
+    if loaded:
+        _chunk._rbd_bake_key = key
+        _promote_bake_layer(layer, _chunk)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            stage.SetStartTimeCode(start_frame)
+            stage.SetEndTimeCode(start_frame + frame_count - 1)
+        _report(_chunk, f"loaded from cache: {Path(loaded).name}" + note)
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+        return True
+    if getattr(_chunk, "_rbd_cache_only", False):
+        _chunk.set_state(chunk.ChunkFlags.State.STALE)
+        _report(_chunk, "not simulated -- press Run Simulation" + (f"\n({why_not})" if why_not else ""))
+        return True
+
+    def live(partial):
+        # The frames simulated so far, on screen while the rest are worked out -- the later
+        # frames hold the last one done. Replaced by the full result when it lands.
+        if _chunk.get_edit_context() is None:
+            return
+        if lreg := chunk.get_layer_manager():
+            lreg.clear_layer(layer.identifier)
+        with Usd.EditContext(stage, layer):
+            brk.author_result(stage, stage.GetPrimAtPath(target_path), partial, proto_index, start_frame, spins)
+        _promote_bake_layer(layer, _chunk)
+
+    brk.dispatch(_chunk, job, finish, lambda text: _report(_chunk, text), live=live)
+    return True
+
+
+def _cancel(owner, notice, sender) -> None:
+    _breakage().cancel(owner.get_chunk())
+
+
 _AUTO_RUN_DELAY_MS = 600
 # Params that don't represent a real simulation input -- clicking/toggling them must not
 # flip the staleness indicator (Run/Reset explicitly manage it themselves; Auto Simulate and
@@ -2959,6 +3286,9 @@ _STALE_IGNORE_PARAMS = {
     "auto_sim",
     "add_collision",
     "clear_collision",
+    "cancel_sim",
+    "readout",
+    "cache_file",
 }
 
 
@@ -2981,7 +3311,7 @@ def _on_any_chunk_changed(owner, notice, sender) -> None:
     """Global CHUNK_CHANGED listener -- catches an upstream chunk (e.g. a Transform feeding
     the collider or target prim) changing, even though it's wired via a live-drawn graph
     connection rather than DagNode.add_dependency(). Real graph wiring (_author_connection in
-    chunk_qt_nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
+    frontends/qt/nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
     calls add_dependency, so ChunkNoticeAlias.INPUT_CHANGED (which is purely a DagNode concept)
     never fires between two chunks connected that way. view_cook_list walks the same
     real USD connections recook_for_view and get_upstream_stage already trust, so membership in
@@ -3049,18 +3379,49 @@ def _is_headless() -> bool:
     return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
 
 
+def execute(node) -> None:
+    """Bake on cook -- headless; interactively, only fetch a cached bake.
+
+    Interactively a bake is expensive, so it waits for Run or Auto Simulate -- but the first
+    cook of a session (opening the scene) loads a bake from the cache file if one was made
+    from exactly this input, so a saved scene reopens simulated. Later cooks leave the bake
+    alone: gathering the inputs to check costs a second or two, too much for every tweak.
+    Under ``usdchunks run`` or a sweep nobody can press anything, and a network that cooked
+    without baking renders a motionless scene that looks entirely plausible -- so it bakes,
+    or loads the cache.
+    """
+    if _is_headless():
+        _run(node, None, None)
+        return
+    if getattr(node, "_rbd_cache_checked", False):
+        # The framework cleared this layer for the cook; put the last bake back. Baking
+        # again would cost a full simulation on every tweak upstream.
+        kept = getattr(node, "_rbd_kept_bake", None)
+        if kept is not None and (layer := node.get_edit_context()) is not None:
+            layer.TransferContent(kept)
+            _promote_bake_layer(layer)
+        return
+    node._rbd_cache_checked = True
+    node._rbd_cache_only = True
+    try:
+        _run(node, None, None)
+    finally:
+        node._rbd_cache_only = False
+
+
 def _schedule_auto_run(root_chunk) -> None:
     """Debounce auto-runs: a sim bake is comparatively expensive, so wait for input changes to
     settle for _AUTO_RUN_DELAY_MS before re-running, rather than baking on every keystroke/drag
     tick while a param is being edited.
 
-    Headless there is nothing to debounce -- no keystrokes, no drag ticks -- and worse, no Qt
-    event loop, so a QTimer never fires at all. Scheduling there means the bake silently never
-    happens and the network cooks to a motionless scene that looks entirely plausible. Run it
-    synchronously instead.
+    Headless there is nothing to debounce and no Qt event loop for a QTimer to fire in; the
+    bake happens in execute() instead, when the cook reaches this chunk.
     """
     if _is_headless():
-        _run(root_chunk, None, None)
+        # Headless, execute() bakes instead: the cook calls it in dependency order, once
+        # every upstream chunk has cooked. Running here too baked against a half-cooked
+        # network -- a solver fired by the first upstream chunk's change, before the
+        # colliders it needed existed -- and then again, a full simulation per upstream.
         return
 
     timer = getattr(root_chunk, "_auto_run_timer", None)
@@ -3098,6 +3459,12 @@ def main() -> chunk.Chunk:
     reset_btn = chunk.Button("reset_sim", "Reset", tooltip="Clear the baked animation from this chunk's layer.")
     reset_btn.add_callback(reset)
     chunk_api.add_param(reset_btn)
+
+    cancel_btn = chunk.Button("cancel_sim", "Cancel", tooltip="Stop a breakable simulation that is running.")
+    cancel_btn.add_callback(_cancel)
+    chunk_api.add_param(cancel_btn)
+    chunk_api.add_param(chunk.Label("readout", "not simulated yet", default_value="not simulated yet",
+                                    tooltip="What the last run did."))
 
     # On by default headless, off in a UI. The reason it is off interactively is that a bake
     # is expensive and the user can see the orange "needs simulation" border and press the
@@ -3198,7 +3565,9 @@ def main() -> chunk.Chunk:
             default_value=0.0,
             tooltip="For Mesh colliders: how deep the solid material behind each triangle is, "
             "in scene units. 0 = auto (2% of the collider's size). Raise it if fast bodies "
-            "tunnel through; lower it if a thin-walled object's opposite faces fight each other.",
+            "tunnel through; lower it if a thin-walled object's opposite faces fight each other.\n"
+            "Breakable targets: 0 = per collider, from its rbd:colliderThickness attribute if it has "
+            "one (the part's real wall thickness), else half its thinnest dimension.",
         )
     )
     col_grp.add_param(
@@ -3400,6 +3769,38 @@ def main() -> chunk.Chunk:
         )
     )
     chunk_api.add_param(forces_grp)
+
+    # ------------------------------------------------------------------
+    # Breakage -- for a fractured PointInstancer (the Fracture chunk's output).
+    brk_grp = _section("Breakage", "Breakage")
+    brk_grp.add_param(chunk.Checkbox(
+        "breakable", "Breakable", default_value=True,
+        tooltip="When the target is a fractured PointInstancer, let its bodies break into their "
+        "pieces under load. Has no effect on anything else.",
+    ))
+    brk_grp.add_param(chunk.Spinbox(
+        "strength", "Strength", default_value=40.0,
+        tooltip="The load that breaks a body, in multiples of its own weight. A fall onto something "
+        "hard is a spike of a few tens; something trapped between two driven parts sees as much "
+        "as it takes. A piece half the size needs a quarter of the load. 0 = nothing breaks.",
+    ))
+    brk_grp.add_param(chunk.Slider("strength_variation", "Variation", min_value=0.0, max_value=0.9,
+                                   default_value=0.3, tooltip="Each piece's strength varies by ± this fraction."))
+    brk_grp.add_param(chunk.Spinbox("max_generations", "Max Generations", default_value=8, is_int=True,
+                                    tooltip="Stop breaking past this generation, even where the fracture goes further."))
+    brk_grp.add_param(chunk.Spinbox("break_delay", "Break Delay", default_value=0.04,
+                                    tooltip="Seconds a fresh piece holds before it can break again, so one blow "
+                                    "cannot shatter a body to gravel within a single step."))
+    brk_grp.add_param(chunk.Spinbox("break_kick", "Break Kick", default_value=10.0,
+                                    tooltip="Speed the pieces spring apart with, scene units/s."))
+    brk_grp.add_param(chunk.LineEdit(
+        "cache_file", "Cache File", flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Where a breakable bake is kept on disk. Empty = cache/<scene>_<this chunk>.usdc beside "
+        "the saved scene. A bake is tagged with a digest of everything that made it; an identical "
+        "setup -- after a reload, or a change undone -- loads from here instead of simulating.",
+    ))
+    chunk_api.add_param(brk_grp)
+
 
     # ------------------------------------------------------------------
     # Simulation -- how the solve itself is run. Last: set once, rarely touched.
