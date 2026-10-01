@@ -6,7 +6,9 @@ Also the load's root loop, which runs a root only if no earlier root's solve coo
 from __future__ import annotations
 
 import os
+import sys
 import time
+import types
 
 import pytest
 from chunk_stubs import register_stub_module
@@ -102,6 +104,27 @@ def test_a_new_version_of_a_required_package_cooks_again(monkeypatch):
         assert len(cooks) == 1, "the same version reads back"
 
         versions["numpy"] = "2.1.0"
+        cook_cache._PACKAGES.clear()  # a restart, as after a real upgrade
+        c.cook()
+
+        assert len(cooks) == 2
+
+
+def test_a_package_with_no_install_record_counts_by_its_imported_version(monkeypatch):
+    """The usdview bundles unpack mujoco into a plain folder: no metadata, only the module."""
+    monkeypatch.setattr(chunk_registry, "installed_version", lambda name: None)
+    fake = types.ModuleType("fake_physics")
+    fake.__version__ = "3.8.1"
+    monkeypatch.setitem(sys.modules, "fake_physics", fake)
+    cooks: list = []
+    with Scene() as scene:
+        module = _cached_module(cooks)
+        module.config.requirements = ["fake-physics>=3"]
+        assert module.installed_packages() == {"fake-physics": "3.8.1"}
+        c = _add(scene, module)
+        assert len(cooks) == 1
+
+        fake.__version__ = "3.10.0"
         cook_cache._PACKAGES.clear()  # a restart, as after a real upgrade
         c.cook()
 
