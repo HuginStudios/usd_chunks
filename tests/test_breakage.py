@@ -775,3 +775,21 @@ def test_adding_a_chunk_downstream_recooks_nothing_upstream(scene, monkeypatch):
     assert cut == [] and sims == []
     assert not solver.has_state(chunk.ChunkFlags.State.STALE)
     assert UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPositionsAttr().GetNumTimeSamples() == 12
+
+
+@needs_manifold
+def test_the_kept_cut_is_let_go_at_exit(scene):
+    """A kept cut holds a manifold3d solid per piece. Still alive as usdview closed, each was
+    reported: "nanobind: leaked 1270 instances". The exit hook drops them first."""
+    qapp, stage, mk = scene
+    frac = mk("fracture")
+    frac.get_param("source").value = fr.SOURCE_ROCKS
+    frac.get_param("count").value = 1
+    frac.get_param("generations").value = 1
+    frac.execute()
+    mod = frac.get_chunk_module().module
+    assert frac._fracture_cut is not None
+
+    mod._let_go()
+
+    assert frac._fracture_cut is None and frac._fracture_protos is None

@@ -39,8 +39,10 @@ so a piece of a concave model collides a little fuller than it looks.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
+import weakref
 
 import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdShade, Vt
@@ -633,6 +635,24 @@ def _values(node, names) -> tuple:
     return tuple(repr(getattr(node.get_param(name), "value", None)) for name in names)
 
 
+#: Chunks holding a kept cut, so _let_go can drop them at exit.
+_KEEPING: weakref.WeakSet = weakref.WeakSet()
+
+
+def _let_go() -> None:
+    """Drop the kept cuts before the interpreter shuts down.
+
+    manifold3d reports every solid still alive then as a leak ("nanobind: leaked 1270
+    instances" as usdview closed), and a kept cut holds one per piece.
+    """
+    for node in list(_KEEPING):
+        node._fracture_cut = None
+        node._fracture_protos = None
+
+
+atexit.register(_let_go)
+
+
 def _cut_once(node, upstream) -> tuple:
     """(key, trees, problems, sources): the last cut again when nothing it reads changed.
 
@@ -644,6 +664,7 @@ def _cut_once(node, upstream) -> tuple:
     if kept is None or kept[0] != key:
         kept = (key, *build_trees(upstream, node))
         node._fracture_cut = kept
+        _KEEPING.add(node)
     return kept
 
 
