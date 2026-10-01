@@ -1844,6 +1844,42 @@ def _vec3(node, name: str) -> list[float]:
     return out + [0.0] * (3 - len(out))
 
 
+#: The most triangles a Mesh collider is built from. A Mesh collider is one MuJoCo geom per
+#: triangle and building them is quadratic (see _collider_spec): 40k is about four minutes. A
+#: 225k-triangle rock cluster set to Mesh, with Triangle Budget at 500k, was some two hours of
+#: building -- usdview simply hung.
+_MESH_TRIANGLE_LIMIT = 40_000
+
+
+def _triangle_count(prim: Usd.Prim) -> int:
+    """How many triangles the meshes under prim make, from their face counts alone."""
+    total = 0
+    for p in Usd.PrimRange(prim):
+        if p.IsA(UsdGeom.Mesh):
+            counts = UsdGeom.Mesh(p).GetFaceVertexCountsAttr().Get()
+            if counts:
+                total += int(_np.maximum(_np.asarray(counts, dtype=_np.int64) - 2, 0).sum())
+    return total
+
+
+def _collider_settings(collision_prims, collider_mode: str, tri_budget: int) -> tuple[str, int, str]:
+    """The collider mode and budget a run uses, and a readout note when they were changed.
+
+    A Mesh collider over _MESH_TRIANGLE_LIMIT triangles is collided as a heightfield instead
+    -- what Auto does over its budget -- and Auto's budget is capped at the same limit.
+    """
+    tri_budget = min(int(tri_budget), _MESH_TRIANGLE_LIMIT)
+    if collider_mode != "Mesh" or not collision_prims:
+        return collider_mode, tri_budget, ""
+    largest = max(_triangle_count(p) for p in collision_prims)
+    if largest <= _MESH_TRIANGLE_LIMIT:
+        return collider_mode, tri_budget, ""
+    return "Heightfield", tri_budget, (
+        f"\ncollider has {largest:,} triangles, too many for Mesh (over {_MESH_TRIANGLE_LIMIT:,}: hours "
+        "to build), so it was collided as a Heightfield. Poly Reduce it to use Mesh."
+    )
+
+
 def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim]:
     """Parse a newline-or-comma-separated path list into valid Usd.Prim objects."""
     result = []
@@ -2846,6 +2882,11 @@ def _run(owner, notice, sender) -> None:
         return
     scratch_stage = chunk_stage.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
+    collider_mode, tri_budget, collider_note = _collider_settings(
+        collision_prims,
+        _chunk.get_param("collider_mode", is_s).value,
+        _chunk.get_param("tri_budget", is_i).value,
+    )
 
     # A sim-ready asset states its own mass, contact properties and collider approximation.
     # Prefer those; the params stay as the fallback for geometry that says nothing.
@@ -2890,7 +2931,7 @@ def _run(owner, notice, sender) -> None:
             restitution=restitution,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_mode=collider_mode,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
             floor_drop=floor_drop,
             lin_damping=lin_damping,
@@ -2922,9 +2963,9 @@ def _run(owner, notice, sender) -> None:
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_mode=collider_mode,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
-            tri_budget=_chunk.get_param("tri_budget", is_i).value,
+            tri_budget=tri_budget,
             floor_drop=floor_drop,
             settle_only=settle_only,
             **forces,
@@ -2961,9 +3002,9 @@ def _run(owner, notice, sender) -> None:
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_mode=collider_mode,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
-            tri_budget=_chunk.get_param("tri_budget", is_i).value,
+            tri_budget=tri_budget,
             floor_drop=floor_drop,
             node=_chunk,
             settle_only=settle_only,
@@ -2998,7 +3039,7 @@ def _run(owner, notice, sender) -> None:
         except Exception:
             pass
         _report(_chunk, f"settled {prim.GetName()}" if settle_only else
-                f"baked {frame_count} frames on {prim.GetName()}")
+                f"baked {frame_count} frames on {prim.GetName()}" + collider_note)
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
     sim_bake.run(_chunk, bake, report=lambda text: _report(_chunk, text), finish=finish, name="RBDSolver")
@@ -3509,7 +3550,9 @@ def main() -> chunk.Chunk:
             "triangles, and falls back to a heightfield above it.\n\n"
             "This is a time budget as much as a quality one: a Mesh collider costs one "
             "MuJoCo geom per triangle and building them is quadratic, so 5k triangles "
-            "takes a few seconds and 20k takes about a minute, every run.",
+            "takes a few seconds and 20k takes about a minute, every run.\n\n"
+            "Capped at 40,000 (about four minutes). A collider over that is collided as a "
+            "heightfield even in Mesh mode, and the readout says so.",
         )
     )
     col_grp.add_param(

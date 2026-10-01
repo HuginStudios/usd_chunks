@@ -112,3 +112,32 @@ def test_cancel_leaves_no_half_bake(solver):
     assert node.get_param("readout").value == "cancelled"
     op = [a for a in stage.GetPrimAtPath("/Box").GetAttributes() if a.GetName().startswith("xformOp:transform")]
     assert not op or op[0].GetNumTimeSamples() == 0
+
+
+def _grid(stage, path, n):
+    """A flat n x n quad grid: 2 n^2 triangles."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    pts = [(float(i), 0.0, float(j)) for j in range(n + 1) for i in range(n + 1)]
+    faces = []
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            faces += [a, a + 1, a + n + 2, a + n + 1]
+    mesh.CreatePointsAttr(pts)
+    mesh.CreateFaceVertexCountsAttr([4] * (n * n))
+    mesh.CreateFaceVertexIndicesAttr(faces)
+    return mesh.GetPrim()
+
+
+def test_a_mesh_collider_over_the_limit_is_collided_as_a_heightfield(monkeypatch):
+    """Falling_rocks_2: a 225k-triangle rock cluster set to Mesh hung usdview for hours."""
+    code = rbd_mod_file
+    monkeypatch.setattr(code, "_MESH_TRIANGLE_LIMIT", 100)
+    stage = Usd.Stage.CreateInMemory()
+    small, big = _grid(stage, "/Small", 5), _grid(stage, "/Big", 10)  # 50 and 200 triangles
+
+    assert code._collider_settings([small], "Mesh", 500_000) == ("Mesh", 100, "")
+    mode, budget, note = code._collider_settings([small, big], "Mesh", 500_000)
+    assert (mode, budget) == ("Heightfield", 100)
+    assert "200 triangles" in note and "Heightfield" in note
+    assert code._collider_settings([big], "Auto", 500_000) == ("Auto", 100, ""), "Auto keeps its own fallback"
