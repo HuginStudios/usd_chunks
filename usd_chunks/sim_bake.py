@@ -339,11 +339,18 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
     with open(job, "wb") as f:
         pickle.dump(kwargs, f, protocol=pickle.HIGHEST_PROTOCOL)
     source = str(Path(sys.modules[function.__module__].__file__).resolve())
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
+    # The child must import this same usd_chunks. A host started in a folder holding another
+    # copy (usdview launched from C:\usd_chunks while running a worktree) found that one first:
+    # "No module named usd_chunks.sim_bake". So the folder holding this package goes first on
+    # its path, and it starts in the temporary folder, where there is nothing to find.
+    root = str(Path(__file__).resolve().parent.parent)
+    paths = [root] + [p for p in sys.path if p and p != root]
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(
         [sys.executable, "-m", "usd_chunks.sim_bake", source, function.__name__, str(job), str(out)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, creationflags=flags,
+        cwd=str(folder),
     )
     lines: queue.Queue = queue.Queue()
     errors: list[str] = []
