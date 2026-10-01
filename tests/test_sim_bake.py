@@ -181,8 +181,9 @@ def test_write_samples_is_one_change_notice_for_every_frame():
 def test_write_samples_makes_the_spec_when_another_layer_authored_the_attribute():
     """A Scatter's instancer: positions defined in its layer, baked in the solver's."""
     stage = Usd.Stage.CreateInMemory()
-    sub = Sdf.Layer.CreateAnonymous()
-    stage.GetRootLayer().subLayerPaths.append(sub.identifier)
+    sub, scatter = Sdf.Layer.CreateAnonymous(), Sdf.Layer.CreateAnonymous()
+    stage.GetRootLayer().subLayerPaths = [sub.identifier, scatter.identifier]  # sub is stronger
+    stage.SetEditTarget(stage.GetEditTargetForLocalLayer(scatter))
     positions = UsdGeom.PointInstancer.Define(stage, "/Scatter").CreatePositionsAttr()
     positions.Set(Vt.Vec3fArray([Gf.Vec3f(0, 0, 0)]))
     stage.SetEditTarget(stage.GetEditTargetForLocalLayer(sub))
