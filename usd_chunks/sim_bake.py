@@ -99,11 +99,16 @@ def in_background() -> bool:
     """Whether bakes run on a worker: only in a host with a running Qt event loop.
 
     That loop is the only way back to the main thread. Headless (cli), under test and in a
-    plain script there is none, so the bake runs inline and is finished when run() returns.
+    script (Scene(), host "script") there is none, so the bake runs inline and is finished when
+    run() returns -- even if the script made a QApplication, which does not run its loop.
     """
     if QtCore is None or QtCore.QCoreApplication.instance() is None:
         return False
-    return chunk_registry.ChunkRegistry().plugin not in (None, "", "cli", "pytest")
+    return chunk_registry.ChunkRegistry().plugin not in _INLINE_HOSTS
+
+
+#: Hosts with no running event loop: bakes run inline there.
+_INLINE_HOSTS = (None, "", "cli", "pytest", "script")
 
 
 def is_running(node) -> bool:

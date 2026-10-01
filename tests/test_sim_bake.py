@@ -19,7 +19,7 @@ import pytest
 from chunk_stubs import register_stub_module
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import Scene, cook_cache, sim_bake
+from usd_chunks import Scene, chunk_registry, cook_cache, sim_bake
 
 
 class _Node:
@@ -57,7 +57,19 @@ def _bake(where, *, fail=False, steps=1):
     return bake
 
 
-def test_inline_runs_straight_through_and_finishes_before_returning():
+@pytest.fixture
+def inline(monkeypatch):
+    monkeypatch.setattr(sim_bake, "in_background", lambda: False)
+
+
+def test_a_script_runs_its_bakes_inline_even_with_a_qapplication(qapp):
+    """Scene() scripts have no running event loop: a bake sent to a thread would never land."""
+    with Scene():
+        assert chunk_registry.ChunkRegistry().plugin == "script"
+        assert sim_bake.in_background() is False
+
+
+def test_inline_runs_straight_through_and_finishes_before_returning(inline):
     where, results, reports = [], [], []
     sim_bake.run(_Node(), _bake(where), report=reports.append, finish=results.append)
     assert results == [42]
