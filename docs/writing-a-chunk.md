@@ -3,6 +3,9 @@
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
 > the work, and `config()` holds details like its `description` and `category`.
 
+This page is about writing a new chunk. To make and wire chunks you already have from
+Python, see [Scripting](scripting.md).
+
 A chunk module is a plain `.py` file. Put it anywhere in a
 [`USD_CHUNK_DIRS`](install.md#environment-variables) folder and it's found automatically.
 You don't need to register it, write a `plugInfo.json`, or import it anywhere.
@@ -75,6 +78,7 @@ defaults below.
 | `requirements` | `[]` | pip packages the module needs, e.g. `["numpy>=2,<3"]`. If one is missing and the module fails to import, it's skipped instead of crashing. With [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables) set, you're asked whether to install the missing ones into `USD_CHUNK_DEPENDENCY_DIR`. |
 | `required_modules` | `[]` | Other chunk *modules* that must be loaded for this one to work. |
 | `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being cleared and rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
+| `cache_cook` | `False` | Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See [Caching a slow cook](#caching-a-slow-cook). |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
 | `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) chunk uses this. |
 | `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs. |
@@ -144,6 +148,68 @@ def main():
 A save only stores a chunk's **data** (params, values and wiring), never the code that
 ran (see [*What a save keeps*](runtime-chunks.md#what-a-save-keeps)). `execute` is what
 makes a chunk do its work again after the file is opened.
+
+### Caching a slow cook
+
+Because a cook with the same inputs always gives the same layer, a slow one doesn't have to
+run again. Set `cache_cook=True` in `config()` and the result is kept on disk and read back
+the next time the inputs match, including after the file is closed and opened again:
+
+```python
+def config():
+    return chunk.DefaultConfig(cache_cook=True)
+```
+
+The cache compares everything it can see:
+
+- every param's value (an expression counts as the value it resolves to), except labels
+  and OUTPUT params, which the cook writes;
+- the size and modification time of any file a param names;
+- the module's own code and the files next to it;
+- the stage's up axis and `metersPerUnit`.
+
+If the result also depends on something that is not a param, for example geometry read
+from an upstream chunk or files named inside another file, add a `cache_key(node)`
+function that returns it. Anything that can be `repr()`ed works. Return `None` when it
+can't be worked out, and the chunk cooks as usual:
+
+```python
+def cache_key(node):
+    return [mesh_checksum(prim) for prim in input_meshes(node)]
+```
+
+Poly Reduce returns a checksum of the meshes it reads, and URDF Import returns the size and
+date of each mesh file the `.urdf` names.
+
+Each chunk of such a module gets a **Cache Result** checkbox, on by default, to switch
+caching off for that one node. Only cooks that take longer than about 50 ms are stored,
+since reading a result back takes time too. A cook that changes its own input params, or
+adds params, is never stored. For where the cache lives and how to switch it off, see
+[`USD_CHUNKS_COOK_CACHE`](install.md#environment-variables).
+
+### Skipping cooks nothing reached
+
+*Experimental, off by default: set `USD_CHUNKS_SKIP_COOKS=1`.*
+
+A change to a chunk dirties everything below it, but most of those chunks read nothing that
+changed: a Scatter below a Light doesn't care that the Light turned. With skipping on, a
+chunk that only the chunks above it changed doesn't cook unless one of them changed a prim
+it reads.
+
+What a chunk reads is not declared anywhere. During a cook, `node.get_stage()` returns a
+stage that only holds the chunk's **inputs** (the prims its prim path params name, such as
+PRIM_SELECTION params and `primpath_location`) and the prims its last cook wrote. So:
+
+- Read the prims you need through a prim path param, not a path written into the code. A
+  chunk that looks up anything else, or walks the whole stage (`Traverse()`), is noticed,
+  cooked again on the whole stage, and never skipped from then on. It still works; it
+  just always cooks.
+- Framework work on the scene, like muting a gate's branches, goes through
+  `node.get_scene_stage()`, which is always the whole scene. Module code shouldn't need it.
+
+Anything the framework can't account for makes the chunks below cook, as they always have:
+a rewire, a chunk disabled above, a change to which layers are muted or to the stage's
+expression variables, an Edit Target repointed.
 
 ## `commit()`
 

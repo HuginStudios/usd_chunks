@@ -1769,7 +1769,6 @@ def _ensure_test_group_module() -> None:
     grp_mod.loaded = True
     grp_mod._has_main = True
     grp_mod.config = ChunkConfig(module=_GROUP_MODULE_NAME)
-    grp_mod._checksum = -1
     grp_mod.func = lambda: ChunkBase("grp", flags=ChunkFlags.GroupFlags.CONTEXT)
     reg.registered_modules[_GROUP_MODULE_NAME] = grp_mod
 

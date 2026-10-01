@@ -474,6 +474,29 @@ def parse(source: str) -> dict:
     }
 
 
+def cache_key(node):
+    """The meshes the .urdf names, by size and mtime, for the cook cache.
+
+    The .urdf itself is a param and the cache already watches it, but the STLs are only
+    named inside it -- and an STL is converted into the layer, not referenced, so an edited
+    one would otherwise read back the old mesh. Resolved exactly as the cook resolves them.
+    """
+    file_path = (node.get_param("file_path").value or "").strip()
+    if not file_path or not os.path.isfile(file_path):
+        return ()
+    mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
+    with open(file_path, encoding="utf-8") as handle:
+        source = handle.read()
+    if "<!DOCTYPE" in source[:4096]:
+        return None  # parse() refuses it; let the cook say so
+    stats = []
+    for name in sorted({m.get("filename", "") for m in ET.fromstring(source).iter("mesh")}):
+        path = _resolve_mesh(name, mesh_root)
+        st = os.stat(path) if path else None
+        stats.append((name, path, st and st.st_size, st and st.st_mtime_ns))
+    return stats
+
+
 def execute(node):
     file_path = (node.get_param("file_path").value or "").strip()
     root_path = (node.get_param("primpath_location").value or "").strip()
@@ -657,6 +680,7 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.RIGS,
         requirements=["numpy>=2,<3"],
+        cache_cook=True,
         description="""
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,
         collision shapes with an approximation, and revolute, prismatic and fixed joints

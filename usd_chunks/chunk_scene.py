@@ -22,18 +22,21 @@ import logging
 import weakref
 from abc import abstractmethod
 from pathlib import Path
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_notice, chunk_registry
+from usd_chunks import chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.chunk_core import (
+from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
+from usd_chunks.graph import engine
+from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkBase,
     ChunkParamBase,
     ChunkHash,
     NameSyncedContainer,
+    all_chunks,
     check_chunk_type,
     is_inst,
 )
@@ -41,11 +44,13 @@ from usd_chunks.chunk_core import (
 logger = logging.getLogger(__name__)
 
 
-# The chunk module backing every context. "context == chunkgroup": a CONTEXT chunk with no
-# module was only ever a stand-in from before this type existed. The /chunks prim itself is a
-# scope (plugins-layer _CHUNKS_ROOT), like /lights or /render -- nothing lives at it, and the
-# default chunkgroup sits under it at /chunks/<name>.
-CHUNKGROUP_MODULE = "chunkgroup"
+
+#: Set by a graph frontend: returns the USD position at the center of the graph it shows, or
+#: None. Nodes a script makes in an app start there, so they land where the user is looking.
+graph_center_hook: Callable[[], tuple[float, float] | None] | None = None
+
+#: Space between two nodes a script makes, in a row. The same as the default layout's.
+_SCRIPT_NODE_STEP = 260.0
 
 
 class SceneSender(chunk_notice.ChunkNoticePropagator):
@@ -55,6 +60,18 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     class is not purely abstract, as most functions dealing with chunks are implemented
     here, but a subclass should implement every @abstractmethod.
     """
+
+    #: Whether a load cooks only what the active views reach. A host whose graph recooks
+    #: for its active view straight after a load sets this: that recook mutes everything the
+    #: view cannot reach, so cooking it during the load is work nobody sees. The rest stays
+    #: stale and cooks when its view is activated. Off by default, because a script or the
+    #: CLI never runs that recook and relies on the load to cook the whole network.
+    load_cooks_active_views_only: bool = False
+
+    #: Whether this scene belongs to an app the user works in, like usdview. A script's own
+    #: Scene refuses to start while one is live: it would build on a stage nobody sees and
+    #: take the registry away from the app. Scene.current() is the way in instead.
+    is_app: bool = False
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -70,6 +87,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._creator: Creator | None = None
         self._scopes: list = []
         self._upstream: list[ChunkBase | None] = []
+        # Where this script's nodes go in an app's graph: the first node's position (None
+        # for the default row), whether it has been looked up yet, and how many have been
+        # placed in the row since.
+        self._script_origin: tuple[float, float] | None = None
+        self._script_origin_found = False
+        self._script_count = 0
 
     @property
     def current_context(self) -> ChunkBase | None:
@@ -692,8 +715,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def look_at_selection(self) -> bool:
         """Turn the viewport camera to face the selected prims. False if none is measurable."""
-        from usd_chunks import chunk_utils  # deferred: chunk_utils imports this package's model
-
         stage = self.get_stage()
         point = chunk_utils.focus_point_of(stage, self.get_selected_prims()) if stage else None
         if point is None:
@@ -763,10 +784,36 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def __enter__(self) -> SceneSender:
         """`with scene:` -- a host's scene is borrowed, so leaving the block keeps it."""
+        self._script_origin_found = False
         return self
 
     def __exit__(self, *exc) -> None:
-        pass
+        self._script_origin_found = False
+
+    def _next_node_position(self) -> tuple[float, float] | None:
+        """Where the next scripted node goes in an app's graph, or None for the default.
+
+        The first goes at the center of the graph view, the rest in a row to its right.
+        Each `with` block starts a new row.
+        """
+        if not self.is_app:
+            return None
+        if not self._script_origin_found:
+            # Looked up once per block: with no view yet, the whole block keeps the default
+            # row rather than jumping to the view once the first node has made one.
+            self._script_origin_found = True
+            self._script_origin = graph_center_hook() if graph_center_hook else None
+            self._script_count = 0
+        if self._script_origin is None:
+            return None
+        x, y = self._script_origin
+        self._script_count += 1
+        return (x + (self._script_count - 1) * _SCRIPT_NODE_STEP, y)
+
+    def _add_scripted(self, chunk: ChunkBase) -> None:
+        """add_chunk, at the position _next_node_position picks."""
+        with chunk_stage.creating_at(self._next_node_position()):
+            self.add_chunk(chunk)
 
     @property
     def create(self) -> Creator:
@@ -805,19 +852,29 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # prim, which does not exist until the chunk is in the scene.
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
+        # A param the chunk only builds once it is in the scene (Light's) waits until then.
+        early = {k: v for k, v in values.items() if new.get_param(k) is not None}
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
-            self.set(new, **values)
+            self.set(new, **early)
         finally:
             new._executing = prev
-        self.add_chunk(new)
+        self._add_scripted(new)
+        # A menu that gets its choices only once the chunk is in the scene (Edit Target's
+        # layer list) drops a value set before that, so set any value that did not stick.
+        late = {
+            k: v for k, v in values.items()
+            if k not in early or new.get_param(k).value != v
+        }
+        self.set(new, **late)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
         for i in inputs:
             new.add_dependency(i)
         self.set(new, **wires)
+        self._recook_active_view(new)
         return new
 
     def set(self, target: ChunkBase, **params) -> None:
@@ -839,11 +896,81 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def cook(self) -> None:
         """Run every chunk, upstream first.
 
-        Setting a value already reruns what it affects, so this is only needed for chunks
-        whose work lives solely in their module's execute(), such as Light, which do
-        nothing until they are run.
+        Making a chunk and setting a value already run what they affect, so this is rarely
+        needed.
         """
         execute_roots(self.get_chunks())
+
+    # save, export and commit live here rather than on the script's Scene, so they work on
+    # usdview's scene too (Scene.current()).
+
+    def save(self, path: str) -> None:
+        """Write the network itself -- Chunk prims and wires -- so it reopens as a graph."""
+        chunk_stage.export_chunks(self, path)
+
+    def export(self, path: str) -> None:
+        """Write the result as plain USD, with the Chunk prims stripped out."""
+        chunk_stage.flatten_without_chunks(self.get_stage()).Export(path)
+
+    def commit(self) -> None:
+        """Run every chunk's commit hook -- the ones that write files, like Export USD."""
+        stage = self.get_stage()
+        chunk_scheduler.commit_all(
+            self.get_chunks(),
+            order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
+        )
+
+    def view(self, target: ChunkBase) -> ChunkBase | None:
+        """Make the active View show `target`, and cook what it now reaches.
+
+        The same as dragging a wire from `target` into the View in the graph: the View's
+        old input is replaced. A graph with no View gets one. Nothing else is rewired.
+
+        Args:
+            target: The chunk to view, usually the last one in a chain.
+
+        Returns:
+            The View chunk, or None if no View could be made.
+        """
+        stage = self.get_stage()
+        target_path = chunk_stage.get_chunk_prim_path(target)
+        context_path, context, slot, view = self._active_view_of(target)
+        if view is None:
+            # Reuses a View already wired to target, or makes one.
+            slot = engine.create_view_for(stage, self, target_path)
+            view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
+            if view is None:
+                return None
+        else:
+            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(view))
+        engine.write_active_slot(stage, context_path, slot)
+        chunk_stage.recook_for_view(stage, self, context, view)
+        return view
+
+    def _active_view_of(self, target: ChunkBase):
+        """The graph `target` is in, and the View active there.
+
+        Returns:
+            (context prim path, context chunk, active slot, View chunk or None).
+        """
+        stage = self.get_stage()
+        context_path = str(Sdf.Path(chunk_stage.get_chunk_prim_path(target)).GetParentPath())
+        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in (*self.get_contexts(), *self.get_chunks())}
+        context = by_path.get(context_path)
+        slot = engine.read_active_slot(stage, context_path)
+        view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
+        return context_path, context, slot, view
+
+    def _recook_active_view(self, target: ChunkBase) -> None:
+        """Cook through the View active in `target`'s graph, as the graph does after a wire.
+
+        A chunk just made outside the View's chain is switched off by this, the same as a
+        node made in the graph, so the viewport matches the graph. It is not blocked before
+        that: a blocked chunk's fields miss the values the script sets.
+        """
+        _, context, _, view = self._active_view_of(target)
+        if view is not None:
+            chunk_stage.recook_for_view(self.get_stage(), self, context, view)
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
@@ -921,7 +1048,9 @@ class Creator:
             primary, *extra = entry.create()
             placed = self._scene.place(primary, inputs, name, **params)
             for c in extra:
-                self._scene.add_chunk(c)
+                self._scene._add_scripted(c)
+            if extra:
+                self._scene._recook_active_view(placed)
             return placed
 
         create.__name__ = name
@@ -965,15 +1094,6 @@ class Creator:
 def _script_name(label: str) -> str:
     """A menu label as a Python name: "Dome Light" -> "dome_light"."""
     return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
-
-
-def all_chunks(chunks) -> list[ChunkBase]:
-    """Every chunk inside the given ones, groups excluded, at any depth."""
-    found = []
-    for c in chunks:
-        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
-        found.extend(all_chunks(sub) if sub else [c])
-    return found
 
 
 def execute_roots(chunks) -> None:

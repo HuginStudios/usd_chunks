@@ -257,6 +257,66 @@ def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
     return not layer.anonymous and layer != stage.GetRootLayer()
 
 
+def stamp_module_hash(stage: Usd.Stage, chunk) -> None:
+    """Record on the chunk's prim which module source it just cooked with.
+
+    Called by the cook, not by a save: a chunk that loaded without re-running has output
+    made by the code the file was saved with, and stamping it at save time would relabel that
+    output with whatever code is loaded now. Written where the rest of the chunk's
+    bookkeeping lives (get_bookkeeping_layer) -- never the cook layer, which is cleared on
+    the next cook -- and updated in place when it already exists, like any other
+    bookkeeping attribute. Skipped when the value is already right, so a re-cook of
+    unchanged code writes nothing.
+
+    Args:
+        stage: The stage.
+        chunk: The chunk that cooked; nothing is written for one whose module has no source
+            hash (a module built without a file).
+    """
+    module = chunk.get_chunk_module()
+    digest = module.source_hash if module is not None else None
+    if not digest:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return
+    attr = prim.GetAttribute(chunk_naming.MODULE_HASH_ATTR)
+    if attr and attr.IsValid() and attr.Get() == digest:
+        return
+    home = get_attr_home_layer(attr) if attr and attr.IsValid() else None
+    target = home or get_bookkeeping_layer(stage, chunk)
+    with Usd.EditContext(stage, target):
+        attr = prim.CreateAttribute(
+            chunk_naming.MODULE_HASH_ATTR, Sdf.ValueTypeNames.String, custom=False)
+        attr.SetVariability(Sdf.VariabilityUniform)
+        attr.Set(digest)
+    logger.debug("%s cooked with %s %s", prim.GetPath(), module.module_name, digest)
+
+
+def recorded_module_hash(prim: Usd.Prim) -> str | None:
+    """The module hash a chunk prim was saved with (MODULE_HASH_ATTR), or None if it has none."""
+    attr = prim.GetAttribute(chunk_naming.MODULE_HASH_ATTR)
+    return (attr.Get() or None) if attr and attr.IsValid() else None
+
+
+def module_changed_since_cook(prim: Usd.Prim, module) -> bool:
+    """Whether a chunk prim's recorded module hash differs from the module now registered.
+
+    True means the result this prim was saved with came from other code than the code that
+    would run it now. No opinion is a no, not a yes: a prim that never cooked, one from a file
+    older than the attribute, and a module with no source hash all have nothing to compare.
+
+    Args:
+        prim: The chunk prim.
+        module: The registered ChunkModule its info:chunkType names.
+
+    Returns:
+        True if both hashes exist and differ.
+    """
+    saved = recorded_module_hash(prim)
+    return bool(saved and module.source_hash and saved != module.source_hash)
+
+
 def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     """The layer to update an existing attribute in.
 
@@ -349,6 +409,19 @@ def resolve_collection_members(stage: Usd.Stage, name: str) -> list[str]:
     return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage)]
 
 
+def _glob_root(pattern: str) -> str:
+    """The deepest path a glob's matches all lie under: its components before the first glob.
+
+    /World/objects/cube_* -> /World/objects; mesh* -> /.
+    """
+    fixed = []
+    for part in pattern.split("/")[1:]:
+        if "*" in part or "?" in part:
+            break
+        fixed.append(part)
+    return "/" + "/".join(fixed)
+
+
 def resolve_prim_paths(stage, location_str):
     """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
@@ -418,7 +491,11 @@ def resolve_prim_paths(stage, location_str):
         rx = _to_re(pattern)
         matched = []
         with author_in_variant_context(stage, token) if selections else nullcontext():
-            for prim in stage.Traverse():
+            # Walked from the pattern's fixed part, not from /: every match is under it, so
+            # the rest of the stage is neither read nor paid for -- and a chunk whose target
+            # is /World/objects/cube_* reads /World/objects, not the whole scene (skip_cook).
+            root = stage.GetPrimAtPath(_glob_root(pattern))
+            for prim in Usd.PrimRange(root) if root else ():
                 if rx.match(prim.GetPath().pathString):
                     matched.append(prim.GetPath().pathString)
         paths.extend(_with_variant_selections(path, selections) for path in matched)
@@ -464,6 +541,31 @@ _TEXT_TYPES = (
 def attr_holds_text(attr: Usd.Attribute) -> bool:
     """Whether a str can be Set() on attr: its type is String, Token or Asset."""
     return attr.GetTypeName() in _TEXT_TYPES
+
+
+#: The attribute type a param value of each Python type is stored as.
+SDF_TYPE_MAP = {
+    bool: Sdf.ValueTypeNames.Bool,
+    int: Sdf.ValueTypeNames.Int,
+    float: Sdf.ValueTypeNames.Float,
+    str: Sdf.ValueTypeNames.String,
+    Gf.Matrix4d: Sdf.ValueTypeNames.Matrix4d,
+}
+
+
+def retype_attr(attr: Usd.Attribute, type_name: Sdf.ValueTypeName) -> None:
+    """Change attr's type in every layer that has a spec for it, dropping the old value.
+
+    Its connections stay: they name where a value comes from, whatever its type.
+
+    Args:
+        attr: The attribute.
+        type_name: Its new type.
+    """
+    for spec in attr.GetPropertyStack():
+        if spec.typeName != type_name:
+            spec.SetInfo("typeName", str(type_name))
+            spec.ClearDefaultValue()
 
 
 # Where the authored expression text is kept for an attr that cannot hold it as its own
@@ -1226,7 +1328,7 @@ def existing_xform_op_name(node):
     suffix = getattr(node, "_xform_op_suffix", None)
     if suffix:
         return _XFORM_OP_PREFIX + suffix
-    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
     prim = _chunk_prim_of(stage, node) if stage is not None else None
     if prim is None:
         return None
@@ -1289,7 +1391,7 @@ def _stable_suffix(node) -> str:
     if cached:
         return cached
 
-    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
     prim = _chunk_prim_of(stage, node) if stage is not None else None
 
     suffix = None

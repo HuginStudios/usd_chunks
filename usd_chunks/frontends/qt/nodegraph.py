@@ -53,19 +53,29 @@ _NODE_HEADER_H = 40
 # ChunkNodeItem paints itself -- when either of these says so. The node keeps its size
 # either way, so layout, edges and framing are unaffected.
 #
-# Zoom alone decides this: below this scale a body's text is unreadable, so it is replaced
-# by the cheap flat form, and above it every body stays live no matter how many are on
-# screen. There is deliberately no cap on the number drawn.
+# Below this scale a body's text is hard to read, so it is replaced by the cheap flat form.
+# There is deliberately no cap on the number drawn above it.
 #
-# Culling by viewport position as well was tried and reverted. A body reports no height
+# Culling by viewport position as well was tried and reverted once. A body reports no height
 # until it has been through one visible layout cycle, and a node's height is what its ports,
 # edges, framing and auto-layout all measure from. Per-node culling hides bodies constantly
 # and early -- proxies are built in deferred batches while the view is still moving -- and a
 # body hidden before it was ever laid out freezes the node at its bare header height.
 # sizeHint(), adjustSize() and an explicit layout activate() all return 0 for such a widget,
-# so it cannot be measured ahead of time; making this work needs a real "has been laid out
-# at least once" gate on the node, not just careful ordering.
-_LOD_BODY_MIN_SCALE = 0.25
+# so it cannot be measured ahead of time. It is back now that the "has been laid out" gate
+# exists: set_body_visible declines every hide until ChunkGraphScene.heights_settled, and
+# _on_heights_settled re-runs LOD, so an offscreen body is only flattened once its height
+# is real. See _LOD_VIEWPORT_MARGIN.
+_LOD_BODY_MIN_SCALE = 0.1
+
+# Nodes outside the visible area also get the flat form. The visible rect is grown by this
+# fraction of the viewport's size on every side, so a node panned toward the edge is
+# already live by the time it arrives rather than popping in (a re-shown proxy can flash
+# blank for a frame while it re-lays out).
+_LOD_VIEWPORT_MARGIN = 0.5
+# Throttle for re-running LOD while panning/resizing: often enough to keep up with a drag,
+# rarely enough that a pan isn't a per-node walk per mouse move.
+_LOD_PAN_THROTTLE_MS = 50
 
 # Quiet period before ports are re-placed after the node's geometry changes. Placement
 # re-measures every param widget, so it must not run per animation frame.
@@ -218,10 +228,15 @@ _PORT_TYPE_COLOR = {
 class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
     """A connection dot on a node."""
 
-    def __init__(self, attr_path: str, port_type: str, parent: ChunkNodeItem, show_label: bool = False):
+    def __init__(
+        self, attr_path: str, port_type: str, parent: ChunkNodeItem, show_label: bool = False, param=None
+    ):
         r = _PORT_RADIUS
         super().__init__(-r, -r, r * 2, r * 2, parent)
         self.attr_path = attr_path
+        # The param this port stands for; a list-group row's port names the same attribute as
+        # its siblings, so this is what tells them apart.
+        self.param = param
         self.port_type = port_type
         self.is_input = ".inputs:" in attr_path
         self.setBrush(_PORT_TYPE_COLOR[port_type])
@@ -1076,11 +1091,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         }
         scene = self.scene()
         if isinstance(scene, ChunkGraphScene):
-            my_path = str(self.prim.GetPath())
-            for node in scene._nodes.values():
-                for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
-                    if src_prim_path == my_path and src_attr_suffix.startswith("outputs:"):
-                        names.add(src_attr_suffix[len("outputs:"):])
+            names |= scene.fed_outputs(str(self.prim.GetPath()))
         return names
 
     def _nearest_collapsed_group(self, param) -> core.ChunkCommon | None:
@@ -1118,11 +1129,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 continue
             y += _STEP
             ptype = _param_port_type(param)
-            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self)
+            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self, param=param)
             in_port.setPos(0, y)
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
-            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
+            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self, param=param)
             out_port.setPos(_NODE_WIDTH, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
@@ -1177,12 +1188,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 widget = vector_widgets.get(param)
             else:
                 widget = param_widgets.get(param)
-            if widget is None:
+            collapsed_group = self._nearest_collapsed_group(param)
+            # A collapsed group builds its contents only once it is first opened
+            # (ContainerWidget.ensure_children_built), so a param inside one may have no
+            # widget yet. It does not need one: its port anchors at the group's header.
+            if widget is None and collapsed_group is None:
                 continue
 
             ptype = _param_port_type(param)
 
-            collapsed_group = self._nearest_collapsed_group(param)
             if collapsed_group is not None:
                 if param.name not in connected:
                     continue
@@ -1221,12 +1235,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
             y = _NODE_HEADER_H + local.y()
 
-            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self)
+            in_port = ChunkPortItem(f"{self.prim.GetPath()}.inputs:{param.name}", ptype, parent=self, param=param)
             in_port.setPos(0, y)
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
 
-            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self)
+            out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self, param=param)
             out_port.setPos(_NODE_WIDTH, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
@@ -1941,6 +1955,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage: Usd.Stage | None = None
         self._scene_sender: chunk_scene.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
+        # Source prim path -> names of its outputs that some node in the scene is wired to.
+        # Built on demand by fed_outputs and dropped whenever a wire or the node set can
+        # have changed; see there.
+        self._fed_outputs_index: dict[str, set[str]] | None = None
         self._edges: list[ChunkEdgeItem] = []
         self._show_param_edges: bool = True
         self._built_context: object = _UNBUILT  # sentinel -- tracks what context is currently rendered
@@ -1951,6 +1969,25 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # deleted kept reacting to every stage change.
         self._stage_listeners: list[NoticeConnection] = []
         disconnect_when_destroyed(self, self._stage_listeners)
+
+    def fed_outputs(self, prim_path: str) -> set[str]:
+        """Names of prim_path's outputs that a node in this scene has a wire from.
+
+        The reverse half of ChunkNodeItem._connected_param_names: a wire lives on the
+        downstream prim's inputs:, so finding the ones that start at a node means reading
+        every other node. Each node asked that on every port placement, which is every
+        node times every placement -- 84k connection scans and over a second to dive into
+        an 86-node group. Read once here instead, and dropped by _on_objects_changed when a
+        wire can have moved and by _rebuild_nodes when the node set does.
+        """
+        if self._fed_outputs_index is None:
+            index: dict[str, set[str]] = {}
+            for node in self._nodes.values():
+                for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
+                    if src_attr_suffix.startswith("outputs:"):
+                        index.setdefault(src_prim_path, set()).add(src_attr_suffix[len("outputs:"):])
+            self._fed_outputs_index = index
+        return self._fed_outputs_index.get(prim_path, set())
 
     def set_show_param_edges(self, show: bool):
         self._show_param_edges = show
@@ -2097,6 +2134,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._rebuild_retries = 0
 
         self._dirty = False
+        self._fed_outputs_index = None  # the node set and its prim handles are about to change
         # Bump the build generation so any in-flight deferred proxy batch from a superseded
         # rebuild aborts instead of creating a ghost proxy on a node that got torn down below.
         self._build_gen = getattr(self, "_build_gen", 0) + 1
@@ -2337,9 +2375,33 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     self.addItem(edge)
                     self._edges.append(edge)
 
+        if self._show_param_edges:
+            self._build_list_row_edges()
+
         for node in self._nodes.values():
             if node.prim.IsValid():
                 node._sync_vector_states()
+
+    def _build_list_row_edges(self) -> None:
+        """Draw the wires into list rows, which live in each row's expression, not in USD.
+
+        See chunk_graph.connect for why a row has no connection of its own.
+        """
+        by_name = {n.prim.GetName(): n for n in self._nodes.values() if n.prim.IsValid()}
+        for node in by_name.values():
+            for dst_port in node._typed_ports:
+                if not (dst_port.is_input and chunk_graph.is_list_row(dst_port.param)):
+                    continue
+                raw = dst_port.param.raw_value
+                if not chunk_utils.is_expression_text(raw):
+                    continue
+                for src_name, src_param in chunk_utils.parse_expression(raw):
+                    src_node = by_name.get(src_name)
+                    src_port = src_node.get_port(f"{src_node.prim.GetPath()}.outputs:{src_param}") if src_node else None
+                    if src_port is not None:
+                        edge = ChunkEdgeItem(src_port, dst_port, raw)
+                        self.addItem(edge)
+                        self._edges.append(edge)
 
     def update_edges_for(self, node: ChunkNodeItem):
         node_ports = set(node._ports)
@@ -2446,6 +2508,14 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             return
         if sender.GetRootLayer().identifier != self._stage.GetRootLayer().identifier:
             return
+        # Before any early return below. A wire is an inputs: property, so an edit to one or
+        # any resync can move it; a cook's hundreds of plain attribute writes cannot.
+        if self._fed_outputs_index is not None and (
+            notice.GetResyncedPaths()
+            or any(p.IsPropertyPath() and p.name.startswith("inputs:")
+                   for p in notice.GetChangedInfoOnlyPaths())
+        ):
+            self._fed_outputs_index = None
         # A prim-level resync under our chunks root means a chunk was added/removed/enabled/
         # disabled. Rebuild the whole graph from scratch -- only active chunks survive --
         # instead of editing nodes in place around expired or inactive prims. Property-level
@@ -2960,6 +3030,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         super().resizeEvent(event)
         self._menubar.setFixedWidth(self.width())
         self._anchor_breadcrumb()
+        self._schedule_lod()
 
     def scrollContentsBy(self, dx: int, dy: int):
         """Keep the context path pinned to the corner while the canvas moves under it.
@@ -2968,9 +3039,24 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         a widget parented to the viewport pans with the graph -- the path drifted off with
         the nodes and read as one of them. Panning is the only thing that moves it, so
         putting it back here costs a move per scroll and nothing else.
+
+        Panning also changes which nodes are on screen, so LOD is re-run (throttled).
         """
         super().scrollContentsBy(dx, dy)
         self._anchor_breadcrumb()
+        self._schedule_lod()
+
+    def _schedule_lod(self) -> None:
+        """Re-run _apply_lod soon; a throttle, not a debounce, so a long pan keeps updating."""
+        timer = getattr(self, "_lod_pan_timer", None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(_LOD_PAN_THROTTLE_MS)
+            timer.timeout.connect(self._apply_lod)
+            self._lod_pan_timer = timer
+        if not timer.isActive():
+            timer.start()
 
     def _anchor_breadcrumb(self) -> None:
         """Top-left of the canvas, above whatever is drawn there."""
@@ -3720,16 +3806,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._apply_lod()
 
     def _apply_lod(self) -> None:
-        """Swap node bodies for the flat far-zoom form below _LOD_BODY_MIN_SCALE.
+        """Swap node bodies for the flat form below _LOD_BODY_MIN_SCALE, and for nodes
+        outside the (margin-grown) visible area.
 
-        Called after anything that changes the view transform, and only that -- panning and
-        resizing move nodes through the viewport but change nothing about how legible a body
-        is, so they cannot flip this. Qt already skips painting offscreen nodes on its own
-        (measured: 0 on screen repaints in 2.8ms against 66ms for 33), so there is nothing
-        to win by tracking position here either.
-
-        The per-node walk runs only when the decision actually flips, so a wheel spin inside
-        one band costs a single float comparison.
+        Called after anything that changes the view transform, and (throttled, via
+        _schedule_lod) after panning and resizing, which change which nodes are on screen.
+        Qt already skips painting offscreen nodes on its own (measured: 0 on screen repaints
+        in 2.8ms against 66ms for 33), but a live offscreen body still costs layout and
+        widget updates, so it is flattened too.
         """
         # Toggling item visibility schedules updates, which can re-enter here through Qt's
         # own handling -- keep it strictly one deep.
@@ -3749,12 +3833,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # requested state, so the repeat costs one attribute compare per node.
         self._lod_bodies_shown = show_bodies
         buried = self._buried_nodes(nodes) if show_bodies else frozenset()
+        live_rect = self._lod_live_rect() if show_bodies else QtCore.QRectF()
         self._lod_busy = True
         try:
             for node in nodes:
-                node.set_body_visible(show_bodies and node not in buried)
+                node.set_body_visible(
+                    show_bodies
+                    and node not in buried
+                    and live_rect.intersects(node.sceneBoundingRect())
+                )
         finally:
             self._lod_busy = False
+
+    def _lod_live_rect(self) -> QtCore.QRectF:
+        """The scene area whose nodes keep a live body: what's on screen plus a margin.
+
+        A view with no size yet (hidden page, not laid out) culls nothing -- it would
+        otherwise flatten every node until its first resize.
+        """
+        vp_rect = self.viewport().rect()
+        if vp_rect.isEmpty():
+            e = self._SCENE_EXTENT
+            return QtCore.QRectF(-e, -e, e * 2, e * 2)
+        visible = self.mapToScene(vp_rect).boundingRect()
+        mx = visible.width() * _LOD_VIEWPORT_MARGIN
+        my = visible.height() * _LOD_VIEWPORT_MARGIN
+        return visible.adjusted(-mx, -my, mx, my)
 
     @staticmethod
     def _buried_nodes(nodes: list) -> frozenset:
@@ -4103,9 +4207,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if isinstance(graph_scene, ChunkGraphScene) and graph_scene._stage:
                 attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
                 conns = list(attr.GetConnections()) if attr and attr.IsValid() else []
-                if conns:
+                row_edge = None
+                if not conns and chunk_graph.is_list_row(port.param):
+                    # A row's wire is its expression, drawn as an edge with no USD connection.
+                    row_edge = next((e for e in graph_scene._edges if e.dst_port is port), None)
+                if conns or row_edge:
                     self._drag_detach_attr = attr
-                    self._drag_detach_source_port = self._find_sibling_output_port(conns[0], graph_scene)
+                    self._drag_detach_source_port = (
+                        row_edge.src_port if row_edge else self._find_sibling_output_port(conns[0], graph_scene)
+                    )
                     # Drag the real edge itself (its src end stays put, dst end follows
                     # the cursor) instead of a separate rubber-band line on top of it.
                     for edge in graph_scene._edges:
@@ -4304,6 +4414,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             attr_path=item.attr_path,
             port_type=item.port_type,
             is_input=item.is_input,
+            param=item.param,
         )
 
     def _can_connect(self, a: ChunkPortItem, b: ChunkPortItem) -> bool:
@@ -4859,6 +4970,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._recook_skip_next_delete = False  # consume -- must not leak into a later delete
         # None = always recook (a relevant chunk was deleted); () = definitely irrelevant, skip.
         self._recook_active_view(None if force_full else ())
+
+    def center_position(self) -> tuple[float, float]:
+        """The USD node position that puts a default-size node in the middle of the view."""
+        center = self.mapToScene(self.viewport().rect().center())
+        w, h = chunk_graph.DEFAULT_NODE_SIZE
+        # Node positions are the top-left corner, and USD is Y-up where the canvas is Y-down.
+        return (center.x() - w / 2, -(center.y() - h / 2))
 
     def _graph_context(self) -> core.ChunkBase | None:
         graph_scene = self.scene()

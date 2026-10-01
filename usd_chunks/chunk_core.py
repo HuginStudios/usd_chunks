@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils, cook_cache, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -166,6 +166,12 @@ class UsdSyntaxHighlightMapping(SyntaxHighlightMapping):
 class ChunkContainerWidgetBase(Generic[GroupT]):
     """Chunk is a base class for creating UI representation of chunk containers."""
 
+    #: Build a collapsed group's child widgets only when it is first expanded. Whether a
+    #: toolkit can is its own question -- expanding must call ensure_children_built before it
+    #: measures anything -- so a subclass opts in. Worth it for big folded groups: a Wedge's
+    #: Ranges list is ~6,600 widgets and ~5 s to build, all of it hidden until opened.
+    defer_collapsed_children: bool = False
+
     def __init__(self, group: GroupT, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -239,7 +245,13 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         # Initialize everything
         self.factory = self.get_widget_factory()
         self.build_collapsable()
-        self._build_param_widgets(self.group)
+        self._children_built = not (
+            self.defer_collapsed_children
+            and self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
+            and self.group.has_state(ChunkFlags.State.COLLAPSED)
+        )
+        if self._children_built:
+            self._build_param_widgets(self.group)
         self.update_from_layout()
         self.update_from_flags()
         self.update_from_state()
@@ -294,6 +306,17 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
             NotImplementedError: A subclass does not implement it.
         """
         raise NotImplementedError
+
+    def ensure_children_built(self) -> None:
+        """Build the child widgets a collapsed group deferred (see defer_collapsed_children).
+
+        Built from the group's params as they are now, so rows added while it was folded
+        (a ListGroup grown by a load) arrive with the rest. Does nothing once built.
+        """
+        if self._children_built:
+            return
+        self._children_built = True
+        self._build_param_widgets(self.group)
 
     def is_collapsed(self) -> bool:
         """Whether the group widget should be collapsed, because it or its parent is.
@@ -485,6 +508,8 @@ class ChunkContainerWidgetBase(Generic[GroupT]):
         self.delete_self()
 
     def _param_added_callback(self, notice, sender: GroupT):
+        if not self._children_built:
+            return  # built with everything else when the group is first expanded
         h = notice.data
         if not h:
             return
@@ -645,6 +670,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
         self.__hashable = HashVal()
         self.__param_ref = weakref.ref(param, self._param_died)
+        self._expression_connections: list = []
 
         if isinstance(param, ChunkParamBase):
             self._value = param.value
@@ -674,6 +700,18 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     def _ref_child_added(self, notice, sender):
         if isinstance(notice.data, ChunkParamBase):
             self._children.add(ProxyParam(notice.data))
+
+    def _on_row_ref_changed(self, notice=None, sender=None):
+        """A param this row's expression reads changed: announce the row's new value."""
+        self.__value_sender.old_value = self._value
+        self.__value_sender.execute()
+
+    def _resolved_value(self) -> Any:
+        """The row's value, with an expression resolved the way the template resolves its own."""
+        raw = self._value
+        if isinstance(raw, str) and chunk_utils.has_expression(raw):
+            return self._param_ref._resolve_expression_string(raw)
+        return raw
 
     def _ref_child_removed(self, notice, sender):
         if isinstance(notice.data, ChunkCommon):
@@ -785,10 +823,12 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
 
     @override
     def __getattribute__(self, name: str) -> Any:
-        if name in ("value", "raw_value"):
-            # Return the value stored on the proxy so widgets display the proxy's own value,
-            # not the template's default.
+        if name == "raw_value":
             return super().__getattribute__("_value")
+        if name == "value":
+            # The proxy's own value, not the template's default -- with an expression
+            # (a wire from another chunk) resolved, as the template's own value is.
+            return super().__getattribute__("_resolved_value")()
         if name == "iter_hierarchy":
             return super().__getattribute__("_iter_hierarchy")
         if name == "get_my_params":
@@ -804,7 +844,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name == "request_delete":
             return super().__getattribute__("request_delete")
 
-        if name in ["_dag_node", "_callbacks", "_blocked"]:
+        if name in ["_dag_node", "_callbacks", "_blocked", "_expression_connections"]:
             return super().__getattribute__(name)
 
         if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
@@ -829,7 +869,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         if name != "__class__" and hasattr(chunk_notice.ChunkNoticePropagator, name):
             return super().__setattr__(name, value)
 
-        if name in ["_dag_node", "_callbacks", "_blocked"]:
+        if name in ["_dag_node", "_callbacks", "_blocked", "_expression_connections"]:
             return super().__setattr__(name, value)
 
         if name == "children":
@@ -841,6 +881,9 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # of through the original param ownership channel.
             self.__value_sender.old_value = self._value
             self._value = value
+            self._expression_connections = self._param_ref._listen_to_expression_refs(
+                value, self._on_row_ref_changed
+            )
             # A list-group row (e.g. Sublayer's imports:sublayer_path) is a ProxyParam, so
             # _load_wire_inputs' bulk restore reaches this setattr directly -- not through
             # ChunkBase.value_changed, the only place chunk_notice._loading_stage is normally
@@ -1589,6 +1632,22 @@ class ChunkCommon(AttributesBase):
     def get_stage(self) -> Usd.Stage | None:
         """Easy access to the current UsdStage.
 
+        Inside a cook skip_cook runs on a stage of the chunk's inputs, this is that stage:
+        it is all a module may read. See skip_cook.
+
+        Returns:
+            Usd.Stage: The stage held by the SceneSender of ChunkRegistry
+        """
+        return skip_cook.active_stage() or self.get_scene_stage()
+
+    def get_scene_stage(self) -> Usd.Stage | None:
+        """The scene's own stage, also inside a cook.
+
+        For the framework's work on the scene rather than a module's reading of it: muting
+        a gate's branches, a chunk prim's bookkeeping, a unique name -- all of which a cook
+        stage (get_stage inside a masked cook) would get wrong, holding only the cook's
+        inputs.
+
         Returns:
             Usd.Stage: The stage held by the SceneSender of ChunkRegistry
         """
@@ -1812,6 +1871,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     # Don't write a string to a typed (numeric) attr -- an unresolved
                                     # forwarded value can arrive as text and raise a type-mismatch.
                                     bad_str = isinstance(val, str) and not chunk_utils.attr_holds_text(usd_attr)
+                                    # And the other way round: a number for a String attr.
+                                    # A wire used to make a number param's attr a String
+                                    # (to hold its expression), and the first plain number
+                                    # typed in once the wire was gone could not be written.
+                                    # A file saved like that is healed here, where it hurts.
+                                    if (
+                                        not isinstance(val, str)
+                                        and usd_attr.GetTypeName() == Sdf.ValueTypeNames.String
+                                        and (typed := chunk_utils.SDF_TYPE_MAP.get(type(val))) is not None
+                                    ):
+                                        chunk_utils.retype_attr(usd_attr, typed)
+                                        current = None
                                     if not bad_str and current != val:
                                         usd_attr.Set(val)
                                 if is_expr:
@@ -1993,7 +2064,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         Returns:
             Usd.Property | None: The bound storage USD property, or None.
         """
-        stage = self.get_stage()
+        stage = self.get_scene_stage()
         if stage and self._param_attr_path:
             return stage.GetPropertyAtPath(self._param_attr_path)
 
@@ -2090,7 +2161,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if context:
             return context.get_param(f"{node_name}.{param_name}")
         try:
-            scene = chunk_registry.ChunkRegistry().get_scene()
+            scene = chunk_registry.ChunkRegistry().scene
             target = scene.get_chunk(node_name)
             return target.get_param(param_name) if target else None
         except Exception:
@@ -2472,29 +2543,43 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                         "literal here. Branch on it with a Stage Expression Switch instead.",
                         self.name, value,
                     )
-            self._expression_connections = []
-            if isinstance(value, str) and chunk_utils.has_expression(value):
-                for node_name, param_name in chunk_utils.parse_expression(value):
-                    ref = self._resolve_expression_ref(node_name, param_name)
-                    if ref is None:
-                        # During a load this is the expected first outcome, not a fault:
-                        # values are restored before their chunk is registered, so a
-                        # sibling ref cannot resolve yet. load_chunks retries once the
-                        # batch is registered and reports whatever is still dangling
-                        # then, so warning here would only ever be a false alarm.
-                        if chunk_notice._loading_stage is not None:
-                            logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
-                        else:
-                            logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
-                        continue
-                    conn = chunk_notice.NoticeConnection(
-                        method=self._on_ref_changed,
-                        alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
-                        sender=ref.get_attribute_sender("value"),
-                    )
-                    self._expression_connections.append(conn)
+            self._expression_connections = self._listen_to_expression_refs(value, self._on_ref_changed)
 
         return super().value_changed(attrname, old_value, value)
+
+    def _listen_to_expression_refs(self, value: Any, method) -> list:
+        """Connect method to every param an expression value names.
+
+        Args:
+            value: The value, expression or not.
+            method: Called when a named param's value changes.
+
+        Returns:
+            The NoticeConnections. Keep them alive; dropping them stops the listening.
+        """
+        connections = []
+        if not (isinstance(value, str) and chunk_utils.has_expression(value)):
+            return connections
+        for node_name, param_name in chunk_utils.parse_expression(value):
+            ref = self._resolve_expression_ref(node_name, param_name)
+            if ref is None:
+                # During a load this is the expected first outcome, not a fault:
+                # values are restored before their chunk is registered, so a
+                # sibling ref cannot resolve yet. load_chunks retries once the
+                # batch is registered and reports whatever is still dangling
+                # then, so warning here would only ever be a false alarm.
+                if chunk_notice._loading_stage is not None:
+                    logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
+                else:
+                    logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
+                continue
+            conn = chunk_notice.NoticeConnection(
+                method=method,
+                alias=chunk_notice.ChunkNoticeAlias.VALUE_CHANGED,
+                sender=ref.get_attribute_sender("value"),
+            )
+            connections.append(conn)
+        return connections
 
     def _on_ref_changed(self, notice=None, sender=None):
         if self._resolving_ref:
@@ -2612,7 +2697,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         tokens = chunk_utils.parse_expression(expr)
         if len(tokens) == 1 and expr.strip() == f"@{tokens[0][0]}.{tokens[0][1]}@":
             ref = self._resolve_expression_ref(*tokens[0])
-            return ref.value if ref is not None else self.__dict__.get("default_value")
+            return self._as_own_number(ref.value) if ref is not None else self.__dict__.get("default_value")
         result = expr
         for node_name, param_name in tokens:
             ref = self._resolve_expression_ref(node_name, param_name)
@@ -2628,14 +2713,43 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         # unevaluable still falls through to the substituted text rather than raising.
         if self._expression_is_numeric():
             if (number := chunk_utils.eval_arithmetic(result)) is not None:
-                types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
-                return int(number) if types and types[0] is int else float(number)
+                return self._as_own_number(number)
         return result
+
+    def _as_own_number(self, value: Any) -> Any:
+        """value as this param's number type, so a float param wired to an int reads a float.
+
+        Args:
+            value: What the expression resolved to.
+
+        Returns:
+            The cast number, or value unchanged if either side is not a number.
+        """
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not self._expression_is_numeric():
+            return value
+        types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
+        return int(value) if types[0] is int else float(value)
 
     def _expression_is_numeric(self) -> bool:
         """True if this param holds a number, so an expression on it should be computed."""
         types = ChunkFlags.ParamTypeToTypes(self.evaluate_type())
         return bool(types) and all(t in (int, float) for t in types)
+
+
+class Checkbox(ChunkParamBase[bool]):
+    """A checkbox param holding a bool.
+
+    Here rather than in chunk.py, which re-exports it, because the framework adds one itself:
+    ChunkModule.create gives every chunk of a cache_cook module its cache_result toggle, and
+    chunk_registry cannot import chunk.py, which imports it.
+    """
+
+    flags: IntFlag = attrs.field(default=ChunkFlags.ParamFlags.LABELED)
+
+    @classmethod
+    @override
+    def get_type(cls) -> ChunkFlags.ParamType:
+        return ChunkFlags.ParamType.CHECKBOX
 
 
 class ChunkContainerBase(ChunkCommon):
@@ -3399,7 +3513,9 @@ class ChunkBase(ChunkGroupBase):
             deleted, or already executing).
         """
         execute = self._module_hook("execute")
-        stage = self.get_stage()
+        # The scene's stage, not get_stage(): a cook started inside another chunk's masked
+        # cook would get that chunk's inputs as its stage.
+        stage = self.get_scene_stage()
         ctx = self.get_edit_context()
         # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
         # layer stack. Don't re-run its module: authoring into a muted layer raises
@@ -3434,10 +3550,14 @@ class ChunkBase(ChunkGroupBase):
                 and not muted and not not_yet_in_stack and not self.is_blocked()):
             return False
 
-        with chunk_notice.executing(self):
+        with chunk_notice.executing(self), skip_cook.unmasked():
             if ctx:
                 try:
                     with Usd.EditContext(stage, ctx):
+                        # What the chunks below saw, to tell them what this cook
+                        # changed (skip_cook). Anonymous only, like the Clear.
+                        skipping = skip_cook.enabled() and ctx.anonymous
+                        before = skip_cook.baseline(self, ctx) if skipping else None
                         # A cook starts from an empty layer, so a module
                         # authors its whole result every time and never reads
                         # its own last one back. Anonymous only: that is a
@@ -3446,12 +3566,31 @@ class ChunkBase(ChunkGroupBase):
                         # that file layer, shared and the user's own.
                         if ctx.anonymous:
                             ctx.Clear()
-                        execute(self)
+                        # A module that declared cache_cook may have this exact
+                        # cook on disk already -- read it back instead. Anonymous
+                        # only, for the same reason as the Clear above.
+                        cached = cook_cache.lookup(self) if ctx.anonymous else None
+                        if cached is None or not cached.restore(self, ctx):
+                            if cached is not None:
+                                cached.before_cook(self)
+                            if skipping:
+                                skip_cook.run(self, stage, ctx, execute)
+                            else:
+                                execute(self)
+                        elif skipping:
+                            skip_cook.restored(self, ctx)
+                        if skip_cook.enabled() and not ctx.anonymous:
+                            skip_cook.unaccounted(self)
                         # What a param drives is its own state, not the cook's
                         # output -- see ChunkBase.reauthor_driven_attrs.
                         if ctx.anonymous:
                             self.reauthor_driven_attrs()
+                        if skipping:
+                            skip_cook.finish(self, ctx, before)
+                        if cached is not None:
+                            cached.after_cook(self, ctx)
                     self._cook_stale = False
+                    chunk_utils.stamp_module_hash(stage, self)
                 except Tf.ErrorException:
                     # The layer left the stage's local layer stack between the
                     # check above and here. It can: a cook reached from inside
@@ -3478,7 +3617,10 @@ class ChunkBase(ChunkGroupBase):
             else:
                 # No edit layer of its own -- author into the stage's current target.
                 execute(self)
+                if skip_cook.enabled():
+                    skip_cook.unaccounted(self)
                 self._cook_stale = False
+                chunk_utils.stamp_module_hash(stage, self)
         return True
 
     @override
@@ -4010,6 +4152,12 @@ class ChunkConfig(AttributesBase):
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
     interactive: bool = attrs.field(default=False)
+    # The module vouches that a cook's result depends only on its params, the files they
+    # name, its code, and whatever its cache_key() hook returns -- so a result cooked before
+    # can be read back from disk instead of cooked again. Each chunk of it gets a
+    # cache_result checkbox to opt out one node; USD_CHUNKS_COOK_CACHE=0 opts out all of
+    # them. See cook_cache.
+    cache_cook: bool = attrs.field(default=False)
     # Kept out of the chunk menu. For a type that exists so something can be SAVED and read
     # back rather than created by hand -- `runtime`, the type a chunk built in the
     # interpreter is written as. It still has to be a registered module, since that is how
@@ -4065,3 +4213,12 @@ def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
         return isinstance(v, cls)
 
     return _fn
+
+
+def all_chunks(chunks) -> list[ChunkBase]:
+    """Every chunk inside the given ones, groups excluded, at any depth."""
+    found = []
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        found.extend(all_chunks(sub) if sub else [c])
+    return found

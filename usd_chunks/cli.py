@@ -22,7 +22,8 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
-from usd_chunks.chunk_script import Scene, flatten_without_chunks
+from usd_chunks.chunk_script import Scene
+from usd_chunks.chunk_stage import flatten_without_chunks
 from usd_chunks.chunk_stage import (
     commit_order_from_stage,
     find_group_active_view,

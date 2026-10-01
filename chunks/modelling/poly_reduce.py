@@ -846,6 +846,52 @@ def mode_changed(owner, notice, sender) -> None:
     _sync_mode_params(owner.get_chunk() or owner)
 
 
+def _settings(node) -> _Settings:
+    is_f = chunk.is_param_t(float)
+    is_i = chunk.is_param_t(int)
+    is_s = chunk.is_param_t(str)
+    is_b = chunk.is_param_t(bool)
+    return _Settings(
+        mode=node.get_param("reduce_mode", is_s).value,
+        keep_percent=node.get_param("keep_percent", is_f).value,
+        target_tris=node.get_param("target_tris", is_i).value,
+        aggressiveness=node.get_param("aggressiveness", is_f).value,
+        lock_boundary=node.get_param("lock_boundary", is_b).value,
+        keep_uvs=node.get_param("preserve_uvs", is_b).value,
+        recurse=node.get_param("recurse", is_b).value,
+    )
+
+
+def _targets(node, settings: _Settings, paths) -> tuple[Usd.Stage, list]:
+    """The meshes to reduce, read from a composition that excludes this chunk's own layer.
+
+    So a cook never sees (and re-reduces) the result of the last one. See the module
+    docstring. The scratch stage comes back too, and the caller must hold it for as long
+    as it reads the prims: they go invalid the moment it is released.
+    """
+    upstream = chunk_stage.get_upstream_stage(node.get_stage(), node.get_scene(), node)
+    return upstream, [
+        prim
+        for path in paths
+        for prim in _mesh_prims(upstream.GetPrimAtPath(path), settings.recurse)
+    ]
+
+
+def cache_key(node):
+    """What the cook cache keys a reduction on, beyond the params: the input meshes.
+
+    The same signature a cook compares against its last (`_fingerprint`), so the disk
+    cache and the in-memory one agree on what counts as the same input: geometry, every
+    primvar and every subset, not just the point count.
+    """
+    paths = node.get_param("prim_path").resolve_paths()
+    if not paths or not _HAS_SIMPLIFY:
+        return ()
+    settings = _settings(node)
+    _upstream, targets = _targets(node, settings, paths)
+    return _fingerprint(targets, settings, {}, {})
+
+
 def execute(node: chunk.Chunk) -> None:
     """Reduce every mesh under the selected prim(s).
 
@@ -863,35 +909,14 @@ def execute(node: chunk.Chunk) -> None:
         _report(node, [], "fast-simplification is not installed — pip install fast-simplification")
         return
 
-    is_f = chunk.is_param_t(float)
-    is_i = chunk.is_param_t(int)
-    is_s = chunk.is_param_t(str)
-    is_b = chunk.is_param_t(bool)
-
-    settings = _Settings(
-        mode=node.get_param("reduce_mode", is_s).value,
-        keep_percent=node.get_param("keep_percent", is_f).value,
-        target_tris=node.get_param("target_tris", is_i).value,
-        aggressiveness=node.get_param("aggressiveness", is_f).value,
-        lock_boundary=node.get_param("lock_boundary", is_b).value,
-        keep_uvs=node.get_param("preserve_uvs", is_b).value,
-        recurse=node.get_param("recurse", is_b).value,
-    )
+    settings = _settings(node)
 
     paths = node.get_param("prim_path").resolve_paths()
     if not paths:
         _report(node, [], "pick a mesh to reduce")
         return
 
-    # Read from a composition that excludes this chunk's own layer, so a cook never sees
-    # (and re-reduces) the result of the last one. See the module docstring.
-    upstream = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
-
-    targets = [
-        prim
-        for path in paths
-        for prim in _mesh_prims(upstream.GetPrimAtPath(path), settings.recurse)
-    ]
+    upstream, targets = _targets(node, settings, paths)
     previous = _LAST_COOK.get(layer.identifier)
     signed: dict = {}
     fingerprint = _fingerprint(targets, settings, previous.arrays if previous else {}, signed)
@@ -1049,6 +1074,7 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         requirements=["fast-simplification>=0.2,<1", "numpy>=2,<3"],
+        cache_cook=True,
         description=(
             "Reduces a mesh's triangle count using quadric error metrics — the method that\n"
             "spends the triangle budget on silhouettes and creases and takes it out of flat\n"

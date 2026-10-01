@@ -54,6 +54,8 @@ class BlenderScene(SceneSender):
     that stops a cook.
     """
 
+    is_app = True
+
     def __init__(self, stage=None):
         super().__init__()
         self._stage = stage

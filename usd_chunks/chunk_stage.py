@@ -9,7 +9,8 @@ import logging
 import math
 import weakref
 from pathlib import Path
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable
+from typing import TYPE_CHECKING
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
@@ -18,12 +19,15 @@ from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
-from usd_chunks import chunk_scene
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
+from usd_chunks import skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
+
+if TYPE_CHECKING:  # pragma: no cover -- typing only: chunk_scene imports this module
+    from usd_chunks import chunk_scene
 
 from usd_chunks import chunk_layers, chunk_naming
 from usd_chunks.chunk_topology import (  # noqa: F401  re-exported
@@ -184,13 +188,30 @@ def _values_agree(usd_value, param_value) -> bool:
     return all(_values_agree(a, b) for a, b in pairs)
 
 
-_SDF_TYPE_MAP = {
-    bool: Sdf.ValueTypeNames.Bool,
-    int: Sdf.ValueTypeNames.Int,
-    float: Sdf.ValueTypeNames.Float,
-    str: Sdf.ValueTypeNames.String,
-    Gf.Matrix4d: Sdf.ValueTypeNames.Matrix4d,
-}
+_SDF_TYPE_MAP = chunk_utils.SDF_TYPE_MAP
+
+
+def param_sdf_type(param: core.ChunkParamBase) -> Sdf.ValueTypeName | None:
+    """The type a param's chunk-prim attribute is created with, or None if it has none.
+
+    From the value, or from the default while the value is a @Node.param@ expression -- the
+    expression text is not the param's type, and a Slider wired to another chunk must still
+    get a number attribute, or the first plain number typed into it after the wire is gone
+    cannot be written.
+    """
+    raw = getattr(param, "raw_value", None)
+    is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+    type_source = getattr(param, "default_value", None) if is_expr or raw is None else raw
+    if ChunkFlags.ParamType.BUTTON in param.evaluate_type():
+        # A button has no value. Its attribute exists only so Loft up can wire to it.
+        return Sdf.ValueTypeNames.Bool
+    # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
+    # type -- there is no tuple entry, so without this a colour param resolves to no
+    # type at all and never gets a chunk-prim attr, leaving its value unable to
+    # round-trip through USD.
+    if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+        return Sdf.ValueTypeNames.Color3f
+    return _SDF_TYPE_MAP.get(type(type_source))
 
 _VECTOR_TYPE_MAP: dict = {
     (float, 2): (Sdf.ValueTypeNames.Float2, Gf.Vec2f),
@@ -241,6 +262,30 @@ def _sdf_type_and_value(val):
         return sdf_type, vt_cls(val)
     sdf_type = _SDF_TYPE_MAP.get(type(val))
     return sdf_type, val
+
+
+def _store_row_expressions(attr: Usd.Attribute, list_group, template_name: str) -> None:
+    """Keep a list group's row expressions with its array, one entry per row.
+
+    The array holds resolved values, like any typed attr, so the text goes to customData
+    under the same key chunk_utils.store_expression_text uses. A row with none gets "".
+    """
+    rows = [list_group.get_indexed_param(template_name, i) for i in range(list_group.size)]
+    texts = [r.raw_value if r is not None and chunk_utils.is_expression_text(r.raw_value) else "" for r in rows]
+    if any(texts):
+        attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, Vt.StringArray(texts))
+    else:
+        chunk_utils.clear_expression_text(attr)
+
+
+def _restore_row_expressions(attr: Usd.Attribute, list_group, template_name: str) -> None:
+    """Put the row expressions _store_row_expressions saved back on their rows."""
+    texts = attr.GetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY)
+    if isinstance(texts, str):  # a plain expression, not row text
+        return
+    for i, text in enumerate(texts or ()):
+        if text and (row := list_group.get_indexed_param(template_name, i)):
+            row.value = text
 
 
 def sdf_type_for_param(param) -> Sdf.ValueTypeName | None:
@@ -533,7 +578,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if chunk_notice._usd_write_active or not self._scene:
             return
         stage = notice.GetStage()
-        if not stage:
+        if not stage or self._is_foreign_stage(stage):
             return
         scene_stage = self._scene.get_stage()
         if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
@@ -625,6 +670,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_prim_paths.discard(prim_path_str)
         self._chunk_prim_paths.pop(id(sender), None)
 
+        # Read who was downstream before healing rewires them off this chunk: nothing after
+        # this point can tell, and they are the only chunks whose Edit Target can change.
+        successor_paths = _exec_successor_paths(self._stage, prim_path_str)
+
         # Heal the exec chain while the prim (and its inputs:chunk predecessor) still exists:
         # deleting a middle node A -> X -> B must leave A -> B, not a broken chain.
         heal_exec_chain_on_delete(self._stage, prim_path_str)
@@ -677,7 +726,27 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # Deleting an Edit Target chunk changes the target that now applies to everything
         # that was downstream of it (heal_exec_chain_on_delete has just rewired the chain
         # around it) -- re-home those chunks to the target that survives at their position.
-        reconcile_edit_targets(self._stage, self._scene)
+        # Only they can have changed, so the pass is scoped to them rather than run over the
+        # whole scene: a delete used to re-home and re-cook every chunk in the graph.
+        # protect_root_layer, as on load: a chunk opened from a file keeps its bookkeeping in
+        # that file's root layer, and migrating deletes the original spec -- the first delete
+        # after opening would empty the file's own layer, which Sdf then hands back to the
+        # next open of the same path.
+        successors = [
+            c for c in core.all_chunks(self._scene.get_chunks())
+            if get_chunk_prim_path(c) in successor_paths
+        ]
+        if not successors:
+            return
+        # The delete itself is done. A cook downstream failing here (say on an expression
+        # that referenced the chunk just deleted) must not escape and abort the rest of the
+        # CHUNK_DELETED dispatch, which would leave the chunk half torn down.
+        try:
+            reconcile_edit_targets(
+                self._stage, self._scene, roots=successors, protect_root_layer=True
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Re-homing chunks after deleting %s failed", sender.name)
 
     def _delete_nested_contexts(self, group_path: Sdf.Path) -> None:
         """Delete the chunkgroups nested inside the group being deleted.
@@ -792,7 +861,33 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         finally:
             chunk_notice._usd_write_active = prev_w
 
+    def _is_foreign_stage(self, stage: Usd.Stage | None) -> bool:
+        """Whether a notice's stage is known to be some other stage than the scene's.
+
+        Only a definite no: without a scene, a scene stage or a notice stage, nothing is
+        known, and the notice is handled as it always was. Compared by root layer, as the
+        rest of the sync does, since the Python wrapper of one stage is not unique -- except
+        for a cook stage (skip_cook), which shares the scene's root layer and is not it. Its
+        changes are the scene's too, and arrive from the scene's stage as well.
+        """
+        if stage is None or not self._scene:
+            return False
+        if skip_cook.is_cook_stage(stage):
+            return True
+        scene_stage = self._scene.get_stage()
+        if not scene_stage:
+            return False
+        return stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier
+
     def _on_objects_changed(self, notice: Usd.Notice.ObjectsChanged, sender):
+        # The listener is global, so it hears every stage in the process -- including ones
+        # nothing here owns. Opening a .mtlx builds its material on a private stage of the
+        # MaterialX file format plugin's, and that alone is ~700 change rounds per material:
+        # each one dropped the edit layer memo (a notice from another stage looks like a
+        # replaced stage to edit_layer_memo_affected) and queued that stage's paths as
+        # resyncs of ours. Nothing below is about any stage but the scene's.
+        if self._is_foreign_stage(notice.GetStage()):
+            return
         # Before the guards, since a prim appearing or an inputs:chunk connection changing
         # is exactly what the memo is keyed against, and those arrive here regardless of
         # which flag is set. Only when the change can actually move an answer, though: a
@@ -1408,11 +1503,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         )
         if lg_path is None:
             return
+        if not isinstance(proxy_param, core.ChunkParamBase):
+            return  # a vector row: no array type holds its tuples
         template_name = proxy_param.name
         values = [
             v for i in range(list_group.size)
             if (px := list_group.get_indexed_param(template_name, i)) is not None
-            for v in [px.value] if v is not None
+            # In the param's own number type: the array's type is taken from its values, and
+            # a float row holding a whole number (or wired to an int) would make it int[].
+            for v in [px._as_own_number(px.value)] if v is not None
         ]
         if not values:
             return
@@ -1432,6 +1531,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             with ctx:
                 attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 attr.Set(usd_value)
+                _store_row_expressions(attr, list_group, template_name)
         finally:
             chunk_notice._usd_write_active = prev_write
 
@@ -1640,17 +1740,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if raw is None and not (is_button and force):
             return
         is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        type_source = getattr(param, 'default_value', None) if is_expr else raw
-        sdf_type = _SDF_TYPE_MAP.get(type(type_source))
-        if is_button:
-            # A button has no value. Its attribute exists only so Loft up can wire to it.
-            sdf_type = Sdf.ValueTypeNames.Bool
-        # A ColorPicker holds an (r, g, b) tuple, and _SDF_TYPE_MAP is keyed by Python
-        # type -- there is no tuple entry, so without this a colour param resolves to no
-        # type at all and never gets a chunk-prim attr, leaving its value unable to
-        # round-trip through USD.
-        if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
-            sdf_type = Sdf.ValueTypeNames.Color3f
+        sdf_type = param_sdf_type(param)
         if sdf_type is None:
             return
         default = getattr(param, 'default_value', None)
@@ -2452,7 +2542,7 @@ def is_network_host(chunk: core.ChunkBase) -> bool:
     """
     if not is_group_chunk(chunk) or is_chunkgroup(chunk):
         return False
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     if not stage:
         return False
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
@@ -2512,7 +2602,7 @@ def suggest_location_from_file(param) -> None:
         return
 
     name = Tf.MakeValidIdentifier(Path(path).stem)
-    location.value = chunk_utils.get_unique_path(param.get_stage(), f"/{name}")
+    location.value = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
 
 
 def network_target(asset_path: str, import_path: str = "") -> str | None:
@@ -2650,7 +2740,7 @@ def host_networks(chunk: core.ChunkBase, targets: list[tuple[str, str]],
     if not targets:
         unhost_network(chunk)
         return
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     if not stage:
         return
     # The path first: get_chunk_prim_path answers a CONTEXT chunk from its prim_path, so
@@ -2718,7 +2808,7 @@ def unhost_network(chunk: core.ChunkBase) -> None:
     Args:
         chunk: The hosting chunk.
     """
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     if not stage or not is_network_host(chunk):
         return
     own_path = get_chunk_prim_path(chunk)
@@ -2815,7 +2905,7 @@ def _storage_attr(param: core.ChunkParamBase) -> Usd.Attribute | None:
     if not path:
         return None
     chunk = param.get_chunk()
-    stage = chunk.get_stage() if chunk else None
+    stage = chunk.get_scene_stage() if chunk else None
     if not stage:
         return None
     attr = stage.GetAttributeAtPath(Sdf.Path(path))
@@ -3001,7 +3091,7 @@ def gate_to_branches(node: core.ChunkBase, live: set[int]) -> tuple[set, set]:
     Returns:
         tuple[set, set]: the chunks kept live, and the chunks muted
     """
-    stage = node.get_stage()
+    stage = node.get_scene_stage()
     inputs = exec_dependencies(node)
 
     # The live branches first, and they win: a chunk feeding two branches must stay live if
@@ -3133,7 +3223,7 @@ def is_chunk_pinned(chunk: core.ChunkBase) -> bool:
     Returns:
         True if the chunk is pinned.
     """
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
     attr = prim.GetAttribute("chunk:pinned") if (prim and prim.IsValid()) else None
     val = attr.Get() if (attr and attr.IsValid()) else None
@@ -3161,7 +3251,7 @@ def set_chunk_pinned(chunk: core.ChunkBase, pinned: bool) -> None:
         chunk: The chunk.
         pinned: The new state.
     """
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     if not stage:
         return
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
@@ -3216,7 +3306,7 @@ def is_pin_filter_enabled(context: core.ChunkBase) -> bool:
     Returns:
         True if the pin filter is on.
     """
-    stage = context.get_stage()
+    stage = context.get_scene_stage()
     path = _context_own_prim_path(context)
     prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
     attr = prim.GetAttribute("filter:pinEnabled") if (prim and prim.IsValid()) else None
@@ -3238,7 +3328,7 @@ def set_pin_filter_enabled(context: core.ChunkBase, enabled: bool) -> None:
         context: The context.
         enabled: The new state.
     """
-    stage = context.get_stage()
+    stage = context.get_scene_stage()
     path = _context_own_prim_path(context)
     if not stage or not path:
         return
@@ -3281,7 +3371,7 @@ def get_search_query(context: core.ChunkBase) -> str:
     Returns:
         The query, "" if none.
     """
-    stage = context.get_stage()
+    stage = context.get_scene_stage()
     path = _context_own_prim_path(context)
     prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
     attr = prim.GetAttribute("filter:searchQuery") if (prim and prim.IsValid()) else None
@@ -3299,7 +3389,7 @@ def set_search_query(context: core.ChunkBase, query: str) -> None:
         context: The context.
         query: The search text.
     """
-    stage = context.get_stage()
+    stage = context.get_scene_stage()
     path = _context_own_prim_path(context)
     if not stage or not path:
         return
@@ -3340,7 +3430,7 @@ def get_search_scope(context: core.ChunkBase) -> str:
     Returns:
         The scope.
     """
-    stage = context.get_stage()
+    stage = context.get_scene_stage()
     path = _context_own_prim_path(context)
     prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
     attr = prim.GetAttribute("filter:searchScope") if (prim and prim.IsValid()) else None
@@ -3357,7 +3447,7 @@ def set_search_scope(context: core.ChunkBase, scope: str) -> None:
     """
     if scope not in _SEARCH_SCOPES:
         scope = "both"
-    stage = context.get_stage()
+    stage = context.get_scene_stage()
     path = _context_own_prim_path(context)
     if not stage or not path:
         return
@@ -3561,10 +3651,17 @@ def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: 
         scene: The scene.
         chunk: The chunk doing the read.
 
+    Inside a masked cook (skip_cook) the scratch stage is masked the same way, and what the
+    chunk looks up on it is watched like the cook stage itself: it is where such a chunk
+    does its reading.
+
     Returns:
         The scratch stage.
     """
     lm = chunk_registry.ChunkLayerManager()
+    # Which chunks are downstream is read off the chunk prims, which a cook stage (the
+    # stage a module is handed in a masked cook) populates only in part.
+    stage = scene.get_stage() or stage
     excluded = exec_downstream(chunk, stage, scene) | {chunk}
     excluded_ids = {layer.identifier for c in excluded if (layer := lm.get_layer(c)) is not None}
     layer_ids: list = []
@@ -3587,7 +3684,7 @@ def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: 
             layer_ids.append(ident)
     scratch_root = Sdf.Layer.CreateAnonymous()
     scratch_root.subLayerPaths = layer_ids + [stage.GetRootLayer().identifier]
-    return Usd.Stage.Open(scratch_root)
+    return skip_cook.open_for_reading(scratch_root)
 
 
 def heal_exec_chain_on_delete(stage: Usd.Stage, deleted_path: str) -> None:
@@ -3653,6 +3750,20 @@ def heal_exec_chain_on_delete(stage: Usd.Stage, deleted_path: str) -> None:
     # Healing rewrites inputs:chunk across the graph with notices suppressed -- every
     # memoised answer below the deleted node is now measured against an edge that is gone.
     invalidate_edit_layer_memo()
+
+
+def _exec_successor_paths(stage: Usd.Stage, node_path: str) -> set[str]:
+    """Prim paths of every chunk whose exec input (any slot) is wired to node_path."""
+    out_path = f"{node_path}.{_EXEC_OUTPUT}"
+    found: set[str] = set()
+    for prim in stage.Traverse():
+        if str(prim.GetPath()) == node_path:
+            continue
+        for attr in iter_exec_inputs(prim):
+            if any(str(c) == out_path for c in attr.GetConnections()):
+                found.add(str(prim.GetPath()))
+                break
+    return found
 
 
 def _remove_attr_spec(stage: Usd.Stage, prim: Usd.Prim, name: str) -> None:
@@ -4552,7 +4663,10 @@ def recook_for_view(
                 # DAG solve to everything downstream on every recook. Whatever a change
                 # upstream of it means for those, their own marks already say.
                 c._cook_stale = False
-            elif _force or chunk_notice.is_cook_stale(c):
+            # _force is for the group's own inside. A group's cook_list also reaches back
+            # through its input into the parent graph, and those chunks are the parent's
+            # to cook -- forcing them re-ran the whole upstream chain on every stale group.
+            elif (_force and in_context(c)) or chunk_notice.is_cook_stale(c):
                 c.execute()
 
     if not cook_list:
@@ -4866,6 +4980,58 @@ def _connected_source_paths(prim: Usd.Prim) -> set[str]:
     return sources
 
 
+def _is_placeholder_prim(prim: Usd.Prim, has_chunk: Callable[[str], bool]) -> bool:
+    """Whether prim is a chunk prim no module backs -- a type missing, renamed or off
+    USD_CHUNK_DIRS. load_chunks leaves it without a chunk, so the graph shows it by its
+    USD type alone and nothing in the DAG stands where it is.
+
+    Both halves are needed. A chunk whose config names an unregistered module still has
+    a prim carrying that type, and it is a real node: walking past it would drop it from
+    its downstream's dependencies. So the registry is asked first, being cheap, and only
+    a type it does not know is checked against has_chunk.
+    """
+    if not prim or not prim.IsValid() or prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+        return False
+    chunk_type = prim.GetAttribute(_CHUNK_TYPE_ATTR).Get()
+    if not chunk_type or chunk_registry.ChunkRegistry().get_chunk_module(str(chunk_type)):
+        return False
+    return not has_chunk(str(prim.GetPath()))
+
+
+def _through_placeholders(
+    stage: Usd.Stage | None, paths: Iterable[str], has_chunk: Callable[[str], bool]
+) -> list[str]:
+    """paths, with every placeholder chunk prim replaced by what feeds its exec slots.
+
+    A placeholder has no chunk, so an edge to it resolves to nothing and is dropped -- and
+    the chunk downstream of it came out with no dependency at all. It became a root: the
+    load cooked it first, before the chain it is wired to, against a stage that did not
+    hold that chain's output yet. A wired node must never be a root. Wired through the
+    placeholder, it waits for everything the placeholder was waiting for, which is the
+    order the file says -- only minus whatever the missing chunk would have authored.
+
+    Transitive, since placeholders can be chained, and in order, strongest branch first.
+    has_chunk says whether a chunk stands at a prim path (see _is_placeholder_prim).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def visit(path: str) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        prim = stage.GetPrimAtPath(Sdf.Path(path)) if stage else None
+        if prim is not None and _is_placeholder_prim(prim, has_chunk):
+            for conn in exec_input_connections(prim):
+                visit(str(conn.GetPrimPath()))
+        else:
+            out.append(path)
+
+    for path in paths:
+        visit(path)
+    return out
+
+
 def commit_order_from_stage(
     chunks: list[core.ChunkBase], stage: Usd.Stage | None
 ) -> list[core.ChunkBase]:
@@ -4985,7 +5151,7 @@ def exec_downstream(
 
 def _live_prim(chunk: core.ChunkBase) -> Usd.Prim | None:
     """Chunk's prim on the live session's stage, if it has one."""
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     if not stage:
         return None
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
@@ -5070,7 +5236,9 @@ def _wired_dependencies(chunk: core.ChunkBase) -> list:
     prim = _live_prim(chunk)
     if prim is None:
         return []
-    return _chunks_at(_connected_source_paths(prim))
+    return _chunks_at(_through_placeholders(
+        prim.GetStage(), _connected_source_paths(prim), lambda path: bool(_chunks_at([path]))
+    ))
 
 
 def _would_cycle(chunk: core.ChunkBase, dep: core.ChunkBase) -> bool:
@@ -5270,6 +5438,14 @@ def _iter_chunk_vectors(
             yield from _iter_chunk_vectors(param, path)
 
 
+def _iter_list_rows(obj: core.ChunkCommon) -> Generator[tuple[str, core.ProxyParam], None, None]:
+    """Yield (path, row) for every list-group row, which _iter_chunk_params skips."""
+    for lg_path, list_group in _iter_list_group_arrays(obj):
+        for i, row_group in enumerate(list_group.proxy_params):
+            for row in row_group.get_my_params():
+                yield f"{lg_path}.{i}.{row.name}", row
+
+
 def _iter_list_group_arrays(
     obj: core.ChunkCommon, prefix: str = ""
 ) -> Generator[tuple[str, core.ChunkListGroupBase], None, None]:
@@ -5359,6 +5535,101 @@ def _iter_scoped_prims(
             yield prim
 
 
+def _unseen_by_active_views(
+    stage: Usd.Stage, scene: chunk_scene.SceneSender
+) -> Callable[[core.ChunkBase], bool]:
+    """A test for the chunks a load can leave uncooked: those no active view reaches.
+
+    What each outermost context's active view cooks, worked out the way recook_for_view
+    walks it -- the view's cook_list, and for every group on it, whatever drives that
+    group's output, recursively. The recook the graph runs straight after a load mutes
+    everything outside that, so a load that cooks it too does work nobody sees. What is
+    skipped stays stale, and recook_for_view cooks it when its view is activated.
+
+    Only for a host that opts in (SceneSender.load_cooks_active_views_only), and only in a
+    context that has an active view: one without cooks as before, since there is no view
+    yet to say what matters. Views themselves are never skipped.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+
+    Returns:
+        A test, True for a chunk the load need not cook.
+    """
+    if not scene.load_cooks_active_views_only:
+        return lambda chunk: False
+
+    contexts = [c for c in scene.get_contexts() if getattr(c, "prim_path", None)]
+    paths = [c.prim_path for c in contexts]
+    reached: set[int] = set()
+    gated: list[str] = []
+
+    def walk(view: core.ChunkBase, synthetic: bool) -> None:
+        cook_list = view_cook_list(view, stage, scene)
+        if synthetic:
+            cook_list.append(view)
+        for c in cook_list:
+            if id(c) in reached:
+                continue
+            reached.add(id(c))
+            if is_group_chunk(c):
+                inner, inner_synthetic = _group_output_driver(stage, scene, c)
+                if inner is not None:
+                    walk(inner, inner_synthetic)
+
+    for context in contexts:
+        path = context.prim_path
+        if any(path.startswith(p + "/") for p in paths):
+            continue  # a group -- walked from the outermost context that holds it
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        attr = prim.GetAttribute("chunk:activeView") if prim and prim.IsValid() else None
+        slot = attr.Get() if attr and attr.IsValid() else None
+        view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
+        if view is None:
+            continue
+        gated.append(path + "/")
+        walk(view, False)
+
+    def unseen(chunk: core.ChunkBase) -> bool:
+        if id(chunk) in reached or is_view_chunk(chunk):
+            return False
+        return get_chunk_prim_path(chunk).startswith(tuple(gated)) if gated else False
+
+    return unseen
+
+
+def _clear_cooked_groups(chunks: list[core.ChunkBase]) -> None:
+    """Clear the stale mark of each group whose inside a load has just cooked.
+
+    A group with no execute() of its own stays stale through a solve -- that mark is what
+    tells recook_for_view to force its inside -- and only recook_for_view clears it. A load
+    cooks through the solve instead, so every such group came out of the load still stale,
+    and the first recook forced its whole inside again for nothing.
+
+    Only when everything inside that can cook came out clean: a chunk that could not run
+    (blocked, no layer yet) is left stale by its own dispatch, and the group stays stale
+    with it. Views are markers that never cook, and a disabled chunk does not cook either.
+
+    Args:
+        chunks: Every chunk in the scene, groups and their insides together. A chunkgroup
+            is recreated as a context before the load cooks, so it is not among the chunks
+            the load itself created.
+    """
+    disabled = ChunkFlags.State.DISABLED
+    for group in chunks:
+        if not is_group_chunk(group) or group.can_cook() or not chunk_notice.is_cook_stale(group):
+            continue
+        prefix = get_chunk_prim_path(group) + "/"
+        if all(
+            not chunk_notice.is_cook_stale(c)
+            for c in chunks
+            if get_chunk_prim_path(c).startswith(prefix)
+            and c.can_cook() and not is_view_chunk(c) and not c.has_state(disabled)
+        ):
+            group._cook_stale = False
+
+
 def _restore_disabled_state(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
     """Carry a prim's authored deactivation back onto the chunk it belongs to.
 
@@ -5426,6 +5697,7 @@ def _load_chunks(
     # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
+    changed_code: dict[str, dict[str, int]] = {}  # chunkType -> {saved hash: prim count}
     for prim in (stage.Traverse(_LOAD_INCLUDE_INACTIVE) if prims is None else prims):
         # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
         # It is typed Scope, so it must be recognised here explicitly: with the saved
@@ -5458,7 +5730,22 @@ def _load_chunks(
                 "(missing/renamed/not on USD_CHUNK_DIRS?) -- loading as an empty placeholder",
                 prim.GetPath(), chunk_type)
             continue
+        if chunk_utils.module_changed_since_cook(prim, mod):
+            saved = chunk_utils.recorded_module_hash(prim)
+            counts = changed_code.setdefault(str(chunk_type), {})
+            counts[saved] = counts.get(saved, 0) + 1
         to_load.append((prim, mod))
+
+    # One line per type, not per prim: a network of a hundred of one chunk is one change.
+    for chunk_type, saved_counts in sorted(changed_code.items()):
+        module = chunk_registry.ChunkRegistry().get_chunk_module(chunk_type)
+        logger.warning(
+            "load_chunks: %d %r chunk(s) were saved with different code than is loaded now "
+            "-- saved with %s, loaded %s (%s from %s); their results may not be what it "
+            "would produce",
+            sum(saved_counts.values()), chunk_type,
+            ", ".join(h[:19] for h in sorted(saved_counts)),
+            module.source_hash[:19], chunk_naming.MODULE_HASH_ATTR, module.module_file)
 
     if not to_load:
         return
@@ -5727,8 +6014,14 @@ def _load_chunks(
                         if not exec_conns:
                             continue
                         existing_deps = {id(d) for _, d in chunk.get_dependencies()}
-                        for conn_path in exec_conns:
-                            dep = chunk_by_path.get(str(conn_path.GetPrimPath()))
+                        # Through any placeholder: a wire into one must still order this
+                        # chunk after the chain behind it (see _through_placeholders).
+                        for source in _through_placeholders(
+                            stage,
+                            [str(conn.GetPrimPath()) for conn in exec_conns],
+                            lambda path: path in chunk_by_path or bool(_chunks_at([path])),
+                        ):
+                            dep = chunk_by_path.get(source)
                             if dep is not None and id(dep) not in existing_deps:
                                 chunk.add_dependency(dep)
                                 chunks_with_dependencies.add(id(chunk))
@@ -5858,10 +6151,26 @@ def _load_chunks(
                 # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
                 # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
                 # chunks at the same depth keep their existing relative order.
+                #
+                # A root an earlier root's solve already cooked is not run again. Everything is
+                # dirty after the build, so the first solve takes in every dirty node connected
+                # to it, the other roots of a shared downstream included -- a Merge of six
+                # References pulls in all six, and the Scatter below cooks once, with every
+                # input in place. Running the next five roots anyway re-dirtied and re-cooked
+                # that whole chain five more times, each identical to the last. Only a cook in
+                # this loop counts: a root that was already clean before it runs as it always
+                # did. Not batched_solve: a solve does not walk from an owner back down to its
+                # dirty children, so a batch let one group's queued inner roots be reached late
+                # and cooked their group before them -- a car configurator's glass binding came
+                # out empty. Run in turn, each root still dirties its group itself.
+                unseen = _unseen_by_active_views(stage, scene)
+                stale_before = {id(c) for _, c in deferred if chunk_notice.is_cook_stale(c)}
                 for prim, added in sorted(
                     deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
                 ):
-                    if id(added) not in chunks_with_dependencies:
+                    if id(added) not in chunks_with_dependencies and not unseen(added):
+                        if id(added) in stale_before and not chunk_notice.is_cook_stale(added):
+                            continue
                         is_top_level = id(added) in top_level_chunk_ids
                         if is_top_level or can_execute_sub_chunks:
                             if lm.initialized:
@@ -5894,6 +6203,11 @@ def _load_chunks(
                 if getattr(sync, "_chunk_prim_paths", None) is not None:
                     for prim, added in deferred:
                         sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
+
+                # Last, after CHUNK_LOADED and the restores above: those can cook again (Render
+                # Settings recooks once its renderer groups exist), and a cook solves up the
+                # ownership chain, which marks a group stale all over again.
+                _clear_cooked_groups(list(scene.get_chunks()))
             finally:
                 chunk_notice._loading_stage = old_loading_stage
                 # A load that failed part-way still leaves its layers on the stage.
@@ -5945,6 +6259,68 @@ def _resync_lofted_menus(chunks: Iterable[core.ChunkBase]) -> None:
         for param in context.get_my_params():
             if (mirror := getattr(param, "_loft_menu_items", None)) is not None:
                 mirror()
+
+
+def flatten_without_chunks(stage):
+    """Flatten the stage to a layer carrying the result but none of the recipe.
+
+    A Chunk prim left in a delivered file is not inert: open it anywhere usd_chunks is
+    installed and the network reloads and re-cooks, overriding the very geometry the
+    file was exported to carry. Stripping them is what makes the output plain USD that
+    anyone can open with nothing installed.
+
+    FlattenLayerStack rather than Stage.Export, because it keeps references as
+    references where Export inlines the referenced asset outright -- which stops
+    mattering only while a network builds all its own geometry.
+
+    Shallowest path first, so removing a parent Chunk takes its children with it and
+    the later lookup for those children simply finds nothing.
+    """
+    flat = UsdUtils.FlattenLayerStack(stage)
+    tmp = Usd.Stage.Open(flat)
+    chunk_paths = sorted(
+        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME),
+        key=lambda p: p.pathElementCount,
+    )
+    for path in chunk_paths:
+        spec = flat.GetPrimAtPath(path)
+        if not spec:
+            continue  # already removed as child of a shallower Chunk
+        parent = spec.nameParent
+        if parent:
+            del parent.nameChildren[spec.name]
+        else:
+            del flat.pseudoRoot.nameChildren[spec.name]
+
+    # Chunks connect the attributes they drive to their own params (a camera's focalLength
+    # to Camera.inputs:...:focalLength). The values are already flattened in, so the links
+    # would only point at prims this file no longer has.
+    def drop_links_to_chunks(path):
+        if not path.IsPropertyPath():
+            return
+        prop = flat.GetPropertyAtPath(path)
+        links = prop.connectionPathList if isinstance(prop, Sdf.AttributeSpec) else prop.targetPathList
+        items = list(links.GetAddedOrExplicitItems())
+        kept = [t for t in items if not any(t.HasPrefix(c) for c in chunk_paths)]
+        if len(kept) == len(items):
+            return
+        if kept:
+            for target in set(items) - set(kept):
+                links.RemoveItemEdits(target)
+        else:
+            links.ClearEdits()  # no `.connect = None` left behind
+
+    flat.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
+
+    # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
+    # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
+    # left in a file whose whole point is to carry none -- and it is enough to make a
+    # delivered asset look like it wants usd_chunks installed. Only when it IS empty: a
+    # stage that parks something else there keeps both the scope and that something.
+    root = flat.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
+    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
+        del flat.pseudoRoot.nameChildren[root.name]
+    return flat
 
 
 def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
@@ -6153,7 +6529,7 @@ def publish_network(group: core.ChunkBase, path: str | Path) -> None:
         path: The file to write.
     """
     scene = _active_scene()
-    stage = group.get_stage()
+    stage = group.get_scene_stage()
     if not (scene and stage):
         return
     group_path = Sdf.Path(get_chunk_prim_path(group))
@@ -6191,7 +6567,7 @@ def is_localisable(chunk: core.ChunkBase) -> bool:
         return True
     if not is_chunkgroup(chunk):
         return False
-    stage = chunk.get_stage()
+    stage = chunk.get_scene_stage()
     if not stage:
         return False
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
@@ -6218,7 +6594,7 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
     if not is_localisable(host):
         return None
     scene = _active_scene()
-    stage = host.get_stage()
+    stage = host.get_scene_stage()
     if not (scene and stage):
         return None
     sync = ChunkStageSync()
@@ -6243,6 +6619,8 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
         for name in list(spec.properties.keys()):
             if name.startswith(_INPUTS_PREFIX) and name != chunk_naming.EXEC_INPUT:
                 del spec.properties[name]
+            elif name == chunk_naming.MODULE_HASH_ATTR:
+                del spec.properties[name]
         chunk_type = spec.properties.get(_CHUNK_TYPE_ATTR) or Sdf.AttributeSpec(
             spec, _CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, Sdf.VariabilityUniform)
         chunk_type.default = "chunkgroup"
@@ -6257,7 +6635,7 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
             for name in list(other_spec.properties.keys()):
                 if name.startswith(_INPUTS_PREFIX) and name != chunk_naming.EXEC_INPUT:
                     del other_spec.properties[name]
-                elif name == _CHUNK_TYPE_ATTR:
+                elif name in (_CHUNK_TYPE_ATTR, chunk_naming.MODULE_HASH_ATTR):
                     del other_spec.properties[name]
     finally:
         chunk_notice._usd_write_active = prev
@@ -6888,6 +7266,7 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                             break
                         if px := parent.get_indexed_param(template_name, i):
                             px.value = v
+                    _restore_row_expressions(attr, parent, template_name)
                 continue
 
         if param := chunk.get_param(param_path):
@@ -6911,7 +7290,7 @@ def _resolve_pending_expressions(deferred, warn: bool) -> None:
     that is merely waiting for a chunk further down the file.
     """
     for _, c in deferred:
-        for path, param in _iter_chunk_params(c):
+        for path, param in [*_iter_chunk_params(c), *_iter_list_rows(c)]:
             raw = getattr(param, "raw_value", None)
             if (
                 isinstance(raw, str)
@@ -7031,6 +7410,7 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
                     for i, v in enumerate(values):
                         if px := parent.get_indexed_param(template_name, i):
                             px.value = v
+                    _restore_row_expressions(attr, parent, template_name)
                 continue
 
         param = chunk.get_param(param_path)
@@ -7413,7 +7793,7 @@ def _author_prim(
             values = [
                 v for i in range(list_group.size)
                 if (px := list_group.get_indexed_param(proxy_param.name, i)) is not None
-                for v in [px.value]
+                for v in [px._as_own_number(px.value)]  # see _sync_list_proxy_to_usd
                 if v is not None
             ]
             if not values:
@@ -7423,3 +7803,4 @@ def _author_prim(
                 continue
             attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, custom=False)
             attr.Set(usd_value)
+            _store_row_expressions(attr, list_group, proxy_param.name)

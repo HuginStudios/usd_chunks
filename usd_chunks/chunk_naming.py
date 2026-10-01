@@ -39,6 +39,19 @@ CHUNKS_ROOT = "/chunks"
 CHUNKS_ROOT_TYPENAME = "Scope"
 
 CHUNK_TYPE_ATTR = "info:chunkType"
+
+#: The chunk module backing every context. "context == chunkgroup": a CONTEXT chunk with no
+#: module was only ever a stand-in from before this type existed. The default chunkgroup sits
+#: under the /chunks scope at /chunks/<name>.
+CHUNKGROUP_MODULE = "chunkgroup"
+
+#: Digest of the chunk module's source, as it was when this chunk last cooked -- next to
+#: info:chunkType because it says which code, where the type says which module. Stamped by the
+#: cook and carried through saves untouched, so a file records what produced its result.
+#: A chunk that has not cooked has none; a file older than the attribute has none either,
+#: and neither counts as a change.
+MODULE_HASH_ATTR = "info:moduleHash"
+
 INPUTS_PREFIX = "inputs:"
 EXEC_INPUT = "inputs:chunk"
 EXEC_OUTPUT = "outputs:chunk"

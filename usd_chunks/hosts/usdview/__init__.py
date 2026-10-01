@@ -56,6 +56,10 @@ class UsdviewScene(chunk_scene.SceneSender):
     TODO: Make this abstract and move implementation to a UsdView related location
     """
 
+    # The node graph recooks for the active view as soon as it opens a file.
+    load_cooks_active_views_only = True
+    is_app = True
+
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
 

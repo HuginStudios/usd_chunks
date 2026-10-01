@@ -11,6 +11,26 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Experimental: `USD_CHUNKS_SKIP_COOKS=1` skips the cooks nothing reached. A chunk that
+  only the chunks above it changed doesn't cook unless one of them changed a prim it reads.
+  What it reads is not declared: each cook runs on a stage holding only its inputs and its
+  last output, and a cook that looks up anything else is cooked on the whole stage from then
+  on. On an interior set with a 5000-instance Scatter below a Transform and a Light, an
+  edit of either takes 18 ms instead of 270 ms, with an identical result. Framework code
+  that works on the scene during a cook uses the new `get_scene_stage()`.
+- A cook cache for slow chunks. A module that sets `cache_cook=True` in its config has its
+  cooked layer kept on disk and read back when its params, the files they name, its code
+  and the stage's units all match, including on reopen; a `cache_key(node)` hook adds
+  inputs that are not params. Each such node gets a Cache Result checkbox, and
+  `USD_CHUNKS_COOK_CACHE=0` turns it off everywhere. URDF Import, Poly Reduce, Mesh, House
+  and CAD Import use it: the duck robot opens in 0.5 s instead of 1.1 s, and with a 25%
+  Poly Reduce on it in 0.7 s instead of 4.9 s.
+- A chunk prim records which version of its module's code it cooked with, as
+  `info:moduleHash` beside `info:chunkType`, and reopening a scene warns once per chunk type
+  whose saved code differs from what is loaded now -- naming both hashes and the module file
+  to diff. Written by the cook, not by a save, so output that was never re-made keeps the
+  hash it was made with; a file from before this, or a chunk that never cooked, is not
+  treated as changed.
 - `from usd_chunks import Scene` builds and runs chunk networks from a plain script:
   `scene.create.<chunk>()` for every chunk module and menu variant (`scene.create.cube()`,
   `scene.create.rect_light()`), input chunks passed positionally, and `with chunk:` to
@@ -71,6 +91,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Opening a network no longer re-cooks what several exec roots share. Each root used to
+  solve everything below it, so a Merge of six References and the Scatter below it cooked
+  once per root; a root that an earlier root's solve already cooked is now skipped.
+  interior_set_v3 opens in 1.1 s instead of 2.5 s, with the same result.
+- `chunk.Checkbox` is defined in `chunk_core` and re-exported from `chunk`, unchanged, so
+  the framework can add one itself.
 - The framework clears a procedural chunk's layer before every `execute()`, so a chunk
   module no longer does. A cook always starts from nothing and authors its whole result:
   a module that forgot to clear can no longer pile up prims or walk its own unique path up
@@ -136,6 +162,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A chunk that sets its own params while it cooks (Light, Wedge) cooked everything below it
+  twice -- once in the middle of its own cook, against a half-written layer -- and was left
+  dirty, so the next edit of any chunk below it cooked it again. Now what is below it cooks
+  once, after it has finished, and a chunk that has just cooked is clean. On an interior set
+  with a 5000-instance Scatter, the first edit of a Transform after opening takes 280 ms
+  instead of 586 ms, and a Transform edit no longer cooks the Light above it.
 - Apply Schema and MDL to MaterialX never cleared their layers, so repeated cooks left
   stale output behind.
 - A chunk with no layer of its own, or one in a context's file layer, bumped its claimed

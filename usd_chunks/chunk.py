@@ -65,6 +65,7 @@ from usd_chunks.chunk_notice import ChunkNoticeAlias  # noqa: F401
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_core import (
     ChunkBase,
+    Checkbox,
     ChunkConfig as _cfg,
     GizmoBase as _gizmo,
     check_gizmo_sugar as _check_gizmo_sugar,
@@ -79,13 +80,14 @@ from usd_chunks.chunk_core import (
     ValueT,
     is_inst,
 )
-from usd_chunks.chunk_scene import SceneSender
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 from usd_chunks import chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
+
+    from usd_chunks.chunk_scene import SceneSender
 
 logger = logging.getLogger(__name__)
 
@@ -415,17 +417,6 @@ class Button(ChunkParamBase):
         self.get_attribute_sender("value").execute()
 
 
-class Checkbox(ChunkParamBase[bool]):
-    """A checkbox param holding a bool."""
-
-    flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
-
-    @classmethod
-    @override
-    def get_type(cls) -> ChunkFlags.ParamType:
-        return ChunkFlags.ParamType.CHECKBOX
-
-
 class LineEdit(ChunkParamBase[str]):
     """An editable single-line string param.
 
@@ -559,6 +550,10 @@ class Label(ChunkParamBase[str]):
 
     Its name or label attribute is the text displayed.
     """
+
+    # Text shown to the user, never an input: a module setting its own status line during
+    # execute() must not recook everything downstream (AttributeSender.is_presentation_change).
+    presentation_only = True
 
     @classmethod
     @override

@@ -7,7 +7,7 @@ module and per menu variant:
 
     from usd_chunks import Scene
 
-    with Scene() as scene:
+    with Scene.new() as scene:
         shot = scene.create.layer(layer_name="shot")
         with scene.create.edit_target(shot, edit_target="shot"):
             box = scene.create.cube(prim_path="/geo/box")
@@ -20,64 +20,22 @@ children; any other chunk goes before them, so they run after it -- which, for a
 Target, is what puts their edits in its layer.
 
 The registry and layer manager are process-wide singletons, so one scene is live at a
-time, as in any host: close it (or leave the `with` block) before making the next.
+time, as in any host: close it (or leave the `with` block) before making the next. Inside
+an app like usdview, the app's scene is the live one: Scene.current() gets it, and a new
+Scene refuses to start.
 """
 from __future__ import annotations
 
 import contextlib
 
-from pxr import Sdf, Usd, UsdUtils
+from pxr import Usd
 
-from usd_chunks import chunk_naming, chunk_registry, chunk_scene, chunk_scheduler
+from usd_chunks import chunk_registry, chunk_scene
 from usd_chunks.chunk_stage import (
     ChunkLayerManager,
     ChunkStageSync,
-    commit_order_from_stage,
-    export_chunks,
     initialize as chunk_stage_init,
 )
-
-
-def flatten_without_chunks(stage):
-    """Flatten the stage to a layer carrying the result but none of the recipe.
-
-    A Chunk prim left in a delivered file is not inert: open it anywhere usd_chunks is
-    installed and the network reloads and re-cooks, overriding the very geometry the
-    file was exported to carry. Stripping them is what makes the output plain USD that
-    anyone can open with nothing installed.
-
-    FlattenLayerStack rather than Stage.Export, because it keeps references as
-    references where Export inlines the referenced asset outright -- which stops
-    mattering only while a network builds all its own geometry.
-
-    Shallowest path first, so removing a parent Chunk takes its children with it and
-    the later lookup for those children simply finds nothing.
-    """
-    flat = UsdUtils.FlattenLayerStack(stage)
-    tmp = Usd.Stage.Open(flat)
-    chunk_paths = sorted(
-        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME),
-        key=lambda p: p.pathElementCount,
-    )
-    for path in chunk_paths:
-        spec = flat.GetPrimAtPath(path)
-        if not spec:
-            continue  # already removed as child of a shallower Chunk
-        parent = spec.nameParent
-        if parent:
-            del parent.nameChildren[spec.name]
-        else:
-            del flat.pseudoRoot.nameChildren[spec.name]
-
-    # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
-    # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
-    # left in a file whose whole point is to carry none -- and it is enough to make a
-    # delivered asset look like it wants usd_chunks installed. Only when it IS empty: a
-    # stage that parks something else there keeps both the scope and that something.
-    root = flat.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
-    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
-        del flat.pseudoRoot.nameChildren[root.name]
-    return flat
 
 
 class Scene(chunk_scene.SceneSender):
@@ -94,6 +52,12 @@ class Scene(chunk_scene.SceneSender):
     """
 
     def __init__(self, stage: Usd.Stage | None = None, host_name: str = "script", *, sync: bool = True):
+        live = chunk_scene.current_scene()
+        if live is not None and live.is_app:
+            raise RuntimeError(
+                f"{type(live).__name__} is already running a scene. "
+                "Use Scene.current() to build in it."
+            )
         super().__init__()
         # Whether the stage is this Scene's own -- made here, or opened by Scene.open -- and
         # so goes when the Scene does. A stage passed in belongs to the caller.
@@ -106,6 +70,16 @@ class Scene(chunk_scene.SceneSender):
             # network loads, which is what binds params a chunk builds during its own
             # execute to their prims, and it restores Edit Target selections.
             chunk_stage_init(self._stage, self)
+
+    @classmethod
+    def new(cls, host_name: str = "script") -> Scene:
+        """Start a scene of your own, on a new in-memory stage. The same as Scene()."""
+        return cls(host_name=host_name)
+
+    @staticmethod
+    def current() -> chunk_scene.SceneSender | None:
+        """The scene that is running now: usdview's inside usdview, or None if there is none."""
+        return chunk_scene.current_scene()
 
     @classmethod
     def open(cls, path: str, host_name: str = "script") -> Scene:
@@ -126,21 +100,6 @@ class Scene(chunk_scene.SceneSender):
     def __exit__(self, *exc) -> None:
         # Unlike a host's scene, this one is the script's own, so the block ends it.
         self.close()
-
-    def commit(self) -> None:
-        """Run every chunk's commit hook -- the ones that write files, like Export USD."""
-        chunk_scheduler.commit_all(
-            self.get_chunks(),
-            order=lambda cs: commit_order_from_stage(cs, self._stage),
-        )
-
-    def save(self, path: str) -> None:
-        """Write the network itself -- Chunk prims and wires -- so it reopens as a graph."""
-        export_chunks(self, path)
-
-    def export(self, path: str) -> None:
-        """Write the result as plain USD, with the Chunk prims stripped out."""
-        flatten_without_chunks(self._stage).Export(path)
 
     def close(self) -> None:
         """Delete the chunks and reset the layer manager, ready for the next scene.

@@ -68,6 +68,14 @@ def build_plane(stage, name="/plane", divx=2, divy=2, width=1.0, height=1.0, pos
         p = pts[ids[i]]
         uvs[i] = (p[0], p[1])
 
+    # Lay it flat on the stage's ground plane, centered on pos and facing up. Built above in
+    # X-Y with its corner at pos, which on a Y-up stage is a wall. Turning -90 degrees about
+    # X, (x, y, 0) -> (x, 0, -y), keeps the faces pointing up.
+    pts -= (pos[0] + width / 2, pos[1] + height / 2, pos[2])
+    if UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y:
+        pts = np.stack([pts[:, 0], pts[:, 2], -pts[:, 1]], axis=1)
+    pts += pos
+
     primpath = Sdf.Path(name)
     mesh = UsdGeom.Mesh.Define(stage, primpath)
     mesh.CreatePointsAttr(pts)
@@ -726,6 +734,7 @@ def config():
     # entirely -- declaring it turns that silence into a named package.
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
+        cache_cook=True,
         # One entry per shape, so "Cube" is found and created directly rather than by
         # creating Mesh and re-picking the type. Ground is a grid preset, sized to stand
         # things on.
