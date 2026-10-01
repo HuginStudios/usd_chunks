@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache
+from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache, sim_bake
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_stage
 
@@ -744,6 +744,34 @@ def _collider_spec(
     return spec, [(f"col_{i}", prims[i]) for i in mocap_idx]
 
 
+def _mocap_tracks(mocap_ids, start_frame: int, frame_count: int) -> list:
+    """Each kinematic collider's world pose at every frame, read from USD up front.
+
+    Read before the bake leaves the main thread: the stepping runs on a worker (sim_bake),
+    where the stage must not be touched.
+
+    Returns:
+        [(mocap id, [(position, wxyz quaternion) per frame])].
+    """
+    tracks = []
+    for mid, cprim in mocap_ids:
+        poses = []
+        for frame in range(frame_count):
+            kxf = UsdGeom.XformCache(Usd.TimeCode(start_frame + frame)).GetLocalToWorldTransform(cprim)
+            kt = kxf.ExtractTranslation()
+            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()  # strip scale: a scaled matrix
+            ki = kq.GetImaginary()                                     # gives a wrong rotation
+            poses.append(([float(kt[0]), float(kt[1]), float(kt[2])],
+                          [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]))
+        tracks.append((mid, poses))
+    return tracks
+
+
+def _set_mocap(data, tracks, frame: int) -> None:
+    for mid, poses in tracks:
+        data.mocap_pos[mid], data.mocap_quat[mid] = poses[frame]
+
+
 def _sim_prim_gen_mj(
     prim: Usd.Prim,
     collision_prims: list[Usd.Prim] | None,
@@ -983,17 +1011,11 @@ def _sim_prim_gen_mj(
     phases = _force_phases(turb_seed)
     sim_t = 0.0
     all_mats = []
+    tracks = _mocap_tracks(mocap_ids, start_frame, frame_count)
+    # Everything below is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
     for frame in range(frame_count):
-        # Update kinematic (mocap) collision bodies from USD time samples
-        for mid, cprim in mocap_ids:
-            tc = Usd.TimeCode(start_frame + frame)
-            kc = UsdGeom.XformCache(tc)
-            kxf = kc.GetLocalToWorldTransform(cprim)
-            kt = kxf.ExtractTranslation()
-            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()  # strip scale, see note above
-            ki = kq.GetImaginary()
-            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
-            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
+        _set_mocap(data, tracks, frame)
 
         # Sample state before stepping (frame N shows where the body was at the start of step N)
         pos = data.xpos[bid]
@@ -1148,10 +1170,12 @@ def _write_prim_results(
             # depends on the timeline being parked anywhere in particular.
             xf_attr.Set(_local(all_mats[-1]) * inv_upstream)
         else:
-            xf_attr.Set(_local(all_mats[0]) * inv_upstream)
-            for frame_idx, mat in enumerate(all_mats):
-                xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
-    _keep_bake(node, layer)
+            sim_bake.write_samples(
+                xf_attr,
+                ((start_frame + i, _local(mat) * inv_upstream) for i, mat in enumerate(all_mats)),
+                default=_local(all_mats[0]) * inv_upstream,
+            )
+    sim_bake.keep(node, layer)
     if settle_only:
         logger.debug("Settled %s", prim.GetPath())
         return
@@ -1161,7 +1185,17 @@ def _write_prim_results(
     logger.debug("Baked %d frames on %s", len(all_mats), prim.GetPath())
 
 
-def simulate_mujoco(
+def simulate_mujoco(*args, **kwargs):
+    """Simulate one prim as a rigid body and bake it, straight through. Returns the world
+    matrices per frame.
+
+    See _prim_steps for the arguments; sim_bake.run runs those steps with the solve on a
+    worker instead.
+    """
+    return sim_bake.drive(_prim_steps(*args, **kwargs))
+
+
+def _prim_steps(
     stage: Usd.Stage,
     prim: Usd.Prim,
     layer: Sdf.Layer,
@@ -1255,13 +1289,8 @@ def simulate_mujoco(
         settle_only=settle_only,
     )
 
-    # Exhaust the generator to get all_mats
-    all_mats = None
-    try:
-        while True:
-            next(gen)
-    except StopIteration as e:
-        all_mats = e.value
+    all_mats = yield from gen
+    yield sim_bake.MAIN
 
     if not all_mats:
         logger.warning("Simulation produced no results")
@@ -1275,7 +1304,16 @@ def simulate_mujoco(
     return all_mats
 
 
-def simulate_mujoco_articulated(
+def simulate_mujoco_articulated(*args, **kwargs) -> dict | None:
+    """Simulate an articulated asset and bake a transform per link, straight through.
+
+    See _articulated_steps for the arguments; sim_bake.run runs those steps with the solve
+    on a worker instead.
+    """
+    return sim_bake.drive(_articulated_steps(*args, **kwargs))
+
+
+def _articulated_steps(
     stage: Usd.Stage,
     roots,
     layer: Sdf.Layer,
@@ -1349,12 +1387,8 @@ def simulate_mujoco_articulated(
         settle_only=settle_only,
     )
 
-    results = None
-    try:
-        while True:
-            next(gen)
-    except StopIteration as exc:
-        results = exc.value
+    results = yield from gen
+    yield sim_bake.MAIN
 
     if not results:
         logger.warning("Articulated simulation produced no results")
@@ -1397,7 +1431,16 @@ def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarr
     return arr
 
 
-def simulate_mujoco_instancer(
+def simulate_mujoco_instancer(*args, **kwargs) -> None:
+    """Simulate a PointInstancer's instances as rigid bodies and bake them, straight through.
+
+    See _instancer_steps for the arguments; sim_bake.run runs those steps with the solve on a
+    worker instead.
+    """
+    sim_bake.drive(_instancer_steps(*args, **kwargs))
+
+
+def _instancer_steps(
     stage: Usd.Stage,
     prim: Usd.Prim,
     layer: Sdf.Layer,
@@ -1735,17 +1778,11 @@ def simulate_mujoco_instancer(
             frame_ori[i] = Gf.Quath(float(lq.GetReal()), float(li[0]), float(li[1]), float(li[2]))
         return frame_pos, frame_ori
 
+    tracks = _mocap_tracks(mocap_ids, start_frame, frame_count)
+    # Everything below until MAIN is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
     for frame in range(frame_count):
-        # Update kinematic (mocap) collision bodies from USD time samples
-        for mid, cprim in mocap_ids:
-            tc = Usd.TimeCode(start_frame + frame)
-            kc = UsdGeom.XformCache(tc)
-            kxf = kc.GetLocalToWorldTransform(cprim)
-            kt = kxf.ExtractTranslation()
-            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()
-            ki = kq.GetImaginary()
-            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
-            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
+        _set_mocap(data, tracks, frame)
 
         frame_pos, frame_ori = _snapshot()
         all_positions.append(frame_pos)
@@ -1755,6 +1792,7 @@ def simulate_mujoco_instancer(
             _apply_wind(model, data, bids, wind, turbulence, turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
             sim_t += sub_dt
+        yield frame
 
     if settle_only:
         # A pile is the case this matters most for: instances shuffle against each other
@@ -1766,6 +1804,7 @@ def simulate_mujoco_instancer(
                                   turb_scale, turb_speed, phases, t),
         )
         settled_pos, settled_ori = _snapshot()
+        yield sim_bake.MAIN
         # Defaults, not samples, and deliberately not just the strongest opinion: Scatter
         # Points authors its layout as a default too, so leaving this as time samples only
         # (as an animated bake does) means anything reading the instancer at Default() --
@@ -1777,12 +1816,11 @@ def simulate_mujoco_instancer(
         logger.debug("Settled PointInstancer %s (%d bodies)", prim.GetPath(), num_instances)
         return
 
-    # Write time samples
+    yield sim_bake.MAIN
+    # Time samples, all in one change block (sim_bake.write_samples).
     with Usd.EditContext(stage, layer):
-        for frame_idx in range(frame_count):
-            tc = Usd.TimeCode(start_frame + frame_idx)
-            positions_attr.Set(all_positions[frame_idx], tc)
-            orientations_attr.Set(all_orientations[frame_idx], tc)
+        sim_bake.write_samples(positions_attr, ((start_frame + f, v) for f, v in enumerate(all_positions)))
+        sim_bake.write_samples(orientations_attr, ((start_frame + f, v) for f, v in enumerate(all_orientations)))
 
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
@@ -1823,65 +1861,22 @@ def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim
 
 def _clear_chunk_bake(owner) -> None:
     if (node := owner.get_chunk()) is not None:
-        node._rbd_kept_bake = None  # or the next cook would put it back
+        sim_bake.forget(node)  # or the next cook would put it back
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
 
 
-def _keep_bake(node, layer: Sdf.Layer | None) -> None:
-    """Keep a copy of the bake in layer on node, for execute() to put back.
-
-    The framework clears this chunk's layer before every cook, and a bake is too expensive
-    to redo on each one. Kept on the chunk, so it goes when the chunk does.
-    """
-    if node is not None and layer is not None:
-        kept = Sdf.Layer.CreateAnonymous("rbd_bake")
-        kept.TransferContent(layer)
-        node._rbd_kept_bake = kept
-
-
 def _promote_bake_layer(layer: Sdf.Layer | None, node=None) -> None:
-    """Make the bake layer the strongest chunk layer for its target prim.
+    """Make the bake layer the strongest chunk layer for its target prim (sim_bake.promote).
 
-    Chunk layers are ordered so the earlier-added sibling wins. When the solver
-    animates a prim that another chunk authored (e.g. a PointInstancer created by
-    ScatterPoints), that source chunk's static values would otherwise override the
-    baked time samples. Move the bake layer -- and its parent graph layer -- to the
-    front of their containers so the simulation wins.
-
-    With node, also keeps a copy of the bake on it (_keep_bake).
+    When the solver animates a prim another chunk authored (a Scatter Points instancer), that
+    chunk's static values would otherwise hide the baked samples. With node, also keeps a copy
+    of the bake on it, for execute() to put back after the next cook clears the layer.
     """
-    _keep_bake(node, layer)
-    lreg = chunk.get_layer_manager()
-    if not lreg or not layer:
-        return
-    try:
-        # Each graph layer's own parent is whatever real layer it's currently sublayered
-        # under (session layer by default, or an Edit-Target-chosen layer) -- build the
-        # hierarchy from iter_chunk_layers() rather than a single fixed root, since a
-        # chunk's graph layer no longer always attaches to the same place.
-        hierarchy: dict = {}
-        for parent, sub in lreg.iter_chunk_layers():
-            hierarchy[sub.identifier] = parent
-            if sub.identifier != layer.identifier:
-                continue
-            # Strongest sibling within its parent graph layer.
-            if sub.identifier in parent.subLayerPaths and parent.subLayerPaths[0] != sub.identifier:
-                parent.subLayerPaths.remove(sub.identifier)
-                parent.subLayerPaths.insert(0, sub.identifier)
-            # Strongest graph layer under its own parent.
-            grandparent = hierarchy.get(parent.identifier)
-            if (
-                grandparent
-                and parent.identifier in grandparent.subLayerPaths
-                and grandparent.subLayerPaths[0] != parent.identifier
-            ):
-                grandparent.subLayerPaths.remove(parent.identifier)
-                grandparent.subLayerPaths.insert(0, parent.identifier)
-            break
-    except Exception as e:
-        logger.warning("Could not promote bake layer: %s", e)
+    if node is not None:
+        sim_bake.keep(node, layer)
+    sim_bake.promote(layer)
 
 
 def reset(owner, notice, sender) -> None:
@@ -2462,6 +2457,8 @@ def _sim_articulated_gen_mj(
     sub_dt = dt / substeps
 
     results = {name: [] for name in ids}
+    # Everything below is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
     for frame in range(frame_count):
         for name, bid in ids.items():
             pos = data.xpos[bid]
@@ -2751,10 +2748,11 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
             if settle_only:
                 xf_attr.Set(mats[-1] * parent_world_inv * inv_upstream)
             else:
-                xf_attr.Set(mats[0] * parent_world_inv * inv_upstream)
-                for i, mat in enumerate(mats):
-                    xf_attr.Set(mat * parent_world_inv * inv_upstream,
-                                Usd.TimeCode(start_frame + i))
+                sim_bake.write_samples(
+                    xf_attr,
+                    ((start_frame + i, mat * parent_world_inv * inv_upstream) for i, mat in enumerate(mats)),
+                    default=mats[0] * parent_world_inv * inv_upstream,
+                )
             written += 1
 
     if not settle_only and written:
@@ -2825,6 +2823,11 @@ def _run(owner, notice, sender) -> None:
         # Only looking for a cached breakable bake (opening a scene): anything else waits
         # for Run, as it always has.
         return
+    if sim_bake.is_running(_chunk):
+        _report(_chunk, "already simulating -- wait, or press Cancel")
+        return
+    # Cleared first: the paths below read the target's starting state off the real stage,
+    # and the last bake in this layer would make a new run start where the last one ended.
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
@@ -2870,7 +2873,7 @@ def _run(owner, notice, sender) -> None:
     # with no joints fall through to the paths below unchanged.
     articulations = read_articulations(prim)
     if articulations:
-        simulate_mujoco_articulated(
+        steps = _articulated_steps(
             stage,
             articulations,
             layer,
@@ -2898,7 +2901,7 @@ def _run(owner, notice, sender) -> None:
             **forces,
         )
     elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
-        simulate_mujoco_instancer(
+        steps = _instancer_steps(
             stage,
             prim,
             layer,
@@ -2935,7 +2938,7 @@ def _run(owner, notice, sender) -> None:
 
         scale_xyz = _bake_scale(prim, xform_cache)
 
-        simulate_mujoco(
+        steps = _prim_steps(
             stage,
             prim,
             layer,
@@ -2967,19 +2970,38 @@ def _run(owner, notice, sender) -> None:
             **forces,
         )
 
-    # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
-    # the target prim, otherwise its static values win and playback shows nothing.
-    _promote_bake_layer(layer, _chunk)
+    def bake(ctx):
+        """The steps, with their frames as progress. The layer is cleared again just before
+        the result is written: a cook while the solve ran may have put the kept bake back."""
+        while True:
+            try:
+                step = next(steps)
+            except StopIteration as e:
+                return e.value
+            if isinstance(step, int):
+                ctx.progress(step, frame_count)
+            yield step
+            if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
+                lreg.clear_layer(layer.identifier)
 
-    try:
-        scene = chunk_registry.ChunkRegistry().scene
-        # A settle bakes no animation, so there is no range to widen the timeline to.
-        if scene and not settle_only:
-            scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
-    except Exception:
-        pass
+    def finish(_result):
+        if _chunk.get_edit_context() is None:
+            return  # the chunk went away while it was simulating
+        # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
+        # the target prim, otherwise its static values win and playback shows nothing.
+        _promote_bake_layer(layer, _chunk)
+        try:
+            scene = chunk_registry.ChunkRegistry().scene
+            # A settle bakes no animation, so there is no range to widen the timeline to.
+            if scene and not settle_only:
+                scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
+        except Exception:
+            pass
+        _report(_chunk, f"settled {prim.GetName()}" if settle_only else
+                f"baked {frame_count} frames on {prim.GetName()}")
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
-    _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+    sim_bake.run(_chunk, bake, report=lambda text: _report(_chunk, text), finish=finish, name="RBDSolver")
 
 
 def _breakage():
@@ -3064,7 +3086,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     frac = brk.read_fracture(upstream, target)
     if not frac:
         return False
-    if brk.is_running(_chunk):
+    if sim_bake.is_running(_chunk):
         _report(_chunk, "already simulating -- wait, or press Cancel")
         return True
 
@@ -3222,7 +3244,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
 
 
 def _cancel(owner, notice, sender) -> None:
-    _breakage().cancel(owner.get_chunk())
+    sim_bake.cancel(owner.get_chunk())
 
 
 _AUTO_RUN_DELAY_MS = 600
@@ -3345,10 +3367,7 @@ def execute(node) -> None:
     if getattr(node, "_rbd_cache_checked", False):
         # The framework cleared this layer for the cook; put the last bake back. Baking
         # again would cost a full simulation on every tweak upstream.
-        kept = getattr(node, "_rbd_kept_bake", None)
-        if kept is not None and (layer := node.get_edit_context()) is not None:
-            layer.TransferContent(kept)
-            _promote_bake_layer(layer)
+        sim_bake.restore(node, node.get_edit_context())
         return
     node._rbd_cache_checked = True
     node._rbd_cache_only = True
