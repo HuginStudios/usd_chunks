@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from usd_chunks import Scene, chunk, chunk_registry, cook_cache
+from usd_chunks import Scene, chunk, chunk_registry, cook_cache, sim_bake
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -698,7 +698,7 @@ def test_an_identical_setup_reads_its_bake_back_from_the_cook_cache(scene, monke
 @needs_manifold
 def test_a_reopened_scene_comes_back_simulated(qapp, tmp_path, monkeypatch):
     # Inline, as under test: the "script" host would otherwise bake on a worker thread.
-    monkeypatch.setattr(rbd._breakage(), "in_background", lambda: False)
+    monkeypatch.setattr(sim_bake, "in_background", lambda: False)
     path = str(tmp_path / "shot.usda")
     with Scene() as scene:
         frac = scene.create.fracture(source=fr.SOURCE_ROCKS, count=1, generations=1)

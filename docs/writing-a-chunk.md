@@ -187,15 +187,19 @@ done. The next cook with the same inputs reads it back, also after the file is o
 again. Taking the entry first means a param changed during the bake does not relabel it:
 
 ```python
-entry = cook_cache.lookup(node)  # None when caching is off
-...                              # bake into the chunk's layer
+def cache_key(node):
+    return sim_bake.input_key(node)  # None in ordinary cooks: no automatic caching
+
+entry = sim_bake.cache_entry(node, sim_bake.digest(job))  # None when caching is off
+if entry is not None and entry.restore(node, layer):
+    ...                               # read back: no bake
+...                                   # else bake into the chunk's layer, then
 if entry is not None:
     entry.store(node, layer)
 ```
 
-The RBD Solver does this for a breakable bake. Its `cache_key` returns `None` during
-ordinary cooks, since working out the bake's inputs is slow, and returns them only while
-it asks the cache itself.
+`cache_key` answers only while `cache_entry` asks, because working out a bake's inputs can
+take seconds, too slow for every cook. The RBD Solver and the Particle Solver do this.
 
 Each chunk of such a module gets a **Cache Result** checkbox, on by default, to switch
 caching off for that one node. Only cooks that take longer than about 50 ms are stored,

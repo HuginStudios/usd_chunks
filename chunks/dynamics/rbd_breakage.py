@@ -40,12 +40,11 @@ from __future__ import annotations
 
 import logging
 import math
-import threading
 import time
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
-from usd_chunks import chunk_registry
+from usd_chunks import sim_bake
 
 try:
     import mujoco as _mj
@@ -56,11 +55,6 @@ except ImportError:  # pragma: no cover - exercised only on a machine without mu
     _mj = None
     np = None
     _HAS_MUJOCO = False
-
-try:
-    from PySide6 import QtCore
-except ImportError:  # pragma: no cover - headless install without Qt
-    QtCore = None
 
 logger = logging.getLogger(__name__)
 
@@ -1074,19 +1068,20 @@ def author_result(stage, instancer_prim, result, proto_index: dict, start_frame:
     # MuJoCo is w,x,y,z; Gf.Quath is laid out x,y,z,w.
     ori = np.ascontiguousarray(np.roll(ori, -1, axis=-1), dtype=np.float16)
     pos = np.ascontiguousarray(pos, dtype=np.float32)
-    pos_attr = inst.CreatePositionsAttr()
-    ori_attr = inst.CreateOrientationsAttr()
-    inv_attr = inst.CreateInvisibleIdsAttr()
-    for f in range(frames):
-        tc = Usd.TimeCode(start_frame + f)
-        pos_attr.Set(Vt.Vec3fArray.FromNumpy(pos[f]), tc)
-        ori_attr.Set(Vt.QuathArray.FromNumpy(ori[f]), tc)
-        inv_attr.Set(Vt.Int64Array.FromNumpy(ids[~alive[f]]), tc)
-    # The last frame as the default too: a read at Default() -- a downstream chunk, or a
-    # bounds query -- sees where things ended up rather than where they started.
-    pos_attr.Set(Vt.Vec3fArray.FromNumpy(pos[-1]))
-    ori_attr.Set(Vt.QuathArray.FromNumpy(ori[-1]))
-    inv_attr.Set(Vt.Int64Array.FromNumpy(ids[~alive[-1]]))
+    # Every frame in one change block (write_samples): the live preview writes this every few
+    # seconds, and a notice per Set cost seconds of main-thread time each time. The last frame
+    # is the default too: a read at Default() -- a downstream chunk, or a bounds query -- sees
+    # where things ended up rather than where they started.
+    frames_at = range(start_frame, start_frame + frames)
+    sim_bake.write_samples(inst.CreatePositionsAttr(),
+                           ((t, Vt.Vec3fArray.FromNumpy(pos[f])) for f, t in enumerate(frames_at)),
+                           default=Vt.Vec3fArray.FromNumpy(pos[-1]))
+    sim_bake.write_samples(inst.CreateOrientationsAttr(),
+                           ((t, Vt.QuathArray.FromNumpy(ori[f])) for f, t in enumerate(frames_at)),
+                           default=Vt.QuathArray.FromNumpy(ori[-1]))
+    sim_bake.write_samples(inst.CreateInvisibleIdsAttr(),
+                           ((t, Vt.Int64Array.FromNumpy(ids[~alive[f]])) for f, t in enumerate(frames_at)),
+                           default=Vt.Int64Array.FromNumpy(ids[~alive[-1]]))
 
     for spin in spins:
         prim = stage.GetPrimAtPath(spin["prim"])
@@ -1098,133 +1093,44 @@ def author_result(stage, instancer_prim, result, proto_index: dict, start_frame:
             Gf.Vec3d(*spin["pivot"]))
         rot = UsdGeom.XformOp(prim.CreateAttribute("xformOp:orient:rbdSpin", Sdf.ValueTypeNames.Quatf))
         axis = Gf.Vec3d(*spin["axis"]).GetNormalized()
-        for f in range(frames):
-            angle = math.degrees(spin["omega"] * f / result.get("fps", 24.0))
-            rot.Set(Gf.Quatf(Gf.Rotation(axis, angle).GetQuat()), Usd.TimeCode(start_frame + f))
+        fps = result.get("fps", 24.0)
+        sim_bake.write_samples(rot.GetAttr(), (
+            (start_frame + f, Gf.Quatf(Gf.Rotation(axis, math.degrees(spin["omega"] * f / fps)).GetQuat()))
+            for f in range(frames)
+        ))
         prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray, variability=Sdf.VariabilityUniform).Set(
             Vt.TokenArray(order + ["xformOp:translate:rbdSpinPivot", "xformOp:orient:rbdSpin",
                                    "!invert!xformOp:translate:rbdSpinPivot"]))
 
 
 # ---------------------------------------------------------------------------
-# Running: a worker thread in a UI, inline headless
+# Running: sim_bake -- a worker thread in a UI, inline headless
 # ---------------------------------------------------------------------------
-
-if QtCore is not None:
-
-    class _Relay(QtCore.QObject):
-        """Runs callables on the thread it was made on -- the main one -- when a worker emits
-        them. A queued signal, because QTimer.singleShot fired from a worker thread without a
-        main-thread context never runs."""
-
-        call = QtCore.Signal(object)
-
-        def __init__(self):
-            super().__init__()
-            self.call.connect(self._invoke, QtCore.Qt.QueuedConnection)
-
-        def _invoke(self, fn):
-            fn()
-
-
-_RUNNING = "_rbd_breakage_running"
-_CANCEL = "_rbd_breakage_cancel"
-
-
-def in_background() -> bool:
-    """A worker thread only where an event loop can bring the result back to the main
-    thread; headless and under test the bake runs inline."""
-    if QtCore is None or QtCore.QCoreApplication.instance() is None:
-        return False
-    return chunk_registry.ChunkRegistry().plugin not in (None, "", "cli", "pytest")
-
-
-def is_running(node) -> bool:
-    return bool(getattr(node, _RUNNING, False))
-
-
-def cancel(node) -> None:
-    setattr(node, _CANCEL, True)
 
 
 def dispatch(node, job, finish, report, live=None) -> None:
-    """Simulate *job*, then hand the result to *finish* on the main thread.
+    """Simulate *job*, then hand the result to *finish* on the main thread (sim_bake.run).
 
     A breakage bake takes tens of seconds; on the main thread the host would stop responding
     for all of it, which reads as a crash. *live*, if given, gets the frames done so far now
     and then, on the main thread (see simulate) -- so the viewport shows the simulation
     progressing rather than whatever was there before it started.
     """
-    setattr(node, _CANCEL, False)
-    if not in_background():
-        try:
-            result = simulate(job)
-        except Exception as e:  # noqa: BLE001 - a failed solve reports, it does not take the host down
-            logger.exception("Breakable simulation failed")
-            report(f"simulation failed: {e}")
-            return
-        finish(result)
-        return
-    if is_running(node):
-        report("already simulating -- wait, or press Cancel")
-        return
-    setattr(node, _RUNNING, True)
-    relay = _Relay()
-    node._rbd_breakage_relay = relay  # the worker's emits need it alive until the last lands
 
-    first_frame = []
+    def bake(ctx):
+        def progress(f, n):
+            if f < 0:
+                ctx.status(f"building the simulation: {n} pieces...")
+            else:
+                ctx.progress(f, n)
 
-    def progress(f, n):
-        if f < 0:
-            relay.call.emit(lambda: report(f"building the simulation: {n} pieces..."))
-            return
-        if not first_frame:
-            first_frame.append(time.perf_counter())
-        if f % 4 == 0 or f == n - 1:
-            el = time.perf_counter() - first_frame[0]
-            eta = el / max(f, 1) * (n - f - 1)
-            relay.call.emit(lambda: report(f"simulating... frame {f + 1} of {n} · about {eta:.0f}s left"))
+        yield sim_bake.WORKER
+        return simulate(job, progress=progress, cancel=ctx.cancelled,
+                        live=ctx.live if live is not None and not ctx.inline else None)
 
-    def show(partial):
-        # Only the newest partial matters: one queued behind another is dropped.
-        relay.latest = partial
-
-        def apply():
-            latest, relay.latest = getattr(relay, "latest", None), None
-            if latest is not None and getattr(node, _RUNNING, False):
-                live(latest)
-
-        relay.call.emit(apply)
-
-    def work():
-        try:
-            result = simulate(job, progress=progress, cancel=lambda: getattr(node, _CANCEL, False),
-                              live=show if live is not None else None)
-        except Exception as e:  # noqa: BLE001
-            cancelled = getattr(node, _CANCEL, False)
-            if not cancelled:
-                logger.exception("Breakable simulation failed")
-            message = "cancelled" if cancelled else f"simulation failed: {e}"
-
-            def failed():
-                setattr(node, _RUNNING, False)
-                report(message)
-
-            relay.call.emit(failed)
-            return
-
-        def done():
-            setattr(node, _RUNNING, False)
-            try:
-                finish(result)
-            except Exception as e:  # noqa: BLE001
-                logger.exception("Writing the breakable bake failed")
-                report(f"writing the result failed: {e}")
-
-        relay.call.emit(done)
-
-    report(f"simulating... frame 0 of {job['frames']}")
-    threading.Thread(target=work, name="RBDBreakage", daemon=True).start()
+    if not sim_bake.is_running(node):
+        report(f"simulating... frame 0 of {job['frames']}")
+    sim_bake.run(node, bake, report=report, finish=finish, live=live, name="RBDBreakage")
 
 
 def describe_world(world, emitter_path="") -> str:

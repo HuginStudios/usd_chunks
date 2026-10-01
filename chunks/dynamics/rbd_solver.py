@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache
+from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache, sim_bake
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_stage
 
@@ -342,6 +342,7 @@ def _add_triangle_soup(
     contact_tc: float,
     xform_inv: Gf.Matrix4d | None = None,
     geometry: tuple | None = None,
+    progress=None,
 ) -> int:
     """Add one thin convex prism geom per collider triangle. Returns the geom count.
 
@@ -370,6 +371,9 @@ def _add_triangle_soup(
     the collider's meshes anyway to decide whether the triangle count fits its budget, and
     on a production collider that walk is the whole mesh -- so it hands the result down
     rather than making this re-read every point and face a second time.
+
+    *progress*, if given, is called with (triangles done, total) every few hundred: a big
+    collider takes minutes, and that is also where a Cancel is noticed.
     """
     verts, tris = geometry if geometry is not None else _collider_triangles(cprim)
     if not tris:
@@ -381,6 +385,8 @@ def _add_triangle_soup(
     V = _np.asarray(verts, dtype=_np.float64)
     count = 0
     for i, (a, b, c) in enumerate(tris):
+        if progress is not None and i % 250 == 0:
+            progress(i, len(tris))
         v0, v1, v2 = V[a], V[b], V[c]
         n = _np.cross(v1 - v0, v2 - v0)
         ln = float(_np.linalg.norm(n))
@@ -405,6 +411,38 @@ def _add_triangle_soup(
     return count
 
 
+class _ColliderRead:
+    """What the collider build needs from one collision prim, read on the main thread.
+
+    The build itself -- one MuJoCo geom per triangle for a Mesh collider, quadratic in their
+    count -- runs on sim_bake's worker, where the stage must not be touched. A 225k-triangle
+    rock cluster set to Mesh used to build there on the main thread, and usdview hung.
+    """
+
+    __slots__ = ("prim", "path", "geometry", "bounds", "is_anim", "rest")
+
+    def __init__(self, prim: Usd.Prim):
+        self.prim = prim
+        self.path = str(prim.GetPath())
+        self.geometry = _collider_triangles(prim)
+        self.bounds = _geom_bounds(prim)
+        self.is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(prim).GetOrderedXformOps())
+        self.rest = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
+
+    @property
+    def bounds_key(self) -> tuple | None:
+        """The world bounds as a plain tuple, for the cache key."""
+        if self.bounds is None:
+            return None
+        lo, hi = self.bounds.GetMin(), self.bounds.GetMax()
+        return tuple(float(v) for v in lo) + tuple(float(v) for v in hi)
+
+
+def _read_colliders(colliders) -> list[_ColliderRead]:
+    """Each collider as a _ColliderRead: prims are read now, reads are passed through."""
+    return [c if isinstance(c, _ColliderRead) else _ColliderRead(c) for c in (colliders or [])]
+
+
 def _add_colliders(
     spec: _mj.MjSpec,
     collision_prims: list[Usd.Prim] | None,
@@ -418,6 +456,7 @@ def _add_colliders(
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
     geometry: list | None = None,
+    progress=None,
 ) -> list[tuple[str, Usd.Prim]]:
     """Add static/kinematic collision bodies to *spec*.
 
@@ -437,10 +476,16 @@ def _add_colliders(
     reads from it, so a collider's meshes are walked once per run however it ends up
     being collided.
 
+    *collision_prims* may be prims or _ColliderRead entries; given reads, nothing here
+    touches the stage, so it can run on a worker thread. *progress* goes to
+    _add_triangle_soup.
+
     Returns mocap_col_names: list of (body_name, prim) needing per-frame updates.
     """
+    reads = _read_colliders(collision_prims)
+    collision_prims = [r.prim for r in reads]
     if geometry is None:
-        geometry = [_collider_triangles(cp) for cp in (collision_prims or [])]
+        geometry = [r.geometry for r in reads]
     mocap_col_names = []
 
     if not collision_prims:
@@ -466,8 +511,8 @@ def _add_colliders(
     # so it reliably catches anything a collider ejects AND any body that
     # rolls/spills off the rim, instead of letting it fall forever.
     ground_up = None
-    for cp in collision_prims:
-        cr = _geom_bounds(cp)
+    for read in reads:
+        cr = read.bounds
         if cr is not None:
             b = float(cr.GetMin()[up_idx])
             ground_up = b if ground_up is None else min(ground_up, b)
@@ -487,9 +532,8 @@ def _add_colliders(
         gpg.solref = [contact_tc, 1.0]
         gpg.condim = 3
 
-    for i, cp in enumerate(collision_prims):
-        is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps())
-        bounds = _geom_bounds(cp)
+    for i, read in enumerate(reads):
+        cp, is_anim, bounds = read.prim, read.is_anim, read.bounds
 
         # --- exact triangle-soup collider (the general case) ---
         soup = collider_mode in ("Auto", "Mesh")
@@ -521,8 +565,7 @@ def _add_colliders(
                     # animated collider keeps its real shape instead of degrading to a box.
                     # Its prisms have to be expressed in the prim's own frame for that pose
                     # to mean anything, hence xform_inv.
-                    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
-                    rest = xfc.GetLocalToWorldTransform(cp)
+                    rest = read.rest
                     xform_inv = rest.GetInverse()
                     rt = rest.ExtractTranslation()
                     rq = rest.RemoveScaleShear().ExtractRotation().GetQuat()
@@ -533,7 +576,7 @@ def _add_colliders(
                     mocap_col_names.append((f"col_{i}", cp))
                 n = _add_triangle_soup(
                     spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv,
-                    geometry=geometry[i],
+                    geometry=geometry[i], progress=progress,
                 )
                 if n:
                     continue
@@ -587,8 +630,7 @@ def _add_colliders(
             ctr = (bounds.GetMin() + bounds.GetMax()) * 0.5
             col_body.pos = [float(ctr[0]), float(ctr[1]), float(ctr[2])]
         else:
-            xfc = UsdGeom.XformCache()
-            col_t = xfc.GetLocalToWorldTransform(cp).ExtractTranslation()
+            col_t = read.rest.ExtractTranslation()
             col_body.pos = [float(col_t[0]), float(col_t[1]), float(col_t[2])]
         if is_anim:
             col_body.mocap = True
@@ -676,6 +718,7 @@ def _collider_spec(
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
+    progress=None,
 ) -> tuple:
     """A fresh MjSpec holding this run's colliders, reusing a built one where possible.
 
@@ -690,7 +733,8 @@ def _collider_spec(
     happens once and every re-run after it -- a friction tweak, a longer frame range, a
     different drop height -- copies.
     """
-    prims = list(collision_prims or [])
+    reads = _read_colliders(collision_prims)
+    prims = [r.prim for r in reads]
     if not prims:
         # No colliders: an infinite ground plane, which costs nothing to build. Caching it
         # would only add a digest of nothing to compare.
@@ -700,7 +744,7 @@ def _collider_spec(
             floor_drop, collider_mode, collider_thickness, tri_budget, geometry=[],
         )
 
-    geometry = [_collider_triangles(cp) for cp in prims]
+    geometry = [r.geometry for r in reads]
     # Two things about a collider shape the spec without showing up in its triangles:
     #
     #  * whether it is animated, which decides between a mocap body and a static one. The
@@ -709,14 +753,7 @@ def _collider_spec(
     #  * its bounds, which position the catch-all ground plane and size the box fallback.
     #    A collider with no Mesh under it at all -- a UsdGeom.Cube, say -- contributes no
     #    triangles whatsoever, so its bounds are the only thing that distinguishes it.
-    shape_state = [
-        (
-            str(cp.GetPath()),
-            any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps()),
-            _bounds_key(cp),
-        )
-        for cp in prims
-    ]
+    shape_state = [(r.path, r.is_anim, r.bounds_key) for r in reads]
     key = _collider_cache_key(
         geometry, up_idx, dyn_radius, hfield_res, floor_drop, collider_mode,
         collider_thickness, tri_budget, shape_state,
@@ -726,8 +763,9 @@ def _collider_spec(
     if entry is None:
         built = _mj.MjSpec()
         mocap = _add_colliders(
-            built, prims, up_idx, friction, contact_tc, dyn_radius, hfield_res,
+            built, reads, up_idx, friction, contact_tc, dyn_radius, hfield_res,
             floor_drop, collider_mode, collider_thickness, tri_budget, geometry=geometry,
+            progress=progress,
         )
         # Indices, not prims: a cached Usd.Prim handle expires with its stage, and the
         # caller has the live prims anyway.
@@ -742,6 +780,41 @@ def _collider_spec(
     spec = cached.copy()
     _apply_contact_params(spec, friction, contact_tc)
     return spec, [(f"col_{i}", prims[i]) for i in mocap_idx]
+
+
+def _collider_poses(reads, start_frame: int, frame_count: int) -> dict:
+    """Each animated collider's world pose at every frame, read from USD up front.
+
+    Read before the bake leaves the main thread: the collider build and the stepping run on a
+    worker (sim_bake), where the stage must not be touched.
+
+    Returns:
+        {collider path: [(position, wxyz quaternion) per frame]}.
+    """
+    poses = {}
+    for read in reads:
+        if not read.is_anim:
+            continue
+        track = []
+        for frame in range(frame_count):
+            kxf = UsdGeom.XformCache(Usd.TimeCode(start_frame + frame)).GetLocalToWorldTransform(read.prim)
+            kt = kxf.ExtractTranslation()
+            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()  # strip scale: a scaled matrix
+            ki = kq.GetImaginary()                                     # gives a wrong rotation
+            track.append(([float(kt[0]), float(kt[1]), float(kt[2])],
+                          [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]))
+        poses[read.path] = track
+    return poses
+
+
+def _mocap_tracks(mocap_ids, poses: dict) -> list:
+    """[(mocap id, poses per frame)] for the moving colliders, from _collider_poses."""
+    return [(mid, poses[str(cprim.GetPath())]) for mid, cprim in mocap_ids]
+
+
+def _set_mocap(data, tracks, frame: int) -> None:
+    for mid, poses in tracks:
+        data.mocap_pos[mid], data.mocap_quat[mid] = poses[frame]
 
 
 def _sim_prim_gen_mj(
@@ -776,6 +849,8 @@ def _sim_prim_gen_mj(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
+    tri_budget: int = 20000,
+    progress=None,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
     """MuJoCo rigid body simulation -- yields frame index, returns all_mats.
 
@@ -865,8 +940,13 @@ def _sim_prim_gen_mj(
     # nothing about them changed; the dynamic body is added below, so colliders still come
     # first and the body-id lookups downstream still hold.
     dyn_radius = max(half_extents) + max(collision_margin, 0.0)
+    colliders = _read_colliders(collision_prims)
+    poses = _collider_poses(colliders, start_frame, frame_count)
+    # Everything below is MuJoCo and Gf only -- the collider build included, which on a big
+    # Mesh collider is minutes: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
     spec, mocap_col_names = _collider_spec(
-        collision_prims,
+        colliders,
         up_idx,
         friction,
         contact_tc,
@@ -875,6 +955,8 @@ def _sim_prim_gen_mj(
         floor_drop,
         collider_mode,
         collider_thickness,
+        tri_budget,
+        progress=progress,
     )
     spec.option.timestep = sub_dt
     grav = [0.0, 0.0, 0.0]
@@ -983,17 +1065,9 @@ def _sim_prim_gen_mj(
     phases = _force_phases(turb_seed)
     sim_t = 0.0
     all_mats = []
+    tracks = _mocap_tracks(mocap_ids, poses)
     for frame in range(frame_count):
-        # Update kinematic (mocap) collision bodies from USD time samples
-        for mid, cprim in mocap_ids:
-            tc = Usd.TimeCode(start_frame + frame)
-            kc = UsdGeom.XformCache(tc)
-            kxf = kc.GetLocalToWorldTransform(cprim)
-            kt = kxf.ExtractTranslation()
-            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()  # strip scale, see note above
-            ki = kq.GetImaginary()
-            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
-            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
+        _set_mocap(data, tracks, frame)
 
         # Sample state before stepping (frame N shows where the body was at the start of step N)
         pos = data.xpos[bid]
@@ -1148,10 +1222,12 @@ def _write_prim_results(
             # depends on the timeline being parked anywhere in particular.
             xf_attr.Set(_local(all_mats[-1]) * inv_upstream)
         else:
-            xf_attr.Set(_local(all_mats[0]) * inv_upstream)
-            for frame_idx, mat in enumerate(all_mats):
-                xf_attr.Set(_local(mat) * inv_upstream, Usd.TimeCode(start_frame + frame_idx))
-    _keep_bake(node, layer)
+            sim_bake.write_samples(
+                xf_attr,
+                ((start_frame + i, _local(mat) * inv_upstream) for i, mat in enumerate(all_mats)),
+                default=_local(all_mats[0]) * inv_upstream,
+            )
+    sim_bake.keep(node, layer)
     if settle_only:
         logger.debug("Settled %s", prim.GetPath())
         return
@@ -1161,7 +1237,17 @@ def _write_prim_results(
     logger.debug("Baked %d frames on %s", len(all_mats), prim.GetPath())
 
 
-def simulate_mujoco(
+def simulate_mujoco(*args, **kwargs):
+    """Simulate one prim as a rigid body and bake it, straight through. Returns the world
+    matrices per frame.
+
+    See _prim_steps for the arguments; sim_bake.run runs those steps with the solve on a
+    worker instead.
+    """
+    return sim_bake.drive(_prim_steps(*args, **kwargs))
+
+
+def _prim_steps(
     stage: Usd.Stage,
     prim: Usd.Prim,
     layer: Sdf.Layer,
@@ -1195,6 +1281,7 @@ def simulate_mujoco(
     turb_seed: int = 0,
     node=None,
     settle_only: bool = False,
+    progress=None,
 ) -> list[Gf.Matrix4d] | None:
     """Run MuJoCo simulation.
 
@@ -1253,15 +1340,12 @@ def simulate_mujoco(
         turb_speed=turb_speed,
         turb_seed=turb_seed,
         settle_only=settle_only,
+        tri_budget=tri_budget,
+        progress=progress,
     )
 
-    # Exhaust the generator to get all_mats
-    all_mats = None
-    try:
-        while True:
-            next(gen)
-    except StopIteration as e:
-        all_mats = e.value
+    all_mats = yield from gen
+    yield sim_bake.MAIN
 
     if not all_mats:
         logger.warning("Simulation produced no results")
@@ -1275,7 +1359,16 @@ def simulate_mujoco(
     return all_mats
 
 
-def simulate_mujoco_articulated(
+def simulate_mujoco_articulated(*args, **kwargs) -> dict | None:
+    """Simulate an articulated asset and bake a transform per link, straight through.
+
+    See _articulated_steps for the arguments; sim_bake.run runs those steps with the solve
+    on a worker instead.
+    """
+    return sim_bake.drive(_articulated_steps(*args, **kwargs))
+
+
+def _articulated_steps(
     stage: Usd.Stage,
     roots,
     layer: Sdf.Layer,
@@ -1306,6 +1399,7 @@ def simulate_mujoco_articulated(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    progress=None,
 ) -> dict | None:
     """Run an articulated MuJoCo simulation and bake a transform per link.
 
@@ -1347,14 +1441,11 @@ def simulate_mujoco_articulated(
         turb_speed=turb_speed,
         turb_seed=turb_seed,
         settle_only=settle_only,
+        progress=progress,
     )
 
-    results = None
-    try:
-        while True:
-            next(gen)
-    except StopIteration as exc:
-        results = exc.value
+    results = yield from gen
+    yield sim_bake.MAIN
 
     if not results:
         logger.warning("Articulated simulation produced no results")
@@ -1397,7 +1488,16 @@ def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarr
     return arr
 
 
-def simulate_mujoco_instancer(
+def simulate_mujoco_instancer(*args, **kwargs) -> None:
+    """Simulate a PointInstancer's instances as rigid bodies and bake them, straight through.
+
+    See _instancer_steps for the arguments; sim_bake.run runs those steps with the solve on a
+    worker instead.
+    """
+    sim_bake.drive(_instancer_steps(*args, **kwargs))
+
+
+def _instancer_steps(
     stage: Usd.Stage,
     prim: Usd.Prim,
     layer: Sdf.Layer,
@@ -1428,6 +1528,7 @@ def simulate_mujoco_instancer(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
+    progress=None,
 ) -> None:
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
@@ -1540,33 +1641,6 @@ def simulate_mujoco_instancer(
     # Same colliders as the single-prim path (bowl heightfield + backstop, etc.), and the
     # spec they come back in is the one the instances are then added to -- so the colliders
     # still precede them, as the body-id lookups below assume.
-    spec, mocap_col_names = _collider_spec(
-        collision_prims,
-        up_idx,
-        friction,
-        contact_tc,
-        max_radius,
-        hfield_res,
-        floor_drop,
-        collider_mode,
-        collider_thickness,
-        tri_budget,
-    )
-    # Many piled bodies generate many contacts/constraints; the default solver
-    # arena (~16 MB) overflows. Scale the allocation with the instance count.
-    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
-    spec.option.timestep = sub_dt
-    grav = [0.0, 0.0, 0.0]
-    grav[up_idx] = gravity
-    spec.option.gravity = grav
-    spec.option.iterations = solver_iters
-    spec.option.noslip_iterations = 3
-    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
-
-    dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
-
-    off_rot = None  # no rotation offset on this chunk any more; see main()
-
     # Convex hull: extract EACH prototype's geometry once, then build one mesh asset per
     # (prototype, distinct instance scale) pair -- MuJoCo computes the hull per asset.
     hull_bases: list = []
@@ -1586,6 +1660,39 @@ def simulate_mujoco_instancer(
                 )
             hull_bases.append(verts)
     hull_bases += [None] * (len(proto_exts) - len(hull_bases))
+
+    colliders = _read_colliders(collision_prims)
+    poses = _collider_poses(colliders, start_frame, frame_count)
+    # Everything below until MAIN is MuJoCo and Gf only -- the collider build included, which
+    # on a big Mesh collider is minutes: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
+    spec, mocap_col_names = _collider_spec(
+        colliders,
+        up_idx,
+        friction,
+        contact_tc,
+        max_radius,
+        hfield_res,
+        floor_drop,
+        collider_mode,
+        collider_thickness,
+        tri_budget,
+        progress=progress,
+    )
+    # Many piled bodies generate many contacts/constraints; the default solver
+    # arena (~16 MB) overflows. Scale the allocation with the instance count.
+    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
+    spec.option.timestep = sub_dt
+    grav = [0.0, 0.0, 0.0]
+    grav[up_idx] = gravity
+    spec.option.gravity = grav
+    spec.option.iterations = solver_iters
+    spec.option.noslip_iterations = 3
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
+
+    dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
+
+    off_rot = None  # no rotation offset on this chunk any more; see main()
 
     hull_mesh_cache: dict[tuple[int, float, float, float], str] = {}
 
@@ -1735,17 +1842,9 @@ def simulate_mujoco_instancer(
             frame_ori[i] = Gf.Quath(float(lq.GetReal()), float(li[0]), float(li[1]), float(li[2]))
         return frame_pos, frame_ori
 
+    tracks = _mocap_tracks(mocap_ids, poses)
     for frame in range(frame_count):
-        # Update kinematic (mocap) collision bodies from USD time samples
-        for mid, cprim in mocap_ids:
-            tc = Usd.TimeCode(start_frame + frame)
-            kc = UsdGeom.XformCache(tc)
-            kxf = kc.GetLocalToWorldTransform(cprim)
-            kt = kxf.ExtractTranslation()
-            kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()
-            ki = kq.GetImaginary()
-            data.mocap_pos[mid] = [float(kt[0]), float(kt[1]), float(kt[2])]
-            data.mocap_quat[mid] = [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]
+        _set_mocap(data, tracks, frame)
 
         frame_pos, frame_ori = _snapshot()
         all_positions.append(frame_pos)
@@ -1755,6 +1854,7 @@ def simulate_mujoco_instancer(
             _apply_wind(model, data, bids, wind, turbulence, turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
             sim_t += sub_dt
+        yield frame
 
     if settle_only:
         # A pile is the case this matters most for: instances shuffle against each other
@@ -1766,6 +1866,7 @@ def simulate_mujoco_instancer(
                                   turb_scale, turb_speed, phases, t),
         )
         settled_pos, settled_ori = _snapshot()
+        yield sim_bake.MAIN
         # Defaults, not samples, and deliberately not just the strongest opinion: Scatter
         # Points authors its layout as a default too, so leaving this as time samples only
         # (as an animated bake does) means anything reading the instancer at Default() --
@@ -1777,12 +1878,11 @@ def simulate_mujoco_instancer(
         logger.debug("Settled PointInstancer %s (%d bodies)", prim.GetPath(), num_instances)
         return
 
-    # Write time samples
+    yield sim_bake.MAIN
+    # Time samples, all in one change block (sim_bake.write_samples).
     with Usd.EditContext(stage, layer):
-        for frame_idx in range(frame_count):
-            tc = Usd.TimeCode(start_frame + frame_idx)
-            positions_attr.Set(all_positions[frame_idx], tc)
-            orientations_attr.Set(all_orientations[frame_idx], tc)
+        sim_bake.write_samples(positions_attr, ((start_frame + f, v) for f, v in enumerate(all_positions)))
+        sim_bake.write_samples(orientations_attr, ((start_frame + f, v) for f, v in enumerate(all_orientations)))
 
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         stage.SetStartTimeCode(start_frame)
@@ -1806,6 +1906,50 @@ def _vec3(node, name: str) -> list[float]:
     return out + [0.0] * (3 - len(out))
 
 
+#: Above this many triangles a Mesh collider takes long enough to build that the readout
+#: warns. MuJoCo builds one geom per triangle, quadratic in their count (see _collider_spec).
+_SLOW_MESH_TRIANGLES = 20_000
+
+
+def _triangle_count(prim: Usd.Prim) -> int:
+    """How many triangles the meshes under prim make, from their face counts alone."""
+    total = 0
+    for p in Usd.PrimRange(prim):
+        if p.IsA(UsdGeom.Mesh):
+            counts = UsdGeom.Mesh(p).GetFaceVertexCountsAttr().Get()
+            if counts:
+                total += int(_np.maximum(_np.asarray(counts, dtype=_np.int64) - 2, 0).sum())
+    return total
+
+
+def _mesh_collider_warning(collision_prims, collider_mode: str, tri_budget: int) -> str:
+    """A readout line when the colliders will be built as a big Mesh, with how long it takes.
+
+    The settings are used as they are -- a long build may be what the user wants -- but a
+    225k-triangle rock cluster set to Mesh is some two hours, and that should be said up
+    front, not discovered. The build runs on the worker, so usdview stays usable and Cancel
+    stops it.
+    """
+    if collider_mode not in ("Mesh", "Auto") or not collision_prims:
+        return ""
+    counts = [_triangle_count(p) for p in collision_prims]
+    if collider_mode == "Auto":
+        counts = [n for n in counts if n <= tri_budget]
+    total = sum(counts)
+    if total <= _SLOW_MESH_TRIANGLES:
+        return ""
+    # Measured: 20k triangles take about a minute, and the cost grows with the square.
+    seconds = 61.0 * (total / 20_000) ** 2
+    if seconds < 90:
+        took = f"about {seconds:.0f} s"
+    elif seconds < 90 * 60:
+        took = f"about {seconds / 60:.0f} min"
+    else:
+        took = f"about {seconds / 3600:.1f} h"
+    return (f"Mesh collider of {total:,} triangles: building it takes {took}. "
+            "Poly Reduce it, or use Heightfield, to be quicker.")
+
+
 def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim]:
     """Parse a newline-or-comma-separated path list into valid Usd.Prim objects."""
     result = []
@@ -1823,65 +1967,22 @@ def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim
 
 def _clear_chunk_bake(owner) -> None:
     if (node := owner.get_chunk()) is not None:
-        node._rbd_kept_bake = None  # or the next cook would put it back
+        sim_bake.forget(node)  # or the next cook would put it back
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
 
 
-def _keep_bake(node, layer: Sdf.Layer | None) -> None:
-    """Keep a copy of the bake in layer on node, for execute() to put back.
-
-    The framework clears this chunk's layer before every cook, and a bake is too expensive
-    to redo on each one. Kept on the chunk, so it goes when the chunk does.
-    """
-    if node is not None and layer is not None:
-        kept = Sdf.Layer.CreateAnonymous("rbd_bake")
-        kept.TransferContent(layer)
-        node._rbd_kept_bake = kept
-
-
 def _promote_bake_layer(layer: Sdf.Layer | None, node=None) -> None:
-    """Make the bake layer the strongest chunk layer for its target prim.
+    """Make the bake layer the strongest chunk layer for its target prim (sim_bake.promote).
 
-    Chunk layers are ordered so the earlier-added sibling wins. When the solver
-    animates a prim that another chunk authored (e.g. a PointInstancer created by
-    ScatterPoints), that source chunk's static values would otherwise override the
-    baked time samples. Move the bake layer -- and its parent graph layer -- to the
-    front of their containers so the simulation wins.
-
-    With node, also keeps a copy of the bake on it (_keep_bake).
+    When the solver animates a prim another chunk authored (a Scatter Points instancer), that
+    chunk's static values would otherwise hide the baked samples. With node, also keeps a copy
+    of the bake on it, for execute() to put back after the next cook clears the layer.
     """
-    _keep_bake(node, layer)
-    lreg = chunk.get_layer_manager()
-    if not lreg or not layer:
-        return
-    try:
-        # Each graph layer's own parent is whatever real layer it's currently sublayered
-        # under (session layer by default, or an Edit-Target-chosen layer) -- build the
-        # hierarchy from iter_chunk_layers() rather than a single fixed root, since a
-        # chunk's graph layer no longer always attaches to the same place.
-        hierarchy: dict = {}
-        for parent, sub in lreg.iter_chunk_layers():
-            hierarchy[sub.identifier] = parent
-            if sub.identifier != layer.identifier:
-                continue
-            # Strongest sibling within its parent graph layer.
-            if sub.identifier in parent.subLayerPaths and parent.subLayerPaths[0] != sub.identifier:
-                parent.subLayerPaths.remove(sub.identifier)
-                parent.subLayerPaths.insert(0, sub.identifier)
-            # Strongest graph layer under its own parent.
-            grandparent = hierarchy.get(parent.identifier)
-            if (
-                grandparent
-                and parent.identifier in grandparent.subLayerPaths
-                and grandparent.subLayerPaths[0] != parent.identifier
-            ):
-                grandparent.subLayerPaths.remove(parent.identifier)
-                grandparent.subLayerPaths.insert(0, parent.identifier)
-            break
-    except Exception as e:
-        logger.warning("Could not promote bake layer: %s", e)
+    if node is not None:
+        sim_bake.keep(node, layer)
+    sim_bake.promote(layer)
 
 
 def reset(owner, notice, sender) -> None:
@@ -2408,6 +2509,7 @@ def _sim_articulated_gen_mj(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
+    progress=None,
 ) -> Generator[int, None, dict | None]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
 
@@ -2418,10 +2520,19 @@ def _sim_articulated_gen_mj(
     """
     if not roots:
         return None
+    # The colliders build on the worker (the slow part on a big Mesh collider); the links
+    # read the stage as they go, so the rest of the build comes back to the main thread.
+    colliders = _read_colliders(collision_prims)
+    yield sim_bake.WORKER
+    collider_spec = _articulated_colliders(
+        colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
+        collider_thickness, progress=progress,
+    )
+    yield sim_bake.MAIN
     built = build_articulated_spec(
         roots, gravity, friction, restitution, mass, substeps, dt, up_idx,
         solver_iters, collision_prims, hfield_res, collider_mode, collider_thickness,
-        floor_drop, free_root, collision_margin,
+        floor_drop, free_root, collision_margin, collider_spec=collider_spec,
     )
     if built is None:
         return None
@@ -2462,6 +2573,8 @@ def _sim_articulated_gen_mj(
     sub_dt = dt / substeps
 
     results = {name: [] for name in ids}
+    # Everything below is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
     for frame in range(frame_count):
         for name, bid in ids.items():
             pos = data.xpos[bid]
@@ -2500,6 +2613,17 @@ def _sim_articulated_gen_mj(
     return results
 
 
+def _articulated_colliders(colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop,
+                           collider_mode, collider_thickness, progress=None):
+    """The collider spec an articulated asset is built on."""
+    contact_tc = max(2.0 * (dt / substeps), 0.01)
+    spec, _ = _collider_spec(
+        colliders, up_idx, friction, contact_tc,
+        1.0, hfield_res, floor_drop, collider_mode, collider_thickness, progress=progress,
+    )
+    return spec
+
+
 def build_articulated_spec(
     roots,
     gravity: float,
@@ -2517,11 +2641,15 @@ def build_articulated_spec(
     floor_drop: float = 0.0,
     free_root: bool = True,
     collision_margin: float = 0.0,
+    collider_spec=None,
 ):
     """Compile an articulated asset into a MuJoCo model.
 
     Split out of the simulate generator so the model can be built, inspected and rendered
     without running a bake -- which is what makes the joint frames checkable at all.
+
+    *collider_spec* is the colliders already built (_articulated_colliders), so the slow
+    part can run off the main thread; without it they are built here.
 
     Returns (model, data, ordered_links), or None if the model would not compile.
     """
@@ -2530,10 +2658,9 @@ def build_articulated_spec(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     sub_dt = dt / substeps
     contact_tc = max(2.0 * sub_dt, 0.01)
-
-    spec, _ = _collider_spec(
-        collision_prims, up_idx, friction, contact_tc,
-        1.0, hfield_res, floor_drop, collider_mode, collider_thickness,
+    spec = collider_spec if collider_spec is not None else _articulated_colliders(
+        collision_prims, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
+        collider_thickness,
     )
     # MuJoCo's compiler defaults to interpreting angles as DEGREES. Joint limits are
     # converted to radians when the USD joint is parsed, so leaving this alone applies the
@@ -2751,10 +2878,11 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
             if settle_only:
                 xf_attr.Set(mats[-1] * parent_world_inv * inv_upstream)
             else:
-                xf_attr.Set(mats[0] * parent_world_inv * inv_upstream)
-                for i, mat in enumerate(mats):
-                    xf_attr.Set(mat * parent_world_inv * inv_upstream,
-                                Usd.TimeCode(start_frame + i))
+                sim_bake.write_samples(
+                    xf_attr,
+                    ((start_frame + i, mat * parent_world_inv * inv_upstream) for i, mat in enumerate(mats)),
+                    default=mats[0] * parent_world_inv * inv_upstream,
+                )
             written += 1
 
     if not settle_only and written:
@@ -2825,6 +2953,11 @@ def _run(owner, notice, sender) -> None:
         # Only looking for a cached breakable bake (opening a scene): anything else waits
         # for Run, as it always has.
         return
+    if sim_bake.is_running(_chunk):
+        _report(_chunk, "already simulating -- wait, or press Cancel")
+        return
+    # Cleared first: the paths below read the target's starting state off the real stage,
+    # and the last bake in this layer would make a new run start where the last one ended.
     if lreg := chunk.get_layer_manager():
         lreg.clear_layer(layer.identifier)
 
@@ -2843,6 +2976,20 @@ def _run(owner, notice, sender) -> None:
         return
     scratch_stage = chunk_stage.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
+    collider_mode = _chunk.get_param("collider_mode", is_s).value
+    tri_budget = _chunk.get_param("tri_budget", is_i).value
+    collider_warning = _mesh_collider_warning(collision_prims, collider_mode, tri_budget)
+    # The steps are made before the bake hands them a Context: the collider build reports
+    # through this box once it has one.
+    box: dict = {}
+
+    def progress(done: int, total: int) -> None:
+        ctx = box.get("ctx")
+        if ctx is None:
+            return
+        ctx.check()  # Cancel stops a long collider build too
+        ctx.status(f"building the collider: {done:,} of {total:,} triangles"
+                   + (f"\n{collider_warning}" if collider_warning else ""))
 
     # A sim-ready asset states its own mass, contact properties and collider approximation.
     # Prefer those; the params stay as the fallback for geometry that says nothing.
@@ -2870,7 +3017,7 @@ def _run(owner, notice, sender) -> None:
     # with no joints fall through to the paths below unchanged.
     articulations = read_articulations(prim)
     if articulations:
-        simulate_mujoco_articulated(
+        steps = _articulated_steps(
             stage,
             articulations,
             layer,
@@ -2887,7 +3034,7 @@ def _run(owner, notice, sender) -> None:
             restitution=restitution,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_mode=collider_mode,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
             floor_drop=floor_drop,
             lin_damping=lin_damping,
@@ -2896,9 +3043,10 @@ def _run(owner, notice, sender) -> None:
             settle_only=settle_only,
             node=_chunk,
             **forces,
+            progress=progress,
         )
     elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
-        simulate_mujoco_instancer(
+        steps = _instancer_steps(
             stage,
             prim,
             layer,
@@ -2919,12 +3067,13 @@ def _run(owner, notice, sender) -> None:
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_mode=collider_mode,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
-            tri_budget=_chunk.get_param("tri_budget", is_i).value,
+            tri_budget=tri_budget,
             floor_drop=floor_drop,
             settle_only=settle_only,
             **forces,
+            progress=progress,
         )
     else:
         xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
@@ -2935,7 +3084,7 @@ def _run(owner, notice, sender) -> None:
 
         scale_xyz = _bake_scale(prim, xform_cache)
 
-        simulate_mujoco(
+        steps = _prim_steps(
             stage,
             prim,
             layer,
@@ -2958,28 +3107,52 @@ def _run(owner, notice, sender) -> None:
             collision_margin=_chunk.get_param("collision_margin", is_f).value,
             solver_iters=30,
             hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=_chunk.get_param("collider_mode", is_s).value,
+            collider_mode=collider_mode,
             collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
-            tri_budget=_chunk.get_param("tri_budget", is_i).value,
+            tri_budget=tri_budget,
             floor_drop=floor_drop,
             node=_chunk,
             settle_only=settle_only,
             **forces,
+            progress=progress,
         )
 
-    # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
-    # the target prim, otherwise its static values win and playback shows nothing.
-    _promote_bake_layer(layer, _chunk)
+    def bake(ctx):
+        """The steps, with their frames as progress. The layer is cleared again just before
+        the result is written: a cook while the solve ran may have put the kept bake back."""
+        box["ctx"] = ctx
+        if collider_warning:
+            ctx.status(collider_warning)
+        while True:
+            try:
+                step = next(steps)
+            except StopIteration as e:
+                return e.value
+            if isinstance(step, int):
+                ctx.progress(step, frame_count)
+            yield step
+            if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
+                lreg.clear_layer(layer.identifier)
 
-    try:
-        scene = chunk_registry.ChunkRegistry().scene
-        # A settle bakes no animation, so there is no range to widen the timeline to.
-        if scene and not settle_only:
-            scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
-    except Exception:
-        pass
+    def finish(_result):
+        if _chunk.get_edit_context() is None:
+            return  # the chunk went away while it was simulating
+        # Ensure the baked animation overrides any chunk (e.g. ScatterPoints) that authored
+        # the target prim, otherwise its static values win and playback shows nothing.
+        _promote_bake_layer(layer, _chunk)
+        try:
+            scene = chunk_registry.ChunkRegistry().scene
+            # A settle bakes no animation, so there is no range to widen the timeline to.
+            if scene and not settle_only:
+                scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
+        except Exception:
+            pass
+        _report(_chunk, f"settled {prim.GetName()}" if settle_only else
+                f"baked {frame_count} frames on {prim.GetName()}"
+                + (f"\n{collider_warning}" if collider_warning else ""))
+        _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
-    _chunk.unset_state(chunk.ChunkFlags.State.STALE)
+    sim_bake.run(_chunk, bake, report=lambda text: _report(_chunk, text), finish=finish, name="RBDSolver")
 
 
 def _breakage():
@@ -3004,48 +3177,9 @@ def _report(node, text: str) -> None:
     logger.info("[RBD Solver] %s", text.replace("\n", " | "))
 
 
-def _bake_key(*parts) -> str:
-    """A digest of everything that shapes a bake -- the whole job, arrays and all."""
-    h = hashlib.blake2b(digest_size=16)
-
-    def feed(v):
-        if isinstance(v, dict):
-            for k in sorted(v, key=str):
-                h.update(repr(k).encode())
-                feed(v[k])
-        elif isinstance(v, (list, tuple)):
-            h.update(b"[")
-            for x in v:
-                feed(x)
-            h.update(b"]")
-        elif _np is not None and isinstance(v, _np.ndarray):
-            h.update(str(v.shape).encode())
-            h.update(_np.ascontiguousarray(v).tobytes())
-        else:
-            h.update(repr(v).encode())
-
-    for part in parts:
-        feed(part)
-    return h.hexdigest()
-
-
 def cache_key(node) -> str | None:
-    """What the cook cache keys a breakable bake on, beyond the params: the bake's inputs.
-
-    None -- no automatic caching -- unless _cache_entry is asking. A bake is made by Run (or
-    a headless cook) and stored by _run_breakable itself, and working out its inputs costs a
-    second or two, too much for every cook.
-    """
-    return getattr(node, "_rbd_input_key", None)
-
-
-def _cache_entry(node, key: str):
-    """The cook cache's entry for a bake made from input key, or None when caching is off."""
-    node._rbd_input_key = key
-    try:
-        return cook_cache.lookup(node)
-    finally:
-        node._rbd_input_key = None
+    """What the cook cache keys a breakable bake on: its inputs, while Run asks (sim_bake)."""
+    return sim_bake.input_key(node)
 
 
 def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_value, forces) -> bool:
@@ -3064,7 +3198,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     frac = brk.read_fracture(upstream, target)
     if not frac:
         return False
-    if brk.is_running(_chunk):
+    if sim_bake.is_running(_chunk):
         _report(_chunk, "already simulating -- wait, or press Cancel")
         return True
 
@@ -3186,12 +3320,12 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     # Nothing that shapes the bake changed: keep it. A bake made from exactly this input
     # before -- this session or an earlier one -- comes back from the cook cache instead of
     # being simulated again, the way a File Cache node would.
-    key = _bake_key(job, proto_index, str(target_path), start_frame, spins)
+    key = sim_bake.digest(job, proto_index, str(target_path), start_frame, spins)
     if key == getattr(_chunk, "_rbd_bake_key", None) and layer.GetPrimAtPath(target_path):
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
         return True
     # Taken now, not when the bake lands: a param changed while it runs must not relabel it.
-    entry = _cache_entry(_chunk, key)
+    entry = sim_bake.cache_entry(_chunk, key)
     if entry is not None and entry.restore(_chunk, layer):
         _chunk._rbd_bake_key = key
         _promote_bake_layer(layer, _chunk)
@@ -3222,7 +3356,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
 
 
 def _cancel(owner, notice, sender) -> None:
-    _breakage().cancel(owner.get_chunk())
+    sim_bake.cancel(owner.get_chunk())
 
 
 _AUTO_RUN_DELAY_MS = 600
@@ -3345,10 +3479,7 @@ def execute(node) -> None:
     if getattr(node, "_rbd_cache_checked", False):
         # The framework cleared this layer for the cook; put the last bake back. Baking
         # again would cost a full simulation on every tweak upstream.
-        kept = getattr(node, "_rbd_kept_bake", None)
-        if kept is not None and (layer := node.get_edit_context()) is not None:
-            layer.TransferContent(kept)
-            _promote_bake_layer(layer)
+        sim_bake.restore(node, node.get_edit_context())
         return
     node._rbd_cache_checked = True
     node._rbd_cache_only = True
@@ -3529,7 +3660,9 @@ def main() -> chunk.Chunk:
             "triangles, and falls back to a heightfield above it.\n\n"
             "This is a time budget as much as a quality one: a Mesh collider costs one "
             "MuJoCo geom per triangle and building them is quadratic, so 5k triangles "
-            "takes a few seconds and 20k takes about a minute, every run.",
+            "takes a few seconds and 20k takes about a minute, every run. Over 20k the "
+            "readout says how long the build will take; it runs in the background and "
+            "Cancel stops it.",
         )
     )
     col_grp.add_param(
