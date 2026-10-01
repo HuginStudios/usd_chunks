@@ -203,6 +203,35 @@ since reading a result back takes time too. A cook that changes its own input pa
 adds params, is never stored. For where the cache lives and how to switch it off, see
 [`USD_CHUNKS_COOK_CACHE`](install.md#environment-variables).
 
+### Long bakes: `sim_bake`
+
+A simulation that takes seconds or minutes must not stop the host. Write the bake as a
+generator and hand it to `sim_bake.run`. Read the scene first, then `yield sim_bake.WORKER`:
+what follows runs on a worker thread, so it must not touch USD. `yield sim_bake.MAIN` comes
+back to the main thread to write the result:
+
+```python
+from usd_chunks import sim_bake
+
+def bake(ctx):
+    job = read_inputs(stage)          # main thread
+    yield sim_bake.WORKER
+    result = solve(job, progress=ctx.progress, cancelled=ctx.cancelled)
+    yield sim_bake.MAIN
+    write_result(stage, result)       # main thread
+    return result
+
+sim_bake.run(node, bake, report=show_in_readout, finish=when_done)
+```
+
+Headless and under test there is no event loop to come back to, so the bake runs straight
+through. `sim_bake.cancel(node)` stops it.
+
+Some engines hold Python's GIL while they compute (Taichi does), which stops the UI even from
+a thread. Call the solve through `sim_bake.in_subprocess(ctx, solve, **job)` to run it in a
+separate Python process. `promote`, `keep` and `restore` handle the bake's layer: put it in
+front of the layers it animates, and put it back after the next cook clears it.
+
 ### Skipping cooks nothing reached
 
 *Experimental, off by default: set `USD_CHUNKS_SKIP_COOKS=1`.*
