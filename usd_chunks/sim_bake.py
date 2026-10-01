@@ -32,6 +32,7 @@ clear-before-cook, since a bake is too expensive to redo on every cook.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import importlib.util
 import logging
@@ -54,6 +55,11 @@ try:
     from PySide6 import QtCore
 except ImportError:  # pragma: no cover - headless install without Qt
     QtCore = None
+
+try:
+    from ctypes import wintypes
+except (ImportError, ValueError):  # pragma: no cover - not Windows
+    wintypes = None
 
 try:
     import numpy as np
@@ -400,8 +406,33 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
             pass
 
 
+def _opt_out_of_power_throttling() -> None:
+    """Keep Windows from slowing this process down.
+
+    A solver process has no window, so Windows treats it as background work and throttles it
+    (EcoQoS) a few seconds in -- the same thing tests/conftest.py opts the test runner out of.
+    A no-op elsewhere, or if Windows refuses.
+    """
+    if sys.platform != "win32" or wintypes is None:
+        return
+
+    class _State(ctypes.Structure):
+        _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        # ProcessPowerThrottling (4): control EXECUTION_SPEED (1), state 0 = never throttle.
+        state = _State(1, 1, 0)
+        kernel32.SetProcessInformation(kernel32.GetCurrentProcess(), 4, ctypes.byref(state), ctypes.sizeof(state))
+    except (OSError, AttributeError):
+        pass
+
+
 def _child(source: str, function: str, job: str, out: str) -> None:
     """in_subprocess's other end: load the module, call the function, write the result."""
+    _opt_out_of_power_throttling()
     spec = importlib.util.spec_from_file_location(f"_sim_bake_{Path(source).stem}", source)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

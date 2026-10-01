@@ -1037,6 +1037,28 @@ class ChunkModule:
         logger.info("loaded module: %s. Load took %s seconds", self.module_name, end - start)
         return res
 
+    def installed_packages(self) -> dict[str, str]:
+        """The installed version of each package config.requirements names.
+
+        A package unpacked into a folder on PYTHONPATH, as the usdview bundles do it, has no
+        install record to read a version from; if it is imported, its __version__ stands in.
+
+        Returns:
+            {package: installed version}; a package with no version to find is left out.
+        """
+        packages = {}
+        for requirement in self.config.requirements or []:
+            name, _ = split_requirement(requirement)
+            if name in packages:
+                continue
+            installed = installed_version(name)
+            if installed is None:
+                imported = sys.modules.get(name) or sys.modules.get(name.replace("-", "_"))
+                installed = getattr(imported, "__version__", None)
+            if installed is not None:
+                packages[name] = str(installed)
+        return packages
+
     def unload(self):
         """Mark the module as not loaded."""
         self.loaded = False

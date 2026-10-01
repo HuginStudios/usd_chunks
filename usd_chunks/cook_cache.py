@@ -16,7 +16,8 @@ def cache_key(node):            # optional: inputs the framework cannot see
 ```
 
 The key is everything the module vouched for: its own source (ChunkModule.source_hash), the
-framework's and its sibling modules' files, every param value except the ones the cook writes
+framework's and its sibling modules' files, the installed version of each package in its
+config's requirements (a new mujoco moves the physics), every param value except the ones the cook writes
 (labels and OUTPUT params), the size and mtime of any file a param names, the stage's up axis
 and metersPerUnit, and what the
 module's `cache_key(node)` returns -- the hook is for inputs that are not params, like the
@@ -70,7 +71,7 @@ _DEFAULT_MAX_GB = 2.0
 TOGGLE = "cache_result"
 
 #: Bumped when an entry's layout or the key's contents change, so old entries miss.
-_FORMAT = 2
+_FORMAT = 3
 
 #: A cook quicker than this is not stored: reading an entry back is not free either.
 _MIN_COOK_S = 0.05
@@ -346,6 +347,7 @@ def _key(chunk, module) -> str | None:
 
     add(_FORMAT, sys.version_info[:2], Usd.GetVersion(), module.source_hash)
     add(_code_fingerprint(str(Path(module.module_file).parent)))
+    add(_packages(module))
     add(str(chunk.get_config().module))
 
     stage = chunk.get_stage()
@@ -387,6 +389,24 @@ def _file_stat(value: str, root: Sdf.Layer | None):
     if not os.path.isfile(path):
         return None
     return (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
+
+
+#: _packages' answers, by module name and requirements.
+_PACKAGES: dict[tuple, tuple] = {}
+
+
+def _packages(module) -> tuple:
+    """The module's required packages and their installed versions, sorted.
+
+    Once per module and requirements list per process, like _code_fingerprint: a package
+    upgraded mid-session is not the one already imported, so it needs a restart anyway.
+    Keyed on the requirements too, so a config() that adds a package mid-session is counted,
+    and on the name rather than the module, so no module object is held for good.
+    """
+    key = (module.module_name, tuple(module.config.requirements or ()))
+    if key not in _PACKAGES:
+        _PACKAGES[key] = tuple(sorted(module.installed_packages().items()))
+    return _PACKAGES[key]
 
 
 @functools.cache
