@@ -293,6 +293,45 @@ def test_rest_until_hit_holds_overlapping_bodies_until_something_lands():
     assert held["positions"][-1, 2, 1] < 100.0  # and the falling one did fall
 
 
+def _box_points(size):
+    return np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=np.float64) * np.asarray(size) * 0.5
+
+
+@needs_mujoco
+def test_pieces_of_an_overlapping_body_stay_out_of_its_group():
+    """A block with a small part inside it, as a wall's hull holds its trim. The block
+    breaks; its halves fill its room, so they keep its overlap bit and nothing is pushed
+    out. (The meteor-strike scene also caught halves let go on the frame they were born,
+    judged by the parking lot they came from; this setup is too gentle to show that.)"""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    _box(stage, "/World/Floor", (0.0, -1.0, 0.0), (60.0, 2.0, 60.0))
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 48, 1, 24.0, 0.0, 0.05)
+    half = _box_points((2.0, 4.0, 4.0))
+    pieces = {
+        (0, 0): dict(points=_box_points((4.0, 4.0, 4.0)), children=[1, 2], offset=np.zeros(3), volume=64.0, generation=0),
+        (0, 1): dict(points=half, children=[], offset=np.array([-1.0, 0, 0]), volume=32.0, generation=1),
+        (0, 2): dict(points=half, children=[], offset=np.array([1.0, 0, 0]), volume=32.0, generation=1),
+        (1, 0): dict(points=_box_points((1.0, 1.0, 1.0)), children=[], offset=np.zeros(3), volume=1.0, generation=0),
+        (2, 0): dict(points=_box_points((1.5, 1.5, 1.5)), children=[], offset=np.zeros(3), volume=3.4, generation=0),
+    }
+    q = np.array([1.0, 0, 0, 0])
+    starts = [dict(key=(0, 0), pos=np.array([0.0, 1.99, 0.0]), quat=q),
+              dict(key=(1, 0), pos=np.array([0.5, 2.0, 0.0]), quat=q),
+              dict(key=(2, 0), pos=np.array([0.0, 9.0, 0.0]), quat=q)]
+    job = dict(
+        up_idx=1, gravity=-9.81, fps=24.0, frames=48, substeps=8, friction=0.8, restitution=0.0,
+        density=1.0, statics=world["statics"], belts=world["belts"], drivers=world["drivers"],
+        pieces=pieces, starts=starts, breakage=dict(strength=0.5, kick=0.0, cooldown=0.0), seed=0,
+        rest_until_hit=True,
+    )
+    res = brk.simulate(job)
+    assert any(res["slot_key"][s] == (0, 0) for _t, s in res["breaks"])
+    v = np.linalg.norm(np.diff(res["positions"], axis=0), axis=2) * 24.0
+    v[~(res["alive"][1:] & res["alive"][:-1])] = 0.0
+    assert v.max() < 20.0  # the falling block lands at ~10 m/s
+
+
 @needs_mujoco
 @needs_manifold
 def test_a_joint_drive_spins_its_body_and_the_spin_is_baked():

@@ -724,7 +724,9 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
         on = np.flatnonzero(alive & (overlap_bit > 0))
         if not len(on):
             return
-        centre = data.xpos[slot_body[on]]
+        # From qpos, not xpos: a piece born from a break this frame has not been through
+        # kinematics yet, and its xpos is still the parking lot -- clear of everything.
+        centre = data.qpos[slot_qadr[on][:, None] + np.arange(3)]
         r = slot_radius[on]
         gap = np.linalg.norm(centre[:, None, :] - centre[None, :, :], axis=2) - (r[:, None] + r[None, :])
         same = overlap_bit[on][:, None] == overlap_bit[on][None, :]
