@@ -129,15 +129,55 @@ def _grid(stage, path, n):
     return mesh.GetPrim()
 
 
-def test_a_mesh_collider_over_the_limit_is_collided_as_a_heightfield(monkeypatch):
-    """Falling_rocks_2: a 225k-triangle rock cluster set to Mesh hung usdview for hours."""
+def test_a_big_mesh_collider_warns_how_long_it_takes_and_keeps_the_mode():
+    """Falling_rocks_2: a 225k-triangle rock cluster set to Mesh. The settings stand -- a long
+    build can be what the user wants -- but the readout says up front what it costs."""
     code = rbd_mod_file
-    monkeypatch.setattr(code, "_MESH_TRIANGLE_LIMIT", 100)
     stage = Usd.Stage.CreateInMemory()
-    small, big = _grid(stage, "/Small", 5), _grid(stage, "/Big", 10)  # 50 and 200 triangles
+    small, big = _grid(stage, "/Small", 5), _grid(stage, "/Big", 150)  # 50 and 45,000 triangles
 
-    assert code._collider_settings([small], "Mesh", 500_000) == ("Mesh", 100, "")
-    mode, budget, note = code._collider_settings([small, big], "Mesh", 500_000)
-    assert (mode, budget) == ("Heightfield", 100)
-    assert "200 triangles" in note and "Heightfield" in note
-    assert code._collider_settings([big], "Auto", 500_000) == ("Auto", 100, ""), "Auto keeps its own fallback"
+    assert code._mesh_collider_warning([small], "Mesh", 20_000) == ""
+    warning = code._mesh_collider_warning([small, big], "Mesh", 20_000)
+    assert "45,050 triangles" in warning and "about 5 min" in warning
+    assert code._mesh_collider_warning([big], "Auto", 20_000) == "", "Auto collides it as a heightfield"
+    assert code._mesh_collider_warning([big], "Heightfield", 20_000) == ""
+
+
+def test_the_collider_builds_on_the_worker_and_cancel_stops_it(solver, monkeypatch):
+    """The Mesh collider build was on the main thread: two hours of a frozen usdview."""
+    qapp, stage, node, code, stepped_on = solver
+    UsdGeom.Cube.Define(stage, "/Box").AddTranslateOp().Set((0.0, 50.0, 0.0))
+    _grid(stage, "/Floor", 40)  # 3,200 triangles
+    node.get_param("prim_path").value = "/Box"
+    node.get_param("collision_path").value = "/Floor"
+    node.get_param("collider_mode").value = "Mesh"
+    node.get_param("frame_count").value = 4
+    code._COLLIDER_SPEC_CACHE.clear()
+    built_on, statuses = [], []
+    real_soup = code._add_triangle_soup
+
+    def soup(*args, **kwargs):
+        built_on.append(threading.current_thread() is threading.main_thread())
+        return real_soup(*args, **kwargs)
+
+    monkeypatch.setattr(code, "_add_triangle_soup", soup)
+    readout = node.get_param("readout")
+    real_report = code._report
+    monkeypatch.setattr(code, "_report", lambda n, text: (statuses.append(text), real_report(n, text)))
+
+    _run_and_wait(qapp, node, code)
+
+    assert built_on == [False], "the collider was built on the worker"
+    assert any("building the collider" in t for t in statuses)
+    assert readout.value == "baked 4 frames on Box"
+
+    # Cancel during the build: no bake, and the solver is free again.
+    code._COLLIDER_SPEC_CACHE.clear()
+    node.get_param("frame_count").value = 5
+    code._run(node, None, None)
+    sim_bake.cancel(node)
+    started = time.perf_counter()
+    while sim_bake.is_running(node) and time.perf_counter() - started < 60:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert readout.value == "cancelled"

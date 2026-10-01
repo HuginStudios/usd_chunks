@@ -342,6 +342,7 @@ def _add_triangle_soup(
     contact_tc: float,
     xform_inv: Gf.Matrix4d | None = None,
     geometry: tuple | None = None,
+    progress=None,
 ) -> int:
     """Add one thin convex prism geom per collider triangle. Returns the geom count.
 
@@ -370,6 +371,9 @@ def _add_triangle_soup(
     the collider's meshes anyway to decide whether the triangle count fits its budget, and
     on a production collider that walk is the whole mesh -- so it hands the result down
     rather than making this re-read every point and face a second time.
+
+    *progress*, if given, is called with (triangles done, total) every few hundred: a big
+    collider takes minutes, and that is also where a Cancel is noticed.
     """
     verts, tris = geometry if geometry is not None else _collider_triangles(cprim)
     if not tris:
@@ -381,6 +385,8 @@ def _add_triangle_soup(
     V = _np.asarray(verts, dtype=_np.float64)
     count = 0
     for i, (a, b, c) in enumerate(tris):
+        if progress is not None and i % 250 == 0:
+            progress(i, len(tris))
         v0, v1, v2 = V[a], V[b], V[c]
         n = _np.cross(v1 - v0, v2 - v0)
         ln = float(_np.linalg.norm(n))
@@ -405,6 +411,38 @@ def _add_triangle_soup(
     return count
 
 
+class _ColliderRead:
+    """What the collider build needs from one collision prim, read on the main thread.
+
+    The build itself -- one MuJoCo geom per triangle for a Mesh collider, quadratic in their
+    count -- runs on sim_bake's worker, where the stage must not be touched. A 225k-triangle
+    rock cluster set to Mesh used to build there on the main thread, and usdview hung.
+    """
+
+    __slots__ = ("prim", "path", "geometry", "bounds", "is_anim", "rest")
+
+    def __init__(self, prim: Usd.Prim):
+        self.prim = prim
+        self.path = str(prim.GetPath())
+        self.geometry = _collider_triangles(prim)
+        self.bounds = _geom_bounds(prim)
+        self.is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(prim).GetOrderedXformOps())
+        self.rest = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
+
+    @property
+    def bounds_key(self) -> tuple | None:
+        """The world bounds as a plain tuple, for the cache key."""
+        if self.bounds is None:
+            return None
+        lo, hi = self.bounds.GetMin(), self.bounds.GetMax()
+        return tuple(float(v) for v in lo) + tuple(float(v) for v in hi)
+
+
+def _read_colliders(colliders) -> list[_ColliderRead]:
+    """Each collider as a _ColliderRead: prims are read now, reads are passed through."""
+    return [c if isinstance(c, _ColliderRead) else _ColliderRead(c) for c in (colliders or [])]
+
+
 def _add_colliders(
     spec: _mj.MjSpec,
     collision_prims: list[Usd.Prim] | None,
@@ -418,6 +456,7 @@ def _add_colliders(
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
     geometry: list | None = None,
+    progress=None,
 ) -> list[tuple[str, Usd.Prim]]:
     """Add static/kinematic collision bodies to *spec*.
 
@@ -437,10 +476,16 @@ def _add_colliders(
     reads from it, so a collider's meshes are walked once per run however it ends up
     being collided.
 
+    *collision_prims* may be prims or _ColliderRead entries; given reads, nothing here
+    touches the stage, so it can run on a worker thread. *progress* goes to
+    _add_triangle_soup.
+
     Returns mocap_col_names: list of (body_name, prim) needing per-frame updates.
     """
+    reads = _read_colliders(collision_prims)
+    collision_prims = [r.prim for r in reads]
     if geometry is None:
-        geometry = [_collider_triangles(cp) for cp in (collision_prims or [])]
+        geometry = [r.geometry for r in reads]
     mocap_col_names = []
 
     if not collision_prims:
@@ -466,8 +511,8 @@ def _add_colliders(
     # so it reliably catches anything a collider ejects AND any body that
     # rolls/spills off the rim, instead of letting it fall forever.
     ground_up = None
-    for cp in collision_prims:
-        cr = _geom_bounds(cp)
+    for read in reads:
+        cr = read.bounds
         if cr is not None:
             b = float(cr.GetMin()[up_idx])
             ground_up = b if ground_up is None else min(ground_up, b)
@@ -487,9 +532,8 @@ def _add_colliders(
         gpg.solref = [contact_tc, 1.0]
         gpg.condim = 3
 
-    for i, cp in enumerate(collision_prims):
-        is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps())
-        bounds = _geom_bounds(cp)
+    for i, read in enumerate(reads):
+        cp, is_anim, bounds = read.prim, read.is_anim, read.bounds
 
         # --- exact triangle-soup collider (the general case) ---
         soup = collider_mode in ("Auto", "Mesh")
@@ -521,8 +565,7 @@ def _add_colliders(
                     # animated collider keeps its real shape instead of degrading to a box.
                     # Its prisms have to be expressed in the prim's own frame for that pose
                     # to mean anything, hence xform_inv.
-                    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
-                    rest = xfc.GetLocalToWorldTransform(cp)
+                    rest = read.rest
                     xform_inv = rest.GetInverse()
                     rt = rest.ExtractTranslation()
                     rq = rest.RemoveScaleShear().ExtractRotation().GetQuat()
@@ -533,7 +576,7 @@ def _add_colliders(
                     mocap_col_names.append((f"col_{i}", cp))
                 n = _add_triangle_soup(
                     spec, cbody, cp, f"col_{i}", thickness, friction, contact_tc, xform_inv,
-                    geometry=geometry[i],
+                    geometry=geometry[i], progress=progress,
                 )
                 if n:
                     continue
@@ -587,8 +630,7 @@ def _add_colliders(
             ctr = (bounds.GetMin() + bounds.GetMax()) * 0.5
             col_body.pos = [float(ctr[0]), float(ctr[1]), float(ctr[2])]
         else:
-            xfc = UsdGeom.XformCache()
-            col_t = xfc.GetLocalToWorldTransform(cp).ExtractTranslation()
+            col_t = read.rest.ExtractTranslation()
             col_body.pos = [float(col_t[0]), float(col_t[1]), float(col_t[2])]
         if is_anim:
             col_body.mocap = True
@@ -676,6 +718,7 @@ def _collider_spec(
     collider_mode: str = "Auto",
     collider_thickness: float = 0.0,
     tri_budget: int = 20000,
+    progress=None,
 ) -> tuple:
     """A fresh MjSpec holding this run's colliders, reusing a built one where possible.
 
@@ -690,7 +733,8 @@ def _collider_spec(
     happens once and every re-run after it -- a friction tweak, a longer frame range, a
     different drop height -- copies.
     """
-    prims = list(collision_prims or [])
+    reads = _read_colliders(collision_prims)
+    prims = [r.prim for r in reads]
     if not prims:
         # No colliders: an infinite ground plane, which costs nothing to build. Caching it
         # would only add a digest of nothing to compare.
@@ -700,7 +744,7 @@ def _collider_spec(
             floor_drop, collider_mode, collider_thickness, tri_budget, geometry=[],
         )
 
-    geometry = [_collider_triangles(cp) for cp in prims]
+    geometry = [r.geometry for r in reads]
     # Two things about a collider shape the spec without showing up in its triangles:
     #
     #  * whether it is animated, which decides between a mocap body and a static one. The
@@ -709,14 +753,7 @@ def _collider_spec(
     #  * its bounds, which position the catch-all ground plane and size the box fallback.
     #    A collider with no Mesh under it at all -- a UsdGeom.Cube, say -- contributes no
     #    triangles whatsoever, so its bounds are the only thing that distinguishes it.
-    shape_state = [
-        (
-            str(cp.GetPath()),
-            any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(cp).GetOrderedXformOps()),
-            _bounds_key(cp),
-        )
-        for cp in prims
-    ]
+    shape_state = [(r.path, r.is_anim, r.bounds_key) for r in reads]
     key = _collider_cache_key(
         geometry, up_idx, dyn_radius, hfield_res, floor_drop, collider_mode,
         collider_thickness, tri_budget, shape_state,
@@ -726,8 +763,9 @@ def _collider_spec(
     if entry is None:
         built = _mj.MjSpec()
         mocap = _add_colliders(
-            built, prims, up_idx, friction, contact_tc, dyn_radius, hfield_res,
+            built, reads, up_idx, friction, contact_tc, dyn_radius, hfield_res,
             floor_drop, collider_mode, collider_thickness, tri_budget, geometry=geometry,
+            progress=progress,
         )
         # Indices, not prims: a cached Usd.Prim handle expires with its stage, and the
         # caller has the live prims anyway.
@@ -744,27 +782,34 @@ def _collider_spec(
     return spec, [(f"col_{i}", prims[i]) for i in mocap_idx]
 
 
-def _mocap_tracks(mocap_ids, start_frame: int, frame_count: int) -> list:
-    """Each kinematic collider's world pose at every frame, read from USD up front.
+def _collider_poses(reads, start_frame: int, frame_count: int) -> dict:
+    """Each animated collider's world pose at every frame, read from USD up front.
 
-    Read before the bake leaves the main thread: the stepping runs on a worker (sim_bake),
-    where the stage must not be touched.
+    Read before the bake leaves the main thread: the collider build and the stepping run on a
+    worker (sim_bake), where the stage must not be touched.
 
     Returns:
-        [(mocap id, [(position, wxyz quaternion) per frame])].
+        {collider path: [(position, wxyz quaternion) per frame]}.
     """
-    tracks = []
-    for mid, cprim in mocap_ids:
-        poses = []
+    poses = {}
+    for read in reads:
+        if not read.is_anim:
+            continue
+        track = []
         for frame in range(frame_count):
-            kxf = UsdGeom.XformCache(Usd.TimeCode(start_frame + frame)).GetLocalToWorldTransform(cprim)
+            kxf = UsdGeom.XformCache(Usd.TimeCode(start_frame + frame)).GetLocalToWorldTransform(read.prim)
             kt = kxf.ExtractTranslation()
             kq = kxf.RemoveScaleShear().ExtractRotation().GetQuat()  # strip scale: a scaled matrix
             ki = kq.GetImaginary()                                     # gives a wrong rotation
-            poses.append(([float(kt[0]), float(kt[1]), float(kt[2])],
+            track.append(([float(kt[0]), float(kt[1]), float(kt[2])],
                           [kq.GetReal(), float(ki[0]), float(ki[1]), float(ki[2])]))
-        tracks.append((mid, poses))
-    return tracks
+        poses[read.path] = track
+    return poses
+
+
+def _mocap_tracks(mocap_ids, poses: dict) -> list:
+    """[(mocap id, poses per frame)] for the moving colliders, from _collider_poses."""
+    return [(mid, poses[str(cprim.GetPath())]) for mid, cprim in mocap_ids]
 
 
 def _set_mocap(data, tracks, frame: int) -> None:
@@ -804,6 +849,8 @@ def _sim_prim_gen_mj(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
+    tri_budget: int = 20000,
+    progress=None,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
     """MuJoCo rigid body simulation -- yields frame index, returns all_mats.
 
@@ -893,8 +940,13 @@ def _sim_prim_gen_mj(
     # nothing about them changed; the dynamic body is added below, so colliders still come
     # first and the body-id lookups downstream still hold.
     dyn_radius = max(half_extents) + max(collision_margin, 0.0)
+    colliders = _read_colliders(collision_prims)
+    poses = _collider_poses(colliders, start_frame, frame_count)
+    # Everything below is MuJoCo and Gf only -- the collider build included, which on a big
+    # Mesh collider is minutes: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
     spec, mocap_col_names = _collider_spec(
-        collision_prims,
+        colliders,
         up_idx,
         friction,
         contact_tc,
@@ -903,6 +955,8 @@ def _sim_prim_gen_mj(
         floor_drop,
         collider_mode,
         collider_thickness,
+        tri_budget,
+        progress=progress,
     )
     spec.option.timestep = sub_dt
     grav = [0.0, 0.0, 0.0]
@@ -1011,9 +1065,7 @@ def _sim_prim_gen_mj(
     phases = _force_phases(turb_seed)
     sim_t = 0.0
     all_mats = []
-    tracks = _mocap_tracks(mocap_ids, start_frame, frame_count)
-    # Everything below is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
-    yield sim_bake.WORKER
+    tracks = _mocap_tracks(mocap_ids, poses)
     for frame in range(frame_count):
         _set_mocap(data, tracks, frame)
 
@@ -1229,6 +1281,7 @@ def _prim_steps(
     turb_seed: int = 0,
     node=None,
     settle_only: bool = False,
+    progress=None,
 ) -> list[Gf.Matrix4d] | None:
     """Run MuJoCo simulation.
 
@@ -1287,6 +1340,8 @@ def _prim_steps(
         turb_speed=turb_speed,
         turb_seed=turb_seed,
         settle_only=settle_only,
+        tri_budget=tri_budget,
+        progress=progress,
     )
 
     all_mats = yield from gen
@@ -1344,6 +1399,7 @@ def _articulated_steps(
     turb_scale: float = 100.0,
     turb_speed: float = 1.0,
     turb_seed: int = 0,
+    progress=None,
 ) -> dict | None:
     """Run an articulated MuJoCo simulation and bake a transform per link.
 
@@ -1385,6 +1441,7 @@ def _articulated_steps(
         turb_speed=turb_speed,
         turb_seed=turb_seed,
         settle_only=settle_only,
+        progress=progress,
     )
 
     results = yield from gen
@@ -1471,6 +1528,7 @@ def _instancer_steps(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
+    progress=None,
 ) -> None:
     """Run MuJoCo multi-body simulation for a UsdGeom.PointInstancer using MjSpec.
 
@@ -1583,33 +1641,6 @@ def _instancer_steps(
     # Same colliders as the single-prim path (bowl heightfield + backstop, etc.), and the
     # spec they come back in is the one the instances are then added to -- so the colliders
     # still precede them, as the body-id lookups below assume.
-    spec, mocap_col_names = _collider_spec(
-        collision_prims,
-        up_idx,
-        friction,
-        contact_tc,
-        max_radius,
-        hfield_res,
-        floor_drop,
-        collider_mode,
-        collider_thickness,
-        tri_budget,
-    )
-    # Many piled bodies generate many contacts/constraints; the default solver
-    # arena (~16 MB) overflows. Scale the allocation with the instance count.
-    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
-    spec.option.timestep = sub_dt
-    grav = [0.0, 0.0, 0.0]
-    grav[up_idx] = gravity
-    spec.option.gravity = grav
-    spec.option.iterations = solver_iters
-    spec.option.noslip_iterations = 3
-    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
-
-    dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
-
-    off_rot = None  # no rotation offset on this chunk any more; see main()
-
     # Convex hull: extract EACH prototype's geometry once, then build one mesh asset per
     # (prototype, distinct instance scale) pair -- MuJoCo computes the hull per asset.
     hull_bases: list = []
@@ -1629,6 +1660,39 @@ def _instancer_steps(
                 )
             hull_bases.append(verts)
     hull_bases += [None] * (len(proto_exts) - len(hull_bases))
+
+    colliders = _read_colliders(collision_prims)
+    poses = _collider_poses(colliders, start_frame, frame_count)
+    # Everything below until MAIN is MuJoCo and Gf only -- the collider build included, which
+    # on a big Mesh collider is minutes: in a UI it runs on a worker (sim_bake).
+    yield sim_bake.WORKER
+    spec, mocap_col_names = _collider_spec(
+        colliders,
+        up_idx,
+        friction,
+        contact_tc,
+        max_radius,
+        hfield_res,
+        floor_drop,
+        collider_mode,
+        collider_thickness,
+        tri_budget,
+        progress=progress,
+    )
+    # Many piled bodies generate many contacts/constraints; the default solver
+    # arena (~16 MB) overflows. Scale the allocation with the instance count.
+    spec.memory = max(64 * 1024 * 1024, num_instances * 2 * 1024 * 1024)
+    spec.option.timestep = sub_dt
+    grav = [0.0, 0.0, 0.0]
+    grav[up_idx] = gravity
+    spec.option.gravity = grav
+    spec.option.iterations = solver_iters
+    spec.option.noslip_iterations = 3
+    spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
+
+    dyn_dampratio = 1.0 - max(0.0, min(1.0, restitution)) * 0.9
+
+    off_rot = None  # no rotation offset on this chunk any more; see main()
 
     hull_mesh_cache: dict[tuple[int, float, float, float], str] = {}
 
@@ -1778,9 +1842,7 @@ def _instancer_steps(
             frame_ori[i] = Gf.Quath(float(lq.GetReal()), float(li[0]), float(li[1]), float(li[2]))
         return frame_pos, frame_ori
 
-    tracks = _mocap_tracks(mocap_ids, start_frame, frame_count)
-    # Everything below until MAIN is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
-    yield sim_bake.WORKER
+    tracks = _mocap_tracks(mocap_ids, poses)
     for frame in range(frame_count):
         _set_mocap(data, tracks, frame)
 
@@ -1844,11 +1906,9 @@ def _vec3(node, name: str) -> list[float]:
     return out + [0.0] * (3 - len(out))
 
 
-#: The most triangles a Mesh collider is built from. A Mesh collider is one MuJoCo geom per
-#: triangle and building them is quadratic (see _collider_spec): 40k is about four minutes. A
-#: 225k-triangle rock cluster set to Mesh, with Triangle Budget at 500k, was some two hours of
-#: building -- usdview simply hung.
-_MESH_TRIANGLE_LIMIT = 40_000
+#: Above this many triangles a Mesh collider takes long enough to build that the readout
+#: warns. MuJoCo builds one geom per triangle, quadratic in their count (see _collider_spec).
+_SLOW_MESH_TRIANGLES = 20_000
 
 
 def _triangle_count(prim: Usd.Prim) -> int:
@@ -1862,22 +1922,32 @@ def _triangle_count(prim: Usd.Prim) -> int:
     return total
 
 
-def _collider_settings(collision_prims, collider_mode: str, tri_budget: int) -> tuple[str, int, str]:
-    """The collider mode and budget a run uses, and a readout note when they were changed.
+def _mesh_collider_warning(collision_prims, collider_mode: str, tri_budget: int) -> str:
+    """A readout line when the colliders will be built as a big Mesh, with how long it takes.
 
-    A Mesh collider over _MESH_TRIANGLE_LIMIT triangles is collided as a heightfield instead
-    -- what Auto does over its budget -- and Auto's budget is capped at the same limit.
+    The settings are used as they are -- a long build may be what the user wants -- but a
+    225k-triangle rock cluster set to Mesh is some two hours, and that should be said up
+    front, not discovered. The build runs on the worker, so usdview stays usable and Cancel
+    stops it.
     """
-    tri_budget = min(int(tri_budget), _MESH_TRIANGLE_LIMIT)
-    if collider_mode != "Mesh" or not collision_prims:
-        return collider_mode, tri_budget, ""
-    largest = max(_triangle_count(p) for p in collision_prims)
-    if largest <= _MESH_TRIANGLE_LIMIT:
-        return collider_mode, tri_budget, ""
-    return "Heightfield", tri_budget, (
-        f"\ncollider has {largest:,} triangles, too many for Mesh (over {_MESH_TRIANGLE_LIMIT:,}: hours "
-        "to build), so it was collided as a Heightfield. Poly Reduce it to use Mesh."
-    )
+    if collider_mode not in ("Mesh", "Auto") or not collision_prims:
+        return ""
+    counts = [_triangle_count(p) for p in collision_prims]
+    if collider_mode == "Auto":
+        counts = [n for n in counts if n <= tri_budget]
+    total = sum(counts)
+    if total <= _SLOW_MESH_TRIANGLES:
+        return ""
+    # Measured: 20k triangles take about a minute, and the cost grows with the square.
+    seconds = 61.0 * (total / 20_000) ** 2
+    if seconds < 90:
+        took = f"about {seconds:.0f} s"
+    elif seconds < 90 * 60:
+        took = f"about {seconds / 60:.0f} min"
+    else:
+        took = f"about {seconds / 3600:.1f} h"
+    return (f"Mesh collider of {total:,} triangles: building it takes {took}. "
+            "Poly Reduce it, or use Heightfield, to be quicker.")
 
 
 def _parse_collision_prims(value: str, stage: Usd.Stage | None) -> list[Usd.Prim]:
@@ -2439,6 +2509,7 @@ def _sim_articulated_gen_mj(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     settle_only: bool = False,
+    progress=None,
 ) -> Generator[int, None, dict | None]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
 
@@ -2449,10 +2520,19 @@ def _sim_articulated_gen_mj(
     """
     if not roots:
         return None
+    # The colliders build on the worker (the slow part on a big Mesh collider); the links
+    # read the stage as they go, so the rest of the build comes back to the main thread.
+    colliders = _read_colliders(collision_prims)
+    yield sim_bake.WORKER
+    collider_spec = _articulated_colliders(
+        colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
+        collider_thickness, progress=progress,
+    )
+    yield sim_bake.MAIN
     built = build_articulated_spec(
         roots, gravity, friction, restitution, mass, substeps, dt, up_idx,
         solver_iters, collision_prims, hfield_res, collider_mode, collider_thickness,
-        floor_drop, free_root, collision_margin,
+        floor_drop, free_root, collision_margin, collider_spec=collider_spec,
     )
     if built is None:
         return None
@@ -2533,6 +2613,17 @@ def _sim_articulated_gen_mj(
     return results
 
 
+def _articulated_colliders(colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop,
+                           collider_mode, collider_thickness, progress=None):
+    """The collider spec an articulated asset is built on."""
+    contact_tc = max(2.0 * (dt / substeps), 0.01)
+    spec, _ = _collider_spec(
+        colliders, up_idx, friction, contact_tc,
+        1.0, hfield_res, floor_drop, collider_mode, collider_thickness, progress=progress,
+    )
+    return spec
+
+
 def build_articulated_spec(
     roots,
     gravity: float,
@@ -2550,11 +2641,15 @@ def build_articulated_spec(
     floor_drop: float = 0.0,
     free_root: bool = True,
     collision_margin: float = 0.0,
+    collider_spec=None,
 ):
     """Compile an articulated asset into a MuJoCo model.
 
     Split out of the simulate generator so the model can be built, inspected and rendered
     without running a bake -- which is what makes the joint frames checkable at all.
+
+    *collider_spec* is the colliders already built (_articulated_colliders), so the slow
+    part can run off the main thread; without it they are built here.
 
     Returns (model, data, ordered_links), or None if the model would not compile.
     """
@@ -2563,10 +2658,9 @@ def build_articulated_spec(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     sub_dt = dt / substeps
     contact_tc = max(2.0 * sub_dt, 0.01)
-
-    spec, _ = _collider_spec(
-        collision_prims, up_idx, friction, contact_tc,
-        1.0, hfield_res, floor_drop, collider_mode, collider_thickness,
+    spec = collider_spec if collider_spec is not None else _articulated_colliders(
+        collision_prims, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
+        collider_thickness,
     )
     # MuJoCo's compiler defaults to interpreting angles as DEGREES. Joint limits are
     # converted to radians when the USD joint is parsed, so leaving this alone applies the
@@ -2882,11 +2976,20 @@ def _run(owner, notice, sender) -> None:
         return
     scratch_stage = chunk_stage.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
-    collider_mode, tri_budget, collider_note = _collider_settings(
-        collision_prims,
-        _chunk.get_param("collider_mode", is_s).value,
-        _chunk.get_param("tri_budget", is_i).value,
-    )
+    collider_mode = _chunk.get_param("collider_mode", is_s).value
+    tri_budget = _chunk.get_param("tri_budget", is_i).value
+    collider_warning = _mesh_collider_warning(collision_prims, collider_mode, tri_budget)
+    # The steps are made before the bake hands them a Context: the collider build reports
+    # through this box once it has one.
+    box: dict = {}
+
+    def progress(done: int, total: int) -> None:
+        ctx = box.get("ctx")
+        if ctx is None:
+            return
+        ctx.check()  # Cancel stops a long collider build too
+        ctx.status(f"building the collider: {done:,} of {total:,} triangles"
+                   + (f"\n{collider_warning}" if collider_warning else ""))
 
     # A sim-ready asset states its own mass, contact properties and collider approximation.
     # Prefer those; the params stay as the fallback for geometry that says nothing.
@@ -2940,6 +3043,7 @@ def _run(owner, notice, sender) -> None:
             settle_only=settle_only,
             node=_chunk,
             **forces,
+            progress=progress,
         )
     elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
         steps = _instancer_steps(
@@ -2969,6 +3073,7 @@ def _run(owner, notice, sender) -> None:
             floor_drop=floor_drop,
             settle_only=settle_only,
             **forces,
+            progress=progress,
         )
     else:
         xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
@@ -3009,11 +3114,15 @@ def _run(owner, notice, sender) -> None:
             node=_chunk,
             settle_only=settle_only,
             **forces,
+            progress=progress,
         )
 
     def bake(ctx):
         """The steps, with their frames as progress. The layer is cleared again just before
         the result is written: a cook while the solve ran may have put the kept bake back."""
+        box["ctx"] = ctx
+        if collider_warning:
+            ctx.status(collider_warning)
         while True:
             try:
                 step = next(steps)
@@ -3039,7 +3148,8 @@ def _run(owner, notice, sender) -> None:
         except Exception:
             pass
         _report(_chunk, f"settled {prim.GetName()}" if settle_only else
-                f"baked {frame_count} frames on {prim.GetName()}" + collider_note)
+                f"baked {frame_count} frames on {prim.GetName()}"
+                + (f"\n{collider_warning}" if collider_warning else ""))
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
     sim_bake.run(_chunk, bake, report=lambda text: _report(_chunk, text), finish=finish, name="RBDSolver")
@@ -3550,9 +3660,9 @@ def main() -> chunk.Chunk:
             "triangles, and falls back to a heightfield above it.\n\n"
             "This is a time budget as much as a quality one: a Mesh collider costs one "
             "MuJoCo geom per triangle and building them is quadratic, so 5k triangles "
-            "takes a few seconds and 20k takes about a minute, every run.\n\n"
-            "Capped at 40,000 (about four minutes). A collider over that is collided as a "
-            "heightfield even in Mesh mode, and the readout says so.",
+            "takes a few seconds and 20k takes about a minute, every run. Over 20k the "
+            "readout says how long the build will take; it runs in the background and "
+            "Cancel stops it.",
         )
     )
     col_grp.add_param(
