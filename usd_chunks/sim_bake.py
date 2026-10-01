@@ -32,6 +32,7 @@ clear-before-cook, since a bake is too expensive to redo on every cook.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import logging
 import os
@@ -47,12 +48,17 @@ from pathlib import Path
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, cook_cache
 
 try:
     from PySide6 import QtCore
 except ImportError:  # pragma: no cover - headless install without Qt
     QtCore = None
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - numpy comes with every solver
+    np = None
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +81,7 @@ MAIN = _Marker("MAIN")
 _RUNNING = "_sim_bake_running"
 _CANCEL = "_sim_bake_cancel"
 _KEPT = "_sim_bake_kept"
+_INPUT_KEY = "_sim_bake_input_key"
 
 #: How often progress reaches the readout, at most.
 _PROGRESS_EVERY_S = 0.25
@@ -396,6 +403,60 @@ def _child(source: str, function: str, job: str, out: str) -> None:
     result = getattr(module, function)(progress=progress, **kwargs)
     with open(out, "wb") as f:
         pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+# ------------------------------------------------------------------------------------------
+# The cook cache
+# ------------------------------------------------------------------------------------------
+
+
+def digest(*parts) -> str:
+    """A digest of everything that shapes a bake: dicts, lists and numpy arrays, all through."""
+    h = hashlib.blake2b(digest_size=16)
+
+    def feed(v):
+        if isinstance(v, dict):
+            for k in sorted(v, key=str):
+                h.update(repr(k).encode())
+                feed(v[k])
+        elif isinstance(v, (list, tuple)):
+            h.update(b"[")
+            for x in v:
+                feed(x)
+            h.update(b"]")
+        elif np is not None and isinstance(v, np.ndarray):
+            h.update(str(v.shape).encode())
+            h.update(str(v.dtype).encode())
+            h.update(np.ascontiguousarray(v).tobytes())
+        else:
+            h.update(repr(v).encode())
+
+    for part in parts:
+        feed(part)
+    return h.hexdigest()
+
+
+def cache_entry(node, key: str):
+    """The cook cache's entry for a bake made from inputs key, or None when it is off.
+
+    A bake is made by Run, not by a cook, so the cook cache cannot work out its key: the
+    module's cache_key(node) returns input_key(node), which is key only while this asks.
+    Take the entry when the bake starts and entry.store() it when it lands.
+    """
+    setattr(node, _INPUT_KEY, key)
+    try:
+        return cook_cache.lookup(node)
+    finally:
+        setattr(node, _INPUT_KEY, None)
+
+
+def input_key(node) -> str | None:
+    """For a module's cache_key(node): the key cache_entry is asking with, else None.
+
+    None the rest of the time means "cannot say", so an ordinary cook neither reads nor
+    stores: working out a bake's inputs can take seconds.
+    """
+    return getattr(node, _INPUT_KEY, None)
 
 
 # ------------------------------------------------------------------------------------------

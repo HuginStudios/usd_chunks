@@ -14,10 +14,12 @@ import threading
 import time
 import types
 
+import numpy as np
 import pytest
+from chunk_stubs import register_stub_module
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import sim_bake
+from usd_chunks import Scene, cook_cache, sim_bake
 
 
 class _Node:
@@ -192,6 +194,36 @@ def test_write_samples_makes_the_spec_when_another_layer_authored_the_attribute(
 
     assert sub.GetPrimAtPath("/Scatter").specifier == Sdf.SpecifierOver
     assert positions.Get(2)[0] == Gf.Vec3f(0, -2, 0)
+
+
+def test_digest_sees_every_array_value_and_ignores_dict_order():
+    a = {"frames": 24, "particles": np.zeros((4, 3))}
+    assert sim_bake.digest(a) == sim_bake.digest({"particles": np.zeros((4, 3)), "frames": 24})
+    moved = np.zeros((4, 3))
+    moved[2, 1] = 1e-6
+    assert sim_bake.digest(a) != sim_bake.digest(dict(a, particles=moved))
+    assert sim_bake.digest(a) != sim_bake.digest(dict(a, particles=np.zeros((4, 3), np.float32)))
+
+
+def test_a_bake_stored_through_cache_entry_is_read_back_by_the_next_run(tmp_path, monkeypatch):
+    monkeypatch.setenv(cook_cache.ENV_DIR, str(tmp_path / "cook_cache"))
+    monkeypatch.delenv(cook_cache.ENV, raising=False)
+    with Scene() as scene:
+        module = register_stub_module(cache_key=sim_bake.input_key)
+        module.config.cache_cook = True
+        (node,) = module.load()
+        scene.add_chunk(node)
+        assert cook_cache.lookup(node) is None, "an ordinary cook neither reads nor stores"
+
+        baked = Sdf.Layer.CreateAnonymous()
+        Sdf.CreatePrimInLayer(baked, "/Baked")
+        sim_bake.cache_entry(node, sim_bake.digest({"particles": np.ones(3)})).store(node, baked)
+
+        again = Sdf.Layer.CreateAnonymous()
+        assert sim_bake.cache_entry(node, sim_bake.digest({"particles": np.ones(3)})).restore(node, again)
+        assert again.GetPrimAtPath("/Baked")
+        other = Sdf.Layer.CreateAnonymous()
+        assert not sim_bake.cache_entry(node, sim_bake.digest({"particles": np.zeros(3)})).restore(node, other)
 
 
 def test_keep_and_restore_carry_a_bake_across_a_cleared_layer():
