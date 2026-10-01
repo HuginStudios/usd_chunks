@@ -25,27 +25,24 @@ from pathlib import Path
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_notice, chunk_registry
+from usd_chunks import chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.chunk_core import (
+from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
+from usd_chunks.graph import engine
+from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkBase,
     ChunkParamBase,
     ChunkHash,
     NameSyncedContainer,
+    all_chunks,
     check_chunk_type,
     is_inst,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# The chunk module backing every context. "context == chunkgroup": a CONTEXT chunk with no
-# module was only ever a stand-in from before this type existed. The /chunks prim itself is a
-# scope (plugins-layer _CHUNKS_ROOT), like /lights or /render -- nothing lives at it, and the
-# default chunkgroup sits under it at /chunks/<name>.
-CHUNKGROUP_MODULE = "chunkgroup"
 
 
 #: Set by a graph frontend: returns the USD position at the center of the graph it shows, or
@@ -718,8 +715,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def look_at_selection(self) -> bool:
         """Turn the viewport camera to face the selected prims. False if none is measurable."""
-        from usd_chunks import chunk_utils  # deferred: chunk_utils imports this package's model
-
         stage = self.get_stage()
         point = chunk_utils.focus_point_of(stage, self.get_selected_prims()) if stage else None
         if point is None:
@@ -817,8 +812,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def _add_scripted(self, chunk: ChunkBase) -> None:
         """add_chunk, at the position _next_node_position picks."""
-        from usd_chunks import chunk_stage  # deferred: chunk_stage imports this module
-
         with chunk_stage.creating_at(self._next_node_position()):
             self.add_chunk(chunk)
 
@@ -909,24 +902,18 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         execute_roots(self.get_chunks())
 
     # save, export and commit live here rather than on the script's Scene, so they work on
-    # usdview's scene too (Scene.current()). Deferred imports: both modules import this one.
+    # usdview's scene too (Scene.current()).
 
     def save(self, path: str) -> None:
         """Write the network itself -- Chunk prims and wires -- so it reopens as a graph."""
-        from usd_chunks import chunk_stage
-
         chunk_stage.export_chunks(self, path)
 
     def export(self, path: str) -> None:
         """Write the result as plain USD, with the Chunk prims stripped out."""
-        from usd_chunks import chunk_script
-
-        chunk_script.flatten_without_chunks(self.get_stage()).Export(path)
+        chunk_stage.flatten_without_chunks(self.get_stage()).Export(path)
 
     def commit(self) -> None:
         """Run every chunk's commit hook -- the ones that write files, like Export USD."""
-        from usd_chunks import chunk_scheduler, chunk_stage
-
         stage = self.get_stage()
         chunk_scheduler.commit_all(
             self.get_chunks(),
@@ -945,9 +932,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             The View chunk, or None if no View could be made.
         """
-        from usd_chunks import chunk_stage
-        from usd_chunks.graph import engine
-
         stage = self.get_stage()
         target_path = chunk_stage.get_chunk_prim_path(target)
         context_path, context, slot, view = self._active_view_of(target)
@@ -969,11 +953,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             (context prim path, context chunk, active slot, View chunk or None).
         """
-        from pxr import Sdf
-
-        from usd_chunks import chunk_stage
-        from usd_chunks.graph import engine
-
         stage = self.get_stage()
         context_path = str(Sdf.Path(chunk_stage.get_chunk_prim_path(target)).GetParentPath())
         by_path = {chunk_stage.get_chunk_prim_path(c): c for c in (*self.get_contexts(), *self.get_chunks())}
@@ -989,8 +968,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         node made in the graph, so the viewport matches the graph. It is not blocked before
         that: a blocked chunk's fields miss the values the script sets.
         """
-        from usd_chunks import chunk_stage
-
         _, context, _, view = self._active_view_of(target)
         if view is not None:
             chunk_stage.recook_for_view(self.get_stage(), self, context, view)
@@ -1117,15 +1094,6 @@ class Creator:
 def _script_name(label: str) -> str:
     """A menu label as a Python name: "Dome Light" -> "dome_light"."""
     return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
-
-
-def all_chunks(chunks) -> list[ChunkBase]:
-    """Every chunk inside the given ones, groups excluded, at any depth."""
-    found = []
-    for c in chunks:
-        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
-        found.extend(all_chunks(sub) if sub else [c])
-    return found
 
 
 def execute_roots(chunks) -> None:

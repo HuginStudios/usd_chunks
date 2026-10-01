@@ -4213,3 +4213,12 @@ def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
         return isinstance(v, cls)
 
     return _fn
+
+
+def all_chunks(chunks) -> list[ChunkBase]:
+    """Every chunk inside the given ones, groups excluded, at any depth."""
+    found = []
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        found.extend(all_chunks(sub) if sub else [c])
+    return found

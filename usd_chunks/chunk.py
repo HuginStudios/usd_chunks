@@ -80,13 +80,14 @@ from usd_chunks.chunk_core import (
     ValueT,
     is_inst,
 )
-from usd_chunks.chunk_scene import SceneSender
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 from usd_chunks import chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
+
+    from usd_chunks.chunk_scene import SceneSender
 
 logger = logging.getLogger(__name__)
 
