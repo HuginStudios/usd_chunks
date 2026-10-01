@@ -14,6 +14,7 @@ from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.frontends.qt.widgets import ChunkLabelWidget
+from PySide6 import QtWidgets
 
 
 class _Scene(SceneSender):
@@ -57,3 +58,22 @@ def test_a_later_value_still_updates_it(qapp):
     readout.value = "cooked"
     qapp.processEvents()
     assert widget.text() == "cooked"
+
+
+def test_a_long_readout_wraps_instead_of_being_cut_off(qapp):
+    """A solver's error named a file, and only "simulation failed: C:" and the first folder or
+    two showed; the rest was cut off at the panel edge."""
+    message = r"simulation failed: C:\Users\k3rps\Desktop\usdbundle_26.05\Python\python.exe: No module named x"
+    widget, _ = _label(qapp, message)
+    assert widget.wordWrap()
+    line = widget.fontMetrics().height()
+    assert widget.heightForWidth(160) >= 3 * line, "the path breaks across lines, not just at spaces"
+    assert widget.get_value() == message, "what the widget reports is the exact text"
+
+
+def test_the_panel_keeps_asking_a_wrapped_label_its_height(qapp):
+    """The panel sets every param widget's size policy fresh; a wrapped label's height for its
+    width has to survive that, or the layout never makes the row taller."""
+    widget, _ = _label(qapp, "a long readout " * 20)
+    widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
+    assert widget.sizePolicy().hasHeightForWidth()

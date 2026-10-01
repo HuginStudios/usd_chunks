@@ -609,10 +609,55 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
 class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
     def __init__(self, param: chunk.Label):
         super().__init__(param)
+        self._shown = ""
+        # A readout can be long -- a solver's summary, or an error naming a file -- and a row
+        # is as wide as the panel, so an unwrapped label was cut off at its edge. Wrapped, and
+        # never read as rich text.
+        self.setWordWrap(True)
+        self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.setup_chunk_widget()
 
     def get_value(self):
-        return self.text()
+        return self._shown
+
+    def setSizePolicy(self, *args):  # noqa: N802 - Qt's name
+        """Keep height-for-width on whatever policy the panel gives this label.
+
+        A container sets every param widget's policy fresh (add_widget), which drops the flag
+        word wrap sets -- and without it the layout never asks how tall the wrapped text is:
+        the first line hid under the button above and the last was cut off.
+        """
+        policy = args[0] if len(args) == 1 else QtWidgets.QSizePolicy(*args)
+        policy.setHeightForWidth(self.wordWrap())
+        return super().setSizePolicy(policy)
+
+    def contextMenuEvent(self, event):  # noqa: N802 - Qt's name
+        """Right-click Copy: the exact text, without the break points setText adds."""
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("Copy", lambda: QtWidgets.QApplication.clipboard().setText(self._shown))
+        menu.popup(event.globalPos())
+
+    def setText(self, text):  # noqa: N802 - Qt's name
+        """Show text, wrapping a long path too: Qt only breaks a line at whitespace, so a
+        zero-width space after each separator gives it somewhere to break."""
+        self._shown = "" if text is None else str(text)
+        result = super().setText(self._shown.replace("\\", "\\​").replace("/", "/​"))
+        self._fit_height()
+        return result
+
+    def _fit_height(self):
+        """Ask for the height the wrapped text needs at this width, as a minimum height.
+
+        Height-for-width alone was not enough: a node graph's panel sits in a graphics proxy
+        whose layouts go by minimum sizes, so the row stayed one height and the text spilled
+        over its neighbours. A minimum height travels up every layout to the panel.
+        """
+        if self.wordWrap() and self.width() > 0:
+            self.setMinimumHeight(self.heightForWidth(self.width()))
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt's name
+        super().resizeEvent(event)
+        self._fit_height()
 
     def set_value(self, value):
         return self.setText("" if value is None else str(value))
