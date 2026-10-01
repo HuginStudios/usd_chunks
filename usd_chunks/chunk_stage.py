@@ -10,6 +10,7 @@ import math
 import weakref
 from pathlib import Path
 from collections.abc import Callable, Generator, Iterable
+from typing import TYPE_CHECKING
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
@@ -18,13 +19,15 @@ from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
-from usd_chunks import chunk_scene
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
 from usd_chunks import skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 from usd_chunks.chunk_registry import ChunkLayerManager  # noqa: F401  re-exported
+
+if TYPE_CHECKING:  # pragma: no cover -- typing only: chunk_scene imports this module
+    from usd_chunks import chunk_scene
 
 from usd_chunks import chunk_layers, chunk_naming
 from usd_chunks.chunk_topology import (  # noqa: F401  re-exported
@@ -730,7 +733,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # after opening would empty the file's own layer, which Sdf then hands back to the
         # next open of the same path.
         successors = [
-            c for c in chunk_scene.all_chunks(self._scene.get_chunks())
+            c for c in core.all_chunks(self._scene.get_chunks())
             if get_chunk_prim_path(c) in successor_paths
         ]
         if not successors:
@@ -6256,6 +6259,68 @@ def _resync_lofted_menus(chunks: Iterable[core.ChunkBase]) -> None:
         for param in context.get_my_params():
             if (mirror := getattr(param, "_loft_menu_items", None)) is not None:
                 mirror()
+
+
+def flatten_without_chunks(stage):
+    """Flatten the stage to a layer carrying the result but none of the recipe.
+
+    A Chunk prim left in a delivered file is not inert: open it anywhere usd_chunks is
+    installed and the network reloads and re-cooks, overriding the very geometry the
+    file was exported to carry. Stripping them is what makes the output plain USD that
+    anyone can open with nothing installed.
+
+    FlattenLayerStack rather than Stage.Export, because it keeps references as
+    references where Export inlines the referenced asset outright -- which stops
+    mattering only while a network builds all its own geometry.
+
+    Shallowest path first, so removing a parent Chunk takes its children with it and
+    the later lookup for those children simply finds nothing.
+    """
+    flat = UsdUtils.FlattenLayerStack(stage)
+    tmp = Usd.Stage.Open(flat)
+    chunk_paths = sorted(
+        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME),
+        key=lambda p: p.pathElementCount,
+    )
+    for path in chunk_paths:
+        spec = flat.GetPrimAtPath(path)
+        if not spec:
+            continue  # already removed as child of a shallower Chunk
+        parent = spec.nameParent
+        if parent:
+            del parent.nameChildren[spec.name]
+        else:
+            del flat.pseudoRoot.nameChildren[spec.name]
+
+    # Chunks connect the attributes they drive to their own params (a camera's focalLength
+    # to Camera.inputs:...:focalLength). The values are already flattened in, so the links
+    # would only point at prims this file no longer has.
+    def drop_links_to_chunks(path):
+        if not path.IsPropertyPath():
+            return
+        prop = flat.GetPropertyAtPath(path)
+        links = prop.connectionPathList if isinstance(prop, Sdf.AttributeSpec) else prop.targetPathList
+        items = list(links.GetAddedOrExplicitItems())
+        kept = [t for t in items if not any(t.HasPrefix(c) for c in chunk_paths)]
+        if len(kept) == len(items):
+            return
+        if kept:
+            for target in set(items) - set(kept):
+                links.RemoveItemEdits(target)
+        else:
+            links.ClearEdits()  # no `.connect = None` left behind
+
+    flat.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
+
+    # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
+    # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
+    # left in a file whose whole point is to carry none -- and it is enough to make a
+    # delivered asset look like it wants usd_chunks installed. Only when it IS empty: a
+    # stage that parks something else there keeps both the scope and that something.
+    root = flat.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
+    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
+        del flat.pseudoRoot.nameChildren[root.name]
+    return flat
 
 
 def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:

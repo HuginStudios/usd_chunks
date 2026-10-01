@@ -28,16 +28,19 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pxr import Gf, Sdf, Usd
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
-from usd_chunks import chunk_naming, chunk_registry, chunk_scene
+from usd_chunks import chunk_naming, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.graph import layout as chunk_graph_layout
 from usd_chunks import chunk_stage
+
+if TYPE_CHECKING:  # pragma: no cover -- typing only: chunk_scene imports this module
+    from usd_chunks import chunk_scene
 
 logger = logging.getLogger(__name__)
 
@@ -1973,7 +1976,7 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
     delete_chunks(chunks_for(chunks, chosen))
 
     registry = chunk_registry.ChunkRegistry()
-    module = registry.get_chunk_module(chunk_scene.CHUNKGROUP_MODULE)
+    module = registry.get_chunk_module(chunk_naming.CHUNKGROUP_MODULE)
     made = (module.create() if module.loaded else module.load()) if module else None
     if not made:
         logger.error("no chunkgroup module registered; the selection has been deleted")
