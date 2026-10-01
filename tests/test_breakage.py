@@ -493,6 +493,43 @@ def test_fracture_does_not_recut_when_nothing_changed(scene, monkeypatch):
 
 
 @needs_manifold
+def test_explode_and_bevel_do_not_cut_again(scene, monkeypatch):
+    """Explode only moves the instances; Bevel only rewrites the meshes. Neither cuts again,
+    and Explode does not rewrite the meshes either. Found on a House's planks, where each
+    Explode tweak re-cut 2,671 pieces."""
+    qapp, stage, mk = scene
+    monkeypatch.setattr(cook_cache, "_MIN_COOK_S", 1e9)  # no read-back: this is about cooks
+    _torus(stage)
+    frac = mk("fracture")
+    frac.get_param("source_prims").value = "/Torus"
+    frac.get_param("generations").value = 2
+    frac.execute()
+    mod = frac.get_chunk_module().module
+    cuts, meshes = [], []
+    real_cut, real_meshes = mod.build_trees, mod.author_prototypes
+    monkeypatch.setattr(mod, "build_trees", lambda *a, **k: cuts.append(1) or real_cut(*a, **k))
+    monkeypatch.setattr(mod, "author_prototypes", lambda *a, **k: meshes.append(1) or real_meshes(*a, **k))
+    def positions():  # fetched each time: a cook clears the layer, which expires prim handles
+        return np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured")).GetPositionsAttr().Get())
+
+    before = positions()
+
+    frac.get_param("preview_generation").value = 1
+    frac.get_param("explode").value = 2.0
+
+    assert (cuts, meshes) == ([], [])
+    assert len(positions()) > len(before), "Start Broken shows the pieces"
+
+    frac.get_param("bevel").value = 0.3
+
+    assert cuts == [] and meshes, "a bevel rewrites the meshes from the same cut"
+
+    frac.get_param("jaggedness").value = 0.9
+
+    assert cuts, "a cut param cuts again"
+
+
+@needs_manifold
 def test_fracture_shows_rock_settings_only_for_rocks(scene):
     qapp, stage, mk = scene
     frac = mk("fracture")
