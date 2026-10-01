@@ -4,7 +4,7 @@ import pathlib
 import sys
 
 import pytest
-from usd_chunks.chunk_registry import ChunkLayerManager
+from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
 import chunk_stubs
 
@@ -94,6 +94,26 @@ def reset_chunk_layer_manager():
     """
     yield
     ChunkLayerManager().reset()
+
+
+@pytest.fixture(autouse=True)
+def release_app_scene():
+    """Let go of an app's scene a test left registered.
+
+    Opening a graph frontend (Flet, ImGui) registers its scene as an app's -- is_app, the
+    way usdview's is -- and nothing unregisters it when the test ends. A script Scene()
+    refuses to start while an app's scene is live, so every Scene-based test that happened
+    to run after one on the same xdist worker failed with "is already running a scene":
+    all of test_module_hash, depending on how the run was split.
+
+    Demoted rather than dropped, the way test_scene_new_current does it by hand: tests that
+    register a scene once at import (test_new_chunks) run on whatever scene is registered
+    by then, and framework code reaches registry.scene.get_stage() without a None check.
+    """
+    yield
+    scene = getattr(ChunkRegistry(), "scene", None)
+    if getattr(scene, "is_app", False):
+        scene.is_app = False
 
 
 @pytest.fixture(autouse=True)

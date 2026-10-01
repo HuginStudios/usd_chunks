@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Experimental: `USD_CHUNKS_SKIP_COOKS=1` skips the cooks nothing reached. A chunk that
+  only the chunks above it changed doesn't cook unless one of them changed a prim it reads.
+  What it reads is not declared: each cook runs on a stage holding only its inputs and its
+  last output, and a cook that looks up anything else is cooked on the whole stage from then
+  on. On an interior set with a 5000-instance Scatter below a Transform and a Light, an
+  edit of either takes 18 ms instead of 270 ms, with an identical result. Framework code
+  that works on the scene during a cook uses the new `get_scene_stage()`.
 - A cook cache for slow chunks. A module that sets `cache_cook=True` in its config has its
   cooked layer kept on disk and read back when its params, the files they name, its code
   and the stage's units all match, including on reopen; a `cache_key(node)` hook adds
@@ -155,6 +162,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A chunk that sets its own params while it cooks (Light, Wedge) cooked everything below it
+  twice -- once in the middle of its own cook, against a half-written layer -- and was left
+  dirty, so the next edit of any chunk below it cooked it again. Now what is below it cooks
+  once, after it has finished, and a chunk that has just cooked is clean. On an interior set
+  with a 5000-instance Scatter, the first edit of a Transform after opening takes 280 ms
+  instead of 586 ms, and a Transform edit no longer cooks the Light above it.
 - Apply Schema and MDL to MaterialX never cleared their layers, so repeated cooks left
   stale output behind.
 - A chunk with no layer of its own, or one in a context's file layer, bumped its claimed

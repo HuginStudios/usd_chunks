@@ -409,6 +409,19 @@ def resolve_collection_members(stage: Usd.Stage, name: str) -> list[str]:
     return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage)]
 
 
+def _glob_root(pattern: str) -> str:
+    """The deepest path a glob's matches all lie under: its components before the first glob.
+
+    /World/objects/cube_* -> /World/objects; mesh* -> /.
+    """
+    fixed = []
+    for part in pattern.split("/")[1:]:
+        if "*" in part or "?" in part:
+            break
+        fixed.append(part)
+    return "/" + "/".join(fixed)
+
+
 def resolve_prim_paths(stage, location_str):
     """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
@@ -478,7 +491,11 @@ def resolve_prim_paths(stage, location_str):
         rx = _to_re(pattern)
         matched = []
         with author_in_variant_context(stage, token) if selections else nullcontext():
-            for prim in stage.Traverse():
+            # Walked from the pattern's fixed part, not from /: every match is under it, so
+            # the rest of the stage is neither read nor paid for -- and a chunk whose target
+            # is /World/objects/cube_* reads /World/objects, not the whole scene (skip_cook).
+            root = stage.GetPrimAtPath(_glob_root(pattern))
+            for prim in Usd.PrimRange(root) if root else ():
                 if rx.match(prim.GetPath().pathString):
                     matched.append(prim.GetPath().pathString)
         paths.extend(_with_variant_selections(path, selections) for path in matched)
@@ -524,6 +541,31 @@ _TEXT_TYPES = (
 def attr_holds_text(attr: Usd.Attribute) -> bool:
     """Whether a str can be Set() on attr: its type is String, Token or Asset."""
     return attr.GetTypeName() in _TEXT_TYPES
+
+
+#: The attribute type a param value of each Python type is stored as.
+SDF_TYPE_MAP = {
+    bool: Sdf.ValueTypeNames.Bool,
+    int: Sdf.ValueTypeNames.Int,
+    float: Sdf.ValueTypeNames.Float,
+    str: Sdf.ValueTypeNames.String,
+    Gf.Matrix4d: Sdf.ValueTypeNames.Matrix4d,
+}
+
+
+def retype_attr(attr: Usd.Attribute, type_name: Sdf.ValueTypeName) -> None:
+    """Change attr's type in every layer that has a spec for it, dropping the old value.
+
+    Its connections stay: they name where a value comes from, whatever its type.
+
+    Args:
+        attr: The attribute.
+        type_name: Its new type.
+    """
+    for spec in attr.GetPropertyStack():
+        if spec.typeName != type_name:
+            spec.SetInfo("typeName", str(type_name))
+            spec.ClearDefaultValue()
 
 
 # Where the authored expression text is kept for an attr that cannot hold it as its own
@@ -1286,7 +1328,7 @@ def existing_xform_op_name(node):
     suffix = getattr(node, "_xform_op_suffix", None)
     if suffix:
         return _XFORM_OP_PREFIX + suffix
-    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
     prim = _chunk_prim_of(stage, node) if stage is not None else None
     if prim is None:
         return None
@@ -1349,7 +1391,7 @@ def _stable_suffix(node) -> str:
     if cached:
         return cached
 
-    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
     prim = _chunk_prim_of(stage, node) if stage is not None else None
 
     suffix = None
