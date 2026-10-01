@@ -28,13 +28,12 @@ Requires: pxr (OpenUSD), usd_chunks, taichi, numpy.
 import logging
 import math
 import sys
-import threading
 import time
 
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_registry, chunk_stage
+from usd_chunks import chunk, chunk_registry, chunk_stage, sim_bake
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +68,6 @@ _HAS_TAICHI = ti is not None
 
 #: Cached by `_mpm_class`, which compiles nothing -- it only defines the kernels.
 _MPM_CLASS = None
-
-try:
-    from PySide6 import QtCore
-except ImportError:
-    QtCore = None
 
 WATER, SAND, SNOW, JELLY = "Water", "Sand", "Snow", "Jelly"
 _MATERIALS = [WATER, SAND, SNOW, JELLY]
@@ -1003,31 +997,6 @@ def _path_list(value):
     return [p.strip() for p in (value or "").replace(",", "\n").split("\n") if p.strip()]
 
 
-def _promote_bake_layer(layer):
-    """Put this chunk's layer in front of its siblings, so a baked instancer beats the static
-    arrays of the Scatter Points that authored it. Same move the RBD Solver makes."""
-    lreg = chunk.get_layer_manager()
-    if not lreg or not layer:
-        return
-    try:
-        hierarchy = {}
-        for parent, sub in lreg.iter_chunk_layers():
-            hierarchy[sub.identifier] = parent
-            if sub.identifier != layer.identifier:
-                continue
-            if sub.identifier in parent.subLayerPaths and parent.subLayerPaths[0] != sub.identifier:
-                parent.subLayerPaths.remove(sub.identifier)
-                parent.subLayerPaths.insert(0, sub.identifier)
-            grandparent = hierarchy.get(parent.identifier)
-            if grandparent and parent.identifier in grandparent.subLayerPaths \
-                    and grandparent.subLayerPaths[0] != parent.identifier:
-                grandparent.subLayerPaths.remove(parent.identifier)
-                grandparent.subLayerPaths.insert(0, parent.identifier)
-            break
-    except Exception as e:  # noqa: BLE001 - a failed reorder must not lose the bake
-        logger.warning("Could not promote bake layer: %s", e)
-
-
 def _bind_material(stage, prim, material_path):
     """Bind a Material to `prim`, if one was named. displayColor is a viewport fallback; a
     renderer wants a real binding."""
@@ -1057,15 +1026,18 @@ def _author_sphere_instancer(stage, path, positions, radius, colour, material_pa
     _bind_material(stage, sphere.GetPrim(), material_path)
     instancer.CreatePrototypesRel().SetTargets([proto_path])
     instancer.CreateProtoIndicesAttr().Set(Vt.IntArray([0] * positions.shape[1]))
-    positions_attr = instancer.CreatePositionsAttr()
-    extent_attr = instancer.CreateExtentAttr()
-    for f in range(len(positions)):
-        frame = np.ascontiguousarray(positions[f], dtype=np.float32)
-        tc = Usd.TimeCode(start_frame + f)
-        positions_attr.Set(Vt.Vec3fArray.FromNumpy(frame), tc)
-        extent = np.stack((frame.min(axis=0) - radius, frame.max(axis=0) + radius))
-        extent_attr.Set(Vt.Vec3fArray.FromNumpy(extent.astype(np.float32)), tc)
-    positions_attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions[-1], dtype=np.float32)))
+    frames = np.ascontiguousarray(positions, dtype=np.float32)
+    sim_bake.write_samples(instancer.CreatePositionsAttr(),
+                           ((start_frame + f, Vt.Vec3fArray.FromNumpy(frames[f])) for f in range(len(frames))),
+                           default=Vt.Vec3fArray.FromNumpy(frames[-1]))
+    sim_bake.write_samples(instancer.CreateExtentAttr(), (
+        (start_frame + f, _extent(frames[f], radius)) for f in range(len(frames))
+    ))
+
+
+def _extent(points, pad):
+    """The bounds of points, padded, as an extent value."""
+    return Vt.Vec3fArray.FromNumpy(np.stack((points.min(axis=0) - pad, points.max(axis=0) + pad)).astype(np.float32))
 
 
 def _emit(source, spacing, blob_radius, rng):
@@ -1109,95 +1081,6 @@ def _emit(source, spacing, blob_radius, rng):
     return particles, np.full(len(particles), -1, dtype=np.int64), None
 
 
-if QtCore is not None:
-
-    class _Relay(QtCore.QObject):
-        """Runs callables on the thread it was created on -- the main one -- when a worker
-        emits them. A queued signal rather than QTimer.singleShot, which fired from a worker
-        thread without a main-thread context never runs at all."""
-
-        call = QtCore.Signal(object)
-
-        def __init__(self):
-            super().__init__()
-            self.call.connect(self._invoke, QtCore.Qt.QueuedConnection)
-
-        def _invoke(self, fn):
-            fn()
-
-
-#: Set on a chunk while its bake is running, so a second click does not start another.
-_RUNNING = "_particle_sim_running"
-
-
-def _in_background():
-    """Whether to simulate on a worker thread: only inside a host with a running event loop,
-    which is the only place anything can be delivered back to the main thread. Headless and
-    under test there is no loop, so the bake runs inline and is finished when Run returns."""
-    if QtCore is None or QtCore.QCoreApplication.instance() is None:
-        return False
-    return chunk_registry.ChunkRegistry().plugin not in (None, "", "cli", "pytest")
-
-
-def _dispatch(node, job, finish, report):
-    """Simulate `job`, then hand the result to `finish` on the main thread.
-
-    In a UI the solve runs on a worker thread. On the main thread it froze usdview for the
-    whole bake -- ten seconds and more on the first run of a session, while Taichi compiles --
-    and a window that stops responding for that long reads as a crash.
-    """
-    if not _in_background():
-        started = time.perf_counter()
-        try:
-            result = simulate(**job)
-        except Exception as e:  # noqa: BLE001 - a failed solve reports, it does not take the host down
-            logger.exception("Particle simulation failed")
-            report(f"simulation failed: {e}")
-            return
-        finish(result, time.perf_counter() - started)
-        return
-
-    if getattr(node, _RUNNING, False):
-        report("already simulating -- wait for it to finish")
-        return
-    setattr(node, _RUNNING, True)
-    relay = _Relay()
-    # Held on the chunk: the worker's emits need the relay alive until the last one lands.
-    node._particle_relay = relay
-
-    def progress(frame, count):
-        relay.call.emit(lambda: report(f"simulating... frame {frame + 1} of {count}"))
-
-    def work():
-        started = time.perf_counter()
-        try:
-            result = simulate(progress=progress, **job)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Particle simulation failed")
-            message = f"simulation failed: {e}"
-
-            def failed():
-                setattr(node, _RUNNING, False)
-                report(message)
-
-            relay.call.emit(failed)
-            return
-        elapsed = time.perf_counter() - started
-
-        def done():
-            setattr(node, _RUNNING, False)
-            try:
-                finish(result, elapsed)
-            except Exception as e:  # noqa: BLE001
-                logger.exception("Writing the particle bake failed")
-                report(f"writing the result failed: {e}")
-
-        relay.call.emit(done)
-
-    report("simulating... (the first run of a session compiles for about 10 s)")
-    threading.Thread(target=work, name="ParticleSolver", daemon=True).start()
-
-
 def _auto_blob_radius(source, stage):
     """Half the brush radius the points were painted with, or 5 cm when nothing says.
 
@@ -1227,6 +1110,9 @@ def _run(owner, notice, sender):
     layer = owner.get_edit_context()
     if stage is None or layer is None:
         return
+    if sim_bake.is_running(node):
+        report("already simulating -- wait, or press Cancel")
+        return
 
     source_paths = node.get_param("source_prim").resolve_paths()
     if not source_paths:
@@ -1244,9 +1130,6 @@ def _run(owner, notice, sender):
     seed = node.get_param("seed", is_i).value
     max_particles = max(1, node.get_param("max_particles", is_i).value)
     rng = np.random.default_rng(seed)
-
-    if lreg := chunk.get_layer_manager():
-        lreg.clear_layer(layer.identifier)
 
     # Read through the upstream composition, so what this chunk writes (and anything wired
     # after it) cannot feed back into its own inputs. The one exception is the instancer it
@@ -1358,11 +1241,16 @@ def _run(owner, notice, sender):
         device=node.get_param("device", is_s).value,
     )
 
-    def finish(result, elapsed):
+    def finish(result):
         """Write the bake. Always on the main thread: it is all USD authoring."""
         if node.get_edit_context() is None:
             # The chunk went away while it was simulating.
             return
+        # Cleared now rather than at Run: the last bake stays on screen while this one is
+        # worked out. Nothing above read this layer -- the inputs come from upstream.
+        if lreg := chunk.get_layer_manager():
+            lreg.clear_layer(layer.identifier)
+        elapsed = result["elapsed"]
         positions = result["positions"].astype(np.float64) * size + origin
         velocities = result["velocities"].astype(np.float64) * size
 
@@ -1383,19 +1271,20 @@ def _run(owner, notice, sender):
             cloud.CreateWidthsAttr().Set(Vt.FloatArray([width]))
             UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
             cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([colour]))
-            points_attr = cloud.CreatePointsAttr()
-            vel_attr = cloud.CreateVelocitiesAttr()
-            extent_attr = cloud.CreateExtentAttr()
-            for f in range(frame_count):
-                tc = Usd.TimeCode(start_frame + f)
-                frame = np.ascontiguousarray(positions[f], dtype=np.float32)
-                points_attr.Set(Vt.Vec3fArray.FromNumpy(frame), tc)
-                vel_attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(velocities[f], dtype=np.float32)), tc)
-                extent = np.stack((frame.min(axis=0) - width, frame.max(axis=0) + width))
-                extent_attr.Set(Vt.Vec3fArray.FromNumpy(extent.astype(np.float32)), tc)
-            # The settled state as the default too: Scatter Points reads a points input at
+            # Every frame in one change block each (sim_bake.write_samples): a Set per frame
+            # sent a change notice per frame, and the host's listeners ran for every one. The
+            # settled state is the default too: Scatter Points reads a points input at
             # Default(), and a time-sampled-only attribute would give it nothing to read.
-            points_attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions[-1], dtype=np.float32)))
+            pos32 = np.ascontiguousarray(positions, dtype=np.float32)
+            vel32 = np.ascontiguousarray(velocities, dtype=np.float32)
+            frames_at = range(start_frame, start_frame + frame_count)
+            sim_bake.write_samples(cloud.CreatePointsAttr(),
+                                   ((t, Vt.Vec3fArray.FromNumpy(pos32[f])) for f, t in enumerate(frames_at)),
+                                   default=Vt.Vec3fArray.FromNumpy(pos32[-1]))
+            sim_bake.write_samples(cloud.CreateVelocitiesAttr(),
+                                   ((t, Vt.Vec3fArray.FromNumpy(vel32[f])) for f, t in enumerate(frames_at)))
+            sim_bake.write_samples(cloud.CreateExtentAttr(),
+                                   ((t, _extent(pos32[f], width)) for f, t in enumerate(frames_at)))
             _bind_material(stage, cloud.GetPrim(), material_path)
 
             if node.get_param("render_as", is_s).value == _AS_SPHERES:
@@ -1421,18 +1310,24 @@ def _run(owner, notice, sender):
                     centres = result["tracer_positions"].astype(np.float64) * size + origin
                     delta = result["tracer_rotations"].astype(np.float64)
                 inst = UsdGeom.PointInstancer(drive_prim)
-                pos_attr, ori_attr = inst.GetPositionsAttr(), inst.GetOrientationsAttr()
-                for f in range(frame_count):
-                    tc = Usd.TimeCode(start_frame + f)
-                    local_pos, local_q = drive_instances.arrays_for(centres[f], delta[f])
-                    pos_attr.Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(local_pos, dtype=np.float32)), tc)
-                    ori_attr.Set(Vt.QuathArray([Gf.Quath(*map(float, q)) for q in local_q]), tc)
+                driven = [drive_instances.arrays_for(centres[f], delta[f]) for f in range(frame_count)]
+                sim_bake.write_samples(inst.GetPositionsAttr(), (
+                    (start_frame + f, Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(p, dtype=np.float32)))
+                    for f, (p, _q) in enumerate(driven)
+                ))
+                sim_bake.write_samples(inst.GetOrientationsAttr(), (
+                    (start_frame + f, Vt.QuathArray([Gf.Quath(*map(float, x)) for x in q]))
+                    for f, (_p, q) in enumerate(driven)
+                ))
 
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
             stage.SetEndTimeCode(start_frame + frame_count - 1)
         if drive_instances is not None:
-            _promote_bake_layer(layer)
+            sim_bake.promote(layer)
+        # Kept before any param below is set: setting one cooks this chunk, the cook clears
+        # this layer and puts the kept bake back -- which must already be this one.
+        sim_bake.keep(node, layer)
 
         for name, value in (("particles_out", str(particles_path)), ("surface_out", str(surface_path))):
             param = node.get_param(name)
@@ -1459,11 +1354,103 @@ def _run(owner, notice, sender):
             f"{len(surface)} surface points{driven}"
         )
         node.unset_state(chunk.ChunkFlags.State.STALE)
+        # In the cook cache for the next time these inputs come round, this session or after
+        # a reopen. Stored last, so the readout above goes with it.
+        if entry is not None:
+            entry.store(node, layer)
 
-    _dispatch(node, job, finish, report)
+    # A bake made from exactly these inputs before comes back from the cook cache instead.
+    entry = sim_bake.cache_entry(node, sim_bake.digest(
+        job, origin, size, spacing, blob_ids, follow_blobs, str(drive_path),
+        vars(drive_instances) if drive_instances is not None else None,
+    ))
+    # Read into a scratch layer and kept before it goes in: restoring sets the output params,
+    # and each cooks this chunk, which clears its layer and puts the kept bake back.
+    read_back = Sdf.Layer.CreateAnonymous("particle_read_back")
+    if entry is not None and entry.restore(node, read_back):
+        sim_bake.keep(node, read_back)
+        layer.TransferContent(read_back)
+        _after_read_back(node, layer, stage, start_frame, frame_count, promote=drive_instances is not None)
+        return
+    if getattr(node, "_particle_cache_only", False):
+        node.set_state(chunk.ChunkFlags.State.STALE)
+        report("not simulated -- press Run Simulation")
+        return
+
+    def bake(ctx):
+        """Solve in a separate process: Taichi holds the GIL while it computes, which from a
+        thread still stopped the host for over a second at a time."""
+        yield sim_bake.WORKER
+        started = time.perf_counter()
+        ctx.status("simulating... (the first run of a session compiles for about 10 s)")
+        result = sim_bake.in_subprocess(ctx, simulate, **job)
+        result["elapsed"] = time.perf_counter() - started
+        yield sim_bake.MAIN
+        return result
+
+    sim_bake.run(node, bake, report=report, finish=finish, name="ParticleSolver")
+
+
+def _after_read_back(node, layer, stage, start_frame, frame_count, promote):
+    """What a bake does besides its layer, for one read back from the cook cache."""
+    if promote:
+        sim_bake.promote(layer)
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        stage.SetStartTimeCode(start_frame)
+        stage.SetEndTimeCode(start_frame + frame_count - 1)
+    revision = node.get_param("revision")
+    if revision is not None:
+        revision.value = int(revision.value or 0) + 1  # downstream reads the points again
+    readout = node.get_param("readout")
+    if readout is not None:
+        readout.value = f"{readout.value}\nread back from the cook cache"
+    node.unset_state(chunk.ChunkFlags.State.STALE)
+    try:
+        scene = chunk_registry.ChunkRegistry().scene
+        if scene is not None and hasattr(scene, "refresh_timeline"):
+            scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
+    except Exception:  # noqa: BLE001 - a timeline refresh is a courtesy
+        pass
+
+
+def _is_headless():
+    """No UI, so no event loop and nobody to press Run."""
+    return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
+
+
+def cache_key(node):
+    """What the cook cache keys a bake on: its inputs, while Run asks (sim_bake)."""
+    return sim_bake.input_key(node)
+
+
+def execute(node):
+    """Bake on cook headless; interactively, only read a cached bake back.
+
+    The first cook of a session (opening the scene) reads the bake back from the cook cache if
+    one was made from exactly these inputs, so a scene reopens simulated. Later cooks put the
+    last bake back -- the framework clears this layer before each -- rather than simulate
+    again on every tweak. Under ``usdchunks run`` nobody can press Run, so it bakes.
+    """
+    if _is_headless():
+        _run(node, None, None)
+        return
+    if getattr(node, "_particle_cache_checked", False):
+        sim_bake.restore(node, node.get_edit_context())
+        return
+    node._particle_cache_checked = True
+    node._particle_cache_only = True
+    try:
+        _run(node, None, None)
+    finally:
+        node._particle_cache_only = False
+
+
+def _cancel(owner, notice, sender):
+    sim_bake.cancel(owner.get_chunk())
 
 
 def _reset(owner, notice, sender):
+    sim_bake.forget(owner.get_chunk())  # or the next cook would put it back
     layer = owner.get_edit_context()
     if layer and (lreg := chunk.get_layer_manager()):
         lreg.clear_layer(layer.identifier)
@@ -1490,8 +1477,8 @@ def _clear_colliders(owner, notice, sender):
     owner.get_chunk().get_param("collision_path").value = ""
 
 
-_NOT_INPUTS = {"run_sim", "reset_sim", "add_collision", "clear_collision", "readout",
-               "particles_out", "surface_out", "revision"}
+_NOT_INPUTS = {"run_sim", "reset_sim", "cancel_sim", "add_collision", "clear_collision", "readout",
+               "particles_out", "surface_out", "revision", "cache_result"}
 
 
 def main():
@@ -1516,6 +1503,9 @@ def main():
     reset = chunk.Button("reset_sim", "Reset", tooltip="Clear the bake from this chunk's layer.")
     reset.add_callback(_reset)
     chunk_api.add_param(reset)
+    cancel = chunk.Button("cancel_sim", "Cancel", tooltip="Stop the simulation that is running.")
+    cancel.add_callback(_cancel)
+    chunk_api.add_param(cancel)
     chunk_api.add_param(chunk.Label("readout", default_value="not simulated yet"))
 
     emit = chunk.Group("Emission", flags=_GF)
@@ -1677,6 +1667,7 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
         requirements=["taichi>=1.7,<2", "numpy>=2,<3"],
+        cache_cook=True,
         description=(
             "Bakes an MLS-MPM simulation of water, sand, snow or jelly with Taichi (GPU when\n"
             "available). The material starts in a mesh's volume, at a Scatter Brush's painted\n"

@@ -2,11 +2,13 @@
 RBD-style bake. The solver runs on a coarse grid and a handful of frames to stay quick."""
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 from pxr import Gf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, cook_cache, sim_bake
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -321,3 +323,55 @@ def test_an_rbd_bake_pushes_the_material_aside(graph):
     undisturbed = near_rock("/floor", "/Calm")
     assert undisturbed > 20
     assert near_rock("/floor\n/rocks", "/Splash") < undisturbed * 0.2, "the rock should have cleared a hole"
+
+
+@needs_taichi
+def test_the_same_setup_reads_its_bake_back_from_the_cook_cache(graph, tmp_path, monkeypatch):
+    """Run twice with nothing changed: the second is read back, not simulated."""
+    monkeypatch.setenv(cook_cache.ENV_DIR, str(tmp_path / "cook_cache"))
+    monkeypatch.delenv(cook_cache.ENV, raising=False)
+    stage, make = graph
+    _floor(stage, "/floor", 100.0, 0.0)
+    _box(stage, "/tank", (-10, -10, 20), (10, 10, 30))
+    solver, module = _solver(make, source_prim="/tank", collision_path="/floor")
+    _press_run(solver, module)
+    first = np.asarray(UsdGeom.Points(stage.GetPrimAtPath("/ParticleSim/Particles")).GetPointsAttr().Get(8))
+
+    solver.get_edit_context().Clear()
+    sim_bake.forget(solver)
+    monkeypatch.setattr(module, "simulate", lambda **kw: pytest.fail("simulated although it was cached"))
+    _press_run(solver, module)
+
+    again = np.asarray(UsdGeom.Points(stage.GetPrimAtPath("/ParticleSim/Particles")).GetPointsAttr().Get(8))
+    assert np.allclose(first, again)
+    assert solver.get_param("readout").value.endswith("read back from the cook cache")
+
+
+@needs_taichi
+def test_in_a_ui_the_solve_runs_in_another_process(graph, qapp, monkeypatch):
+    """Taichi holds the GIL while it computes; on a thread it still froze the host."""
+    monkeypatch.setattr(sim_bake, "in_background", lambda: True)
+    monkeypatch.setenv(cook_cache.ENV, "0")
+    stage, make = graph
+    _floor(stage, "/floor", 100.0, 0.0)
+    _box(stage, "/tank", (-10, -10, 20), (10, 10, 30))
+    solver, module = _solver(make, source_prim="/tank", collision_path="/floor", device="CPU")
+    real = module.simulate
+    monkeypatch.setattr(module, "simulate", lambda **kw: pytest.fail("solved in this process"))
+    # in_subprocess loads the function by name from the module's file, so the child gets the
+    # real one: put it back under the name it pickles by, keep this process's copy failing.
+    monkeypatch.setattr(sim_bake, "in_subprocess", lambda ctx, fn, **job: _real_in_subprocess(ctx, real, **job))
+
+    _press_run(solver, module)
+    assert sim_bake.is_running(solver), "Run returns while the solve goes on"
+    started = time.perf_counter()
+    while sim_bake.is_running(solver) and time.perf_counter() - started < 300:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    points = UsdGeom.Points(stage.GetPrimAtPath("/ParticleSim/Particles")).GetPointsAttr()
+    assert points.GetNumTimeSamples() == 8, solver.get_param("readout").value
+
+
+_real_in_subprocess = sim_bake.in_subprocess
