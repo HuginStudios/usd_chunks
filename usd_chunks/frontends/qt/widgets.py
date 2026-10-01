@@ -609,10 +609,28 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
 class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
     def __init__(self, param: chunk.Label):
         super().__init__(param)
+        self._shown = ""
+        # A readout can be long -- a solver's summary, or an error naming a file -- and a row
+        # is as wide as the panel, so an unwrapped label was cut off at its edge. Wrapped, and
+        # never read as rich text.
+        self.setWordWrap(True)
+        self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.setup_chunk_widget()
 
     def get_value(self):
-        return self.text()
+        return self._shown
+
+    def contextMenuEvent(self, event):  # noqa: N802 - Qt's name
+        """Right-click Copy: the exact text, without the break points setText adds."""
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("Copy", lambda: QtWidgets.QApplication.clipboard().setText(self._shown))
+        menu.popup(event.globalPos())
+
+    def setText(self, text):  # noqa: N802 - Qt's name
+        """Show text, wrapping a long path too: Qt only breaks a line at whitespace, so a
+        zero-width space after each separator gives it somewhere to break."""
+        self._shown = "" if text is None else str(text)
+        return super().setText(self._shown.replace("\\", "\\​").replace("/", "/​"))
 
     def set_value(self, value):
         return self.setText("" if value is None else str(value))
