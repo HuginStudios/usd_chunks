@@ -318,7 +318,19 @@ def _outside(layer: Sdf.Layer, mask: set[Sdf.Path]) -> set[Sdf.Path]:
 
 
 def _covered(path: Sdf.Path, mask: set[Sdf.Path]) -> bool:
-    return any(path.HasPrefix(m) for m in mask)
+    """Whether path is at or below a masked one.
+
+    Walks path's parents and looks each up in mask, rather than testing every masked path
+    as a prefix: a cook that writes thousands of prims also has thousands in its mask, and
+    checking each against each was 64 million prefix tests for a fracture of 8,000 specs.
+    """
+    while not path.isEmpty:
+        if path in mask:
+            return True
+        if path == Sdf.Path.absoluteRootPath:
+            return False
+        path = path.GetParentPath()
+    return False
 
 
 # ------------------------------------------------------------------------------------------

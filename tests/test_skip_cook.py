@@ -221,3 +221,21 @@ def test_changed_paths_ignore_a_parent_only_gaining_a_child():
 def test_a_glob_covers_the_prims_under_its_fixed_part():
     assert set(skip_cook._paths_in("/World/*/Mesh, /Other")) == {Sdf.Path("/World"), Sdf.Path("/Other")}
     assert set(skip_cook._paths_in("a_collection")) == {Sdf.Path.absoluteRootPath}
+
+
+@pytest.mark.parametrize(
+    ("path", "covered"),
+    [
+        ("/Rocks", True),
+        ("/Rocks/Prototypes/Rock00_0", True),
+        ("/Rocks/Prototypes/Rock00_0.points", True),
+        ("/Rocks2", False),
+        ("/World", False),
+        ("/World/Machine/Mantle", True),
+        ("/World/Machine", False),
+    ],
+)
+def test_covered_is_at_or_below_a_masked_path(path, covered):
+    mask = {Sdf.Path("/Rocks"), Sdf.Path("/World/Machine/Mantle")}
+    assert skip_cook._covered(Sdf.Path(path), mask) is covered
+    assert skip_cook._covered(Sdf.Path(path), mask | {Sdf.Path.absoluteRootPath}) is True
