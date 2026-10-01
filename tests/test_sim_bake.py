@@ -145,6 +145,26 @@ def test_in_subprocess_runs_the_solve_in_another_process(tmp_path, monkeypatch):
     assert reports[-1].startswith("simulating... frame 5 of 5")
 
 
+def test_in_subprocess_uses_this_usd_chunks_not_another_copy(tmp_path, monkeypatch):
+    """usdview launched from C:\\usd_chunks while running a worktree: the child found the main
+    checkout's usd_chunks first and failed with "No module named usd_chunks.sim_bake"."""
+    decoy = tmp_path / "checkout"
+    (decoy / "usd_chunks").mkdir(parents=True)
+    (decoy / "usd_chunks" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.chdir(decoy)
+    monkeypatch.setattr(sys, "path", [str(decoy), *sys.path])
+    source = tmp_path / "engine_copy.py"
+    source.write_text("def solve(progress, n):\n    return n * 2\n", encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("engine_copy_for_test", source)
+    engine = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "engine_copy_for_test", engine)
+    spec.loader.exec_module(engine)
+    relay = types.SimpleNamespace(call=types.SimpleNamespace(emit=lambda fn: fn()))
+    ctx = sim_bake.Context(_Node(), lambda text: None, None, relay)
+
+    assert sim_bake.in_subprocess(ctx, engine.solve, n=21) == 42
+
+
 def test_in_subprocess_reports_the_childs_error(tmp_path, monkeypatch):
     source = tmp_path / "broken.py"
     source.write_text("def solve(progress):\n    raise RuntimeError('taichi is not installed')\n",

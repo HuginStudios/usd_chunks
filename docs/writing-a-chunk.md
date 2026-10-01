@@ -181,6 +181,26 @@ def cache_key(node):
 Poly Reduce returns a checksum of the meshes it reads, and URDF Import returns the size and
 date of each mesh file the `.urdf` names.
 
+Some results are not made in a cook: a simulation bakes when you press Run, on a worker
+thread. To cache one, take the entry when the work starts and store the layer when it is
+done. The next cook with the same inputs reads it back, also after the file is opened
+again. Taking the entry first means a param changed during the bake does not relabel it:
+
+```python
+def cache_key(node):
+    return sim_bake.input_key(node)  # None in ordinary cooks: no automatic caching
+
+entry = sim_bake.cache_entry(node, sim_bake.digest(job))  # None when caching is off
+if entry is not None and entry.restore(node, layer):
+    ...                               # read back: no bake
+...                                   # else bake into the chunk's layer, then
+if entry is not None:
+    entry.store(node, layer)
+```
+
+`cache_key` answers only while `cache_entry` asks, because working out a bake's inputs can
+take seconds, too slow for every cook. The RBD Solver and the Particle Solver do this.
+
 Each chunk of such a module gets a **Cache Result** checkbox, on by default, to switch
 caching off for that one node. Only cooks that take longer than about 50 ms are stored,
 since reading a result back takes time too. A cook that changes its own input params, or

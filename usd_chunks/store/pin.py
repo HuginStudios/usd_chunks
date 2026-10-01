@@ -334,12 +334,8 @@ def collect_packages(chunk_types: Iterable[str]) -> dict[str, str]:
         module = modules.get(str(chunk_type))
         if module is None:
             continue
-        for requirement in module.config.requirements or []:
-            name, _ = chunk_registry.split_requirement(requirement)
-            if name in packages:
-                continue
-            if (installed := chunk_registry.installed_version(name)) is not None:
-                packages[name] = installed
+        for name, installed in module.installed_packages().items():
+            packages.setdefault(name, installed)
     return packages
 
 

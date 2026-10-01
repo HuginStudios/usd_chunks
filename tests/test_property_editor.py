@@ -182,3 +182,49 @@ def test_the_edits_come_back_after_a_reload(tmp_path):
         assert _get(stage, "/a", "weight") == pytest.approx(5.0)
         editor = next(c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "property_editor")
         assert _widget(editor, "weight").value == pytest.approx(5.0)
+
+
+def test_a_typed_edit_creates_the_attribute_where_it_is_missing():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _spheres(stage, "/a")
+        UsdGeom.Xform.Define(stage, "/x")
+        editor = scene.create.property_editor()
+        editor.get_param("prim").value = "/a,/x"
+
+        editor.get_param("edits").value = 'bool vray:env:bg:tex:use = true\nfloat3 tint = [1, 0.5, 0]\nweight = 2'
+
+        for path in ("/a", "/x"):
+            attr = stage.GetPrimAtPath(path).GetAttribute("vray:env:bg:tex:use")
+            assert attr.GetTypeName() == Sdf.ValueTypeNames.Bool
+            assert attr.Get() is True
+            assert tuple(_get(stage, path, "tint")) == pytest.approx((1.0, 0.5, 0.0))
+        assert _get(stage, "/a", "weight") == pytest.approx(2.0)
+        assert not stage.GetPrimAtPath("/x").GetAttribute("weight"), "an untyped edit still skips"
+
+
+def test_a_widget_edit_keeps_the_types_in_the_list():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _spheres(stage, "/a")
+        editor = scene.create.property_editor()
+        editor.get_param("prim").value = "/a"
+        edits = editor.get_param("edits")
+        edits.value = "double exposure = 1.5"
+
+        _widget(editor, "weight").value = 5.0
+
+        assert edits.value.splitlines() == ["double exposure = 1.5", "weight = 5.0"]
+        assert _get(stage, "/a", "exposure") == pytest.approx(1.5)
+
+
+def test_an_unknown_type_writes_nothing():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _spheres(stage, "/a")
+        editor = scene.create.property_editor()
+        editor.get_param("prim").value = "/a"
+
+        editor.get_param("edits").value = "flaot tint = 1"
+
+        assert not stage.GetPrimAtPath("/a").GetAttribute("tint")
