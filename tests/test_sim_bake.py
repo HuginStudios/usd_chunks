@@ -178,6 +178,22 @@ def test_write_samples_is_one_change_notice_for_every_frame():
     assert sub.GetAttributeAtPath("/Cloud.points"), "written into the edit target"
 
 
+def test_write_samples_makes_the_spec_when_another_layer_authored_the_attribute():
+    """A Scatter's instancer: positions defined in its layer, baked in the solver's."""
+    stage = Usd.Stage.CreateInMemory()
+    sub, scatter = Sdf.Layer.CreateAnonymous(), Sdf.Layer.CreateAnonymous()
+    stage.GetRootLayer().subLayerPaths = [sub.identifier, scatter.identifier]  # sub is stronger
+    stage.SetEditTarget(stage.GetEditTargetForLocalLayer(scatter))
+    positions = UsdGeom.PointInstancer.Define(stage, "/Scatter").CreatePositionsAttr()
+    positions.Set(Vt.Vec3fArray([Gf.Vec3f(0, 0, 0)]))
+    stage.SetEditTarget(stage.GetEditTargetForLocalLayer(sub))
+
+    sim_bake.write_samples(positions, ((f, Vt.Vec3fArray([Gf.Vec3f(0, -f, 0)])) for f in (1, 2)))
+
+    assert sub.GetPrimAtPath("/Scatter").specifier == Sdf.SpecifierOver
+    assert positions.Get(2)[0] == Gf.Vec3f(0, -2, 0)
+
+
 def test_keep_and_restore_carry_a_bake_across_a_cleared_layer():
     node = _Node()
     layer = Sdf.Layer.CreateAnonymous()

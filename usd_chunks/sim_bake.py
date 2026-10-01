@@ -414,7 +414,8 @@ def write_samples(attr: Usd.Attribute, samples, default=_NO_DEFAULT) -> None:
     Written straight into the layer inside one change block, it is one notice.
 
     Args:
-        attr: The attribute, already created (Create...Attr) so it has a spec to write into.
+        attr: The attribute. Its spec in the edit target layer is made if it has none there
+            (an instancer's positions authored by another chunk's layer).
         samples: (time, value) pairs; time a float or Usd.TimeCode.
         default: Also set the default value, when given.
     """
@@ -422,6 +423,9 @@ def write_samples(attr: Usd.Attribute, samples, default=_NO_DEFAULT) -> None:
     layer = target.GetLayer()
     path = target.MapToSpecPath(attr.GetPath())
     with Sdf.ChangeBlock():
+        if not layer.GetAttributeAtPath(path):
+            owner = Sdf.CreatePrimInLayer(layer, path.GetPrimPath())
+            Sdf.AttributeSpec(owner, path.name, attr.GetTypeName(), attr.GetVariability(), attr.IsCustom())
         for time_code, value in samples:
             t = time_code.GetValue() if isinstance(time_code, Usd.TimeCode) else float(time_code)
             layer.SetTimeSample(path, t, value)
