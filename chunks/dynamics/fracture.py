@@ -39,8 +39,10 @@ so a piece of a concave model collides a little fuller than it looks.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
+import weakref
 
 import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdShade, Vt
@@ -406,6 +408,19 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
            explode: float = 0.0, inside_material: str = "", outside_material: str = "",
            bevel: float = 0.0, bevel_detail: int = 3) -> int:
     """Write the fractured instancer at *out_path*. Returns the instance count."""
+    proto_of = author_prototypes(stage, out_path, trees, uv_scale=uv_scale, inside_material=inside_material,
+                                 outside_material=outside_material, bevel=bevel, bevel_detail=bevel_detail)
+    return author_instances(stage, out_path, trees, proto_of, preview_generation=preview_generation,
+                            explode=explode)
+
+
+def author_prototypes(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, inside_material: str = "",
+                      outside_material: str = "", bevel: float = 0.0, bevel_detail: int = 3) -> dict:
+    """Write the instancer at *out_path* with one prototype mesh per piece -- the slow part.
+
+    Returns:
+        {(tree index, piece node): prototype index}, for author_instances.
+    """
     inst = UsdGeom.PointInstancer.Define(stage, out_path)
     inst.GetPrim().CreateAttribute(NS + "fractured", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
     protos = out_path.AppendChild("Prototypes")
@@ -479,9 +494,17 @@ def author(stage, out_path: Sdf.Path, trees: list[Tree], *, uv_scale: float, pre
                 proto_of[(tree.index, piece.node)] = len(targets)
                 targets.append(path)
     inst.CreatePrototypesRel().SetTargets(targets)
+    return proto_of
 
-    # Instances: every tree's pieces of the preview generation (0 = whole), pushed out
-    # along their offset from the root by Explode.
+
+def author_instances(stage, out_path: Sdf.Path, trees: list[Tree], proto_of: dict, *, preview_generation: int = 0,
+                     explode: float = 0.0) -> int:
+    """Write the instances on the instancer author_prototypes wrote. Returns the instance count.
+
+    Every tree's pieces of the preview generation (0 = whole), pushed out along their offset
+    from the root by Explode.
+    """
+    inst = UsdGeom.PointInstancer(stage.GetPrimAtPath(out_path))
     positions, indices = [], []
     for tree in trees:
         root_centre = tree.pieces[0].centre
@@ -563,17 +586,17 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
     return trees, problems, sources
 
 
-def cache_key(node) -> str:
-    """What the cook cache keys a fracture on, beyond the params: the source geometry.
+#: The params the cut reads. The others only change how its pieces are written.
+_CUT_PARAMS = ("source", "source_prims", "seed", "generations", "jaggedness", "piece_shape", "count", "size",
+               "size_variation", "roughness", "flatness", "detail", "rock_origin")
+#: The params the piece meshes read, on top of the cut.
+_SURFACE_PARAMS = ("output_path", "uv_scale", "inside_material", "outside_material", "bevel", "bevel_detail")
 
-    Hashed as it composes upstream, so a moved, edited or swapped source is a different key
-    with no invalidation to get wrong. Procedural rocks are made from the params alone.
-    """
+
+def _source_digest(upstream, node) -> str:
+    """A digest of the source meshes as they compose upstream; "" for procedural rocks."""
     h = hashlib.blake2b(digest_size=16)
     if node.get_param("source").value != SOURCE_ROCKS:
-        stage = node.get_stage()
-        scene = node.get_scene()
-        upstream = chunk_stage.get_upstream_stage(stage, scene, node) if scene is not None else stage
         for prim in node.get_param("source_prims").get_prims():
             for p in Usd.PrimRange(upstream.GetPrimAtPath(prim.GetPath())):
                 if not p.IsA(UsdGeom.Mesh):
@@ -592,13 +615,96 @@ def cache_key(node) -> str:
     return h.hexdigest()
 
 
+def _upstream(node):
+    """The stage without this chunk's own layer, which hides the sources."""
+    stage = node.get_stage()
+    scene = node.get_scene()
+    return chunk_stage.get_upstream_stage(stage, scene, node) if scene is not None else stage
+
+
+def cache_key(node) -> str:
+    """What the cook cache keys a fracture on, beyond the params: the source geometry.
+
+    Hashed as it composes upstream, so a moved, edited or swapped source is a different key
+    with no invalidation to get wrong. Procedural rocks are made from the params alone.
+    """
+    return _source_digest(_upstream(node), node)
+
+
+def _values(node, names) -> tuple:
+    return tuple(repr(getattr(node.get_param(name), "value", None)) for name in names)
+
+
+#: Chunks holding a kept cut, so _let_go can drop them at exit.
+_KEEPING: weakref.WeakSet = weakref.WeakSet()
+
+
+def _let_go() -> None:
+    """Drop the kept cuts before the interpreter shuts down.
+
+    manifold3d reports every solid still alive then as a leak ("nanobind: leaked 1270
+    instances" as usdview closed), and a kept cut holds one per piece.
+    """
+    for node in list(_KEEPING):
+        node._fracture_cut = None
+        node._fracture_protos = None
+
+
+atexit.register(_let_go)
+
+
+def _cut_once(node, upstream) -> tuple:
+    """(key, trees, problems, sources): the last cut again when nothing it reads changed.
+
+    Explode, Start Broken, UVs, materials and Bevel only change how the pieces are written,
+    so they reuse the cut rather than make it again. Kept on the chunk, one cut at a time.
+    """
+    key = (_values(node, _CUT_PARAMS), UsdGeom.GetStageUpAxis(upstream), _source_digest(upstream, node))
+    kept = getattr(node, "_fracture_cut", None)
+    if kept is None or kept[0] != key:
+        kept = (key, *build_trees(upstream, node))
+        node._fracture_cut = kept
+        _KEEPING.add(node)
+    return kept
+
+
+def _prototypes_once(node, cut_key, trees, sources, out_path) -> tuple:
+    """(scratch stage, proto_of): the last pieces' meshes again when neither the cut nor
+    the surface params changed. Kept on the chunk, like the cut."""
+    is_f, is_i, is_s = chunk.is_param_t(float), chunk.is_param_t(int), chunk.is_param_t(str)
+    key = (cut_key, _values(node, _SURFACE_PARAMS))
+    kept = getattr(node, "_fracture_protos", None)
+    if kept is None or kept[0] != key:
+        scratch = Usd.Stage.CreateInMemory()
+        if out_path.GetParentPath() != Sdf.Path.absoluteRootPath:
+            UsdGeom.Xform.Define(scratch, out_path.GetParentPath())
+        proto_of = author_prototypes(
+            scratch, out_path, trees,
+            uv_scale=node.get_param("uv_scale", is_f).value,
+            inside_material=node.get_param("inside_material", is_s).value.strip(),
+            outside_material=node.get_param("outside_material", is_s).value.strip(),
+            bevel=max(0.0, node.get_param("bevel", is_f).value),
+            bevel_detail=max(2, node.get_param("bevel_detail", is_i).value),
+        )
+        for p in sources:
+            # The instancer stands in for the source from here on.
+            UsdGeom.Imageable(scratch.OverridePrim(p.GetPath())).MakeInvisible()
+        # The stage itself is kept, not its root layer: that handle expires with the stage.
+        kept = (key, scratch, proto_of)
+        node._fracture_protos = kept
+    return kept[1], kept[2]
+
+
 def execute(node) -> None:
     """Cut the sources and write the pieces.
 
     Only runs when the inputs are new: the cook cache (cache_cook, cache_key) reads back a
     fracture made from the same params and source geometry, this session or an earlier one.
+    Within a session, a change that leaves the cut alone (Explode, Start Broken, UVs,
+    materials, Bevel) reuses it, and one that leaves the meshes alone (Explode, Start
+    Broken) reuses those too: only the instances are written again.
 
-    Results are written to a scratch layer rather than into the live stage -- writing
+    Results are written to a scratch stage rather than into the live stage -- writing
     hundreds of meshes into a composed stage costs three times as much, every edit a
     recomposition -- and then moved into this chunk's layer in one transfer.
     """
@@ -612,29 +718,16 @@ def execute(node) -> None:
         return
     is_f, is_i, is_s = chunk.is_param_t(float), chunk.is_param_t(int), chunk.is_param_t(str)
     out_path = Sdf.Path(node.get_param("output_path", is_s).value.strip() or "/Fractured")
-    # Read the sources without this chunk's own layer, which hides them.
-    scene = node.get_scene()
-    upstream = chunk_stage.get_upstream_stage(stage, scene, node) if scene is not None else stage
-    trees, problems, sources = build_trees(upstream, node)
+    cut_key, trees, problems, sources = _cut_once(node, _upstream(node))
     if not trees:
         _report(node, "nothing to fracture -- pick a closed mesh, or use Procedural Rocks")
         return
-    scratch = Usd.Stage.CreateInMemory()
-    if out_path.GetParentPath() != Sdf.Path.absoluteRootPath:
-        UsdGeom.Xform.Define(scratch, out_path.GetParentPath())
-    count = author(
-        scratch, out_path, trees,
-        uv_scale=node.get_param("uv_scale", is_f).value,
+    scratch, proto_of = _prototypes_once(node, cut_key, trees, sources, out_path)
+    count = author_instances(
+        scratch, out_path, trees, proto_of,
         preview_generation=max(0, node.get_param("preview_generation", is_i).value),
         explode=max(0.0, node.get_param("explode", is_f).value),
-        inside_material=node.get_param("inside_material", is_s).value.strip(),
-        outside_material=node.get_param("outside_material", is_s).value.strip(),
-        bevel=max(0.0, node.get_param("bevel", is_f).value),
-        bevel_detail=max(2, node.get_param("bevel_detail", is_i).value),
     )
-    for p in sources:
-        # The instancer stands in for the source from here on.
-        UsdGeom.Imageable(scratch.OverridePrim(p.GetPath())).MakeInvisible()
     total = sum(len(t.pieces) for t in trees)
     smallest = min(p.volume for t in trees for p in t.pieces)
     largest = max(t.pieces[0].volume for t in trees)
