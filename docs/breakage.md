@@ -58,10 +58,10 @@ as it moved. Material is conserved: the pieces of a break tile their parent exac
   [Caching a slow cook](writing-a-chunk.md#caching-a-slow-cook)). The key is its params
   plus the source geometry. A fracture made before from the same input is read back
   instead of cut again, also after the scene is closed and opened.
-- **RBD Solver** hashes everything that goes into a bake. The same input keeps its bake or
-  loads it from `cache/<scene>_<chunk>.usdc`; opening a saved scene checks the cache once,
-  so it comes back simulated. A new chunk downstream changes nothing upstream. The
-  **Cache File** param moves that file.
+- **RBD Solver** stores each breakable bake in the same cook cache, keyed on everything
+  that goes into it. The same input keeps its bake or reads it back. Opening a scene checks
+  the cache once, so it comes back simulated. A new chunk downstream changes nothing
+  upstream. Untick **Cache Result** to always simulate.
 
 ## Worked examples
 

@@ -221,6 +221,24 @@ class CookEntry:
         except Exception:  # noqa: BLE001 - a cache that cannot be written is only slower
             logger.warning("cook cache: could not store %s", chunk.name, exc_info=True)
 
+    def store(self, chunk, layer: Sdf.Layer) -> None:
+        """Store a result made outside a cook, such as a bake run from a button.
+
+        Stored under this entry's key, so take the entry (lookup) when the work starts: a
+        param changed while it ran must not relabel the result. The chunk's outputs (its
+        readout) are stored as they are now, and come back with the layer.
+        """
+        mask = int(_STATES[0] | _STATES[1])
+        written = [
+            (i, p.name, True, p.value, int(p.state) & mask)
+            for i, p in enumerate(_items(chunk))
+            if hasattr(p, "value") and _is_output(p)
+        ]
+        try:
+            _store(self.key, layer, written)
+        except Exception:  # noqa: BLE001 - a cache that cannot be written is only slower
+            logger.warning("cook cache: could not store %s", chunk.name, exc_info=True)
+
 
 def _store(key: str, layer: Sdf.Layer, written: list) -> None:
     folder = cache_dir()
