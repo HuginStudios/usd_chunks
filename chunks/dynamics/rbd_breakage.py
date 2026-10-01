@@ -1018,6 +1018,25 @@ def _hold_when_parked(values: np.ndarray, alive: np.ndarray) -> np.ndarray:
     return values[src, np.arange(slots)[None, :]]
 
 
+def _per_instance_attrs_not_written(inst: UsdGeom.PointInstancer) -> list:
+    """Per-instance values upstream authored that author_result does not rewrite.
+
+    The bake swaps the instance list for one slot per body, so anything else with one value
+    per instance still has the old count. Left in, Storm sizes the whole instancer by it: an
+    Emit's primvars:rbd:emitFrame for 36 rocks against 4572 baked slots drew the bake
+    wrong and printed "Inconsistent number of 'hydra:instanceTranslations'" every frame.
+    """
+    attrs = [inst.GetScalesAttr(), inst.GetVelocitiesAttr(), inst.GetAngularVelocitiesAttr(),
+             inst.GetAccelerationsAttr(), inst.GetOrientationsfAttr()]
+    for pv in UsdGeom.PrimvarsAPI(inst).GetPrimvars():
+        if pv.GetInterpolation() in (UsdGeom.Tokens.constant, UsdGeom.Tokens.uniform):
+            continue
+        attrs.append(pv.GetAttr())
+        if pv.IsIndexed():
+            attrs.append(pv.GetIndicesAttr())
+    return [a for a in attrs if a and a.HasAuthoredValue()]
+
+
 def author_result(stage, instancer_prim, result, proto_index: dict, start_frame: int, spins=()) -> None:
     """Rewrite the instancer as the simulation's bodies, and bake joint spins.
 
@@ -1031,9 +1050,8 @@ def author_result(stage, instancer_prim, result, proto_index: dict, start_frame:
     inst.CreateProtoIndicesAttr().Set(Vt.IntArray([proto_index[k] for k in keys]))
     ids = np.arange(n_slots, dtype=np.int64)
     inst.CreateIdsAttr().Set(Vt.Int64Array.FromNumpy(ids))
-    for attr in (inst.GetScalesAttr(), inst.GetVelocitiesAttr(), inst.GetAngularVelocitiesAttr()):
-        if attr and attr.HasAuthoredValue():
-            attr.Block()
+    for attr in _per_instance_attrs_not_written(inst):
+        attr.Block()
     if frames == 0 or n_slots == 0:
         return
     to_local = np.array(UsdGeom.Xformable(instancer_prim).ComputeLocalToWorldTransform(start_frame).GetInverse())
