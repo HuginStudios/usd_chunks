@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils, cook_cache
+from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils, cook_cache, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -1632,6 +1632,22 @@ class ChunkCommon(AttributesBase):
     def get_stage(self) -> Usd.Stage | None:
         """Easy access to the current UsdStage.
 
+        Inside a cook skip_cook runs on a stage of the chunk's inputs, this is that stage:
+        it is all a module may read. See skip_cook.
+
+        Returns:
+            Usd.Stage: The stage held by the SceneSender of ChunkRegistry
+        """
+        return skip_cook.active_stage() or self.get_scene_stage()
+
+    def get_scene_stage(self) -> Usd.Stage | None:
+        """The scene's own stage, also inside a cook.
+
+        For the framework's work on the scene rather than a module's reading of it: muting
+        a gate's branches, a chunk prim's bookkeeping, a unique name -- all of which a cook
+        stage (get_stage inside a masked cook) would get wrong, holding only the cook's
+        inputs.
+
         Returns:
             Usd.Stage: The stage held by the SceneSender of ChunkRegistry
         """
@@ -1855,6 +1871,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     # Don't write a string to a typed (numeric) attr -- an unresolved
                                     # forwarded value can arrive as text and raise a type-mismatch.
                                     bad_str = isinstance(val, str) and not chunk_utils.attr_holds_text(usd_attr)
+                                    # And the other way round: a number for a String attr.
+                                    # A wire used to make a number param's attr a String
+                                    # (to hold its expression), and the first plain number
+                                    # typed in once the wire was gone could not be written.
+                                    # A file saved like that is healed here, where it hurts.
+                                    if (
+                                        not isinstance(val, str)
+                                        and usd_attr.GetTypeName() == Sdf.ValueTypeNames.String
+                                        and (typed := chunk_utils.SDF_TYPE_MAP.get(type(val))) is not None
+                                    ):
+                                        chunk_utils.retype_attr(usd_attr, typed)
+                                        current = None
                                     if not bad_str and current != val:
                                         usd_attr.Set(val)
                                 if is_expr:
@@ -2036,7 +2064,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         Returns:
             Usd.Property | None: The bound storage USD property, or None.
         """
-        stage = self.get_stage()
+        stage = self.get_scene_stage()
         if stage and self._param_attr_path:
             return stage.GetPropertyAtPath(self._param_attr_path)
 
@@ -3485,7 +3513,9 @@ class ChunkBase(ChunkGroupBase):
             deleted, or already executing).
         """
         execute = self._module_hook("execute")
-        stage = self.get_stage()
+        # The scene's stage, not get_stage(): a cook started inside another chunk's masked
+        # cook would get that chunk's inputs as its stage.
+        stage = self.get_scene_stage()
         ctx = self.get_edit_context()
         # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
         # layer stack. Don't re-run its module: authoring into a muted layer raises
@@ -3520,10 +3550,14 @@ class ChunkBase(ChunkGroupBase):
                 and not muted and not not_yet_in_stack and not self.is_blocked()):
             return False
 
-        with chunk_notice.executing(self):
+        with chunk_notice.executing(self), skip_cook.unmasked():
             if ctx:
                 try:
                     with Usd.EditContext(stage, ctx):
+                        # What the chunks below saw, to tell them what this cook
+                        # changed (skip_cook). Anonymous only, like the Clear.
+                        skipping = skip_cook.enabled() and ctx.anonymous
+                        before = skip_cook.baseline(self, ctx) if skipping else None
                         # A cook starts from an empty layer, so a module
                         # authors its whole result every time and never reads
                         # its own last one back. Anonymous only: that is a
@@ -3539,11 +3573,20 @@ class ChunkBase(ChunkGroupBase):
                         if cached is None or not cached.restore(self, ctx):
                             if cached is not None:
                                 cached.before_cook(self)
-                            execute(self)
+                            if skipping:
+                                skip_cook.run(self, stage, ctx, execute)
+                            else:
+                                execute(self)
+                        elif skipping:
+                            skip_cook.restored(self, ctx)
+                        if skip_cook.enabled() and not ctx.anonymous:
+                            skip_cook.unaccounted(self)
                         # What a param drives is its own state, not the cook's
                         # output -- see ChunkBase.reauthor_driven_attrs.
                         if ctx.anonymous:
                             self.reauthor_driven_attrs()
+                        if skipping:
+                            skip_cook.finish(self, ctx, before)
                         if cached is not None:
                             cached.after_cook(self, ctx)
                     self._cook_stale = False
@@ -3574,6 +3617,8 @@ class ChunkBase(ChunkGroupBase):
             else:
                 # No edit layer of its own -- author into the stage's current target.
                 execute(self)
+                if skip_cook.enabled():
+                    skip_cook.unaccounted(self)
                 self._cook_stale = False
                 chunk_utils.stamp_module_hash(stage, self)
         return True
@@ -4168,3 +4213,12 @@ def is_inst(cls: type[ValueT]) -> Predicate[ValueT]:
         return isinstance(v, cls)
 
     return _fn
+
+
+def all_chunks(chunks) -> list[ChunkBase]:
+    """Every chunk inside the given ones, groups excluded, at any depth."""
+    found = []
+    for c in chunks:
+        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
+        found.extend(all_chunks(sub) if sub else [c])
+    return found

@@ -34,7 +34,7 @@ from pxr import Sdf, Usd
 
 from usd_chunks import chunk_scheduler
 from usd_chunks.chunk_scene import all_chunks
-from usd_chunks.chunk_script import flatten_without_chunks
+from usd_chunks.chunk_stage import flatten_without_chunks
 from usd_chunks.chunk_stage import commit_order_from_stage, recook_focus
 
 #: The wedge param a sweep drives.

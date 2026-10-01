@@ -41,7 +41,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self, override
-from usd_chunks import chunk_scheduler
+from usd_chunks import chunk_scheduler, skip_cook
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ _internal_layer_write_active: bool = False
 # authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
+
+# The chunks the running cook holds back until it has finished, in the order they were reached;
+# None while no cook runs. See executing().
+_held_cooks: dict | None = None
 
 # The propagators whose solve an enclosing batched_solve() is holding back, in the order they
 # asked, each with the batch clock at the time it asked; None outside a batch.
@@ -215,15 +219,26 @@ def executing(prop):
     ChunkBase.cook is the one caller; the state lives here because every listener reads it
     from this module.
 
+    A module that sets its own params while it runs -- a Light showing its prim's attributes,
+    a Wedge writing a variant's ranges -- solves them there and then, and that solve reached
+    everything downstream of the chunk while the chunk was still half way through its own
+    cook: those chunks cooked against a layer it had not finished, and cooked again once it
+    had, when the change that started it all got to them. The param callbacks still run
+    during the cook; the chunks below are held (see _solve_downstream) and cooked once,
+    when it ends. The edit that started the cook still returns with all of them cooked.
+
     Args:
         prop: The chunk about to run its module.
     """
-    global _usd_write_active, _executing_chunk
+    global _usd_write_active, _executing_chunk, _held_cooks
     prev_executing_chunk = _executing_chunk
     prev_usd_write_active = _usd_write_active
+    prev_held_cooks = _held_cooks
+    held: dict = {}
     prop._executing = True
     _usd_write_active = True
     _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
+    _held_cooks = held
     try:
         yield
     finally:
@@ -232,7 +247,30 @@ def executing(prop):
         # that outer write for whatever it still had left to do.
         _usd_write_active = prev_usd_write_active
         _executing_chunk = prev_executing_chunk
+        _held_cooks = prev_held_cooks
         prop._executing = False
+    # Not on a raise: a module that fails ends the solve it was part of, as it always has.
+    #
+    # A chunk that has just cooked is clean. What it set on itself while it ran -- and the
+    # params it created, whose nodes start out dirty -- dirtied it again after its solve had
+    # cleaned it, and its result already takes all of that in. Left dirty, the next solve
+    # anywhere below it walked up to it (chunk_scheduler.dirty_component) and cooked it
+    # again: a Light, on every edit of the Transform after it. Cleaned before the held
+    # chunks solve, so their solves do not walk up and cook it a second time either.
+    prop.get_dag_node()._dirty = False
+    for chunk in held:
+        if chunk.get_dag_node().dirty:
+            chunk._solve_downstream()
+
+
+def _chunk_of(prop):
+    """The chunk prop belongs to, or None -- up its owners, since an AttributeSender has no
+    get_chunk() of its own and answers to the param that owns it."""
+    while prop is not None:
+        if (get_chunk := getattr(prop, "get_chunk", None)) is not None:
+            return get_chunk()
+        prop = prop.get_owner()
+    return None
 
 
 _T = TypeVar("_T")
@@ -931,6 +969,9 @@ class DagNode:
         # whatever depth it had, since gaining a dependant says nothing about its own
         # distance from the roots.
         chunk_scheduler.topology_changed(self)
+        # A new chunk above self: what it and everything below it cooked on is gone.
+        if skip_cook.enabled():
+            skip_cook.inputs_rewired(self)
 
         if connect_reverse:
             node.add_dependant(self)
@@ -973,6 +1014,8 @@ class DagNode:
         for key in keys:
             del self._connections.inputs[key]
         chunk_scheduler.topology_changed(self, node)
+        if skip_cook.enabled():
+            skip_cook.inputs_rewired(self)
 
         if disconnect_reverse:
             node.remove_dependant(self)
@@ -1502,6 +1545,33 @@ class ChunkNoticePropagator:
             # None -- which is what makes the cast below sound.
             if not state_only and prop.get_chunk_module() is not None:
                 chunk = cast("chunk_core.ChunkBase", prop)
+                # A chunk setting its own params mid-cook reaches everything below it from
+                # here. Those wait for its cook to end -- left dirty, so whichever solve gets
+                # to them next, this one's end or an enclosing one, cooks them once. See
+                # executing().
+                if (
+                    _held_cooks is not None
+                    and chunk is not _executing_chunk
+                    and _chunk_of(self) is _executing_chunk
+                ):
+                    n._dirty = True
+                    _held_cooks[chunk] = None
+                    # Its reasons go with it: the solve that holds it clears them, and
+                    # the skip decision when it is solved later needs them.
+                    if skip_cook.enabled():
+                        skip_cook.hold_reasons(chunk, changes)
+                    continue
+                if skip_cook.enabled():
+                    skip_cook.note_state(chunk)
+                    # Dirtied only by chunks above it cooking, and none of what they
+                    # changed is anything it reads: its layer already holds the result.
+                    # Not stale either -- there is nothing for recook_for_view to redo.
+                    if skip_cook.should_skip(chunk, changes):
+                        continue
+                    # A chunk with no cook of its own (a chunkgroup) changes what is
+                    # below it without a cook to say what: everything.
+                    if not chunk.can_cook():
+                        skip_cook.hand_down(chunk, skip_cook.EVERYTHING)
                 # Stale until the module actually runs below. Every reason this dispatch has
                 # for not running it -- blocked, muted, no layer yet, no stage -- leaves the
                 # layer holding a result the change never reached, and recook_for_view cooks
