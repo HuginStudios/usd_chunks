@@ -3026,48 +3026,9 @@ def _report(node, text: str) -> None:
     logger.info("[RBD Solver] %s", text.replace("\n", " | "))
 
 
-def _bake_key(*parts) -> str:
-    """A digest of everything that shapes a bake -- the whole job, arrays and all."""
-    h = hashlib.blake2b(digest_size=16)
-
-    def feed(v):
-        if isinstance(v, dict):
-            for k in sorted(v, key=str):
-                h.update(repr(k).encode())
-                feed(v[k])
-        elif isinstance(v, (list, tuple)):
-            h.update(b"[")
-            for x in v:
-                feed(x)
-            h.update(b"]")
-        elif _np is not None and isinstance(v, _np.ndarray):
-            h.update(str(v.shape).encode())
-            h.update(_np.ascontiguousarray(v).tobytes())
-        else:
-            h.update(repr(v).encode())
-
-    for part in parts:
-        feed(part)
-    return h.hexdigest()
-
-
 def cache_key(node) -> str | None:
-    """What the cook cache keys a breakable bake on, beyond the params: the bake's inputs.
-
-    None -- no automatic caching -- unless _cache_entry is asking. A bake is made by Run (or
-    a headless cook) and stored by _run_breakable itself, and working out its inputs costs a
-    second or two, too much for every cook.
-    """
-    return getattr(node, "_rbd_input_key", None)
-
-
-def _cache_entry(node, key: str):
-    """The cook cache's entry for a bake made from input key, or None when caching is off."""
-    node._rbd_input_key = key
-    try:
-        return cook_cache.lookup(node)
-    finally:
-        node._rbd_input_key = None
+    """What the cook cache keys a breakable bake on: its inputs, while Run asks (sim_bake)."""
+    return sim_bake.input_key(node)
 
 
 def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_value, forces) -> bool:
@@ -3208,12 +3169,12 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
     # Nothing that shapes the bake changed: keep it. A bake made from exactly this input
     # before -- this session or an earlier one -- comes back from the cook cache instead of
     # being simulated again, the way a File Cache node would.
-    key = _bake_key(job, proto_index, str(target_path), start_frame, spins)
+    key = sim_bake.digest(job, proto_index, str(target_path), start_frame, spins)
     if key == getattr(_chunk, "_rbd_bake_key", None) and layer.GetPrimAtPath(target_path):
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
         return True
     # Taken now, not when the bake lands: a param changed while it runs must not relabel it.
-    entry = _cache_entry(_chunk, key)
+    entry = sim_bake.cache_entry(_chunk, key)
     if entry is not None and entry.restore(_chunk, layer):
         _chunk._rbd_bake_key = key
         _promote_bake_layer(layer, _chunk)
