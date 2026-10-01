@@ -187,6 +187,30 @@ since reading a result back takes time too. A cook that changes its own input pa
 adds params, is never stored. For where the cache lives and how to switch it off, see
 [`USD_CHUNKS_COOK_CACHE`](install.md#environment-variables).
 
+### Skipping cooks nothing reached
+
+*Experimental, off by default: set `USD_CHUNKS_SKIP_COOKS=1`.*
+
+A change to a chunk dirties everything below it, but most of those chunks read nothing that
+changed: a Scatter below a Light doesn't care that the Light turned. With skipping on, a
+chunk that only the chunks above it changed doesn't cook unless one of them changed a prim
+it reads.
+
+What a chunk reads is not declared anywhere. During a cook, `node.get_stage()` returns a
+stage that only holds the chunk's **inputs** (the prims its prim path params name, such as
+PRIM_SELECTION params and `primpath_location`) and the prims its last cook wrote. So:
+
+- Read the prims you need through a prim path param, not a path written into the code. A
+  chunk that looks up anything else, or walks the whole stage (`Traverse()`), is noticed,
+  cooked again on the whole stage, and never skipped from then on. It still works; it
+  just always cooks.
+- Framework work on the scene, like muting a gate's branches, goes through
+  `node.get_scene_stage()`, which is always the whole scene. Module code shouldn't need it.
+
+Anything the framework can't account for makes the chunks below cook, as they always have:
+a rewire, a chunk disabled above, a change to which layers are muted or to the stage's
+expression variables, an Edit Target repointed.
+
 ## `commit()`
 
 ```python
