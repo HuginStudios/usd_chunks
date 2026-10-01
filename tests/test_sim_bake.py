@@ -15,7 +15,7 @@ import time
 import types
 
 import pytest
-from pxr import Sdf
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
 from usd_chunks import sim_bake
 
@@ -156,6 +156,26 @@ def test_inline_in_subprocess_is_a_plain_call():
     ctx = sim_bake.Context(_Node(), lambda text: None, None)
     assert sim_bake.in_subprocess(ctx, solve, frames=3) == 3
     assert seen == [threading.get_ident()]
+
+
+def test_write_samples_is_one_change_notice_for_every_frame():
+    stage = Usd.Stage.CreateInMemory()
+    sub = Sdf.Layer.CreateAnonymous()
+    stage.GetRootLayer().subLayerPaths.append(sub.identifier)
+    stage.SetEditTarget(stage.GetEditTargetForLocalLayer(sub))
+    points = UsdGeom.Points.Define(stage, "/Cloud").CreatePointsAttr()
+    notices = []
+    listener = Tf.Notice.Register(Usd.Notice.ObjectsChanged, lambda n, s: notices.append(n), stage)
+
+    sim_bake.write_samples(points, ((f, Vt.Vec3fArray([Gf.Vec3f(f, 0, 0)])) for f in range(1, 101)),
+                           default=Vt.Vec3fArray([Gf.Vec3f(100, 0, 0)]))
+
+    listener.Revoke()
+    assert len(notices) == 1
+    assert points.GetTimeSamples() == [float(f) for f in range(1, 101)]
+    assert points.Get(42)[0] == Gf.Vec3f(42, 0, 0)
+    assert points.Get()[0] == Gf.Vec3f(100, 0, 0)
+    assert sub.GetAttributeAtPath("/Cloud.points"), "written into the edit target"
 
 
 def test_keep_and_restore_carry_a_bake_across_a_cleared_layer():
