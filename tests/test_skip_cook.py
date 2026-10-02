@@ -12,7 +12,7 @@ import pytest
 from chunk_stubs import register_stub_module
 from pxr import Sdf
 
-from usd_chunks import Scene, chunk, skip_cook
+from usd_chunks import Scene, chunk, chunk_registry, skip_cook
 
 
 @pytest.fixture(autouse=True)
@@ -207,6 +207,53 @@ def test_a_value_written_before_the_cook_still_reaches_the_chunks_below():
 
         assert "Reader" in cooks
         assert _size(scene, "/Reader") == 18.0
+
+
+def test_a_cook_does_not_see_its_siblings_layers():
+    """Above and below stay: neither cooks while it does. A sibling may."""
+    cooks: list = []
+    with Scene() as scene:
+        gen = _add(scene, _generator(cooks, "Gen"))
+        sibling = _add(scene, _generator(cooks, "Sibling"))
+        reader = _add(scene, _reader(cooks, "Reader"))
+        below = _add(scene, _generator(cooks, "Below"))
+        _chain(scene, gen, reader, below)
+        layer_of = chunk_registry.ChunkLayerManager().get_layer
+
+        hidden = skip_cook.hidden_layers(reader, layer_of(reader), layer_of)
+
+        assert set(hidden) == {layer_of(sibling).identifier}
+
+
+def test_a_cook_reading_what_a_chunk_below_it_edits_stays_upstream_only():
+    cooks: list = []
+    with Scene() as scene:
+        gen = _add(scene, _generator(cooks, "Gen"))
+        _add(scene, _generator(cooks, "Sibling"))
+        reader = _add(scene, _reader(cooks, "Reader"))
+        below = _add(scene, _generator(cooks, "Below"))
+        below.get_param("path").value = "/Gen"
+        _chain(scene, gen, reader, below)
+
+        gen.get_param("size").value = 3.0
+
+        assert not getattr(reader, "_skip_sees_all", False)
+
+
+def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
+    cooks: list = []
+    with Scene() as scene:
+        gen = _add(scene, _generator(cooks, "Gen"))
+        _add(scene, _generator(cooks, "Sibling"))
+        reader = _add(scene, _reader(cooks, "Reader"))
+        _chain(scene, gen, reader)
+
+        # Masked now, with Sibling hidden: the read misses, is caught, and runs again.
+        reader.get_param("target").value = "/Sibling"
+
+        assert _size(scene, "/Reader") == 2.0
+        assert reader._skip_sees_all
+        assert reader._skip_mask is not None
 
 
 def test_changed_paths_ignore_a_parent_only_gaining_a_child():
