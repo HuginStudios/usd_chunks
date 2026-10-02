@@ -972,24 +972,44 @@ def _leaf_points(strands, positions, normals, radii, spacing):
     """
     if spacing <= 0.0:
         return [], []
+    radii = np.asarray(radii, dtype=np.float64)
     points, facing = [], []
     for chain in strands:
-        travelled = 0.0
-        next_leaf = spacing
-        for a, b in zip(chain[:-1], chain[1:]):
-            start, end = positions[a], positions[b]
-            segment = float(np.linalg.norm(end - start))
-            if segment <= 1e-9:
-                continue
-            while next_leaf <= travelled + segment:
-                t = (next_leaf - travelled) / segment
-                normal = normals[b]
-                at = start + (end - start) * t
-                points.append(Gf.Vec3f(*(at + normal * radii[b])))
-                facing.append(Gf.Vec3f(*normal))
-                next_leaf += spacing
-            travelled += segment
-    return points, facing
+        chain = np.asarray(chain, dtype=np.int64)
+        a, b = chain[:-1], chain[1:]
+        delta = positions[b] - positions[a]
+        # The length summed x + y + z in that order, which is what np.linalg.norm of one
+        # vector does; norm(axis=1) and einsum can round differently.
+        segment = np.sqrt(delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1] + delta[:, 2] * delta[:, 2])
+        kept = segment > 1e-9
+        if not kept.any():
+            continue
+        a, b, delta, segment = a[kept], b[kept], delta[kept], segment[kept]
+        # Running totals: arc length at the end of each segment, and the leaves' arc lengths
+        # by repeated addition -- cumsum adds in the order the loop did, so both come out
+        # bit for bit.
+        ends = np.cumsum(segment)
+        count = int(ends[-1] / spacing) + 2
+        targets = np.cumsum(np.full(count, spacing))
+        while targets[-1] <= ends[-1]:  # only if rounding drifted past the estimate
+            count *= 2
+            targets = np.cumsum(np.full(count, spacing))
+        targets = targets[targets <= ends[-1]]
+        if not len(targets):
+            continue
+        # The segment each leaf falls on: the first whose end reaches it.
+        k = np.searchsorted(ends, targets, side="left")
+        travelled = np.concatenate(([0.0], ends[:-1]))[k]
+        t = (targets - travelled) / segment[k]
+        normal = normals[b[k]]
+        at = positions[a[k]] + delta[k] * t[:, None]
+        points.append(at + normal * radii[b[k]][:, None])
+        facing.append(normal)
+    if not points:
+        return [], []
+    # Rounded to float32 once, as Gf.Vec3f(double) did per leaf.
+    return (Vt.Vec3fArray.FromNumpy(np.concatenate(points).astype(np.float32)),
+            Vt.Vec3fArray.FromNumpy(np.concatenate(facing).astype(np.float32)))
 
 
 # ---------------------------------------------------------------------------
@@ -1065,12 +1085,8 @@ def _painted_roots(stage, points_path, projector):
     points = UsdGeom.Points(prim).GetPointsAttr().Get()
     if not points:
         return []
-    roots = []
-    for point in points:
-        landed, normal = projector.project(np.asarray(point, dtype=np.float64))
-        if normal is not None:
-            roots.append((landed, normal))
-    return roots
+    landed, normals, found = projector.project_many(np.asarray(points, dtype=np.float64))
+    return [(landed[i], normals[i]) for i in np.flatnonzero(found)]
 
 
 def _attractor_count(surface, settings):

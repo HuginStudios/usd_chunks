@@ -26,7 +26,6 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSou
 
 from __future__ import annotations
 
-import bisect
 import itertools
 import logging
 import math
@@ -941,9 +940,12 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
 
     The area table and its cumulative distribution are built in one array pass -- adding up
     679,936 triangle areas a Gf.Vec3f cross product at a time took twenty seconds, which was
-    most of a cook on a photogrammetry mesh. The draw loop itself is deliberately unchanged:
-    it consumes the generator in exactly the same order (triangle, u, v, then the mask's
-    roll), so a given seed still produces the scatter it always did.
+    most of a cook on a photogrammetry mesh.
+
+    Candidates are drawn in batches -- triangle, barycentric point and mask roll as arrays,
+    from a numpy generator seeded off *rng* -- and only the spacing test walks them, in draw
+    order, since each one kept changes what the next may be. With no spacing and no mask
+    nothing is rejected, and the first *count* candidates are the scatter.
     """
     if not len(triangles):
         return [], []
@@ -952,41 +954,56 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     total_area = float(areas.sum())
     if total_area < 1e-10:
         return [], []
-    # Back to a plain list for the draw: bisect over one is faster per call than
-    # np.searchsorted, which pays array-protocol overhead on a single scalar.
-    cdf = (np.cumsum(areas) / total_area).tolist()
+    cdf = np.cumsum(areas) / total_area
 
-    v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
-    positions, normals = [], []
+    v0s, v1s, v2s = (np.asarray(a, dtype=np.float64) for a in (triangles.v0, triangles.v1, triangles.v2))
+    normals_all = np.asarray(triangles.n, dtype=np.float64)
+    gen = np.random.default_rng(rng.getrandbits(63))
+    many = getattr(getattr(mask, "__self__", None), "sample_many", None) if mask is not None else None
+    kept_p, kept_n = [], []
+    kept = 0
     grid = _PoissonGrid(min_dist)
     max_attempts = count * 100
     attempts = 0
-    while len(positions) < count and attempts < max_attempts:
-        attempts += 1
-        tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
+    while kept < count and attempts < max_attempts:
+        batch = int(min(8192, max(512, 2 * (count - kept)), max_attempts - attempts))
+        attempts += batch
+        tri = np.minimum(np.searchsorted(cdf, gen.random(batch)), len(cdf) - 1)
+        uv = gen.random((batch, 2))
+        flip = uv.sum(axis=1) > 1.0
+        uv[flip] = 1.0 - uv[flip]
+        pts = v0s[tri] * (1.0 - uv[:, :1] - uv[:, 1:]) + v1s[tri] * uv[:, :1] + v2s[tri] * uv[:, 1:]
+        nrm = normals_all[tri]
+        ok = np.ones(batch, dtype=bool)
+        if mask is not None:
+            roll = gen.random(batch)
+            if many is not None:
+                ok = roll <= many(pts)
+            else:
+                ok = np.fromiter((roll[i] <= mask(Gf.Vec3f(*pts[i]), Gf.Vec3f(*nrm[i])) for i in range(batch)),
+                                 dtype=bool, count=batch)
+        live = np.flatnonzero(ok)
+        if min_dist > 0:
+            chosen = []
+            for i in live:
+                pt = pts[i]
+                if grid.too_close(pt):
+                    continue
+                grid.add(pt)
+                chosen.append(i)
+                if kept + len(chosen) >= count:
+                    break
+            live = np.asarray(chosen, dtype=np.int64)
+        live = live[:count - kept]
+        kept_p.append(pts[live])
+        kept_n.append(nrm[live])
+        kept += len(live)
 
-        u, v = rng.random(), rng.random()
-        if u + v > 1.0:
-            u, v = 1.0 - u, 1.0 - v
-        w = 1.0 - u - v
-        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
-        pt = Gf.Vec3f(
-            w * v0[0] + u * v1[0] + v * v2[0],
-            w * v0[1] + u * v1[1] + v * v2[1],
-            w * v0[2] + u * v1[2] + v * v2[2],
-        )
-        n = Gf.Vec3f(*normals_all[tri_idx])
-
-        if grid.too_close(pt):
-            continue
-        if mask is not None and rng.random() > mask(pt, n):
-            continue
-
-        positions.append(pt)
-        normals.append(n)
-        grid.add(pt)
-
-    return positions, normals
+    if not kept:
+        return [], []
+    positions = np.concatenate(kept_p).astype(np.float32)
+    normals = np.concatenate(kept_n).astype(np.float32)
+    return [Gf.Vec3f(*p) for p in positions.tolist()], [Gf.Vec3f(*n) for n in normals.tolist()]
 
 
 def _fill_in_volume(triangles, count, rng, min_dist=0, mask=None):
@@ -1022,22 +1039,29 @@ def _fill_in_volume(triangles, count, rng, min_dist=0, mask=None):
     grid = _PoissonGrid(min_dist)
     max_attempts = count * 200
     attempts = 0
+    # Candidates and mask rolls drawn in batches from a numpy generator seeded off *rng*;
+    # each is still tested in draw order, as a kept point changes what the next may be.
+    gen = np.random.default_rng(rng.getrandbits(63))
+    lo = np.asarray([low[0], low[1], low[2]], dtype=np.float64)
+    hi = np.asarray([high[0], high[1], high[2]], dtype=np.float64)
     while len(positions) < count and attempts < max_attempts:
-        attempts += 1
-        pt = Gf.Vec3f(
-            rng.uniform(low[0], high[0]),
-            rng.uniform(low[1], high[1]),
-            rng.uniform(low[2], high[2]),
-        )
-        if not _inside(pt):
-            continue
-        if grid.too_close(pt):
-            continue
-        if mask is not None and rng.random() > mask(pt, up):
-            continue
-        positions.append(pt)
-        normals.append(up)
-        grid.add(pt)
+        batch = int(min(4096, max(256, 4 * (count - len(positions))), max_attempts - attempts))
+        attempts += batch
+        cands = gen.uniform(lo, hi, (batch, 3)).astype(np.float32).tolist()
+        rolls = gen.random(batch).tolist() if mask is not None else None
+        for i, (x, y, z) in enumerate(cands):
+            pt = Gf.Vec3f(x, y, z)
+            if not _inside(pt):
+                continue
+            if grid.too_close(pt):
+                continue
+            if mask is not None and rolls[i] > mask(pt, up):
+                continue
+            positions.append(pt)
+            normals.append(up)
+            grid.add(pt)
+            if len(positions) >= count:
+                break
 
     return positions, normals
 
@@ -1124,6 +1148,147 @@ def _rotate_vec(quat, vec):
 def _to_quath(quat):
     im = quat.GetImaginary()
     return Gf.Quath(quat.GetReal(), im[0], im[1], im[2])
+
+
+def _np_align(from_dirs, to_dirs):
+    """_align_quat over rows: (N, 4) w, x, y, z rotations taking from_dirs to to_dirs.
+
+    from_dirs is one direction or one per row; the thresholds are _align_quat's.
+    """
+    b = np.asarray(to_dirs, dtype=np.float64).reshape(-1, 3)
+    a = np.broadcast_to(np.asarray(from_dirs, dtype=np.float64), b.shape)
+    la, lb = np.linalg.norm(a, axis=1), np.linalg.norm(b, axis=1)
+    q = np.zeros((len(b), 4))
+    q[:, 0] = 1.0
+    good = (la >= 1e-8) & (lb >= 1e-8)
+    an, bn = np.zeros_like(b), np.zeros_like(b)
+    an[good] = a[good] / la[good, None]
+    bn[good] = b[good] / lb[good, None]
+    dot = np.einsum("ij,ij->i", an, bn)
+    anti = good & (dot < -0.9999)
+    turn = good & (dot <= 0.9999) & (dot >= -0.9999)
+    if anti.any():
+        # Antiparallel: any perpendicular axis is a valid 180° turn.
+        axis = np.cross(an[anti], [1.0, 0.0, 0.0])
+        small = np.linalg.norm(axis, axis=1) < 1e-6
+        axis[small] = np.cross(an[anti][small], [0.0, 1.0, 0.0])
+        q[anti, 1:] = axis / np.linalg.norm(axis, axis=1)[:, None]
+        q[anti, 0] = 0.0
+    if turn.any():
+        axis = np.cross(an[turn], bn[turn])
+        axis /= np.linalg.norm(axis, axis=1)[:, None]
+        half = np.arccos(np.clip(dot[turn], -1.0, 1.0)) * 0.5
+        q[turn, 0] = np.cos(half)
+        q[turn, 1:] = axis * np.sin(half)[:, None]
+    return q
+
+
+def _np_axis_quat(axes, angles):
+    """_axis_quat over rows: (N, 4) w, x, y, z; a zero axis is no rotation."""
+    axes = np.asarray(axes, dtype=np.float64).reshape(-1, 3)
+    ln = np.linalg.norm(axes, axis=1)
+    q = np.zeros((len(axes), 4))
+    q[:, 0] = 1.0
+    ok = ln >= 1e-8
+    half = np.asarray(angles, dtype=np.float64)[ok] * 0.5
+    q[ok, 0] = np.cos(half)
+    q[ok, 1:] = axes[ok] / ln[ok, None] * np.sin(half)[:, None]
+    return q
+
+
+def _np_quat_mul(a, b):
+    """_quat_mul over rows of (N, 4) w, x, y, z."""
+    aw, ax, ay, az = a.T
+    bw, bx, by, bz = b.T
+    return np.stack([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ], axis=1)
+
+
+def _np_rotate(q, v):
+    """_rotate_vec over rows: q (N, 4), v (N, ..., 3) rotated by its row's quat."""
+    shape = (len(q),) + (1,) * (v.ndim - 2) + (3,)
+    w = q[:, 0].reshape(shape[:-1] + (1,))
+    u = np.broadcast_to(q[:, 1:].reshape(shape), v.shape)
+    uv = np.cross(u, v)
+    return v + uv * (2.0 * w) + np.cross(u, uv) * 2.0
+
+
+def _instance_arrays(positions, normals, sizes, assignment, protos, seed, scale_lo, scale_hi, bias,
+                     orient_mode, world_up, rand_axis, rand_amount, sit_on_surface, normal_offset):
+    """The instancer's positions, scales, orientations and indices, every instance at once.
+
+    The array form of the per-instance loop in execute for a Surface or Volume scatter -- the
+    same orientation modes, random rotation, sit-on-surface and normal offset -- with scales
+    and rotations drawn from numpy generators on the loop's own seeds. Stack levels and points
+    placed by hand keep the loop: the one lifts each instance by its level, the other seeds
+    every point on its own so its look is tied to the point.
+    """
+    count = len(positions)
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    nrm = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+    idx = np.asarray(assignment, dtype=np.int64)
+    mult = np.asarray([p.scale_mult for p in protos], dtype=np.float64)[idx]
+    proto_scale = np.asarray([[p.scale[0], p.scale[1], p.scale[2]] for p in protos], dtype=np.float64)[idx]
+    if sizes:
+        s = np.asarray(sizes, dtype=np.float64)
+    else:
+        u = np.random.default_rng(seed + 13).random(count)
+        s = scale_lo + (scale_hi - scale_lo) * (u ** bias if bias != 1.0 else u)
+
+    orient = np.random.default_rng(seed + 7)
+    up = [world_up[0], world_up[1], world_up[2]] if world_up is not None else [0.0, 0.0, 1.0]
+    if orient_mode == "Align to Normal":
+        quat = _np_align([0.0, 0.0, 1.0], nrm)
+    elif orient_mode == "Random":
+        # Uniform random orientation (Shoemake), as _random_quat.
+        u1, u2, u3 = orient.random((3, count))
+        s1, s2 = np.sqrt(1 - u1), np.sqrt(u1)
+        quat = np.stack([s2 * np.cos(2 * np.pi * u3), s1 * np.sin(2 * np.pi * u2),
+                         s1 * np.cos(2 * np.pi * u2), s2 * np.sin(2 * np.pi * u3)], axis=1)
+    elif orient_mode == "Long Axis Up":
+        table = _np_align(np.asarray([list(p.long_axis_dir()) for p in protos]), np.tile(up, (len(protos), 1)))
+        quat = table[idx]
+    elif orient_mode == "Long Axis to Normal":
+        axes = np.asarray([list(p.long_axis_dir()) for p in protos], dtype=np.float64)[idx]
+        quat = _np_align(axes, nrm)
+    else:
+        # "Keep Original" / "Up" -- prototype's own orientation.
+        quat = np.tile([1.0, 0.0, 0.0, 0.0], (count, 1))
+
+    if rand_axis != "Off" and count:
+        amount = math.radians(rand_amount)
+        if rand_axis == "All":
+            axes = orient.normal(size=(count, 3))
+            spin = np.linalg.norm(axes, axis=1) >= 1e-8
+        else:
+            axes = np.tile({"X": [1.0, 0, 0], "Y": [0, 1.0, 0], "Z": [0, 0, 1.0]}[rand_axis], (count, 1))
+            spin = np.ones(count, dtype=bool)
+        angles = orient.uniform(-amount, amount, count)
+        turned = _np_quat_mul(_np_axis_quat(axes, angles), quat)
+        quat = np.where(spin[:, None], turned, quat)
+
+    sm = s * mult
+    if sit_on_surface and count:
+        # Rest the rotated bounding box on the surface: its lowest corner along the normal.
+        lo = np.asarray([[p.bmin[0], p.bmin[1], p.bmin[2]] for p in protos], dtype=np.float64)[idx]
+        hi = np.asarray([[p.bmax[0], p.bmax[1], p.bmax[2]] for p in protos], dtype=np.float64)[idx]
+        pick = np.asarray([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=bool)
+        corners = np.where(pick[None], hi[:, None], lo[:, None]) * (proto_scale * sm[:, None])[:, None]
+        along = np.einsum("ijk,ik->ij", _np_rotate(quat, corners), nrm).min(axis=1)
+        pos = pos - nrm * along[:, None]
+    if abs(normal_offset) > 1e-9:
+        pos = pos + nrm * normal_offset
+
+    # Quath memory is imaginary first: x, y, z, w.
+    xyzw = np.ascontiguousarray(np.roll(quat, -1, axis=1).astype(np.float32).astype(np.float16))
+    return (Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(pos, dtype=np.float32)),
+            Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(proto_scale * sm[:, None], dtype=np.float32)),
+            Vt.QuathArray.FromNumpy(xyzw),
+            Vt.IntArray.FromNumpy(np.ascontiguousarray(idx, dtype=np.int32)))
 
 
 def _random_quat(rng):
@@ -1835,7 +2000,15 @@ def execute(node):
 
         level_step = height + pack_level_gap
 
-        for i in range(count):
+        # Surface and Volume build every instance at once (_instance_arrays); the loop below
+        # is for Stack levels and hand-placed points.
+        looped = scatter_mode == "Stack" or bool(placed)
+        if not looped:
+            out_positions, out_scales, out_orients, out_indices = _instance_arrays(
+                positions, normals, sizes, assignment, protos, seed, scale_min, scale_max, scale_bias,
+                orient_mode, world_up, rand_axis, rand_amount, sit_on_surface, normal_offset)
+
+        for i in range(count if looped else 0):
             pidx = assignment[i]
             proto = protos[pidx]
             if placed:

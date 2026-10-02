@@ -66,6 +66,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
+import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils, sdf_authoring
@@ -342,24 +343,33 @@ def _face_uvs(triangulation, points, indices, base, node_count, first_triangle) 
     downstream has to care, because the array still lines up one-to-one with the points.
     """
     if not triangulation.HasUVNodes():
-        return [Gf.Vec2f(0.0, 0.0)] * node_count
+        return np.zeros((node_count, 2), dtype=np.float32)
 
-    raw = [triangulation.UVNode(i) for i in range(1, node_count + 1)]
+    nodes = (triangulation.UVNode(i) for i in range(1, node_count + 1))
+    raw = np.array([(node.X(), node.Y()) for node in nodes], dtype=np.float64).reshape(-1, 2)
+    # This face's triangles, as (T, 3) indices into its own nodes.
+    tris = np.asarray(indices[first_triangle * 3:], dtype=np.int64).reshape(-1, 3) - base
     area_3d = 0.0
     area_uv = 0.0
-    for triangle in range(first_triangle, len(indices) // 3):
-        a, b, c = indices[triangle * 3], indices[triangle * 3 + 1], indices[triangle * 3 + 2]
-        p0, p1, p2 = points[a], points[b], points[c]
-        area_3d += Gf.Cross(p1 - p0, p2 - p0).GetLength() * 0.5
-        u0, u1, u2 = raw[a - base], raw[b - base], raw[c - base]
-        area_uv += abs(
-            (u1.X() - u0.X()) * (u2.Y() - u0.Y()) - (u2.X() - u0.X()) * (u1.Y() - u0.Y())
+    if len(tris):
+        # float32, the precision of the Gf.Vec3f points: the cross product, the squared
+        # length summed x + y + z in that order, and the sqrt are each what GfVec3f does.
+        face = np.asarray(Vt.Vec3fArray(points[base:base + node_count]), dtype=np.float32)
+        p0, p1, p2 = face[tris[:, 0]], face[tris[:, 1]], face[tris[:, 2]]
+        cross = np.cross(p1 - p0, p2 - p0)
+        lengths = np.sqrt(cross[:, 0] * cross[:, 0] + cross[:, 1] * cross[:, 1] + cross[:, 2] * cross[:, 2])
+        u0, u1, u2 = raw[tris[:, 0]], raw[tris[:, 1]], raw[tris[:, 2]]
+        uv = np.abs(
+            (u1[:, 0] - u0[:, 0]) * (u2[:, 1] - u0[:, 1]) - (u2[:, 0] - u0[:, 0]) * (u1[:, 1] - u0[:, 1])
         ) * 0.5
+        # cumsum, not sum: a running total adds in the order a loop does, where sum()
+        # pairs terms up and can differ in the last bit.
+        area_3d = float(np.cumsum(lengths.astype(np.float64) * 0.5)[-1])
+        area_uv = float(np.cumsum(uv)[-1])
 
     scale = math.sqrt(area_3d / area_uv) if area_uv > 1e-20 and area_3d > 1e-20 else 1.0
-    min_u = min(node.X() for node in raw)
-    min_v = min(node.Y() for node in raw)
-    return [Gf.Vec2f((node.X() - min_u) * scale, (node.Y() - min_v) * scale) for node in raw]
+    # In float64, rounded to float32 once at the end -- what Gf.Vec2f(double) did per node.
+    return ((raw - raw.min(axis=0)) * scale).astype(np.float32)
 
 
 def _tessellate(shape_tool, color_tool, label, settings: _Settings) -> _Proto | None:
@@ -408,10 +418,12 @@ def _tessellate(shape_tool, color_tool, label, settings: _Settings) -> _Proto | 
             counts.append(3)
             face_colors.append(colour)
 
-        uvs.extend(_face_uvs(triangulation, points, indices, base, node_count, first_triangle))
+        uvs.append(_face_uvs(triangulation, points, indices, base, node_count, first_triangle))
 
     if not counts:
         return None
+    # One (N, 2) float32 array for the whole part, a row per point.
+    uvs = np.concatenate(uvs)
 
     name = _label_name(label) or "part"
     return _Proto(
@@ -564,7 +576,10 @@ def _author_proto(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, s
     writer.define(path, "Xform")
     mesh = writer.define(path.AppendChild("mesh"), "Mesh")
 
-    points = Vt.Vec3fArray([Gf.Vec3f(p[0] * scale, p[1] * scale, p[2] * scale) for p in proto.points])
+    # Scaled in float64 and rounded to float32 once, as Gf.Vec3f(double) did per point.
+    points = Vt.Vec3fArray.FromNumpy(
+        (np.asarray(Vt.Vec3fArray(proto.points), dtype=np.float64).reshape(-1, 3) * scale).astype(np.float32)
+    )
     sdf_authoring.attribute(mesh, "points", Sdf.ValueTypeNames.Point3fArray, points)
     sdf_authoring.attribute(mesh, "faceVertexCounts", Sdf.ValueTypeNames.IntArray, Vt.IntArray(proto.counts))
     sdf_authoring.attribute(mesh, "faceVertexIndices", Sdf.ValueTypeNames.IntArray, Vt.IntArray(proto.indices))
@@ -582,7 +597,9 @@ def _author_proto(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, s
         repeats = 1.0 / texture_size
         sdf_authoring.primvar(
             mesh, "st", Sdf.ValueTypeNames.TexCoord2fArray,
-            Vt.Vec2fArray([Gf.Vec2f(uv[0] * repeats, uv[1] * repeats) for uv in proto.uvs]),
+            Vt.Vec2fArray.FromNumpy(
+                (np.asarray(proto.uvs, dtype=np.float64).reshape(-1, 2) * repeats).astype(np.float32)
+            ),
             UsdGeom.Tokens.vertex,
         )
 
@@ -592,10 +609,12 @@ def _author_proto(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, s
         sdf_authoring.primvar(mesh, "displayColor", Sdf.ValueTypeNames.Color3fArray,
                               Vt.Vec3fArray([Gf.Vec3f(*colour)]), UsdGeom.Tokens.constant)
     elif len(distinct) > 1:
-        fallback = Gf.Vec3f(0.5, 0.5, 0.5)
+        fallback = (0.5, 0.5, 0.5)
         sdf_authoring.primvar(
             mesh, "displayColor", Sdf.ValueTypeNames.Color3fArray,
-            Vt.Vec3fArray([Gf.Vec3f(*c) if c is not None else fallback for c in proto.face_colors]),
+            Vt.Vec3fArray.FromNumpy(np.asarray(
+                [c if c is not None else fallback for c in proto.face_colors], dtype=np.float32
+            )),
             UsdGeom.Tokens.uniform,
         )
 
@@ -953,7 +972,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
-        requirements=["cadquery-ocp>=7.8,<9"],
+        requirements=["cadquery-ocp>=7.8,<9", "numpy>=2,<3"],
         cache_cook=True,
         description=(
             "Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.\n\n"

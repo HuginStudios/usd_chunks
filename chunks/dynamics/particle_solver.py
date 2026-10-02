@@ -1315,8 +1315,11 @@ def _run(owner, notice, sender):
                     (start_frame + f, Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(p, dtype=np.float32)))
                     for f, (p, _q) in enumerate(driven)
                 ))
+                # FromNumpy wants [x, y, z, w]; these are w-first. Through float32 on the way
+                # to half, as Gf.Quath(float) rounds -- straight from float64 rounds differently.
                 sim_bake.write_samples(inst.GetOrientationsAttr(), (
-                    (start_frame + f, Vt.QuathArray([Gf.Quath(*map(float, x)) for x in q]))
+                    (start_frame + f, Vt.QuathArray.FromNumpy(np.ascontiguousarray(
+                        np.roll(q, -1, axis=-1).astype(np.float32).astype(np.float16))))
                     for f, (_p, q) in enumerate(driven)
                 ))
 

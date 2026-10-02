@@ -29,8 +29,12 @@ def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces
     # create some random points in uv space. These will be our roots
     r = np.random.random((count, 2))
 
+    # Where each face's vertices start in `indices`. Looked up per face rather than counted
+    # up as the loop goes: a face that gets no curves still owns its vertices, and `faces`
+    # may be any subset of the mesh's faces, in any order.
+    face_starts = np.concatenate(([0], np.cumsum(counts)[:-1])) if len(counts) else []
+
     carried = 0
-    c_offset = 0
     pt_offset = 0
 
     for i in faces:
@@ -47,9 +51,9 @@ def build_hair(stage, target, count=15, seg=2, length=0.2, path="/curves", faces
 
         # find all vertices on this face
         p = np.zeros((c, 3))
+        start = int(face_starts[i])
         for j in range(c):
-            p[j] = pts[indices[j + c_offset]]
-        c_offset += c
+            p[j] = pts[indices[j + start]]
 
         # compute face normal
         e = p[1:] - p[0]

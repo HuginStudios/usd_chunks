@@ -50,10 +50,13 @@ try:
     import mujoco as _mj
     import numpy as np
 
+    from usd_chunks import mesh_math
+
     _HAS_MUJOCO = True
 except ImportError:  # pragma: no cover - exercised only on a machine without mujoco
     _mj = None
     np = None
+    mesh_math = None
     _HAS_MUJOCO = False
 
 logger = logging.getLogger(__name__)
@@ -798,16 +801,17 @@ def _mesh_world(prim, xfc):
     pts = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64).reshape(-1, 3)
     counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
     idx = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
-    tris = []
-    k = 0
-    for c in counts:
-        if c >= 3 and k + c <= len(idx):
-            for t in range(1, c - 1):
-                tris.append((idx[k], idx[k + t], idx[k + t + 1]))
-        k += c
+    # A face running past the end of the index array is dropped, not read out of range:
+    # pad the indices so the fan can still be cut, then keep only the faces that fit.
+    ends = np.cumsum(counts)
+    fits = ends <= len(idx)
+    if not fits.all():
+        idx = np.concatenate([idx, np.zeros(int(ends.max()) - len(idx), dtype=np.int64)])
+    tris, _, face = mesh_math.fan_triangulate(counts, idx)
+    tris = tris[fits[face]]
     m = np.array(xfc.GetLocalToWorldTransform(prim), dtype=np.float64)
     world = pts @ m[:3, :3] + m[3, :3] if len(pts) else pts
-    return world, np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    return world, tris
 
 
 def _is_animated(prim, stop) -> bool:

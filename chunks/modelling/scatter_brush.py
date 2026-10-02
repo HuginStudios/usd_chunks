@@ -562,16 +562,23 @@ def _place_points(node, stage, samples):
 
     spacing = radius
     added = False
+    samples = list(samples)
+    # The same points as an array, grown as they are placed: one distance pass per sample
+    # instead of a Gf.Vec3d per existing point. Rows are the float points widened to
+    # double, so each distance is the one GetLength() gave.
+    placed = np.empty((len(existing) + len(samples), 3), dtype=np.float64)
+    placed[: len(existing)] = np.asarray(existing, dtype=np.float32).reshape(-1, 3)
+    count = len(existing)
 
     for sample in samples:
         point, _pressure, normal = _unpack(sample)
         if point is None:
             continue
-        if spacing > 0.0 and any(
-            (Gf.Vec3d(p) - point).GetLength() < spacing for p in existing
-        ):
+        if spacing > 0.0 and count and (_distances(placed[:count], point) < spacing).any():
             continue
         existing.append(Gf.Vec3f(point[0], point[1], point[2]))
+        placed[count] = existing[-1]
+        count += 1
         widths.append(_dab_width(node))
         # The surface's facing where the dab landed. Recorded per point, the way Houdini
         # carries N, so a downstream instance can be laid flat on what it was painted on --
@@ -595,15 +602,15 @@ def _erase_points(node, stage, samples, existing, normals, widths, radius):
     if radius <= 0.0 or not existing:
         return False
 
+    # Every point against every dab in one pass, (points, dabs), rather than unpacking each
+    # sample again for every point.
+    centres = [tuple(c) for c, _pressure, _n in map(_unpack, samples) if c is not None]
+    points = np.asarray(existing, dtype=np.float32).reshape(-1, 1, 3).astype(np.float64)
+    centres = np.asarray(centres, dtype=np.float64).reshape(1, -1, 3)
+    under_brush = (_distances(points, centres) <= radius).any(axis=1)
     keep_points, keep_normals, keep_widths = [], [], []
-    for point, normal, width in zip(existing, normals, widths):
-        under_brush = False
-        for sample in samples:
-            centre, _pressure, _n = _unpack(sample)
-            if centre is not None and (Gf.Vec3d(point) - centre).GetLength() <= radius:
-                under_brush = True
-                break
-        if not under_brush:
+    for point, normal, width, under in zip(existing, normals, widths, under_brush):
+        if not under:
             keep_points.append(point)
             keep_normals.append(normal)
             keep_widths.append(width)
@@ -613,6 +620,17 @@ def _erase_points(node, stage, samples, existing, normals, widths, radius):
     setattr(node, _STROKE_TOUCHED, True)
     _write_points(node, stage, keep_points, keep_normals, keep_widths)
     return True
+
+
+def _distances(points, centre):
+    """Distances from `points` to `centre`, over the last axis.
+
+    Squared components summed x, y, z in that order and then square-rooted -- the same
+    arithmetic as `(Gf.Vec3d(p) - centre).GetLength()`, so a point exactly at a threshold
+    falls on the same side of it. Comparing squared distances instead would not.
+    """
+    offset = points - np.asarray(centre, dtype=np.float64)
+    return np.sqrt((offset * offset).sum(axis=-1))
 
 
 def _points_path(node):

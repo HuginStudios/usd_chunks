@@ -9,7 +9,7 @@ Everything is built in a local frame where +X runs along the fence, +Y is up
 and +Z is the fence's thickness direction, then mapped onto the stage's up
 axis on the way out.
 
-Requires: pxr (OpenUSD), usd_chunks.
+Requires: pxr (OpenUSD), usd_chunks, numpy (a Path Prim's points are transformed as one array).
 """
 
 from __future__ import annotations
@@ -17,10 +17,11 @@ from __future__ import annotations
 import math
 import random
 
+import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils
-from usd_chunks import chunk_stage
+from usd_chunks import chunk_stage, mesh_math
 
 _PICKET_TOPS = ["Flat", "Pointed", "Dog Ear"]
 
@@ -144,16 +145,34 @@ def _path_points(prim, up_is_z):
     pts = points_attr.Get() if points_attr else None
     if not pts:
         return []
-    world_xf = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
-    out = []
-    for p in pts:
-        wp = world_xf.Transform(Gf.Vec3d(p[0], p[1], p[2]))
-        lp = _to_local(Gf.Vec3f(wp[0], wp[1], wp[2]), up_is_z)
-        # Coincident points make zero-length segments the sampler would trip over.
-        if out and Gf.GetLength(lp - out[-1]) <= 1e-6:
+    # World space in float64, rounded to float32 once -- then the swap _to_local does.
+    local = mesh_math.world_points(prim, pts).astype(np.float32)
+    if up_is_z:
+        local = np.stack([local[:, 0], local[:, 2], -local[:, 1]], axis=1)
+    # Coincident points make zero-length segments the sampler would trip over. A point is
+    # dropped when it is within 1e-6 of the last point *kept*, so the mask from each point's
+    # predecessor is exact only while that predecessor was kept; after a drop the run is
+    # re-walked one point at a time. Lengths are float32, as Gf.GetLength of a Vec3f is.
+    keep = np.ones(len(local), dtype=bool)
+    keep[1:] = _length32(local[1:] - local[:-1]) > 1e-6
+    walked = 0
+    for start in np.flatnonzero(~keep).tolist():
+        if start < walked:
             continue
-        out.append(lp)
-    return out
+        last, i = start - 1, start
+        while i < len(local) and _length32(local[i] - local[last]) <= 1e-6:
+            keep[i] = False
+            i += 1
+        if i < len(local):
+            keep[i] = True
+        walked = i + 1
+    return list(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(local[keep])))
+
+
+def _length32(vectors):
+    """Gf.GetLength of float32 vectors, as float64: x*x + y*y + z*z in float32, then sqrt."""
+    v = np.asarray(vectors, dtype=np.float32)
+    return np.sqrt(v[..., 0] * v[..., 0] + v[..., 1] * v[..., 1] + v[..., 2] * v[..., 2]).astype(np.float64)
 
 
 class _Polyline:
@@ -671,8 +690,11 @@ def main():
 
 
 def config():
+    # numpy is imported at module scope, so without it the registry skips this chunk
+    # entirely -- declaring it turns that silence into a named package.
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        requirements=["numpy>=2,<3"],
         description=(
             "Builds a parametric fence — posts, rails and pickets — as a single mesh.\n"
             "Runs straight, or follows a curve/points prim including its terrain height.\n"
