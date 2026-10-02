@@ -36,10 +36,11 @@ import shutil
 
 import numpy as np
 import OpenEXR
+from numpy.lib.stride_tricks import sliding_window_view
 from PIL import Image, ImageDraw
 from pxr import CameraUtil, Sdf, Usd, UsdGeom, UsdRender
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, mesh_math
 
 logger = logging.getLogger(f"usd_chunks.{__name__}")
 
@@ -56,6 +57,10 @@ _CONFORM = {
 
 #: A pixel within this of an instance colour, on every channel, is that instance outright.
 _EXACT = 0.02
+
+#: How far an edge pixel looks for labelled neighbours, and how many are decoded at once.
+_REACH = 3
+_BATCH = 1 << 16
 
 #: Silhouettes are rasterised at this many samples per pixel edge, so that "inside" means
 #: what the renderer's pixel coverage means rather than whatever a polygon fill touches.
@@ -220,12 +225,9 @@ def gprim_triangles(prim, time):
         points = np.array(mesh.GetPointsAttr().Get(time) or [], dtype=np.float64)
         counts = mesh.GetFaceVertexCountsAttr().Get(time) or []
         indices = mesh.GetFaceVertexIndicesAttr().Get(time) or []
-        triangles, start = [], 0
-        for count in counts:
-            for k in range(1, count - 1):
-                triangles.append((indices[start], indices[start + k], indices[start + k + 1]))
-            start += count
-        return points, np.array(triangles, dtype=np.int64).reshape(-1, 3)
+        # Fans in face order, each from the face's first corner.
+        triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
+        return points, triangles
     if prim.IsA(UsdGeom.Sphere):
         radius = UsdGeom.Sphere(prim).GetRadiusAttr().Get(time) or 1.0
         return _SPHERE[0] * radius, _SPHERE[1]
@@ -238,6 +240,21 @@ def gprim_triangles(prim, time):
         return None
     low, high = np.array(extent[0], dtype=np.float64), np.array(extent[1], dtype=np.float64)
     return low + (_CUBE[0] + 0.5) * (high - low), _CUBE[1]
+
+
+class _Geometry:
+    """`gprim_triangles` at one time, read once per gprim. A frame wants the same gprim's
+    geometry up to three times -- the inside test, its silhouette, an anchor's extent --
+    and a dense mesh is not cheap to read and triangulate."""
+
+    def __init__(self, time):
+        self.time, self._cache = time, {}
+
+    def __call__(self, prim):
+        path = prim.GetPath()
+        if path not in self._cache:
+            self._cache[path] = gprim_triangles(prim, self.time)
+        return self._cache[path]
 
 
 def _to_world(points, prim, time):
@@ -283,42 +300,140 @@ def decode_ids(pixels, palette):
 
     best = np.zeros(len(flat), dtype=np.int32)
     best_distance = np.full(len(flat), np.inf, dtype=np.float32)
-    for index, colour in enumerate(palette):
-        distance = np.abs(flat - colour).max(axis=1)
-        closer = distance < best_distance
-        best[closer], best_distance[closer] = index, distance[closer]
+    # Channel planes, so the per-entry distance is whole-array maths rather than a
+    # reduction over a length-3 axis -- the same values either way -- taken a block of
+    # pixels at a time so the planes stay in cache across the palette.
+    channels = [np.ascontiguousarray(flat[:, c]) for c in range(3)]
+    work_dtype = np.result_type(flat.dtype, palette.dtype)
+    for start in range(0, len(flat), _BATCH):
+        block = slice(start, start + _BATCH)
+        planes = [channel[block] for channel in channels]
+        block_best, block_distance = best[block], best_distance[block]
+        distance = np.empty(len(planes[0]), dtype=work_dtype)
+        offset = np.empty_like(distance)
+        closer = np.empty(len(distance), dtype=bool)
+        for index, colour in enumerate(palette):
+            np.abs(np.subtract(planes[0], colour[0], out=distance), out=distance)
+            for plane, value in zip(planes[1:], colour[1:]):
+                np.abs(np.subtract(plane, value, out=offset), out=offset)
+                np.maximum(distance, offset, out=distance)
+            np.less(distance, block_distance, out=closer)
+            np.copyto(block_best, index, where=closer)
+            np.copyto(block_distance, distance, where=closer)
 
     ids = best.reshape(height, width)
     exact = (best_distance < _EXACT).reshape(height, width)
     resolved = ids.copy()
 
-    for y, x in zip(*np.nonzero(~exact)):
-        candidates = set()
-        for radius in (1, 2, 3):
-            window = (slice(max(0, y - radius), y + radius + 1), slice(max(0, x - radius), x + radius + 1))
-            candidates = set(ids[window][exact[window]].tolist())
-            if candidates:
-                break
-        candidates.add(0)
-        colour = pixels[y, x]
-        options = sorted(candidates)
-        winner, winner_error = ids[y, x], np.inf
-        for i, a in enumerate(options):
-            error = float(np.abs(colour - palette[a]).max())
-            if error < winner_error:
-                winner, winner_error = a, error
-            for b in options[i + 1:]:
-                ca, cb = palette[a], palette[b]
-                span = ca - cb
-                length = float(span @ span)
-                if length < 1e-12:
-                    continue
-                weight = min(1.0, max(0.0, float((colour - cb) @ span) / length))
-                error = float(np.abs(colour - (cb + weight * span)).max())
-                if error < winner_error:
-                    winner, winner_error = (a if weight >= 0.5 else b), error
-        resolved[y, x] = winner
+    # Edge pixels are decided independently of each other, from `ids` and `exact` alone,
+    # so they are done in batches: every pixel whose neighbours offer the same candidates
+    # is one array, put through the same comparisons in the same order a single pixel
+    # would be.
+    inexact = np.flatnonzero(~exact)
+    if not inexact.size:
+        return resolved
+    flat_ids, flat_resolved = ids.reshape(-1), resolved.reshape(-1)
+    # The windows the candidates are read from, radius 1 to _REACH, on an image padded
+    # with "not exact" so that a window clipped at the border reads the same labels.
+    labelled = np.full((height + 2 * _REACH, width + 2 * _REACH), -1, dtype=ids.dtype)
+    labelled[_REACH:-_REACH, _REACH:-_REACH] = np.where(exact, ids, -1)
+    windows = sliding_window_view(labelled, (2 * _REACH + 1, 2 * _REACH + 1))
+    pairs = {}
+    for start in range(0, inexact.size, _BATCH):
+        where = inexact[start:start + _BATCH]
+        sets, group = _candidate_sets(windows, where // width, where % width, len(palette))
+        order = np.argsort(group, kind="stable")
+        ends = np.cumsum(np.bincount(group, minlength=len(sets)))
+        for options, members in zip(sets, np.split(where[order], ends[:-1])):
+            flat_resolved[members] = _resolve(flat[members], flat_ids[members], options, palette, pairs)
     return resolved
+
+
+def _candidate_sets(windows, ys, xs, size):
+    """The candidates of each edge pixel (ys, xs), from `windows` of labels around every
+    pixel (-1 for "not exact"): the labels in the smallest window around it that has any,
+    plus background. Labels are below `size`.
+
+    Returns:
+        (the distinct candidate lists, each ascending; each pixel's index into them).
+    """
+    count = len(ys)
+    rows = []
+    remaining = np.arange(count)
+    for radius in range(1, _REACH + 1):
+        low, high = _REACH - radius, _REACH + radius + 1
+        cells = windows[ys[remaining], xs[remaining], low:high, low:high]
+        cells = cells.reshape(len(remaining), (high - low) ** 2)
+        # The widest window takes the rest, with nothing but background if it finds nothing.
+        take = (cells >= 0).any(axis=1) if radius < _REACH else np.ones(len(remaining), dtype=bool)
+        rows.append((remaining[take], _distinct(cells[take])))
+        remaining = remaining[~take]
+    width = max(found.shape[1] for _, found in rows)
+    labels = np.full((count, width), -1, dtype=np.int64)
+    for members, found in rows:
+        labels[members, width - found.shape[1]:] = found
+    # One integer per row, when it fits, makes telling the rows apart a 1-D unique.
+    if width * math.log2(size + 1) < 62:
+        keys = (labels + 1) @ ((size + 1) ** np.arange(width, dtype=np.int64))
+        _, first, group = np.unique(keys, return_index=True, return_inverse=True)
+        sets = labels[first]
+    else:
+        sets, group = np.unique(labels, axis=0, return_inverse=True)
+    return [[int(v) for v in row if v >= 0] for row in sets], group.reshape(-1)
+
+
+def _distinct(cells):
+    """Each row's distinct labels plus background (0), ascending, padded in front with -1,
+    as narrow as the widest row needs."""
+    rows = np.concatenate([cells, np.zeros((len(cells), 1), dtype=cells.dtype)], axis=1).astype(np.int64)
+    rows.sort(axis=1)
+    repeated = rows[:, 1:] == rows[:, :-1]
+    rows[:, 1:][repeated] = -1
+    rows.sort(axis=1)
+    return rows[:, -int((rows >= 0).sum(axis=1).max(initial=1)):]
+
+
+def _dot3(offsets, span):
+    """Row-wise `offset @ span`, rounded as numpy's own 1-D float32 `@` rounds it (float32
+    products, summed in double), so a batch decides exactly as one pixel at a time did.
+    Other dtypes (the renders are float32) may round differently in the last bit."""
+    if offsets.dtype == np.float32 and span.dtype == np.float32:
+        products = (offsets * span).astype(np.float64)
+        return ((products[:, 0] + products[:, 1]) + products[:, 2]).astype(np.float32)
+    return offsets @ span
+
+
+def _resolve(colours, nearest, options, palette, pairs):
+    """decode_ids' choice for a batch of edge pixels sharing the candidate list `options`.
+
+    The pixel's own nearest entry stands until something beats it; then each candidate
+    alone, and each pair (a, b > a) mixed, in that order, and only a strictly smaller error
+    replaces the winner -- so ties go to whichever came first. `pairs` caches each pair's
+    span and squared length across calls.
+    """
+    winner, winner_error = nearest.copy(), np.full(len(colours), np.inf)
+    for i, a in enumerate(options):
+        error = np.abs(colours - palette[a]).max(axis=1)
+        better = error < winner_error
+        winner[better], winner_error[better] = a, error[better]
+        for b in options[i + 1:]:
+            if (a, b) not in pairs:
+                span = palette[a] - palette[b]
+                pairs[a, b] = span, float(span @ span)
+            span, length = pairs[a, b]
+            if length < 1e-12:
+                continue
+            cb = palette[b]
+            # min(1, max(0, t)) as Python evaluates it, NaN included (it comes out 0).
+            weight = _dot3(colours - cb, span).astype(np.float64) / length
+            weight = np.where(weight > 0.0, weight, 0.0)
+            weight = np.where(weight < 1.0, weight, 1.0)
+            # A Python float times a float32 array is float32 arithmetic.
+            error = np.abs(colours - (cb + weight.astype(span.dtype)[:, None] * span)).max(axis=1)
+            better = error < winner_error
+            winner[better] = np.where(weight[better] >= 0.5, a, b)
+            winner_error[better] = error[better]
+    return winner
 
 
 def _to_srgb8(linear):
@@ -413,18 +528,22 @@ class FrameRejected(ValueError):
     """A frame that rendered but must not be trained on."""
 
 
-def _camera_inside(camera, instances, time):
+def _camera_inside(camera, instances, time, geometry_of=None):
     """The path of the instance the camera sits inside, or None.
 
     A camera placed at random near objects will now and then land inside one. The render
     is then the inside of a surface and every label is nonsense, so the frame is rejected
     rather than written. Tested against each gprim's own box in its local space, which
     over-covers (a torus's hole counts as inside) -- the safe direction to be wrong in.
+
+    `geometry_of` is the frame's _Geometry, so the meshes read here are not read again.
     """
+    if geometry_of is None:
+        geometry_of = _Geometry(time)
     eye = np.append(camera.eye, 1.0)
     for inst in instances:
         for gprim in inst.gprims:
-            geometry = gprim_triangles(gprim, time)
+            geometry = geometry_of(gprim)
             if geometry is None or not len(geometry[0]):
                 continue
             to_world = np.array(UsdGeom.Xformable(gprim).ComputeLocalToWorldTransform(time), dtype=np.float64)
@@ -450,7 +569,8 @@ def process_frame(stage, frame, layers, settings):
 
     instances = _instances(stage, settings["root"], time)
     ordered = [instances[k] for k in sorted(instances)]
-    if (inside := _camera_inside(camera, ordered, time)) is not None:
+    geometry_of = _Geometry(time)
+    if (inside := _camera_inside(camera, ordered, time, geometry_of)) is not None:
         raise FrameRejected(f"the camera is inside {inside}")
     palette = [np.zeros(3, dtype=np.float32)] + [inst.colour for inst in ordered]
 
@@ -488,7 +608,7 @@ def process_frame(stage, frame, layers, settings):
         silhouette_image = np.zeros((height, width), dtype=bool)
         padded = np.zeros((height + 2 * pad_y, width + 2 * pad_x), dtype=bool)
         for gprim in inst.gprims:
-            geometry = gprim_triangles(gprim, time)
+            geometry = geometry_of(gprim)
             if geometry is None or not len(geometry[1]):
                 continue
             points_world = _to_world(geometry[0], gprim, time)
@@ -529,7 +649,7 @@ def process_frame(stage, frame, layers, settings):
         h, w, l, location, rotation_y = _yaw_box(cam_points, heading_cam)
         alpha = _wrap(rotation_y - math.atan2(location[0], location[2]))
 
-        local_points, _ = gprim_triangles(anchor, time) or (np.zeros((1, 3)), None)
+        local_points, _ = geometry_of(anchor) or (np.zeros((1, 3)), None)
         records.append({
             "instance_id": inst.instance_id,
             "class_id": inst.class_id,
