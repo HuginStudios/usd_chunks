@@ -768,6 +768,77 @@ def has_stage_expression(text) -> bool:
     return bool(_STAGE_VAR_RE.search(text)) or Sdf.VariableExpression.IsExpression(text)
 
 
+#: The spelling people reach for first, and it is backwards. Worth catching by name: it
+#: looks close enough to right that the value simply arrives on disk with the braces still
+#: in it, and a file called "{$SEQ}_{$SHOT}.png" reads as a broken renderer.
+_REVERSED_VAR_RE = re.compile(r"\{\$(\w+)\}")
+
+
+def resolve_output_path(text, stage: Usd.Stage, log=None):
+    """Substitute ${NAME} into a path this toolkit is about to WRITE to.
+
+    Deliberately not the same thing as a USD expression, and named apart from one. USD
+    substitutes expression variables into asset paths and variant selections; a render
+    product's `productName` is a `token`, and an output filename is not a composition input
+    at all -- it is a file we open. So `${SHOT}` there resolves because usd_chunks resolves
+    it, which is a mechanism of ours in one named place rather than a claim about OpenUSD.
+
+    That is the whole reason it is worth having: an output path is the one string in a shot
+    graph that has to differ per shot, and without this the only way to render ten shots is
+    to retype the filename ten times.
+
+    Both spellings work. A path in backticks (`"C:/out/${SHOT}.png"`, or an `if(...)`) is a
+    real USD expression and is evaluated by Sdf.VariableExpression, so it reads the same as
+    in an asset path. Anything else has bare ${NAME} references substituted into it.
+
+    An unknown variable is left as written, so a missing SHOT shows up in the filename
+    instead of silently collapsing every shot onto one image. For a backtick expression that
+    means the whole path is left as typed: USD evaluates an unset variable to its own name
+    without reporting an error, which would turn `"${TAKE}.png"` into "TAKE.png".
+
+    Args:
+        text (str): The path as typed
+        stage (Usd.Stage): The stage whose variables apply
+        log (logging.Logger): Where to report a reversed ${} spelling or an expression left
+            unresolved; module logger if None
+
+    Returns:
+        str: The path with its variables substituted
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    if match := _REVERSED_VAR_RE.search(text):
+        (log or logger).warning(
+            "Output path %r: %s is written the other way round -- ${%s}, not {$%s}. "
+            "Left as it is, so the braces end up in the filename.",
+            text, match.group(0), match.group(1), match.group(1),
+        )
+    variables = stage_expression_variables(stage)
+
+    if Sdf.VariableExpression.IsExpression(text):
+        # A backslash is an escape inside a USD string literal, so a Windows path typed the
+        # usual way evaluates without error to "C:out${SHOT}.png" -- separators gone and
+        # \$ escaping the variable. Only \\, \" and \` are meant as escapes in a path.
+        if re.search(r'\\[^\\"`]', text.replace("\\\\", "")):
+            (log or logger).warning(
+                "Output path %r left as typed: a backslash is an escape inside a USD "
+                "expression. Use / or \\\\ as the separator.", text,
+            )
+            return text
+        result = Sdf.VariableExpression(text).Evaluate(variables)
+        missing = sorted(set(result.usedVariables) - set(variables))
+        if result.errors or missing or not isinstance(result.value, str):
+            problem = "; ".join(result.errors) or (
+                "no value for " + ", ".join(missing) if missing
+                else "it evaluates to %r, not a path" % (result.value,)
+            )
+            (log or logger).warning("Output path %r left as typed: %s", text, problem)
+            return text
+        return result.value
+
+    return _STAGE_VAR_RE.sub(lambda m: str(variables.get(m.group(1), m.group(0))), text)
+
+
 def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
     """Author variables into the stage's session layer, replacing what is there.
 

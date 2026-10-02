@@ -159,6 +159,12 @@ def execute(node):
             return
 
         if product_name := node.get_param("product_name").value:
+            # ${SHOT} and friends resolved HERE, by us. USD substitutes expression variables
+            # into asset paths and variant selections; productName is a `token`, so a
+            # ${SHOT} typed into this field would otherwise reach disk with the braces still
+            # in it. Doing it here is what lets one graph render a whole sequence: set the
+            # Stage Expression and press Render, instead of retyping the filename per shot.
+            product_name = chunk_utils.resolve_output_path(product_name, stage, logger)
             product.CreateProductNameAttr().Set(product_name)
             _warn_if_usd_cannot_find_it(product_name)
         product.CreateProductTypeAttr().Set(node.get_param("product_type").value)
