@@ -168,6 +168,37 @@ def downstream_closure(seed: DagNode) -> dict[DagNode, None]:
     return found
 
 
+def upstream_closure(seed: DagNode) -> dict[DagNode, None]:
+    """Every node that solves before seed, seed included: its dependencies and what it owns.
+
+    The mirror of downstream_closure. Ownership is followed down to what is owned, since an
+    owner solves after the deepest thing it owns -- a chunk wired to another only through its
+    params is upstream of it all the same.
+
+    Args:
+        seed (DagNode): The node to walk from
+
+    Returns:
+        Dict[DagNode, None]: The closure, in discovery order
+    """
+    found: dict[DagNode, None] = {seed: None}
+    pending = [seed]
+
+    head = 0
+    while head < len(pending):
+        node = pending[head]
+        head += 1
+        nodes = list(node._connections.inputs.values())
+        if (owned := node._owned) is not None:
+            nodes.extend(owned)
+        for nxt in nodes:
+            if nxt not in found:
+                found[nxt] = None
+                pending.append(nxt)
+
+    return found
+
+
 def dirty_component(seed: DagNode) -> dict[DagNode, None]:
     """Every dirty node connected to `seed` along a path of dirty nodes, in both directions.
 

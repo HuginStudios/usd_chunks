@@ -3574,7 +3574,8 @@ class ChunkBase(ChunkGroupBase):
                             if cached is not None:
                                 cached.before_cook(self)
                             if skipping:
-                                skip_cook.run(self, stage, ctx, execute)
+                                skip_cook.run(self, stage, ctx, execute,
+                                              chunk_registry.ChunkLayerManager().get_layer)
                             else:
                                 execute(self)
                         elif skipping:
