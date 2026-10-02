@@ -56,6 +56,11 @@ except ImportError:  # pragma: no cover - exercised only on a machine without mu
     np = None
     _HAS_MUJOCO = False
 
+try:  # optional: finds near neighbours fast; a dense check stands in without it
+    from scipy.spatial import cKDTree as _KDTree
+except ImportError:  # pragma: no cover
+    _KDTree = None
+
 logger = logging.getLogger(__name__)
 
 NS = "fracture:"
@@ -667,16 +672,27 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
         con = data.contact
         pair = body_slot[model.geom_bodyid[con.geom[:ncon]]] if ncon else np.zeros((0, 2), dtype=np.int64)
         dist = con.dist[:ncon]
-        # Resting: touching the world, or touching something that is -- a rock in the air
-        # made of several touching parts still falls.
+        # Resting: touching the world, or close to another body -- bounding spheres meeting.
+        # Contact alone missed most of a fence: its pickets hover a hair off the ground and off
+        # their rails, touch nothing, and fell on frame 1. What falls is what is alone in the
+        # air, the way a dropped rock is.
         touching = np.zeros(n_slots, dtype=bool)
         touching[pair[(pair >= 0) & (pair[:, ::-1] < 0)]] = True
-        links = pair[(pair >= 0).all(axis=1)]
-        while len(links):
-            reach = touching[links[:, 0]] != touching[links[:, 1]]
-            if not reach.any():
-                break
-            touching[links[reach].reshape(-1)] = True
+        starts_now = np.flatnonzero(alive)
+        if len(starts_now) > 1:
+            centre = data.xpos[slot_body[starts_now]]
+            r = slot_radius[starts_now]
+            if _KDTree is not None:
+                near = _KDTree(centre).query_ball_point(centre, r + r.max())
+                for i, others in enumerate(near):
+                    for j in others:
+                        if j != i and np.linalg.norm(centre[i] - centre[j]) < r[i] + r[j]:
+                            touching[starts_now[i]] = True
+                            break
+            else:
+                gap = np.linalg.norm(centre[:, None] - centre[None], axis=2) - (r[:, None] + r[None])
+                np.fill_diagonal(gap, 1.0)
+                touching[starts_now[(gap < 0.0).any(axis=1)]] = True
         # Deeper than a touch: a few percent of the smaller body.
         smaller = np.minimum(slot_radius[np.maximum(pair[:, 0], 0)], slot_radius[np.maximum(pair[:, 1], 0)])
         deep = (pair >= 0).all(axis=1) & (dist < -0.02 * smaller)
