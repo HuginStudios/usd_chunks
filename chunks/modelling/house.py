@@ -44,6 +44,7 @@ import logging
 import math
 import random
 
+import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
@@ -192,11 +193,6 @@ def _orient_quat(axes, v_dir, w_dir):
     return Gf.Quatf(quat.GetReal(), Gf.Vec3f(*quat.GetImaginary()))
 
 
-def _to_quath(quat):
-    im = quat.GetImaginary()
-    return Gf.Quath(quat.GetReal(), im[0], im[1], im[2])
-
-
 def _spin(v_dir, w_dir, angle):
     """`v_dir` turned about `w_dir` by `angle`, both unit and perpendicular.
 
@@ -227,19 +223,23 @@ def _author_instancer(stage, path, prototypes, positions, orientations, indices)
         targets.append(proto_path)
     instancer.GetPrototypesRel().SetTargets(targets)
 
-    instancer.CreatePositionsAttr().Set(Vt.Vec3fArray(positions))
-    instancer.CreateOrientationsAttr().Set(Vt.QuathArray([_to_quath(q) for q in orientations]))
+    points = Vt.Vec3fArray(positions)
+    instancer.CreatePositionsAttr().Set(points)
+    # Whole array at once: float -> half is the same rounding Gf.Quath(float) does, and
+    # FromNumpy reads [x, y, z, w], which is how a QuatfArray lies in memory too.
+    quats = np.asarray(Vt.QuatfArray(orientations), dtype=np.float32).reshape(-1, 4)
+    instancer.CreateOrientationsAttr().Set(Vt.QuathArray.FromNumpy(quats.astype(np.float16)))
     instancer.CreateProtoIndicesAttr().Set(Vt.IntArray([int(i) for i in indices]))
     if positions:
-        xs = [p[0] for p in positions]
-        ys = [p[1] for p in positions]
-        zs = [p[2] for p in positions]
+        # Padded in double, as the per-component min()/max() over these floats did.
+        xyz = np.asarray(points, dtype=np.float64)
+        lo, hi = xyz.min(axis=0), xyz.max(axis=0)
         pad = 1.0
         instancer.CreateExtentAttr().Set(
             Vt.Vec3fArray(
                 [
-                    Gf.Vec3f(min(xs) - pad, min(ys) - pad, min(zs) - pad),
-                    Gf.Vec3f(max(xs) + pad, max(ys) + pad, max(zs) + pad),
+                    Gf.Vec3f(lo[0] - pad, lo[1] - pad, lo[2] - pad),
+                    Gf.Vec3f(hi[0] + pad, hi[1] + pad, hi[2] + pad),
                 ]
             )
         )
@@ -1339,16 +1339,18 @@ def _author_mesh(stage, path, mesh, color):
         prim.CreateFaceVertexCountsAttr().Set(Vt.IntArray())
         prim.CreateFaceVertexIndicesAttr().Set(Vt.IntArray())
         return
-    prim.CreatePointsAttr().Set(Vt.Vec3fArray(mesh.points))
+    points = Vt.Vec3fArray(mesh.points)
+    prim.CreatePointsAttr().Set(points)
     prim.CreateFaceVertexCountsAttr().Set(Vt.IntArray(mesh.counts))
     prim.CreateFaceVertexIndicesAttr().Set(Vt.IntArray(mesh.indices))
     UsdGeom.Primvar(prim.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
     prim.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
-    xs = [p[0] for p in mesh.points]
-    ys = [p[1] for p in mesh.points]
-    zs = [p[2] for p in mesh.points]
+    # From the float points rather than the double ones: rounding to float never reorders
+    # values, so the min of the rounded points is the rounded min -- the same extent.
+    xyz = np.asarray(points)
+    lo, hi = xyz.min(axis=0), xyz.max(axis=0)
     prim.CreateExtentAttr().Set(
-        Vt.Vec3fArray([Gf.Vec3f(min(xs), min(ys), min(zs)), Gf.Vec3f(max(xs), max(ys), max(zs))])
+        Vt.Vec3fArray([Gf.Vec3f(*map(float, lo)), Gf.Vec3f(*map(float, hi))])
     )
 
 
@@ -1764,6 +1766,7 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         cache_cook=True,
+        requirements=["numpy>=2,<3"],
         description="""
         Swedish House — builds a Falu-red cottage from a box.
 

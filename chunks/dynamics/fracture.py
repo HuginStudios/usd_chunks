@@ -47,7 +47,7 @@ import weakref
 import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_stage
+from usd_chunks import chunk, chunk_stage, mesh_math
 
 try:
     import manifold3d as _mf
@@ -342,12 +342,7 @@ def _source_solid(prim) -> tuple[object, bool, str]:
     world = pts @ xf[:3, :3] + xf[3, :3]
 
     # Fan-triangulate, remembering each triangle corner's face-corner index.
-    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
-    tri_fc = []
-    for s, c in zip(starts, counts):
-        for k in range(1, c - 1):
-            tri_fc.append((s, s + k, s + k + 1))
-    tri_fc = np.asarray(tri_fc, dtype=np.int64)
+    _, tri_fc, _ = mesh_math.fan_triangulate(counts, idx)
     fc_point = idx
 
     uv = None
@@ -516,7 +511,9 @@ def author_instances(stage, out_path: Sdf.Path, trees: list[Tree], proto_of: dic
                 indices.append(proto_of[(tree.index, piece.node)])
     inst.CreateProtoIndicesAttr(Vt.IntArray(indices))
     inst.CreatePositionsAttr(Vt.Vec3fArray.FromNumpy(np.asarray(positions, dtype=np.float32).reshape(-1, 3)))
-    inst.CreateOrientationsAttr(Vt.QuathArray([Gf.Quath(1, 0, 0, 0)] * len(indices)))
+    identity = np.zeros((len(indices), 4), dtype=np.float16)
+    identity[:, 3] = 1.0  # [x, y, z, w]: imaginary first
+    inst.CreateOrientationsAttr(Vt.QuathArray.FromNumpy(identity))
     return len(indices)
 
 
