@@ -26,7 +26,7 @@ import math
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage
+from usd_chunks import chunk, chunk_stage, sim_bake
 
 EMIT_FRAME = "primvars:rbd:emitFrame"
 #: How long each instance shows in the preview, from its emit frame.
@@ -160,9 +160,10 @@ def execute(node) -> None:
         inv = out.CreateInvisibleIdsAttr()
         inv.Set(Vt.Int64Array.FromNumpy(ids))
         frames = p["frames"]
-        for f in sorted(set(int(v) for v in frames) | set(int(v) + flash for v in frames)):
-            showing = (frames <= f) & (f < frames + flash)
-            inv.Set(Vt.Int64Array.FromNumpy(ids[~showing]), Usd.TimeCode(f))
+        changes = sorted(set(int(v) for v in frames) | set(int(v) + flash for v in frames))
+        sim_bake.write_samples(inv, (
+            (f, Vt.Int64Array.FromNumpy(ids[~((frames <= f) & (f < frames + flash))])) for f in changes
+        ))
         if (sc := out.GetScalesAttr()) and sc.HasAuthoredValue():
             sc.Block()
     last = int(p["frames"].max()) if count else start_frame

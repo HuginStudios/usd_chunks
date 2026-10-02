@@ -36,7 +36,7 @@ import math
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage
+from usd_chunks import chunk, chunk_stage, sim_bake
 
 #: Points whose tangential push is below this fraction of the force sit still: a flat top,
 #: or a flat underside the drop hangs from.
@@ -335,10 +335,10 @@ def execute(node) -> None:
         pa, na = pts.CreatePointsAttr(), pts.CreateNormalsAttr()
         pa.Set(Vt.Vec3fArray.FromNumpy(pos[-1].astype(np.float32)))
         na.Set(Vt.Vec3fArray.FromNumpy(nrm[-1].astype(np.float32)))
-        for f in range(frames + 1):
-            t = Usd.TimeCode(start_frame + f)
-            pa.Set(Vt.Vec3fArray.FromNumpy(pos[f].astype(np.float32)), t)
-            na.Set(Vt.Vec3fArray.FromNumpy(nrm[f].astype(np.float32)), t)
+        sim_bake.write_samples(pa, ((start_frame + f, Vt.Vec3fArray.FromNumpy(pos[f].astype(np.float32)))
+                                    for f in range(frames + 1)))
+        sim_bake.write_samples(na, ((start_frame + f, Vt.Vec3fArray.FromNumpy(nrm[f].astype(np.float32)))
+                                    for f in range(frames + 1)))
         width = max(1e-6, node.get_param("width", is_f).value)
         pts.CreateWidthsAttr().Set(Vt.FloatArray([width] * len(dist)))
         pts.SetWidthsInterpolation(UsdGeom.Tokens.vertex)

@@ -68,7 +68,7 @@ from dataclasses import dataclass, field
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, sdf_authoring
 
 logger = logging.getLogger(__name__)
 
@@ -547,7 +547,8 @@ def prototype_scope(stage, path: Sdf.Path):
     return scope
 
 
-def _author_proto(stage, path: Sdf.Path, proto: _Proto, scale: float, texture_size: float = 0.0) -> None:
+def _author_proto(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, scale: float,
+                  texture_size: float = 0.0) -> None:
     """One Xform holding one Mesh -- the shared half of every placement.
 
     An ordinary `def`, not a `class`. A class prim is the traditional way to hold something
@@ -556,83 +557,91 @@ def _author_proto(stage, path: Sdf.Path, proto: _Proto, scale: float, texture_si
     become invisible to `UsdGeom.Subset.GetAllGeomSubsets` and to anything else that walks
     children normally. Keeping them concrete and hiding the scope above them costs nothing
     and leaves the prototypes inspectable with the ordinary APIs.
+
+    Written as specs (sdf_authoring), inside the caller's change block: an assembly has
+    thousands of parts, and through the Usd API every attribute is a recomposition.
     """
-    UsdGeom.Xform.Define(stage, path)
-    mesh = UsdGeom.Mesh.Define(stage, path.AppendChild("mesh"))
+    writer.define(path, "Xform")
+    mesh = writer.define(path.AppendChild("mesh"), "Mesh")
 
     points = Vt.Vec3fArray([Gf.Vec3f(p[0] * scale, p[1] * scale, p[2] * scale) for p in proto.points])
-    mesh.CreatePointsAttr(points)
-    mesh.CreateFaceVertexCountsAttr(Vt.IntArray(proto.counts))
-    mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(proto.indices))
+    sdf_authoring.attribute(mesh, "points", Sdf.ValueTypeNames.Point3fArray, points)
+    sdf_authoring.attribute(mesh, "faceVertexCounts", Sdf.ValueTypeNames.IntArray, Vt.IntArray(proto.counts))
+    sdf_authoring.attribute(mesh, "faceVertexIndices", Sdf.ValueTypeNames.IntArray, Vt.IntArray(proto.indices))
     # Without this the default catmullClark would round off every edge the CAD kernel was
     # asked to keep sharp.
-    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
-    mesh.CreateExtentAttr(UsdGeom.PointBased(mesh).ComputeExtent(points))
-
-    primvars = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+    sdf_authoring.attribute(mesh, "subdivisionScheme", Sdf.ValueTypeNames.Token, UsdGeom.Tokens.none,
+                            uniform=True)
+    sdf_authoring.attribute(mesh, "extent", Sdf.ValueTypeNames.Float3Array,
+                            UsdGeom.PointBased.ComputeExtent(points))
 
     # `vertex`, not `faceVarying`: points are never welded across face boundaries, so every
     # point already belongs to exactly one face and one UV. That is half the data of a
     # faceVarying primvar and needs no index array.
     if texture_size > 0.0 and len(proto.uvs) == len(proto.points):
         repeats = 1.0 / texture_size
-        st = primvars.CreatePrimvar(
-            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+        sdf_authoring.primvar(
+            mesh, "st", Sdf.ValueTypeNames.TexCoord2fArray,
+            Vt.Vec2fArray([Gf.Vec2f(uv[0] * repeats, uv[1] * repeats) for uv in proto.uvs]),
+            UsdGeom.Tokens.vertex,
         )
-        st.Set(Vt.Vec2fArray([Gf.Vec2f(uv[0] * repeats, uv[1] * repeats) for uv in proto.uvs]))
 
     distinct = {c for c in proto.face_colors if c is not None}
     if len(distinct) == 1:
         colour = next(iter(distinct))
-        pv = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant)
-        pv.Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+        sdf_authoring.primvar(mesh, "displayColor", Sdf.ValueTypeNames.Color3fArray,
+                              Vt.Vec3fArray([Gf.Vec3f(*colour)]), UsdGeom.Tokens.constant)
     elif len(distinct) > 1:
         fallback = Gf.Vec3f(0.5, 0.5, 0.5)
-        pv = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.uniform)
-        pv.Set(Vt.Vec3fArray([Gf.Vec3f(*c) if c is not None else fallback for c in proto.face_colors]))
+        sdf_authoring.primvar(
+            mesh, "displayColor", Sdf.ValueTypeNames.Color3fArray,
+            Vt.Vec3fArray([Gf.Vec3f(*c) if c is not None else fallback for c in proto.face_colors]),
+            UsdGeom.Tokens.uniform,
+        )
 
     # Colour groups as bindable subsets: in STEP the colour IS the material assignment, so
-    # these are the handles a shading library binds against later.
+    # these are the handles a shading library binds against later. What
+    # UsdGeom.Subset.CreateGeomSubset authors, with no family type.
     if len(distinct) > 1:
         taken: set = set()
         for colour in sorted(distinct):
             faces = [i for i, c in enumerate(proto.face_colors) if c == colour]
             name = _unique("mat_" + "".join(f"{int(round(c * 255)):02x}" for c in colour), taken)
-            UsdGeom.Subset.CreateGeomSubset(
-                mesh, name, UsdGeom.Tokens.face, Vt.IntArray(faces), familyName="materialBind"
-            )
+            subset = writer.define(path.AppendChild("mesh").AppendChild(name), "GeomSubset")
+            sdf_authoring.attribute(subset, "elementType", Sdf.ValueTypeNames.Token, UsdGeom.Tokens.face,
+                                    uniform=True)
+            sdf_authoring.attribute(subset, "indices", Sdf.ValueTypeNames.IntArray, Vt.IntArray(faces))
+            sdf_authoring.attribute(subset, "familyName", Sdf.ValueTypeNames.Token, "materialBind",
+                                    uniform=True)
 
 
-def _author_node(stage, parent: Sdf.Path, node: _Node, proto_paths: list, settings_instanceable: bool,
-                 scale: float, taken: set, counters: dict) -> None:
+def _author_node(writer: sdf_authoring.Writer, parent: Sdf.Path, node: _Node, proto_paths: list,
+                 settings_instanceable: bool, scale: float, taken: set, counters: dict) -> None:
     path = parent.AppendChild(_unique(node.name, taken))
-    xform = UsdGeom.Xform.Define(stage, path)
+    spec = writer.define(path, "Xform")
 
     matrix = Gf.Matrix4d(node.matrix)
     translation = matrix.ExtractTranslation()
     matrix.SetTranslateOnly(translation * scale)
     if not Gf.IsClose(matrix, Gf.Matrix4d(1.0), 1e-12):
-        xform.AddTransformOp().Set(matrix)
+        sdf_authoring.transform(spec, matrix)
 
     if node.proto is not None:
-        prim = xform.GetPrim()
-        prim.GetReferences().AddInternalReference(proto_paths[node.proto])
+        writer.reference(spec, proto_paths[node.proto])
         counters["parts"] += 1
         # Instancing only earns its keep where the part is placed more than once, and it
         # costs the ability to override anything inside -- including the per-placement colour
         # a component label may carry.
         shared = counters["uses"][node.proto] > 1
         if settings_instanceable and shared and node.color is None:
-            prim.SetInstanceable(True)
+            spec.instanceable = True
         elif node.color is not None:
-            pv = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
-                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant
-            )
-            pv.Set(Vt.Vec3fArray([Gf.Vec3f(*node.color)]))
+            sdf_authoring.primvar(spec, "displayColor", Sdf.ValueTypeNames.Color3fArray,
+                                  Vt.Vec3fArray([Gf.Vec3f(*node.color)]), UsdGeom.Tokens.constant)
 
     child_taken: set = set()
     for child in node.children:
-        _author_node(stage, path, child, proto_paths, settings_instanceable, scale, child_taken, counters)
+        _author_node(writer, path, child, proto_paths, settings_instanceable, scale, child_taken, counters)
 
 
 def _flatten(node: _Node, matrix: Gf.Matrix4d, out: list) -> None:
@@ -761,23 +770,25 @@ def execute(node):
 
             proto_scope = root_path.AppendChild("Prototypes")
             prototype_scope(stage, proto_scope)
-            proto_paths = []
-            taken: set = set()
-            for proto in scene.protos:
-                proto_path = proto_scope.AppendChild(_unique(proto.name, taken))
-                _author_proto(stage, proto_path, proto, scale, texture_size)
-                proto_paths.append(proto_path)
+            writer = sdf_authoring.Writer(stage)
+            with Sdf.ChangeBlock():
+                proto_paths = []
+                taken: set = set()
+                for proto in scene.protos:
+                    proto_path = proto_scope.AppendChild(_unique(proto.name, taken))
+                    _author_proto(writer, proto_path, proto, scale, texture_size)
+                    proto_paths.append(proto_path)
 
-            taken = set()
-            if keep_hierarchy:
-                for tree in scene.roots:
-                    _author_node(stage, root_path, tree, proto_paths, instance_parts, scale, taken, counters)
-            else:
-                flat: list = []
-                for tree in scene.roots:
-                    _flatten(tree, Gf.Matrix4d(1.0), flat)
-                for leaf in flat:
-                    _author_node(stage, root_path, leaf, proto_paths, instance_parts, scale, taken, counters)
+                taken = set()
+                if keep_hierarchy:
+                    for tree in scene.roots:
+                        _author_node(writer, root_path, tree, proto_paths, instance_parts, scale, taken, counters)
+                else:
+                    flat: list = []
+                    for tree in scene.roots:
+                        _flatten(tree, Gf.Matrix4d(1.0), flat)
+                    for leaf in flat:
+                        _author_node(writer, root_path, leaf, proto_paths, instance_parts, scale, taken, counters)
 
     triangles = sum(len(p.counts) * p.uses for p in scene.protos)
     unique = sum(len(p.counts) for p in scene.protos)
