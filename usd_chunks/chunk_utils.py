@@ -6,6 +6,7 @@ kept beside typed values, variant-aware authoring, and per-chunk xformOp names.
 """
 from __future__ import annotations
 import ast
+import bisect
 import hashlib
 import logging
 import os
@@ -23,7 +24,10 @@ from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
 
-_EXPR_RE = re.compile(r'@(\w+)\.(\w+)@')
+# A list-group row has no name of its own (every row shares its template's), so it is
+# named by index: @Node.param[1]@ is row 1 of the list holding param.
+_EXPR_RE = re.compile(r'@(\w+)\.(\w+(?:\[\d+\])?)@')
+_ROW_REF_RE = re.compile(r'(\w+)\[(\d+)\]')
 
 
 _PATH_LIST_SPLIT = re.compile(r"([,\s]+)")
@@ -521,6 +525,70 @@ def parse_expression(text: str) -> list[tuple[str, str]]:
     return _EXPR_RE.findall(text)
 
 
+def split_row_ref(param_name: str) -> tuple[str, int | None]:
+    """Split a param name from parse_expression into (name, row index or None).
+
+    "item[1]" is row 1 of the list holding item; "item" is item itself.
+    """
+    if match := _ROW_REF_RE.fullmatch(param_name):
+        return match.group(1), int(match.group(2))
+    return param_name, None
+
+
+def parse_expression_attrs(text: str) -> list[tuple[str, str]]:
+    """parse_expression, naming the attribute a USD connection for each ref points at.
+
+    A row has no attribute of its own, so a wire from one names its template's: the
+    connection records which node feeds which, and the expression says which row.
+    """
+    return [(node, split_row_ref(name)[0]) for node, name in _EXPR_RE.findall(text)]
+
+
+def renumber_row_refs(text: str, node_name: str, names: Iterable[str],
+                      removed: Iterable[int]) -> tuple[str, bool]:
+    """Rewrite @node.name[i]@ refs for rows that were just removed from a list.
+
+    Rows are named by position, so removing one moves every row after it down. A ref to a
+    later row follows it to its new index; a ref to a removed row is left as it was.
+
+    Args:
+        text: The expression text.
+        node_name: The chunk holding the list.
+        names: The list's template param names.
+        removed: The indices the rows had before they were removed.
+
+    Returns:
+        The rewritten text, and whether it names a removed row.
+    """
+    names, removed = set(names), sorted(set(removed))
+    hit = False
+
+    def renumber(match: re.Match) -> str:
+        nonlocal hit
+        name, index = split_row_ref(match.group(2))
+        if match.group(1) != node_name or index is None or name not in names:
+            return match.group(0)
+        if index in removed:
+            hit = True
+            return match.group(0)
+        return f"@{node_name}.{name}[{index - bisect.bisect_left(removed, index)}]@"
+
+    return _EXPR_RE.sub(renumber, text), hit
+
+
+def clear_connections_everywhere(stage: Usd.Stage, attr: Usd.Attribute) -> None:
+    """Clear attr's connections in every layer that has one, not just the edit target.
+
+    A connection may have been authored under a different Edit Target; clearing only the
+    current one would silently leave the original composed in.
+    """
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        spec = layer.GetAttributeAtPath(attr.GetPath())
+        if spec and spec.connectionPathList.explicitItems:
+            with Usd.EditContext(stage, layer):
+                attr.ClearConnections()
+
+
 def has_expression(text: str) -> bool:
     """Whether `text` contains a @Node.param@ reference."""
     return bool(_EXPR_RE.search(text))
@@ -679,6 +747,29 @@ def is_expression_text(value) -> bool:
         True for a string holding a @Node.param@ reference.
     """
     return isinstance(value, str) and has_expression(value)
+
+
+def is_wire_locked(param) -> bool:
+    """Whether a wire into param owns its value, so its widget must not take input.
+
+    A dragged slider would otherwise replace the wire with a plain number, and it would
+    win every time a hand landed on it. Text fields are the exception: their expression IS
+    what the field shows and edits, so typing into one is how a path is built on a wire
+    (@Box.primpath_location@/lid).
+
+    Args:
+        param: The param, or a list row.
+
+    Returns:
+        True if param holds a @Node.param@ wire and is not a text field.
+    """
+    try:
+        raw, param_type = param.raw_value, param.get_type()
+    except (AttributeError, ReferenceError):
+        return False
+    if not is_expression_text(raw):
+        return False
+    return not (ChunkFlags.ParamType.LINEEDIT in param_type or ChunkFlags.ParamType.FILE in param_type)
 
 
 def clear_expression_text(attr: Usd.Attribute) -> None:

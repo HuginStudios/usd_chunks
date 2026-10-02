@@ -19,6 +19,10 @@ A reference is `@` + chunk name + `.` + param name + `@`:
   label "Box Size" is `@Box.size@`.
 - The param can be inside a group. `@Box.size@` still finds it.
 - A [Vector](chunk-basics.md#groups) can be read as one value: `@Box.translate@`.
+- A row of a list is read by its index, from 0: `@Fence.post[2]@` is the third row's
+  `post`. It works inside text too: `@Fence.post[2]@/geo`. Delete a row and refs to the
+  rows after it are renumbered to follow them. A ref to the deleted row is removed,
+  and that param goes back to its default.
 
 ## ✏️ Setting one
 

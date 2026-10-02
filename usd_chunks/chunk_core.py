@@ -1888,7 +1888,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                 if is_expr:
                                     chunk_root = str(usd_attr.GetPrim().GetParent().GetPath())
                                     conns = []
-                                    for node, attr_name in chunk_utils.parse_expression(raw):
+                                    for node, attr_name in chunk_utils.parse_expression_attrs(raw):
                                         ref_prim = stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
                                         # The referenced node may not exist (a stale/renamed expression
                                         # ref, or a lofted chain pointing at a prim not on this stage) --
@@ -1902,8 +1902,14 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                         suffix = f"outputs:{attr_name}" if use_out else f"inputs:{attr_name}"
                                         conns.append(Sdf.Path(f"{chunk_root}/{node}.{suffix}"))
                                     usd_attr.SetConnections(conns)
-                                    if usd_attr.GetTypeName() == Sdf.ValueTypeNames.String and usd_attr.Get(0) != raw:
-                                        usd_attr.Set(raw)
+                                    # Every type, not only String: a number attr keeps its text
+                                    # in customData, and a rewired one kept the old wire's text.
+                                    if chunk_utils.read_expression_text(usd_attr) != raw:
+                                        chunk_utils.store_expression_text(usd_attr, raw)
+                                else:
+                                    # The wire is gone; text left behind would come back as the
+                                    # wire on the next load.
+                                    chunk_utils.clear_expression_text(usd_attr)
                     if not self.is_blocked():
                         self._write_driven_attrs(stage, val)
                 finally:
@@ -2005,7 +2011,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                         chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
                         notice.data.SetConnections([
                             Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
-                            for node, attr_name in chunk_utils.parse_expression(raw)
+                            for node, attr_name in chunk_utils.parse_expression_attrs(raw)
                         ])
                         # The connections carry the refs; only this carries the operators
                         # and literals between them.
@@ -2154,6 +2160,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
         return "".join(tokens) if tokens else None
 
     def _resolve_expression_ref(self, node_name: str, param_name: str) -> ChunkCommon | None:
+        name, row = chunk_utils.split_row_ref(param_name)
+        ref = self._resolve_named_ref(node_name, name)
+        return ref if row is None else list_row_of(ref, row)
+
+    def _resolve_named_ref(self, node_name: str, param_name: str) -> ChunkCommon | None:
         chunk = self.get_chunk()
         if not chunk:
             return None
@@ -3261,15 +3272,55 @@ class ChunkListGroupBase(ChunkGroupBase):
             # every later element down one, so proxy_params[i] would run off the end (and
             # delete the wrong rows). Removing the highest index first keeps the lower ones
             # stable. Clamp the top to the actual length in case it's already shorter.
-            for i in range(min(old_value, len(self.proxy_params)) - 1, value - 1, -1):
+            removed = range(value, min(old_value, len(self.proxy_params)))
+            for i in reversed(removed):
                 self.proxy_params[i].request_delete()
                 self.proxy_params.pop(i)
+            self._renumber_row_refs(removed)
 
         if value != old_value:
             for i, grp in enumerate(self.proxy_params):
                 grp.name = str(i)
 
         return super().value_changed(attrname, old_value, value)
+
+    def _renumber_row_refs(self, removed: Iterable[int]) -> None:
+        """Keep every expression naming one of these rows (@Node.item[2]@) on the same row.
+
+        Rows are named by position, so removing one moves the rows after it down: a ref to
+        a later row is renumbered to follow it, and a ref to a removed row loses its wire,
+        the way unwiring it in the graph would, rather than quietly reading another row.
+
+        Args:
+            removed: The indices the removed rows had.
+        """
+        removed = list(removed)
+        chunk = self.get_chunk()
+        if not removed or chunk is None:
+            return
+        try:
+            chunks = chunk_registry.ChunkRegistry().scene.get_chunks()
+        except Exception:
+            return
+        names = [p.name for p in self.children.get_my_params()]
+        for other in chunks:
+            for param in iter_params_and_rows(other):
+                raw = getattr(param, "raw_value", None)
+                if not (isinstance(raw, str) and chunk_utils.has_expression(raw)):
+                    continue
+                text, hit = chunk_utils.renumber_row_refs(raw, chunk.name, names, removed)
+                if hit:
+                    param.value = param.default_value
+                    # A row's wire is its text alone; get_usd_prop on one would answer for
+                    # its template, whose array attribute it shares with every row.
+                    if isinstance(param, ChunkParamBase):
+                        # The ref to the missing row already read the default, so the reset
+                        # was no change and wrote nothing: announce it, or USD keeps the text.
+                        param.refresh_expression_value()
+                        if attr := param.get_usd_prop():
+                            chunk_utils.clear_connections_everywhere(attr.GetStage(), attr)
+                elif text != raw:
+                    param.value = text
 
     @overload
     def get_params(self) -> tuple[ChunkCommon, ...]: ...
@@ -3308,6 +3359,7 @@ class ChunkListGroupBase(ChunkGroupBase):
             return
 
         self.size -= 1
+        self._renumber_row_refs([index])
 
     @override
     def add_param(self, param: ChunkT, force_unique: bool = True) -> ChunkT:
@@ -3316,6 +3368,41 @@ class ChunkListGroupBase(ChunkGroupBase):
         for proxy_group in self.proxy_params:
             proxy_group.add_param(ProxyParam(param))  # type: ignore
         return param
+
+
+def iter_params_and_rows(chunk: ChunkBase) -> Generator[ChunkCommon, None, None]:
+    """chunk.get_params(), plus every list-group row, which get_params leaves out."""
+    for param in chunk.get_params():
+        yield param
+        if isinstance(param, ChunkListGroupBase):
+            yield from param.get_params()
+
+
+def list_row_of(template: ChunkCommon | None, index: int) -> ProxyParam | None:
+    """Row `index` of a list-group template param, or None if there is no such row.
+
+    What an @Node.param[index]@ expression names. A missing row is None rather than an
+    error: rows come and go at runtime, and a ref to one that is gone reads the default the
+    way a ref to a missing param does.
+    """
+    owner = template.get_owner() if template is not None else None
+    while owner is not None and not isinstance(owner, (ChunkListGroupBase, ChunkBase)):
+        owner = owner.get_owner()
+    if not isinstance(owner, ChunkListGroupBase) or not 0 <= index < len(owner.proxy_params):
+        return None
+    # By the template itself, not its name: a renamed template's rows still answer to it.
+    return owner.get_indexed_param(template, index)
+
+
+def list_row_ref(row: ProxyParam) -> str | None:
+    """The name an expression reads `row` by -- "item[1]" -- or None if it is not a row."""
+    # Ownership chain: ProxyParam -> NameSyncedContainer -> ChunkGroupBase("1") -> ChunkListGroupBase
+    container = row.get_owner()
+    row_group = container.get_owner() if container is not None else None
+    if not (isinstance(row_group, ChunkGroupBase) and row_group.name.isdigit()
+            and isinstance(row_group.get_owner(), ChunkListGroupBase)):
+        return None
+    return f"{row.name}[{row_group.name}]"
 
 
 class ChunkBase(ChunkGroupBase):
@@ -3931,7 +4018,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                                         if stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}")).GetAttribute(f"outputs:{attr_name}").IsValid()
                                         else f"{chunk_root}/{node}.inputs:{attr_name}"
                                     )
-                                    for node, attr_name in chunk_utils.parse_expression(raw)
+                                    for node, attr_name in chunk_utils.parse_expression_attrs(raw)
                                 ])
                     if not self.is_blocked():
                         self._write_driven_attrs(stage, val)
