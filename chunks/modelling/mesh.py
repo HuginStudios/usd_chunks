@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pxr import Usd, UsdGeom, Sdf
+from pxr import Usd, UsdGeom, Sdf, Vt
 from usd_chunks import chunk, chunk_utils
 import itertools
 import logging
@@ -24,6 +24,11 @@ class Topo(IntEnum):
     QUAD = 4
 
 
+def _int_array(values):
+    """An index or count array as a Vt.IntArray, straight from numpy."""
+    return Vt.IntArray.FromNumpy(np.ascontiguousarray(values, dtype=np.int32).ravel())
+
+
 def build_plane(stage, name="/plane", divx=2, divy=2, width=1.0, height=1.0, pos=(0, 0, 0), topo: Topo = Topo.QUAD):
     """Build a simple plane for testing hair procedural"""
     w = max(int(divx), 2)
@@ -37,36 +42,26 @@ def build_plane(stage, name="/plane", divx=2, divy=2, width=1.0, height=1.0, pos
         nfaces *= 2
 
     pts = np.zeros((w * h, 3))
-    uvs = np.zeros((ipf * nfaces, 2))
 
-    py = pos[1]
-    pz = pos[2]
-    ids = []
+    counts = _int_array(np.full(nfaces, int(ipf)))
 
-    counts = [ipf] * nfaces
+    # Rows of x, one row per y. The coordinates step by repeated addition rather than
+    # i * step, and a cumsum adds in that same order, so they come out bit for bit.
+    xs = np.cumsum([pos[0]] + [width / (divx - 1)] * (w - 1))
+    ys = np.cumsum([pos[1]] + [height / (divy - 1)] * (h - 1))
+    pts[:, 0] = np.tile(xs, h)
+    pts[:, 1] = np.repeat(ys, w)
+    pts[:, 2] = pos[2]
 
-    for y in range(h):
-        px = pos[0]
+    # The lower-left corner of every cell, i = x + y * w.
+    i = (np.arange(h - 1)[:, None] * w + np.arange(w - 1)[None, :]).ravel()
+    if ipf == 4:
+        ids = np.stack([i, i + 1, i + w + 1, i + w], axis=1).ravel()
+    else:
+        ids = np.stack([i, i + 1, i + w + 1, i, i + w + 1, i + w], axis=1).ravel()
 
-        wr = range(w)
-        for x in wr:
-            i = x + y * w
-
-            pts[i] = (px, py, pz)
-
-            if x < w - 1 and y < h - 1:
-                if ipf == 4:
-                    ids += [i, i + 1, i + w + 1, i + w]
-                elif ipf == 3:
-                    ids += [i, i + 1, i + w + 1]
-                    ids += [i, i + w + 1, i + w]
-
-            px += width / (divx - 1)
-        py += height / (divy - 1)
-
-    for i in range(ipf * nfaces):
-        p = pts[ids[i]]
-        uvs[i] = (p[0], p[1])
+    uvs = pts[ids, :2]
+    ids = _int_array(ids)
 
     # Lay it flat on the stage's ground plane, centered on pos and facing up. Built above in
     # X-Y with its corner at pos, which on a Y-up stage is a wall. Turning -90 degrees about
@@ -250,27 +245,25 @@ def build_torus(stage, name="/torus", rings=48, sides=20, radius=1.0, tube_radiu
     rings = max(int(rings), 3)
     sides = max(int(sides), 3)
 
-    pts, normals = [], []
-    for i in range(rings):
-        u = 2.0 * np.pi * i / rings
-        for j in range(sides):
-            v = 2.0 * np.pi * j / sides
-            normal = (np.cos(v) * np.cos(u), np.sin(v), np.cos(v) * np.sin(u))
-            normals.append(normal)
-            pts.append((radius * np.cos(u) + tube_radius * normal[0], tube_radius * normal[1],
-                        radius * np.sin(u) + tube_radius * normal[2]))
+    # Ring i around the centre, side j around the tube: (rings, sides) grids, ring-major.
+    u = (2.0 * np.pi * np.arange(rings) / rings)[:, None]
+    v = (2.0 * np.pi * np.arange(sides) / sides)[None, :]
+    normals = np.stack(np.broadcast_arrays(np.cos(v) * np.cos(u), np.sin(v), np.cos(v) * np.sin(u)), axis=-1)
+    pts = np.stack(np.broadcast_arrays(radius * np.cos(u) + tube_radius * normals[..., 0],
+                                       tube_radius * normals[..., 1],
+                                       radius * np.sin(u) + tube_radius * normals[..., 2]), axis=-1)
 
-    indices, counts = [], []
-    for i in range(rings):
-        for j in range(sides):
-            a = i * sides + j
-            b = ((i + 1) % rings) * sides + j
-            c = ((i + 1) % rings) * sides + (j + 1) % sides
-            d = i * sides + (j + 1) % sides
-            indices += [a, d, c, b]  # counter-clockwise seen from outside
-            counts.append(4)
+    i = np.arange(rings)[:, None]
+    j = np.arange(sides)[None, :]
+    a = i * sides + j
+    b = ((i + 1) % rings) * sides + j
+    c = ((i + 1) % rings) * sides + (j + 1) % sides
+    d = i * sides + (j + 1) % sides
+    indices = np.stack([a, d, c, b], axis=-1)  # counter-clockwise seen from outside
+    counts = np.full(rings * sides, 4)
 
-    return _smooth_mesh(stage, name, np.array(pts), np.array(normals), indices, counts)
+    return _smooth_mesh(stage, name, pts.reshape(-1, 3), normals.reshape(-1, 3),
+                        _int_array(indices), _int_array(counts))
 
 
 def build_cone(stage, name="/cone", rows=8, columns=32, radius=1.0, height=2.0):
@@ -285,35 +278,35 @@ def build_cone(stage, name="/cone", rows=8, columns=32, radius=1.0, height=2.0):
     columns = max(int(columns), 3)
     slope = radius / height if height else 0.0
 
-    pts, normals = [], []
-    for i in range(rows):
-        y = height * i / (rows - 1)
-        ring = radius * (1.0 - i / (rows - 1))
-        for j in range(columns):
-            v = 2.0 * np.pi * j / columns
-            pts.append((np.cos(v) * ring, y, np.sin(v) * ring))
-            normal = np.array((np.cos(v), slope, np.sin(v)))
-            normals.append(normal / np.linalg.norm(normal))
+    # Row i up the side, column j around it: (rows, columns) grids, row-major.
+    i = np.arange(rows)[:, None]
+    y = height * i / (rows - 1)
+    ring = radius * (1.0 - i / (rows - 1))
+    v = 2.0 * np.pi * np.arange(columns) / columns
+    side = np.stack(np.broadcast_arrays(np.cos(v) * ring, y, np.sin(v) * ring), axis=-1).reshape(-1, 3)
+    # A column's normal is the same on every row. Normalised one column at a time with
+    # np.linalg.norm, exactly as before -- it is only `columns` calls, and a vectorised
+    # length can round differently in the last bit.
+    column_normals = []
+    for angle in v:
+        normal = np.array((np.cos(angle), slope, np.sin(angle)))
+        column_normals.append(normal / np.linalg.norm(normal))
+    side_normals = np.tile(np.array(column_normals), (rows, 1))
 
-    indices, counts = [], []
-    for i in range(rows - 1):
-        for j in range(columns):
-            a, b = i * columns + j, i * columns + (j + 1) % columns
-            indices += [a, a + columns, b + columns, b]  # counter-clockwise seen from outside
-            counts.append(4)
+    j = np.arange(columns)[None, :]
+    a, b = np.arange(rows - 1)[:, None] * columns + j, np.arange(rows - 1)[:, None] * columns + (j + 1) % columns
+    sides = np.stack([a, a + columns, b + columns, b], axis=-1)  # counter-clockwise seen from outside
 
-    base, centre = len(pts), len(pts) + columns
-    for j in range(columns):
-        v = 2.0 * np.pi * j / columns
-        pts.append((np.cos(v) * radius, 0.0, np.sin(v) * radius))
-        normals.append((0.0, -1.0, 0.0))
-    pts.append((0.0, 0.0, 0.0))
-    normals.append((0.0, -1.0, 0.0))
-    for j in range(columns):
-        indices += [centre, base + j, base + (j + 1) % columns]
-        counts.append(3)
+    base, centre = rows * columns, rows * columns + columns
+    rim = np.stack([np.cos(v) * radius, np.zeros(columns), np.sin(v) * radius], axis=-1)
+    pts = np.concatenate([side, rim, np.zeros((1, 3))])
+    normals = np.concatenate([side_normals, np.tile((0.0, -1.0, 0.0), (columns + 1, 1))])
+    j = np.arange(columns)
+    cap = np.stack([np.full(columns, centre), base + j, base + (j + 1) % columns], axis=-1)
+    indices = np.concatenate([sides.ravel(), cap.ravel()])
+    counts = np.concatenate([np.full((rows - 1) * columns, 4), np.full(columns, 3)])
 
-    return _smooth_mesh(stage, name, np.array(pts), np.array(normals), indices, counts)
+    return _smooth_mesh(stage, name, pts, normals, _int_array(indices), _int_array(counts))
 
 
 def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, caps=True, pos=(0, 0, 0)):
@@ -322,49 +315,39 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
     columns = max(int(columns), 3)
     rc = rows * columns
 
-    pts = np.zeros((rc, 3))
-    for i in range(rows):
-        y = (height / (rows - 1)) * i
-        for j in range(columns):
-            v = (j % columns) / columns * np.pi * 2
-            p = (pos[0] + np.sin(v) * radius, pos[1] + y, pos[2] + np.cos(v) * radius)
-
-            pts[i * columns + j] = p
+    # Row i up the tube, column j around it, row-major.
+    y = ((height / (rows - 1)) * np.arange(rows))[:, None]
+    v = (np.arange(columns) % columns / columns * np.pi * 2)[None, :]
+    pts = np.stack(np.broadcast_arrays(pos[0] + np.sin(v) * radius, pos[1] + y, pos[2] + np.cos(v) * radius),
+                   axis=-1).reshape(rc, 3)
 
     indices = []
     counts = []
 
     # CAPS
     if caps:
-        pts.resize((rc + 2, 3))
-        pts[-2] = pos
-        pts[-1] = (pos[0], pos[1] + height, pos[2])
-        for i in range(columns):
-            indices.append(i + 1 if i + 1 != columns else 0)
-            indices.append(i)
-            indices.append(rc)
-            counts.append(3)
-
-        for i in range(rc - columns, rc):
-            indices.append(rc + 1)
-            indices.append(i)
-            indices.append(i + 1 if i != rc - 1 else rc - columns)
-            counts.append(3)
+        pts = np.concatenate([pts, [pos, (pos[0], pos[1] + height, pos[2])]])
+        i = np.arange(columns)
+        bottom = np.stack([(i + 1) % columns, i, np.full(columns, rc)], axis=-1)
+        i = np.arange(rc - columns, rc)
+        top = np.stack([np.full(columns, rc + 1), i, np.where(i != rc - 1, i + 1, rc - columns)], axis=-1)
+        indices += [bottom.ravel(), top.ravel()]
+        counts.append(np.full(2 * columns, 3))
 
     # SIDES
-    for i in range(rows - 1):
-        for j in range(columns):
-            idx = i * columns + j
-            indices.append(idx + 1 if j != columns - 1 else i * columns)
-            indices.append(idx + columns + 1 if j != columns - 1 else i * columns + columns)
-            indices.append(idx + columns)
-            indices.append(idx)
-            counts.append(4)
+    i = np.arange(rows - 1)[:, None]
+    j = np.arange(columns)[None, :]
+    side = np.stack(np.broadcast_arrays(i * columns + (j + 1) % columns,
+                                        (i + 1) * columns + (j + 1) % columns,
+                                        i * columns + j + columns,
+                                        i * columns + j), axis=-1)
+    indices.append(side.ravel())
+    counts.append(np.full((rows - 1) * columns, 4))
 
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(name))
     mesh.CreatePointsAttr(pts)
-    mesh.CreateFaceVertexIndicesAttr(indices)
-    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateFaceVertexIndicesAttr(_int_array(np.concatenate(indices)))
+    mesh.CreateFaceVertexCountsAttr(_int_array(np.concatenate(counts)))
     mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
 
     pv = UsdGeom.PrimvarsAPI(mesh.GetPrim())
@@ -378,48 +361,43 @@ def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
     dimx = max(int(dimx), 3)
     dimy = max(int(dimy), 3)
     rc = dimx * dimy - (dimx - 1) * 2
-    indices = []
-    counts = []
 
+    # Column i around the axis, sample j from pole to pole. The first column holds both
+    # poles; every later one only its dimy - 2 inner points, so a point's index is
+    # i * dimy + j less the poles the earlier columns did not repeat.
+    i = np.arange(dimx)[:, None]
+    j = np.arange(dimy)[None, :]
+    offset = np.where(i == 0, 0, i + (i - 1))
+    idx = i * dimy + j - offset
+    nbr = np.where(i == 0, dimy - 1, dimy - 2)
+    last = i == dimx - 1
+
+    # Per column, in order: a triangle at the first pole, the quads down the side, and a
+    # triangle at the second pole -- dimy - 1 faces.
+    first, mid, end = idx[:, :1], idx[:, 1:dimy - 2], idx[:, dimy - 2:dimy - 1]
+    tri0 = np.concatenate(np.broadcast_arrays(0, first + 1, np.where(last, 1, first + 1 + nbr)), axis=1)
+    quads = np.stack(np.broadcast_arrays(mid, mid + 1,
+                                         np.where(last, j[:, 1:dimy - 2] + 1, mid + nbr + 1),
+                                         np.where(last, j[:, 1:dimy - 2], mid + nbr)), axis=-1)
+    tri1 = np.concatenate(np.broadcast_arrays(end, dimy - 1, np.where(last, dimy - 2, end + nbr)), axis=1)
+    indices = np.concatenate([tri0, quads.reshape(dimx, 4 * (dimy - 3)), tri1], axis=1)
+    counts = np.tile(np.concatenate([[3], np.full(dimy - 3, 4), [3]]), dimx)
+
+    # Every sample of the first column, then the inner samples of the rest -- each point
+    # written once, at its own index.
+    row = np.broadcast_to((i / dimx) * np.pi * 2, idx.shape)
+    theta = np.broadcast_to((j % dimy) / (dimy - 1) * np.pi, idx.shape)
+    written = np.ones(idx.shape, dtype=bool)
+    written[1:, 0] = written[1:, -1] = False
+    row, theta = row[written], theta[written]
     pts = np.zeros((rc, 3))
-    for i in range(dimx):
-        row = (i / dimx) * np.pi * 2
-        for j in range(dimy):
-            offset = 0 if i == 0 else i + (i - 1)
-            idx = int(i * dimy + j - offset)
-            nbr = dimy - 1 if i == 0 else dimy - 2
-
-            if j == 0:
-                indices.append(0)
-                indices.append(idx + 1)
-                indices.append(idx + 1 + nbr if i != dimx - 1 else 1)
-                counts.append(3)
-
-            elif j == dimy - 2:
-                indices.append(idx)
-                indices.append(dimy - 1)
-                indices.append(idx + nbr if i != dimx - 1 else dimy - 2)
-                counts.append(3)
-
-            elif j < dimy - 2:
-                indices.append(idx)
-                indices.append(idx + 1)
-                indices.append(idx + nbr + 1 if i != dimx - 1 else j + 1)
-                indices.append(idx + nbr if i != dimx - 1 else j)
-                counts.append(4)
-
-            if (j == 0 or j == dimy - 1) and i > 0:
-                continue
-
-            theta = (j % dimy) / (dimy - 1) * np.pi
-            y = pos[1] + radius * np.sin(theta) * np.sin(row)
-            x = pos[0] + radius * np.sin(theta) * np.cos(row)
-            z = pos[2] + radius * np.cos(theta)
-            pts[idx] = (x, y, z)
+    pts[idx[written]] = np.stack([pos[0] + radius * np.sin(theta) * np.cos(row),
+                                  pos[1] + radius * np.sin(theta) * np.sin(row),
+                                  pos[2] + radius * np.cos(theta)], axis=-1)
 
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(name))
-    mesh.CreateFaceVertexIndicesAttr(indices)
-    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateFaceVertexIndicesAttr(_int_array(indices))
+    mesh.CreateFaceVertexCountsAttr(_int_array(counts))
     # Polygons, not a subdivision cage -- see _POLYGONS.
     mesh.CreateSubdivisionSchemeAttr(_POLYGONS)
 
