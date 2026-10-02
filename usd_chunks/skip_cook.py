@@ -331,6 +331,15 @@ def output_paths(layer: Sdf.Layer) -> set[Sdf.Path]:
     return paths
 
 
+def _chunk_of(node):
+    """The chunk a DAG node's propagator is or belongs to; None for the scene and the like."""
+    prop = node.propagator
+    if prop is None or _is_chunk(prop):
+        return prop
+    # A param or group (ChunkCommon); the scene's own get_chunk looks a chunk up by name.
+    return prop.get_chunk() if hasattr(prop, "get_scene_stage") else None
+
+
 def upstream_chunks(chunk) -> list:
     """chunk and every chunk that solves before it: wired to it by exec or by a param.
 
@@ -341,11 +350,7 @@ def upstream_chunks(chunk) -> list:
     pending = [chunk]
     while pending:
         for node in chunk_scheduler.upstream_closure(pending.pop().get_dag_node()):
-            prop = node.propagator
-            if prop is None:
-                continue
-            get_chunk = getattr(prop, "get_chunk", None)
-            owner = prop if _is_chunk(prop) else get_chunk() if get_chunk else None
+            owner = _chunk_of(node)
             if owner is not None and id(owner) not in found:
                 found[id(owner)] = owner
                 pending.append(owner)
@@ -353,12 +358,14 @@ def upstream_chunks(chunk) -> list:
 
 
 def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tuple]:
-    """The layers a cook of chunk does not see: those of chunks not upstream of it.
+    """The layers a cook of chunk does not see: those of its siblings.
 
-    A chunk's cook reads what the chunks above it wrote and nothing else, so it does not
-    depend on a sibling that may be cooking at the same time. Only a chunk's own anonymous
-    layer is hidden -- a file layer an Edit Target hands to several chunks is the user's,
-    and may hold what an upstream chunk wrote too.
+    A sibling is a chunk neither upstream nor downstream of chunk -- one that may be cooking
+    at the same time, so a cook must not depend on it. What is downstream stays: it never
+    cooks while chunk does, and an upstream chunk reading a prim a chunk below it also edits
+    (a Mesh and the Transform after it) is how networks are built. Only a chunk's own
+    anonymous layer is hidden -- a file layer an Edit Target hands to several chunks is the
+    user's, and may hold what an upstream chunk wrote too.
 
     Args:
         chunk: The chunk about to cook.
@@ -368,13 +375,15 @@ def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tupl
     Returns:
         {layer identifier: (chunk, layer)} for every hidden layer.
     """
-    upstream = upstream_chunks(chunk)
+    related = upstream_chunks(chunk)
+    related.extend(c for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+                   if (c := _chunk_of(node)) is not None)
     kept = {layer.identifier}
-    kept.update(own.identifier for c in upstream if (own := layer_of(c)) is not None)
-    upstream_ids = {id(c) for c in upstream}
+    kept.update(own.identifier for c in related if (own := layer_of(c)) is not None)
+    related_ids = {id(c) for c in related}
     hidden: dict[str, tuple] = {}
     for other in chunk.get_scene().get_chunks():
-        if id(other) in upstream_ids:
+        if id(other) in related_ids:
             continue
         own = layer_of(other)
         if own is None or not own.anonymous or own.identifier in kept:
@@ -743,7 +752,12 @@ def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | Non
         return
     with cook_stage(main, layer, mask | {_CHUNKS_ROOT}, hidden) as watch:
         watches.append(watch)
-        execute(chunk)
+        try:
+            execute(chunk)
+        finally:
+            # The watch outlives the cook; its stages must not. A cook stage still open
+            # goes on hearing the layer's changes -- the Clear of a re-run among them.
+            watch.stages.clear()
 
 
 def restored(chunk, layer: Sdf.Layer) -> None:
