@@ -27,6 +27,8 @@ try:
     import mujoco as _mj
     import numpy as _np
 
+    from usd_chunks import mesh_math
+
     _HAS_MUJOCO = True
 except ImportError:
     _HAS_MUJOCO = False
@@ -66,6 +68,28 @@ def _turbulence_accel(pos, t: float, amp: float, scale: float, speed: float, pha
     )
 
 
+def _turbulence_field(pos, t: float, amp: float, scale: float, speed: float, phases):
+    """_turbulence_accel for many points at once: (N, 3) positions in, (N, 3) pushes out."""
+    if amp <= 0.0:
+        return _np.zeros_like(pos)
+    k = (2.0 * math.pi / scale) if scale > 1e-6 else 0.0
+    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+    p = phases
+    return _np.stack(
+        [
+            _np.sin(k * y + speed * t + p[0]) * _np.cos(k * z - speed * t + p[1]) * amp,
+            _np.sin(k * z + speed * t + p[2]) * _np.cos(k * x - speed * t + p[3]) * amp,
+            _np.sin(k * x + speed * t + p[4]) * _np.cos(k * y - speed * t + p[5]) * amp,
+        ],
+        axis=1,
+    )
+
+
+#: Below this many bodies _apply_wind loops in Python; at or above it, one numpy pass.
+#: Measured crossover is around a dozen bodies.
+_WIND_VECTOR_MIN = 16
+
+
 def _apply_wind(model, data, body_ids, wind, amp: float, scale: float, speed: float, phases, t: float) -> None:
     """Push wind + turbulence onto each dynamic body for the coming step.
 
@@ -81,11 +105,18 @@ def _apply_wind(model, data, body_ids, wind, amp: float, scale: float, speed: fl
     """
     if amp <= 0.0 and not any(wind):
         return
-    for bid in body_ids:
-        fx, fy, fz = _turbulence_accel(data.xpos[bid], t, amp, scale, speed, phases)
-        data.xfrc_applied[bid][0] = wind[0] + fx
-        data.xfrc_applied[bid][1] = wind[1] + fy
-        data.xfrc_applied[bid][2] = wind[2] + fz
+    if len(body_ids) < _WIND_VECTOR_MIN:
+        # A body or a handful (the single-prim and articulated paths, every substep): a
+        # plain loop beats numpy's per-call overhead here.
+        for bid in body_ids:
+            fx, fy, fz = _turbulence_accel(data.xpos[bid], t, amp, scale, speed, phases)
+            data.xfrc_applied[bid][0] = wind[0] + fx
+            data.xfrc_applied[bid][1] = wind[1] + fy
+            data.xfrc_applied[bid][2] = wind[2] + fz
+        return
+    bids = _np.asarray(body_ids, dtype=_np.intp)
+    accel = _turbulence_field(data.xpos[bids], t, amp, scale, speed, phases)
+    data.xfrc_applied[bids, :3] = _np.asarray(wind[:3], dtype=_np.float64) + accel
 
 
 #: What counts as "stopped moving", as the norm of the whole model's generalised velocity,
@@ -208,7 +239,7 @@ def _build_heightfield(cprim: Usd.Prim, up_idx: int, resolution: int = 64, min_c
     # each. Measuring the real footprint instead skips essentially all of them: the loop
     # now runs only for the genuinely big faces it was written for (a tabletop's one-quad
     # top, a terrain's coarse base) and a dense mesh falls straight through it.
-    if tris:
+    if len(tris):
         TRI = _np.asarray(tris, dtype=_np.int64)
         tc = (V[TRI][:, :, a0] - min0) / (max0 - min0) * (N - 1)
         tr = (max1 - V[TRI][:, :, a1]) / (max1 - min1) * (N - 1)
@@ -301,11 +332,14 @@ def _geom_bounds(prim: Usd.Prim) -> Gf.Range3d | None:
     return None if rng.IsEmpty() else rng
 
 
-def _collider_triangles(cprim: Usd.Prim, world: bool = True) -> tuple[list, list]:
-    """(verts, tris) for every mesh under *cprim*, in world space."""
-    xc = UsdGeom.XformCache()
-    verts: list = []
-    tris: list = []
+def _collider_triangles(cprim: Usd.Prim, world: bool = True) -> tuple:
+    """(verts, tris) for every mesh under *cprim*, in world space.
+
+    Arrays, not lists: verts is (N, 3) float64, tris (T, 3) int64 indexing into it.
+    """
+    vert_parts: list = []
+    tri_parts: list = []
+    base = 0
     for p in Usd.PrimRange(cprim):
         mesh = UsdGeom.Mesh(p)
         if not mesh:
@@ -313,22 +347,23 @@ def _collider_triangles(cprim: Usd.Prim, world: bool = True) -> tuple[list, list
         pts = mesh.GetPointsAttr().Get()
         if not pts:
             continue
-        wxf = xc.GetLocalToWorldTransform(p)
-        base = len(verts)
-        for pt in pts:
-            w = wxf.Transform(Gf.Vec3d(pt[0], pt[1], pt[2])) if world else Gf.Vec3d(pt[0], pt[1], pt[2])
-            verts.append((float(w[0]), float(w[1]), float(w[2])))
+        v = mesh_math.world_points(p, pts) if world else _np.asarray(pts, dtype=_np.float64)
+        vert_parts.append(v)
         counts = mesh.GetFaceVertexCountsAttr().Get()
         indices = mesh.GetFaceVertexIndicesAttr().Get()
-        if not counts or not indices:
-            continue
-        k = 0
-        for c in counts:
-            if c >= 3 and k + c <= len(indices):
-                i0 = base + indices[k]
-                for t in range(1, c - 1):
-                    tris.append((i0, base + indices[k + t], base + indices[k + t + 1]))
-            k += c
+        if counts and indices:
+            counts = _np.asarray(counts, dtype=_np.int64)
+            # A face running past the end of the index array is skipped, and so is every
+            # face after it (they all start past the end too): cut the counts there.
+            ends = _np.cumsum(counts)
+            over = _np.nonzero(ends > len(indices))[0]
+            if over.size:
+                counts = counts[: over[0]]
+            tri, _, _ = mesh_math.fan_triangulate(counts, indices)
+            tri_parts.append(tri + base)
+        base += len(v)
+    verts = _np.concatenate(vert_parts) if vert_parts else _np.zeros((0, 3), dtype=_np.float64)
+    tris = _np.concatenate(tri_parts) if tri_parts else _np.zeros((0, 3), dtype=_np.int64)
     return verts, tris
 
 
@@ -376,30 +411,35 @@ def _add_triangle_soup(
     collider takes minutes, and that is also where a Cancel is noticed.
     """
     verts, tris = geometry if geometry is not None else _collider_triangles(cprim)
-    if not tris:
+    if not len(tris):
         return 0
 
-    if xform_inv is not None:
-        verts = [tuple(xform_inv.Transform(Gf.Vec3d(*v))) for v in verts]
-
     V = _np.asarray(verts, dtype=_np.float64)
+    if xform_inv is not None:
+        inv = _np.asarray(xform_inv, dtype=_np.float64)
+        V = V @ inv[:3, :3] + inv[3, :3]
+
+    # Every prism at once; only the MuJoCo calls below stay per triangle. Geom names keep
+    # the triangle's own index, degenerate ones included, so `_t{i}` means the same
+    # triangle whichever of them get skipped.
+    TRI = _np.asarray(tris, dtype=_np.int64)
+    v0, v1, v2 = V[TRI[:, 0]], V[TRI[:, 1]], V[TRI[:, 2]]
+    n = _np.cross(v1 - v0, v2 - v0)
+    ln = _np.linalg.norm(n, axis=1)
+    keep = ~(ln < 1e-12)  # sliver/degenerate triangle: no volume to extrude, skip it
+    back = (-n / _np.where(keep, ln, 1.0)[:, None]) * thickness
+    prisms = _np.stack(
+        [v0, v1, v2, v0 + back, v1 + back, v2 + back], axis=1
+    ).astype(_np.float32).reshape(len(TRI), 18)
     count = 0
-    for i, (a, b, c) in enumerate(tris):
+    for i in range(len(TRI)):
         if progress is not None and i % 250 == 0:
-            progress(i, len(tris))
-        v0, v1, v2 = V[a], V[b], V[c]
-        n = _np.cross(v1 - v0, v2 - v0)
-        ln = float(_np.linalg.norm(n))
-        if ln < 1e-12:
-            continue  # sliver/degenerate triangle: no volume to extrude, skip it
-        back = (-n / ln) * thickness
-        prism = _np.array(
-            [v0, v1, v2, v0 + back, v1 + back, v2 + back],
-            dtype=_np.float32,
-        )
+            progress(i, len(TRI))
+        if not keep[i]:
+            continue
         ma = spec.add_mesh()
         ma.name = f"{name}_t{i}"
-        ma.uservert = prism.flatten()
+        ma.uservert = prisms[i]
         g = body.add_geom()
         g.type = _mj.mjtGeom.mjGEOM_MESH
         g.meshname = ma.name
@@ -539,7 +579,7 @@ def _add_colliders(
         soup = collider_mode in ("Auto", "Mesh")
         if soup and bounds is not None:
             tris = geometry[i][1]
-            if not tris or (collider_mode == "Auto" and len(tris) > tri_budget):
+            if not len(tris) or (collider_mode == "Auto" and len(tris) > tri_budget):
                 soup = False
             else:
                 thickness = collider_thickness
@@ -907,23 +947,23 @@ def _sim_prim_gen_mj(
     mesh_pts = None
     if shape_type == "Convex Hull":
         _xc = UsdGeom.XformCache()
-        hull_verts = []
+        hull_parts = []
         for _child in Usd.PrimRange(prim):
             _mesh = UsdGeom.Mesh(_child)
             _pts = _mesh.GetPointsAttr().Get()
             if not _pts:
                 continue
-            _cxf = _xc.GetLocalToWorldTransform(_child)
-            for _pt in _pts:
-                _wp = _cxf.Transform(Gf.Vec3d(_pt[0], _pt[1], _pt[2]))
-                # Transform world point into the body frame (centred on the geometry).
-                _lp = body_inv.Transform(_wp)
-                hull_verts.append([float(_lp[0]), float(_lp[1]), float(_lp[2])])
-        if hull_verts:
+            # World point, then into the body frame (centred on the geometry): both
+            # matrices folded into one, so each point is transformed once.
+            hull_parts.append(_transform_points(_pts, _xc.GetLocalToWorldTransform(_child) * body_inv))
+        if hull_parts:
+            # Subsample over all meshes together, after transforming -- the stride runs
+            # across the concatenation, not per mesh.
+            hull_verts = _np.concatenate(hull_parts)
             if hull_max_verts > 0 and len(hull_verts) > hull_max_verts:
                 step = max(1, len(hull_verts) // hull_max_verts)
                 hull_verts = hull_verts[::step][:hull_max_verts]
-            mesh_pts = _np.array(hull_verts, dtype=_np.float32)
+            mesh_pts = hull_verts.astype(_np.float32)
         else:
             logger.warning("Convex Hull: no mesh data, falling back to Box")
 
@@ -1456,6 +1496,46 @@ def _articulated_steps(
     return results
 
 
+def _transform_points(points, matrix: Gf.Matrix4d) -> _np.ndarray:
+    """*points* through *matrix*, as an (N, 3) float64 array -- Gf.Matrix4d.Transform
+    for every point in one product (row vectors: p * M, translation in the last row).
+    """
+    m = _np.asarray(matrix, dtype=_np.float64)
+    return _np.asarray(points, dtype=_np.float64) @ m[:3, :3] + m[3, :3]
+
+
+def _quat_mul(a: _np.ndarray, b: _np.ndarray) -> _np.ndarray:
+    """Hamilton product a * b of [w, x, y, z] quaternions, row by row."""
+    aw, ax, ay, az = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    bw, bx, by, bz = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+    return _np.stack(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        axis=-1,
+    )
+
+
+def _quat_as_rotation(q: _np.ndarray) -> _np.ndarray:
+    """[w, x, y, z] quaternions the way Gf.Rotation keeps them: unit length, and
+    exactly identity when the imaginary part is too short to give an axis.
+    """
+    q = q / _np.linalg.norm(q, axis=-1, keepdims=True)
+    no_axis = _np.linalg.norm(q[..., 1:], axis=-1) <= 1e-10  # GF_MIN_VECTOR_LENGTH
+    q[no_axis] = (1.0, 0.0, 0.0, 0.0)
+    return q
+
+
+def _quat_rotate(q: _np.ndarray, v: _np.ndarray) -> _np.ndarray:
+    """Rotate vectors *v* by unit [w, x, y, z] quaternions *q* (Gf.Rotation.TransformDir)."""
+    w, u = q[..., :1], q[..., 1:]
+    t = 2.0 * _np.cross(u, v)
+    return v + w * t + _np.cross(u, t)
+
+
 def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarray | None:
     """One prototype's mesh vertices, for its convex-hull collider (extracted once).
 
@@ -1470,19 +1550,16 @@ def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarr
     if not proto_prim:
         return None
     xc = UsdGeom.XformCache()
-    verts = []
+    parts = []
     for c in Usd.PrimRange(proto_prim):
         mesh = UsdGeom.Mesh(c)
         pts = mesh.GetPointsAttr().Get()
         if not pts:
             continue
-        cxf = xc.GetLocalToWorldTransform(c)
-        for p in pts:
-            w = cxf.Transform(Gf.Vec3d(p[0], p[1], p[2]))
-            verts.append([float(w[0]), float(w[1]), float(w[2])])
-    if len(verts) < 4:
+        parts.append(_transform_points(pts, xc.GetLocalToWorldTransform(c)))
+    if sum(len(v) for v in parts) < 4:
         return None
-    arr = _np.asarray(verts, dtype=_np.float32)
+    arr = _np.concatenate(parts).astype(_np.float32)
     if len(arr) > cap:
         arr = arr[:: max(1, len(arr) // cap)][:cap]
     return arr
@@ -1815,31 +1892,32 @@ def _instancer_steps(
     all_positions = []
     all_orientations = []
 
+    # Constant across frames, so gathered once: the body/instance index map, each
+    # instance's centre offset, and the instancer's inverse rotation as a quaternion.
+    bid_arr = _np.asarray(bids, dtype=_np.intp)
+    centres = _np.array([tuple(_instance_centre(i)) for i in range(num_instances)], dtype=_np.float64)
+    world_inv_np = _np.asarray(world_inv, dtype=_np.float64)
+    iq = inst_rot_inv.GetQuat()
+    inst_inv_q = _np.array([iq.GetReal(), *iq.GetImaginary()], dtype=_np.float64)
+
     def _snapshot():
         """The instancer's own arrays for the state the bodies are in right now."""
-        frame_pos = Vt.Vec3fArray(num_instances)
-        frame_ori = Vt.QuathArray(num_instances)
-        for i in range(num_instances):
-            bid = bids[i]
-            pos = data.xpos[bid]
-            qmj = data.xquat[bid]
+        pos = data.xpos[bid_arr]
 
-            # world orientation back to instancer-local
-            wq = Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3]))
-            body_rot = Gf.Rotation(wq)
-            # The body frame is on the instance's geometry centre; the instancer wants the
-            # instance ORIGIN, so undo that offset with the body's current rotation.
-            ctr_now = body_rot.TransformDir(_instance_centre(i))
-            world_pos = Gf.Vec3d(
-                float(pos[0]) - float(ctr_now[0]),
-                float(pos[1]) - float(ctr_now[1]),
-                float(pos[2]) - float(ctr_now[2]),
-            )
-            local_pos = world_inv.Transform(world_pos)
-            frame_pos[i] = Gf.Vec3f(float(local_pos[0]), float(local_pos[1]), float(local_pos[2]))
-            lq = (inst_rot_inv * body_rot).GetQuat()
-            li = lq.GetImaginary()
-            frame_ori[i] = Gf.Quath(float(lq.GetReal()), float(li[0]), float(li[1]), float(li[2]))
+        # world orientation back to instancer-local
+        body_q = _quat_as_rotation(data.xquat[bid_arr].astype(_np.float64))
+        # The body frame is on the instance's geometry centre; the instancer wants the
+        # instance ORIGIN, so undo that offset with the body's current rotation.
+        ctr_now = _quat_rotate(body_q, centres)
+        local_pos = (pos - ctr_now) @ world_inv_np[:3, :3] + world_inv_np[3, :3]
+        frame_pos = Vt.Vec3fArray.FromNumpy(_np.ascontiguousarray(local_pos, dtype=_np.float32))
+        # Gf.Rotation composes right-to-left in quaternions: (inst_rot_inv * body_rot) is
+        # body_q * inst_inv_q.
+        lq = _quat_as_rotation(_quat_mul(body_q, inst_inv_q[None, :]))
+        # QuathArray.FromNumpy wants [x, y, z, w], imaginary first.
+        frame_ori = Vt.QuathArray.FromNumpy(
+            _np.ascontiguousarray(_np.roll(lq, -1, axis=-1), dtype=_np.float32)
+        )
         return frame_pos, frame_ori
 
     tracks = _mocap_tracks(mocap_ids, poses)
@@ -2412,14 +2490,11 @@ def _collider_shape(prim, to_link):
         points = UsdGeom.Mesh(prim).GetPointsAttr().Get()
         if not points:
             return None
-        verts = []
-        for pt in points:
-            lp = local.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
-            verts.append([float(lp[0]), float(lp[1]), float(lp[2])])
+        verts = _transform_points(points, local)
         if len(verts) > 256:
             verts = verts[:: max(1, len(verts) // 256)][:256]
         # Position and rotation are already folded into the transformed vertices.
-        return "mesh", _np.array(verts, dtype=_np.float32), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+        return "mesh", verts.astype(_np.float32), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
 
     return None
 
