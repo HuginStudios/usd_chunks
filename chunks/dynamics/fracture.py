@@ -382,18 +382,14 @@ def _split_group(uniq, tris, tri_pos, has_uv) -> list:
     """The closed solids one connected group of triangles is made of.
 
     Tried in order, first whose every piece is closed wins: joined only across edges two
-    triangles share (boxes pressed together come apart); the group whole, when every edge
-    has exactly two triangles; paired by angle round each edge (_shared_edges); the group
-    whole as manifold3d takes it. Else the pieces of the first split, hulled.
+    triangles share (a wall built strip by strip comes apart into its strips); the group
+    whole, as manifold3d takes it (a picket and its pointed top stay one -- split, the top is
+    a sliver a hundredth of the rail's mass, and the solver blows up between them); paired
+    by angle round each edge (_shared_edges). Else the pieces of the first split, hulled.
     """
     corners = uniq[tris, :3]
     simple = _groups(len(tris), _two_sided(tri_pos, corners))
-    tries = [simple]
-    edges = np.sort(np.concatenate([tri_pos[:, [0, 1]], tri_pos[:, [1, 2]], tri_pos[:, [2, 0]]]), axis=1)
-    if (np.unique(edges, axis=0, return_counts=True)[1] == 2).all():
-        tries.append([np.arange(len(tris))])
-    tries.append(_groups(len(tris), _shared_edges(tri_pos, corners)))
-    tries.append([np.arange(len(tris))])
+    tries = [simple, [np.arange(len(tris))], _groups(len(tris), _shared_edges(tri_pos, corners))]
     for split in tries:
         solids = [_corners_solid(uniq, tris[sub], has_uv) for sub in split]
         if not any(problem for _solid, _uv, problem in solids):

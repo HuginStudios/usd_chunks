@@ -171,16 +171,17 @@ def test_loose_parts_split_a_mesh_of_separate_boards():
 
 @needs_manifold
 def test_loose_parts_keep_boxes_built_face_to_face_apart():
-    """A wall built strip by strip around a window: boxes sharing whole faces. Joined by shared
-    points it is one part that is not closed; split across two-sided edges, three boxes."""
+    """A wall built strip by strip around a window: a tall strip, a short one beside it under
+    the window, another tall one. Joined by shared points it is one part that is not closed;
+    split across two-sided edges, the three strips."""
     stage = Usd.Stage.CreateInMemory()
-    prim = _soup(stage, "/Wall", [((0.5, 0.0, 1.0), (1.0, 0.2, 2.0)), ((1.5, 0.0, 1.0), (1.0, 0.2, 2.0)),
+    prim = _soup(stage, "/Wall", [((0.5, 0.0, 1.0), (1.0, 0.2, 2.0)), ((1.5, 0.0, 0.5), (1.0, 0.2, 1.0)),
                                   ((2.5, 0.0, 1.0), (1.0, 0.2, 2.0))])
     parts, flat = fr._source_parts(prim)
     assert len(parts) == 3 and flat == 0
     assert all(not problem for _solid, _uv, problem in parts)
     vols = sorted(fr._solid_centre(solid)[0] for solid, _uv, _p in parts)
-    assert np.allclose(vols, [0.4, 0.4, 0.4], rtol=1e-3)
+    assert np.allclose(vols, [0.2, 0.4, 0.4], rtol=1e-3)
 
 
 @needs_manifold
