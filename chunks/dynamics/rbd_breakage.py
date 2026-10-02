@@ -656,7 +656,13 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
         firsts = [gi for gi in pending if groups[gi][5] <= 0.0]
         for gi in firsts:
             _start(gi, 0.0)
+        # A little margin for this one look: parts built flush (a picket on its rail) sit a
+        # rounding error apart and make no contact at zero margin, which broke the chain that
+        # tells a fence it stands on the ground.
+        margin = model.geom_margin.copy()
+        model.geom_margin[:] = 0.01 * float(np.median(slot_radius)) if n_slots else 0.0
         _mj.mj_forward(model, data)
+        model.geom_margin[:] = margin
         ncon = data.ncon
         con = data.contact
         pair = body_slot[model.geom_bodyid[con.geom[:ncon]]] if ncon else np.zeros((0, 2), dtype=np.int64)
