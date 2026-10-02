@@ -222,9 +222,18 @@ def _cut(solid, rng, jaggedness: float, min_fraction: float, candidates: int = 1
     return fallback[1] if fallback is not None else None
 
 
+def _longest_side(solid) -> float:
+    """The longest side of *solid*'s axis-aligned box."""
+    verts = np.asarray(solid.to_mesh().vert_properties, dtype=np.float64)[:, :3]
+    return float(np.ptp(verts, axis=0).max()) if len(verts) else 0.0
+
+
 def fracture(tree_index: int, root, rng, generations: int, jaggedness: float,
-             min_fraction: float = 0.04, candidates: int = 1) -> list[Piece]:
-    """Cut *root* down *generations* levels. Pieces are listed parents-first."""
+             min_fraction: float = 0.04, candidates: int = 1, min_size: float = 0.0) -> list[Piece]:
+    """Cut *root* down *generations* levels. Pieces are listed parents-first.
+
+    A piece whose longest side is under *min_size* is not cut again.
+    """
     vol, centre = _solid_centre(root)
     pieces = [Piece(tree_index, 0, -1, 0, root, centre, vol)]
     frontier = [0]
@@ -232,6 +241,8 @@ def fracture(tree_index: int, root, rng, generations: int, jaggedness: float,
         nxt = []
         for n in frontier:
             parent = pieces[n]
+            if min_size > 0.0 and _longest_side(parent.solid) < min_size:
+                continue
             islands = _cut(parent.solid, rng, jaggedness, min_fraction, candidates)
             if islands is None:
                 continue
@@ -332,12 +343,173 @@ def _source_solid(prim) -> tuple[object, bool, str]:
     closed. A mesh that still is not closed comes back as its convex hull, and *problem*
     says so.
     """
+    corners = _mesh_corners(prim)
+    if corners is None:
+        return None, False, "has no geometry"
+    props, tri_fc, has_uv = corners
+    uniq, inverse = _weld(props)
+    return _corners_solid(uniq, inverse[tri_fc], has_uv)
+
+
+def _source_parts(prim) -> tuple[list[tuple[object, bool, str]], int]:
+    """Like _source_solid, but one solid per loose part.
+
+    A fence is one mesh of separate pickets, a house's planks one mesh of separate boards.
+    As one source each is a single body, collided as the hull of the lot -- a solid slab.
+    A part is what shares points (by position, so a UV seam does not split one), then split
+    into the closed solids it is built from (_split_group). Flat parts (a gable drawn as one
+    face) have no volume to fracture and are left out.
+
+    Returns (parts, how many flat parts were left out).
+    """
+    corners = _mesh_corners(prim)
+    if corners is None:
+        return [(None, False, "has no geometry")], 0
+    props, tri_fc, has_uv = corners
+    uniq, inverse = _weld(props)
+    tris = inverse[tri_fc]
+    _, pos_id = np.unique(np.round(uniq[:, :3], 6), axis=0, return_inverse=True)
+    tri_pos = pos_id.reshape(-1)[tris]
+
+    parts = []
+    for group in _groups(len(tri_pos), _shared_points(tri_pos)):
+        parts.extend(_split_group(uniq, tris[group], tri_pos[group], has_uv))
+    solid_parts = [part for part in parts if part[0] is not None and _solid_centre(part[0])[0] > 1e-12]
+    return (solid_parts, len(parts) - len(solid_parts)) if solid_parts else (parts[:1], 0)
+
+
+def _split_group(uniq, tris, tri_pos, has_uv) -> list:
+    """The closed solids one connected group of triangles is made of.
+
+    Tried in order, first whose every piece is closed wins: joined only across edges two
+    triangles share (boxes pressed together come apart); the group whole, when every edge
+    has exactly two triangles; paired by angle round each edge (_shared_edges); the group
+    whole as manifold3d takes it. Else the pieces of the first split, hulled.
+    """
+    corners = uniq[tris, :3]
+    simple = _groups(len(tris), _two_sided(tri_pos, corners))
+    tries = [simple]
+    edges = np.sort(np.concatenate([tri_pos[:, [0, 1]], tri_pos[:, [1, 2]], tri_pos[:, [2, 0]]]), axis=1)
+    if (np.unique(edges, axis=0, return_counts=True)[1] == 2).all():
+        tries.append([np.arange(len(tris))])
+    tries.append(_groups(len(tris), _shared_edges(tri_pos, corners)))
+    tries.append([np.arange(len(tris))])
+    for split in tries:
+        solids = [_corners_solid(uniq, tris[sub], has_uv) for sub in split]
+        if not any(problem for _solid, _uv, problem in solids):
+            return solids
+    return [_corners_solid(uniq, tris[sub], has_uv) for sub in simple]
+
+
+def _two_sided(tri_pos, corners) -> np.ndarray:
+    """Pairs of triangles across each edge exactly two of them use, unless back to back."""
+    n = len(tri_pos)
+    edges = np.sort(np.stack([tri_pos[:, [0, 1]], tri_pos[:, [1, 2]], tri_pos[:, [2, 0]]], axis=1).reshape(-1, 2), axis=1)
+    _, edge_id, uses = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    edge_id = edge_id.reshape(-1)
+    owner = np.repeat(np.arange(n), 3)
+    order = np.argsort(edge_id, kind="stable")
+    two = order[uses[edge_id[order]] == 2]
+    pairs = np.stack([owner[two[0::2]], owner[two[1::2]]], axis=1)
+    normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+    return pairs[np.einsum("ij,ij->i", normal[pairs[:, 0]], normal[pairs[:, 1]]) > -0.999]
+
+
+def _shared_points(tri_pos) -> np.ndarray:
+    """Pairs of triangles that share a point."""
+    owner = np.repeat(np.arange(len(tri_pos)), 3)
+    order = np.argsort(tri_pos.reshape(-1), kind="stable")
+    point = tri_pos.reshape(-1)[order]
+    same = point[1:] == point[:-1]
+    return np.stack([owner[order][:-1][same], owner[order][1:][same]], axis=1)
+
+
+def _shared_edges(tri_pos, corners) -> np.ndarray:
+    """Pairs of triangles that bound the same solid across each edge.
+
+    Where two triangles meet, they pair -- unless they face opposite ways, which is two
+    boxes pressed together sharing a face's diagonal. Where more meet (boxes built face to
+    face, a wall strip by strip), they are sorted by angle round the edge and each pairs with
+    the neighbour on its inside: the standard way to read a non-manifold edge as shells.
+    """
+    n = len(tri_pos)
+    a = tri_pos[:, [0, 1, 2]].reshape(-1)
+    b = tri_pos[:, [1, 2, 0]].reshape(-1)
+    edges = np.stack([np.minimum(a, b), np.maximum(a, b)], axis=1)
+    _, edge_id, uses = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    edge_id = edge_id.reshape(-1)
+    owner = np.repeat(np.arange(n), 3)
+    slot = np.tile(np.arange(3), n)
+    normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+    order = np.argsort(edge_id, kind="stable")
+    bounds = np.flatnonzero(np.diff(np.concatenate([[-1], edge_id[order], [-1]])))
+    pairs = []
+    for lo, hi in zip(bounds[:-1], bounds[1:]):
+        group = order[lo:hi]
+        if len(group) == 2:
+            t0, t1 = owner[group]
+            if normal[t0] @ normal[t1] > -0.999:
+                pairs.append((t0, t1))
+            continue
+        if len(group) < 2 or len(group) % 2:
+            continue
+        tris, slots = owner[group], slot[group]
+        p0 = corners[tris, slots]
+        p1 = corners[tris, (slots + 1) % 3]
+        axis = p1[0] - p0[0]
+        axis = axis / max(np.linalg.norm(axis), 1e-12)
+        # One direction along the edge for all of them: flip where this triangle runs it backwards.
+        along = np.einsum("ij,j->i", p1 - p0, axis) < 0.0
+        start = np.where(along[:, None], p1, p0)
+        far = corners[tris, (slots + 2) % 3] - start
+        radial = far - np.outer(far @ axis, axis)
+        ref = radial[0] / max(np.linalg.norm(radial[0]), 1e-12)
+        side = np.cross(axis, ref)
+        angle = np.arctan2(radial @ side, radial @ ref) % (2 * np.pi)
+        # The way round the edge each triangle's solid lies: its inward normal against the
+        # direction of increasing angle at it. Ties (faces pressed together) put the one whose
+        # solid lies behind it first.
+        rad_unit = radial / np.maximum(np.linalg.norm(radial, axis=1, keepdims=True), 1e-12)
+        ahead = np.einsum("ij,ij->i", -normal[tris], np.cross(axis, rad_unit)) > 0.0
+        ring = np.lexsort((ahead, np.round(angle, 6)))
+        first = 0 if ahead[ring[0]] else 1
+        ring = np.roll(ring, -first)
+        for i in range(0, len(ring), 2):
+            pairs.append((tris[ring[i]], tris[ring[i + 1]]))
+    return np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+
+
+def _groups(count, pairs) -> list[np.ndarray]:
+    """The connected groups of *count* items joined by *pairs*, as index arrays."""
+    parent = np.arange(count)
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in pairs:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+    roots = np.array([find(i) for i in range(count)])
+    return [np.flatnonzero(roots == r) for r in np.unique(roots)]
+
+
+def _mesh_corners(prim):
+    """(corner properties, triangle corners, has_uv) of a mesh prim in world space, or None.
+
+    A corner's properties are its world position, then its UV and normal when it has them.
+    """
     mesh = UsdGeom.Mesh(prim)
     pts = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64).reshape(-1, 3)
     counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
     idx = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
     if not len(pts) or not len(counts):
-        return None, False, "has no geometry"
+        return None
     xf = np.array(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()), dtype=np.float64)
     world = pts @ xf[:3, :3] + xf[3, :3]
 
@@ -379,10 +551,20 @@ def _source_solid(prim) -> tuple[object, bool, str]:
         cols.append(uv)
         if nrm is not None:
             cols.append(nrm)
-    corner_props = np.hstack(cols)
+    return np.hstack(cols), tri_fc, uv is not None
+
+
+def _weld(corner_props):
+    """(unique corners, each corner's row in them): corners equal in every property merge."""
     uniq, inverse = np.unique(np.round(corner_props, 6), axis=0, return_inverse=True)
-    inverse = inverse.reshape(-1)
-    tris = inverse[tri_fc]
+    return uniq, inverse.reshape(-1)
+
+
+def _corners_solid(welded, tris, has_uv) -> tuple[object, bool, str]:
+    """Triangles *tris* over the *welded* corners (_weld) as a manifold, else their convex hull."""
+    keep, tris = np.unique(tris, return_inverse=True)
+    tris = tris.reshape(-1, 3)
+    uniq = welded[keep]
     # USD meshes may be authored left-handed or simply inside out; manifold wants outward.
     vol, _ = _centroid(uniq[:, :3], tris)
     if vol < 0.0:
@@ -391,8 +573,9 @@ def _source_solid(prim) -> tuple[object, bool, str]:
     m.merge()
     solid = _mf.Manifold(m)
     if solid.status() != _mf.Error.NoError or solid.is_empty():
-        return _mf.Manifold.hull_points(world), False, "is not a closed surface -- fractured as its convex hull"
-    return solid, uv is not None, ""
+        hull = _mf.Manifold.hull_points(uniq[:, :3])
+        return hull, False, "is not a closed surface -- fractured as its convex hull"
+    return solid, has_uv, ""
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +721,8 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
     generations = max(0, min(8, node.get_param("generations", is_i).value))
     jaggedness = max(0.0, min(1.0, node.get_param("jaggedness", is_f).value))
     candidates = 1 + int(round(7 * max(0.0, min(1.0, node.get_param("piece_shape", is_f).value))))
+    min_size = max(0.0, node.get_param("min_piece_size", is_f).value)
+    loose = node.get_param("loose_parts", chunk.is_param_t(bool)).value
     trees, problems, sources = [], [], []
     if node.get_param("source", is_s).value == SOURCE_ROCKS:
         count = max(1, node.get_param("count", is_i).value)
@@ -568,26 +753,37 @@ def build_trees(stage, node) -> tuple[list[Tree], list[str], list]:
         for p in Usd.PrimRange(prim):
             if not p.IsA(UsdGeom.Mesh):
                 continue
-            solid, has_uv, problem = _source_solid(p)
-            if solid is None:
-                problems.append(f"{p.GetName()} {problem or 'could not be read'}")
+            parts, flat = _source_parts(p) if loose else ([_source_solid(p)], 0)
+            if flat:
+                problems.append(f"{p.GetName()}: {flat} flat part{'s' if flat > 1 else ''} left out")
+            hulled = sum(1 for solid, _uv, problem in parts if solid is not None and problem)
+            if parts[0][0] is None:
+                problems.append(f"{p.GetName()} {parts[0][2] or 'could not be read'}")
                 continue
-            if problem:
-                problems.append(f"{p.GetName()} {problem}")
-            solid = solid.as_original()
-            index = len(trees)
-            pieces = fracture(index, solid, rng, generations, jaggedness, candidates=candidates)
+            if hulled and len(parts) > 1:
+                problems.append(f"{p.GetName()}: {hulled} of {len(parts)} parts are not closed -- "
+                                "fractured as their convex hulls")
+            elif hulled:
+                problems.append(f"{p.GetName()} {parts[0][2]}")
             colour = UsdGeom.Mesh(p).GetDisplayColorAttr().Get()
             material = UsdShade.MaterialBindingAPI(p).ComputeBoundMaterial()[0]
-            trees.append(Tree(index, Tf.MakeValidIdentifier(p.GetName()), pieces, solid.original_id(), has_uv,
-                              colour=tuple(colour[0]) if colour else None,
-                              material=material.GetPath() if material else None))
+            base = Tf.MakeValidIdentifier(p.GetName())
+            for k, (solid, has_uv, _problem) in enumerate(parts):
+                solid = solid.as_original()
+                index = len(trees)
+                pieces = fracture(index, solid, rng, generations, jaggedness, candidates=candidates,
+                                  min_size=min_size)
+                trees.append(Tree(index, f"{base}_{k:03d}" if len(parts) > 1 else base, pieces,
+                                  solid.original_id(), has_uv,
+                                  colour=tuple(colour[0]) if colour else None,
+                                  material=material.GetPath() if material else None))
             sources.append(p)
     return trees, problems, sources
 
 
 #: The params the cut reads. The others only change how its pieces are written.
-_CUT_PARAMS = ("source", "source_prims", "seed", "generations", "jaggedness", "piece_shape", "count", "size",
+_CUT_PARAMS = ("source", "source_prims", "seed", "generations", "jaggedness", "piece_shape", "loose_parts",
+               "min_piece_size", "count", "size",
                "size_variation", "roughness", "flatness", "detail", "rock_origin")
 #: The params the piece meshes read, on top of the cut.
 _SURFACE_PARAMS = ("output_path", "uv_scale", "inside_material", "outside_material", "bevel", "bevel_detail")
@@ -797,6 +993,16 @@ def main() -> chunk.Chunk:
         tooltip="0 = take the first cut that works, which leaves wedges and needles. Higher tries "
         "more planes per cut and keeps the one leaving the chunkiest pieces -- gravel rather "
         "than shards. Costs fracture time, not simulation time.",
+    ))
+    chunk_api.add_param(chunk.Checkbox(
+        "loose_parts", "Split Loose Parts", default_value=False,
+        tooltip="Each separate part of a mesh -- a fence's pickets, a wall's planks -- becomes its own "
+        "body. Off, a mesh is one body, and it collides as the convex hull of all its parts.",
+    ))
+    chunk_api.add_param(chunk.Spinbox(
+        "min_piece_size", "Min Piece Size", default_value=0.0,
+        tooltip="A piece whose longest side is under this, in scene units, is not cut again. "
+        "Keeps many small parts from turning into thousands of bodies. 0 = cut every generation.",
     ))
     chunk_api.add_param(chunk.Spinbox("seed", "Seed", default_value=0, is_int=True))
 

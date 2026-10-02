@@ -140,6 +140,72 @@ def test_an_open_mesh_falls_back_to_its_hull_and_says_so():
     assert "convex hull" in problem
 
 
+def _soup(stage, path, boxes, flats=()):
+    """One mesh prim holding several boxes (centre, size), plus flat quads, as triangles."""
+    verts, tris = [], []
+    for centre, size in boxes:
+        v, t = rig.box(centre, size)
+        tris.extend((np.asarray(t) + len(verts)).tolist())
+        verts.extend(np.asarray(v).tolist())
+    for quad in flats:
+        base = len(verts)
+        verts.extend(quad)
+        tris.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]])
+    m = UsdGeom.Mesh.Define(stage, path)
+    m.CreatePointsAttr([Gf.Vec3f(*map(float, p)) for p in verts])
+    m.CreateFaceVertexCountsAttr([3] * len(tris))
+    m.CreateFaceVertexIndicesAttr([int(i) for t in tris for i in t])
+    return m.GetPrim()
+
+
+@needs_manifold
+def test_loose_parts_split_a_mesh_of_separate_boards():
+    """A fence is one mesh of pickets: each is its own part, and each part is closed."""
+    stage = Usd.Stage.CreateInMemory()
+    prim = _soup(stage, "/Fence", [((x * 2.0, 0.0, 0.0), (0.2, 0.2, 1.0)) for x in range(5)])
+    parts, flat = fr._source_parts(prim)
+    assert len(parts) == 5 and flat == 0
+    assert all(solid is not None and not problem for solid, _uv, problem in parts)
+    assert fr._source_solid(prim)[2] == ""  # as one source it is closed too -- but one body
+
+
+@needs_manifold
+def test_loose_parts_keep_boxes_built_face_to_face_apart():
+    """A wall built strip by strip around a window: boxes sharing whole faces. Joined by shared
+    points it is one part that is not closed; split across two-sided edges, three boxes."""
+    stage = Usd.Stage.CreateInMemory()
+    prim = _soup(stage, "/Wall", [((0.5, 0.0, 1.0), (1.0, 0.2, 2.0)), ((1.5, 0.0, 1.0), (1.0, 0.2, 2.0)),
+                                  ((2.5, 0.0, 1.0), (1.0, 0.2, 2.0))])
+    parts, flat = fr._source_parts(prim)
+    assert len(parts) == 3 and flat == 0
+    assert all(not problem for _solid, _uv, problem in parts)
+    vols = sorted(fr._solid_centre(solid)[0] for solid, _uv, _p in parts)
+    assert np.allclose(vols, [0.4, 0.4, 0.4], rtol=1e-3)
+
+
+@needs_manifold
+def test_a_flat_part_is_left_out_and_counted():
+    stage = Usd.Stage.CreateInMemory()
+    quad = [(5.0, 0.0, 0.0), (6.0, 0.0, 0.0), (6.0, 0.0, 1.0), (5.0, 0.0, 1.0)]
+    prim = _soup(stage, "/Gable", [((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))], flats=[quad])
+    parts, flat = fr._source_parts(prim)
+    assert len(parts) == 1 and flat == 1
+
+
+@needs_manifold
+def test_min_piece_size_stops_cutting_small_pieces():
+    stage = Usd.Stage.CreateInMemory()
+    solid = fr._source_solid(_soup(stage, "/Board", [((0.0, 0.0, 0.0), (4.0, 0.2, 0.2))]))[0].as_original()
+    rng = np.random.default_rng(3)
+    full = fr.fracture(0, solid, rng, 3, 0.2)
+    capped = fr.fracture(0, solid, np.random.default_rng(3), 3, 0.2, min_size=1.5)
+    assert len(full) == 15
+    assert len(capped) < len(full)
+    leaves = [p for p in capped if not p.children]
+    assert all(fr._longest_side(p.solid) < 1.5 or p.generation == 3 for p in leaves)
+    assert all(fr._longest_side(capped[p.parent].solid) >= 1.5 for p in capped if p.parent >= 0)
+
+
 # ---------------------------------------------------------------------------
 # The world, read the UsdPhysics way
 # ---------------------------------------------------------------------------
