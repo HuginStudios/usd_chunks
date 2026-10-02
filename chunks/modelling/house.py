@@ -60,6 +60,9 @@ _ROOF_STYLES = [ROOF_GABLE, ROOF_HIP, ROOF_GAMBREL, ROOF_SALTBOX, ROOF_MONO]
 #: The flat-mesh prims this chunk authors, each its own colour, under the house scope.
 #: The instanced parts (Windows, RoofTiles, RidgeTiles) are PointInstancers alongside them.
 PART_NAMES = ("Walls", "Planks", "Trim", "RoofTrim", "Door", "Roof", "Chimney")
+#: Thickness of a roof deck board, in the scene's units. Hangs below the deck plane, so the
+#: tiles that sit on the plane do not move.
+ROOF_DECK = 0.05
 
 #: Safety cap on instanced tiles, so a slider dragged to its end cannot wedge a session.
 _MAX_TILES = 24000
@@ -124,6 +127,30 @@ class _Mesh:
         self.points.extend(Gf.Vec3f(*p) for p in pts)
         self.counts.append(len(pts))
         self.indices.extend(range(start, start + len(pts)))
+
+    def slab(self, uvw_points, thickness, toward=None):
+        """A flat polygon given *thickness*: the face, its back and a side per edge.
+
+        A closed solid where ngon() draws one face -- which is what lets Fracture cut a roof
+        deck or a gable into boards instead of breaking the convex hull of the whole lot.
+        The board grows *toward* that (u, v, w) direction; by default, down.
+        """
+        top = [Gf.Vec3d(*p) for p in uvw_points]
+        normal = Gf.Vec3d(0.0, 0.0, 0.0)
+        for k in range(2, len(top)):
+            normal += Gf.Cross(top[k - 1] - top[0], top[k] - top[0])
+        if normal.GetLength() < 1e-12:
+            return
+        normal.Normalize()
+        grow = Gf.Vec3d(*(toward or (0.0, 0.0, -1.0)))
+        if Gf.Dot(normal, grow) > 0.0:  # the face looks away from where the board grows
+            top, normal = top[::-1], -normal
+        bottom = [p - normal * thickness for p in top]
+        self.ngon([tuple(p) for p in top])
+        self.ngon([tuple(p) for p in bottom[::-1]])
+        for i in range(len(top)):
+            j = (i + 1) % len(top)
+            self.ngon([tuple(top[j]), tuple(top[i]), tuple(bottom[i]), tuple(bottom[j])])
 
     def box(self, u0, u1, v0, v1, w0, w1):
         """An axis-aligned box in the (u, v, w) frame, as 6 unshared quads."""
@@ -428,12 +455,12 @@ def _build_wall_panel(mesh, wall, height, thickness, holes):
         panel(cursor, length, 0.0, height)
 
 
-def _mono_end_walls(mesh, mesh_planks, w, d, h_front, h_back, spacing):
-    """The two sloped, window-less end walls under a Mono roof -- flat trapezoids, since
+def _mono_end_walls(mesh, mesh_planks, w, d, h_front, h_back, spacing, thickness=0.2):
+    """The two sloped, window-less end walls under a Mono roof -- solid trapezoids, since
     nothing is ever punched into them, grooved to the roofline like every other wall.
     """
     for u, sign in ((0.0, -1), (w, 1)):
-        mesh.ngon([(u, 0.0, 0.0), (u, d, 0.0), (u, d, h_back), (u, 0.0, h_front)])
+        mesh.slab([(u, 0.0, 0.0), (u, d, 0.0), (u, d, h_back), (u, 0.0, h_front)], thickness, toward=(-sign, 0.0, 0.0))
         _gable_grooves(mesh_planks, u, sign, [(0.0, h_front), (d, h_back)], 0.0, spacing, d)
 
 
@@ -716,13 +743,15 @@ def _rake_board(mesh, gu, sign, a, b, board_width):
     nv, nz = -dz / length, dv / length
     hw = board_width / 2.0
     u_out = gu + sign * 0.02
-    mesh.ngon(
+    mesh.slab(
         [
             (u_out, v_a - nv * hw, z_a - nz * hw),
             (u_out, v_a + nv * hw, z_a + nz * hw),
             (u_out, v_b + nv * hw, z_b + nz * hw),
             (u_out, v_b - nv * hw, z_b - nz * hw),
-        ]
+        ],
+        0.02,
+        toward=(-sign, 0.0, 0.0),
     )
 
 
@@ -770,6 +799,7 @@ def _build_profile_roof(
     profile,
     trim_width,
     plank_spacing,
+    wall_thickness=0.2,
 ):
     """Gable, Saltbox and Gambrel: a deck plane per profile segment, extended past the
     wall at the same slope so an eave dips below the wall top the way a real one does,
@@ -791,7 +821,7 @@ def _build_profile_roof(
         if i == n - 2:
             bv, bz = d + overhang, z_b + slope * overhang
         plane = [(u0, av, az), (u1, av, az), (u1, bv, bz), (u0, bv, bz)]
-        mesh_roof.ngon(plane)
+        mesh_roof.slab(plane, ROOF_DECK)
         planes.append(plane)
         if i == 0:
             _eave_board(mesh_edge, u0, u1, av, az, trim_width * 1.5, trim_width * 2.2)
@@ -799,7 +829,7 @@ def _build_profile_roof(
             _eave_board(mesh_edge, u0, u1, bv, bz, trim_width * 1.5, trim_width * 2.2)
 
     for gu, sign in ((0.0, -1), (w, 1)):
-        mesh_walls.ngon([(gu, v, z) for v, z in pts])
+        mesh_walls.slab([(gu, v, z) for v, z in pts], wall_thickness, toward=(-sign, 0.0, 0.0))
         _gable_grooves(mesh_planks, gu, sign, pts, wall_top, plank_spacing, d)
         for i in range(n - 1):
             _rake_board(mesh_edge, gu, sign, pts[i], pts[i + 1], trim_width * 1.9)
@@ -831,7 +861,7 @@ def _build_hip_roof(mesh_roof, w, d, wall_top, overhang, pitch):
         [fr, br, ridge_b],
     ]
     for plane in planes:
-        mesh_roof.ngon(plane)
+        mesh_roof.slab(plane, ROOF_DECK)
     return planes, ridge_a, ridge_b
 
 
@@ -848,13 +878,14 @@ def _build_mono_roof(
     pitch,
     trim_width,
     plank_spacing,
+    wall_thickness=0.2,
 ):
     """A single flat slope, front wall short and back wall tall -- the one style whose
     walls are not uniform height.
     """
     rise = d * math.tan(pitch)
     h_front, h_back = wall_top, wall_top + rise
-    _mono_end_walls(mesh_walls, mesh_planks, w, d, h_front, h_back, plank_spacing)
+    _mono_end_walls(mesh_walls, mesh_planks, w, d, h_front, h_back, plank_spacing, wall_thickness)
     _add_corner_posts(mesh_trim, w, d, h_front, h_back, trim_width)
 
     slope = rise / d if d else 0.0
@@ -862,7 +893,7 @@ def _build_mono_roof(
     v0, v1 = -overhang, d + overhang
     z0, z1 = h_front - slope * overhang, h_back + slope * overhang
     plane = [(u0, v0, z0), (u1, v0, z0), (u1, v1, z1), (u0, v1, z1)]
-    mesh_roof.ngon(plane)
+    mesh_roof.slab(plane, ROOF_DECK)
     _eave_board(mesh_edge, u0, u1, v0, z0, trim_width * 1.5, trim_width * 2.2)
     return [plane], (0.0, d, h_back), (w, d, h_back)
 
@@ -1400,6 +1431,7 @@ def execute(node: chunk.Chunk) -> None:
             s["pitch"],
             s["trim_width"],
             s["plank_spacing"],
+            s["wall_thickness"],
         )
         h_front, h_back = top, top + d * math.tan(s["pitch"])
         heights = {"front": h_front, "back": h_back}
@@ -1422,6 +1454,7 @@ def execute(node: chunk.Chunk) -> None:
             _roof_profile(style, d, s["pitch"]),
             s["trim_width"],
             s["plank_spacing"],
+            s["wall_thickness"],
         )
         heights = {"front": top, "back": top, "left": top, "right": top}
 
