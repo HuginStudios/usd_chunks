@@ -63,7 +63,7 @@ def test_a_later_value_still_updates_it(qapp):
 def test_a_long_readout_wraps_instead_of_being_cut_off(qapp):
     """A solver's error named a file, and only "simulation failed: C:" and the first folder or
     two showed; the rest was cut off at the panel edge."""
-    message = r"simulation failed: C:\Users\k3rps\Desktop\usdbundle_26.05\Python\python.exe: No module named x"
+    message = r"simulation failed: C:\Users\artist\Desktop\usdbundle_26.05\Python\python.exe: No module named x"
     widget, _ = _label(qapp, message)
     assert widget.wordWrap()
     line = widget.fontMetrics().height()

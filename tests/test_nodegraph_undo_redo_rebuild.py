@@ -12,8 +12,8 @@ chunks, so a prim coming back has to find its chunk again.
 
 Under this model the graph reconciles correctly, both for a menu-created chunk and for one
 auto-created by a gizmo drag. So the real cause is something the model does not capture:
-the actual undo engine (`hugin`) cannot be driven from here -- it is a binary built for
-Python 3.11 against the bundle's USD, and does not import under this interpreter.
+the actual undo engine cannot be driven from here -- it is a host-side binary that lives
+outside this repository.
 
 Two things this DID surface, both real and neither the reported bug:
 

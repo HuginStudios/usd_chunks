@@ -1,0 +1,3 @@
+# Every change needs a review from a Hugin Studios maintainer before it can merge.
+# Branch protection on main enforces this ("Require review from Code Owners").
+* @DanEnglesson @k3rps @skrotViktor
