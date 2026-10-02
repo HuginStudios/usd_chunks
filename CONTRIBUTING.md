@@ -19,7 +19,7 @@ pip install -e ".[dev,ui]"
 ```
 
 That gives you the library, the `usdchunks` CLI, OpenUSD (`usd-core`, pulled in by `dev`)
-and PySide6 for the widget tests. Python 3.10 or newer is required.
+and PySide6 for the widget tests. Python 3.11 or newer is required.
 
 `usd-core` is not a hard dependency of the package — it lives in the `standalone` extra,
 because a DCC that already ships USD must use its own rather than have a second one
