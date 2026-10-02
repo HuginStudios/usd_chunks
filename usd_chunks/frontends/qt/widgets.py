@@ -517,7 +517,7 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDoubleSpinBox):
@@ -560,7 +560,7 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpinBox):
@@ -603,7 +603,7 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
@@ -676,7 +676,7 @@ class ChunkLabelWidget(ChunkParamWidgetBase[chunk.Label], QtWidgets.QLabel):
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidget):
@@ -800,7 +800,7 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
     def update_from_state(self):
         # Base ChunkParamWidgetBase.update_from_state is a no-op stub with no default
@@ -859,7 +859,7 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget):
@@ -926,7 +926,7 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox):
@@ -1018,7 +1018,7 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheckBox):
@@ -1043,7 +1043,7 @@ class ChunkCheckBoxWidget(ChunkParamWidgetBase[chunk.Checkbox], QtWidgets.QCheck
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushButton):
@@ -1068,7 +1068,7 @@ class ChunkPushButtonWidget(ChunkParamWidgetBase[chunk.Button], QtWidgets.QPushB
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
@@ -1086,7 +1086,7 @@ class ChunkSeparatorWidget(ChunkParamWidgetBase, QtWidgets.QFrame):
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
 class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.QPushButton):
@@ -1128,7 +1128,7 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
         self.setHidden(val)
 
     def set_enabled(self, val: bool):
-        self.setEnabled(val)
+        self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
     def update_from_state(self):
         self.set_hidden(self.param.has_state(ChunkFlags.State.HIDDEN))
@@ -1399,6 +1399,12 @@ class LabeledWidget(QtWidgets.QWidget):
             self.label.style().unpolish(self.label)
             self.label.style().polish(self.label)
         self.label.setToolTip(str(raw) if expr else "")
+        # A wire locks the field (chunk_utils.is_wire_locked); set_enabled folds that in, so
+        # re-applying the state locks it when a wire lands and frees it when one is pulled.
+        locked = chunk_utils.is_wire_locked(self.widget.param)
+        if getattr(self, "_wire_locked", False) != locked:
+            self._wire_locked = locked
+            self.widget.update_from_state()
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self.should_show_tooltip():

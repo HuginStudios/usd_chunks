@@ -511,11 +511,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """
         if not (self.initialized and self._stage):
             return
-        for layer in self._stage.GetLayerStack(includeSessionLayers=True):
-            spec = layer.GetAttributeAtPath(attr.GetPath())
-            if spec and spec.connectionPathList.explicitItems:
-                with Usd.EditContext(self._stage, layer):
-                    attr.ClearConnections()
+        chunk_utils.clear_connections_everywhere(self._stage, attr)
 
     def _expr_connections(self, prim: Usd.Prim, raw: str) -> list:
         """Build Sdf.Path connection targets for an expression string, preferring outputs: over inputs:.
@@ -529,7 +525,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """
         chunk_root = str(prim.GetParent().GetPath())
         targets = []
-        for node, attr_name in chunk_utils.parse_expression(raw):
+        for node, attr_name in chunk_utils.parse_expression_attrs(raw):
             target_prim = self._stage.GetPrimAtPath(Sdf.Path(f"{chunk_root}/{node}"))
             kind = ("outputs" if target_prim.IsValid()
                     and target_prim.GetAttribute(f"outputs:{attr_name}").IsValid() else "inputs")
@@ -1383,6 +1379,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     and c.prim_path.startswith(old_prefix)):
                 c.prim_path = rebase(c.prim_path)
 
+    def _patch_renamed_param_refs(self, chunk: core.ChunkBase, old_name: str, new_name: str) -> None:
+        """Point every expression that reads a renamed param of chunk at its new name."""
+        # An expression names a param by its bare name (@node.param@), at any depth, so
+        # match the whole token with this chunk's name: ".a@" alone would also rewrite
+        # another chunk's param of the same name. Patched whether or not the param has an
+        # attribute of its own: one still at its default has none, and other chunks can
+        # refer to it all the same. A list row is @node.param[1]@, matched by the second pair.
+        for old_ref, new_ref in ((f"@{chunk.name}.{old_name}@", f"@{chunk.name}.{new_name}@"),
+                                 (f"@{chunk.name}.{old_name}[", f"@{chunk.name}.{new_name}[")):
+            _patch_expressions(self._stage, old_ref, new_ref)
+            _patch_param_expressions(self._scene.get_chunks(), old_ref, new_ref)
+
     def _handle_param_rename(self, owner: core.ChunkCommon, old_name: str, new_name: str) -> None:
         """Rename the USD attributes behind a renamed param, vector or group, and rebind them.
 
@@ -1404,6 +1412,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             None,
         )
         if found is None:
+            # A list template is not on the path walk (a list shows its rows, not its
+            # template), and holds no attribute of its own, but rows are read by its name.
+            if (isinstance(owner, core.ChunkParamBase) and (chunk := owner.get_chunk()) is not None
+                    and _under_list_group(owner, chunk)):
+                self._patch_renamed_param_refs(chunk, old_name, new_name)
             return
         chunk, segments = found
         new_ns = ":".join(segments)
@@ -1425,14 +1438,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             elif not is_leaf and name.startswith(old_attr + ":"):
                 renames[name] = f"{_INPUTS_PREFIX}{new_ns}{name[len(old_attr):]}"
 
-        # An expression names a param by its bare name (@node.param@), at any depth, so
-        # match the whole token with this chunk's name: ".a@" alone would also rewrite
-        # another chunk's param of the same name. Patched whether or not the param has an
-        # attribute of its own: one still at its default has none, and other chunks can
-        # refer to it all the same.
-        old_ref, new_ref = f"@{chunk.name}.{old_name}@", f"@{chunk.name}.{new_name}@"
-        _patch_expressions(self._stage, old_ref, new_ref)
-        _patch_param_expressions(self._scene.get_chunks(), old_ref, new_ref)
+        self._patch_renamed_param_refs(chunk, old_name, new_name)
         if not renames:
             return
 
@@ -2423,7 +2429,7 @@ def _patch_param_expressions(chunks, old: str, new: str) -> None:
         new: The replacement.
     """
     for c in chunks:
-        for param in c.get_params():
+        for param in core.iter_params_and_rows(c):
             raw = getattr(param, "raw_value", None)
             if isinstance(raw, str) and old in raw:
                 param.value = raw.replace(old, new)
@@ -7744,7 +7750,7 @@ def _author_prim(
             if isinstance(store_value, str) and chunk_utils.has_expression(store_value):
                 attr.SetConnections([
                     Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
-                    for node_name, param_name in chunk_utils.parse_expression(store_value)
+                    for node_name, param_name in chunk_utils.parse_expression_attrs(store_value)
                 ])
 
     for vec_path, vector in _iter_chunk_vectors(chunk):
@@ -7778,7 +7784,7 @@ def _author_prim(
         if is_vec_expr:
             attr.SetConnections([
                 Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
-                for node_name, param_name in chunk_utils.parse_expression(raw)
+                for node_name, param_name in chunk_utils.parse_expression_attrs(raw)
             ])
             continue
         attr.Set(usd_value)

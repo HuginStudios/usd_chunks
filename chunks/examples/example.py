@@ -238,6 +238,7 @@ def main():
 
     # A row of the list can be wired to a param on another chunk in the node graph, like any other
     # slider. The row then follows that param. The other rows keep their own values.
+    # A row can also be wired out: the param it drives reads @HelloWorld.listSlider[0]@, row 0.
 
     # Prints the hierarchy of the chunk. Useful for debugging chunks
     # myChunk.print_hierarchy()

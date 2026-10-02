@@ -8,7 +8,6 @@ Edges follow inputs:chunk connections between prims.
 from __future__ import annotations
 
 import os
-import re
 import time
 import weakref
 from collections.abc import Iterable
@@ -2356,24 +2355,24 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 try:
                     param = node.chunk.get_param(attr_name[len("inputs:"):])
                     raw = getattr(param, 'raw_value', None) if param else None
-                    if isinstance(raw, str) and re.search(r'@\w+\.\w+@', raw):
+                    if isinstance(raw, str) and chunk_utils.has_expression(raw):
                         expression = raw
                 except Exception:
                     pass
 
-                for conn_path in attr.GetConnections():
+                # dict.fromkeys: two rows of one list read by one expression author the same
+                # connection twice, and _source_ports already finds both rows from either.
+                for conn_path in dict.fromkeys(attr.GetConnections()):
                     src_node = self._nodes.get(str(conn_path.GetPrimPath()))
                     if src_node is None:
                         continue
                     # Connection is always owned by the consumer, so the source
                     # always visualizes from its output dot regardless of attr prefix.
                     src_path = str(conn_path).replace(".inputs:", ".outputs:", 1)
-                    src_port = src_node.get_port(src_path)
-                    if src_port is None:
-                        continue
-                    edge = ChunkEdgeItem(src_port, dst_port, expression)
-                    self.addItem(edge)
-                    self._edges.append(edge)
+                    for src_port in self._source_ports(src_node, src_path, expression):
+                        edge = ChunkEdgeItem(src_port, dst_port, expression)
+                        self.addItem(edge)
+                        self._edges.append(edge)
 
         if self._show_param_edges:
             self._build_list_row_edges()
@@ -2395,13 +2394,37 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 raw = dst_port.param.raw_value
                 if not chunk_utils.is_expression_text(raw):
                     continue
-                for src_name, src_param in chunk_utils.parse_expression(raw):
+                for src_name, src_attr in dict.fromkeys(chunk_utils.parse_expression_attrs(raw)):
                     src_node = by_name.get(src_name)
-                    src_port = src_node.get_port(f"{src_node.prim.GetPath()}.outputs:{src_param}") if src_node else None
-                    if src_port is not None:
+                    if src_node is None:
+                        continue
+                    src_path = f"{src_node.prim.GetPath()}.outputs:{src_attr}"
+                    for src_port in self._source_ports(src_node, src_path, raw):
                         edge = ChunkEdgeItem(src_port, dst_port, raw)
                         self.addItem(edge)
                         self._edges.append(edge)
+
+    @staticmethod
+    def _source_ports(src_node: ChunkNodeItem, src_path: str, expression: str | None) -> list[ChunkPortItem]:
+        """The output ports a wire from src_path is drawn from.
+
+        Every row of a list shares its template's port path, so a wire from a row is told
+        apart by the expression alone: @Node.item[1]@ is drawn from row 1's port. Without a
+        row index it is the port at src_path, as for any other param.
+        """
+        node_name = src_node.prim.GetName()
+        attr_name = src_path.rsplit(":", 1)[-1]
+        rows = set()
+        for ref_node, ref in chunk_utils.parse_expression(expression or ""):
+            name, index = chunk_utils.split_row_ref(ref)
+            if ref_node == node_name and name == attr_name and index is not None:
+                rows.add(ref)
+        if rows:
+            return [port for port in src_node._ports
+                    if port.attr_path == src_path and chunk_graph.is_list_row(port.param)
+                    and core.list_row_ref(port.param) in rows]
+        port = src_node.get_port(src_path)
+        return [port] if port is not None else []
 
     def update_edges_for(self, node: ChunkNodeItem):
         node_ports = set(node._ports)

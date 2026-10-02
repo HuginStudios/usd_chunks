@@ -26,7 +26,6 @@ because in Qt that derives from live widget geometry.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -69,8 +68,6 @@ CHUNK_TYPE_ATTR = chunk_naming.CHUNK_TYPE_ATTR
 #: Chunk prims are found with this rather than the default predicate: a disabled chunk is
 #: an INACTIVE prim and still belongs on the graph, drawn greyed.
 INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
-
-_EXPRESSION = re.compile(r"@\w+\.\w+@")
 
 
 def sdf_to_port_type(sdf_type_name) -> str:
@@ -328,7 +325,7 @@ def build_edges(prims: dict[str, Usd.Prim], chunks: dict | None = None,
                 try:
                     param = chunk.get_param(name[len("inputs:"):])
                     raw = getattr(param, "raw_value", None) if param else None
-                    if isinstance(raw, str) and _EXPRESSION.search(raw):
+                    if isinstance(raw, str) and chunk_utils.has_expression(raw):
                         expression = raw
                 except Exception:
                     expression = None
@@ -617,8 +614,11 @@ def _write_wire_expression(src: PortRef, dst: PortRef, chunks: dict) -> str:
     if param is None:
         return ""
     src_node_name = Sdf.Path(src.attr_path).GetPrimPath().name
+    # A row shares its template's name, so it is read by index; the bare name would read
+    # the template, which no widget shows and nothing moves.
+    src_name = (core.list_row_ref(src.param) if is_list_row(src.param) else None) or src.name
     try:
-        set_param_visibly(dst_chunk, param, f"@{src_node_name}.{src.name}@")
+        set_param_visibly(dst_chunk, param, f"@{src_node_name}.{src_name}@")
     except Exception as exc:  # noqa: BLE001 -- the wire stands either way
         return f"{type(exc).__name__}: {exc}"
     return ""

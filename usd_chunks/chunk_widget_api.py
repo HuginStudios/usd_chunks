@@ -28,7 +28,7 @@ import weakref
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
-from usd_chunks import chunk_notice
+from usd_chunks import chunk_notice, chunk_utils
 
 if TYPE_CHECKING:
     # One way only: chunk_core imports this module, never the reverse at runtime.
@@ -221,6 +221,10 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
         """
         if self.param is not None:
             if self.param._solving_attributes:
+                return
+            # A wire owns the value (chunk_utils.is_wire_locked): a frontend that still let
+            # the widget move must not replace the wire with what the widget says.
+            if chunk_utils.is_wire_locked(self.param):
                 return
 
             if value is None:
