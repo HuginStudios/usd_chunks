@@ -787,13 +787,20 @@ def resolve_output_path(text, stage: Usd.Stage, log=None):
     graph that has to differ per shot, and without this the only way to render ten shots is
     to retype the filename ten times.
 
+    Both spellings work. A path in backticks (`"C:/out/${SHOT}.png"`, or an `if(...)`) is a
+    real USD expression and is evaluated by Sdf.VariableExpression, so it reads the same as
+    in an asset path. Anything else has bare ${NAME} references substituted into it.
+
     An unknown variable is left as written, so a missing SHOT shows up in the filename
-    instead of silently collapsing every shot onto one image.
+    instead of silently collapsing every shot onto one image. For a backtick expression that
+    means the whole path is left as typed: USD evaluates an unset variable to its own name
+    without reporting an error, which would turn `"${TAKE}.png"` into "TAKE.png".
 
     Args:
         text (str): The path as typed
         stage (Usd.Stage): The stage whose variables apply
-        log (logging.Logger): Where to report a reversed ${} spelling; module logger if None
+        log (logging.Logger): Where to report a reversed ${} spelling or an expression left
+            unresolved; module logger if None
 
     Returns:
         str: The path with its variables substituted
@@ -807,6 +814,28 @@ def resolve_output_path(text, stage: Usd.Stage, log=None):
             text, match.group(0), match.group(1), match.group(1),
         )
     variables = stage_expression_variables(stage)
+
+    if Sdf.VariableExpression.IsExpression(text):
+        # A backslash is an escape inside a USD string literal, so a Windows path typed the
+        # usual way evaluates without error to "C:out${SHOT}.png" -- separators gone and
+        # \$ escaping the variable. Only \\, \" and \` are meant as escapes in a path.
+        if re.search(r'\\[^\\"`]', text.replace("\\\\", "")):
+            (log or logger).warning(
+                "Output path %r left as typed: a backslash is an escape inside a USD "
+                "expression. Use / or \\\\ as the separator.", text,
+            )
+            return text
+        result = Sdf.VariableExpression(text).Evaluate(variables)
+        missing = sorted(set(result.usedVariables) - set(variables))
+        if result.errors or missing or not isinstance(result.value, str):
+            problem = "; ".join(result.errors) or (
+                "no value for " + ", ".join(missing) if missing
+                else "it evaluates to %r, not a path" % (result.value,)
+            )
+            (log or logger).warning("Output path %r left as typed: %s", text, problem)
+            return text
+        return result.value
+
     return _STAGE_VAR_RE.sub(lambda m: str(variables.get(m.group(1), m.group(0))), text)
 
 

@@ -79,6 +79,50 @@ def test_both_spellings_in_one_path_still_resolve_the_right_one(stage):
 
 
 # ---------------------------------------------------------------------------
+# the USD spelling: the whole path in backticks, as in an asset path
+# ---------------------------------------------------------------------------
+
+def test_a_backtick_expression_is_evaluated_by_usd(stage):
+    out = chunk_utils.resolve_output_path('`"C:/out/${SEQ}_${SHOT}.png"`', stage)
+    assert out == "C:/out/sq010_sh030.png"
+
+
+def test_a_backtick_expression_can_branch(stage):
+    text = '`if(eq(${SHOT}, "sh030"), "C:/out/night.png", "C:/out/day.png")`'
+    assert chunk_utils.resolve_output_path(text, stage) == "C:/out/night.png"
+
+
+def test_doubled_backslashes_are_windows_separators(stage):
+    out = chunk_utils.resolve_output_path(r'`"C:\\out\\${SHOT}.png"`', stage)
+    assert out == r"C:\out\sh030.png"
+
+
+def test_an_unknown_variable_in_a_backtick_expression_leaves_the_path(stage, caplog):
+    """USD evaluates an unset variable to its own name without an error, so `"${TAKE}.png"`
+    would quietly become "TAKE.png" and every shot would write over the same file."""
+    text = '`"C:/out/${TAKE}_${SHOT}.png"`'
+    with caplog.at_level("WARNING"):
+        assert chunk_utils.resolve_output_path(text, stage) == text
+    assert "TAKE" in caplog.text
+
+
+def test_single_backslashes_in_a_backtick_expression_are_reported(stage, caplog):
+    r"""\o and \$ are escapes in a USD string, so this would evaluate to "C:out${SHOT}.png"
+    with no error from USD -- separators gone and the variable never substituted."""
+    text = r'`"C:\out\${SHOT}.png"`'
+    with caplog.at_level("WARNING"):
+        assert chunk_utils.resolve_output_path(text, stage) == text
+    assert "backslash" in caplog.text
+
+
+def test_a_backtick_expression_that_is_not_a_string_is_left(stage, caplog):
+    chunk_utils.set_stage_expression_variables(stage, {"SHOT": "sh030", "N": 3})
+    with caplog.at_level("WARNING"):
+        assert chunk_utils.resolve_output_path("`${N}`", stage) == "`${N}`"
+    assert "not a path" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # through the Render Product chunk, which is where it was asked for
 # ---------------------------------------------------------------------------
 
