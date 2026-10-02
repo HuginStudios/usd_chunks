@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 from pxr import Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage
+from usd_chunks import chunk, chunk_stage, sim_bake
 
 
 def _report(node, text: str) -> None:
@@ -191,12 +191,10 @@ def execute(node) -> None:
                                                Vt.FloatArray.FromNumpy(full[2].astype(np.float32)))):
             attr_.Set(value)
         if grow:
-            for k, f in enumerate(frames):
-                p, c, w = _curves_at(paths, keep, k, widths, taper, **shape)
-                t = Usd.TimeCode(f)
-                pa.Set(Vt.Vec3fArray.FromNumpy(p.astype(np.float32)), t)
-                ca.Set(Vt.IntArray(c), t)
-                wa.Set(Vt.FloatArray.FromNumpy(w.astype(np.float32)), t)
+            grown = [(f, _curves_at(paths, keep, k, widths, taper, **shape)) for k, f in enumerate(frames)]
+            sim_bake.write_samples(pa, ((f, Vt.Vec3fArray.FromNumpy(p.astype(np.float32))) for f, (p, _c, _w) in grown))
+            sim_bake.write_samples(ca, ((f, Vt.IntArray(c)) for f, (_p, c, _w) in grown))
+            sim_bake.write_samples(wa, ((f, Vt.FloatArray.FromNumpy(w.astype(np.float32))) for f, (_p, _c, w) in grown))
         lo, hi = (full[0].min(axis=0), full[0].max(axis=0)) if len(full[0]) else (np.zeros(3), np.zeros(3))
         curves.CreateExtentAttr().Set(Vt.Vec3fArray([tuple(lo - base), tuple(hi + base)]))
     _report(node, f"{len(full[1])} trails from {n} points · frames {frames[0]}–{frames[-1]}"

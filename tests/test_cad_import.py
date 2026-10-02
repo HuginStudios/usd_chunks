@@ -21,6 +21,8 @@ import importlib
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
+from usd_chunks import sdf_authoring
+
 try:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Trsf, gp_Vec
@@ -72,23 +74,25 @@ def _author(stage, scene_protos, roots, instance=True, scale=1.0, keep_hierarchy
     scope = root.AppendChild("Prototypes")
     ci.prototype_scope(stage, scope)
 
-    paths, taken = [], set()
-    for proto in scene_protos:
-        path = scope.AppendChild(ci._unique(proto.name, taken))
-        ci._author_proto(stage, path, proto, scale, texture_size)
-        paths.append(path)
-
+    writer = sdf_authoring.Writer(stage)
     counters = {"parts": 0, "uses": [p.uses for p in scene_protos]}
-    taken = set()
-    if keep_hierarchy:
-        for node in roots:
-            ci._author_node(stage, root, node, paths, instance, scale, taken, counters)
-    else:
-        flat: list = []
-        for node in roots:
-            ci._flatten(node, Gf.Matrix4d(1.0), flat)
-        for leaf in flat:
-            ci._author_node(stage, root, leaf, paths, instance, scale, taken, counters)
+    with Sdf.ChangeBlock():
+        paths, taken = [], set()
+        for proto in scene_protos:
+            path = scope.AppendChild(ci._unique(proto.name, taken))
+            ci._author_proto(writer, path, proto, scale, texture_size)
+            paths.append(path)
+
+        taken = set()
+        if keep_hierarchy:
+            for node in roots:
+                ci._author_node(writer, root, node, paths, instance, scale, taken, counters)
+        else:
+            flat: list = []
+            for node in roots:
+                ci._flatten(node, Gf.Matrix4d(1.0), flat)
+            for leaf in flat:
+                ci._author_node(writer, root, leaf, paths, instance, scale, taken, counters)
     return counters
 
 

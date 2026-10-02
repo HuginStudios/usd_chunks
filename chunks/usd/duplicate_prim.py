@@ -8,9 +8,9 @@ Handles name collisions by auto-incrementing a numeric suffix.
 
 from __future__ import annotations
 
-from pxr import Usd
+from pxr import Sdf, Usd
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, sdf_authoring
 
 
 def _generate_dest_path(stage: Usd.Stage, source_path: str) -> str:
@@ -30,13 +30,24 @@ def _copy_prim_recursive(stage: Usd.Stage, source: Usd.Prim, dest_path: str):
 
     Copies from the composed view: all authored attributes with their values,
     metadata, type name, and children.
+
+    Written as specs in one change block (sdf_authoring): an animated asset is thousands of
+    prims times their time samples, and through the Usd API each one recomposed the stage.
+    Everything read is the source's composed view, never the copy, so nothing reads back
+    what the block has not composed yet.
     """
+    writer = sdf_authoring.Writer(stage)
+    with Sdf.ChangeBlock():
+        _copy_spec(writer, source, dest_path)
+
+
+def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str):
     if not source.IsValid():
         return
 
     # Define the destination prim with the same type
     type_name = source.GetTypeName()
-    dest_prim = stage.DefinePrim(dest_path, type_name)
+    dest_prim = writer.define(dest_path, type_name)
 
     # Copy metadata
     for key in source.GetAllAuthoredMetadata():
@@ -46,35 +57,31 @@ def _copy_prim_recursive(stage: Usd.Stage, source: Usd.Prim, dest_path: str):
         val = source.GetMetadata(key)
         if val is not None:
             try:
-                dest_prim.SetMetadata(key, val)
+                dest_prim.SetInfo(key, val)
             except Exception:
                 pass
 
-    # Copy authored attributes
+    # Copy authored attributes. Custom unless the source says otherwise, as
+    # Prim.CreateAttribute makes them.
     for attr in source.GetAuthoredAttributes():
-        attr_name = attr.GetName()
-        type_name_attr = attr.GetTypeName()
-
-        dest_attr = dest_prim.CreateAttribute(attr_name, type_name_attr)
-
         # Copy default value
-        default_val = attr.Get(Usd.TimeCode.Default())
-        if default_val is not None:
-            dest_attr.Set(default_val, Usd.TimeCode.Default())
+        dest_attr = sdf_authoring.attribute(
+            dest_prim, attr.GetName(), attr.GetTypeName(), attr.Get(Usd.TimeCode.Default()), custom=True
+        )
 
         # Copy time samples
         time_samples = attr.GetTimeSamples()
         for t in time_samples:
             val = attr.Get(t)
             if val is not None:
-                dest_attr.Set(val, t)
+                writer.layer.SetTimeSample(dest_attr.path, t, val)
 
         # Copy attribute metadata
         for meta_key in ("interpolation", "custom", "variability"):
             meta_val = attr.GetMetadata(meta_key)
             if meta_val is not None:
                 try:
-                    dest_attr.SetMetadata(meta_key, meta_val)
+                    dest_attr.SetInfo(meta_key, meta_val)
                 except Exception:
                     pass
 
@@ -82,15 +89,16 @@ def _copy_prim_recursive(stage: Usd.Stage, source: Usd.Prim, dest_path: str):
     for rel in source.GetAuthoredRelationships():
         rel_name = rel.GetName()
         targets = rel.GetTargets()
-        dest_rel = dest_prim.CreateRelationship(rel_name)
+        dest_rel = dest_prim.relationships[rel_name] if rel_name in dest_prim.relationships \
+            else Sdf.RelationshipSpec(dest_prim, rel_name, True)
         if targets:
-            dest_rel.SetTargets(targets)
+            dest_rel.targetPathList.explicitItems = [writer.target_path(t) for t in targets]
 
     # Recursively copy children
     for child in source.GetChildren():
         child_name = child.GetName()
         child_dest_path = f"{dest_path}/{child_name}"
-        _copy_prim_recursive(stage, child, child_dest_path)
+        _copy_spec(writer, child, child_dest_path)
 
 
 def execute(node):

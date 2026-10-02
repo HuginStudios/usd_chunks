@@ -4,7 +4,7 @@ import logging
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdSemantics, Vt
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, sdf_authoring
 
 logger = logging.getLogger(f"usd_chunks.{__name__}")
 
@@ -138,17 +138,25 @@ def author_render_primvars(stage, root, taxonomy, classes):
     instances, classes = labelled_instances(stage, root, taxonomy, classes)
     labelled_paths = {prim.GetPath() for prim, _name in instances}
 
-    for instance_id, (instance, name) in enumerate(instances, start=1):
-        class_id = classes.index(name) + 1
-        for gprim in _covered_gprims(instance, labelled_paths):
-            primvars = UsdGeom.PrimvarsAPI(gprim)
+    # Found first, then written as specs in one change block (sdf_authoring): a dataset
+    # scene has thousands of gprims, four primvars each, and the walk must not run over a
+    # stage that recomposes under it.
+    covered = [
+        (gprim.GetPath(), classes.index(name) + 1, instance_id)
+        for instance_id, (instance, name) in enumerate(instances, start=1)
+        for gprim in _covered_gprims(instance, labelled_paths)
+    ]
+    writer = sdf_authoring.Writer(stage)
+    with Sdf.ChangeBlock():
+        for path, class_id, instance_id in covered:
+            spec = writer.over(path)
             for pv_name, sdf_type, value in (
                 ("semantic_id", Sdf.ValueTypeNames.Int, class_id),
                 ("semantic_color", Sdf.ValueTypeNames.Color3f, class_colour(class_id)),
                 ("instance_id", Sdf.ValueTypeNames.Int, instance_id),
                 ("instance_color", Sdf.ValueTypeNames.Color3f, instance_colour(instance_id)),
             ):
-                primvars.CreatePrimvar(pv_name, sdf_type, UsdGeom.Tokens.constant).Set(value)
+                sdf_authoring.primvar(spec, pv_name, sdf_type, value, UsdGeom.Tokens.constant)
     return len(instances), classes
 
 
