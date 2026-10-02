@@ -24,6 +24,8 @@ def _warnings(caplog):
 
 def test_empty_chunk_dirs_warns_once(monkeypatch, caplog, fresh_warning) -> None:
     monkeypatch.delenv("USD_CHUNK_DIRS", raising=False)
+    # As in an installed package, where the bundled chunks/ default does not exist.
+    monkeypatch.setattr(chunk_registry.USD_CHUNK_DIRS, "_default", ["no_such_chunks_dir"])
     with caplog.at_level(logging.WARNING):
         with Scene():
             pass

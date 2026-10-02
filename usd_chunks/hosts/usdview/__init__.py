@@ -11,7 +11,7 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore, QtGui
 
-from usd_chunks import chunk_notice, chunk_registry, chunk_scene, shader_defs
+from usd_chunks import chunk_notice, chunk_registry, chunk_scene, configure_logging, shader_defs
 from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks.frontends.qt import window_state as chunk_window_state
 from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
@@ -476,6 +476,7 @@ class ChunksPluginContainer(PluginContainer):
             plugRegistry: The plugin registry to register the UI Creator plugin with.
             plugCtx: The Usdview API instance to use for module creation.
         """
+        configure_logging()
         self._openModuleSettingsCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.openModuleSettings", "Modules", self.openModuleSettings
         )

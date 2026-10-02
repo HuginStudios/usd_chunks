@@ -45,7 +45,7 @@ standalone = ["usd-core"]
 ui = ["PySide6"]
 # The standalone graph frontends. Neither is imported unless you ask for its module by
 # name -- frontends/__init__.py imports nothing -- so a missing toolkit is not fatal to the
-# rest of the package, but `usdchunks-flet`/`-imgui` need these.
+# rest of the package, but `python -m usd_chunks.frontends.flet.nodegraph` (and imgui) needs these.
 flet = ["flet>=0.28"]
 imgui = ["imgui-bundle>=1.6"]
 # `requests` is not a library dependency — the suite loads example chunks from chunks/
@@ -74,3 +74,4 @@ namespaces = false
 [tool.setuptools.package-data]
 "usd_chunks" = ["resources/icons/*.png"]
 "usd_chunks.hosts.usdview" = ["plugInfo.json"]
+"usd_chunks.frontends.blender.addon" = ["blender_manifest.toml"]

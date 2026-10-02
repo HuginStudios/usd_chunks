@@ -33,7 +33,7 @@ import logging
 import bpy
 from pxr import Gf, Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.blender import nodegraph as bg
@@ -786,6 +786,7 @@ def _unregister_keymap() -> None:
 
 
 def register() -> None:
+    configure_logging()
     bg.register()
     for cls in _CLASSES:
         bg._register_once(cls)

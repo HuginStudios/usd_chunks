@@ -18,7 +18,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from pxr import Usd
-from usd_chunks import chunk_naming
+from usd_chunks import chunk_naming, configure_logging
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
@@ -754,6 +754,7 @@ def cmd_plugin_path(args):
 
 
 def main():
+    configure_logging()
     parser = ArgumentParser(
         prog="usdchunks",
         description="Execute and inspect USD chunk networks serialized as .usda files.",

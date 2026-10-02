@@ -33,3 +33,6 @@ AGENTS.md
 CONTEXT.md
 CONTEXT-MAP.md
 
+
+# Download cache the camera chunk writes beside itself.
+chunks/modelling/cameras.json
