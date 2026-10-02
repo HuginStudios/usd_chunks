@@ -24,6 +24,8 @@ screen.
    `execute()` and `commit()`.
 8. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
    interpreter before making it a module.
+9. [Making a chunk fast](fast-chunks.md): author specs in one change block, do the maths
+   in numpy, and what doesn't help (threads).
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
 > the work, and `config()` holds details like its `description` and `category`.

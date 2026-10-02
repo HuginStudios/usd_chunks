@@ -151,6 +151,10 @@ makes a chunk do its work again after the file is opened.
 
 ### Caching a slow cook
 
+Before caching a slow cook, check whether it needs to be slow. Authoring thousands of prims
+through the Usd API, or looping over points in Python, is usually 10× or more slower than it
+has to be. See [Making a chunk fast](fast-chunks.md).
+
 Because a cook with the same inputs always gives the same layer, a slow one doesn't have to
 run again. Set `cache_cook=True` in `config()` and the result is kept on disk and read back
 the next time the inputs match, including after the file is closed and opened again:
