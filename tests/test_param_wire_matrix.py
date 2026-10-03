@@ -13,7 +13,8 @@ type that stops carrying values through a wire shows up by name:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 from pxr import Gf, Sdf, Usd
