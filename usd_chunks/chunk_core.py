@@ -1461,7 +1461,7 @@ class ChunkCommon(AttributesBase):
     @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "name":
-            return re.sub(r"\W+", "", str(val))[0:100]
+            return self._unique_among_siblings(re.sub(r"\W+", "", str(val))[0:100])
 
         ftype = field_type(type(self), attr)
         if inspect.isclass(ftype) and issubclass(ftype, Enum):
@@ -1472,6 +1472,26 @@ class ChunkCommon(AttributesBase):
                     return val
 
         return super().convert_attr(attr, val)
+
+    def _unique_among_siblings(self, name: str) -> str:
+        """name, numbered like add_param numbers a new child if a sibling already holds it.
+
+        A rename went straight through: two siblings then shared a name, the container's
+        name map pointed only at the renamed one, and for a chunk the prim move onto the
+        sibling's path raised -- the Qt graph's "Rename chunk" with a name already in use.
+        """
+        try:
+            owner = self.get_owner()
+            current = self.name
+            own_key = self.get_hash()
+        except AttributeError:
+            return name  # still being constructed: add_param numbers it when it is added
+        if not isinstance(owner, NameSyncedContainer) or not name or name == current:
+            return name
+        taken = owner._names.maps[0]
+        if name in taken and taken[name] != own_key:
+            return ChunkGroupBase.get_valid_child_name(name, set(taken))
+        return name
 
     @override
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:

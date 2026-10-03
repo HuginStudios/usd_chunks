@@ -1349,12 +1349,20 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
                 continue
             for attr in prim.GetAttributes():
-                conns = attr.GetConnections()
-                if not conns:
+                if not attr.HasAuthoredConnections():
                     continue
-                new_conns = [c.ReplacePrefix(old_sdf, new_sdf) for c in conns]
-                if new_conns != list(conns):
-                    attr.SetConnections(new_conns)
+                # Rewritten in each layer that authors the connection, not set once through
+                # the edit target: an exec wire lives in the session layer, so a corrected
+                # copy in the root layer sat under the stale one, the wire kept pointing at
+                # the old name, and the root layer gained a stray opinion besides.
+                for spec in attr.GetPropertyStack():
+                    paths = spec.connectionPathList
+                    for field in ("explicitItems", "prependedItems", "appendedItems",
+                                  "deletedItems", "orderedItems"):
+                        items = list(getattr(paths, field))
+                        moved = [c.ReplacePrefix(old_sdf, new_sdf) for c in items]
+                        if moved != items:
+                            setattr(paths, field, moved)
 
     def _rebase_descendant_paths(self, old_root: str, new_root: str) -> None:
         """Rebase every tracked descendant path after a group is renamed.
