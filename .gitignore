@@ -34,5 +34,5 @@ CONTEXT.md
 CONTEXT-MAP.md
 
 
-# Download cache the camera chunk writes beside itself.
+# Old location of the camera chunk's download cache (now per user); stale copies remain.
 chunks/modelling/cameras.json

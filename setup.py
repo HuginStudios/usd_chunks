@@ -14,6 +14,7 @@ from setuptools.command.build_py import build_py
 
 # Patterns left out of the shipped set, as shutil.ignore_patterns takes them. Add a
 # chunk's file or folder name here to keep it in the repository but out of the wheel.
+# cameras.json: a stale download cache from before the camera chunk cached per user.
 EXCLUDE = ("__pycache__", "*.pyc", "cameras.json")
 
 

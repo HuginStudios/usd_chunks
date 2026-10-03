@@ -56,6 +56,7 @@ from typing import Any
 
 from pxr import Sdf, Usd, UsdGeom
 
+from usd_chunks.chunk_cache import user_cache_dir
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -99,8 +100,7 @@ def cache_dir() -> Path:
     """Where entries live: USD_CHUNKS_COOK_CACHE_DIR, else %LOCALAPPDATA%/usd_chunks/cook_cache."""
     if custom := os.environ.get(ENV_DIR):
         return Path(custom)
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.cache")
-    return Path(base) / "usd_chunks" / "cook_cache"
+    return Path(user_cache_dir("cook_cache"))
 
 
 def lookup(chunk) -> CookEntry | None:

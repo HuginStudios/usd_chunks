@@ -53,6 +53,7 @@ from typing import Any
 from pxr import Plug, Usd
 
 from usd_chunks import shader_defs
+from usd_chunks.chunk_cache import user_cache_dir
 
 try:
     from pxr import UsdImagingGL
@@ -557,11 +558,7 @@ def _disk_cache_dir() -> str | None:
     override = os.environ.get("USD_CHUNKS_CACHE_DIR")
     if override is not None:
         return override or None
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-    else:
-        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(base, "usd_chunks")
+    return user_cache_dir()
 
 
 def _disk_cache_key() -> str:

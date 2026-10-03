@@ -166,12 +166,9 @@ PY_MODULE_EXT = ".py"
 #: whole chunk directory to rebuild objects the registry already holds.
 _DISCOVERED_MODULES: dict[tuple[str, str], tuple[int, list[ChunkModule]]] = {}
 
-# A per-user folder, like cook_cache.cache_dir. Not beside the package: installed, that is
-# site-packages, which is often read-only and no place for `pip install -t` to write.
-USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar(
-    "USD_CHUNK_DEPENDENCY_DIR",
-    os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.cache"), "usd_chunks", "installed_deps"),
-)
+# A per-user folder: beside the package is site-packages once installed, which is often
+# read-only and no place for `pip install -t` to write.
+USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", chunk_cache.user_cache_dir("installed_deps"))
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
 
 # Installing a chunk's declared pip dependencies is OFF unless this is set. A chunk module
