@@ -18,7 +18,6 @@ from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
     _INPUTS_PREFIX,
-    _author_prim,
     _load_wire_inputs,
     _reorder_graph_layers_by_rank,
     ChunkStageSync,
@@ -34,6 +33,7 @@ from usd_chunks.chunk_stage import (
     get_upstream_stage,
     exec_output_path,
 )
+from chunk_prim_authoring import _author_prim
 from usd_chunks.chunk_utils import get_unique_path
 from usd_chunks import chunk, chunk_registry, chunk_scheduler
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
