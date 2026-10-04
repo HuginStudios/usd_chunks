@@ -371,6 +371,13 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # unaffected; only the dirtying of readers is skipped.
             if self.name == "value" and getattr(self.get_owner(), "presentation_only", False):
                 return True
+            # A menu's item list is what the dropdown offers, not what the chunk computes
+            # from: the cook reads the value, and a value outside the new list is set (and
+            # dirties) on its own. Menus refreshed from the stage -- Edit Target, Layer --
+            # rewrite their lists on every layer-stack edit, so dirtying for it made their
+            # cooks (which edit the layer stack) dirty each other forever.
+            if self.name == "menu_items":
+                return True
             return False
 
         old = ChunkFlags.State(self.old_value or ChunkFlags.State.NONE)
