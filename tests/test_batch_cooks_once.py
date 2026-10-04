@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import collections
 
-from usd_chunks import Scene, chunk_cook, chunk_registry
+from usd_chunks import Scene, chunk, chunk_cook, chunk_registry
 
 
 def _count_cooks(module_name, counts):
@@ -55,3 +55,26 @@ def test_deferred_work_runs_once_after_the_batch():
             assert chunk_cook.defer_to_batch_end("k", lambda: runs.append("batch"))
         assert runs == []
     assert runs == ["batch"]
+
+
+def test_values_set_in_a_change_block_cook_once():
+    """chunk.change_block(): a script setting two values cooks once, with both in place."""
+    with Scene() as scene:
+        place = scene.create.transform()
+        counts = collections.Counter()
+        restore = _count_cooks("transform", counts)
+        try:
+            place.get_param("tx").value = 1.0
+            place.get_param("ty").value = 2.0
+            apart = counts[place.name]
+            counts.clear()
+            with chunk.change_block():
+                place.get_param("tx").value = 3.0
+                place.get_param("ty").value = 4.0
+                assert counts[place.name] == 0, "cooked inside the block"
+        finally:
+            restore()
+
+        assert apart == 2
+        assert counts[place.name] == 1, f"cooked {counts[place.name]} times for one block"
+        assert (place.get_param("tx").value, place.get_param("ty").value) == (3.0, 4.0)

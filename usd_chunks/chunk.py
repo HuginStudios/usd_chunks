@@ -54,7 +54,8 @@ from attr import Attribute as Attribute
 from attrs import field, validators
 
 from enum import IntFlag, Enum
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, TYPE_CHECKING, cast, TypeGuard, overload
 from typing_extensions import override
 
@@ -82,7 +83,7 @@ from usd_chunks.chunk_core import (
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
-from usd_chunks import chunk_utils
+from usd_chunks import chunk_cook, chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -665,6 +666,28 @@ class Custom(ChunkParamBase):
 def set_validators_enabled(enabled: bool):
     """Turn attrs validators on or off globally."""
     validators.set_disabled(not enabled)
+
+
+@contextmanager
+def change_block() -> Iterator[None]:
+    """Make every value set inside the block one change: what it affects cooks once, at the end.
+
+    Each value set outside a block cooks everything below it straight away. Setting several
+    cooks them several times, each time against a half-new set of values::
+
+        mc = scene.create.mychunk()
+        with chunk.change_block():
+            mc.get_param("param1").value = 1
+            mc.get_param("param2").value = 2
+        # mychunk, and everything below it, cooked once, with both values
+
+    Inside the block a value change only marks what it affects; callbacks run, and chunks
+    cook, when the block ends. Blocks nest: an inner one joins the outermost. For a script,
+    and for a module whose execute() sets many params of its own (a Wedge writing a
+    variant's ranges).
+    """
+    with chunk_cook.batched_solve():
+        yield
 
 
 usd_type_map = {

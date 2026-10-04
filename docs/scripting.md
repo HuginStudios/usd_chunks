@@ -124,6 +124,21 @@ lift.get_param("ty").value = 5.0     # the same thing
 
 Chunks cook again by themselves when a value changes.
 
+Each value you set cooks what it affects straight away, so setting several cooks several
+times. Set them inside `chunk.change_block()` and they count as one change: what they
+affect cooks once, when the block ends, with every value in place.
+
+``` py
+from usd_chunks import chunk
+
+with chunk.change_block():
+    lift.get_param("tx").value = 1.0
+    lift.get_param("ty").value = 2.0
+# lift, and everything after it, cooked once
+```
+
+Blocks can nest. An inner block joins the outermost one.
+
 ## Connect chunks
 
 There are two kinds of wire, the same two the graph draws.
