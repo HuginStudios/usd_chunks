@@ -2423,7 +2423,6 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
                     attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, text.replace(old, new))
 
 
-
 def _patch_param_expressions(chunks, old: str, new: str) -> None:
     """Replace old with new in the expression text of every loaded param.
 
@@ -4056,7 +4055,6 @@ def _loading_from_file():
         _loading = previous
 
 
-
 def _chunks_downstream_of(roots: list[core.ChunkBase]) -> set[int]:
     """Ids of every chunk that solves at or after one of roots.
 
@@ -5221,12 +5219,6 @@ def exec_dependencies(chunk: core.ChunkBase) -> list:
     return _chunks_at(str(conn.GetPrimPath()) for conn in exec_input_connections(prim))
 
 
-def _param_wire_source_paths(prim: Usd.Prim) -> set[str]:
-    """The prim paths this chunk reads through a *param* wire, exec slots excluded."""
-    exec_sources = {str(conn.GetPrimPath()) for conn in exec_input_connections(prim)}
-    return _connected_source_paths(prim) - exec_sources
-
-
 def _wired_dependencies(chunk: core.ChunkBase) -> list:
     """Every chunk this one reads from on the live stage -- exec slots *and* param wires.
 
@@ -5366,19 +5358,23 @@ def paste_chunks() -> None:
             if not name.startswith(_INPUTS_PREFIX) or name == _EXEC_INPUT:
                 continue
             dst_attr = new_prim.GetAttribute(name)
-            if not dst_attr.IsValid():
-                continue
-            # dst_attr was just authored moments ago by create_chunks() -> _define_prim,
+            # dst_attr, when it exists, was just authored by create_chunks() -> _define_prim,
             # via the chunk's own current Edit Target -- update it there, not wherever
-            # ambient happens to point.
-            home = chunk_utils.get_attr_home_layer(dst_attr)
-            ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
-            with ctx:
+            # ambient happens to point. A fresh chunk only has attrs for values off their
+            # default, so every value the user changed is missing here: skipping those
+            # pasted a copy that had none of them. Made where a new bookkeeping attr goes.
+            home = chunk_utils.get_attr_home_layer(dst_attr) if dst_attr.IsValid() else None
+            with Usd.EditContext(stage, home or chunk_utils.get_bookkeeping_layer(stage, new_chunk)):
+                if not dst_attr.IsValid():
+                    dst_attr = new_prim.CreateAttribute(name, attr.GetTypeName(), custom=False)
                 val = attr.Get()
                 if val is not None:
                     dst_attr.Set(val)
                 if attr.HasAuthoredConnections():
                     dst_attr.SetConnections(attr.GetConnections())
+                # A wire into a number keeps its text beside the value, not in it.
+                if text := chunk_utils.read_expression_text(attr):
+                    chunk_utils.store_expression_text(dst_attr, text)
         _load_wire_inputs(new_prim, new_chunk)
 
 
@@ -7665,155 +7661,3 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             _forward_to_inner(None, None)
             _mirror_menu_items(inner_param, context_param)
             _forward_button_click(inner_param, context_param)
-
-
-def _author_prim(
-    stage: Usd.Stage, chunk: core.ChunkBase, prev_chunk: core.ChunkBase | None = None, index: int = 0
-) -> None:
-    chunk_root = _resolve_chunk_root(chunk)
-    _define_chunk_parent(stage, chunk_root)
-
-    prim = stage.DefinePrim(Sdf.Path(f"{chunk_root}/{chunk.name}"), _CHUNK_PRIM_TYPENAME)
-
-    ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
-    if not ui_api.GetPosAttr().HasAuthoredValue():
-        ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
-
-    config = chunk.get_config()
-    if config and config.module:
-        attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
-        attr.SetVariability(Sdf.VariabilityUniform)
-        attr.Set(config.module)
-
-    if not (config and config.terminal):
-        exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
-        exec_out.SetVariability(Sdf.VariabilityUniform)
-
-    if config and getattr(config, "outputs", None):
-        for out_name, out_type_name in config.outputs:
-            out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
-            if out_type is not None:
-                prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
-
-    chunk_gizmo.author_gizmos(stage, prim, chunk)
-
-    # The stage's exec wiring comes first, and the Python DAG is only the fallback for a
-    # chunk that has none yet. The DAG now also holds edges reconciled from *param* wires
-    # (see _wired_dependencies), and authoring one of those as inputs:chunk would
-    # invent an exec edge the user never drew -- so the fallback filters them back out.
-    deps = exec_dependencies(chunk)
-    if not deps:
-        wired = _param_wire_source_paths(prim)
-        deps = [
-            dep for _, dep in chunk.get_dependencies()
-            if isinstance(dep, core.ChunkBase) and get_chunk_prim_path(dep) not in wired
-        ]
-    if not deps and prev_chunk:
-        deps = [prev_chunk]
-    if deps:
-        exec_in = prim.CreateAttribute(_EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
-        exec_in.SetConnections([Sdf.Path(exec_output_path(dep)) for dep in deps])
-        invalidate_edit_layer_memo()
-
-    # Build a name → context_param map for lofted params (direct ChunkParamBase children of context)
-    context = chunk.get_context()
-    lofted: dict[str, core.ChunkParamBase] = {}
-    if context:
-        for p in context.get_my_params():
-            if isinstance(p, core.ChunkParamBase) and getattr(p, "_param_attr_path", None):
-                lofted[p.name] = p
-
-    for path, param in _iter_chunk_params(chunk):
-        store_value = param.raw_value
-        if store_value is None:
-            store_value = param.value  # proxy params delegate raw_value to the template (None); use value instead
-        if store_value is None or is_transient_param(param):
-            continue
-        if store_value == getattr(param, "default_value", None):
-            continue
-        sdf_type, usd_value = _sdf_type_and_value(store_value)
-        if sdf_type is None:
-            continue
-
-        attr_name = f"{_INPUTS_PREFIX}{path.replace('.', ':')}"
-        ctx_param = lofted.get(param.name)
-
-        if ctx_param:
-            # Param is lofted: write a connection on the inner attr and author the context prim's attr
-            ctx_attr_path_str = ctx_param._param_attr_path  # e.g. "/chunks.inputs:mySlider"
-            ctx_prim_str, ctx_attr_name = ctx_attr_path_str.rsplit(".", 1)
-            ctx_prim = stage.GetPrimAtPath(Sdf.Path(ctx_prim_str))
-            if not (ctx_prim and ctx_prim.IsValid()):
-                ctx_prim = stage.DefinePrim(Sdf.Path(ctx_prim_str), _CHUNK_PRIM_TYPENAME)
-            ctx_attr = ctx_prim.CreateAttribute(ctx_attr_name, sdf_type, custom=True)
-            ctx_attr.Set(ctx_param.value if ctx_param.value is not None else param.value)
-
-            inner_attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-            inner_attr.Set(ctx_param.value if ctx_param.value is not None else usd_value)
-            inner_attr.SetConnections([Sdf.Path(ctx_attr_path_str)])
-        else:
-            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-            attr.Set(usd_value)
-            if isinstance(store_value, str) and chunk_utils.has_expression(store_value):
-                attr.SetConnections([
-                    Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
-                    for node_name, param_name in chunk_utils.parse_expression_attrs(store_value)
-                ])
-
-    for vec_path, vector in _iter_chunk_vectors(chunk):
-        raw = vector.raw_value
-        is_vec_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-        if not is_vec_expr:
-            val = vector.value
-            if not val or not any(v is not None for v in val):
-                continue
-            if val == vector.default_value:
-                continue
-        prefix = "outputs:" if vector.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
-        attr_name = f"{prefix}{vec_path.replace('.', ':')}"
-        # If the vector is already wired to a real USD attr, preserve its exact type
-        backing = getattr(vector, '_param_attr_path', None)
-        if not is_vec_expr and backing:
-            real_attr = stage.GetAttributeAtPath(Sdf.Path(backing))
-            if real_attr and real_attr.IsValid() and real_attr.HasAuthoredValue():
-                if (current_val := real_attr.Get()) is not None:
-                    attr = prim.CreateAttribute(attr_name, real_attr.GetTypeName(), custom=False)
-                    attr.Set(current_val)
-                    continue
-        if is_vec_expr:
-            type_source = vector.default_value
-            sdf_type, _ = _sdf_vector_type(type_source) if type_source else (None, None)
-        else:
-            sdf_type, usd_value = _sdf_vector_type(val)
-        if sdf_type is None:
-            continue
-        attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-        if is_vec_expr:
-            attr.SetConnections([
-                Sdf.Path(f"{chunk_root}/{node_name}.inputs:{param_name}")
-                for node_name, param_name in chunk_utils.parse_expression_attrs(raw)
-            ])
-            continue
-        attr.Set(usd_value)
-
-    # Serialize ListGroup template params as arrays: inputs:list_name:param_name = [v0, v1, ...]
-    for lg_path, list_group in _iter_list_group_arrays(chunk):
-        if not list_group.proxy_params:
-            continue
-        for proxy_param in list_group.proxy_params[0].get_my_params():
-            if not isinstance(proxy_param, core.ChunkParamBase):
-                continue
-            values = [
-                v for i in range(list_group.size)
-                if (px := list_group.get_indexed_param(proxy_param.name, i)) is not None
-                for v in [px._as_own_number(px.value)]  # see _sync_list_proxy_to_usd
-                if v is not None
-            ]
-            if not values:
-                continue
-            sdf_type, usd_value = _sdf_type_and_value(values)
-            if sdf_type is None:
-                continue
-            attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{lg_path.replace('.', ':')}:{proxy_param.name}", sdf_type, custom=False)
-            attr.Set(usd_value)
-            _store_row_expressions(attr, list_group, proxy_param.name)

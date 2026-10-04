@@ -14,7 +14,6 @@ from usd_chunks import chunk, chunk_notice, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
-    _author_prim,
     _CHUNKS_ROOT,
     ChunkStageSync,
     get_chunk_prim_path,
@@ -22,6 +21,7 @@ from usd_chunks.chunk_stage import (
     load_chunks,
     save_scene,
 )
+from chunk_prim_authoring import _author_prim
 
 
 class _DummyScene(SceneSender):

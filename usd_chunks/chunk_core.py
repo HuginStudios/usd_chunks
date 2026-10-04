@@ -727,7 +727,11 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             if not p:
                 raise ReferenceError("Could not find ref child")
 
-            del self._children[p]
+            # By _hashable, the key the child is filed under: a ProxyParam forwards
+            # _hashable to the param it mirrors but hashes as itself, so deleting by the
+            # object looked under the wrong key, found nothing, and the row kept a param
+            # its template had dropped.
+            del self._children[p._hashable]
 
     def _param_died(self, ref):
         self.request_delete()
@@ -1957,78 +1961,35 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
-        """Write the param's change to its bound USD attribute.
+        """Write the param's change to the USD relationship it is bound to, if it is one.
 
-        Invoked when the 'value' AttributeSender changes, with the attribute as notice.data.
+        Invoked when the 'value' AttributeSender changes. notice.data is that sender, never
+        the property: an attribute is written by ChunkParamBase.data_changed (and a vector's
+        by ChunkVectorBase.data_changed), so all that is left here is a relationship, which
+        those cannot write -- they look the path up with GetAttributeAtPath.
 
         Args:
-            notice (chunk_notice.AttributeChangeNotice): The notice holding the Usd.Attribute
+            notice (chunk_notice.AttributeChangeNotice): The value change
             sender (AttributeSender): The sender of the notice
         """
-        # ChunkVectorBase.data_changed already handles this write path itself (correctly,
-        # with outputs:-preferring connection routing) -- this method's SetConnections
-        # below hardcodes inputs: unconditionally, so letting both run fights over two
-        # different connection targets on every value change.
-        if isinstance(notice.data, Usd.Attribute) and not isinstance(self, ChunkVectorBase):
-            raw = getattr(self, 'raw_value', None)
-            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            # Only String-typed attrs can hold the raw expression text as their value
-            # (needed so _patch_expressions can rewrite it on rename); other types (Float,
-            # Float3, etc.) store the resolved value and keep the text in customData
-            # instead (chunk_utils.store_expression_text) -- rebuilding it from
-            # SetConnections cannot work, since the connections name only the refs and
-            # drop every operator between them.
-            if is_expr and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
-                store_val = sender.value
-            else:
-                store_val = raw if is_expr else sender.value
-            prev_write = chunk_notice._usd_write_active
-            chunk_notice._usd_write_active = True
-            try:
-                # notice.data here is always the chunk-prim's own storage attr (bound via
-                # _connect_param_attr -- connect_usd_attr's driven-content path is a
-                # separate mechanism, _author_driven_connections, scoped via
-                # get_edit_context()). It already exists (that's what being bound via
-                # _connect_param_attr means), so update it wherever its spec already
-                # lives, rather than wherever the stage's ambient/Edit-Target-driven
-                # edit target currently points -- that may have moved on since it was
-                # first authored. No home means the attr is new, and it goes where a
-                # new bookkeeping attr of this chunk would.
-                stage = notice.data.GetStage()
-                home = chunk_utils.get_attr_home_layer(notice.data) or chunk_utils.get_bookkeeping_layer(
-                    stage, self.get_chunk()
-                )
-                with Usd.EditContext(stage, home):
-                    # A non-String attr must never receive raw expression text: if an expression ref
-                    # can't resolve (e.g. a lofted cross-context ref like @ChunkGroup.tx@), sender.value
-                    # stays the expression STRING and Set() on a typed (float/etc) attr raises a
-                    # type-mismatch. The connection authored below carries the topology, so skip the
-                    # value write in that case.
-                    bad_str = isinstance(store_val, str) and not chunk_utils.attr_holds_text(notice.data)
-                    if not bad_str and notice.data.Get(0) != store_val:
-                        notice.data.Set(store_val)
-                    if is_expr:
-                        chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
-                        notice.data.SetConnections([
-                            Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
-                            for node, attr_name in chunk_utils.parse_expression_attrs(raw)
-                        ])
-                        # The connections carry the refs; only this carries the operators
-                        # and literals between them.
-                        chunk_utils.store_expression_text(notice.data, raw)
-                    else:
-                        chunk_utils.clear_expression_text(notice.data)
-            finally:
-                chunk_notice._usd_write_active = prev_write
-
-        elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
+        # Looked up, not read off notice.data: testing notice.data for a Relationship never
+        # matched, and a param built from a relationship (show_attribute) showed its targets
+        # but never wrote them.
+        if isinstance(rel := self.get_usd_prop(), Usd.Relationship) and isinstance(sender.value, str):
             # Currently just assume the string is a comma separated list of paths. This will likely
             # be changed in the future for a more robust approach
-            paths = sender.value.split(",")
+            paths = [x.strip() for x in sender.value.split(",") if x.strip()]
             if not all([Sdf.Path.IsValidPathString(x) for x in paths]):
                 return
             targets = [Sdf.Path(x) for x in paths]
-            notice.data.SetTargets(targets)
+            if rel.GetTargets() == targets:
+                return
+            stage = rel.GetStage()
+            # Into the chunk's own layer (and the variant it was read from), like any other
+            # edit a param makes to a real prim.
+            with chunk_utils.edit_context_for(stage, self._var_selections,
+                                              chunk_utils.chunk_write_layer(stage, self.get_chunk())):
+                rel.SetTargets(targets)
 
     @abstractmethod
     def usd_prop_changed(self):

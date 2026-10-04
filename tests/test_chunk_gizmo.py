@@ -17,9 +17,9 @@ from usd_chunks.chunk_core import ChunkConfig, ChunkFlags, GizmoBase
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,
-    _author_prim,
     ChunkStageSync,
 )
+from chunk_prim_authoring import _author_prim
 
 from chunk_stubs import attach_stub_module, register_stub_module
 
