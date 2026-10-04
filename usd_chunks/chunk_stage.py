@@ -209,8 +209,15 @@ def param_sdf_type(param: core.ChunkParamBase) -> Sdf.ValueTypeName | None:
     # type -- there is no tuple entry, so without this a colour param resolves to no
     # type at all and never gets a chunk-prim attr, leaving its value unable to
     # round-trip through USD.
-    if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
+    # Compared with ==: VECTOR | FLOAT_SLIDER also contains every bit of COLOR_PICKER, and
+    # a wired Vector typed as a colour read back as a colour port once its chunk was gone.
+    param_type = param.evaluate_type()
+    if param_type == ChunkFlags.ParamType.COLOR_PICKER:
         return Sdf.ValueTypeNames.Color3f
+    if isinstance(param, core.ChunkVectorBase):
+        if ChunkFlags.ParamType.FLOAT in param_type:
+            return _VECTOR_TYPE_MAP.get((float, param.length), (None, None))[0]
+        return _sdf_vector_type(type_source)[0] if type_source else None
     return _SDF_TYPE_MAP.get(type(type_source))
 
 _VECTOR_TYPE_MAP: dict = {
