@@ -526,7 +526,7 @@ def process_frame(stage, frame, layers, settings):
         anchor = inst.gprims[0]
         to_world = np.array(UsdGeom.Xformable(anchor).ComputeLocalToWorldTransform(time), dtype=np.float64)
         heading_cam = (camera.world_to_cam[:3, :3] @ to_world[0, :3])
-        h, w, l, location, rotation_y = _yaw_box(cam_points, heading_cam)
+        h, w, length, location, rotation_y = _yaw_box(cam_points, heading_cam)
         alpha = _wrap(rotation_y - math.atan2(location[0], location[2]))
 
         local_points, _ = gprim_triangles(anchor, time) or (np.zeros((1, 3)), None)
@@ -540,7 +540,7 @@ def process_frame(stage, frame, layers, settings):
             "occlusion_ratio": 1.0 - visible_fraction,
             "truncation": truncation,
             "bbox2d": box2d,
-            "dimensions_hwl": (h, w, l),
+            "dimensions_hwl": (h, w, length),
             "location": tuple(location),
             "rotation_y": _wrap(rotation_y),
             "alpha": alpha,
@@ -577,11 +577,11 @@ def _kitti_line(record, name, settings):
         occluded = 1
     else:
         occluded = 2
-    h, w, l = record["dimensions_hwl"]
+    h, w, length = record["dimensions_hwl"]
     x, y, z = record["location"]
     return (f"{name} {record['truncation']:.2f} {occluded} {record['alpha']:.2f} "
             f"{left:.2f} {top:.2f} {right:.2f} {bottom:.2f} "
-            f"{h:.2f} {w:.2f} {l:.2f} {x:.2f} {y:.2f} {z:.2f} {record['rotation_y']:.2f}")
+            f"{h:.2f} {w:.2f} {length:.2f} {x:.2f} {y:.2f} {z:.2f} {record['rotation_y']:.2f}")
 
 
 def _calib_text(camera):

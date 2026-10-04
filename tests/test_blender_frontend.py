@@ -1007,7 +1007,7 @@ def test_bounds_picking_finds_the_prim_under_the_ray(view):
     """The GL-free fallback: Hydra's own pick raises on some builds (pending GL errors from
     whoever drew last), and this is what keeps clicking working there."""
     stage = view.stage
-    near = UsdGeom.Xform.Define(stage, "/Near")
+    _near = UsdGeom.Xform.Define(stage, "/Near")
     UsdGeom.Cube.Define(stage, "/Near/Box")
     far = UsdGeom.Xform.Define(stage, "/Far")
     UsdGeom.Cube.Define(stage, "/Far/Box")
@@ -1050,7 +1050,7 @@ def test_a_click_on_a_mesh_finds_the_chunk_driving_its_parent(driven):
 
 def test_an_undriven_click_still_reports_the_prim_it_hit(view):
     """So ensure_transform_chunk has something to make a chunk for on the first drag."""
-    loose = view.stage.DefinePrim("/Loose", "Cube")
+    _loose = view.stage.DefinePrim("/Loose", "Cube")
     bg.set_picked_prim_paths(["/Loose"])
     try:
         found = gz._picked_prim(view.stage)

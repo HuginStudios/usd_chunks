@@ -164,9 +164,9 @@ def test_yaw_box_of_a_turned_cube(writer):
     # Ry(yaw) in KITTI's camera frame, then 10 m ahead.
     ry = np.array([[math.cos(yaw), 0, math.sin(yaw)], [0, 1, 0], [-math.sin(yaw), 0, math.cos(yaw)]])
     points = corners @ ry.T + np.array([0.0, 0.0, 10.0])
-    h, w, l, location, rotation_y = writer._yaw_box(points, ry @ np.array([1.0, 0.0, 0.0]))
+    h, w, length, location, rotation_y = writer._yaw_box(points, ry @ np.array([1.0, 0.0, 0.0]))
     assert rotation_y == pytest.approx(yaw)
-    assert (h, w, l) == pytest.approx((1.0, 4.0, 2.0))
+    assert (h, w, length) == pytest.approx((1.0, 4.0, 2.0))
     assert location == pytest.approx([0.0, 0.5, 10.0])  # bottom-face centre, y down
 
 

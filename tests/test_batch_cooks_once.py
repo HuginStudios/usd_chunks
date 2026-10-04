@@ -10,7 +10,6 @@ every chunk below a second time with the same values: two cooks per chunk per ch
 from __future__ import annotations
 
 import collections
-import sys
 
 from usd_chunks import Scene, chunk_notice, chunk_registry
 

@@ -182,7 +182,7 @@ def test_author_in_variant_contexts_authors_inside_the_variant():
 
 
 def test_target_paths_strips_selections_without_entering_a_context():
-    stage = _variant_stage()
+    _stage = _variant_stage()
     param = _StubParam(["/asset{lod=high}/geo", "/other"])
     assert CU.target_paths(param) == ["/asset/geo", "/other"]
 

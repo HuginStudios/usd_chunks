@@ -16,8 +16,9 @@ from graph_fixtures import _Scene, make_network
 from usd_chunks import chunk_registry, chunk_utils
 from usd_chunks.chunk_stage import (
     param_override_source,
-    ChunkStageSync, export_chunks, get_chunk_prim_path, initialize, is_group_chunk,
+    export_chunks, get_chunk_prim_path, initialize, is_group_chunk,
     is_network_host, is_subnet,
+    is_chunkgroup, localise_network, publish_network, loft_param_to_context,
 )
 from usd_chunks.graph import engine as chunk_graph
 
@@ -350,8 +351,6 @@ class TestPayloadHostsToo:
             _teardown(scene)
 
 
-from usd_chunks.chunk_stage import is_chunkgroup, localise_network, publish_network
-
 
 class TestLocalise:
     """Localise = convert the host into a chunkgroup of this file, its network now local."""
@@ -517,7 +516,7 @@ class TestNamespace:
     def test_a_location_puts_the_network_under_it(self, prim_network):
         stage, scene = _open(None)
         try:
-            host = _reference(scene, prim_network, "/room")
+            _host = _reference(scene, prim_network, "/room")
             inner = next(c for c in scene.get_chunks() if c.name == "Prim")
             path = inner.get_param("primpath_location")
             assert path.raw_value == "/thing", "the stored text is the file's"
@@ -705,7 +704,6 @@ class TestTheHostNodeInTheQtGraph:
             assert getattr(reference, "_network_namespace") == typed.rstrip("/")
 
 
-from usd_chunks.chunk_stage import loft_param_to_context
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene  # noqa: E402
 
 

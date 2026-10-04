@@ -9,7 +9,6 @@ because USD's own default is alphabetical (walk beats wave).
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdSkel, Vt
