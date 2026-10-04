@@ -152,15 +152,14 @@ def flush(force: bool = False) -> None:
                 # new dispatch's, so it never cooked at all.
                 if chunk in _pending:
                     changes = changes + _pending.pop(chunk)[0]
-                if skip_cook.enabled():
-                    # Decided here, not when the solve reached it: the chunks above it
-                    # have cooked by now (upstream first) and handed down what changed.
-                    if skip_cook.should_skip(chunk, changes, states):
-                        # Its layer already holds the result -- as stale as it was.
-                        chunk._cook_stale = was_stale
-                        continue
-                    if not chunk.can_cook():
-                        skip_cook.passed_through(chunk, changes)
+                # Decided here, not when the solve reached it: the chunks above it
+                # have cooked by now (upstream first) and handed down what changed.
+                if skip_cook.should_skip(chunk, changes, states):
+                    # Its layer already holds the result -- as stale as it was.
+                    chunk._cook_stale = was_stale
+                    continue
+                if not chunk.can_cook():
+                    skip_cook.passed_through(chunk, changes)
                 # Not stale any more: it cooked since it was reached -- its own params,
                 # set while it ran, reach it here, and its result already takes them in.
                 if is_cook_stale(chunk):
@@ -319,11 +318,10 @@ def outside_cook():
 def inputs_rewired(node) -> None:
     """A node gained or lost an input: what it and everything below it cooked on is gone.
 
-    Called by DagNode when one of its input edges changes. Only skip-cooking keeps a record
-    of what a chunk read, so this is a no-op with it off.
+    Called by DagNode when one of its input edges changes. The record skip-cooking keeps
+    of what a chunk read is what goes.
     """
-    if skip_cook.enabled():
-        skip_cook.inputs_rewired(node)
+    skip_cook.inputs_rewired(node)
 
 
 def dispatch(chunk, node, changes, seed) -> None:
@@ -339,8 +337,7 @@ def dispatch(chunk, node, changes, seed) -> None:
         changes: The (alias, propagator) changes that reached it.
         seed: The propagator whose execute() started the solve.
     """
-    if skip_cook.enabled():
-        skip_cook.note_state(chunk)
+    skip_cook.note_state(chunk)
     if chunk in _pending:
         _pending[chunk][0].extend(changes)
     else:

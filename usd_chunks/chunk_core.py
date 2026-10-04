@@ -3624,7 +3624,7 @@ class ChunkBase(ChunkGroupBase):
                     with Usd.EditContext(stage, ctx):
                         # What the chunks below saw, to tell them what this cook
                         # changed (skip_cook). Anonymous only, like the Clear.
-                        skipping = skip_cook.enabled() and ctx.anonymous
+                        skipping = ctx.anonymous
                         before = skip_cook.baseline(self, ctx) if skipping else None
                         # A cook starts from an empty layer, so a module
                         # authors its whole result every time and never reads
@@ -3648,7 +3648,7 @@ class ChunkBase(ChunkGroupBase):
                                 execute(self)
                         elif skipping:
                             skip_cook.restored(self, ctx)
-                        if skip_cook.enabled() and not ctx.anonymous:
+                        if not ctx.anonymous:
                             skip_cook.unaccounted(self)
                         # What a param drives is its own state, not the cook's
                         # output -- see ChunkBase.reauthor_driven_attrs.
@@ -3686,8 +3686,7 @@ class ChunkBase(ChunkGroupBase):
             else:
                 # No edit layer of its own -- author into the stage's current target.
                 execute(self)
-                if skip_cook.enabled():
-                    skip_cook.unaccounted(self)
+                skip_cook.unaccounted(self)
                 self._cook_stale = False
                 chunk_utils.stamp_module_hash(stage, self)
         return True

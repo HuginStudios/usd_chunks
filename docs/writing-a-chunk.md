@@ -248,10 +248,8 @@ front of the layers it animates, and put it back after the next cook clears it.
 
 ### Skipping cooks nothing reached
 
-*Experimental, off by default: set `USD_CHUNKS_SKIP_COOKS=1`.*
-
 A change to a chunk dirties everything below it, but most of those chunks read nothing that
-changed: a Scatter below a Light doesn't care that the Light turned. With skipping on, a
+changed: a Scatter below a Light doesn't care that the Light turned. So a
 chunk that only the chunks above it changed doesn't cook unless one of them changed a prim
 it reads.
 

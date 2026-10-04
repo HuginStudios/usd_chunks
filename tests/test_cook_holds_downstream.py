@@ -18,9 +18,9 @@ from usd_chunks import Scene, chunk, skip_cook
 
 @pytest.fixture(autouse=True)
 def _every_cook_runs(monkeypatch):
-    # What is held and when it cooks, not whether: Down reads nothing Up writes, and with
-    # skipping on it would rightly not cook at all.
-    monkeypatch.delenv(skip_cook.ENV, raising=False)
+    # What is held and when it cooks, not whether: Down reads nothing Up writes, and
+    # skipping would rightly not cook it at all.
+    monkeypatch.setattr(skip_cook, "should_skip", lambda *args, **kwargs: False)
 
 
 def _add(scene, module):

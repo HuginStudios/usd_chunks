@@ -31,14 +31,13 @@ a cook read back from the cook cache. Each hands "everything changed" down.
 The framework's own work during a cook -- muting a gate's branches, a chunk prim's
 bookkeeping -- is on the scene, not the cook stage: ChunkCommon.get_scene_stage.
 
-Off unless USD_CHUNKS_SKIP_COOKS=1, while chunks that cannot cook on their inputs alone are
-found and made to.
+Always on. It was behind USD_CHUNKS_SKIP_COOKS=1 while chunks that cannot cook on their
+inputs alone were found and made to.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -51,9 +50,6 @@ from usd_chunks.chunk_naming import CHUNKS_ROOT
 
 logger = logging.getLogger(__name__)
 
-#: The switch. See the module docstring.
-ENV = "USD_CHUNKS_SKIP_COOKS"
-
 #: A change handed down that covers every path: nothing below it may skip.
 EVERYTHING = frozenset({Sdf.Path.absoluteRootPath})
 
@@ -65,11 +61,6 @@ _GLOB_CHARS = set("*?[")
 _VARIANT_SELECTION = re.compile(r"\{[^{}]*\}")
 
 _CHUNKS_ROOT = Sdf.Path(CHUNKS_ROOT)
-
-
-def enabled() -> bool:
-    """Whether cooks go through the cook stage and may be skipped. See ENV."""
-    return os.environ.get(ENV, "").strip().lower() in ("1", "on", "true", "yes")
 
 
 # ------------------------------------------------------------------------------------------
@@ -684,7 +675,7 @@ def should_skip(chunk, reasons: list, states: list | None = None) -> bool:
             whenever something may have changed the scene -- a cook. One drag step decided
             on twenty chunks of the same scene, and read its state twenty times.
     """
-    if not enabled() or not reasons:
+    if not reasons:
         return False
     mask = getattr(chunk, "_skip_mask", None)
     if mask is None:
