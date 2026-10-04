@@ -43,7 +43,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
-from usd_chunks import chunk_cache, cook_cache
+from usd_chunks import chunk_cache, chunk_cook, cook_cache
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
@@ -2478,7 +2478,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # An empty layer holds no result, so the chunk must cook before recook_for_view can
         # count on its layer. Covers a load, which makes every layer afresh for chunk objects
         # that may have cooked into the old ones.
-        chunk_notice.mark_cook_stale(c)
+        chunk_cook.mark_cook_stale(c)
 
         # We must make sure to delete the layer of the chunk AFTER all other notices are sent.
         # For this reason, we can't rely on callbacks. Instead we can register a finalizer, so we delete

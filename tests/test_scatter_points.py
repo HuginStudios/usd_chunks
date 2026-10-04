@@ -6,7 +6,7 @@ import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
-from usd_chunks import chunk_registry, chunk, chunk_stage as _chunk_usd
+from usd_chunks import chunk, chunk_cook, chunk_registry, chunk_stage as _chunk_usd
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 
@@ -252,7 +252,7 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     # Cube, so the "typeless means unresolved" check never fired. It only ever passed
     # because the readout Label written at the end of execute() re-cooked the chunk -- a
     # Label no longer does (it is presentation_only).
-    assert scatter._cook(), "precondition: the chunk is allowed to cook"  # must not raise
+    assert chunk_cook.cook(scatter), "precondition: the chunk is allowed to cook"  # must not raise
 
     proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
     assert proto.IsValid()

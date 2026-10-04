@@ -11,7 +11,7 @@ import logging
 
 from pxr import Sdf, Usd
 
-from usd_chunks import Scene, chunk_naming, chunk_registry, chunk_utils
+from usd_chunks import Scene, chunk_cook, chunk_naming, chunk_registry, chunk_utils
 from usd_chunks.chunk_topology import get_chunk_prim_path
 from usd_chunks.store import pin
 
@@ -74,7 +74,7 @@ def test_a_recook_restamps_a_prim_whose_recorded_code_is_out_of_date():
         prim = _prim(scene, node)
         _set_hash(prim, OLD)
 
-        assert node._cook() is True
+        assert chunk_cook.cook(node) is True
 
         assert prim.GetAttribute(ATTR).Get() == _module().source_hash
 

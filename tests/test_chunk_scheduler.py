@@ -10,7 +10,7 @@ import random
 
 import pytest
 
-from usd_chunks import chunk_notice, chunk_scheduler
+from usd_chunks import chunk_cook, chunk_scheduler
 from usd_chunks.chunk_notice import ChunkNoticeAlias, ChunkNoticePropagator
 
 
@@ -551,7 +551,7 @@ class Counting(Node):
 
 
 class TestBatchedSolve:
-    """chunk_notice.batched_solve: many changes, one solve of what they feed."""
+    """chunk_cook.batched_solve: many changes, one solve of what they feed."""
 
     def setup_method(self):
         Counting.log = []
@@ -572,7 +572,7 @@ class TestBatchedSolve:
 
     def test_a_batch_solves_what_its_changes_feed_once(self):
         a, b, _c = self.graph()
-        with chunk_notice.batched_solve():
+        with chunk_cook.batched_solve():
             a.execute()
             b.execute()
             assert Counting.log == []  # nothing solves inside the block
@@ -581,9 +581,9 @@ class TestBatchedSolve:
 
     def test_nested_batches_join_the_outermost(self):
         a, b, _c = self.graph()
-        with chunk_notice.batched_solve():
+        with chunk_cook.batched_solve():
             a.execute()
-            with chunk_notice.batched_solve():
+            with chunk_cook.batched_solve():
                 b.execute()
             assert Counting.log == []
         assert Counting.log.count("c") == 1
@@ -605,7 +605,7 @@ class TestBatchedSolve:
 
         a.__class__ = Reentrant
         b.__class__ = Reentrant
-        with chunk_notice.batched_solve():
+        with chunk_cook.batched_solve():
             a.execute()
 
         assert depth["max"] == 1

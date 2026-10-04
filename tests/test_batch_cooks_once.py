@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import collections
 
-from usd_chunks import Scene, chunk_notice, chunk_registry
+from usd_chunks import Scene, chunk_cook, chunk_registry
 
 
 def _count_cooks(module_name, counts):
@@ -49,9 +49,9 @@ def test_a_wedge_change_cooks_what_it_drives_once():
 def test_deferred_work_runs_once_after_the_batch():
     """Asked for under one key any number of times, it runs once, after the solves."""
     runs = []
-    assert chunk_notice.defer_to_batch_end("k", lambda: runs.append("now")) is False
-    with chunk_notice.batched_solve():
+    assert chunk_cook.defer_to_batch_end("k", lambda: runs.append("now")) is False
+    with chunk_cook.batched_solve():
         for _ in range(5):
-            assert chunk_notice.defer_to_batch_end("k", lambda: runs.append("batch"))
+            assert chunk_cook.defer_to_batch_end("k", lambda: runs.append("batch"))
         assert runs == []
     assert runs == ["batch"]

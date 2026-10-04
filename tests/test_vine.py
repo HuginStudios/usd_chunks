@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk_notice, chunk_registry, chunk
+from usd_chunks import chunk, chunk_cook, chunk_registry
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as chunk_usd_init
@@ -109,7 +109,7 @@ class _Harness:
     def vine(self, **params):
         node = self.chunk("vine")
         # One cook for the whole setup, not one per param: each set grows the vine again.
-        with chunk_notice.batched_solve():
+        with chunk_cook.batched_solve():
             node.get_param("surface_prim").value = WALL
             node.get_param("density_primvar").value = DENSITY
             for name, value in params.items():
