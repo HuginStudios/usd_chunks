@@ -590,7 +590,7 @@ def should_skip(chunk, reasons: list) -> bool:
         chunk: The chunk the solve is about to cook.
         reasons: The (alias, propagator) pairs that dirtied it, from DagNode.iter_changes.
     """
-    # A chunk held for the end of a cook above it (chunk_notice.executing) comes back with
+    # A chunk held for the end of a cook above it (chunk_cook.executing) comes back with
     # its reasons cleared; they were kept for this.
     held = getattr(chunk, "_skip_held", None)
     if held:
@@ -723,7 +723,7 @@ def finish(chunk, layer: Sdf.Layer, before: Sdf.Layer | None) -> None:
     """Hand down what chunk's layer changed since the chunks below last saw it.
 
     Called once the cook is wholly done -- its driven attributes re-authored too -- and
-    before the chunks it held (chunk_notice.executing) are solved.
+    before the chunks it held (chunk_cook.executing) are solved.
     """
     everything = before is None or getattr(chunk, "_skip_everything", True)
     chunk._skip_everything = True

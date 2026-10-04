@@ -33,7 +33,7 @@ import logging
 
 from pxr import Sdf
 
-from usd_chunks import chunk, chunk_notice
+from usd_chunks import chunk, chunk_cook, chunk_notice
 
 logger = logging.getLogger(__name__)
 
@@ -521,7 +521,7 @@ def execute(node):
     # One batch: every range lands first, then what they drive cooks once. Set one at a
     # time, each value re-cooked everything below the wedge against a half-new variant --
     # hundreds of cooks per variant, where one is the answer.
-    with chunk_notice.batched_solve():
+    with chunk_cook.batched_solve():
         for name, value in sample(node, index).items():
             node.get_param(name).value = value
 

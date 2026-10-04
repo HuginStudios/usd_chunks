@@ -10,7 +10,7 @@ import threading
 import pytest
 from pxr import Usd, UsdShade, Sdf
 
-from usd_chunks import chunk, chunk_notice, chunk_registry
+from usd_chunks import chunk, chunk_cook, chunk_registry
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import (
@@ -580,7 +580,7 @@ class TestBindMaterialResilience:
         stage, c = self._setup()
         c.execute()
         assert self._bound(stage) == "/mat"
-        assert not chunk_notice.is_cook_stale(c), (
+        assert not chunk_cook.is_cook_stale(c), (
             "a clean chunk is what recook_for_view leaves alone -- the whole of the protection"
         )
 

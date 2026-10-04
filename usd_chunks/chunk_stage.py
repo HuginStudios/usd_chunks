@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
+from usd_chunks import chunk_cook
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks.gizmo import runtime as chunk_gizmo
@@ -1207,7 +1208,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         # Once per chunk per batch: a Wedge change writes hundreds of params,
                         # and each refresh reads every param the chunk has.
                         refresh = functools.partial(self._refresh_gizmo_anchors, chunk)
-                        if not chunk_notice.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
+                        if not chunk_cook.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
                             refresh()
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
@@ -4530,7 +4531,7 @@ def recook_for_view(
     param changes (see ChunkBase.value_changed) -- so being outside the active view's tree
     means "does not execute", live.
 
-    Of the revealed tree, only the chunks that are stale (chunk_notice.is_cook_stale) cook.
+    Of the revealed tree, only the chunks that are stale (chunk_cook.is_cook_stale) cook.
     Muting keeps a layer's content, so a chunk that already cooked on its current inputs
     comes back with that result, and running it again would redo the same work -- for an
     import that parses a mesh file, on every view switch and every wire. A chunk that cooks
@@ -4670,7 +4671,7 @@ def recook_for_view(
                 inner_view, synthetic = _group_output_driver(stage, scene, c)
                 recook_for_view(
                     stage, scene, c, inner_view, _synthetic_tail=synthetic,
-                    _force=_force or chunk_notice.is_cook_stale(c),
+                    _force=_force or chunk_cook.is_cook_stale(c),
                 )
                 c._cook_stale = False
             continue
@@ -4685,7 +4686,7 @@ def recook_for_view(
             # _force is for the group's own inside. A group's cook_list also reaches back
             # through its input into the parent graph, and those chunks are the parent's
             # to cook -- forcing them re-ran the whole upstream chain on every stale group.
-            elif (_force and in_context(c)) or chunk_notice.is_cook_stale(c):
+            elif (_force and in_context(c)) or chunk_cook.is_cook_stale(c):
                 c.execute()
 
     if not cook_list:
@@ -5635,11 +5636,11 @@ def _clear_cooked_groups(chunks: list[core.ChunkBase]) -> None:
     """
     disabled = ChunkFlags.State.DISABLED
     for group in chunks:
-        if not is_group_chunk(group) or group.can_cook() or not chunk_notice.is_cook_stale(group):
+        if not is_group_chunk(group) or group.can_cook() or not chunk_cook.is_cook_stale(group):
             continue
         prefix = get_chunk_prim_path(group) + "/"
         if all(
-            not chunk_notice.is_cook_stale(c)
+            not chunk_cook.is_cook_stale(c)
             for c in chunks
             if get_chunk_prim_path(c).startswith(prefix)
             and c.can_cook() and not is_view_chunk(c) and not c.has_state(disabled)
@@ -6181,12 +6182,12 @@ def _load_chunks(
                 # and cooked their group before them -- a car configurator's glass binding came
                 # out empty. Run in turn, each root still dirties its group itself.
                 unseen = _unseen_by_active_views(stage, scene)
-                stale_before = {id(c) for _, c in deferred if chunk_notice.is_cook_stale(c)}
+                stale_before = {id(c) for _, c in deferred if chunk_cook.is_cook_stale(c)}
                 for prim, added in sorted(
                     deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
                 ):
                     if id(added) not in chunks_with_dependencies and not unseen(added):
-                        if id(added) in stale_before and not chunk_notice.is_cook_stale(added):
+                        if id(added) in stale_before and not chunk_cook.is_cook_stale(added):
                             continue
                         is_top_level = id(added) in top_level_chunk_ids
                         if is_top_level or can_execute_sub_chunks:

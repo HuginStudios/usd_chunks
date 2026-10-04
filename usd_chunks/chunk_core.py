@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils, cook_cache, skip_cook
+from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_notice, chunk_registry, chunk_utils, cook_cache, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -3564,12 +3564,12 @@ class ChunkBase(ChunkGroupBase):
         """
         return self._module_hook("execute") is not None
 
-    def cook(self) -> bool:
+    def _cook(self) -> bool:
         """Run this chunk's module into its own edit layer, now, and nothing downstream of it.
 
         Owned by the framework, not meant to be overridden: a chunk's behaviour is its
         module's execute(). Deciding WHEN to cook -- a data change rather than a pure state
-        change, not twice in one batch -- is the solve's (ChunkNoticePropagator.execute);
+        change, not twice in one batch -- is the solve's (chunk_cook.dispatch);
         this only decides whether the chunk CAN run right now, and runs it. It does not
         mark the chunk stale first: the solve does, so a cook that is refused leaves it
         stale for recook_for_view to pick up.
@@ -3618,7 +3618,7 @@ class ChunkBase(ChunkGroupBase):
                 and not muted and not not_yet_in_stack and not self.is_blocked()):
             return False
 
-        with chunk_notice.executing(self), skip_cook.unmasked():
+        with chunk_cook.executing(self), skip_cook.unmasked():
             if ctx:
                 try:
                     with Usd.EditContext(stage, ctx):
@@ -3724,7 +3724,7 @@ class ChunkBase(ChunkGroupBase):
             if lm.initialized:
                 if layer := lm.get_or_create_layer(param):
                     layer.Clear()
-                    chunk_notice.mark_cook_stale(param)
+                    chunk_cook.mark_cook_stale(param)
         res = super().add_param(param, force_unique)
         if do_context_setup:
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)

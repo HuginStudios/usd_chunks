@@ -24,7 +24,7 @@ import pytest
 from PySide6 import QtCore
 from pxr import Sdf, Usd
 
-from usd_chunks import Scene, chunk, chunk_core, chunk_notice, chunk_registry, chunk_stage
+from usd_chunks import Scene, chunk, chunk_cook, chunk_core, chunk_notice, chunk_registry, chunk_stage
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import connect_exec, get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks.chunk_widget_api import ChunkParamWidgetBase
@@ -127,7 +127,7 @@ def network(qapp):
 def cooks(monkeypatch):
     """The chunks that cook, in order -- by object: prim chunks share a name across groups."""
     seen: list = []
-    real = chunk_core.ChunkBase.cook
+    real = chunk_core.ChunkBase._cook
 
     def counting(self):
         ran = real(self)
@@ -135,14 +135,14 @@ def cooks(monkeypatch):
             seen.append(self)
         return ran
 
-    monkeypatch.setattr(chunk_core.ChunkBase, "cook", counting)
+    monkeypatch.setattr(chunk_core.ChunkBase, "_cook", counting)
     return seen
 
 
 def test_a_stale_group_forces_its_inside_not_its_upstream(network, cooks):
     up, group, inner = network["up"], network["group"], network["inner"]
-    assert not chunk_notice.is_cook_stale(up), "precondition: the upstream chunk has cooked"
-    chunk_notice.mark_cook_stale(group)
+    assert not chunk_cook.is_cook_stale(up), "precondition: the upstream chunk has cooked"
+    chunk_cook.mark_cook_stale(group)
 
     chunk_stage.recook_focus(network["stage"], network["scene"], network["root"], network["view"])
 
@@ -152,22 +152,22 @@ def test_a_stale_group_forces_its_inside_not_its_upstream(network, cooks):
 
 def test_a_group_whose_inside_has_cooked_is_not_stale(network):
     group, inner = network["group"], network["inner"]
-    chunk_notice.mark_cook_stale(group)
-    assert not chunk_notice.is_cook_stale(inner)
+    chunk_cook.mark_cook_stale(group)
+    assert not chunk_cook.is_cook_stale(inner)
 
     chunk_stage._clear_cooked_groups(list(network["scene"].get_chunks()))
 
-    assert not chunk_notice.is_cook_stale(group)
+    assert not chunk_cook.is_cook_stale(group)
 
 
 def test_a_group_with_anything_stale_inside_stays_stale(network):
     group, inner = network["group"], network["inner"]
-    chunk_notice.mark_cook_stale(group)
-    chunk_notice.mark_cook_stale(inner)
+    chunk_cook.mark_cook_stale(group)
+    chunk_cook.mark_cook_stale(inner)
 
     chunk_stage._clear_cooked_groups(list(network["scene"].get_chunks()))
 
-    assert chunk_notice.is_cook_stale(group), "the recook still has to force its inside"
+    assert chunk_cook.is_cook_stale(group), "the recook still has to force its inside"
 
 
 def _make_view_active(network):
@@ -244,8 +244,8 @@ def test_a_group_recooked_by_a_loaded_callback_still_loads_clean(tmp_path, monke
     try:
         by_path = {get_chunk_prim_path(c): c for c in loaded.get_chunks()}
         assert inner_path in by_path and group_path in by_path, "precondition: the network reloaded"
-        assert not chunk_notice.is_cook_stale(by_path[inner_path])
-        assert not chunk_notice.is_cook_stale(by_path[group_path]), \
+        assert not chunk_cook.is_cook_stale(by_path[inner_path])
+        assert not chunk_cook.is_cook_stale(by_path[group_path]), \
             "a group whose inside the load cooked must not be forced again by the first recook"
     finally:
         loaded.close()

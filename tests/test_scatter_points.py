@@ -252,7 +252,7 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     # Cube, so the "typeless means unresolved" check never fired. It only ever passed
     # because the readout Label written at the end of execute() re-cooked the chunk -- a
     # Label no longer does (it is presentation_only).
-    assert scatter.cook(), "precondition: the chunk is allowed to cook"  # must not raise
+    assert scatter._cook(), "precondition: the chunk is allowed to cook"  # must not raise
 
     proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
     assert proto.IsValid()
