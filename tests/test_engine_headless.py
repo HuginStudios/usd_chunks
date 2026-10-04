@@ -246,6 +246,24 @@ def test_paste_recreates_nodes_values_and_the_wires_between_them(graph):
     assert new_b.get_param("p").value == pytest.approx(9.0)
 
 
+def test_a_pasted_chunk_records_its_list_rows_on_its_prim(graph):
+    # The rows land before the chunk has a prim, so only adding it can write them. Unwritten,
+    # a pasted Wedge drove its outports until the save and reopened with no ranges at all.
+    a = graph.make("a")
+    rows = a.get_param("rows")
+    rows.size = 2
+    rows.get_indexed_param("item", 1).value = 7.0
+    chunks, prims, positions = graph.view_state()
+    nodes, edges = chunk_graph.snapshot_selection(chunks, prims, positions, graph.scene,
+                                                  graph.stage, {graph.path(a)})
+
+    (new,) = chunk_graph.paste_nodes(graph.scene, graph.stage, nodes, edges, _identity,
+                                     chunks=chunks).values()
+
+    attr = graph.prim(new).GetAttribute("inputs:rows:item")
+    assert attr and list(attr.Get()) == pytest.approx([0.0, 7.0])
+
+
 def test_pasting_nothing_makes_nothing(graph):
     assert chunk_graph.paste_nodes(graph.scene, graph.stage, [], [], _identity) == {}
 

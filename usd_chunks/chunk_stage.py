@@ -1557,6 +1557,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         finally:
             chunk_notice._usd_write_active = prev_write
 
+    def _sync_list_arrays(self, chunk: core.ChunkBase) -> None:
+        """Write every list group's arrays for the rows a chunk holds as its prim is made.
+
+        _sync_list_proxy_to_usd writes an array when a row changes, and only once the chunk
+        has a prim. A paste fills the rows in before the chunk is added, so a pasted Wedge
+        showed its ranges and drove its outports until the save, then reopened with none.
+        """
+        for _, list_group in _iter_list_group_arrays(chunk):
+            if list_group.size and list_group.proxy_params:
+                for proxy in list_group.proxy_params[0].get_my_params():
+                    self._sync_list_proxy_to_usd(proxy)
+
     def _on_dependency_added(self, notice, sender):
         if not self.initialized or not self._stage:
             return
@@ -2029,6 +2041,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         prev = self._find_dag_tail(tail_context, exclude=chunk) if _params_tab_create else None
         prim = self._define_prim(chunk, prev)
         self._wire_inputs(prim, chunk)
+        self._sync_list_arrays(chunk)
         # Set prim_path on group contexts so sub-chunks nest correctly under them.
         if is_group:
             chunk.prim_path = prim_path
