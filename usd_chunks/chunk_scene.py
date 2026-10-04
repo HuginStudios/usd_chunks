@@ -931,8 +931,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             else:
                 param.value = value
 
-    def cook(self) -> None:
-        """Run every chunk, upstream first.
+    def execute(self) -> None:
+        """Run every chunk, upstream first: chunk.execute() for the whole scene.
 
         Making a chunk and setting a value already run what they affect, so this is rarely
         needed. Every chunk cooks once, in the same flush as any other cook

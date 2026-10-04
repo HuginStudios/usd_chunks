@@ -226,7 +226,7 @@ Edit Target is what sends edits to it.
 | --- | --- |
 | `scene.save(path)` | Writes the network: Chunk prims and wires. It opens as a graph. |
 | `scene.export(path)` | Writes the result as plain USD, without the Chunk prims. |
-| `scene.cook()` | Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes. |
+| `scene.execute()` | Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes. |
 | `scene.commit()` | Runs the chunks that write files, such as Export USD. |
 
 ## Inside usdview

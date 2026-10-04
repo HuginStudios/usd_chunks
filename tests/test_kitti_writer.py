@@ -58,7 +58,7 @@ def test_render_primvars_number_every_label_across_chunks(scene, all_on):
     for shape in ("sphere", "cube", "torus"):
         node = _labels(scene, node, f"L_{shape}", f"/W/{shape}_*", shape,
                        **(render if all_on or shape == "torus" else {}))
-    scene.cook()
+    scene.execute()
 
     got = {p: (_primvar(stage, p, "semantic_id"), _primvar(stage, p, "instance_id"))
            for p in ("/W/sphere_a", "/W/sphere_b", "/W/cube_a", "/W/torus_a/geo")}
@@ -77,7 +77,7 @@ def test_a_descendant_with_its_own_label_is_its_own_instance(scene):
         UsdGeom.Cube.Define(stage, "/W/chair/cushion")
     node = _labels(scene, None, "Chair", "/W/chair", "cube")
     _labels(scene, node, "Cushion", "/W/chair/cushion", "sphere", render_primvars=True, classes="sphere,cube")
-    scene.cook()
+    scene.execute()
 
     # The chair is one instance, however many gprims it is built from...
     assert _primvar(stage, "/W/chair/seat", "instance_id") == _primvar(stage, "/W/chair/leg", "instance_id")
@@ -92,7 +92,7 @@ def test_render_primvars_are_off_by_default(scene):
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         UsdGeom.Sphere.Define(stage, "/W/ball")
     _labels(scene, None, "L", "/W/ball", "sphere")
-    scene.cook()
+    scene.execute()
     assert _primvar(stage, "/W/ball", "instance_id") is None
 
 
