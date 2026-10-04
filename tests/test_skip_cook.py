@@ -127,7 +127,7 @@ def test_a_skip_is_decided_on_everything_above_not_just_the_chunk_before():
         assert _size(scene, "/Reader") == 8.0
 
 
-def test_a_chunk_reading_outside_its_inputs_cooks_on_the_whole_stage():
+def test_a_chunk_reading_outside_its_inputs_widens_its_mask_to_what_it_read():
     cooks: list = []
     with Scene() as scene:
         gen = _add(scene, _generator(cooks, "Gen"))
@@ -137,11 +137,18 @@ def test_a_chunk_reading_outside_its_inputs_cooks_on_the_whole_stage():
         gen.get_param("size").value = 5.0
 
         assert _size(scene, "/Reader") == 10.0
-        assert reader._skip_mask is None
+        assert Sdf.Path("/Gen") in reader._skip_mask
         cooks.clear()
         gen.get_param("size").value = 6.0
         assert cooks == ["Gen", "Reader"]
         assert _size(scene, "/Reader") == 12.0
+
+
+def test_a_variant_selection_names_the_prim_under_it_not_the_whole_stage():
+    # As a chunk writes it -- a slash after the brace -- which Sdf.Path does not parse.
+    assert list(skip_cook._paths_in("/Car{color=Red}/_materials/Paint")) == [
+        Sdf.Path("/Car/_materials/Paint")]
+    assert list(skip_cook._paths_in("/Car{color=Red}Body")) == [Sdf.Path("/Car/Body")]
 
 
 def test_a_cook_that_writes_somewhere_new_is_run_again_where_it_can():

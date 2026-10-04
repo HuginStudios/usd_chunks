@@ -93,7 +93,9 @@ def _rig(node) -> _Rig | None:
     if cached is not None and cached[0] == (id(stage), path):
         return cached[1]
     rig = _read_rig(stage, path)
-    if rig is not None:
+    # Not a cook's own stage (skip_cook's stage of its inputs): a new one every cook, so
+    # caching against it replaced the scene's rig, and its watch, with one read only once.
+    if rig is not None and stage == node.get_scene_stage():
         node._rig_cache = ((id(stage), path), rig)
         _watch(node, stage)
     return rig

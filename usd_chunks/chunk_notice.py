@@ -1847,55 +1847,73 @@ class NoticeConnection:
 
         args = (owner, notice, sender) if self._wants_owner(meth) else (notice, sender)
         if owner:
-            # Try running the callback function with the edit context to safely add any changes to the stage
-            # to the correct layer
-
-            stage = owner.get_stage()
-            # A global USD listener hears every stage in the process, and a chunk acts on
-            # its own. Dropped before the edit context, which is the expensive part: opening
-            # one .mtlx sends hundreds of change rounds from the MaterialX plugin's private
-            # stage, and resolving the context for each cost more than the file itself.
-            # Compared by root layer, since the Python wrapper of one stage is not unique.
-            # An on-create trigger passes the notice class, not a notice, and a class's
-            # GetStage is unbound -- calling it raised for every Layer and Edit Target made.
-            notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
-            if stage and notice_stage is not None and (other := notice_stage()) is not None \
-                    and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
+            cooking = _executing_chunk
+            if cooking is not None and getattr(owner, "get_chunk", lambda: None)() is not cooking:
+                # Another chunk is cooking, and its stage is the cook's (skip_cook): only what
+                # that cook reads, and whatever is looked up there is charged to it. A Set
+                # Camera refreshing its menu by a Traverse during an Add Variants cook made Add
+                # Variants read the whole stage, so it cooked on every edit above it. The cook
+                # stage's notice is a copy -- the scene's stage hears the same layer edit -- so
+                # it is dropped, and the scene's is handled on the scene's stage.
+                notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
+                if notice_stage is not None and chunk_cook.is_cook_stage(notice_stage()):
+                    return
+                with chunk_cook.outside_cook():
+                    self._call_for_owner(owner, meth, args, notice, context)
                 return
-            ctx = owner.get_edit_context()
-            try:
-                if stage and ctx and context:
-                    # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
-                    # from the local layer stack, so entering an EditContext on it raises
-                    # ("not in the local LayerStack"). A dormant chunk must not author anyway --
-                    # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
-                    if stage.IsLayerMuted(ctx.identifier):
-                        return
-                    if not stage.HasLocalLayer(ctx):
-                        # Not muted -- just not inserted into the local layer stack YET (hit
-                        # live during load_chunks's bulk restore: a ListGroup proxy row's
-                        # value setter bypasses the chunk_notice._loading_stage guard that
-                        # suppresses every OTHER reactive path during that restore, so this
-                        # can fire before get_or_create_layer has run for this chunk). Unlike
-                        # the muted case, skipping the call entirely would be wrong here:
-                        # nothing re-triggers this specific ATTRIBUTE_CHANGED notice later the
-                        # way load_chunks's own explicit final execute() loop does for the
-                        # reserved hook, so this would-be edit would just be lost. Call it
-                        # without the EditContext wrapper instead -- a callback that (like
-                        # chunks/usd/sublayer.py's) authors straight into its own
-                        # get_edit_context() layer object, not through the stage's ambient
-                        # edit target, works fine either way.
-                        meth(*args)
-                        return
-                    with Usd.EditContext(stage, ctx):
-                        meth(*args)
-                else:
-                    meth(*args)
-            except Exception:
-                logger.exception("failed to run method %s", meth)
+            self._call_for_owner(owner, meth, args, notice, context)
             return
 
         meth(*args)
+
+    def _call_for_owner(self, owner, meth, args, notice, context):
+        """Run meth for owner, inside owner's edit context when it has one (handle_callback)."""
+        # Try running the callback function with the edit context to safely add any changes to the stage
+        # to the correct layer
+
+        stage = owner.get_stage()
+        # A global USD listener hears every stage in the process, and a chunk acts on
+        # its own. Dropped before the edit context, which is the expensive part: opening
+        # one .mtlx sends hundreds of change rounds from the MaterialX plugin's private
+        # stage, and resolving the context for each cost more than the file itself.
+        # Compared by root layer, since the Python wrapper of one stage is not unique.
+        # An on-create trigger passes the notice class, not a notice, and a class's
+        # GetStage is unbound -- calling it raised for every Layer and Edit Target made.
+        notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
+        if stage and notice_stage is not None and (other := notice_stage()) is not None \
+                and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
+            return
+        ctx = owner.get_edit_context()
+        try:
+            if stage and ctx and context:
+                # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
+                # from the local layer stack, so entering an EditContext on it raises
+                # ("not in the local LayerStack"). A dormant chunk must not author anyway --
+                # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
+                if stage.IsLayerMuted(ctx.identifier):
+                    return
+                if not stage.HasLocalLayer(ctx):
+                    # Not muted -- just not inserted into the local layer stack YET (hit
+                    # live during load_chunks's bulk restore: a ListGroup proxy row's
+                    # value setter bypasses the chunk_notice._loading_stage guard that
+                    # suppresses every OTHER reactive path during that restore, so this
+                    # can fire before get_or_create_layer has run for this chunk). Unlike
+                    # the muted case, skipping the call entirely would be wrong here:
+                    # nothing re-triggers this specific ATTRIBUTE_CHANGED notice later the
+                    # way load_chunks's own explicit final execute() loop does for the
+                    # reserved hook, so this would-be edit would just be lost. Call it
+                    # without the EditContext wrapper instead -- a callback that (like
+                    # chunks/usd/sublayer.py's) authors straight into its own
+                    # get_edit_context() layer object, not through the stage's ambient
+                    # edit target, works fine either way.
+                    meth(*args)
+                    return
+                with Usd.EditContext(stage, ctx):
+                    meth(*args)
+            else:
+                meth(*args)
+        except Exception:
+            logger.exception("failed to run method %s", meth)
 
     def __del__(self):
         """Revoke the listener when the connection is collected."""

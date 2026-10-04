@@ -146,10 +146,8 @@ def flush(force: bool = False) -> None:
                         # Its layer already holds the result -- as stale as it was.
                         chunk._cook_stale = was_stale
                         continue
-                    # A chunk with no cook of its own (a chunkgroup) changes what is
-                    # below it without a cook to say what: everything.
                     if not chunk.can_cook():
-                        skip_cook.hand_down(chunk, skip_cook.EVERYTHING)
+                        skip_cook.passed_through(chunk, changes)
                 # Not stale any more: it cooked since it was reached -- its own params,
                 # set while it ran, reach it here, and its result already takes them in.
                 if is_cook_stale(chunk):
@@ -278,6 +276,22 @@ def executing(prop):
     # anywhere below it walked up to it (chunk_scheduler.dirty_component) and cooked it
     # again: a Light, on every edit of the Transform after it.
     prop.get_dag_node()._dirty = False
+
+
+def is_cook_stage(stage) -> bool:
+    """Whether stage is a running cook's stage of its inputs (skip_cook), not the scene's."""
+    return skip_cook.is_cook_stage(stage)
+
+
+@contextmanager
+def outside_cook():
+    """The scene's stage for what runs during a cook but is not part of it.
+
+    Another chunk's notice listener, run while a chunk cooks: its get_stage() is the
+    scene's, and what it looks up is not the cook's read.
+    """
+    with skip_cook.unmasked():
+        yield
 
 
 def inputs_rewired(node) -> None:
