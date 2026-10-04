@@ -46,14 +46,20 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
 from usd_chunks import sim_bake
 
+# Imported apart: numpy in the same try as mujoco made np None wherever mujoco was
+# missing, so the parts that need only numpy -- gathering the scene, building hulls --
+# raised on 'NoneType' instead of working.
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - exercised only on a machine without numpy
+    np = None
+
 try:
     import mujoco as _mj
-    import numpy as np
 
-    _HAS_MUJOCO = True
+    _HAS_MUJOCO = np is not None
 except ImportError:  # pragma: no cover - exercised only on a machine without mujoco
     _mj = None
-    np = None
     _HAS_MUJOCO = False
 
 logger = logging.getLogger(__name__)

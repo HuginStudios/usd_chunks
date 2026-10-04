@@ -48,13 +48,15 @@ ui = ["PySide6"]
 # rest of the package, but `python -m usd_chunks.frontends.flet.nodegraph` (and imgui) needs these.
 flet = ["flet>=0.28"]
 imgui = ["imgui-bundle>=1.6"]
-# `requests` is not a library dependency — the suite loads example chunks from chunks/
-# that import it. Chunks whose imports fail are skipped by the registry, so the heavier
-# example deps (numpy, opencv) are deliberately left out.
+# `requests` and `numpy` are not library dependencies — the suite loads example chunks
+# from chunks/ that import them. A chunk whose imports fail is skipped by the registry,
+# but the suite tests most of the numpy ones (scatter, RBD, KITTI, mesh tools), and
+# without numpy CI failed 57 tests and could not import 15 test modules. Heavier
+# optional deps (opencv, mujoco, manifold3d) stay out; their tests skip.
 # ruff is pinned: CI runs `ruff check .`, and an unpinned install picks up each new
 # release's rules, turning main red with no change to the code. Bump it on purpose.
-dev = ["pytest", "pytest-xdist", "ruff==0.16.10", "build", "types-usd", "requests", "usd-core",
-       "flet>=0.28", "imgui-bundle>=1.6"]
+dev = ["pytest", "pytest-xdist", "ruff==0.16.10", "build", "types-usd", "requests", "numpy",
+       "usd-core", "flet>=0.28", "imgui-bundle>=1.6"]
 docs = [
     "mkdocs",
     "mkdocs-material",

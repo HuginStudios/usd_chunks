@@ -107,8 +107,34 @@ def test_results_follow_the_query_as_it_changes(menu):
     assert "transform" not in results
 
 
-def test_a_broad_search_scrolls_rather_than_growing(menu):
-    menu.filter_widget.setText("materialx")
+@pytest.fixture
+def long_menu(qapp, monkeypatch):
+    """The menu with 20 extra entries all matching "scrolltest".
+
+    Its own entries, not a real broad search: "materialx" matched 200+ entries with the
+    usdbundle's MaterialX and 3 in CI, whose pip usd-core ships no MaterialX at all -- the
+    scrolling under test does not depend on which chunks are installed.
+    """
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(_Scene(), "pytest")
+    real = reg.get_menu_entries()
+    if not real:
+        pytest.skip("no chunk modules registered -- USD_CHUNK_DIRS must point at chunks/")
+    extra = [chunk_registry.MenuEntry(real[0].module, ("Scrolltest", f"scrolltest_{i:02d}"))
+             for i in range(20)]
+    original = chunk_registry.ChunkRegistry.get_menu_entries
+    monkeypatch.setattr(chunk_registry.ChunkRegistry, "get_menu_entries",
+                        lambda self, *a, **k: list(original(self, *a, **k)) + extra)
+    m = FilterableChunkMenu()
+    m.exec_ = lambda _pos: None  # build it without popping it up
+    m.select_module(None)
+    yield m
+    m.deleteLater()
+
+
+def test_a_broad_search_scrolls_rather_than_growing(long_menu):
+    menu = long_menu
+    menu.filter_widget.setText("scrolltest")
     results = _results(menu)
     assert FilterableChunkMenu.VISIBLE_RESULTS < len(results) <= FilterableChunkMenu.MAX_RESULTS
     row = menu.results.sizeHintForRow(0)

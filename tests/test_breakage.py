@@ -610,6 +610,7 @@ def test_chunky_cuts_leave_chunkier_pieces():
 
 
 
+@needs_manifold
 def test_emit_writes_a_stream_onto_the_instancer(scene):
     """What, where, when and how fast -- all instancer data, previewed by invisibleIds."""
     qapp, stage, mk = scene
