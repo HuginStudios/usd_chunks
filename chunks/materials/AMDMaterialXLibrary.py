@@ -4,6 +4,7 @@ import re
 import json
 import zipfile
 import io
+import logging
 import threading
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -14,6 +15,8 @@ from usd_chunks import chunk_widget_api
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
 from usd_chunks.chunk_stage import chunk_prim_edit_context, connect_exec, get_chunk_prim_path
 from PySide6 import QtWidgets, QtCore, QtGui
+
+logger = logging.getLogger(__name__)
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"
 CACHE_FILE_NAME = "gpuopen_materials.json"
@@ -26,6 +29,10 @@ _results_by_title: dict[str, dict] = {}
 _selected_title: str = ""
 _thumbnail_cache: dict[str, bytes] = {}  # render_id → jpeg bytes
 _downloading: set[str] = set()  # titles with an in-flight background download
+# Every live grid. A chunk shown in a second place (the node graph's body beside the panel)
+# gets its own MaterialGridWidget, but only param.custom_widget is told to fetch -- so the
+# catalog, once it lands, is handed to all of them, not just the one that asked.
+_grids: weakref.WeakSet[MaterialGridWidget] = weakref.WeakSet()
 
 THUMB_SIZE = 85
 PAGE_SIZE = 10
@@ -289,6 +296,7 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
         self._search.textChanged.connect(self._timer.start)
 
         self._catalog_ready.connect(self._on_catalog_ready)
+        _grids.add(self)
 
         self.setFixedHeight(360)
         self.setup_chunk_widget()
@@ -324,7 +332,7 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
                 materials = _fetch_all_materials(cache_dir)
                 self._catalog_ready.emit(materials)
             except Exception:
-                pass
+                logger.warning("Could not fetch the AMD MaterialX catalog", exc_info=True)
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -332,6 +340,15 @@ class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidge
     def _on_catalog_ready(self, materials: list):
         global _all_materials
         _all_materials = materials
+        # Grids already showing tiles (another library node's) keep their scroll position.
+        for grid in list(_grids):
+            if grid is self or not grid._tiles:
+                try:
+                    grid._show_catalog()
+                except RuntimeError:
+                    pass  # its C++ half is gone; the Python wrapper outlived it
+
+    def _show_catalog(self):
         # Restore the previously picked selection by pinning it to the front of the first
         # page, rather than scroll-loading page after page until the picked tile turns up
         # -- a material deep in the catalog would otherwise build and fetch hundreds of
