@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 
@@ -60,6 +61,8 @@ EVERYTHING = frozenset({Sdf.Path.absoluteRootPath})
 _MAX_WIDENINGS = 3
 
 _GLOB_CHARS = set("*?[")
+
+_VARIANT_SELECTION = re.compile(r"\{[^{}]*\}")
 
 _CHUNKS_ROOT = Sdf.Path(CHUNKS_ROOT)
 
@@ -282,8 +285,12 @@ def _paths_in(value) -> Iterator[Sdf.Path]:
         if not text.startswith("/"):
             yield Sdf.Path.absoluteRootPath
             continue
+        # A selection names a variant, not a prim: /asset{color=red}/geo is /asset/geo. A
+        # chunk writes it with a slash after the brace (split_variant_path), which Sdf.Path
+        # does not parse, and an unparsed path covered everything.
+        text = _VARIANT_SELECTION.sub("/", text)
         parts = []
-        for part in text.split("/")[1:]:
+        for part in filter(None, text.split("/")[1:]):
             if _GLOB_CHARS & set(part):
                 break
             parts.append(part)
@@ -347,14 +354,36 @@ def upstream_chunks(chunk) -> list:
     chunk authored depends on all of it.
     """
     found = {id(chunk): chunk}
-    pending = [chunk]
-    while pending:
-        for node in chunk_scheduler.upstream_closure(pending.pop().get_dag_node()):
-            owner = _chunk_of(node)
-            if owner is not None and id(owner) not in found:
-                found[id(owner)] = owner
-                pending.append(owner)
+
+    # One walk: a chunk found walks on from its own node, and what it shares with the
+    # chunks found before it is not walked again. A walk per chunk found went over the same
+    # params again and again, and was most of a first cook after opening a scene.
+    def chunk_of(node):
+        owner = _chunk_of(node)
+        if owner is None or id(owner) in found:
+            return ()
+        found[id(owner)] = owner
+        return (owner.get_dag_node(),)
+
+    chunk_scheduler.upstream_closure(chunk.get_dag_node(), also=chunk_of)
     return list(found.values())
+
+
+def _related(chunk) -> set[int]:
+    """The ids of chunk and every chunk above or below it, cached until the graph changes.
+
+    Only the graph decides it, and a drag changes values, not wiring: walked once, not on
+    every cook.
+    """
+    version = chunk_scheduler.shape_version()
+    cached = getattr(chunk, "_skip_related", None)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+    related = {id(c) for c in upstream_chunks(chunk)}
+    related.update(id(c) for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+                   if (c := _chunk_of(node)) is not None)
+    chunk._skip_related = (version, related)
+    return related
 
 
 def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tuple]:
@@ -375,18 +404,23 @@ def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tupl
     Returns:
         {layer identifier: (chunk, layer)} for every hidden layer.
     """
-    related = upstream_chunks(chunk)
-    related.extend(c for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
-                   if (c := _chunk_of(node)) is not None)
+    related_ids = _related(chunk)
+    chunks = chunk.get_scene().get_chunks()
     kept = {layer.identifier}
-    kept.update(own.identifier for c in related if (own := layer_of(c)) is not None)
-    related_ids = {id(c) for c in related}
+    kept.update(own.identifier for c in chunks
+                if id(c) in related_ids and (own := layer_of(c)) is not None)
     hidden: dict[str, tuple] = {}
-    for other in chunk.get_scene().get_chunks():
+    for other in chunks:
         if id(other) in related_ids:
             continue
         own = layer_of(other)
         if own is None or not own.anonymous or own.identifier in kept:
+            continue
+        # A layer that sublayers others (a Sublayer chunk's) holds no prims of its own to
+        # tell a read of it by -- read_hidden goes by its specs -- and hidden, everything it
+        # brings in vanished silently: a Bind Material in a group after one found no prim to
+        # bind. Its sublayer list is part of scene_state, so a change to it still cooks.
+        if own.subLayerPaths:
             continue
         hidden[own.identifier] = (other, own)
     return hidden
@@ -538,6 +572,38 @@ def hand_down(chunk, changed: Iterable[Sdf.Path]) -> None:
             pending.update(changed)
 
 
+def passed_through(chunk, reasons: list) -> None:
+    """Hand down what a chunk with no cook of its own (a chunkgroup) changed.
+
+    Its own params are what the chunks inside it read, and a change of one changes what is
+    below it without a cook to say what: everything. Reached only because a chunk above it
+    changed, it changes nothing itself -- that chunk handed its change past it already. Nor
+    does a param of a chunk nested in it, which that chunk's own cook answers for, or a
+    change only the UI sees: a lofted menu's item list, mirrored as a scene finishes
+    loading, left every chunk below the group to cook on the first edit after opening.
+
+    Args:
+        chunk: The chunk chunk_cook.flush reached, with no execute() to run.
+        reasons: The (alias, propagator) pairs that dirtied it, as for should_skip.
+    """
+    if not reasons or any(_own_input(chunk, source) for _alias, source in reasons):
+        hand_down(chunk, EVERYTHING)
+
+
+def _own_input(chunk, source) -> bool:
+    """Whether source, a propagator that dirtied chunk, is chunk itself or one of its params."""
+    if source is chunk:
+        return True
+    if _is_chunk(source):
+        return False
+    if getattr(source, "is_presentation_change", lambda: False)():
+        return False
+    owner = source
+    while owner is not None and not _is_chunk(owner):
+        owner = owner.get_owner()
+    return owner is chunk
+
+
 def inputs_rewired(node) -> None:
     """A chunk's inputs changed: what it and everything below it saw is no longer known."""
     prop = node.propagator
@@ -626,9 +692,11 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     The mask is the chunk's inputs and what its last cook wrote. A cook that writes
     somewhere new (a renamed prim path) fails to define it on the masked stage -- the spec
     lands in the layer all the same -- and is run again with that path in the mask. A
-    masked cook that looked something up outside its mask, or failed for any other reason,
-    is run again on the whole stage, and the chunk is cooked that way from then on: it
-    reads something its inputs do not name.
+    masked cook that looked a prim up outside its mask -- a material by a path its params
+    do not flag as one -- is run again with that prim in the mask too, and the prims it
+    looked up beyond its inputs and outputs are kept in the mask for the next cook. One
+    that walked the whole stage, kept widening, or failed for any other reason is run
+    again on the whole stage, and the chunk is cooked that way from then on.
 
     Given layer_of, a masked cook also sees only the layers of the chunks upstream of it
     (hidden_layers). One that reads what a sibling it is not wired to authors is run again
@@ -640,7 +708,7 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     unmaskable = getattr(chunk, "_skip_unmaskable", False)
     mask: set[Sdf.Path] | None = None
     if outputs is not None and not unmaskable:
-        mask = input_paths(chunk) | set(outputs)
+        mask = input_paths(chunk) | set(outputs) | set(getattr(chunk, "_skip_reads", ()))
     hidden: dict[str, tuple] = {}
     if not _whole(mask) and layer_of is not None and not getattr(chunk, "_skip_sees_all", False):
         hidden = hidden_layers(chunk, layer, layer_of)
@@ -678,8 +746,8 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         if not failed and not wider and not read_outside:
             break
         layer.Clear()
-        if wider and widenings < _MAX_WIDENINGS:
-            mask |= wider
+        if (wider or read_outside) and Sdf.Path.absoluteRootPath not in read_outside                 and widenings < _MAX_WIDENINGS:
+            mask |= wider | read_outside
             widenings += 1
             continue
         logger.info(
@@ -692,6 +760,13 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
 
     chunk._skip_outputs = frozenset(output_paths(layer))
     chunk._skip_mask = frozenset(mask) if mask is not None else None
+    # What it looked up beyond its inputs and outputs, from this cook alone: a read it no
+    # longer makes -- its material param pointed elsewhere -- leaves the mask with it.
+    chunk._skip_reads = frozenset()
+    if not _whole(mask) and watches:
+        base = input_paths(chunk) | chunk._skip_outputs | {_CHUNKS_ROOT}
+        chunk._skip_reads = frozenset(
+            path for path in watches[0].points | watches[0].children if not _covered(path, base))
     chunk._skip_scene = scene_state(main)
     chunk._skip_layer = layer.identifier
     # What changed is handed down by finish(), once the cook is wholly done.

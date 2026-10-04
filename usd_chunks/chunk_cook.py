@@ -51,6 +51,9 @@ _batched: collections.deque | None = None
 # Follow-up work held until an enclosing batch has drained, by key; None outside a batch.
 _batch_deferred: dict | None = None
 
+# Follow-up work held until the outermost flush has cooked, by key, outside a batch.
+_solve_deferred: dict = {}
+
 
 def queue(prop) -> bool:
     """Inside batched_solve(), hold prop's solve back until the block ends.
@@ -65,24 +68,32 @@ def queue(prop) -> bool:
 
 
 def defer_to_batch_end(key, fn) -> bool:
-    """Run fn once when the enclosing batch has drained, instead of now.
+    """Run fn once when the enclosing batch has drained -- or the solve has cooked -- instead of now.
 
     For bookkeeping that only has to be right once the dust settles and costs something each
     time -- refreshing a chunk's gizmo anchors reads every param it has, and a Wedge change
     asked for it once per param written, hundreds of times. Deferred under the same key it
     runs once, with the batch's final values.
 
+    Outside a batch, a solve settles too: one drag step of a Transform's gizmo changed nine
+    values -- the param, its group, what its cook set -- and refreshed the anchors for each,
+    a quarter of the step. Inside a solve or a flush, fn runs once the outermost flush has
+    cooked everything pending.
+
     Args:
         key: Identifies the work, so asking twice runs it once.
         fn: What to run.
 
     Returns:
-        False outside a batch -- the caller runs fn itself, straight away.
+        False outside a batch, a solve and a flush -- the caller runs fn itself, straight away.
     """
-    if _batch_deferred is None:
-        return False
-    _batch_deferred[key] = fn
-    return True
+    if _batch_deferred is not None:
+        _batch_deferred[key] = fn
+        return True
+    if _solve_depth or _flushing:
+        _solve_deferred[key] = fn
+        return True
+    return False
 
 
 @contextmanager
@@ -146,10 +157,8 @@ def flush(force: bool = False) -> None:
                         # Its layer already holds the result -- as stale as it was.
                         chunk._cook_stale = was_stale
                         continue
-                    # A chunk with no cook of its own (a chunkgroup) changes what is
-                    # below it without a cook to say what: everything.
                     if not chunk.can_cook():
-                        skip_cook.hand_down(chunk, skip_cook.EVERYTHING)
+                        skip_cook.passed_through(chunk, changes)
                 # Not stale any more: it cooked since it was reached -- its own params,
                 # set while it ran, reach it here, and its result already takes them in.
                 if is_cook_stale(chunk):
@@ -159,6 +168,14 @@ def flush(force: bool = False) -> None:
                     chunk._cook()
     finally:
         _flushing = was_flushing
+    # The outermost flush, outside a batch (which runs its own): what was deferred until
+    # the cooks were done. Each may solve again, which flushes and runs its own.
+    if not was_flushing and _batch_deferred is None:
+        while _solve_deferred:
+            pending = list(_solve_deferred.values())
+            _solve_deferred.clear()
+            for fn in pending:
+                fn()
 
 
 @contextmanager
@@ -278,6 +295,22 @@ def executing(prop):
     # anywhere below it walked up to it (chunk_scheduler.dirty_component) and cooked it
     # again: a Light, on every edit of the Transform after it.
     prop.get_dag_node()._dirty = False
+
+
+def is_cook_stage(stage) -> bool:
+    """Whether stage is a running cook's stage of its inputs (skip_cook), not the scene's."""
+    return skip_cook.is_cook_stage(stage)
+
+
+@contextmanager
+def outside_cook():
+    """The scene's stage for what runs during a cook but is not part of it.
+
+    Another chunk's notice listener, run while a chunk cooks: its get_stage() is the
+    scene's, and what it looks up is not the cook's read.
+    """
+    with skip_cook.unmasked():
+        yield
 
 
 def inputs_rewired(node) -> None:

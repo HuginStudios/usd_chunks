@@ -74,6 +74,10 @@ _topology_epoch: int = 0
 _depth_epoch: int = -1
 _depth_cache: weakref.WeakKeyDictionary[DagNode, int] = weakref.WeakKeyDictionary()
 
+# Bumped on every change of the graph's shape, however local: for what is derived from a
+# node's whole neighbourhood and cached against it (skip_cook's related chunks).
+_shape_version: int = 0
+
 # Dropped before the interpreter starts tearing modules down. This is the only global
 # holding weakrefs to graph nodes for an unbounded time, and letting those references die
 # in the middle of finalisation puts weakref callbacks in among USD's own C++ teardown.
@@ -97,8 +101,9 @@ def topology_changed(*nodes: DagNode):
     Args:
         nodes (DagNode): The nodes whose connections changed, if known
     """
-    global _topology_epoch
+    global _topology_epoch, _shape_version
 
+    _shape_version += 1
     if not nodes:
         _topology_epoch += 1
         return
@@ -168,7 +173,13 @@ def downstream_closure(seed: DagNode) -> dict[DagNode, None]:
     return found
 
 
-def upstream_closure(seed: DagNode) -> dict[DagNode, None]:
+def shape_version() -> int:
+    """A number that changes whenever any connection or owner in the graph does."""
+    return _shape_version
+
+
+def upstream_closure(seed: DagNode, also: Callable[[DagNode], Iterable[DagNode]] | None = None
+                     ) -> dict[DagNode, None]:
     """Every node that solves before seed, seed included: its dependencies and what it owns.
 
     The mirror of downstream_closure. Ownership is followed down to what is owned, since an
@@ -177,6 +188,8 @@ def upstream_closure(seed: DagNode) -> dict[DagNode, None]:
 
     Args:
         seed (DagNode): The node to walk from
+        also: More nodes to walk from, given each node found -- in the same walk, so what
+            two of them share is visited once. skip_cook brings a param's chunk along.
 
     Returns:
         Dict[DagNode, None]: The closure, in discovery order
@@ -191,6 +204,8 @@ def upstream_closure(seed: DagNode) -> dict[DagNode, None]:
         nodes = list(node._connections.inputs.values())
         if (owned := node._owned) is not None:
             nodes.extend(owned)
+        if also is not None:
+            nodes.extend(also(node))
         for nxt in nodes:
             if nxt not in found:
                 found[nxt] = None

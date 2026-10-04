@@ -430,14 +430,26 @@ class LineEdit(ChunkParamBase[str]):
         super().__attrs_post_init__()
 
         if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
-            self.set_prims(self.get_scene().get_selected_prims())
+            self._seed_from_selection()
 
     @override
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if attrname == "flags" and ChunkFlags.ParamFlags.PRIM_SELECTION in value:
-            self.set_prims(self.get_scene().get_selected_prims())
+            self._seed_from_selection()
 
         return super().value_changed(attrname, old_value, value)
+
+    def _seed_from_selection(self):
+        """Fill the value from the host's selection, when it names a prim.
+
+        usdview selects the pseudo-root when nothing is picked, and "/" is no prim to seed
+        a param with: a Render Settings camera of "/" names no camera, and reads as a chunk
+        that depends on the whole stage, cooking on every edit anywhere. Without a prim
+        selected the param keeps its default.
+        """
+        prims = [p for p in self.get_scene().get_selected_prims() if str(p.GetPath()) != "/"]
+        if prims:
+            self.set_prims(prims)
 
     def set_prims(self, prims: Sequence[Usd.Prim]):
         """Set the value to a comma-separated list of these prims' paths.
