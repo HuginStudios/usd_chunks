@@ -74,7 +74,7 @@ def test_a_recook_restamps_a_prim_whose_recorded_code_is_out_of_date():
         prim = _prim(scene, node)
         _set_hash(prim, OLD)
 
-        assert node.cook() is True
+        assert node._cook() is True
 
         assert prim.GetAttribute(ATTR).Get() == _module().source_hash
 

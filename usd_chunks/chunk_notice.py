@@ -216,7 +216,7 @@ def executing(prop):
     Marks prop as executing (its own guard against being cooked re-entrantly), raises
     _usd_write_active so the stage listeners skip the writes the module makes, and names the
     chunk in _executing_chunk so an Edit Target resolves from its place in the graph.
-    ChunkBase.cook is the one caller; the state lives here because every listener reads it
+    ChunkBase._cook is the one caller; the state lives here because every listener reads it
     from this module.
 
     A module that sets its own params while it runs -- a Light showing its prim's attributes,
@@ -1495,10 +1495,15 @@ class ChunkNoticePropagator:
         return self._dag_node
 
     def execute(self):
-        """Dirty this object and solve everything downstream of it.
+        """Re-execute this object, and everything downstream of it, now.
 
-        Each solved object's data_changed() runs, and with it send_self(), which triggers any
-        connected callbacks. Inside batched_solve() the solve waits for the block to end.
+        Dirties it and solves downstream: each solved object's data_changed() runs, and with
+        it send_self(), which triggers any connected callbacks; each solved chunk then runs
+        its module's execute(node) (through ChunkBase._cook). Inside batched_solve() it only
+        dirties, and the solve waits for the block to end.
+
+        This is the one way to run a chunk again: a module's execute(node) is written, never
+        called directly, and ChunkBase._cook is the framework's step, not an API.
         """
         node = self.get_dag_node()
         node.dirty = True
@@ -1581,9 +1586,9 @@ class ChunkNoticePropagator:
                 if _cooked_since(chunk):
                     chunk._cook_stale = False
                 # The cook itself -- and every guard on whether it may run now -- is
-                # ChunkBase.cook. A chunk whose module has no execute() has nothing to run
+                # ChunkBase._cook. A chunk whose module has no execute() has nothing to run
                 # and stays stale.
-                elif chunk.cook():
+                elif chunk._cook():
                     # True once cook() got past its guards, including when the layer left
                     # the stack mid-cook. A module that raises ends the whole batch, and
                     # this record with it, so there is nothing to note on that path.

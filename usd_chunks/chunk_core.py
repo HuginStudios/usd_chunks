@@ -3564,7 +3564,7 @@ class ChunkBase(ChunkGroupBase):
         """
         return self._module_hook("execute") is not None
 
-    def cook(self) -> bool:
+    def _cook(self) -> bool:
         """Run this chunk's module into its own edit layer, now, and nothing downstream of it.
 
         Owned by the framework, not meant to be overridden: a chunk's behaviour is its

@@ -120,6 +120,12 @@ each `execute()`, so write the whole result every time. It must give the same re
 time it runs with the same inputs. It can run many times while the graph cooks, so keep it
 fast.
 
+You write `execute(node)`; you don't call it directly. To run a chunk again, call
+`chunk.execute()`: it re-executes the chunk and everything that depends on it, the same as
+when a param changes. Changing a param or a wire already does this, so a module only needs
+it when its result is out of date in a way no param change says -- say, it restored params
+its first cook could not see.
+
 A common pattern is a chunk that does its real work in a param callback, with `execute`
 only there to redo that work after the file is opened. This is why `execute` exists,
 instead of doing everything in callbacks:
