@@ -38,9 +38,10 @@ from pxr import Sdf, Usd
 
 try:
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.tags import sys_tags
     from packaging.version import InvalidVersion, Version
 except ImportError:  # pragma: no cover - packaging ships with pip
-    SpecifierSet = Version = InvalidSpecifier = InvalidVersion = None
+    SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
 from usd_chunks import chunk_cache, cook_cache
 from usd_chunks.chunk_flags import ChunkFlags
@@ -60,9 +61,12 @@ if TYPE_CHECKING:
 
 import atexit
 import ast
+import base64
+import hashlib
 import inspect
 import importlib.abc
 import logging
+import shutil
 import subprocess
 import textwrap
 from dataclasses import dataclass
@@ -237,6 +241,130 @@ def _run_pip(args, on_line=None) -> tuple[int, str]:
     return proc.wait(), "".join(lines)
 
 
+def _legacy_dependency_dirs(base: str) -> list[str]:
+    """Where packages were installed before the per-Python-version split.
+
+    The dependency dir itself, flat, and -- when USD_CHUNK_DEPENDENCY_DIR is not set -- the
+    repository's _installed_deps, the default before packages moved to the per-user folder.
+    """
+    dirs = [base]
+    if os.environ.get(USD_CHUNK_DEPENDENCY_DIR.key) is None:
+        dirs.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "_installed_deps"))
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def _record_hash(path: str) -> str:
+    """A file's hash spelled the way a wheel's RECORD spells it."""
+    with open(path, "rb") as f:
+        digest = hashlib.sha256(f.read()).digest()
+    return "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _intact_files(source: str, dist_info: str) -> list[str] | None:
+    """The files a distribution installed into `source`, or None if any differs from RECORD.
+
+    A shared folder that two interpreters both `pip install -t`'d into holds one copy of
+    each file: numpy for 3.13 overwrote numpy for 3.11's .py files and left its .pyd beside
+    them. Only a distribution whose every file still hashes as installed is whole.
+    """
+    record = os.path.join(source, dist_info, "RECORD")
+    if not os.path.isfile(record):
+        return None
+    files = []
+    with open(record, encoding="utf-8") as f:
+        for line in f:
+            path, _, rest = line.strip().partition(",")
+            digest = rest.partition(",")[0]
+            # Unhashed entries are RECORD itself and compiled .pyc; ".." ones are scripts
+            # pip put beside the target, not in it.
+            if not digest or path.startswith(".."):
+                continue
+            full = os.path.join(source, path)
+            if not os.path.isfile(full) or _record_hash(full) != digest:
+                return None
+            files.append(path)
+    return files
+
+
+def migrate_legacy_dependencies(sources: list[str], target: str) -> list[str]:
+    """Copy into `target` the packages in `sources` that this interpreter can import.
+
+    Run while this Python version's folder has no packages yet, so a user upgrading
+    is not asked to reinstall every chunk's packages. A distribution is copied only if its
+    wheel tags fit this interpreter and its files are intact (_intact_files); anything else
+    is left for the usual ask-to-install. Copied, not moved: the sources may also hold
+    packages for another Python version, whose own first run migrates them. Several
+    versions of one distribution: the newest that qualifies wins.
+
+    Args:
+        sources: Folders packages were `pip install -t`'d into.
+        target: This Python version's dependency folder. It may already exist holding only
+            the package cache file; anything else in it means it is in use, and nothing is
+            copied.
+
+    Returns:
+        The distributions copied, as "name-version".
+    """
+    if sys_tags is None or not _no_packages_in(target):
+        return []
+    supported = {str(t) for t in sys_tags()}
+
+    candidates: dict[str, list[tuple[Version, str, str]]] = defaultdict(list)
+    for source in sources:
+        for entry in os.listdir(source):
+            if not entry.endswith(".dist-info"):
+                continue
+            name, _, version = entry[: -len(".dist-info")].rpartition("-")
+            try:
+                parsed = Version(version)
+                with open(os.path.join(source, entry, "WHEEL"), encoding="utf-8") as f:
+                    tags = {line.split(":", 1)[1].strip() for line in f if line.startswith("Tag:")}
+            except (InvalidVersion, OSError):
+                continue
+            if tags & supported:
+                candidates[_normalise_package(name)].append((parsed, source, entry))
+
+    staging = f"{target}.migrating-{os.getpid()}"
+    copied = []
+    for versions in candidates.values():
+        for _, source, dist_info in sorted(versions, reverse=True):
+            files = _intact_files(source, dist_info)
+            if files is None:
+                continue
+            for path in files:
+                dest = os.path.join(staging, path)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(os.path.join(source, path), dest)
+            shutil.copytree(os.path.join(source, dist_info), os.path.join(staging, dist_info), dirs_exist_ok=True)
+            copied.append(dist_info[: -len(".dist-info")])
+            break
+
+    try:
+        if not _no_packages_in(target):
+            # Another process (an xdist worker, a second usdview) migrated first.
+            return []
+        if copied:
+            shutil.copytree(staging, target, dirs_exist_ok=True)
+        # Once, even when nothing qualified: hashing every file of a large package (vtk)
+        # again on each stage reload would buy nothing. The marker makes the folder in use.
+        os.makedirs(target, exist_ok=True)
+        open(os.path.join(target, _MIGRATED_MARKER), "w").close()
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return copied
+
+
+#: Left in a dependency folder once migrate_legacy_dependencies has run for it.
+_MIGRATED_MARKER = ".migrated_legacy_dependencies"
+
+
+def _no_packages_in(folder: str) -> bool:
+    """Whether `folder` is missing or holds nothing but package cache files."""
+    if not os.path.isdir(folder):
+        return True
+    return all(entry.endswith("_chunk_package_cache.json") for entry in os.listdir(folder))
+
+
 class ChunkDependencyManager(metaclass=RegistrySingleton):
     """Installs and tracks the pip packages chunk modules declare as requirements.
 
@@ -261,6 +389,17 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         # `pip list --path` would still report it as installed to all of them.
         self.package_dir = ""
         self.package_dir = self.target_dir()
+
+        if self.package_dir and _no_packages_in(self.package_dir):
+            try:
+                migrated = migrate_legacy_dependencies(
+                    _legacy_dependency_dirs(USD_CHUNK_DEPENDENCY_DIR()), self.package_dir
+                )
+            except OSError:
+                logger.warning("Could not migrate installed chunk dependencies", exc_info=True)
+                migrated = []
+            if migrated:
+                logger.info("Migrated chunk dependencies to %s: %s", self.package_dir, ", ".join(migrated))
 
         if self.package_dir:
             if self.package_dir not in sys.path:
