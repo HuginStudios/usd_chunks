@@ -133,6 +133,12 @@ def flush(force: bool = False) -> None:
             work = [(c, *_pending.pop(c)) for c in chunks]
             work.sort(key=lambda w: chunk_scheduler.get_depth(w[0].get_dag_node()))
             for chunk, changes, was_stale in work:
+                # Reached again since this round began: a cook before it set what it reads
+                # (a Math Ops whose a is @Mult1.result@). Decided on with only the reasons it
+                # had, it was skipped -- and the skip put back its old staleness over the
+                # new dispatch's, so it never cooked at all.
+                if chunk in _pending:
+                    changes = changes + _pending.pop(chunk)[0]
                 if skip_cook.enabled():
                     # Decided here, not when the solve reached it: the chunks above it
                     # have cooked by now (upstream first) and handed down what changed.
