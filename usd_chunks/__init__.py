@@ -89,5 +89,5 @@ if ATTRS_VERSION < (25, 4):  # type: ignore
 # The scripting entry point: `Scene.new()` for a script of its own, `Scene.current()` for the
 # one a host is already running (usdview's). `current_scene` stays for older scripts. Last,
 # so everything above is set up before the chunk model they pull in is imported.
-from usd_chunks.chunk_scene import current_scene  # noqa: E402
-from usd_chunks.chunk_script import Scene  # noqa: E402
+from usd_chunks.chunk_scene import current_scene as current_scene  # noqa: E402
+from usd_chunks.chunk_script import Scene as Scene  # noqa: E402

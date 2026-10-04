@@ -10,7 +10,7 @@ test_proxy_param_expression.py covers a row as the destination; this covers the 
 from __future__ import annotations
 
 import pytest
-from pxr import Sdf, Usd
+from pxr import Usd
 
 from usd_chunks import chunk, chunk_registry, chunk_stage, chunk_utils
 from usd_chunks.chunk_scene import SceneSender

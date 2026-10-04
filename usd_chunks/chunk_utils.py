@@ -921,7 +921,7 @@ def resolve_output_path(text, stage: Usd.Stage, log=None):
         if result.errors or missing or not isinstance(result.value, str):
             problem = "; ".join(result.errors) or (
                 "no value for " + ", ".join(missing) if missing
-                else "it evaluates to %r, not a path" % (result.value,)
+                else f"it evaluates to {result.value!r}, not a path"
             )
             (log or logger).warning("Output path %r left as typed: %s", text, problem)
             return text

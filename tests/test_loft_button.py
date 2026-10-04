@@ -18,7 +18,7 @@ def _button_on(inner, clicks):
     return btn
 
 
-def test_a_lofted_button_clicks_the_inner_one(env):
+def test_a_lofted_button_clicks_the_inner_one(env):  # noqa: F811 -- the imported fixture
     group = env["mk"]("chunkgroup", name="Group")
     inner = env["mk"]("transform", context=group)
     env["settle"]()
@@ -59,7 +59,7 @@ def test_a_reopened_lofted_button_still_clicks_the_inner_one(qapp, tmp_path):
     assert clicks == [1]
 
 
-def test_right_clicking_a_button_offers_loft_up(env, qapp, monkeypatch):
+def test_right_clicking_a_button_offers_loft_up(env, qapp, monkeypatch):  # noqa: F811 -- the imported fixture
     group = env["mk"]("chunkgroup", name="Group")
     inner = env["mk"]("transform", context=group)
     env["settle"]()
