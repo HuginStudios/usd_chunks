@@ -44,7 +44,7 @@ def test_translate_range_defaults_to_the_original_span_at_centimeter_scale() -> 
     stage.DefinePrim("/prim", "Xform")
     scene = _make_scene(stage)
     t = _make_transform(scene)
-    t.execute()
+    t.recook()
 
     assert t.get_param("tx").min_value == -1000.0
     assert t.get_param("tx").max_value == 1000.0
@@ -61,7 +61,7 @@ def test_translate_range_shrinks_to_match_a_meters_scale_stage() -> None:
     stage.DefinePrim("/prim", "Xform")
     scene = _make_scene(stage)
     t = _make_transform(scene)
-    t.execute()
+    t.recook()
 
     assert t.get_param("tx").min_value == -10.0
     assert t.get_param("tx").max_value == 10.0
@@ -75,10 +75,10 @@ def test_translate_still_authors_the_correct_offset_at_meters_scale() -> None:
     stage.DefinePrim("/prim", "Xform")
     scene = _make_scene(stage)
     t = _make_transform(scene)
-    t.execute()
+    t.recook()
 
     t.get_param("tx").value = 5.0
-    t.execute()
+    t.recook()
 
     xformable = UsdGeom.Xformable(stage.GetPrimAtPath("/prim"))
     translation = xformable.GetLocalTransformation().ExtractTranslation()

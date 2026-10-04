@@ -93,7 +93,7 @@ def _light(scene, name, path, intensity):
     node = _make(scene, "light", name)
     node.get_param("primpath_location").value = path
     node.get_param("light_type").value = "SphereLight"
-    node.execute()
+    node.recook()
     node.get_param("attr_grp.inputs.intensity").value = intensity
     return node
 
@@ -115,7 +115,7 @@ def show(graph):
     rows.get_indexed_param("var_name", 0).value = "SHOT"
     rows.get_indexed_param("var_type", 0).value = "string"
     rows.get_indexed_param("var_value", 0).value = "sh010"
-    ctx.execute()
+    ctx.recook()
 
     key = _light(scene, "Key", KEY, 10.0)
     key.add_dependency(ctx)
@@ -128,12 +128,12 @@ def show(graph):
     gate.get_param(switch_mod.PATTERN_PARAM).value = "sh040"
     gate.add_dependency(key)   # normal path
     gate.add_dependency(rim)   # matched path
-    gate.execute()
+    gate.recook()
     qapp.processEvents()
 
     def go(shot):
         rows.get_indexed_param("var_value", 0).value = shot
-        ctx.execute()
+        ctx.recook()
         qapp.processEvents()
 
     return go, stage, rim, qapp

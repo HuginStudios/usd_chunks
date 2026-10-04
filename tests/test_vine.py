@@ -431,7 +431,7 @@ def test_step_decides_how_smoothly_a_vine_curves_and_not_how_thick_it_is(host) -
     node = host.vine(auto_step=False, step=0.1)
     fine = max(host.curves().GetWidthsAttr().Get())
     node.get_param("step").value = 0.4
-    node.execute()
+    node.recook()
     coarse = max(host.curves().GetWidthsAttr().Get())
 
     assert fine == pytest.approx(coarse)
@@ -452,7 +452,7 @@ def test_a_recook_replaces_the_previous_vine_rather_than_adding_to_it(host) -> N
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine()
     first = len(host.points())
-    node.execute()
+    node.recook()
 
     assert len(host.points()) == first
 
@@ -461,7 +461,7 @@ def test_the_same_seed_grows_the_same_vine(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(seed=7)
     once = host.points()
-    node.execute()
+    node.recook()
 
     assert np.allclose(host.points(), once)
 
@@ -471,7 +471,7 @@ def test_a_different_seed_grows_a_different_vine(host) -> None:
     node = host.vine(seed=1)
     first = host.points()
     node.get_param("seed").value = 2
-    node.execute()
+    node.recook()
     second = host.points()
 
     assert first.shape != second.shape or not np.allclose(first, second)
@@ -506,7 +506,7 @@ def test_wider_leaf_spacing_leaves_fewer_leaves(host) -> None:
     node = host.vine(leaf_spacing=2.0)
     dense = len(host.leaves().GetPointsAttr().Get())
     node.get_param("leaf_spacing").value = 8.0
-    node.execute()
+    node.recook()
 
     assert len(host.leaves().GetPointsAttr().Get()) < dense
 
@@ -525,7 +525,7 @@ def test_the_outputs_are_published_before_anything_grows(host) -> None:
     node = host.vine()
     node.get_param("surface_prim").value = ""
 
-    node.execute()
+    node.recook()
 
     assert node.get_param("out_curves").value == "/Vine/Curves"
     assert node.get_param("out_leaves").value == "/Vine/Leaves"
@@ -552,7 +552,7 @@ def test_a_brush_stroke_decides_where_the_vine_grows(host) -> None:
     chunk_gizmo.apply_stroke(
         brush, "paint", [(Gf.Vec3d(7.5, 0.0, 0.5 + t * 0.2), 1.0) for t in range(40)]
     )
-    node.execute()
+    node.recook()
     points = host.points()
 
     assert len(points)
@@ -569,7 +569,7 @@ def test_painted_points_become_the_roots(host) -> None:
     cloud.CreatePointsAttr().Set(Vt.Vec3fArray(seeds))
 
     node = host.vine(seed_points="/Painted", root_count=99)
-    node.execute()
+    node.recook()
 
     assert "3 vines from painted points" in node.get_param("readout").value
     # Each root is where it was painted, give or take the lift off the wall.
@@ -597,7 +597,7 @@ def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
     leaf.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
 
     node = host.vine()
-    node.execute()
+    node.recook()
 
     scatter = host.chunk("scatter_points")
     scatter.add_dependency(node)
@@ -607,7 +607,7 @@ def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
     rows = scatter.get_param("prototypes")
     rows.size = 1
     rows.get_indexed_param(rows.get_param("proto_path"), 0).value = "/Assets/Leaf"
-    scatter.execute()
+    scatter.recook()
 
     cloud = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
     instancer = UsdGeom.PointInstancer(host.stage.GetPrimAtPath("/LeafInstancer"))
@@ -625,10 +625,10 @@ def test_wiring_painted_points_hides_the_root_count(host) -> None:
 
     _paint(host.mesh, _stripe(0.0, SIZE))
     node = host.vine()
-    node.execute()
+    node.recook()
     assert not node.get_param("root_count").has_state(chunk.ChunkFlags.State.HIDDEN)
 
     node.get_param("seed_points").value = "/Painted"
-    node.execute()
+    node.recook()
 
     assert node.get_param("root_count").has_state(chunk.ChunkFlags.State.HIDDEN)

@@ -160,7 +160,7 @@ class TestExportUsdCommit:
         scene, stage = _setup_stage()
         shot = _make(scene, self.create_mod, "layer")
         shot.get_param("layer_name").value = "shot"
-        shot.execute()
+        shot.recook()
 
         export_chunk = _make(scene, self.export_mod, "export_usd")
         out_dir = tmp_path / out_name
@@ -230,7 +230,7 @@ class TestCliRunCommits:
 
         scene, _stage = _setup_stage()
         light = _make(scene, light_mod, "light")
-        light.execute()
+        light.recook()
 
         result = tmp_path / "result.usda"
         export_chunk = _make(scene, export_mod, "export_usd")

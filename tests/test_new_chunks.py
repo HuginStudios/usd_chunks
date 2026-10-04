@@ -578,7 +578,7 @@ class TestBindMaterialResilience:
 
     def test_a_cook_binds_and_leaves_the_chunk_clean(self):
         stage, c = self._setup()
-        c.execute()
+        c.recook()
         assert self._bound(stage) == "/mat"
         assert not chunk_notice.is_cook_stale(c), (
             "a clean chunk is what recook_for_view leaves alone -- the whole of the protection"
@@ -588,7 +588,7 @@ class TestBindMaterialResilience:
         stage, c = self._setup()
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.RemovePrim("/geo/mesh")
-        c.execute()
+        c.recook()
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.DefinePrim("/geo/mesh", "Mesh")
         assert not self._bound(stage)
@@ -596,7 +596,7 @@ class TestBindMaterialResilience:
     def test_clearing_the_param_still_unbinds(self):
         """Companion check: an explicitly emptied field is a real instruction to unbind."""
         stage, c = self._setup()
-        c.execute()
+        c.recook()
         assert self._bound(stage) == "/mat"
 
         c.get_param("material_path").value = ""

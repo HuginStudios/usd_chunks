@@ -119,10 +119,10 @@ class TestPosingAlone:
         stage, sender = scene
         pose = _mk(sender, pose_mod, "Pose", "pose_articulation")
         pose.get_param("prim_path").value = "/root"
-        pose.execute()
+        pose.recook()
 
         pose.get_param("upper").value = 90.0
-        pose.execute()
+        pose.recook()
 
         world = _world(stage, "/root/upper")
         assert world.ExtractTranslation() == pytest.approx(Gf.Vec3d(0, 0, 0.15), abs=1e-6)
@@ -133,13 +133,13 @@ class TestPosingAlone:
         stage, sender = scene
         pose = _mk(sender, pose_mod, "Pose", "pose_articulation")
         pose.get_param("prim_path").value = "/root"
-        pose.execute()
+        pose.recook()
 
         pose.get_param("upper").value = 90.0
-        pose.execute()
+        pose.recook()
         first = _world(stage, "/root/upper").ExtractRotation().GetAngle()
 
-        pose.execute()
+        pose.recook()
         second = _world(stage, "/root/upper").ExtractRotation().GetAngle()
 
         assert second == pytest.approx(first, abs=1e-6)
@@ -151,9 +151,9 @@ class TestPosingAlone:
         stage, sender = scene
         pose = _mk(sender, pose_mod, "Pose", "pose_articulation")
         pose.get_param("prim_path").value = "/root"
-        pose.execute()
+        pose.recook()
         pose.get_param("upper").value = 45.0
-        pose.execute()
+        pose.recook()
 
         order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/root/upper"))
                      .GetXformOpOrderAttr().Get())
@@ -187,16 +187,16 @@ class TestPosingAlongsideADownstreamWriter:
         stage, sender = scene
         pose = _mk(sender, pose_mod, "Pose", "pose_articulation")
         pose.get_param("prim_path").value = "/root"
-        pose.execute()
+        pose.recook()
         pose.get_param("upper").value = 45.0
-        pose.execute()
+        pose.recook()
 
         share = Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0, 0, -1.0))
         self._wire_solver_with_a_stale_bake(stage, sender, pose, share)
 
         # The reported trigger: pose again, with the solver's stale share still authored.
         pose.get_param("upper").value = 10.0
-        pose.execute()
+        pose.recook()
 
         t = _world(stage, "/root/upper").ExtractTranslation()
         assert all(math.isfinite(v) for v in t)
@@ -214,15 +214,15 @@ class TestPosingAlongsideADownstreamWriter:
         stage, sender = scene
         pose = _mk(sender, pose_mod, "Pose", "pose_articulation")
         pose.get_param("prim_path").value = "/root"
-        pose.execute()
+        pose.recook()
         pose.get_param("upper").value = 45.0
-        pose.execute()
+        pose.recook()
 
         share = Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0, 0, -1.0))
         self._wire_solver_with_a_stale_bake(stage, sender, pose, share)
 
         pose.get_param("upper").value = 10.0
-        pose.execute()
+        pose.recook()
         with_solver = _world(stage, "/root/upper")
 
         # Oracle: the same joint value, posed with no downstream chunk in the picture at all.
@@ -238,9 +238,9 @@ class TestPosingAlongsideADownstreamWriter:
         chunk_stage.ChunkStageSync().initialize(stage2, sender2)
         pose2 = _mk(sender2, pose_mod, "Pose", "pose_articulation")
         pose2.get_param("prim_path").value = "/root"
-        pose2.execute()
+        pose2.recook()
         pose2.get_param("upper").value = 10.0
-        pose2.execute()
+        pose2.recook()
         pose_only = _world(stage2, "/root/upper")
 
         expected = share * pose_only

@@ -75,15 +75,15 @@ def _render_network(scene):
     set_mod = importlib.import_module("chunks.usd.render_settings")
 
     var = _make(scene, var_mod, "render_var")
-    var.execute()
+    var.recook()
 
     product = _make(scene, prod_mod, "render_product")
     product.get_param("ordered_vars").value = var.get_param("primpath_location").value
-    product.execute()
+    product.recook()
 
     settings = _make(scene, set_mod, "render_settings")
     settings.get_param("products").value = product.get_param("primpath_location").value
-    settings.execute()
+    settings.recook()
 
     return var, product, settings
 
@@ -117,7 +117,7 @@ class TestRenderVar:
             rows.get_indexed_param("dp_name", i).value = name
             rows.get_indexed_param("dp_type", i).value = type_name
             rows.get_indexed_param("dp_value", i).value = value
-        var.execute()
+        var.recook()
 
         prim = stage.GetPrimAtPath(var.get_param("primpath_location").value)
         assert prim.GetAttribute("driver:parameters:aov:name").Get() == "zDepth"
@@ -138,7 +138,7 @@ class TestRenderVar:
         rows.get_indexed_param("dp_name", 1).value = "force_32_bit_output"
         rows.get_indexed_param("dp_type", 1).value = "int"
         rows.get_indexed_param("dp_value", 1).value = "not a number"
-        var.execute()
+        var.recook()
 
         prim = stage.GetPrimAtPath(var.get_param("primpath_location").value)
         authored = [a.GetName() for a in prim.GetAttributes()
@@ -183,7 +183,7 @@ class TestRenderProduct:
         _var, product, _settings = _render_network(scene)
 
         product.get_param("product_name").value = "render.exr"
-        product.execute()
+        product.recook()
 
         usd_product = UsdRender.Product(stage.GetPrimAtPath(product.get_param("primpath_location").value))
         assert usd_product.GetProductNameAttr().Get() == "render.exr"
@@ -228,7 +228,7 @@ class TestRenderSettings:
         settings.get_param("data_window_ndc").value = (0.25, 0.25, 0.75, 0.75)
         settings.get_param("disable_motion_blur").value = True
         settings.get_param("disable_depth_of_field").value = True
-        settings.execute()
+        settings.recook()
 
         usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert tuple(usd_settings.GetDataWindowNDCAttr().Get()) == (0.25, 0.25, 0.75, 0.75)
@@ -241,7 +241,7 @@ class TestRenderSettings:
 
         settings.get_param("material_binding_purposes").value = "full, preview"
         settings.get_param("rendering_color_space").value = "acescg"
-        settings.execute()
+        settings.recook()
 
         usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert list(usd_settings.GetMaterialBindingPurposesAttr().Get()) == ["full", "preview"]
@@ -271,8 +271,8 @@ class TestRenderSettings:
 
             settings.get_param("camera").value = value
             product.get_param("camera").value = value
-            settings.execute()
-            product.execute()
+            settings.recook()
+            product.recook()
 
     def test_multiple_selected_cameras_take_the_first(self):
         scene, stage = _setup_stage()
@@ -281,7 +281,7 @@ class TestRenderSettings:
         _var, _product, settings = _render_network(scene)
 
         settings.get_param("camera").value = "/cam_a,/cam_b"
-        settings.execute()
+        settings.recook()
 
         usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert [str(t) for t in usd_settings.GetCameraRel().GetTargets()] == ["/cam_a"]
@@ -291,7 +291,7 @@ class TestRenderSettings:
         _var, _product, settings = _render_network(scene)
 
         settings.get_param("camera").value = "   "
-        settings.execute()
+        settings.recook()
 
         usd_settings = UsdRender.Settings(stage.GetPrimAtPath(settings.get_param("primpath_location").value))
         assert usd_settings.GetCameraRel().GetTargets() == []
@@ -313,7 +313,7 @@ class TestRenderSettings:
 
         settings = _make(scene, set_mod, "render_settings")
         settings.get_param("set_stage_settings").value = False
-        settings.execute()
+        settings.recook()
 
         assert not UsdRender.Settings.GetStageRenderSettings(stage)
 
@@ -379,7 +379,7 @@ class TestDelegateSettings:
         should not claim its API schema on the prim."""
         scene, stage = _setup_stage()
         _mod, settings = self._settings_chunk(scene)
-        settings.execute()
+        settings.recook()
 
         prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         assert list(prim.GetAppliedSchemas()) == []
@@ -424,7 +424,7 @@ class TestDelegateSettings:
         target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
         _populate_containing(settings, target.name)
         settings.get_param(target.name).value = True
-        settings.execute()
+        settings.recook()
 
         net = __import__("tempfile").mkdtemp() + "/net.usda"
         export_chunks(scene, net)
@@ -456,7 +456,7 @@ class TestDelegateSettings:
         target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
         _populate_containing(settings, target.name)
         settings.get_param(target.name).value = True
-        settings.execute()
+        settings.recook()
 
         prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         assert definition.schema_name in prim.GetAppliedSchemas()
@@ -468,7 +468,7 @@ class TestDelegateSettings:
         _mod, settings = self._settings_chunk(scene)
         definition = _schema_delegates()[0]
         # every renderer is lofted on creation; nothing to select
-        settings.execute()
+        settings.recook()
 
         prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         authored = [
@@ -487,7 +487,7 @@ class TestDelegateSettings:
         target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
         _populate_containing(settings, target.name)
         settings.get_param(target.name).value = True
-        settings.execute()
+        settings.recook()
 
         prim = stage.GetPrimAtPath(settings.get_param("primpath_location").value)
         attr = prim.GetAttribute(target.attr_name)
@@ -697,7 +697,7 @@ class TestRenderPass:
         mod = importlib.import_module("chunks.usd.render_pass")
         rp = _make(scene, mod, "render_pass")
         rp.get_param("render_source").value = settings.get_param("primpath_location").value
-        rp.execute()
+        rp.recook()
         return rp
 
     def test_authors_a_render_pass_pointing_at_the_settings(self):
@@ -720,7 +720,7 @@ class TestRenderPass:
         second.get_param("primpath_location").value = "/Render/Passes/comp"
         second.get_param("pass_type").value = "comp"
         second.get_param("input_passes").value = first.get_param("primpath_location").value
-        second.execute()
+        second.recook()
 
         prim = stage.GetPrimAtPath(second.get_param("primpath_location").value)
         usd_pass = UsdRender.Pass(prim)
@@ -737,7 +737,7 @@ class TestRenderPass:
         mod = importlib.import_module("chunks.usd.render_pass")
         rp = _make(scene, mod, "render_pass")
         rp.get_param("render_source").value = "/Render/settings,/Render/Products/beauty"
-        rp.execute()
+        rp.recook()
 
         targets = UsdRender.Pass(stage.GetPrimAtPath(rp.get_param("primpath_location").value))
         assert len(targets.GetRenderSourceRel().GetTargets()) == 1
@@ -989,7 +989,7 @@ class TestHydraMode:
         # Through the chunk's own param: a productName authored from outside is
         # overridden by the chunk layer that owns the prim.
         product.get_param("product_name").value = str(tmp_path / "aovs" / "beauty.exr")
-        product.execute()
+        product.recook()
 
         mod = importlib.import_module("chunks.usd.render")
         rop = _make(scene, mod, "render")
@@ -1073,7 +1073,7 @@ class TestRenderRop:
         mod, rop = self._rop(scene)
 
         before = len(list(stage.TraverseAll()))
-        rop.execute()
+        rop.recook()
         assert len(list(stage.TraverseAll())) == before
 
     def test_commit_skipped_when_render_on_commit_is_off(self, monkeypatch):
@@ -1342,7 +1342,7 @@ class TestUnpatchedUsdBuild:
         UsdGeom.Camera.Define(stage, "/cam")
         _var, product, settings = _render_network(scene)
         product.get_param("product_name").value = "beauty.exr"
-        product.execute()
+        product.recook()
 
         monkeypatch.setattr(mod, "_hydra_reads_render_products", lambda: False)
         # Nothing should reach a recorder; a build without the support cannot make one

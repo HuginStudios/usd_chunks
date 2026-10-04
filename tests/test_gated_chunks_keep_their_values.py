@@ -94,7 +94,7 @@ def _light(sender, name, path, intensity):
     node = _mk(sender, light_mod, name, "light")
     node.get_param("primpath_location").value = path
     node.get_param("light_type").value = "SphereLight"
-    node.execute()
+    node.recook()
     node.get_param("attr_grp.inputs.intensity").value = intensity
     return node
 
@@ -102,7 +102,7 @@ def _light(sender, name, path, intensity):
 def _camera(sender, name, path, focal_length):
     node = _mk(sender, camera_mod, name, "camera")
     node.get_param("primpath_location").value = path
-    node.execute()
+    node.recook()
     node.get_param("focalLength").value = focal_length
     return node
 
@@ -137,7 +137,7 @@ def _value(stage, prim_path, attr_name):
 def _set_shot(sender, shot):
     ctx = next(c for c in sender.get_chunks() if c.name == "ShotContext")
     ctx.get_param("variables").get_indexed_param("var_value", 0).value = shot
-    ctx.execute()
+    ctx.recook()
 
 
 def _build(tmp_path) -> pathlib.Path:
@@ -157,7 +157,7 @@ def _build(tmp_path) -> pathlib.Path:
     rows.get_indexed_param("var_name", 0).value = "SHOT"
     rows.get_indexed_param("var_type", 0).value = "string"
     rows.get_indexed_param("var_value", 0).value = "sh010"
-    ctx.execute()
+    ctx.recook()
 
     shared = _light(sender, "Shared", SHARED, INTENSITY)
     # The context feeds the chain, so changing SHOT carries downstream to the gate the way
@@ -179,7 +179,7 @@ def _build(tmp_path) -> pathlib.Path:
     # after, the binding survives, and none of this reproduces.
     view = _mk(sender, importlib.import_module("view"), "View", "view")
     _wire(stage, view, switch)
-    switch.execute()
+    switch.recook()
 
     assert _value(stage, NIGHT, "inputs:intensity") is None, "the note is gated off to start"
 
@@ -253,7 +253,7 @@ def test_a_gated_chunks_params_are_left_alone_while_it_waits(reopened):
     note = next(c for c in sender.get_chunks() if c.name == "NightNote")
 
     assert note.is_blocked(), "test setup: it is gated off in the file"
-    note.execute()
+    note.recook()
 
     param = note.get_param("attr_grp.inputs.intensity")
     assert param is not None, "the params were cleared while the chunk was gated off"
@@ -304,7 +304,7 @@ def test_a_cook_rebuilds_a_binding_the_load_could_not_restore(reopened):
     assert chunk_stage.params_are_bound(note), "test setup: it starts bound"
 
     _unbind(note)
-    note.execute()
+    note.recook()
 
     assert chunk_stage.params_are_bound(note), "the cache claimed a cook that did not happen"
     assert _value(stage, NIGHT, "inputs:intensity") == pytest.approx(INTENSITY)
@@ -316,7 +316,7 @@ def test_the_same_for_a_camera(reopened):
     cam = next(c for c in sender.get_chunks() if c.name == "ShotCam")
 
     _unbind(cam)
-    cam.execute()
+    cam.recook()
 
     assert chunk_stage.params_are_bound(cam)
     assert _value(stage, SHOT_CAM, "focalLength") == pytest.approx(FOCAL_LENGTH)
@@ -337,7 +337,7 @@ def test_a_bound_chunk_keeps_its_params(reopened):
         return [p for _, p in shared.get_param("attr_grp").iter_hierarchy()]
 
     before = shown()
-    shared.execute()
+    shared.recook()
 
     after = shown()
     assert len(after) == len(before) and all(a is b for a, b in zip(after, before)), (

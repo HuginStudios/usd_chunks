@@ -704,7 +704,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
     def _on_row_ref_changed(self, notice=None, sender=None):
         """A param this row's expression reads changed: announce the row's new value."""
         self.__value_sender.old_value = self._value
-        self.__value_sender.execute()
+        self.__value_sender.recook()
 
     def _resolved_value(self) -> Any:
         """The row's value, with an expression resolved the way the template resolves its own."""
@@ -898,7 +898,7 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             # pre-registration above the re-sort pass in _add_prim_mods), so this skips only
             # the early, repeated execute() calls, not the real one.
             if not chunk_notice._loading_stage:
-                self.__value_sender.execute()
+                self.__value_sender.recook()
             return
 
         try:
@@ -2603,7 +2603,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         try:
             attr_sender = self.get_attribute_sender("value")
             attr_sender.old_value = self.__dict__.get("value")
-            attr_sender.execute()
+            attr_sender.recook()
         finally:
             self._resolving_ref = False
 
@@ -3569,7 +3569,7 @@ class ChunkBase(ChunkGroupBase):
 
         Owned by the framework, not meant to be overridden: a chunk's behaviour is its
         module's execute(). Deciding WHEN to cook -- a data change rather than a pure state
-        change, not twice in one batch -- is the solve's (ChunkNoticePropagator.execute);
+        change, not twice in one batch -- is the solve's (ChunkNoticePropagator.recook);
         this only decides whether the chunk CAN run right now, and runs it. It does not
         mark the chunk stale first: the solve does, so a cook that is refused leaves it
         stale for recook_for_view to pick up.
@@ -3598,7 +3598,7 @@ class ChunkBase(ChunkGroupBase):
         # chunk_notice._loading_stage guard that suppresses every OTHER reactive path
         # during that restore -- reaching here before get_or_create_layer has run for
         # this specific chunk, same "not in the local LayerStack" raise as the muted
-        # case. load_chunks's own later, correctly-ordered explicit .execute() call
+        # case. load_chunks's own later, correctly-ordered explicit .recook() call
         # (after every chunk's layer is properly registered) still runs normally.
         not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
         # A blocked chunk (view-driven: not in the active view's tree -- e.g. connected to
@@ -4105,7 +4105,7 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         finally:
             self._suppress_storage_write = False
         if not chunk_notice._loading_stage:
-            self.get_attribute_sender("value").execute()
+            self.get_attribute_sender("value").recook()
 
     def _on_ref_changed(self, notice=None, sender=None):
         if self._resolving_ref:

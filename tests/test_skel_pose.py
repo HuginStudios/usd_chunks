@@ -159,7 +159,7 @@ class TestPose:
         before = rotations.Get(2)
 
         node.get_param("arm").value = (0.0, 0.0, 90.0)
-        node.execute()
+        node.recook()
 
         text = node.get_edit_context().ExportToString()
         assert "rotations = edit [write" in text and "to [1]]" in text
@@ -172,22 +172,22 @@ class TestPose:
 
     def test_zero_rotation_writes_nothing(self, posed):
         _, node, _ = posed
-        node.execute()
+        node.recook()
         assert "rotations" not in node.get_edit_context().ExportToString()
 
     def test_pose_is_absolute_not_cumulative(self, posed):
         stage, node, _ = posed
         rotations = stage.GetAttributeAtPath("/Char/Anim.rotations")
         node.get_param("arm").value = (0.0, 0.0, 90.0)
-        node.execute()
+        node.recook()
         once = rotations.Get(2)[1]
-        node.execute()
+        node.recook()
         assert rotations.Get(2)[1] == once
 
     def test_rotation_is_in_the_characters_space_about_the_joint(self, posed):
         stage, node, _ = posed
         node.get_param("arm").value = (0.0, 0.0, 90.0)
-        node.execute()
+        node.recook()
         # The rest arm points along +X from the arm joint; turned 90 about Z it points +Y.
         # Read the skinning result the way a mesh would: the joint's skel-space transform.
         cache = UsdSkel.Cache()
@@ -210,7 +210,7 @@ class TestPose:
         node.get_param("primpath_location").value = "/Char"
         node.get_param("joints").value = "arm"
         node.get_param("arm").value = (0.0, 0.0, 90.0)
-        node.execute()
+        node.recook()
         cache = UsdSkel.Cache()
         root = UsdSkel.Root(stage.GetPrimAtPath("/Char"))
         cache.Populate(root, Usd.PrimDefaultPredicate)
@@ -233,10 +233,10 @@ class TestPose:
     def test_the_cache_survives_the_chunks_own_cook_but_not_a_rig_edit(self, posed):
         stage, node, module = posed
         node.get_param("arm").value = (0.0, 0.0, 30.0)
-        node.execute()
+        node.recook()
         rig = module._rig(node)
         node.get_param("arm").value = (0.0, 0.0, 60.0)
-        node.execute()
+        node.recook()
         assert module._rig(node) is rig, "the cook's own writes must not evict the rig"
 
         # Rebind the character to an animation with a different joint order: the arm is
@@ -246,7 +246,7 @@ class TestPose:
         anim2.GetRotationsAttr().Set(Vt.QuatfArray([Gf.Quatf(1, 0, 0, 0)] * 3))
         UsdSkel.BindingAPI(stage.GetPrimAtPath("/Char")).GetAnimationSourceRel().SetTargets([anim2.GetPath()])
         assert module._rig(node) is not rig
-        node.execute()
+        node.recook()
         assert "to [0]]" in node.get_edit_context().ExportToString()
         assert node.get_edit_context().GetPrimAtPath("/Char/Anim2") is not None
 
@@ -263,7 +263,7 @@ class TestReload:
     def test_pose_survives_a_save_and_reload(self, posed, tmp_path):
         stage, node, _ = posed
         node.get_param("arm").value = (0.0, 0.0, 90.0)
-        node.execute()
+        node.recook()
         held = stage.GetAttributeAtPath("/Char/Anim.rotations").Get(2)[1]
 
         path = str(tmp_path / "pose.usda")

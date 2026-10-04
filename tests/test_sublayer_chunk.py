@@ -65,7 +65,7 @@ def test_reload_reauthors_sublayer_paths(tmp_path) -> None:
     layer-level field, not a prim attribute) -- so reopening a saved chunkgroup showed the
     correct path in the field but never actually brought the sublayer back in, unless
     something re-runs the "write subLayerPaths from imports" logic on load. That's exactly
-    what load_chunks's own explicit, correctly-ordered `chunk.execute()` call (once per
+    what load_chunks's own explicit, correctly-ordered `chunk.recook()` call (once per
     top-level chunk, after every chunk's own bookkeeping layer is registered) is for --
     which only does anything if the module has a real, single-arg execute(node) hook."""
     stage = Usd.Stage.CreateInMemory()

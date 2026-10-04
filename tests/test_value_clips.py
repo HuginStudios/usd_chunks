@@ -97,7 +97,7 @@ def _set_rows(node, rows: list[dict]):
                 group.get_indexed_param(key, i).value = value
     finally:
         node.set_blocked(False)
-    node.execute()
+    node.recook()
 
 
 @pytest.fixture
@@ -220,7 +220,7 @@ class TestStacking:
         assert clips["cycle"]["primPath"] == "/root/RIG/Skel/Sprite_Walk"
 
         node.get_param("target_prim").value = "/Char/Mesh"
-        node.execute()
+        node.recook()
         clips = node.get_edit_context().GetPrimAtPath("/Char/Mesh").GetInfo("clips")
         assert clips["cycle"]["primPath"] == "/root", "any other target still takes the defaultPrim"
 

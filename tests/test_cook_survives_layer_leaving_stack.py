@@ -67,7 +67,7 @@ def placed():
     node = (mod.create() if mod.loaded else mod.load())[0]
     sender.add_chunk(node)
     node.get_param("primpath_location").value = THING
-    node.execute()
+    node.recook()
 
     layer = chunk_registry.ChunkLayerManager().get_layer(node)
     assert layer is not None, "test setup: the chunk needs its own edit layer"
@@ -80,7 +80,7 @@ def test_a_layer_muted_before_the_cook_is_skipped_quietly(placed):
     stage.MuteLayer(layer.identifier)
 
     node.get_param("translate_grp.tx").value = 5.0
-    node.execute()  # must not raise
+    node.recook()  # must not raise
 
 
 # The reported crash itself is NOT pinned here, and that is worth stating rather than
@@ -98,7 +98,7 @@ def test_the_ordinary_cook_still_authors(placed):
     sender, stage, node, layer = placed
 
     node.get_param("translate_grp.tx").value = 12.0
-    node.execute()
+    node.recook()
 
     matrix = UsdGeom.Xformable(stage.GetPrimAtPath(THING)).GetLocalTransformation()
     matrix = matrix[0] if isinstance(matrix, tuple) else matrix

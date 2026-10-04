@@ -324,8 +324,8 @@ def test_sender_scoped_callback_triggers_only_for_matching_sender():
 
     root.add_callback(on_button, sender=btn_a)
 
-    btn_b.execute()
-    btn_a.execute()
+    btn_b.recook()
+    btn_a.recook()
 
     assert received == ["a"]
 
@@ -491,7 +491,7 @@ def test_selecting_a_chunk_does_not_recook_downstream():
     calls = _module_call_counter(downstream)
     # Cook once so the node is clean, as it is in a live graph. A node that is already
     # dirty gets swept into whatever solve passes it next, which would mask the point.
-    downstream.execute()
+    downstream.recook()
     calls.clear()
 
     upstream.set_state(chunk.ChunkFlags.State.SELECTED)
@@ -512,7 +512,7 @@ def test_disabling_a_chunk_recooks_downstream():
     downstream.add_dependency(upstream)
 
     calls = _module_call_counter(downstream)
-    downstream.execute()
+    downstream.recook()
     calls.clear()
 
     upstream.set_state(chunk.ChunkFlags.State.DISABLED)

@@ -39,7 +39,7 @@ def test_three_param_function_receives_owner() -> None:
 
     button = chunk.Button("click")
     button.add_callback(cb, send_on_create=False)
-    button.execute()
+    button.recook()
 
     assert got == [button]
 
@@ -58,7 +58,7 @@ def test_two_param_function_receives_notice_and_sender() -> None:
 
     button = chunk.Button("click")
     button.add_callback(cb, send_on_create=False)
-    button.execute()
+    button.recook()
 
     assert got == [button]
 
@@ -78,7 +78,7 @@ def test_bound_method_receives_notice_and_sender() -> None:
             self.seen.append(sender.name)
 
     my_chunk = _MyChunk()
-    my_chunk.get_param("click").execute()
+    my_chunk.get_param("click").recook()
 
     assert my_chunk.seen == ["click"]
 

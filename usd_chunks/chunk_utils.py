@@ -96,7 +96,7 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     bookkeeping does.
 
     The fallback for a missing `owner` is safe despite being ambient state because its sole
-    writer (ChunkNoticePropagator.execute) save/restores it around each module run -- set to
+    writer (ChunkNoticePropagator.recook) save/restores it around each module run -- set to
     the running module's own chunk right before module.execute(), popped back to the prior
     value in the finally -- so it can never transiently point at the wrong chunk, even when a
     reconcile re-executes a chunk from inside another chunk's execute(). Anything running

@@ -16,7 +16,7 @@ from usd_chunks.chunk_stage import initialize as init_chunk_usd
 
 
 def _exec(mod, node):
-    """Mirror the real auto-execute chain (chunk_notice.py), which runs module.execute()
+    """Mirror the real auto-execute chain (chunk_notice.py), which runs module.recook()
     inside Usd.EditContext(stage, node.get_edit_context()) -- each chunk's own anonymous
     layer. Calling mod.execute(node) directly would target the ambient root edit target
     for every chunk, so two clearing chunks would stomp on each other's output."""

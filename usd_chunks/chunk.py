@@ -414,7 +414,7 @@ class Button(ChunkParamBase):
 
     def click(self):
         """Click the button, triggering its connected callbacks."""
-        self.get_attribute_sender("value").execute()
+        self.get_attribute_sender("value").recook()
 
 
 class LineEdit(ChunkParamBase[str]):

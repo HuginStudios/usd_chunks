@@ -69,12 +69,12 @@ def test_chaining_several_create_layer_edit_target_pairs_does_not_crash():
         for i in range(8):
             cl = _make(scene, create_mod, f"cl_{i}")
             cl.get_param("layer_name").value = f"layer{i}"
-            cl.execute()
+            cl.recook()
             chunks.append(cl)
 
             et = _make(scene, edit_mod, f"et_{i}")
             et.get_param("edit_target").value = f"layer{i}"
-            et.execute()
+            et.recook()
             chunks.append(et)
 
         assert len(list(scene.get_chunks())) == 16

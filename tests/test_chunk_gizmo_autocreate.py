@@ -308,7 +308,7 @@ def test_the_new_chunk_starts_empty_and_moves_nothing(scene) -> None:
 
     desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
-    created.execute()
+    created.recook()
 
     assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [0.0, 0.0, 0.0]
     assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(5, 6, 7), 1e-6)
@@ -320,7 +320,7 @@ def test_seeding_survives_the_first_cook(scene) -> None:
     _place(stage, scene_layer, (5.0, 6.0, 7.0))
 
     desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
 
     assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(5.0, 6.0, 7.0), 1e-6)
 
@@ -349,7 +349,7 @@ def test_a_drag_through_the_new_chunk_moves_the_prim(scene) -> None:
         desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(1.0, 2.0, 3.0))
     )
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
-    created.execute()
+    created.recook()
 
     assert [created.get_param(n).value for n in ("tx", "ty", "tz")] == [1.0, 2.0, 3.0]
     assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(1.0, 2.0, 3.0), 1e-6)

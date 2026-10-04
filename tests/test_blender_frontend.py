@@ -729,7 +729,7 @@ def hosted(view, tmp_path):
     host.name = "Room"
     view.scene.add_chunk(host)
     host.get_param("file_path").value = network
-    host.execute()
+    host.recook()
     view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
     view.reload()
     return view, host, network
@@ -829,14 +829,14 @@ def driven(view):
     maker.name = "Maker"
     view.scene.add_chunk(maker)
     maker.get_param("prim_type").value = "Cube"
-    maker.execute()
+    maker.recook()
     target = maker.get_param("primpath_location").value
     xf = _make(registry.get_chunk_module("transform"))
     xf.name = "Place"
     view.scene.add_chunk(xf)
     xf.add_dependency(maker)
     xf.get_param("primpath_location").value = target
-    xf.execute()
+    xf.recook()
     view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
     return view, xf, view.stage.GetPrimAtPath(target)
 
@@ -860,7 +860,7 @@ def test_handles_are_filtered_to_one_chunk(driven):
     view.scene.add_chunk(second)
     second.add_dependency(xf)
     second.get_param("primpath_location").value = str(prim.GetPath())
-    second.execute()
+    second.recook()
     assert len(chunk_gizmo.resolve_gizmos(prim)) > 1
     assert len({d.chunk_prim for d in gz._visible_descs(prim, view)}) == 1
 

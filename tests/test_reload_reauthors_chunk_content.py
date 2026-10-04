@@ -107,7 +107,7 @@ def test_reset_transform_reapplies_on_reload(tmp_path) -> None:
 
     c = _make(scene, "reset_transform")
     c.get_param("prim_path").value = "/box"
-    c.get_param("run").execute()
+    c.get_param("run").recook()
 
     assert not UsdGeom.Xformable(stage.GetPrimAtPath("/box")).GetOrderedXformOps()  # sanity
 
@@ -245,7 +245,7 @@ def test_apply_schema_reapplies_on_reload(tmp_path) -> None:
     c = _make(scene, "apply_schema")
     c.get_param("prim").value = "/geo"
     c.get_param("schemas").value = "UsdGeomModelAPI"
-    c.get_param("apply").execute()
+    c.get_param("apply").recook()
 
     assert stage.GetPrimAtPath("/geo").HasAPI("GeomModelAPI") or "GeomModelAPI" in [
         s.split(":")[0] for s in stage.GetPrimAtPath("/geo").GetAppliedSchemas()
@@ -266,7 +266,7 @@ def test_uv_checker_reapplies_on_reload(tmp_path) -> None:
 
     c = _make(scene, "uvchecker.uv_checker")
     c.get_param("prim").value = "/geo"
-    c.get_param("apply").execute()
+    c.get_param("apply").recook()
 
     binding = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/geo")).ComputeBoundMaterial()[0]
     assert binding and binding.GetPath() == Sdf.Path("/materials/UVCheckerMaterial")  # sanity

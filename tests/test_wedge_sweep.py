@@ -75,7 +75,7 @@ def network(tmp_path):
         _EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False
     )
     attr.SetConnections([Sdf.Path(f"{get_chunk_prim_path(wedge)}.{_EXEC_OUTPUT}")])
-    place.execute()
+    place.recook()
 
     export_chunks(scene, str(out))
     # The cube has to be in the exported file, not only in the in-memory root layer:

@@ -54,7 +54,7 @@ def test_a_chunk_with_no_clear_of_its_own_does_not_pile_up():
         prim = scene.create.prim(primpath_location="/world/thing")
         stage = prim.get_stage()
         for _ in range(3):
-            prim.execute()
+            prim.recook()
 
         assert prim.get_param("primpath_location").value == "/world/thing", (
             "its own prim from the last cook must not read as a collision"
@@ -90,7 +90,7 @@ def test_an_interactive_chunk_is_never_cleared():
         assert prim.get_edit_context() is None
 
         for _ in range(3):
-            prim.execute()
+            prim.recook()
 
         target = stage.GetEditTarget().GetLayer()
         assert target.GetPrimAtPath("/users_own") is not None, "the user's work must survive a cook"
@@ -102,12 +102,12 @@ def test_an_interactive_chunk_is_never_cleared():
 def test_a_cook_leaves_the_chunk_clean_and_a_new_layer_makes_it_stale():
     with Scene() as scene:
         prim = scene.create.prim(primpath_location="/p")
-        prim.execute()
+        prim.recook()
         assert not chunk_notice.is_cook_stale(prim)
 
         chunk_notice.mark_cook_stale(prim)
         assert chunk_notice.is_cook_stale(prim)
-        prim.execute()
+        prim.recook()
         assert not chunk_notice.is_cook_stale(prim)
 
 
@@ -162,7 +162,7 @@ def test_recook_for_view_does_not_execute_a_chunk_with_nothing_to_cook(monkeypat
         chunk_stage.recook_for_view(stage, scene, None, view)
 
         solves = []
-        monkeypatch.setattr(type(editor), "execute", lambda self: solves.append(self.name))
+        monkeypatch.setattr(type(editor), "recook", lambda self: solves.append(self.name))
         counts = _count_cooks(monkeypatch, a, b)
         chunk_stage.recook_for_view(stage, scene, None, view)
 
@@ -181,7 +181,7 @@ def test_a_light_keeps_its_params_across_a_cook():
 
         for value in (68.0, 70.0, 72.5):
             intensity.value = value
-        light.execute()
+        light.recook()
 
         assert _param(light, "intensity") is intensity, "the same param object, not a rebuilt one"
         assert stage.GetAttributeAtPath(f"{path}.inputs:intensity").Get() == pytest.approx(72.5)
@@ -220,6 +220,6 @@ def test_a_driven_attr_survives_its_chunks_cook():
         assert target.Get() == pytest.approx(5.0), "test setup: the binding has to land first"
 
         ops.get_param("a").value = 10.0
-        ops.execute()
+        ops.recook()
 
         assert stage.GetAttributeAtPath("/geo/x.driven").Get() == pytest.approx(10.0)

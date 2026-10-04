@@ -28,7 +28,7 @@ class _Scene(SceneSender):
 
 
 def _exec(mod, node):
-    """Mirror the real auto-execute chain (chunk_notice.py): run module.execute() inside
+    """Mirror the real auto-execute chain (chunk_notice.py): run module.recook() inside
     Usd.EditContext(stage, node.get_edit_context()) so each chunk clears only its own
     anonymous layer instead of the ambient root edit target."""
     stage = node.get_stage()

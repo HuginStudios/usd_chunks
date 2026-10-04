@@ -66,7 +66,7 @@ def network(tmp_path):
     move = make("transform", "Move")
     move.get_param("primpath_location").value = "/a"
     move.get_param("tz").value = 5.0
-    move.execute()
+    move.recook()
 
     view = make("view", "View")
     view_prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(view)))

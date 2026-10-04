@@ -3509,9 +3509,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         # one legitimate execute the _executing guard above deferred past
                         # add_chunk so it runs with correct positioning/parenting in place.
                         for c in blockable:
-                            c.execute()
+                            c.recook()
                     for c in self_building:
-                        c.execute()
+                        c.recook()
                 new_chunks.append(primary)
                 new_path_by_index[index] = chunk_stage.get_chunk_prim_path(primary)
                 if item.children:
@@ -3606,7 +3606,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     for c in blockable:
                         c.set_blocked(True)
                     for c in self_building:
-                        c.execute()
+                        c.recook()
                 path = chunk_stage.get_chunk_prim_path(primary)
                 child_path_by_index[index] = path
                 child_chunk_by_index[index] = primary
@@ -4547,7 +4547,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if port.port_type != _PORT_EXEC:
             node = graph_scene._nodes.get(str(Sdf.Path(port.attr_path).GetPrimPath()))
             if node and getattr(node, "chunk", None):
-                node.chunk.execute()
+                node.chunk.recook()
 
         # Detaching an exec wire can change which Edit Target applies to the node and its
         # downstream -- re-home them to the target that survives at the new position.
@@ -4574,7 +4574,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     param = node.chunk.get_param(param_name)
                     if param is not None:
                         param.value = param.default_value
-                node.chunk.execute()
+                node.chunk.recook()
         return True
 
     def _shake_disconnect_node(self, node: ChunkNodeItem) -> None:

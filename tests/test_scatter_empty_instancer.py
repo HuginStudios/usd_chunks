@@ -96,7 +96,7 @@ def test_scatter_with_nothing_placed_leaves_a_well_formed_instancer(scene):
     points.get_param("points_prim").value = (
         published or f"{get_chunk_prim_path(brush)}/PaintedPoints"
     )
-    points.execute()
+    points.recook()
     qapp.processEvents()
 
     found = _instancers(stage)
@@ -109,7 +109,7 @@ def test_a_normal_scatter_is_still_well_formed(scene):
     """The invariant must hold when it does place something, too."""
     qapp, reg, s, stage = scene
     points = _mk(reg, s, "scatter_points")
-    points.execute()
+    points.recook()
     qapp.processEvents()
 
     for instancer in _instancers(stage):

@@ -682,9 +682,9 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
 
         if sender := self._attribute_sender(attrname):
             sender.old_value = old_value
-            sender.execute()
+            sender.recook()
         else:
-            self.execute()
+            self.recook()
 
     def set_function(self, attrname: str, method: Callable[[Self, AttributeSender], Any]):
         """Set a function that computes an attribute's value.

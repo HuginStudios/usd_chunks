@@ -234,7 +234,7 @@ def _chunk_loaded(owner, notice, sender):
     # and it authors a renderer setting by reading the param that holds it -- params
     # that did not exist yet, so that pass wrote nothing for them.
     if restored:
-        _chunk.execute()
+        _chunk.recook()
 
 
 def _set_stage_settings_path(stage, prim_path):

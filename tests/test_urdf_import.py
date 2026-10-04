@@ -103,7 +103,7 @@ def _import(scene, urdf_text, tmp_path, **params):
     node.get_param("primpath_location").value = "/World/robot"
     for name, value in params.items():
         node.get_param(name).value = value
-    node.execute()
+    node.recook()
     return node
 
 

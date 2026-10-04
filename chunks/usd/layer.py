@@ -42,7 +42,7 @@ def _refresh_after_layer(owner, notice, sender):
         # it anyway writes menu_items -- a plain attrs field whose content is "the current
         # subLayerPaths list", which differs on essentially every sibling Layer's
         # edit -- and that write unconditionally re-triggers THIS chunk's own execute() as
-        # a side effect (chunk_core.py value_changed -> self.execute()), regardless of
+        # a side effect (chunk_core.py value_changed -> self.recook()), regardless of
         # whether anything about THIS chunk actually changed. Live-confirmed: this alone
         # cascades into hundreds of spurious re-executions across just a few sibling Create
         # Layer chunks during ordinary graph construction, each one blindly reinserting

@@ -118,8 +118,8 @@ def test_two_transforms_compose(scene) -> None:
 
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
-    first.execute()
-    second.execute()
+    first.recook()
+    second.recook()
 
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0)), (
         "both contribute now; 5 or 3 alone would mean one had discarded the other"
@@ -134,8 +134,8 @@ def test_each_transform_owns_a_distinct_op(scene) -> None:
     second = _mk(sender, transform_mod, "T2")
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
-    first.execute()
-    second.execute()
+    first.recook()
+    second.recook()
 
     names = {chunk_utils.xform_op_name(first), chunk_utils.xform_op_name(second)}
     order = list(UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetXformOpOrderAttr().Get())
@@ -151,7 +151,7 @@ def test_a_chunks_op_id_survives_a_rename(scene) -> None:
     stage, sender, scene_layer = scene
     node = _mk(sender, transform_mod, "T1")
     node.get_param("ty").value = 5.0
-    node.execute()
+    node.recook()
     before = chunk_utils.xform_op_name(node)
 
     node.name = "RenamedLater"
@@ -174,7 +174,7 @@ def test_the_same_network_mints_the_same_op_name_twice(scene) -> None:
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     first.get_param("ty").value = 5.0
-    first.execute()
+    first.recook()
     once = chunk_utils.xform_op_name(first)
 
     rebuilt_stage = Usd.Stage.CreateInMemory()
@@ -189,7 +189,7 @@ def test_the_same_network_mints_the_same_op_name_twice(scene) -> None:
 
     second = _mk(rebuilt_sender, transform_mod, "T1")
     second.get_param("ty").value = 5.0
-    second.execute()
+    second.recook()
 
     assert chunk_utils.xform_op_name(second) == once
 
@@ -205,14 +205,14 @@ def test_a_vacated_path_does_not_hand_its_op_to_a_newcomer(scene) -> None:
     stage, sender, scene_layer = scene
     original = _mk(sender, transform_mod, "T1")
     original.get_param("ty").value = 5.0
-    original.execute()
+    original.recook()
     kept = chunk_utils.xform_op_name(original)
 
     original.name = "RenamedLater"
 
     newcomer = _mk(sender, transform_mod, "T1")
     newcomer.get_param("ty").value = 3.0
-    newcomer.execute()
+    newcomer.recook()
 
     assert chunk_utils.xform_op_name(original) == kept
     assert chunk_utils.xform_op_name(newcomer) != kept
@@ -225,8 +225,8 @@ def test_both_chunks_offer_a_handle(scene) -> None:
     second = _mk(sender, transform_mod, "T2")
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
-    first.execute()
-    second.execute()
+    first.recook()
+    second.recook()
 
     prims = {str(d.chunk_prim) for d in chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))}
 
@@ -241,8 +241,8 @@ def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
     second = _mk(sender, transform_mod, "T2")
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
-    first.execute()
-    second.execute()
+    first.recook()
+    second.recook()
 
     handles = chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))
     chunk_gizmo.apply_bindings(
@@ -250,7 +250,7 @@ def test_dragging_moves_the_prim_by_what_was_dragged(scene) -> None:
         Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 9.0, 0.0)),
     )
     for c in (first, second):
-        c.execute()
+        c.recook()
 
     assert _translation(stage) == Gf.Vec3d(0.0, 9.0, 0.0)
 
@@ -281,7 +281,7 @@ def test_an_unauthored_downstream_chunk_still_owns_the_prim(scene) -> None:
     stage, sender, scene_layer = scene
     transform = _mk(sender, transform_mod, "T1")
     transform.get_param("ty").value = 5.0
-    transform.execute()
+    transform.recook()
     _mk(sender, transform_mod, "Off")
     _wire(stage, "Off", "T1")
 
@@ -297,7 +297,7 @@ def test_the_upstream_chunk_is_still_offered(scene) -> None:
     stage, sender, scene_layer = scene
     transform = _mk(sender, transform_mod, "T1")
     transform.get_param("ty").value = 5.0
-    transform.execute()
+    transform.recook()
     _mk(sender, transform_mod, "Off")
     _wire(stage, "Off", "T1")
 
@@ -311,7 +311,7 @@ def test_ownership_does_not_flip_once_the_downstream_chunk_authors(scene) -> Non
     stage, sender, scene_layer = scene
     transform = _mk(sender, transform_mod, "T1")
     transform.get_param("ty").value = 5.0
-    transform.execute()
+    transform.recook()
     offset = _mk(sender, transform_mod, "Off")
     _wire(stage, "Off", "T1")
     before = str(chunk_gizmo.placement_gizmos(stage.GetPrimAtPath("/cube"))[0].chunk_prim)
@@ -330,16 +330,16 @@ def test_dragging_the_downstream_chunk_lands_where_it_was_dragged(scene) -> None
     upstream = _mk(sender, transform_mod, "T1")
     downstream = _mk(sender, transform_mod, "T2")
     upstream.get_param("ty").value = 5.0
-    upstream.execute()
-    downstream.execute()
+    upstream.recook()
+    downstream.recook()
     _wire(stage, "T2", "T1")
 
     chunk_gizmo.apply_bindings(
         Sdf.Path(_chunk_path("T2")), "transform",
         Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 9.0, 0.0)),
     )
-    upstream.execute()
-    downstream.execute()
+    upstream.recook()
+    downstream.recook()
 
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 9, 0))
     assert upstream.get_param("ty").value == 5.0, "the upstream chunk must not be touched"
@@ -360,14 +360,14 @@ def test_a_second_transform_offsets_the_first(scene) -> None:
     stage, sender, scene_layer = scene
     placed = _mk(sender, transform_mod, "Placed")
     placed.get_param("ty").value = 5.0
-    placed.execute()
+    placed.recook()
 
     nudge = _mk(sender, transform_mod, "Nudge")
     nudge.get_param("ty").value = 2.0
     # Wired, as a graph actually is. Two chunks with no connection between them have no
     # order to derive -- see test_two_unconnected_chunks_have_no_defined_order.
     nudge.add_dependency(placed)
-    nudge.execute()
+    nudge.recook()
 
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0))
     assert placed.get_param("ty").value == 5.0, "the original placement is untouched"
@@ -381,15 +381,15 @@ def test_removing_the_offset_leaves_the_placement(scene) -> None:
     stage, sender, scene_layer = scene
     placed = _mk(sender, transform_mod, "Placed")
     placed.get_param("ty").value = 5.0
-    placed.execute()
+    placed.recook()
     nudge = _mk(sender, transform_mod, "Nudge")
     nudge.get_param("ty").value = 2.0
     nudge.add_dependency(placed)
-    nudge.execute()
+    nudge.recook()
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 7, 0)), "precondition"
 
     nudge.request_delete()
-    placed.execute()
+    placed.recook()
 
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 5, 0))
 
@@ -407,8 +407,8 @@ def test_two_unconnected_chunks_have_no_defined_order(scene) -> None:
     second = _mk(sender, transform_mod, "T2")
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
-    first.execute()
-    second.execute()
+    first.recook()
+    second.recook()
 
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0))
 
@@ -419,11 +419,11 @@ def test_a_scale_offset_multiplies(scene) -> None:
     stage, sender, scene_layer = scene
     base = _mk(sender, transform_mod, "Base")
     base.get_param("sx").value = 2.0
-    base.execute()
+    base.recook()
     nudge = _mk(sender, transform_mod, "Nudge")
     nudge.get_param("sx").value = 3.0
     nudge.add_dependency(base)
-    nudge.execute()
+    nudge.recook()
 
     matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/cube")).GetLocalTransformation(
         Usd.TimeCode.Default()

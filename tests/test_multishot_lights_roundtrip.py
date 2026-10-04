@@ -75,7 +75,7 @@ def _set_shot(scene, shot):
     shot_ctx = next(c for c in scene.get_chunks() if c.name == "ShotContext")
     rows = shot_ctx.get_param("variables")
     rows.get_indexed_param("var_value", 0).value = shot
-    shot_ctx.execute()
+    shot_ctx.recook()
 
 
 def _assert_shot(stage, night):
@@ -109,7 +109,7 @@ def _build(tmp_path) -> pathlib.Path:
     switch.add_dependency(sun)
     switch.add_dependency(lamp)
     for c in (shot_ctx, hood, sun, lamp, switch):
-        c.execute()
+        c.recook()
 
     _assert_shot(stage, night=False)
     _set_shot(scene, "sh030_night")

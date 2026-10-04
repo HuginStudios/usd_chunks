@@ -76,7 +76,7 @@ def _place(sender, name, prim_path, height):
     node = _mk(sender, transform_mod, name, "transform")
     node.get_param("primpath_location").value = prim_path
     node.get_param("tz").value = height
-    node.execute()
+    node.recook()
     return node
 
 
@@ -130,7 +130,7 @@ def test_a_match_takes_the_matched_path(scene):
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, normal, matched)
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(0.0), "the normal path is muted"
     assert _height(stage, "/b") == pytest.approx(7.0)
@@ -147,7 +147,7 @@ def test_a_miss_takes_the_normal_path(scene):
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, normal, matched)
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(5.0)
     assert _height(stage, "/b") == pytest.approx(0.0)
@@ -162,10 +162,10 @@ def test_changing_the_variable_swaps_the_path(scene):
     matched = _place(sender, "Night", "/b", 7.0)
     sw = _switch(sender, "*_night")
     _wire(stage, sw, normal, matched)
-    sw.execute()
+    sw.recook()
 
     _declare(stage, SHOT="sh010_day")
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(5.0)
     assert _height(stage, "/b") == pytest.approx(0.0)
@@ -179,7 +179,7 @@ def test_an_undeclared_variable_runs_the_normal_path(scene):
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, normal, matched)
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(5.0)
     assert _height(stage, "/b") == pytest.approx(0.0)
@@ -193,7 +193,7 @@ def test_an_empty_pattern_runs_the_normal_path(scene):
 
     sw = _switch(sender)
     _wire(stage, sw, normal, matched)
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(5.0)
     assert _height(stage, "/b") == pytest.approx(0.0)
@@ -210,11 +210,11 @@ def test_it_mutes_the_whole_branch_not_just_the_input(scene):
     tail.get_param("primpath_location").value = "/b"
     tail.get_param("tz").value = 7.0
     _wire(stage, tail, upstream)
-    tail.execute()
+    tail.recook()
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, day, tail)
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/b") == pytest.approx(0.0)
     assert upstream.is_blocked(), "the branch behind the input must be muted too"
@@ -230,16 +230,16 @@ def test_the_thread_above_the_fork_is_shared(scene):
     day.get_param("primpath_location").value = "/b"
     day.get_param("tz").value = 7.0
     _wire(stage, day, shared)
-    day.execute()
+    day.recook()
     night = _mk(sender, transform_mod, "Night", "transform")
     night.get_param("primpath_location").value = "/c"
     night.get_param("tz").value = 9.0
     _wire(stage, night, shared)
-    night.execute()
+    night.recook()
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, day, night)
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(5.0), "the shared upstream stays live"
     assert _height(stage, "/b") == pytest.approx(0.0)
@@ -257,7 +257,7 @@ def test_disable_is_left_alone(scene):
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, day)
-    sw.execute()
+    sw.recook()
 
     assert day.has_state(ChunkFlags.State.DISABLED)
 
@@ -271,14 +271,14 @@ def test_a_released_branch_is_unblocked_when_it_is_unwired(scene):
     night = _place(sender, "Night", "/b", 7.0)
     sw = _switch(sender, "*_night")
     _wire(stage, sw, day, night)
-    sw.execute()
+    sw.recook()
     assert night.is_blocked()
 
     _wire(stage, sw, day)
     stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(sw))).GetAttribute(
         chunk_stage.exec_input_name(1)
     ).SetConnections([])
-    sw.execute()
+    sw.recook()
 
     assert not night.is_blocked()
     assert _height(stage, "/b") == pytest.approx(7.0)
@@ -312,16 +312,16 @@ def test_a_typed_variable_is_matched_on_its_value(scene):
 
     sw = _switch(sender, "32*", variable="IDENTIFIER")
     _wire(stage, sw, normal, matched)
-    sw.execute()
+    sw.recook()
     assert _height(stage, "/b") == pytest.approx(7.0)
 
     sw.get_param(switch_mod.VARIABLE_PARAM).value = "renderPassList"
     sw.get_param(switch_mod.PATTERN_PARAM).value = "FX"
-    sw.execute()
+    sw.recook()
     assert _height(stage, "/b") == pytest.approx(7.0), "a list matches on its elements"
 
     sw.get_param(switch_mod.PATTERN_PARAM).value = "matte"
-    sw.execute()
+    sw.recook()
     assert _height(stage, "/b") == pytest.approx(0.0), "no match runs the normal path"
     assert _height(stage, "/a") == pytest.approx(5.0)
 
@@ -376,7 +376,7 @@ def test_muting_a_branch_does_not_orphan_the_other_ones_prims(scene):
         node = _mk(sender, prim_mod, name, "prim")
         node.get_param("primpath_location").value = path
         node.get_param("prim_type").value = "Xform"
-        node.execute()
+        node.recook()
         return node
 
     first = prim_chunk("First", "/shared/first")    # cooks first, so it owns `def /shared`
@@ -385,7 +385,7 @@ def test_muting_a_branch_does_not_orphan_the_other_ones_prims(scene):
 
     sw = _switch(sender, "*_night")
     _wire(stage, sw, first, second)   # normal path, matched path
-    sw.execute()
+    sw.recook()
 
     def defined(path):
         prim = stage.GetPrimAtPath(path)

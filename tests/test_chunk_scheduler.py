@@ -566,15 +566,15 @@ class TestBatchedSolve:
 
     def test_without_a_batch_each_change_solves_what_it_feeds(self):
         a, b, _c = self.graph()
-        a.execute()
-        b.execute()
+        a.recook()
+        b.recook()
         assert Counting.log.count("c") == 2
 
     def test_a_batch_solves_what_its_changes_feed_once(self):
         a, b, _c = self.graph()
         with chunk_notice.batched_solve():
-            a.execute()
-            b.execute()
+            a.recook()
+            b.recook()
             assert Counting.log == []  # nothing solves inside the block
         assert Counting.log.count("c") == 1
         assert sorted(Counting.log) == ["a", "b", "c"]
@@ -582,9 +582,9 @@ class TestBatchedSolve:
     def test_nested_batches_join_the_outermost(self):
         a, b, _c = self.graph()
         with chunk_notice.batched_solve():
-            a.execute()
+            a.recook()
             with chunk_notice.batched_solve():
-                b.execute()
+                b.recook()
             assert Counting.log == []
         assert Counting.log.count("c") == 1
 
@@ -600,13 +600,13 @@ class TestBatchedSolve:
                 depth["max"] = max(depth["max"], depth["now"])
                 super().send_self()
                 if self.name == "a":
-                    b.execute()  # asked for while a is being solved
+                    b.recook()  # asked for while a is being solved
                 depth["now"] -= 1
 
         a.__class__ = Reentrant
         b.__class__ = Reentrant
         with chunk_notice.batched_solve():
-            a.execute()
+            a.recook()
 
         assert depth["max"] == 1
         assert Counting.log.count("c") == 1

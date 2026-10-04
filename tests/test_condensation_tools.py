@@ -210,7 +210,7 @@ def test_noise_field_chunk_paints_only_the_named_subsets(scene):
     field.get_param("prim_path").value = "/Can"
     field.get_param("subsets").value = "top"
     field.get_param("threshold").value = 0.0
-    field.execute()
+    field.recook()
     qapp.processEvents()
     v = np.asarray(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("density").Get())
     assert len(v) == len(mesh.GetPointsAttr().Get())
@@ -230,11 +230,11 @@ def test_flow_and_trails_chunks_chain(scene):
     f.get_param("frames").value = 24
     f.get_param("release").value = 0.0
     f.get_param("stickiness").value = 0.0
-    f.execute()
+    f.recook()
     t = mk("trails")
     t.get_param("source").value = "/SurfaceFlow"
     t.get_param("grow").value = True
-    t.execute()
+    t.recook()
     qapp.processEvents()
     pts = UsdGeom.Points(stage.GetPrimAtPath("/SurfaceFlow"))
     assert pts.GetPointsAttr().GetNumTimeSamples() == 25
@@ -251,7 +251,7 @@ def _scatter(mk, **params):
     s.get_param("auto_spacing").value = False
     for k, v in params.items():
         s.get_param(k).value = v
-    s.execute()
+    s.recook()
     return s
 
 

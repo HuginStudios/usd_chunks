@@ -117,7 +117,7 @@ def _wired_pair(stage, sender):
     move = _mk(sender, transform_mod, "Move", "transform")
     move.get_param("primpath_location").value = "/chair"
     move.get_param("tx").value = 20.0
-    move.execute()
+    move.recook()
 
     solver = _mk(sender, rbd_mod, "Solver", "rbd_solver")
     solver.get_param("prim_path").value = "/chair"

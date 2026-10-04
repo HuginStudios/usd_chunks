@@ -70,7 +70,7 @@ def hosting(network_file):
     reference.get_param("file_path").value = network_file
     # A chunk not reachable from any view is blocked and does not cook on a param change;
     # this is the cook the view would have given it.
-    reference.execute()
+    reference.recook()
     try:
         yield stage, scene, reference, network_file
     finally:
@@ -132,7 +132,7 @@ class TestPointingAtSceneContent:
         try:
             reference = _add(scene, "reference")
             reference.get_param("file_path").value = scene_file
-            reference.execute()
+            reference.recook()
             assert not is_network_host(reference)
             assert not is_subnet(reference)
             assert not is_group_chunk(reference)
@@ -145,7 +145,7 @@ class TestPointingAtSceneContent:
     def test_retargeting_from_a_network_to_content_unhosts(self, hosting, scene_file):
         stage, scene, reference, _ = hosting
         reference.get_param("file_path").value = scene_file
-        reference.execute()
+        reference.recook()
         assert not is_network_host(reference)
         assert not stage.GetPrimAtPath(get_chunk_prim_path(reference)).HasAuthoredReferences()
         assert _children(scene, reference) == []
@@ -202,7 +202,7 @@ def _sublayer_of(scene, *paths):
     imports.size = len(paths)
     for index, path in enumerate(paths):
         imports.get_indexed_param("sublayer_path", index).value = path
-    sublayer.execute()
+    sublayer.recook()
     return sublayer
 
 
@@ -309,7 +309,7 @@ class TestPayloadHostsToo:
         try:
             payload = _add(scene, "payload")
             payload.get_param("file_path").value = network_file
-            payload.execute()
+            payload.recook()
             assert is_network_host(payload)
             assert is_subnet(payload)
             assert _children(scene, payload) == ["Transform", "Transform1"]
@@ -323,7 +323,7 @@ class TestPayloadHostsToo:
         stage, scene = _open(None)
         payload = _add(scene, "payload")
         payload.get_param("file_path").value = network_file
-        payload.execute()
+        payload.recook()
         host_path = get_chunk_prim_path(payload)
         shot = str(tmp_path / "shot.usda")
         export_chunks(scene, shot)
@@ -343,7 +343,7 @@ class TestPayloadHostsToo:
         try:
             payload = _add(scene, "payload")
             payload.get_param("file_path").value = scene_file
-            payload.execute()
+            payload.recook()
             assert not is_network_host(payload)
             location = payload.get_param("primpath_location").value
             assert stage.GetPrimAtPath(location).HasAuthoredPayloads()
@@ -494,7 +494,7 @@ def _reference(scene, path, location=None):
     reference.get_param("file_path").value = path
     if location is not None:
         reference.get_param("primpath_location").value = location
-    reference.execute()
+    reference.recook()
     return reference
 
 
@@ -508,7 +508,7 @@ class TestNamespace:
             host = _reference(scene, prim_network)
             assert host.get_param("primpath_location").value == ""
             inner = next(c for c in scene.get_chunks() if c.name == "Prim")
-            inner.execute()
+            inner.recook()
             assert stage.GetPrimAtPath("/thing").IsValid()
         finally:
             _teardown(scene)
@@ -521,7 +521,7 @@ class TestNamespace:
             path = inner.get_param("primpath_location")
             assert path.raw_value == "/thing", "the stored text is the file's"
             assert path.value == "/room/thing", "the resolved path is the scene's"
-            inner.execute()
+            inner.recook()
             assert stage.GetPrimAtPath("/room/thing").IsValid()
             assert not stage.GetPrimAtPath("/thing").IsValid()
             assert not Sdf.Layer.Find(prim_network).dirty
@@ -534,7 +534,7 @@ class TestNamespace:
             _reference(scene, prim_network, "/left")
             _reference(scene, prim_network, "/right")
             for inner in [c for c in scene.get_chunks() if c.name == "Prim"]:
-                inner.execute()
+                inner.recook()
             assert stage.GetPrimAtPath("/left/thing").IsValid()
             assert stage.GetPrimAtPath("/right/thing").IsValid()
         finally:
@@ -547,12 +547,12 @@ class TestNamespace:
         try:
             _reference(scene, prim_network, "/room")
             inner = next(c for c in scene.get_chunks() if c.name == "Prim")
-            inner.execute()
+            inner.recook()
             path = inner.get_param("primpath_location")
             path.value = "/room/thing"
             assert path.raw_value == "/thing"
             assert path.value == "/room/thing"
-            inner.execute()
+            inner.recook()
             assert not stage.GetPrimAtPath("/room/room/thing").IsValid()
         finally:
             _teardown(scene)
@@ -660,7 +660,7 @@ class TestTheSequenceIsLive:
         stage, scene, reference, _ = hosting
         inner = [c for c in scene.get_chunks() if c is not reference]
         reference.get_param("file_path").value = scene_file
-        reference.execute()
+        reference.recook()
         assert all(c not in scene.get_chunks() for c in inner)
 
 
@@ -685,7 +685,7 @@ class TestTheHostNodeInTheQtGraph:
         assert not node._locked and not node._is_chunkgroup
 
         reference.get_param("file_path").value = network_file
-        reference.execute()
+        reference.recook()
         graph_scene._rebuild_nodes()
 
         node = graph_scene._nodes[get_chunk_prim_path(reference)]
@@ -695,11 +695,11 @@ class TestTheHostNodeInTheQtGraph:
     def test_the_location_field_reads_back_what_was_typed(self, graph):
         stage, scene, reference, graph_scene, network_file = graph
         reference.get_param("file_path").value = network_file
-        reference.execute()
+        reference.recook()
         location = reference.get_param("primpath_location")
         for typed in ("/room", "/room/east", "/other", ""):
             location.value = typed
-            reference.execute()
+            reference.recook()
             assert location.value == typed
             assert getattr(reference, "_network_namespace") == typed.rstrip("/")
 
@@ -774,7 +774,7 @@ class TestLoftedParamsOnTheHost:
             assert widget is not None, "the node has no embedded widget to check"
 
             host.get_param("file_path").value = path
-            host.execute()
+            host.recook()
             qapp.processEvents()
 
             public = next(p for p in host.get_my_params() if getattr(p, "_lofted", False))

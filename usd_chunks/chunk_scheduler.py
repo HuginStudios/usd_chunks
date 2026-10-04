@@ -16,7 +16,7 @@ The one piece of per-node state the scheduler does maintain is the *change reaso
 a node is dirtied, each node it dirties records which ChunkNoticeAlias caused it, which
 node it came from, and whether that change was presentation only. That triple is what
 `DagNode.iter_changes()` and `DagNode.only_presentation_changed()` replay, and what lets
-`ChunkNoticePropagator.execute()` tell a pure state change (selection, collapse, disable)
+`ChunkNoticePropagator.recook()` tell a pure state change (selection, collapse, disable)
 apart from a data change and skip re-cooking the module. A scheduler that only tracked
 "dirty" would re-cook chunks on selection.
 
@@ -286,7 +286,7 @@ def propagate_presentation(seed: DagNode):
     solve, and each records the *seed's* reason -- not the alias of the node it inherited
     it through. Stamping GROUP_CHANGED / PARAM_CHANGED on the way up would make a collapsed
     group read as a data change by the time it reached the chunk, and
-    ChunkNoticePropagator.execute() would re-cook the module on it.
+    ChunkNoticePropagator.recook() would re-cook the module on it.
 
     Dependants are left clean, so nothing travels along the exec chain: selecting one node
     must not dirty every chunk downstream of it.

@@ -73,12 +73,12 @@ def two_branches(tmp_path):
     viewed = make("transform", "Viewed")
     viewed.get_param("primpath_location").value = "/a"
     viewed.get_param("tz").value = 5.0
-    viewed.execute()
+    viewed.recook()
 
     dangling = make("transform", "Dangling")
     dangling.get_param("primpath_location").value = "/b"
     dangling.get_param("tz").value = 7.0
-    dangling.execute()
+    dangling.recook()
 
     view = make("view", "View")
     wire(view, viewed)
@@ -148,7 +148,7 @@ def test_a_file_with_no_view_still_cooks_everything(tmp_path):
         scene.add_chunk(c)
     node.get_param("primpath_location").value = "/a"
     node.get_param("tz").value = 3.0
-    node.execute()
+    node.recook()
 
     export_chunks(scene, str(out_net))
     exported = Usd.Stage.Open(str(out_net))

@@ -74,7 +74,7 @@ def _place(sender, name, prim_path, height):
     node = _mk(sender, transform_mod, name, "transform")
     node.get_param("primpath_location").value = prim_path
     node.get_param("tz").value = height
-    node.execute()
+    node.recook()
     return node
 
 
@@ -105,7 +105,7 @@ def test_only_the_selected_branch_reaches_the_stage(scene):
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, branch_a, branch_b)
     sw.get_param("index").value = 0
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/a") == pytest.approx(5.0)
     assert _height(stage, "/b") == pytest.approx(0.0), "branch B should be muted"
@@ -121,9 +121,9 @@ def test_flipping_the_index_swaps_which_branch_is_live(scene):
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, branch_a, branch_b)
     sw.get_param("index").value = 0
-    sw.execute()
+    sw.recook()
     sw.get_param("index").value = 1
-    sw.execute()
+    sw.recook()
 
     assert _height(stage, "/b") == pytest.approx(7.0)
     assert _height(stage, "/a") == pytest.approx(0.0)
@@ -140,14 +140,14 @@ def test_it_mutes_the_whole_branch_not_just_the_slot(scene):
     tail.get_param("primpath_location").value = "/b"
     tail.get_param("tx").value = 3.0
     _wire(stage, tail, upstream)
-    tail.execute()
+    tail.recook()
 
     live = _place(sender, "Live", "/a", 5.0)
 
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, live, tail)
     sw.get_param("index").value = 0
-    sw.execute()
+    sw.recook()
 
     assert upstream.is_blocked(), "the branch's interior stayed live"
     assert tail.is_blocked()
@@ -162,18 +162,18 @@ def test_a_chunk_feeding_both_branches_stays_live(scene):
     kept = _mk(sender, transform_mod, "Kept", "transform")
     kept.get_param("primpath_location").value = "/a"
     _wire(stage, kept, shared)
-    kept.execute()
+    kept.recook()
 
     dropped = _mk(sender, transform_mod, "Dropped", "transform")
     dropped.get_param("primpath_location").value = "/b"
     dropped.get_param("tz").value = 7.0
     _wire(stage, dropped, shared)
-    dropped.execute()
+    dropped.recook()
 
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, kept, dropped)
     sw.get_param("index").value = 0
-    sw.execute()
+    sw.recook()
 
     assert not shared.is_blocked()
     assert dropped.is_blocked()
@@ -192,7 +192,7 @@ def test_a_hand_disabled_chunk_keeps_its_disable(scene):
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, branch_a, branch_b)
     sw.get_param("index").value = 0   # select the branch the user disabled
-    sw.execute()
+    sw.recook()
 
     assert branch_a.has_state(ChunkFlags.State.DISABLED), "the user's own disable was cleared"
 
@@ -206,7 +206,7 @@ def test_an_index_past_the_last_slot_clamps(scene):
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, branch_a, branch_b)
     sw.get_param("index").value = 99
-    sw.execute()
+    sw.recook()
 
     assert not branch_b.is_blocked()
     assert branch_a.is_blocked()
@@ -215,7 +215,7 @@ def test_an_index_past_the_last_slot_clamps(scene):
 def test_a_switch_with_nothing_wired_does_nothing(scene):
     stage, sender = scene
     sw = _mk(sender, switch_mod, "Switch", "switch")
-    sw.execute()  # must not raise
+    sw.recook()  # must not raise
 
 
 def test_the_index_can_be_driven_by_an_expression(scene):
@@ -243,8 +243,8 @@ def test_the_index_can_be_driven_by_an_expression(scene):
     seen = set()
     for i in range(12):
         wedge.get_param("current_index").value = i
-        wedge.execute()
-        sw.execute()
+        wedge.recook()
+        sw.recook()
         seen.add(0 if branch_b.is_blocked() else 1)
 
     assert seen == {0, 1}, (
@@ -270,12 +270,12 @@ def test_an_unwired_branch_is_released_even_when_it_is_more_than_one_chunk_deep(
     sw = _mk(sender, switch_mod, "switch", "switch")
     _wire(stage, sw, a, b_slot)
     sw.get_param("index").value = 0
-    sw.execute()
+    sw.recook()
     assert b_inner.is_blocked(), "branch B is not selected, so the whole branch is muted"
 
     # The user unwires branch B from the Switch entirely.
     _wire(stage, sw, a)
-    sw.execute()
+    sw.recook()
 
     assert not b_inner.is_blocked(), (
         "nothing is suppressing b_inner any more -- it is not upstream of the Switch at all"
@@ -308,13 +308,13 @@ def test_the_selected_branch_keeps_an_upstream_switchs_choice(scene):
         attr.SetConnections([
             Sdf.Path(f"{chunk_stage.get_chunk_prim_path(src)}.{chunk_stage._EXEC_OUTPUT}")
         ])
-    inner.execute()
+    inner.recook()
     assert night.is_blocked()
 
     sw = _mk(sender, switch_mod, "Switch", "switch")
     _wire(stage, sw, inner)
     sw.get_param("index").value = 0
-    sw.execute()
+    sw.recook()
 
     assert night.is_blocked(), "the inner switch's choice must stand"
     assert _height(stage, "/b") == pytest.approx(0.0)

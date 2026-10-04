@@ -261,13 +261,13 @@ def test_chunk_internal_layer_ids_matches_layer_managers_own_set():
         cl._config = ChunkConfig(module="layer")
         scene.add_chunk(cl)
         cl.get_param("layer_name").value = "layerA"
-        cl.execute()
+        cl.recook()
 
         et = edit_mod.main()
         et._config = ChunkConfig(module="edit_target")
         scene.add_chunk(et)
         et.get_param("edit_target").value = "layerA"
-        et.execute()
+        et.recook()
 
         lm = chunk_registry.ChunkLayerManager()
         assert lm.internal_layer_ids, "setup must be faithful: some layer must be tracked"

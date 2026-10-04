@@ -115,7 +115,7 @@ def test_multi_selection_keeps_prims_where_they_were(scene) -> None:
 
     for name in ("A", "B", "C"):
         desc = chunk_gizmo.ensure_transform_chunk(_prim(stage, name))
-        chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+        chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
 
     for name, x in (("A", 1.0), ("B", 5.0), ("C", 9.0)):
         local = UsdGeom.Xformable(_prim(stage, name)).GetLocalTransformation(Usd.TimeCode.Default())
@@ -147,7 +147,7 @@ def test_the_prim_goes_back_where_it_was(scene) -> None:
     chunk_gizmo.apply_bindings(
         desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(7.0, 0, 0))
     )
-    created.execute()
+    created.recook()
 
     created.request_delete()
 

@@ -224,7 +224,7 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     ChunkNoticeAlias.VALUE_CHANGED) never got a chance to run: the fix for the duplicate-layer
     bug above used set_blocked(True) during value restoration, which chunk_notice.py's
     value_changed() also treats as "suppress every per-param notice", not just the reserved
-    module.execute() hook. Switched to guarding with _executing instead (see _materialize_at),
+    module.recook() hook. Switched to guarding with _executing instead (see _materialize_at),
     which only gates the reserved hook -- insert_index must end up NOT hidden once the import
     settles, matching what typing "Index" into a live, already-created chunk would do."""
     qapp, reg, scene, docker = graph

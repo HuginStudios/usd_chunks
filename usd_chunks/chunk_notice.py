@@ -1494,11 +1494,17 @@ class ChunkNoticePropagator:
             self._dag_node = DagNode(self)
         return self._dag_node
 
-    def execute(self):
-        """Dirty this object and solve everything downstream of it.
+    def recook(self):
+        """Dirty this object, then solve and cook everything downstream of it, now.
 
         Each solved object's data_changed() runs, and with it send_self(), which triggers any
-        connected callbacks. Inside batched_solve() the solve waits for the block to end.
+        connected callbacks; each solved chunk then cooks (ChunkBase.cook). Inside
+        batched_solve() it only dirties, and the solve waits for the block to end.
+
+        Not the module's execute(node): that is a chunk's behaviour, run by ChunkBase.cook
+        when this solve reaches the chunk. A chunk module never needs to call this -- setting
+        a param already does -- except to ask for a re-cook its params cannot express (a
+        module that restored params its first cook could not see).
         """
         node = self.get_dag_node()
         node.dirty = True

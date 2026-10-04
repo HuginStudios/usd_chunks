@@ -236,7 +236,7 @@ def test_a_group_recooked_by_a_loaded_callback_still_loads_clean(tmp_path, monke
     def recook_inner_when_loaded(alias, sender, *a, **k):
         result = real_send(alias, sender, *a, **k)
         if alias is chunk_notice.ChunkNoticeAlias.CHUNK_LOADED and get_chunk_prim_path(sender) == inner_path:
-            sender.execute()
+            sender.recook()
         return result
 
     monkeypatch.setattr(chunk_notice, "send_notice", recook_inner_when_loaded)

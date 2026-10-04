@@ -1135,10 +1135,10 @@ def _script_name(label: str) -> str:
 
 
 def execute_roots(chunks) -> None:
-    """Call execute() on every root node (no dependencies), recursing into groups."""
+    """Call recook() on every root node (no dependencies), recursing into groups."""
     for c in chunks:
         sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
         if sub:
             execute_roots(sub)
         elif not c.get_dependencies():
-            c.execute()
+            c.recook()

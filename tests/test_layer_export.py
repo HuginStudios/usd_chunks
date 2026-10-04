@@ -74,7 +74,7 @@ class TestCreateLayerNestingAndExport:
     def _create_layer(self, scene, name):
         c = _make(scene, self.create_mod, "layer")
         c.get_param("layer_name").value = name
-        c.execute()
+        c.recook()
         return c
 
     def test_light_fx_layout_nest_under_shot(self):
@@ -89,7 +89,7 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         light = self._create_layer(scene, "light")
         fx = self._create_layer(scene, "fx")
@@ -159,7 +159,7 @@ class TestCreateLayerNestingAndExport:
 
         edit_target1 = _make(scene, self.edit_mod, "edit_target")
         edit_target1.get_param("edit_target").value = "layer1"
-        edit_target1.execute()
+        edit_target1.recook()
 
         layer2 = self._create_layer(scene, "layer2")
         layer2_id = layer2.get_param("_new_layer_id").value
@@ -169,10 +169,10 @@ class TestCreateLayerNestingAndExport:
 
         edit_target2 = _make(scene, self.edit_mod, "edit_target")
         edit_target2.get_param("edit_target").value = "layer2"
-        edit_target2.execute()
+        edit_target2.recook()
 
         prim = _make(scene, prim_mod, "prim")
-        prim.execute()
+        prim.recook()
 
         session = stage.GetSessionLayer()
         prim_path = Sdf.Path(get_chunk_prim_path(prim))
@@ -217,7 +217,7 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         self._create_layer(scene, "light")
         self._create_layer(scene, "fx")
@@ -252,7 +252,7 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         export_chunk = _make(scene, self.export_mod, "export_usd")
         export_chunk.get_param("output_dir").value = str(tmp_path)
@@ -275,7 +275,7 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         self._create_layer(scene, "light")
         self._create_layer(scene, "fx")
@@ -333,10 +333,10 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         light = _make(scene, light_mod, "light")
-        light.execute()
+        light.recook()
 
         export_chunk = _make(scene, self.export_mod, "export_usd")
 
@@ -395,10 +395,10 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         light = _make(scene, light_mod, "light")
-        light.execute()
+        light.recook()
 
         export_chunk = _make(scene, self.export_mod, "export_usd")
         export_chunk.get_param("bake_all").value = True
@@ -443,10 +443,10 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         light = _make(scene, light_mod, "light")
-        light.execute()
+        light.recook()
 
         export_chunk = _make(scene, self.export_mod, "export_usd")
         export_chunk.get_param("bake_all").value = True
@@ -469,10 +469,10 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         light = _make(scene, light_mod, "light")
-        light.execute()
+        light.recook()
 
         export_chunk = _make(scene, self.export_mod, "export_usd")
         export_chunk.get_param("flatten").value = True
@@ -569,10 +569,10 @@ class TestCreateLayerNestingAndExport:
         # edit_target now stores/matches display names, not raw (session-ephemeral)
         # Sdf identifiers -- see edit_target.py's _refresh_edit_target/_resolve_layer.
         edit_target.get_param("edit_target").value = "shot"
-        edit_target.execute()
+        edit_target.recook()
 
         light = _make(scene, light_mod, "light")
-        light.execute()
+        light.recook()
 
         export_chunk = _make(scene, export_chunkgroup_mod, "export_chunkgroup")
         out_path = tmp_path / "graph.usda"

@@ -1164,11 +1164,11 @@ def test_blocked_chunk_does_not_execute_on_creation() -> None:
     scene.add_chunk(c)
     assert calls == []  # blocked → no execute on creation
 
-    c.execute()
+    c.recook()
     assert calls == []  # blocked → even a direct execute() is suppressed (module guard)
 
     c.set_blocked(False)
-    c.execute()
+    c.recook()
     assert len(calls) >= 1  # unblocked + cooked → runs
 
 
@@ -2692,7 +2692,7 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
         cl = _mk(create_mod)
         cl.get_param("layer_name").value = tag
         cl.get_param("insert_mode").value = "Prepend"
-        cl.execute()
+        cl.recook()
         scene._current_context = None
         groups.append(g)
         layers.append(cl)

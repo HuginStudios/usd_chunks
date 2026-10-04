@@ -91,7 +91,7 @@ def _drag(stage, path, translation=(0.0, 3.0, 0.0)):
     chunk_gizmo.apply_bindings(
         desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(*translation))
     )
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
     return desc
 
 

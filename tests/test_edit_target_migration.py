@@ -113,7 +113,7 @@ class TestEditTargetMigration:
         # layer this authors exists again on the other side of a reload.
         c = _make(scene, self.create_mod, "layer")
         c.get_param("layer_name").value = name
-        c.execute()
+        c.recook()
         return c, Sdf.Layer.Find(c.get_param("_new_layer_id").value)
 
     def _driven_holder(self, stage, prim_path):
@@ -131,9 +131,9 @@ class TestEditTargetMigration:
         _, layer_a = self._create_layer(scene, "layerA")
         et = _make(scene, self.edit_mod, "edit_target")
         et.get_param("edit_target").value = "layerA"
-        et.execute()
+        et.recook()
         c = _make(scene, self.prim_mod, "prim")
-        c.execute()
+        c.recook()
 
         cpath = Sdf.Path(get_chunk_prim_path(c))
         assert layer_a.GetPrimAtPath(cpath) is not None
@@ -152,9 +152,9 @@ class TestEditTargetMigration:
         _, layer_b = self._create_layer(scene, "layerB")
         et = _make(scene, self.edit_mod, "edit_target")
         et.get_param("edit_target").value = "layerA"
-        et.execute()
+        et.recook()
         c = _make(scene, self.prim_mod, "prim")
-        c.execute()
+        c.recook()
 
         cpath = Sdf.Path(get_chunk_prim_path(c))
         dpath = Sdf.Path(c.get_param("primpath_location").value)
@@ -162,7 +162,7 @@ class TestEditTargetMigration:
         assert self._driven_holder(stage, dpath).identifier in _reachable_layers(layer_a)
 
         et.get_param("edit_target").value = "layerB"
-        et.execute()
+        et.recook()
 
         # Bookkeeping moved to layerB, gone from layerA.
         assert layer_b.GetPrimAtPath(cpath) is not None
@@ -186,13 +186,13 @@ class TestEditTargetMigration:
         self._create_layer(scene, "A")
         et_a = _make(scene, self.edit_mod, "edit_target")
         et_a.get_param("edit_target").value = "A"
-        et_a.execute()
+        et_a.recook()
         self._create_layer(scene, "B")
         et_b = _make(scene, self.edit_mod, "edit_target")
         et_b.get_param("edit_target").value = "B"
-        et_b.execute()
+        et_b.recook()
         prim = _make(scene, self.prim_mod, "prim")
-        prim.execute()
+        prim.recook()
 
         graph_path = tmp_path / "graph.usda"
         cg = _make(scene, export_cg, "export_chunkgroup")
@@ -277,7 +277,7 @@ class TestEditTargetMigration:
         scene, stage = self._setup()
         _, layer_a = self._create_layer(scene, "layerA")
         c = _make(scene, self.prim_mod, "prim")
-        c.execute()
+        c.recook()
 
         cpath = Sdf.Path(get_chunk_prim_path(c))
         assert stage.GetSessionLayer().GetPrimAtPath(cpath) is not None
@@ -307,9 +307,9 @@ class TestEditTargetMigration:
         self._create_layer(scene, "layerA")
         et = _make(scene, self.edit_mod, "edit_target")
         et.get_param("edit_target").value = "layerA"
-        et.execute()
+        et.recook()
         prim = _make(scene, self.prim_mod, "prim")
-        prim.execute()
+        prim.recook()
 
         chunks = list(scene.get_chunks())
         assert len(chunks) == 3
@@ -328,9 +328,9 @@ class TestEditTargetMigration:
         _, layer_a = self._create_layer(scene, "layerA")
         et = _make(scene, self.edit_mod, "edit_target")
         et.get_param("edit_target").value = "layerA"
-        et.execute()
+        et.recook()
         c = _make(scene, self.prim_mod, "prim")
-        c.execute()
+        c.recook()
 
         cpath = Sdf.Path(get_chunk_prim_path(c))
         assert layer_a.GetPrimAtPath(cpath) is not None

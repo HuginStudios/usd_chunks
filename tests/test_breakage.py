@@ -392,7 +392,7 @@ def test_fracture_chunk_replaces_a_model_with_its_instancer(scene):
     frac = mk("fracture")
     frac.get_param("source_prims").value = str(torus.GetPath())
     frac.get_param("generations").value = 2
-    frac.execute()
+    frac.recook()
     qapp.processEvents()
     inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured"))
     assert inst and len(inst.GetProtoIndicesAttr().Get()) == 1
@@ -426,13 +426,13 @@ def test_fracture_rig_and_rbd_solver_crush_rock(scene, tmp_path):
     machine.add_dependency(frac)
     stream.add_dependency(machine)
     solver.add_dependency(stream)
-    frac.execute()
-    machine.execute()
+    frac.recook()
+    machine.recook()
     stream.get_param("target").value = "/Fractured"
     stream.get_param("region").value = "/CrusherRig/Emitter"
     stream.get_param("count").value = 2
     stream.get_param("rate").value = 8.0
-    stream.execute()
+    stream.recook()
     qapp.processEvents()
     assert "2 instances" in stream.get_param("readout").value
 
@@ -479,15 +479,15 @@ def test_fracture_does_not_recut_when_nothing_changed(scene, monkeypatch):
     frac.get_param("generations").value = 1
     # Chunk modules load twice under different names; patch the copy execute() runs in.
     mod = frac.get_chunk_module().module
-    frac.execute()
+    frac.recook()
     real = mod.build_trees
     calls = []
     monkeypatch.setattr(mod, "build_trees", lambda *a, **k: calls.append(1) or real(*a, **k))
-    frac.execute()
-    frac.execute()
+    frac.recook()
+    frac.recook()
     assert calls == []
     frac.get_param("generations").value = 2
-    frac.execute()
+    frac.recook()
     assert calls
     assert UsdGeom.PointInstancer(stage.GetPrimAtPath("/Fractured"))
 
@@ -503,7 +503,7 @@ def test_explode_and_bevel_do_not_cut_again(scene, monkeypatch):
     frac = mk("fracture")
     frac.get_param("source_prims").value = "/Torus"
     frac.get_param("generations").value = 2
-    frac.execute()
+    frac.recook()
     mod = frac.get_chunk_module().module
     cuts, meshes = [], []
     real_cut, real_meshes = mod.build_trees, mod.author_prototypes
@@ -553,13 +553,13 @@ def test_physics_drive_makes_any_prim_spin_or_carry(scene):
     spin.get_param("mode").value = "Spin"
     spin.get_param("axis").value = "Y"
     spin.get_param("rpm").value = 20.0
-    spin.execute()
+    spin.recook()
     belt = mk("physics_drive")
     belt.get_param("prim_path").value = "/World/Belt"
     belt.get_param("mode").value = "Conveyor"
     belt.get_param("belt_direction").value = (1.0, 0.0, 0.0)
     belt.get_param("belt_speed").value = 50.0
-    belt.execute()
+    belt.recook()
     qapp.processEvents()
 
     world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 12, 1, 24.0, 0.0, 3.0)
@@ -623,7 +623,7 @@ def test_emit_writes_a_stream_onto_the_instancer(scene):
     stream.get_param("rate").value = 6.0
     stream.get_param("start_frame").value = 5
     stream.get_param("velocity").value = (0.0, -80.0, 0.0)
-    stream.execute()
+    stream.recook()
     qapp.processEvents()
 
     inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Rocks"))
@@ -803,7 +803,7 @@ def test_the_kept_cut_is_let_go_at_exit(scene):
     frac.get_param("source").value = fr.SOURCE_ROCKS
     frac.get_param("count").value = 1
     frac.get_param("generations").value = 1
-    frac.execute()
+    frac.recook()
     mod = frac.get_chunk_module().module
     assert frac._fracture_cut is not None
 

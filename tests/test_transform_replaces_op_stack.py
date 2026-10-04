@@ -102,7 +102,7 @@ def test_auto_creating_on_an_asset_does_not_move_it(asset) -> None:
     before = _local(stage)
 
     desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
 
     after = _local(stage)
     assert _scale_of(after) == pytest.approx(_scale_of(before)), "scale was applied twice"
@@ -118,7 +118,7 @@ def test_the_chunk_appends_its_own_op(asset) -> None:
     stage, _layer = asset
     desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
-    created.execute()
+    created.recook()
 
     order = list(UsdGeom.Xformable(_prim(stage)).GetXformOpOrderAttr().Get() or [])
 
@@ -131,7 +131,7 @@ def test_the_assets_own_ops_are_left_alone(asset) -> None:
     """The order is overridden in the chunk's layer, never in the asset's."""
     stage, scene_layer = asset
     desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
 
     spec = scene_layer.GetPrimAtPath(Sdf.Path("/food_apple"))
     authored = list(spec.properties["xformOpOrder"].default)
@@ -144,7 +144,7 @@ def test_deleting_the_chunk_gives_the_asset_back(asset) -> None:
     before = _local(stage)
     desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
-    created.execute()
+    created.recook()
 
     created.request_delete()
 
@@ -163,7 +163,7 @@ def test_dragging_moves_it_by_exactly_what_was_dragged(asset) -> None:
 
     matrix = Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 5.0, 0.0))
     chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, matrix)
-    created.execute()
+    created.recook()
 
     assert Gf.IsClose(_local(stage).ExtractTranslation(), Gf.Vec3d(0.0, 5.0, 0.0), 1e-6)
 
@@ -179,7 +179,7 @@ def test_a_prim_with_no_ops_still_works(asset) -> None:
     chunk_gizmo.apply_bindings(
         desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(1.0, 2.0, 3.0))
     )
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
 
     matrix = UsdGeom.Xformable(plain).GetLocalTransformation(Usd.TimeCode.Default())
     matrix = matrix[0] if isinstance(matrix, tuple) else matrix
@@ -221,7 +221,7 @@ def test_a_dangling_op_order_does_not_crash_the_cook(asset) -> None:
     chunk_gizmo.apply_bindings(
         desc.chunk_prim, desc.name, Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.0, 4.0, 0.0))
     )
-    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).execute()
+    chunk_gizmo.chunk_at_prim_path(desc.chunk_prim).recook()
 
     assert Gf.IsClose(_local(stage).ExtractTranslation(), Gf.Vec3d(0.0, 4.0, 0.0), 1e-6)
 
@@ -232,7 +232,7 @@ def test_the_attribute_gets_its_type_from_the_chunks_own_layer(asset) -> None:
     _dangling_order(stage, scene_layer)
     desc = chunk_gizmo.ensure_transform_chunk(_prim(stage))
     created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
-    created.execute()
+    created.recook()
 
     op_name = chunk_utils.xform_op_name(created)
     assert _prim(stage).GetAttribute(op_name).GetTypeName() == Sdf.ValueTypeNames.Matrix4d

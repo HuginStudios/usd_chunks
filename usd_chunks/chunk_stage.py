@@ -2084,7 +2084,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if chunk.is_blocked():
             return
 
-        chunk.execute()
+        chunk.recook()
 
     def _find_dag_tail(self, context, exclude=None) -> core.ChunkBase | None:
         """The tail of the exec DAG for this context.
@@ -2793,7 +2793,7 @@ def host_networks(chunk: core.ChunkBase, targets: list[tuple[str, str]],
             cooked = 0
             for c in sorted(inside, key=lambda c: get_chunk_prim_path(c).count("/")):
                 if not c.is_blocked() and not is_group_chunk(c):
-                    c.execute()
+                    c.recook()
                     cooked += 1
             logger.info(
                 "%s: network now under %r; re-cooked %d of %d inner chunks (%d blocked)",
@@ -4246,7 +4246,7 @@ def reconcile_edit_targets(
                 # The chunk moved layers -- re-run it so its driven content re-nests
                 # under the new target (bookkeeping is hand-moved above; driven
                 # content follows via ChunkLayerManager on execute).
-                chunk.execute()
+                chunk.recook()
                 # A cook can create and sublayer this chunk's procedural layer, so the
                 # migratable set is stale from here on.
                 migratable = _migratable_layers(stage)
@@ -4686,7 +4686,7 @@ def recook_for_view(
             # through its input into the parent graph, and those chunks are the parent's
             # to cook -- forcing them re-ran the whole upstream chain on every stale group.
             elif (_force and in_context(c)) or chunk_notice.is_cook_stale(c):
-                c.execute()
+                c.recook()
 
     if not cook_list:
         return
@@ -6192,7 +6192,7 @@ def _load_chunks(
                         if is_top_level or can_execute_sub_chunks:
                             if lm.initialized:
                                 lm.get_or_create_layer(added)
-                            added.execute()
+                            added.recook()
 
                 # Fire CHUNK_LOADED for all loaded chunks (UI notification) and restore
                 # params that were created dynamically inside execute (e.g. show_attribute).

@@ -153,8 +153,8 @@ def build_chunk_graph(count: int) -> list[tuple[str, float]]:
     # Solving from the head walks the whole chain; solving from the tail should touch
     # almost nothing, and the gap between the two is what says whether a solve is
     # correctly scoped to the dirty frontier.
-    head_solve, _ = _time(chunks[0].execute)
-    tail_solve, _ = _time(chunks[-1].execute)
+    head_solve, _ = _time(chunks[0].recook)
+    tail_solve, _ = _time(chunks[-1].recook)
 
     return [
         ("create", create_time),
@@ -195,7 +195,7 @@ def reload_chunk_graph(count: int, directory: str) -> list[tuple[str, float]]:
     # Cook the whole restored graph from its head, the same measurement build_chunk_graph
     # takes, so the two tiers are directly comparable.
     head = min(loaded, key=lambda c: chunk_scheduler.get_depth(c.get_dag_node()))
-    execute, _ = _time(head.execute)
+    execute, _ = _time(head.recook)
 
     return [("export", export), ("load", load), ("exec loaded", execute)]
 

@@ -202,12 +202,12 @@ class TestTheOverrideFollowsTheHostEditTarget:
         _, stage, scene, seq_layer, _, transform_path = composed_shot
         create = _add(scene, "layer")
         create.get_param("layer_name").value = "layout"
-        create.execute()
+        create.recook()
         layout = Sdf.Layer.Find(create.get_param("_new_layer_id").value)
         edit_target = _add(scene, "edit_target")
         edit_target.add_dependency(create)
         edit_target.get_param("edit_target").value = "layout"
-        edit_target.execute()
+        edit_target.recook()
         transform = next(c for c in scene.get_chunks() if c.name == "Transform")
 
         transform.get_param("tx").value = _SHOT_VALUE
