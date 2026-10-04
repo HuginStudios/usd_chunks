@@ -1299,12 +1299,12 @@ class ChunkNoticePropagator:
         Dirties it and solves downstream: each solved object's data_changed() runs, and with
         it send_self(), which triggers any connected callbacks. When the solve has finished,
         every chunk it reached runs its module's execute(node) once, upstream first
-        (chunk_cook.flush, through ChunkBase._cook). Inside batched_solve() it only dirties,
+        (chunk_cook.flush, then chunk_cook.cook). Inside batched_solve() it only dirties,
         and the solve waits for the block to end; inside another chunk's cook, the chunks
         it reaches cook once that cook has ended.
 
         This is the one way to run a chunk again: a module's execute(node) is written, never
-        called directly, and ChunkBase._cook is the framework's step, not an API.
+        called directly, and chunk_cook.cook is the framework's step, not an API.
         """
         node = self.get_dag_node()
         node.dirty = True
@@ -1316,22 +1316,27 @@ class ChunkNoticePropagator:
     def _solve_downstream(self):
         """Solve this object's already-dirty node and everything downstream of it."""
         node = self.get_dag_node()
+        # Built only when it is logged: it named every node of every solve, a drag step's
+        # thirty of them, for a message nobody reads.
+        debug = logger.isEnabledFor(logging.DEBUG)
         msg = "\n====== SOLVE ======\n"
         for n in node.solve_outputs():
             if not (prop := n.propagator):
                 continue
 
-            msg += f"solved: {n.name}\n"
+            if debug:
+                msg += f"solved: {n.name}\n"
 
             changes = [(alias, iprop) for alias, iprop in n.iter_changes() if iprop]
             for alias, iprop in changes:
                 if alias == prop.get_notice_alias():
                     continue
 
-                msg += f"   {alias.name}\n"
+                if debug:
+                    msg += f"   {alias.name}\n"
                 prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
 
-            if notice := prop.send_self():
+            if (notice := prop.send_self()) and debug:
                 msg += f"   {notice.alias.name}\n"
 
             # A pure state change (selection, collapse, disable) must not re-run the module.
@@ -1352,8 +1357,9 @@ class ChunkNoticePropagator:
             if not state_only and prop.get_chunk_module() is not None:
                 chunk_cook.dispatch(cast("chunk_core.ChunkBase", prop), n, changes, self)
 
-        msg += "====== FINISHED ======\n"
-        logger.debug(msg)
+        if debug:
+            msg += "====== FINISHED ======\n"
+            logger.debug(msg)
 
     def add_dependency(self, input: ChunkNoticePropagator) -> int:
         """Add an input. This propagator does not evaluate until all inputs are solved.
@@ -1848,19 +1854,23 @@ class NoticeConnection:
         args = (owner, notice, sender) if self._wants_owner(meth) else (notice, sender)
         if owner:
             cooking = _executing_chunk
-            if cooking is not None and getattr(owner, "get_chunk", lambda: None)() is not cooking:
+            if cooking is None or getattr(owner, "get_chunk", lambda: None)() is not cooking:
                 # Another chunk is cooking, and its stage is the cook's (skip_cook): only what
                 # that cook reads, and whatever is looked up there is charged to it. A Set
                 # Camera refreshing its menu by a Traverse during an Add Variants cook made Add
                 # Variants read the whole stage, so it cooked on every edit above it. The cook
                 # stage's notice is a copy -- the scene's stage hears the same layer edit -- so
-                # it is dropped, and the scene's is handled on the scene's stage.
+                # it is dropped, and the scene's is handled on the scene's stage. With no
+                # chunk cooking, a cook stage is being opened: muting its hidden layers is
+                # nobody's change, and every Set Camera and Set Variant rebuilt its menus
+                # for it on every masked cook.
                 notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
                 if notice_stage is not None and chunk_cook.is_cook_stage(notice_stage()):
                     return
-                with chunk_cook.outside_cook():
-                    self._call_for_owner(owner, meth, args, notice, context)
-                return
+                if cooking is not None:
+                    with chunk_cook.outside_cook():
+                        self._call_for_owner(owner, meth, args, notice, context)
+                    return
             self._call_for_owner(owner, meth, args, notice, context)
             return
 

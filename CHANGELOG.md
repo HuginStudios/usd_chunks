@@ -11,7 +11,7 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
-- Experimental: `USD_CHUNKS_SKIP_COOKS=1` skips the cooks nothing reached. A chunk that
+- Cooks nothing reached are skipped. A chunk that
   only the chunks above it changed doesn't cook unless one of them changed a prim it reads.
   What it reads is not declared: each cook runs on a stage holding only its inputs and its
   last output, and a cook that looks up anything else is cooked on the whole stage from then

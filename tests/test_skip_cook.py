@@ -1,4 +1,4 @@
-"""Skipping cooks no upstream change can reach (skip_cook, USD_CHUNKS_SKIP_COOKS=1).
+"""Skipping cooks no upstream change can reach (skip_cook).
 
 A chunk cooks on a stage populated only at its inputs and its last outputs, so what it
 read is known without anyone declaring it; what each cook changed is handed to the chunks
@@ -13,11 +13,6 @@ from chunk_stubs import register_stub_module
 from pxr import Sdf
 
 from usd_chunks import Scene, chunk, chunk_registry, skip_cook
-
-
-@pytest.fixture(autouse=True)
-def _skipping_on(monkeypatch):
-    monkeypatch.setenv(skip_cook.ENV, "1")
 
 
 def _add(scene, module):
