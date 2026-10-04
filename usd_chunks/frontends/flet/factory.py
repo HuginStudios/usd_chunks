@@ -351,8 +351,8 @@ class FletButtonWidget(FletParamWidget):
     CONTROL_H = 34.0
     HAS_LABEL = False
     def build(self):
-        self.control = ft.ElevatedButton(content=self.param.get_label() or self.param.name,
-                                         on_click=self.on_clicked)
+        self.control = ft.Button(content=self.param.get_label() or self.param.name,
+                                 on_click=self.on_clicked)
 
     def apply_value(self, value):
         pass
