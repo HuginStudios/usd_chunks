@@ -1316,22 +1316,27 @@ class ChunkNoticePropagator:
     def _solve_downstream(self):
         """Solve this object's already-dirty node and everything downstream of it."""
         node = self.get_dag_node()
+        # Built only when it is logged: it named every node of every solve, a drag step's
+        # thirty of them, for a message nobody reads.
+        debug = logger.isEnabledFor(logging.DEBUG)
         msg = "\n====== SOLVE ======\n"
         for n in node.solve_outputs():
             if not (prop := n.propagator):
                 continue
 
-            msg += f"solved: {n.name}\n"
+            if debug:
+                msg += f"solved: {n.name}\n"
 
             changes = [(alias, iprop) for alias, iprop in n.iter_changes() if iprop]
             for alias, iprop in changes:
                 if alias == prop.get_notice_alias():
                     continue
 
-                msg += f"   {alias.name}\n"
+                if debug:
+                    msg += f"   {alias.name}\n"
                 prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
 
-            if notice := prop.send_self():
+            if (notice := prop.send_self()) and debug:
                 msg += f"   {notice.alias.name}\n"
 
             # A pure state change (selection, collapse, disable) must not re-run the module.
@@ -1352,8 +1357,9 @@ class ChunkNoticePropagator:
             if not state_only and prop.get_chunk_module() is not None:
                 chunk_cook.dispatch(cast("chunk_core.ChunkBase", prop), n, changes, self)
 
-        msg += "====== FINISHED ======\n"
-        logger.debug(msg)
+        if debug:
+            msg += "====== FINISHED ======\n"
+            logger.debug(msg)
 
     def add_dependency(self, input: ChunkNoticePropagator) -> int:
         """Add an input. This propagator does not evaluate until all inputs are solved.
