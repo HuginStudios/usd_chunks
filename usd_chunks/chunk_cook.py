@@ -351,3 +351,19 @@ def dispatch(chunk, node, changes, seed) -> None:
     # A chunk with no execute() (a chunkgroup) stays stale, which tells recook_for_view
     # its inside needs cooking.
     mark_cook_stale(chunk)
+
+
+def cook_all(chunks) -> None:
+    """Cook every one of chunks, upstream first, whether or not anything reached it.
+
+    Each is made pending as a solve reaching it would make it, with no change to give as a
+    reason -- so none is skipped (skip_cook skips only for a change above it) -- and flush()
+    cooks them, through the same guards as any cook: a chunk outside the active view is
+    refused and stays stale for recook_for_view. No notices are sent; nothing changed.
+
+    Args:
+        chunks: The chunks, nested ones included (SceneSender.get_chunks).
+    """
+    with solving():
+        for chunk in chunks:
+            dispatch(chunk, chunk.get_dag_node(), [], None)

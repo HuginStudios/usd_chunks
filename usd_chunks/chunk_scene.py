@@ -27,7 +27,7 @@ from typing import Any
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
+from usd_chunks import chunk_cook, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
 from usd_chunks.graph import engine
@@ -935,9 +935,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Run every chunk, upstream first.
 
         Making a chunk and setting a value already run what they affect, so this is rarely
-        needed.
+        needed. Every chunk cooks once, in the same flush as any other cook
+        (chunk_cook.cook_all); one outside the active view stays stale until a view shows it.
         """
-        execute_roots(self.get_chunks())
+        chunk_cook.cook_all(self.get_chunks())
 
     # save, export and commit live here rather than on the script's Scene, so they work on
     # usdview's scene too (Scene.current()).
@@ -1132,13 +1133,3 @@ class Creator:
 def _script_name(label: str) -> str:
     """A menu label as a Python name: "Dome Light" -> "dome_light"."""
     return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
-
-
-def execute_roots(chunks) -> None:
-    """Call execute() on every root node (no dependencies), recursing into groups."""
-    for c in chunks:
-        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
-        if sub:
-            execute_roots(sub)
-        elif not c.get_dependencies():
-            c.execute()
