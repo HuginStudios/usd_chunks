@@ -3569,7 +3569,7 @@ class ChunkBase(ChunkGroupBase):
 
         Owned by the framework, not meant to be overridden: a chunk's behaviour is its
         module's execute(). Deciding WHEN to cook -- a data change rather than a pure state
-        change, not twice in one batch -- is the solve's (chunk_cook.dispatch);
+        change, once per edit, upstream first -- is chunk_cook's (dispatch, then flush);
         this only decides whether the chunk CAN run right now, and runs it. It does not
         mark the chunk stale first: the solve does, so a cook that is refused leaves it
         stale for recook_for_view to pick up.
