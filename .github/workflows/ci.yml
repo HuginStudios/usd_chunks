@@ -92,8 +92,11 @@ jobs:
 
           assert Path(chunk_resources.get_icon("pin")).is_file(), "icons missing from wheel"
           assert any((files("usd_chunks") / "chunks").iterdir()), "bundled chunks missing from wheel"
-          for pkg, name in [("usd_chunks.hosts.usdview", "plugInfo.json"),
-                            ("usd_chunks.frontends.blender.addon", "blender_manifest.toml")]:
-              assert (files(pkg) / name).is_file(), f"{name} missing from wheel"
+          # Walked to from the top package, not files("usd_chunks.hosts.usdview"):
+          # that imports the host package, which imports pxr.Usdviewq (and the Blender
+          # addon, bpy) -- neither of which pip's usd-core has.
+          for rel in ["hosts/usdview/plugInfo.json",
+                      "frontends/blender/addon/blender_manifest.toml"]:
+              assert files("usd_chunks").joinpath(*rel.split("/")).is_file(), f"{rel} missing from wheel"
           print("package data OK")
           PY
