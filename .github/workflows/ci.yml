@@ -38,10 +38,16 @@ jobs:
       # The widget tests import PySide6 at module scope, so the suite needs the ui
       # extra too. tests/conftest.py already forces QT_QPA_PLATFORM=offscreen; the
       # Windows runner image needs nothing else.
-      - run: pip install -e ".[dev,ui]"
+      - id: install
+        run: pip install -e ".[dev,ui]"
 
       - run: ruff check .
       - name: pytest
+        # Runs even when ruff fails: a lint error used to stop the job here, so a PR
+        # showed only "ruff failed" and its tests never ran at all. The job still fails
+        # on lint; this only makes the test result visible alongside it. Not after a
+        # failed install, where pytest would only bury the real error.
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         # USD_CHUNK_DIRS must point at chunks/ or ChunkRegistry.get_chunk_module finds
         # nothing and the suite fails with NoneType 'loaded'. It is split on os.pathsep,
         # which is ';' on Windows.
