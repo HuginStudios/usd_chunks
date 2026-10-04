@@ -82,7 +82,7 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         widget_class = self.get_map().get(key, None)
 
         if not widget_class:
-            print("Could not create widget for param: ", param.name, "Missing mapping in Qt factory")
+            logger.warning("Could not create widget for param %s: missing mapping in Qt factory", param.name)
             return None
 
         widget: ChunkParamWidget = widget_class(param)

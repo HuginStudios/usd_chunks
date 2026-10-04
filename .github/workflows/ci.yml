@@ -22,14 +22,8 @@ jobs:
     # libs PySide6 links against; macOS was dropped on cost alone.
     #
     # 3.11 is what the DCCs ship today (Houdini 20.5, Maya 2025), so it is the
-    # version users actually run under. Dropped alongside it: 3.10 (the
-    # requires-python floor in pyproject.toml) and 3.13 (current).
-    #
-    # Also gone is a `wheel` job that built the wheel and installed it into a
-    # clean venv to catch packaging bugs an editable install hides — missing
-    # runtime deps, package data left out of the wheel, console scripts that only
-    # resolve against the source tree. Nothing checks packaging now; git history
-    # has it if it is ever worth restoring.
+    # version users actually run under, and the requires-python floor in
+    # pyproject.toml. 3.13 (current) was dropped on cost.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,3 +48,46 @@ jobs:
         env:
           USD_CHUNK_DIRS: chunks
         run: pytest
+
+  wheel:
+    # Builds the wheel and installs it into a clean venv to catch packaging bugs an
+    # editable install hides: package data left out of the wheel, missing runtime
+    # deps, console scripts that only resolve against the source tree. One Linux row
+    # keeps it cheap; nothing is uploaded.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build && python -m build --wheel
+
+      # One step so the venv path survives across commands.
+      - name: Install the wheel into a clean venv and smoke test it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/smoke"
+          BIN="$RUNNER_TEMP/smoke/bin"
+          WHEEL="$(ls "$PWD"/dist/*.whl)"
+          # standalone: usd_chunks needs pxr, which a DCC would otherwise supply.
+          "$BIN/pip" install "${WHEEL}[standalone]"
+
+          # From outside the checkout so the source tree cannot satisfy the imports.
+          cd "$RUNNER_TEMP"
+          "$BIN/usdchunks" --help
+          "$BIN/usdchunks" plugin-path
+
+          "$BIN/python" - <<'PY'
+          from pathlib import Path
+          from importlib.resources import files
+
+          from usd_chunks import chunk_resources
+
+          assert Path(chunk_resources.get_icon("pin")).is_file(), "icons missing from wheel"
+          assert any((files("usd_chunks") / "chunks").iterdir()), "bundled chunks missing from wheel"
+          for pkg, name in [("usd_chunks.hosts.usdview", "plugInfo.json"),
+                            ("usd_chunks.frontends.blender.addon", "blender_manifest.toml")]:
+              assert (files(pkg) / name).is_file(), f"{name} missing from wheel"
+          print("package data OK")
+          PY

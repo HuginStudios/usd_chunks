@@ -12,10 +12,13 @@ from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
 
+import logging
 import re
 from collections.abc import Callable
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
+
+logger = logging.getLogger(__name__)
 
 # Re-exported under the original private name: chunk_qt imports it from here, and the
 # implementation is core (frontend-agnostic), not Qt.
@@ -1194,7 +1197,7 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         widget_class = self.get_map().get(key, None)
 
         if not widget_class:
-            print("Could not create widget for param: ", param.name, "Missing mapping in Qt factory")
+            logger.warning("Could not create widget for param %s: missing mapping in Qt factory", param.name)
             return None
 
         widget: ChunkParamWidgetBase = widget_class(param)

@@ -27,7 +27,7 @@ import sys
 from imgui_bundle import hello_imgui, imgui, imgui_node_editor as ed
 from pxr import Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.frontends.imgui import factory as chunk_imgui
@@ -680,6 +680,7 @@ def _quiet_introspection():
 
 
 def main(network: str, context: str | None = None):
+    configure_logging()
     view = ImGuiGraphView(network, context)
 
     def gui():

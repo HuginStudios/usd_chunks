@@ -7,6 +7,7 @@ Edges follow inputs:chunk connections between prims.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 import weakref
@@ -28,6 +29,8 @@ from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks
+
+logger = logging.getLogger(__name__)
 
 # The clipboard model and its snapshot helpers live in the engine now; these aliases keep
 # the rest of this file reading as it did, and keep the two frontends on one format.
@@ -2256,9 +2259,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             # node without its widget -- the "only the port dot shows" corruption). Log and skip.
             try:
                 node.create_proxy()
-            except Exception as e:
-                print(f"[PROXY] create_proxy FAILED for {getattr(node.chunk, 'name', '?')}: "
-                      f"{type(e).__name__}: {e}")
+            except Exception:
+                logger.exception("create_proxy failed for %s", getattr(node.chunk, 'name', '?'))
         if rest:
             QtCore.QTimer.singleShot(0, self, lambda: self._create_proxies_batch(rest, gen))
             return
@@ -4506,8 +4508,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if change.expression_error:
             # The wire stands; only the expression was refused. Worth saying so -- the
             # value will not resolve through a connection that looks complete.
-            print(f"[ChunkGraph] wired, but the expression was refused: "
-                  f"{change.expression_error}")
+            logger.warning("Wired, but the expression was refused: %s", change.expression_error)
 
         # Everything below is the view's own work, which is why it stayed here. The
         # expression write that used to sit here is chunk_graph.connect's job now, and it

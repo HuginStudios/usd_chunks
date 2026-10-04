@@ -31,7 +31,7 @@ import flet as ft
 import flet.canvas as cv
 from pxr import Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.frontends.flet import factory as chunk_flet
@@ -1247,6 +1247,7 @@ class GraphView:
 
 
 def main(page: ft.Page, network: str, context: str | None = None):
+    configure_logging()
     view = GraphView(network, context)
     view.page = page
     page.on_keyboard_event = view.on_key

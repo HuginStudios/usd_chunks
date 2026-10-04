@@ -151,7 +151,10 @@ class ChunkEnvVar(Generic[_T]):
         return self._get(self.default, fallback)
 
 
-USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", [], True)
+# The bundled chunks are always searched, after the folders the variable names (so yours
+# win on a duplicate name). Resolved against the folder holding the package: chunks/ there
+# is a checkout's copy, usd_chunks/chunks the one setup.py copies into an installed package.
+USD_CHUNK_DIRS = ChunkEnvVar("USD_CHUNK_DIRS", ["chunks", os.path.join("usd_chunks", "chunks")], True)
 
 # Said once per process: each new Scene registers the directories again.
 _warned_no_chunk_dirs = False
@@ -163,7 +166,9 @@ PY_MODULE_EXT = ".py"
 #: whole chunk directory to rebuild objects the registry already holds.
 _DISCOVERED_MODULES: dict[tuple[str, str], tuple[int, list[ChunkModule]]] = {}
 
-USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", "_installed_deps", True)
+# A per-user folder: beside the package is site-packages once installed, which is often
+# read-only and no place for `pip install -t` to write.
+USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", chunk_cache.user_cache_dir("installed_deps"))
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
 
 # Installing a chunk's declared pip dependencies is OFF unless this is set. A chunk module
@@ -1435,7 +1440,11 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         Returns:
             The registered directories, in precedence order.
         """
-        dirs = list(USD_CHUNK_DIRS())
+        # The bundled chunks are a default, not something the user asked for: of its two
+        # locations (checkout, installed package) only one exists, and the other is skipped
+        # quietly instead of reported as "directory not found".
+        defaults = set(USD_CHUNK_DIRS.default)
+        dirs = [d for d in USD_CHUNK_DIRS() if d not in defaults or Path(d).exists()]
         global _warned_no_chunk_dirs
         if not dirs and not _warned_no_chunk_dirs:
             _warned_no_chunk_dirs = True

@@ -4,6 +4,7 @@ import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_utils
+from usd_chunks.chunk_cache import user_cache_dir
 from usd_chunks.gizmo import runtime as chunk_gizmo
 
 #: The legacy shared transform op, from before each chunk owned a named one. Still read, so
@@ -26,13 +27,15 @@ def _download_camera_types_cache(camera_cache):
 
     res = conn.getresponse()
     data = json.loads(res.read().decode("utf-8"))
+    os.makedirs(os.path.dirname(camera_cache), exist_ok=True)
     with open(camera_cache, "w") as f:
         json.dump(data, f, indent=2)
     return data
 
 
 def _get_camera_data():
-    camera_cache = os.path.join(os.path.dirname(__file__), "cameras.json")
+    # Per-user, not beside this file: installed, that is site-packages.
+    camera_cache = user_cache_dir("cameras.json")
     if not os.path.exists(camera_cache):
         data = _download_camera_types_cache(camera_cache)
     else:
@@ -590,7 +593,7 @@ def config():
             unique /cameras/camera1 path. Updated in-place when taken (outside
             variant contexts).
           - Camera Preset: real-world camera body fetched from physicallybased.info
-            (cached locally as cameras.json). Defaults to Fuji X-T5. Changing
+            (cached per user as usd_chunks/cameras.json). Defaults to Fuji X-T5. Changing
             the preset repopulates the Formats menu and applies the first sensor
             size as the default aperture values.
           - Formats: sensor format for the selected camera body. Changing the
