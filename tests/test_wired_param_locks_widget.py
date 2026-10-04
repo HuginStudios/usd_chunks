@@ -69,6 +69,20 @@ def test_a_wired_slider_is_locked(scene):
     assert widget.isEnabled(), "pulling the wire must free the slider"
 
 
+def test_pulling_a_wire_whose_value_equals_the_default_frees_the_slider(scene):
+    # The wire resolves to 2.0, the default is 2.0: `value` reads the same either side, so
+    # the change must still be seen -- it is the expression that went, not the number.
+    slider = chunk.Slider("amount", default_value=2.0)
+    _, built = _dst(scene, slider)
+    widget = _widget_for(built, slider)
+    slider.value = "@src.level@"
+    assert not widget.isEnabled()
+
+    slider.value = slider.default_value
+    assert slider.raw_value == 2.0
+    assert widget.isEnabled(), "pulling the wire must free the slider"
+
+
 def test_a_slider_built_already_wired_starts_locked(scene):
     slider = chunk.Slider("amount", default_value=0.0)
     slider.value = "@src.level@"

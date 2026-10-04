@@ -2613,6 +2613,17 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return self.__dict__.get("value")
 
     @override
+    def _old_value_for(self, name: str) -> Any:
+        # `value` reads back resolved, so clearing a wire whose source happens to equal the
+        # value it is reset to compared equal and sent nothing: the widget stayed locked and
+        # the expression stayed in USD. An expression is compared as the text it is stored as.
+        if name == "value":
+            raw = self.__dict__.get("value")
+            if isinstance(raw, str) and chunk_utils.has_expression(raw):
+                return raw
+        return super()._old_value_for(name)
+
+    @override
     def __getattribute__(self, name: str) -> Any:
         if name == "value" and "value" in self.__dict__:
             raw = self.__dict__["value"]
