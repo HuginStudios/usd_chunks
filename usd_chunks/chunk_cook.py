@@ -238,6 +238,16 @@ def executing(prop):
             chunk._solve_downstream()
 
 
+def inputs_rewired(node) -> None:
+    """A node gained or lost an input: what it and everything below it cooked on is gone.
+
+    Called by DagNode when one of its input edges changes. Only skip-cooking keeps a record
+    of what a chunk read, so this is a no-op with it off.
+    """
+    if skip_cook.enabled():
+        skip_cook.inputs_rewired(node)
+
+
 def dispatch(chunk, node, changes, seed) -> None:
     """Cook a chunk the solve has reached with a data change -- or decide it must wait.
 

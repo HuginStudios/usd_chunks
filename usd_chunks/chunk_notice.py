@@ -39,7 +39,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self, override
-from usd_chunks import chunk_cook, chunk_scheduler, skip_cook
+from usd_chunks import chunk_cook, chunk_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -771,8 +771,7 @@ class DagNode:
         # distance from the roots.
         chunk_scheduler.topology_changed(self)
         # A new chunk above self: what it and everything below it cooked on is gone.
-        if skip_cook.enabled():
-            skip_cook.inputs_rewired(self)
+        chunk_cook.inputs_rewired(self)
 
         if connect_reverse:
             node.add_dependant(self)
@@ -815,8 +814,7 @@ class DagNode:
         for key in keys:
             del self._connections.inputs[key]
         chunk_scheduler.topology_changed(self, node)
-        if skip_cook.enabled():
-            skip_cook.inputs_rewired(self)
+        chunk_cook.inputs_rewired(self)
 
         if disconnect_reverse:
             node.remove_dependant(self)
