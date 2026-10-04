@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `chunk.change_block()`: values set inside it are one change, so what they affect cooks
+  once when the block ends rather than once per value. For scripts, and for modules that
+  set many params of their own (the Wedge uses it).
 - Cooks nothing reached are skipped. A chunk that
   only the chunks above it changed doesn't cook unless one of them changed a prim it reads.
   What it reads is not declared: each cook runs on a stage holding only its inputs and its

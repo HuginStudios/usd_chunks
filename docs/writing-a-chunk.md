@@ -126,6 +126,10 @@ when a param changes. Changing a param or a wire already does this, so a module 
 it when its result is out of date in a way no param change says -- say, it restored params
 its first cook could not see.
 
+An `execute` that sets many params -- a Wedge writing a variant's ranges -- sets them inside
+`with chunk.change_block():`. Then what they drive cooks once, after the last one, rather
+than once per value.
+
 A common pattern is a chunk that does its real work in a param callback, with `execute`
 only there to redo that work after the file is opened. This is why `execute` exists,
 instead of doing everything in callbacks:
