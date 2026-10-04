@@ -1297,9 +1297,11 @@ class ChunkNoticePropagator:
         """Re-execute this object, and everything downstream of it, now.
 
         Dirties it and solves downstream: each solved object's data_changed() runs, and with
-        it send_self(), which triggers any connected callbacks; each solved chunk then runs
-        its module's execute(node) (through ChunkBase._cook). Inside batched_solve() it only
-        dirties, and the solve waits for the block to end.
+        it send_self(), which triggers any connected callbacks. When the solve has finished,
+        every chunk it reached runs its module's execute(node) once, upstream first
+        (chunk_cook.flush, through ChunkBase._cook). Inside batched_solve() it only dirties,
+        and the solve waits for the block to end; inside another chunk's cook, the chunks
+        it reaches cook once that cook has ended.
 
         This is the one way to run a chunk again: a module's execute(node) is written, never
         called directly, and ChunkBase._cook is the framework's step, not an API.
@@ -1308,7 +1310,8 @@ class ChunkNoticePropagator:
         node.dirty = True
         if chunk_cook.queue(self):
             return
-        self._solve_downstream()
+        with chunk_cook.solving():
+            self._solve_downstream()
 
     def _solve_downstream(self):
         """Solve this object's already-dirty node and everything downstream of it."""

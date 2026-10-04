@@ -578,24 +578,14 @@ def _touches(changed: set[Sdf.Path], mask: Iterable[Sdf.Path]) -> bool:
     return any(_covered(c, set(mask)) for c in changed)
 
 
-def hold_reasons(chunk, reasons: list) -> None:
-    """Keep the reasons of a chunk held until a cook above it ends, for should_skip then."""
-    chunk._skip_held = [*(getattr(chunk, "_skip_held", None) or []), *reasons]
-
-
 def should_skip(chunk, reasons: list) -> bool:
     """Whether chunk's cook can be skipped: only chunks above it changed, and not what it reads.
 
     Args:
-        chunk: The chunk the solve is about to cook.
-        reasons: The (alias, propagator) pairs that dirtied it, from DagNode.iter_changes.
+        chunk: The chunk chunk_cook.flush is about to cook.
+        reasons: The (alias, propagator) pairs that dirtied it since it last cooked, from
+            DagNode.iter_changes, gathered by chunk_cook.dispatch.
     """
-    # A chunk held for the end of a cook above it (chunk_cook.executing) comes back with
-    # its reasons cleared; they were kept for this.
-    held = getattr(chunk, "_skip_held", None)
-    if held:
-        chunk._skip_held = None
-        reasons = [*reasons, *held]
     if not enabled() or not reasons:
         return False
     mask = getattr(chunk, "_skip_mask", None)
@@ -723,7 +713,7 @@ def finish(chunk, layer: Sdf.Layer, before: Sdf.Layer | None) -> None:
     """Hand down what chunk's layer changed since the chunks below last saw it.
 
     Called once the cook is wholly done -- its driven attributes re-authored too -- and
-    before the chunks it held (chunk_cook.executing) are solved.
+    before chunk_cook.flush decides on the chunks below it.
     """
     everything = before is None or getattr(chunk, "_skip_everything", True)
     chunk._skip_everything = True
