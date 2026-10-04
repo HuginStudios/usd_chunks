@@ -130,6 +130,8 @@ def flush(force: bool = False) -> None:
     if _flushing and not force:
         return
     was_flushing, _flushing = _flushing, True
+    # The scene's state as skip_cook last read it here; only a cook changes it in between.
+    states: list = []
     try:
         rounds = 0
         while True:
@@ -153,7 +155,7 @@ def flush(force: bool = False) -> None:
                 if skip_cook.enabled():
                     # Decided here, not when the solve reached it: the chunks above it
                     # have cooked by now (upstream first) and handed down what changed.
-                    if skip_cook.should_skip(chunk, changes):
+                    if skip_cook.should_skip(chunk, changes, states):
                         # Its layer already holds the result -- as stale as it was.
                         chunk._cook_stale = was_stale
                         continue
@@ -165,6 +167,7 @@ def flush(force: bool = False) -> None:
                     # The cook itself -- and every guard on whether it may run now -- is
                     # ChunkBase._cook. A chunk whose module has no execute() has nothing
                     # to run and stays stale.
+                    states.clear()
                     chunk._cook()
     finally:
         _flushing = was_flushing

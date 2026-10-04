@@ -255,20 +255,29 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
     # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
     # a different stage starts a new one.
     global _edit_layer_memo_stage, _edit_layer_memo_layer_stack
-    if _edit_layer_memo_stage is None or _edit_layer_memo_stage() is not stage:
-        _edit_layer_memo.clear()
-        _edit_layer_memo_stage = weakref.ref(stage)
+    memo = _edit_layer_memo
+    current = _edit_layer_memo_stage() if _edit_layer_memo_stage is not None else None
+    if current is not stage:
+        if current is not None and current.GetRootLayer() == stage.GetRootLayer():
+            # Another stage of the same layers while that one lives -- a cook stage
+            # (skip_cook) asked during a cook. Answered without the memo, and without
+            # dropping it: a drag step cooking one chunk threw the scene's answers away
+            # twice, once for the cook stage and once on the way back.
+            memo = {}
+        else:
+            _edit_layer_memo.clear()
+            _edit_layer_memo_stage = weakref.ref(stage)
     # The layer stack every answer about to be memoised is computed against. Taken as the
     # memo starts filling (not on each notice), so a stack change that happened while the
     # memo was empty -- or under a frozen block -- is still seen by edit_layer_memo_affected
     # as a difference from this, whichever notice comes next.
-    if not _edit_layer_memo:
+    if memo is _edit_layer_memo and not memo:
         _edit_layer_memo_layer_stack = [
             layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
         ]
 
     key = str(prim.GetPath())
-    if (memoised := _edit_layer_memo.get(key)) is not None:
+    if (memoised := memo.get(key)) is not None:
         return memoised
 
     result = session
@@ -287,12 +296,12 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
         if not unbranched:
             continue
         upstream_key = str(path)
-        if (upstream := _edit_layer_memo.get(upstream_key)) is not None:
+        if (upstream := memo.get(upstream_key)) is not None:
             result = upstream
             break
         shared.append(upstream_key)
 
-    _edit_layer_memo[key] = result
+    memo[key] = result
     for shared_key in shared:
-        _edit_layer_memo[shared_key] = result
+        memo[shared_key] = result
     return result

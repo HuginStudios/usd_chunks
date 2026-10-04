@@ -1848,19 +1848,23 @@ class NoticeConnection:
         args = (owner, notice, sender) if self._wants_owner(meth) else (notice, sender)
         if owner:
             cooking = _executing_chunk
-            if cooking is not None and getattr(owner, "get_chunk", lambda: None)() is not cooking:
+            if cooking is None or getattr(owner, "get_chunk", lambda: None)() is not cooking:
                 # Another chunk is cooking, and its stage is the cook's (skip_cook): only what
                 # that cook reads, and whatever is looked up there is charged to it. A Set
                 # Camera refreshing its menu by a Traverse during an Add Variants cook made Add
                 # Variants read the whole stage, so it cooked on every edit above it. The cook
                 # stage's notice is a copy -- the scene's stage hears the same layer edit -- so
-                # it is dropped, and the scene's is handled on the scene's stage.
+                # it is dropped, and the scene's is handled on the scene's stage. With no
+                # chunk cooking, a cook stage is being opened: muting its hidden layers is
+                # nobody's change, and every Set Camera and Set Variant rebuilt its menus
+                # for it on every masked cook.
                 notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
                 if notice_stage is not None and chunk_cook.is_cook_stage(notice_stage()):
                     return
-                with chunk_cook.outside_cook():
-                    self._call_for_owner(owner, meth, args, notice, context)
-                return
+                if cooking is not None:
+                    with chunk_cook.outside_cook():
+                        self._call_for_owner(owner, meth, args, notice, context)
+                    return
             self._call_for_owner(owner, meth, args, notice, context)
             return
 
