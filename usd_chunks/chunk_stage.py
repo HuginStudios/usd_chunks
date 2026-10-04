@@ -1205,7 +1205,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_param_input(chunk, owner)
-                        # Once per chunk per batch: a Wedge change writes hundreds of params,
+                        # Once per chunk per batch or solve: a Wedge change writes hundreds of params,
                         # and each refresh reads every param the chunk has.
                         refresh = functools.partial(self._refresh_gizmo_anchors, chunk)
                         if not chunk_cook.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
