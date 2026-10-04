@@ -39,7 +39,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self, override
-from usd_chunks import chunk_scheduler, skip_cook
+from usd_chunks import chunk_cook, chunk_scheduler, skip_cook
 
 logger = logging.getLogger(__name__)
 
@@ -1300,11 +1300,11 @@ class ChunkNoticePropagator:
 
         Dirties it and solves downstream: each solved object's data_changed() runs, and with
         it send_self(), which triggers any connected callbacks; each solved chunk then runs
-        its module's execute(node) (through chunk_cook.cook). Inside batched_solve() it only
+        its module's execute(node) (through ChunkBase._cook). Inside batched_solve() it only
         dirties, and the solve waits for the block to end.
 
         This is the one way to run a chunk again: a module's execute(node) is written, never
-        called directly, and chunk_cook.cook is the framework's step, not an API.
+        called directly, and ChunkBase._cook is the framework's step, not an API.
         """
         node = self.get_dag_node()
         node.dirty = True
@@ -1951,7 +1951,3 @@ class NoticeConnection:
 
 
 
-
-# Imported last: chunk_cook imports chunk_registry, which imports names from this module, so
-# they must all be defined first. Nothing here touches chunk_cook until a solve runs.
-from usd_chunks import chunk_cook  # noqa: E402

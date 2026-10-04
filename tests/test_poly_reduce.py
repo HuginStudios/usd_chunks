@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_cook, chunk_registry
+from usd_chunks import chunk_registry, chunk
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -569,7 +569,7 @@ def test_an_unchanged_recook_does_not_redo_the_reduction(wired, monkeypatch) -> 
     real_plan = module._plan_mesh
     monkeypatch.setattr(module, "_plan_mesh", lambda *a, **k: plans.append(1) or real_plan(*a, **k))
 
-    assert chunk_cook.cook(node)
+    assert node._cook()
 
     assert plans == [], "an unchanged recook reduced the mesh again"
     assert _triangle_count(stage) == reduced_count, "and the result is written back"

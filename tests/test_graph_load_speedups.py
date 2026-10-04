@@ -127,7 +127,7 @@ def network(qapp):
 def cooks(monkeypatch):
     """The chunks that cook, in order -- by object: prim chunks share a name across groups."""
     seen: list = []
-    real = chunk_cook.cook
+    real = chunk_core.ChunkBase._cook
 
     def counting(self):
         ran = real(self)
@@ -135,7 +135,7 @@ def cooks(monkeypatch):
             seen.append(self)
         return ran
 
-    monkeypatch.setattr(chunk_cook, "cook", counting)
+    monkeypatch.setattr(chunk_core.ChunkBase, "_cook", counting)
     return seen
 
 
