@@ -46,14 +46,22 @@ def config():
 The registry reads `config()` straight from the source, without running the module, so the
 requirements are known even when the packages are missing and `import cv2` would fail.
 
-What happens next depends on `USD_CHUNK_AUTO_INSTALL`:
+When a chunk is loaded with packages missing, the host asks once for all of them, naming
+the chunk: usdview shows "OK to install requests for chunk AMDMaterialXLibrary?" with
+Yes/No, `usdchunks run` asks the same on an interactive terminal, and Blender shows a popup
+once the add-on has loaded (one checkbox per chunk when several need something).
 
-- **Unset (the default):** nothing is installed. A missing package is named in a warning,
-  and the chunk does not load. Opening someone else's network can never add packages to
-  your environment on its own.
-- **Set:** the missing packages are installed, after asking, into
-  `USD_CHUNK_DEPENDENCY_DIR`. That directory is added to `sys.path`, and then the module
-  body runs.
+- **Yes:** they are installed into `USD_CHUNK_DEPENDENCY_DIR` (a subfolder per Python
+  version), with pip's progress shown: a progress dialog in usdview, pip's output in the
+  terminal, the status bar and USDChunks sidebar in Blender. That directory is on
+  `sys.path`, and then the module body runs.
+- **No, or nobody to ask** (Blender, CI, a piped run): nothing is installed. The chunk does
+  not load, and a warning names the missing packages and the pip command to install them.
+  A "no" is remembered until restart, so a network with ten of that chunk asks once.
+
+Opening someone else's network never adds packages without your yes.
+`USD_CHUNK_AUTO_INSTALL` changes the default: `1` installs without asking, `0` never installs
+and only warns.
 
 ## Declare a range, not a bare name
 

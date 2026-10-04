@@ -587,6 +587,44 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return False
 
+    def should_install_packages(self, packages: Sequence[str], chunk_name: str) -> bool:
+        """Whether a chunk's missing pip requirements may be installed, asked once for all of them.
+
+        The ChunkDependencyManager calls this when a chunk being loaded needs packages that
+        are not installed. A host with someone to ask asks them -- "OK to install requests
+        for chunk AMDMaterialXLibrary?" -- and returns their answer; a host without one
+        returns False, and the missing packages are named in a warning instead.
+
+        Defaults to asking should_install_package about each one, so hosts that override
+        only that keep working.
+
+        Args:
+            packages: The requirement strings to install, e.g. "requests>=2,<3".
+            chunk_name: The chunk module that needs them.
+
+        Returns:
+            bool: True to install all of them.
+        """
+        return all(self.should_install_package(p) for p in packages)
+
+    def run_install(self, packages: Sequence[str], chunk_name: str, run: Callable) -> Any:
+        """Run a pip install the user has agreed to, showing whatever progress the host can.
+
+        `run(on_line)` does the install and returns its result, calling `on_line` with each
+        line pip prints. It touches nothing but the subprocess, so a host may call it on a
+        worker thread and keep its UI alive -- but must return its result, from this call,
+        once it is done. The default just runs it.
+
+        Args:
+            packages: The requirement strings being installed.
+            chunk_name: The chunk that needs them.
+            run: The install; returns what this method must return.
+
+        Returns:
+            Whatever `run` returned.
+        """
+        return run(None)
+
     @abstractmethod
     def get_stage(self) -> Usd.Stage | None:
         """Get the current scene stage. Implemented by a host.

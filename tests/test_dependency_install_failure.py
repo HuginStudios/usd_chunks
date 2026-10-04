@@ -15,8 +15,6 @@ Seen with chunks/materials/AMDMaterialXLibrary.py, which declares requirements=[
 """
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
 from usd_chunks import chunk_registry
@@ -51,10 +49,15 @@ def manager(monkeypatch):
     exactly the way this bug describes.
     """
     # Every test here is about what install_packages does once it is allowed to install.
-    # That is opt-in now (USD_CHUNK_AUTO_INSTALL), and without this the manager returns
-    # before pip is ever reached -- which several of these tests would misread as a pass,
-    # since "nothing was cached" is trivially true when nothing was attempted.
+    # A falsey USD_CHUNK_AUTO_INSTALL in the developer's shell would return before pip is
+    # ever reached -- which several of these tests would misread as a pass, since "nothing
+    # was cached" is trivially true when nothing was attempted.
     monkeypatch.setenv("USD_CHUNK_AUTO_INSTALL", "1")
+    # A "no" is remembered per process; start every test without one.
+    monkeypatch.setattr(chunk_registry.ChunkDependencyManager, "_declined", set())
+    # install_packages sets _listed on the class; with update_cache stubbed below, leaving it
+    # True would stop the rest of this worker ever listing what is installed.
+    monkeypatch.setattr(chunk_registry.ChunkDependencyManager, "_listed", False)
     chunk_registry.ChunkRegistry().initialize(_ApprovingScene(), "pytest")
     mgr = chunk_registry.ChunkDependencyManager()
     mgr.initialize()
@@ -71,14 +74,14 @@ def manager(monkeypatch):
 
 
 def _run_returning(code: int):
-    def fake_run(args, **kwargs):  # noqa: ARG001
-        return subprocess.CompletedProcess(args, code, stdout=b"", stderr=b"boom")
+    def fake_run(args, on_line=None):  # noqa: ARG001
+        return code, "boom"
 
     return fake_run
 
 
 def test_failed_install_is_not_recorded_in_the_cache(manager, monkeypatch):
-    monkeypatch.setattr(chunk_registry.subprocess, "run", _run_returning(1))
+    monkeypatch.setattr(chunk_registry, "_run_pip", _run_returning(1))
 
     manager.install_packages([PACKAGE])
 
@@ -89,16 +92,16 @@ def test_failed_install_is_not_recorded_in_the_cache(manager, monkeypatch):
 
 
 def test_failed_install_is_retried_on_the_next_run(manager, monkeypatch):
-    monkeypatch.setattr(chunk_registry.subprocess, "run", _run_returning(1))
+    monkeypatch.setattr(chunk_registry, "_run_pip", _run_returning(1))
     manager.install_packages([PACKAGE])
 
     attempts = []
 
-    def recording_run(args, **kwargs):  # noqa: ARG001
+    def recording_run(args, on_line=None):  # noqa: ARG001
         attempts.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+        return 0, ""
 
-    monkeypatch.setattr(chunk_registry.subprocess, "run", recording_run)
+    monkeypatch.setattr(chunk_registry, "_run_pip", recording_run)
     manager.install_packages([PACKAGE])
 
     assert attempts, "a previously failed install must be attempted again"
@@ -106,7 +109,7 @@ def test_failed_install_is_retried_on_the_next_run(manager, monkeypatch):
 
 
 def test_successful_install_is_recorded(manager, monkeypatch):
-    monkeypatch.setattr(chunk_registry.subprocess, "run", _run_returning(0))
+    monkeypatch.setattr(chunk_registry, "_run_pip", _run_returning(0))
 
     manager.install_packages([PACKAGE])
 
@@ -143,7 +146,7 @@ def test_cache_names_match_the_way_pip_spells_them(manager):
 def test_a_satisfied_range_never_reaches_pip(manager, monkeypatch):
     manager._cache["numpy"] = {"2.4.2"}
     attempts = []
-    monkeypatch.setattr(chunk_registry.subprocess, "run", lambda args, **kw: attempts.append(args))
+    monkeypatch.setattr(chunk_registry, "_run_pip", lambda args, on_line=None: attempts.append(args))
     manager.install_packages(["numpy>=2,<3"])
     assert not attempts, "an installed package must not be listed or installed again"
 
@@ -151,7 +154,7 @@ def test_a_satisfied_range_never_reaches_pip(manager, monkeypatch):
 def test_pip_is_listed_once_per_process_for_packages_that_stay_missing(manager, monkeypatch):
     listed = []
     monkeypatch.setattr(chunk_registry.ChunkDependencyManager, "update_cache", lambda self: listed.append(1))
-    monkeypatch.setattr(chunk_registry.subprocess, "run", _run_returning(1))
+    monkeypatch.setattr(chunk_registry, "_run_pip", _run_returning(1))
     monkeypatch.setattr(chunk_registry.ChunkDependencyManager, "_listed", False)
     manager.install_packages([PACKAGE])
     manager.install_packages([PACKAGE + "-too"])

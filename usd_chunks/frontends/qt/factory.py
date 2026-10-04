@@ -45,6 +45,7 @@ from usd_chunks.frontends.qt.widgets import (
     LabeledWidget,  # noqa: F401
     ContainerWidget,  # noqa: F401
     confirm_dial,  # noqa: F401
+    progress_dial,  # noqa: F401
 )
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphView, droppable_paths
 

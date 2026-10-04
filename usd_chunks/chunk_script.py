@@ -27,6 +27,7 @@ Scene refuses to start.
 from __future__ import annotations
 
 import contextlib
+import sys
 
 from pxr import Usd
 
@@ -93,6 +94,29 @@ class Scene(chunk_scene.SceneSender):
 
     def get_stage(self):
         return self._stage
+
+    def should_install_packages(self, packages, chunk_name: str) -> bool:
+        """Ask on the terminal; no when nobody is there to answer (CI, a pipe, a cron job).
+
+        input() on a closed or redirected stdin reads EOF or blocks, so only an interactive
+        terminal is asked.
+        """
+        stdin = sys.stdin
+        if stdin is None or not stdin.isatty():
+            return False
+        target = chunk_registry.ChunkDependencyManager().target_dir()
+        try:
+            answer = input(
+                f"OK to install {', '.join(packages)} for chunk {chunk_name} into {target}? [y/N] "
+            )
+        except EOFError:
+            return False
+        return answer.strip().lower() in ("y", "yes")
+
+    def run_install(self, packages, chunk_name: str, run):
+        """Echo pip's output as it arrives, so a long download shows it is moving."""
+        print(f"Installing {', '.join(packages)} for chunk {chunk_name}...", file=sys.stderr, flush=True)
+        return run(lambda line: print(f"  {line}", file=sys.stderr, flush=True))
 
     def __enter__(self) -> Scene:
         return self
