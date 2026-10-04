@@ -234,7 +234,7 @@ class AttributesMetaclass(type):
             has_attr = hasattr(inst, name)
             old_value = None
             if has_attr:
-                old_value = getattr(inst, name)
+                old_value = inst._old_value_for(name)
 
             super(res, inst).__setattr__(name, resval)
 
@@ -746,6 +746,17 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 self._solving_attributes = False
 
         return super().data_changed(notice)
+
+    def _old_value_for(self, name: str) -> Any:
+        """The value an attribute holds before a set, for value_changed to compare against.
+
+        Args:
+            name (str): The attribute about to be set.
+
+        Returns:
+            Any: What reading the attribute gives now.
+        """
+        return getattr(self, name)
 
     def _safe_convert(self, attr: attrs.Attribute, val: Any) -> Any:
         """Wrap self.convert_attr, deferring any conversion that raises AttributeError.
