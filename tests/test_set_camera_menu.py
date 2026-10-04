@@ -96,3 +96,18 @@ def test_a_pick_the_stage_lacks_stays_listed(qapp, scene) -> None:
 
     assert menu.value == "/cameras/closeup"
     assert "/cameras/closeup" in menu.menu_items
+
+
+def test_a_recook_with_the_same_pick_leaves_the_viewport_alone(qapp, scene) -> None:
+    """Set Camera sits downstream of the Camera chunks and cooks whenever they do -- their
+    "Set as Viewport Camera" button cooks them. Re-applying its own pick on each of those took
+    the viewport straight back from the camera the button had just chosen."""
+    node = _set_camera(qapp, scene)
+    node.get_param("camera").value = "/cameras/closeup"
+    qapp.processEvents()
+    applied = len(scene.viewport_cameras)
+
+    node.execute()
+    qapp.processEvents()
+
+    assert len(scene.viewport_cameras) == applied

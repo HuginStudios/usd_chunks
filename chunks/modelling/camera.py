@@ -20,6 +20,12 @@ _FREECAM_OWNED = "_freecam_owned"
 #: the prim only holds what the cook itself authors.
 _FLOWN_MATRIX = "_flown_matrix"
 
+#: Set while `lock_to_freecam` has this camera claiming the viewport. Only the chunk holding
+#: the claim may release it: an unlocked camera chunk hears every camera move too, and
+#: releasing on each one cancelled a snap still pending from someone else -- Set Camera
+#: switching cameras, or another chunk's "Set as Viewport Camera".
+_HOLDS_VIEW = "_holds_view"
+
 
 def _download_camera_types_cache(camera_cache):
     conn = http.client.HTTPSConnection("api.physicallybased.info")
@@ -82,10 +88,12 @@ def _apply_freecam_transform(owner, notice, sender):
         # The chunk is mid-delete and its params are gone; this global listener outlives them.
         return
     if not lock.value:
-        # Also reached on every camera move while the lock is off, so the host's release
-        # must be (and is) idempotent. Here rather than only on the checkbox because the
-        # checkbox callback is this same function.
-        scene.release_viewport_camera()
+        # Also reached on every camera move while the lock is off -- by every camera chunk,
+        # so only the one whose lock claimed the view lets go of it. Here rather than only on
+        # the checkbox because the checkbox callback is this same function.
+        if getattr(_chunk, _HOLDS_VIEW, False):
+            setattr(_chunk, _HOLDS_VIEW, False)
+            scene.release_viewport_camera()
         return
 
     gf_cam = scene.get_active_camera()
@@ -111,6 +119,7 @@ def _apply_freecam_transform(owner, notice, sender):
         _chunk.get_param("focusDistance").value = gf_cam.focusDistance
     # The camera just moved; the focus plane follows the point, not the camera.
     _refocus(_chunk)
+    setattr(_chunk, _HOLDS_VIEW, True)
     scene.set_viewport_camera(prim)
 
 
@@ -559,6 +568,7 @@ def execute(node):
         scene = node.get_scene()
         prim = stage.GetPrimAtPath(node.get_param("primpath_location").value)
         if prim.IsValid():
+            setattr(node, _HOLDS_VIEW, True)
             scene.set_viewport_camera(prim)
 
 

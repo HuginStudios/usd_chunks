@@ -357,3 +357,24 @@ def test_a_snap_prim_that_is_not_a_camera_puts_nothing_on(scene) -> None:
     scene._reconcile_free_camera_lens(rebuilt)
 
     assert (rebuilt.overrideNear, rebuilt.overrideFar) == (None, None)
+
+
+def test_a_snap_finds_a_camera_re_authored_before_it_lands(scene) -> None:
+    """The snap lands 150ms after it is asked for. The Camera chunk's "Set as Viewport Camera"
+    button cooks that chunk, which re-authors the camera prim and expires the handle it just
+    passed -- the snap used to be dropped silently. It resolves the path instead."""
+    stage = Usd.Stage.CreateInMemory()
+    prim = UsdGeom.Camera.Define(stage, "/cameras/camera1").GetPrim()
+    viewed = []
+    scene.get_stage = lambda: stage
+    scene._set_viewport_camera = lambda p: viewed.append(str(p.GetPath()))
+    scene._snap_prim = prim
+    scene._snap_path = prim.GetPath()
+
+    stage.RemovePrim("/cameras/camera1")
+    UsdGeom.Camera.Define(stage, "/cameras/camera1")
+    assert not prim.IsValid()
+
+    scene._on_snap_timer()
+
+    assert viewed == ["/cameras/camera1"]

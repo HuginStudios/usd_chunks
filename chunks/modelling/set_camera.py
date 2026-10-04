@@ -5,6 +5,12 @@ from usd_chunks import chunk
 #: Set on the chunk once CHUNK_LOADED has fired -- its value is in, the menu may fill.
 _IN_SCENE = "_set_camera_in_scene"
 
+#: The camera this chunk last put in the viewport. A cook only re-applies a different pick:
+#: this chunk is downstream of the Camera chunks, so it cooks whenever they do -- including
+#: when their "Set as Viewport Camera" button is clicked -- and re-applying the same pick on
+#: each of those took the viewport straight back from the camera just chosen.
+_APPLIED = "_set_camera_applied"
+
 
 def _chunk_loaded(owner, notice, sender):
     setattr(owner.get_chunk(), _IN_SCENE, True)
@@ -60,8 +66,9 @@ def execute(node):
     if not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
         return
     scene = node.get_scene()
-    if scene is None:
+    if scene is None or getattr(node, _APPLIED, None) == path:
         return
+    setattr(node, _APPLIED, path)
     scene.set_viewport_camera(prim)
 
 
@@ -96,11 +103,13 @@ def config():
 
         Camera is a dropdown of every UsdGeom.Camera prim on the stage, and follows
         the stage: a camera created by a Camera chunk upstream shows up as soon as
-        it cooks. The pick is stored on the chunk and re-applied on every cook, so
+        it cooks. The pick is stored on the chunk and applied when it cooks, so
         it survives a save and can be lofted onto a chunkgroup to vary the camera
         per variant or shot. A pick the stage does not currently offer stays listed
         rather than being dropped, so a saved pick survives loading ahead of the
-        chunk that creates the camera.
+        chunk that creates the camera. A cook re-applies the pick only when it
+        has changed, so a camera chosen elsewhere (a Camera chunk's "Set as
+        Viewport Camera") is not taken back by the next upstream cook.
 
         Authors nothing on the stage: the only effect is the host viewport
         (scene.set_viewport_camera), the same call the Camera chunk's
