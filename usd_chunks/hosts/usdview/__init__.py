@@ -82,6 +82,10 @@ class UsdviewScene(chunk_scene.SceneSender):
         # a free camera we caused to be rebuilt from one the user owns, and that runs on any
         # view setting change, long before anything asks for a viewport camera.
         self._snap_prim = None
+        #: The path of _snap_prim, taken when it was handed over. The snap lands 150ms later,
+        #: and a cook in between that re-authors the camera (the Camera chunk's own button
+        #: cooks it) leaves the handle expired; the path finds the prim it became.
+        self._snap_path = None
         #: The user's own free-camera field of view, held across usdview rebuilding it.
         self._free_camera_fov = None
         #: The user's own free-camera near/far overrides (None each when usdview's defaults),
@@ -287,6 +291,7 @@ class UsdviewScene(chunk_scene.SceneSender):
         # the last moment its lens means anything.
         self._remember_free_camera_lens()
         self._snap_prim = prim
+        self._snap_path = prim.GetPath()
         self._camera_snap_timer.start(150)
 
     def _remember_free_camera_lens(self) -> None:
@@ -388,6 +393,7 @@ class UsdviewScene(chunk_scene.SceneSender):
             return
         self._camera_snap_timer.stop()
         self._snap_prim = None
+        self._snap_path = None
         # Unconditional, not waiting on a remembered fov: the prim's clipping was put on by us,
         # so even a user whose lens was never learned needs it taken off again.
         # A fov never learned is still left alone -- see _reconcile_free_camera_lens.
@@ -397,8 +403,15 @@ class UsdviewScene(chunk_scene.SceneSender):
         # IsValid: the stage can be closed between the snap being queued and this firing
         # (File > Open, or usdview's --quitAfterStartup), and usdview raises on an expired
         # prim -- which, from a timer slot, takes the application down with it.
-        if self._snap_prim is not None and self._snap_prim.IsValid():
-            self._set_viewport_camera(self._snap_prim)
+        if self._snap_prim is None:
+            return
+        if not self._snap_prim.IsValid():
+            stage = self.get_stage()
+            prim = stage.GetPrimAtPath(self._snap_path) if stage and self._snap_path else None
+            if prim is None or not prim.IsValid():
+                return
+            self._snap_prim = prim
+        self._set_viewport_camera(self._snap_prim)
 
     def _on_chunk_deleted(self, notice, sender) -> None:
         # Next tick: the prim goes after the notice.
