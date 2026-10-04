@@ -4686,7 +4686,7 @@ def recook_for_view(
                     stage, scene, c, inner_view, _synthetic_tail=synthetic,
                     _force=_force or chunk_cook.is_cook_stale(c),
                 )
-                c._cook_stale = False
+                chunk_cook.clear_cook_stale(c)
             continue
         if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
@@ -4695,7 +4695,7 @@ def recook_for_view(
                 # Nothing ever clears its stale mark either, so executing it would push a
                 # DAG solve to everything downstream on every recook. Whatever a change
                 # upstream of it means for those, their own marks already say.
-                c._cook_stale = False
+                chunk_cook.clear_cook_stale(c)
             # _force is for the group's own inside. A group's cook_list also reaches back
             # through its input into the parent graph, and those chunks are the parent's
             # to cook -- forcing them re-ran the whole upstream chain on every stale group.
@@ -5658,7 +5658,7 @@ def _clear_cooked_groups(chunks: list[core.ChunkBase]) -> None:
             if get_chunk_prim_path(c).startswith(prefix)
             and c.can_cook() and not is_view_chunk(c) and not c.has_state(disabled)
         ):
-            group._cook_stale = False
+            chunk_cook.clear_cook_stale(group)
 
 
 def _restore_disabled_state(prim: Usd.Prim, chunk: core.ChunkBase) -> None:

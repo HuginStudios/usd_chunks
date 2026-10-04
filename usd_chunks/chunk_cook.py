@@ -9,12 +9,13 @@ The model, in two steps:
    and pending. Nothing cooks during the solve. batched_solve() holds the solves back and
    runs them once.
 2. When the outermost solve (or batch) ends, flush() cooks every pending chunk, upstream
-   first. A cook calls its chunk's execute. That is ChunkBase._cook: it checks the chunk
-   may run now, then runs its module into the chunk's own layer.
+   first. A cook calls its chunk's execute. That is cook(): it checks the chunk may run
+   now, then runs its module into the chunk's own layer.
 
-This module decides *when* (dispatch, flush, batching); ChunkBase._cook is *how*. The how
-stays on the chunk because it needs the chunk's layers and registry, which sit above
-chunk_notice -- and chunk_notice imports this module, so it imports nothing above it.
+This module decides *when* (dispatch, flush, batching) and *how* (cook). chunk_notice
+imports this module, so it imports nothing above chunk_notice: the two things a cook needs
+from above it -- where a chunk's layer is, and how to stamp the module hash -- are handed
+in by ChunkBase._cook, which is only that.
 
 Stale tracking (is_cook_stale) records a chunk whose cook was refused -- blocked outside
 the active view, muted, no layer yet -- so chunk_stage.recook_for_view cooks it later.
@@ -27,9 +28,12 @@ call chunk.execute() to run a chunk again.
 from __future__ import annotations
 
 import collections
+from collections.abc import Callable
 from contextlib import contextmanager
 
-from usd_chunks import chunk_notice, chunk_scheduler, skip_cook
+from pxr import Tf, Usd
+
+from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, skip_cook
 
 # The chunks the solves since the last flush() reached, waiting for it -- each with the
 # (alias, propagator) changes that reached it and whether it was stale before they did.
@@ -118,7 +122,7 @@ def flush(force: bool = False) -> None:
     """Cook every pending chunk, upstream first, until none are left.
 
     A cook can set params and so dirty more chunks; those are picked up by the next round.
-    A chunk outside the active view is refused by ChunkBase._cook (blocked) and stays
+    A chunk outside the active view is refused by cook() (blocked) and stays
     stale for recook_for_view. A chunk mid-cook stays pending for the flush around it.
 
     Args:
@@ -164,8 +168,8 @@ def flush(force: bool = False) -> None:
                 # set while it ran, reach it here, and its result already takes them in.
                 if is_cook_stale(chunk):
                     # The cook itself -- and every guard on whether it may run now -- is
-                    # ChunkBase._cook. A chunk whose module has no execute() has nothing
-                    # to run and stays stale.
+                    # cook(), reached through ChunkBase._cook. A chunk whose module has no
+                    # execute() has nothing to run and stays stale.
                     states.clear()
                     chunk._cook()
     finally:
@@ -257,6 +261,145 @@ def mark_cook_stale(chunk) -> None:
     chunk._cook_stale = True
 
 
+def clear_cook_stale(chunk) -> None:
+    """Record that a chunk's layer holds the result of its inputs. See is_cook_stale."""
+    chunk._cook_stale = False
+
+
+def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
+    """Run chunk's module into its own edit layer, now, and nothing downstream of it.
+
+    Deciding WHEN to cook -- a data change rather than a pure state change, once per edit,
+    upstream first -- is dispatch and flush; this only decides whether the chunk CAN run
+    right now, and runs it. It does not mark the chunk stale first: the solve does, so a
+    cook that is refused leaves it stale for recook_for_view to pick up.
+
+    Reached through ChunkBase._cook, which hands in the two things this needs from the
+    modules above it: where a chunk's layer is, and how to stamp the module hash.
+
+    Args:
+        chunk: The chunk.
+        layer_of: The layer of a chunk, or None (ChunkLayerManager.get_layer).
+        stamp: Records on the chunk's prim the module source it cooked with
+            (chunk_utils.stamp_module_hash), called as stamp(stage, chunk).
+
+    Returns:
+        True if the module was run -- also when its layer left the stage's layer stack
+        part way through, which is skipped rather than raised. False if a guard refused
+        it (no execute(), no stage, muted, not in the layer stack yet, blocked, being
+        deleted, or already executing).
+    """
+    execute = chunk._module_hook("execute")
+    # The scene's stage, not get_stage(): a cook started inside another chunk's masked
+    # cook would get that chunk's inputs as its stage.
+    stage = chunk.get_scene_stage()
+    ctx = chunk.get_edit_context()
+    # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
+    # layer stack. Don't re-run its module: authoring into a muted layer raises
+    # ("Layer ... is not in the local LayerStack"), and a disabled chunk must not
+    # execute anyway.
+    muted = bool(stage and ctx and stage.IsLayerMuted(ctx.identifier))
+    # Separately: a chunk's own edit layer may not be inserted into the stage's
+    # local layer stack YET at all -- not muted (present-but-disabled), just not
+    # there yet. Hit live during load_chunks's bulk restore: a ListGroup proxy
+    # row's value setter (chunk_core.py's ProxyParam.__setattr__, "value" case)
+    # calls straight through to this same dispatch, bypassing the
+    # chunk_notice._loading_stage guard that suppresses every OTHER reactive path
+    # during that restore -- reaching here before get_or_create_layer has run for
+    # this specific chunk, same "not in the local LayerStack" raise as the muted
+    # case. load_chunks's own later, correctly-ordered explicit .execute() call
+    # (after every chunk's layer is properly registered) still runs normally.
+    not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
+    # A blocked chunk (view-driven: not in the active view's tree -- e.g. connected to
+    # an inactive view) must never run its module, whatever triggered the solve. recook
+    # unblocks the active view's tree before executing it, so cooking is unaffected.
+    # A chunk being deleted must not run its module -- teardown notices can land
+    # back here after its params are already detached (see request_delete).
+    # With no stage there is nothing for a module to author into: every chunk module
+    # works through get_stage(), so running one stage-less is never useful and
+    # crashes on the first stage call. The host can genuinely have no stage for a
+    # window -- usdview clears its stage before opening the next file while still
+    # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
+    # window, can reach here.
+    if not (execute is not None and stage is not None
+            and not getattr(chunk, '_executing', False)
+            and not getattr(chunk, '_deleting', False)
+            and not muted and not not_yet_in_stack and not chunk.is_blocked()):
+        return False
+
+    with executing(chunk), skip_cook.unmasked():
+        if ctx:
+            try:
+                with Usd.EditContext(stage, ctx):
+                    # What the chunks below saw, to tell them what this cook
+                    # changed (skip_cook). Anonymous only, like the Clear.
+                    skipping = ctx.anonymous
+                    before = skip_cook.baseline(chunk, ctx) if skipping else None
+                    # A cook starts from an empty layer, so a module
+                    # authors its whole result every time and never reads
+                    # its own last one back. Anonymous only: that is a
+                    # layer this chunk alone owns and rebuilds on load.
+                    # A chunk in a context with a file layer is handed
+                    # that file layer, shared and the user's own.
+                    if ctx.anonymous:
+                        ctx.Clear()
+                    # A module that declared cache_cook may have this exact
+                    # cook on disk already -- read it back instead. Anonymous
+                    # only, for the same reason as the Clear above.
+                    cached = cook_cache.lookup(chunk) if ctx.anonymous else None
+                    if cached is None or not cached.restore(chunk, ctx):
+                        if cached is not None:
+                            cached.before_cook(chunk)
+                        if skipping:
+                            skip_cook.run(chunk, stage, ctx, execute, layer_of)
+                        else:
+                            execute(chunk)
+                    elif skipping:
+                        skip_cook.restored(chunk, ctx)
+                    if not ctx.anonymous:
+                        skip_cook.unaccounted(chunk)
+                    # What a param drives is its own state, not the cook's
+                    # output -- see ChunkBase.reauthor_driven_attrs.
+                    if ctx.anonymous:
+                        chunk.reauthor_driven_attrs()
+                    if skipping:
+                        skip_cook.finish(chunk, ctx, before)
+                    if cached is not None:
+                        cached.after_cook(chunk, ctx)
+                clear_cook_stale(chunk)
+                stamp(stage, chunk)
+            except Tf.ErrorException:
+                # The layer left the stage's local layer stack between the
+                # check above and here. It can: a cook reached from inside
+                # another cook mutes layers (a gate suppressing a branch),
+                # and this dispatch is reached re-entrantly -- a module
+                # setting a param during its own execute lands straight back
+                # here for whatever that param drives.
+                #
+                # Re-checked rather than swallowed: only the "not in the
+                # local LayerStack" case is skipped, and any other error a
+                # module raises still surfaces. Skipping is right because it
+                # is what the guards above already decided -- a chunk whose
+                # layer is not in the stack has nowhere to author, and the
+                # cook that put it back will run it.
+                if stage.IsLayerMuted(ctx.identifier) or not stage.HasLocalLayer(ctx):
+                    # Logged as the solve always has, under chunk_notice.
+                    chunk_notice.logger.debug(
+                        "skipped cooking %s: its layer left the stage's "
+                        "layer stack mid-solve",
+                        chunk.name,
+                    )
+                else:
+                    raise
+        else:
+            # No edit layer of its own -- author into the stage's current target.
+            execute(chunk)
+            skip_cook.unaccounted(chunk)
+            clear_cook_stale(chunk)
+            stamp(stage, chunk)
+    return True
+
+
 @contextmanager
 def executing(prop):
     """The execution scope around one chunk's module.execute(): what a cook sets while it runs.
@@ -264,7 +407,7 @@ def executing(prop):
     Marks prop as executing (its own guard against being cooked re-entrantly), raises
     chunk_notice._usd_write_active so the stage listeners skip the writes the module makes,
     and names the chunk in chunk_notice._executing_chunk so an Edit Target resolves from its
-    place in the graph. ChunkBase._cook is the one caller; those two live in chunk_notice because
+    place in the graph. cook() is the one caller; those two live in chunk_notice because
     every listener reads them from there.
 
     A module that sets its own params while it runs -- a Light showing its prim's attributes,
