@@ -106,7 +106,7 @@ def test_no_tracked_chunk_imports_an_undeclared_package():
     guarded import is a deliberate optional -- true for whether the chunk still *runs*, and
     beside the point for whether its version reaches the manifest. mujoco is optional to
     importing rbd_solver and decisive for what it computes. Declaring costs nothing: the
-    registry only installs when USD_CHUNK_AUTO_INSTALL says so.
+    registry never installs without the user's yes.
 
     Still skipped: imports inside a function body, which is the actual house rule and where
     rbd_solver's scipy fallback lives.
@@ -162,7 +162,7 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
     """The declaration is not decoration: loading the chunk hands the name to pip.
 
     This is the whole path the RBD Solver was missing. What happens next -- a warning
-    naming the package, or an actual install -- is USD_CHUNK_AUTO_INSTALL's business and
+    naming the package, or an install the user agreed to -- is the prompt's business and
     is covered in test_dependency_install_optin; all that matters here is that mujoco
     arrives somewhere the user can be told about it.
     """
@@ -175,7 +175,7 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
     monkeypatch.setattr(
         chunk_registry.ChunkDependencyManager,
         "install_packages",
-        lambda self, requirements: asked_for.extend(requirements),
+        lambda self, requirements, chunk_name="": asked_for.extend(requirements),
     )
     chunk_registry.ChunkDependencyManager().initialized = True
 

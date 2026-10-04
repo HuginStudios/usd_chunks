@@ -37,6 +37,7 @@ from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.blender import nodegraph as bg
+from usd_chunks.frontends.blender.addon import dependencies
 from usd_chunks.frontends.blender.addon import gizmos
 from usd_chunks.frontends.blender.addon import viewport
 
@@ -116,16 +117,20 @@ class BlenderScene(SceneSender):
     def get_end_frame(self) -> float:
         return float(bpy.context.scene.frame_end) if bpy.context.scene else 0.0
 
-    def should_install_package(self, package_name: str) -> bool:
-        """Never install into Blender's Python behind the user's back.
+    def should_install_packages(self, packages, chunk_name: str) -> bool:
+        """Offer the install in a moment, through a dialog; no for now.
 
-        Blender's interpreter is shared by every add-on and is replaced wholesale on
-        upgrade, so a silent pip install is both invasive and lost. A chunk whose
-        requirements are missing is skipped by the registry, which is the safe failure.
+        Blender cannot block on a question while it loads chunks -- see dependencies.py,
+        which asks once the add-on is idle and registers the chunk's node type after a yes.
+        Packages go to the per-version dependency dir, never into Blender's own Python.
         """
-        logger.info("usd_chunks: %s is required by a chunk but will not be auto-installed",
-                    package_name)
+        dependencies.queue(packages, chunk_name)
         return False
+
+    def run_install(self, packages, chunk_name: str, run):
+        # Called on dependencies.py's worker thread (or inline, with USD_CHUNK_AUTO_INSTALL=1):
+        # report_line only stores the text for the modal operator to show.
+        return run(dependencies.report_line)
 
 
 #: One scene and one view per Blender session. A second node tree re-points them rather
@@ -642,6 +647,7 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        dependencies.draw_progress(layout)
         tree = _active_tree()
         layout.operator(USDCHUNKS_OT_new_network.bl_idname, icon="ADD")
         layout.operator(USDCHUNKS_OT_open_network.bl_idname, icon="FILE_FOLDER")
@@ -788,7 +794,7 @@ def _unregister_keymap() -> None:
 def register() -> None:
     configure_logging()
     bg.register()
-    for cls in _CLASSES:
+    for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
     # On the tree, not in a global: two trees can edit two networks, and the path has to
     # survive a .blend save so reopening the file knows what it was pointed at.
@@ -819,7 +825,8 @@ def unregister() -> None:
     _unregister_keymap()
     if bpy.app.timers.is_registered(_poll_new_trees):
         bpy.app.timers.unregister(_poll_new_trees)
-    for cls in reversed(_CLASSES):
+    dependencies.unregister()
+    for cls in reversed(dependencies.CLASSES + _CLASSES):
         try:
             bpy.utils.unregister_class(cls)
         except Exception:  # pragma: no cover - already gone

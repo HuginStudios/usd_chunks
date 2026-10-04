@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Any, Generic
 
@@ -2688,10 +2689,66 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return super().eventFilter(watched, event)
 
 
-def confirm_dial(msg) -> bool:
+def confirm_dial(msg, title: str | None = None, detail: str | None = None) -> bool:
     dial = QtWidgets.QMessageBox(text=msg)
+    if title:
+        dial.setWindowTitle(title)
+    if detail:
+        dial.setInformativeText(detail)
     dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+
+def progress_dial(title: str, label: str, run):
+    """Run `run(on_line)` on a worker thread behind a modal progress dialog; return its result.
+
+    The bar is a busy indicator -- pip does not say how much is left until it is done -- and
+    the line under the label is the last thing `run` reported, so a long download is
+    visibly moving. Modal, and the call does not return until the work has, so the caller
+    can use the result as if it had run inline; the UI repaints meanwhile.
+
+    `run` must not touch Qt: on_line only queues the text, which a timer on the main
+    thread puts on screen.
+    """
+    dial = QtWidgets.QProgressDialog(label, "", 0, 0)
+    dial.setWindowTitle(title)
+    dial.setCancelButton(None)  # pip cannot be stopped halfway cleanly
+    dial.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+    dial.setMinimumDuration(0)
+    dial.setMinimumWidth(480)
+
+    lines: list[str] = []
+    result: list = []
+    errors: list[BaseException] = []
+
+    def work():
+        try:
+            result.append(run(lines.append))
+        except BaseException as exc:  # handed back to the main thread below
+            errors.append(exc)
+
+    loop = QtCore.QEventLoop()
+    worker = threading.Thread(target=work, name="usd_chunks-pip", daemon=True)
+
+    def poll():
+        if lines:
+            dial.setLabelText(f"{label}\n{lines[-1][:120]}")
+        if not worker.is_alive():
+            timer.stop()
+            loop.quit()
+
+    timer = QtCore.QTimer()
+    timer.timeout.connect(poll)
+    dial.show()
+    worker.start()
+    timer.start(50)
+    loop.exec()
+    dial.close()
+    dial.deleteLater()
+
+    if errors:
+        raise errors[0]
+    return result[0]
 
 
 def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):

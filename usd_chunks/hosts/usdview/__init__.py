@@ -147,6 +147,21 @@ class UsdviewScene(chunk_scene.SceneSender):
     def should_install_package(self, package_name: str) -> bool:
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
+    def should_install_packages(self, packages, chunk_name: str) -> bool:
+        target = chunk_registry.ChunkDependencyManager().target_dir()
+        return chunk_qt.confirm_dial(
+            f"OK to install {', '.join(packages)} for chunk {chunk_name}?",
+            title="Missing chunk dependencies",
+            detail=f"pip will install into {target}. Without it the chunk cannot load.",
+        )
+
+    def run_install(self, packages, chunk_name: str, run):
+        return chunk_qt.progress_dial(
+            "Installing chunk dependencies",
+            f"Installing {', '.join(packages)} for chunk {chunk_name}...",
+            run,
+        )
+
     def primSelectionChangedCallback(self, added, removed):
         if not added and not removed:
             return

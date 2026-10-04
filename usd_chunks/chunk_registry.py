@@ -171,17 +171,17 @@ _DISCOVERED_MODULES: dict[tuple[str, str], tuple[int, list[ChunkModule]]] = {}
 USD_CHUNK_DEPENDENCY_DIR = ChunkEnvVar("USD_CHUNK_DEPENDENCY_DIR", chunk_cache.user_cache_dir("installed_deps"))
 USD_CHUNK_LOAD_FILTER = ChunkEnvVar[str | None]("USD_CHUNK_LOAD_FILTER", None)
 
-# Installing a chunk's declared pip dependencies is OFF unless this is set. A chunk module
+# What happens when a chunk declares pip dependencies that are not installed. A chunk module
 # is ordinary Python that anyone can drop on USD_CHUNK_DIRS, so "load this network" must
-# never be able to put packages into the user's environment as a side effect -- not even
-# behind a prompt, because the prompt is the wrong question in the places it gets asked.
-# `usdchunks run` in CI has no one to answer it: chunk_cli's should_install_package calls
-# input(), which reads EOF and blocks or throws with no useful message.
+# never put packages into the user's environment as a side effect: by default nothing is
+# installed without a yes from the person at the screen.
 #
-# When it is off the missing packages are named in a warning instead, so the user can
-# install them deliberately. When it is on, the per-scene should_install_package prompt
-# still applies -- this switch decides whether asking is allowed at all, not what the
-# answer is.
+# - Unset: the host asks, once per chunk, naming the chunk and its packages (usdview's
+#   dialog, the CLI's terminal prompt, Blender's popup). A host with nobody to ask -- CI, a
+#   piped run -- answers no through ChunkScene.should_install_packages, and only warns.
+# - Truthy ("1", "on", ...): install without asking. The user said yes ahead of time.
+# - Falsey ("0", "off", ...): never install and never ask; the missing packages are named
+#   in a warning, so they can be installed deliberately.
 USD_CHUNK_AUTO_INSTALL = ChunkEnvVar[str | None]("USD_CHUNK_AUTO_INSTALL", None)
 
 # The marketplace install location (where `usdchunks install` deposits chunks).
@@ -202,21 +202,65 @@ def _is_truthy(value) -> bool:
     return bool(value) and str(value).strip().lower() not in ("0", "false", "no", "off")
 
 
+def _install_mode() -> str:
+    """"ask", "always" or "never" -- see USD_CHUNK_AUTO_INSTALL."""
+    value = USD_CHUNK_AUTO_INSTALL()
+    if value is None:
+        return "ask"
+    return "always" if _is_truthy(value) else "never"
+
+
+def _run_pip(args, on_line=None) -> tuple[int, str]:
+    """Run pip, handing each line of its output to on_line as it arrives.
+
+    Streamed rather than collected at the end so a host can show what pip is doing while
+    it downloads -- a progress dialog that sits on "Installing..." for a minute reads as a
+    hang. Safe off the main thread: it touches nothing but the subprocess.
+
+    Args:
+        args: The full command line.
+        on_line: Called with each output line, stripped; None to just collect.
+
+    Returns:
+        (return code, the whole output).
+    """
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        text=True, errors="replace", creationflags=_NO_WINDOW_FLAGS,
+    )
+    lines = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        lines.append(line)
+        if on_line is not None and line.strip():
+            on_line(line.strip())
+    return proc.wait(), "".join(lines)
+
+
 class ChunkDependencyManager(metaclass=RegistrySingleton):
     """Installs and tracks the pip packages chunk modules declare as requirements.
 
-    Packages go into USD_CHUNK_DEPENDENCY_DIR, which is added to sys.path. Installing is off
-    unless USD_CHUNK_AUTO_INSTALL is set; see that variable.
+    Packages go into USD_CHUNK_DEPENDENCY_DIR, which is added to sys.path. Nothing is
+    installed without the scene's say-so; see USD_CHUNK_AUTO_INSTALL.
     """
     initialized = False
     #: Whether `pip list` has run this process -- see install_packages. Not reset by
     #: initialize(), which runs again on every stage reload.
     _listed = False
+    #: Requirements the user said no to this process. Opening a network with ten nodes of
+    #: one chunk loads that chunk ten times; asking again after each "no" is ten dialogs.
+    #: A restart asks again.
+    _declined: set = set()
 
     def initialize(self):
         """Put the dependency directory on sys.path and in PYTHONPATH for subprocesses."""
         self._cache = defaultdict(set)
-        self.package_dir = USD_CHUNK_DEPENDENCY_DIR()
+        # One folder per Python version. usdview, Blender and a CLI venv run different
+        # interpreters against the same USD_CHUNK_DEPENDENCY_DIR, and a compiled wheel
+        # (numpy, mujoco) pip-installed for one cannot be imported by another -- while
+        # `pip list --path` would still report it as installed to all of them.
+        self.package_dir = ""
+        self.package_dir = self.target_dir()
 
         if self.package_dir:
             if self.package_dir not in sys.path:
@@ -279,18 +323,24 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             version = None
         return name, version
 
-    def install_packages(self, requirements):
+    def install_packages(self, requirements, chunk_name: str = "") -> list[str]:
         """Install whichever of these requirements are not already satisfied.
 
-        Nothing is installed unless USD_CHUNK_AUTO_INSTALL is set; the missing packages are
-        named in a warning instead. When it is set, the scene is still asked about each package
-        (should_install_package), and only what pip actually installed is cached.
+        The scene is asked once for all of them (should_install_packages), naming the chunk
+        that needs them; nothing is installed without its yes. With USD_CHUNK_AUTO_INSTALL
+        set falsey, or a scene that cannot ask, the missing packages are named in a warning
+        instead. Only what pip actually installed is cached.
 
         Args:
             requirements: Requirement strings, ranges allowed.
+            chunk_name: The chunk module that declares them, for the question and the warning.
+
+        Returns:
+            The requirements still not installed afterwards -- declined, failed, or never
+            asked. Empty when the manager is not initialized, since it cannot tell.
         """
         if not self.initialized:
-            return
+            return []
 
         missing = []
 
@@ -313,44 +363,69 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             missing.append(package)
 
         if not missing:
-            return
+            return []
 
-        if not _is_truthy(USD_CHUNK_AUTO_INSTALL()):
-            # Off by default -- see USD_CHUNK_AUTO_INSTALL. Say what is missing and how to
-            # get it, rather than either installing it or failing silently later when the
-            # chunk's import does.
+        # Asked about once per process: a "no" stands until restart -- see _declined.
+        askable = [p for p in missing if p not in self._declined]
+        mode = _install_mode()
+        if askable and mode != "never" and (
+            mode == "always" or self.should_install_packages(askable, chunk_name)
+        ):
+            if self.install(askable, chunk_name):
+                missing = [p for p in missing if p not in askable]
+        else:
+            type(self)._declined.update(askable)
+
+        if missing:
+            # Say what is missing and how to get it, rather than failing later with an
+            # import error from inside the chunk's module.
+            quoted = " ".join(f'"{p}"' for p in missing)
             logger.warning(
-                "Chunk dependencies not installed: %s. Install them yourself, or set "
-                "USD_CHUNK_AUTO_INSTALL=1 to be asked about installing them into %s.",
-                ", ".join(missing), self.package_dir,
+                "Chunk %s needs %s, which is not installed. Install it with:\n"
+                "    %s -m pip install -t \"%s\" %s",
+                chunk_name or "module", ", ".join(missing), sys.executable, self.package_dir, quoted,
             )
-            return
+        return missing
 
-        packages = [p for p in missing if self.should_install_package(p)]
-        if not packages:
-            return
+    def install(self, packages, chunk_name: str = "") -> bool:
+        """pip-install `packages` into the dependency dir, now, without asking; whether pip succeeded.
 
+        The scene runs pip (ChunkScene.run_install) so it can show progress; the bookkeeping
+        after it stays here, on the calling thread.
+
+        Args:
+            packages: Requirement strings.
+            chunk_name: The chunk that needs them, for the progress display.
+        """
+        if not self.initialized or not packages:
+            return False
+        packages = list(packages)
         args = [sys.executable, "-m", "pip", "install", "-t", self.package_dir]
         args.extend(packages)
-        proc = subprocess.run(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=_NO_WINDOW_FLAGS
-        )
+
+        def run(on_line=None):
+            return _run_pip(args, on_line)
+
+        scene = ChunkRegistry().scene
+        returncode, output = scene.run_install(packages, chunk_name, run) if scene else run()
 
         # Only cache what pip actually installed, after checking its return code. A failed
         # install (an embedded interpreter shipping no pip, no network, a bad package name)
         # remembered as a success would short-circuit package_in_cache forever: never
         # retried, never prompted again, and the chunk erroring on every creation.
-        if proc.returncode != 0:
-            output = (proc.stdout or b"").decode(errors="replace").strip()
+        if returncode != 0:
             logger.error(
                 "Failed to install chunk dependencies %s (pip exited %s). "
                 "They will be retried the next time a chunk requires them.\n%s",
-                packages, proc.returncode, output,
+                packages, returncode, output.strip(),
             )
-            return
+            return False
 
         if (pip_dir := self.package_dir) and pip_dir in sys.path_importer_cache:
             sys.path_importer_cache.pop(pip_dir)
+        importlib.invalidate_caches()
+        # A "no" given earlier no longer applies once the package is in.
+        type(self)._declined.difference_update(packages)
 
         # By the package's name, not the requirement string: "numpy>=2,<3" is what a chunk
         # declares, and the cache is keyed the way `pip list` spells things. The version is
@@ -359,13 +434,21 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         for package in packages:
             name = split_requirement(package)[0]
             self._cache[name].add(installed_version(name))
+        return True
 
-    def should_install_package(self, package):
-        """Whether the scene allows installing `package`; False with no scene."""
+    def target_dir(self) -> str:
+        """Where install() puts packages -- for telling the user, before initialize() too."""
+        if getattr(self, "package_dir", None):
+            return self.package_dir
+        base = USD_CHUNK_DEPENDENCY_DIR()
+        return os.path.join(base, f"py{sys.version_info[0]}{sys.version_info[1]}") if base else ""
+
+    def should_install_packages(self, packages, chunk_name: str = "") -> bool:
+        """Whether the scene allows installing `packages` for `chunk_name`; False with no scene."""
         reg = ChunkRegistry()
         if not reg.scene or not self.initialized:
             return False
-        return reg.scene.should_install_package(package)
+        return reg.scene.should_install_packages(list(packages), chunk_name)
 
     def update_cache(self):
         """Record every installed package, from `pip list` over the interpreter and the dependency dir."""
@@ -972,9 +1055,10 @@ class ChunkModule:
 
         return True
 
-    def _install_deps(self):
+    def _install_deps(self) -> list[str]:
+        """Install the module's requirements, asking first; the ones still missing."""
         if not self.config.requirements:
-            return
+            return []
 
         # A requirement with no constraint says nothing, so two runs a month apart can use
         # different libraries from an identical recipe and nothing recorded explains the
@@ -996,7 +1080,7 @@ class ChunkModule:
         if not dep_reg.initialized:
             dep_reg.initialize()
 
-        dep_reg.install_packages(self.config.requirements)
+        return dep_reg.install_packages(self.config.requirements, self.module_name)
 
     def _pre_load(self):
         if not self.loaded and (self._needs_read or not self.module):
@@ -1004,14 +1088,32 @@ class ChunkModule:
                 return False
             self._needs_read = False
 
-        self._install_deps()
+        # Tried even with requirements still missing: a chunk may guard an optional import
+        # and load without it (cad_import shows a "not installed" readout), and the cache
+        # that says what is installed can be wrong where an import is not.
+        missing = self._install_deps()
 
         try:
             self.func = getattr(self.module, "main")
         except Exception:
             # This module failed to load. Set to file_name so we can try loading it again later
-            logger.exception("Failed to run module %s", self.module_name)
+            if missing:
+                # The import of what was declined is what failed: say that, not the
+                # traceback -- install_packages has already said how to install it.
+                logger.error(
+                    "Chunk %s could not load: it needs %s, which is not installed.",
+                    self.module_name, ", ".join(missing),
+                )
+            else:
+                logger.exception("Failed to run module %s", self.module_name)
             self.loaded = False
+            # The lazy module ran half-way and stays broken: asked for again it reports
+            # "has no attribute 'main'" even once the package is in. Drop it, so the next
+            # load reads the file afresh.
+            if sys.modules.get(self.module_name) is self.module:
+                del sys.modules[self.module_name]
+            self.module = None
+            self._needs_read = True
             return False
 
         if not self.module:
