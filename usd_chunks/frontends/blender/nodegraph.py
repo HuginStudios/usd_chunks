@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import bpy
 from usd_chunks import chunk_core as core
@@ -242,10 +243,27 @@ def socket_param(socket, node):
     chunk = node.get_chunk() if hasattr(node, "get_chunk") else None
     if chunk is None:
         return None
+    return _connectable_by_name(chunk).get(socket.name)
+
+
+#: id(chunk) -> (when built, the chunk, {name: param}). Every socket of every node asks on
+#: every redraw, and the walk behind it types each of the chunk's params -- panning a
+#: network of a few dozen nodes spent most of each frame there. Rebuilt at most this often,
+#: which is how quickly a param added or re-typed shows on its socket.
+_connectable_cache: dict = {}
+_CONNECTABLE_TTL = 1.0
+
+
+def _connectable_by_name(chunk) -> dict:
+    now = time.monotonic()
+    cached = _connectable_cache.get(id(chunk))
+    if cached is not None and cached[1] is chunk and now - cached[0] < _CONNECTABLE_TTL:
+        return cached[2]
+    by_name: dict = {}
     for param in chunk_graph.iter_connectable_params(chunk):
-        if param.name == socket.name:
-            return param
-    return None
+        by_name.setdefault(param.name, param)  # the first match, as the walk returned it
+    _connectable_cache[id(chunk)] = (now, chunk, by_name)
+    return by_name
 
 
 def socket_draws_value(socket, param) -> bool:
@@ -257,6 +275,10 @@ def socket_draws_value(socket, param) -> bool:
     which param it is. A linked input has a wire for its value, as in any Blender node.
     """
     if param is None or socket.is_output or socket.is_linked:
+        return False
+    if getattr(param, "item_images", None) is not None:
+        # An ImageMenu's picture needs the body's room; a socket row is one line high and
+        # squeezed it into a strip beside the name.
         return False
     if chunk_blender.list_row_of(param) is not None:
         # A list row's field belongs in its row box in the body, beside the row's other
@@ -458,6 +480,116 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _search_param(op):
+    tree = bpy.data.node_groups.get(op.tree_name)
+    node = tree.nodes.get(op.node_path) if tree else None
+    chunk = node.get_chunk() if node else None
+    return chunk_blender.resolve_key(chunk, op.param_name) if chunk else None
+
+
+#: The last item list the search popup was handed: Blender does not own the strings an
+#: items callback returns, so they are kept alive here (as factory._enum_cache does).
+_search_items_alive: list = []
+
+
+def _search_items(self, _context):
+    param = _search_param(self)
+    items = chunk_blender._enum_items(param) if param is not None else [("", "", "")]
+    _search_items_alive[:] = [items]
+    return items
+
+
+#: How many thumbnails the picture search shows at once; typing narrows the rest.
+_THUMB_RESULTS = 30
+_THUMB_COLUMNS = 5
+
+
+class USDCHUNKS_OT_pick_menu_item(bpy.types.Operator):
+    """Pick this item."""
+
+    bl_idname = "usd_chunks.pick_menu_item"
+    bl_label = "Pick"
+    bl_options = {"REGISTER"}
+
+    tree_name: bpy.props.StringProperty(options={"HIDDEN"})
+    node_path: bpy.props.StringProperty(options={"HIDDEN"})
+    param_name: bpy.props.StringProperty(options={"HIDDEN"})
+    item: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, _context):
+        param = _search_param(self)
+        if param is None:
+            return {"CANCELLED"}
+        param.value = self.item
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_search_menu(bpy.types.Operator):
+    """Search this menu by typing.
+
+    A menu with pictures (chunk.ImageMenu) opens a popup of its own: a filter field over a
+    grid of large thumbnails. Blender's search popup, which plain menus get, has room only
+    for a small icon beside each name.
+    """
+
+    bl_idname = "usd_chunks.search_menu"
+    bl_label = "Search"
+    bl_options = {"REGISTER"}
+    # invoke_search_popup searches the property bl_property names.
+    bl_property = "item"
+
+    # By name, not from context: the popup's items callback runs with whatever context
+    # Blender has then, which need not be the node editor the button was in.
+    tree_name: bpy.props.StringProperty(options={"HIDDEN"})
+    node_path: bpy.props.StringProperty(options={"HIDDEN"})
+    param_name: bpy.props.StringProperty(options={"HIDDEN"})
+    item: bpy.props.EnumProperty(items=_search_items)
+    # TEXTEDIT_UPDATE: the grid narrows with every key, not only on Enter.
+    filter: bpy.props.StringProperty(name="", options={"TEXTEDIT_UPDATE", "SKIP_SAVE"})
+
+    def invoke(self, context, _event):
+        param = _search_param(self)
+        if getattr(param, "item_images", None) is not None:
+            return context.window_manager.invoke_popup(self, width=110 * _THUMB_COLUMNS)
+        context.window_manager.invoke_search_popup(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, _context):
+        """The picture search: only reached through invoke_popup, for an ImageMenu."""
+        param = _search_param(self)
+        if param is None:
+            return
+        layout = self.layout
+        layout.activate_init = True  # the field takes the keyboard as the popup opens
+        layout.prop(self, "filter", icon="VIEWZOOM")
+        term = self.filter.lower()
+        matches = [i for i in (param.menu_items or []) if i and term in i.lower()]
+        images = param.item_images or {}
+        grid = layout.grid_flow(row_major=True, columns=_THUMB_COLUMNS, even_columns=True)
+        for item in matches[:_THUMB_RESULTS]:
+            col = grid.column(align=True)
+            icon = chunk_blender._icon_id(images.get(item, ""))
+            if icon:
+                col.template_icon(icon_value=icon, scale=5.0)
+            else:
+                col.label(text="", icon="IMAGE_DATA")
+            op = col.operator(USDCHUNKS_OT_pick_menu_item.bl_idname, text=item,
+                              depress=item == param.value)
+            op.tree_name, op.node_path = self.tree_name, self.node_path
+            op.param_name, op.item = self.param_name, item
+        if len(matches) > _THUMB_RESULTS:
+            layout.label(text=f"{len(matches) - _THUMB_RESULTS} more -- type to narrow")
+        elif not matches:
+            layout.label(text="Nothing matches")
+
+    def execute(self, _context):
+        param = _search_param(self)
+        if param is None or not self.item:
+            return {"CANCELLED"}
+        param.value = self.item
+        return {"FINISHED"}
+
+
 class USDCHUNKS_OT_revert_override(bpy.types.Operator):
     """Put back the value a hosted network's file has for this param.
 
@@ -613,6 +745,12 @@ def active_view():
     a second tree would need this keyed by tree name.
     """
     return _active_view
+
+
+def clear_active_view() -> None:
+    """No network open: a loaded .blend with no chunk tree in it."""
+    global _active_view
+    _active_view = None
 
 
 #: Prim paths the live-viewport picker (chunk_blender_addon.viewport, which owns the actual
@@ -1565,7 +1703,8 @@ def _draw_add_menu(self, context) -> None:
 # ---------------------------------------------------------------------------
 
 _CLASSES = (UsdChunksNodeTree, UsdChunksSocket, USDCHUNKS_OT_param_button,
-            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_revert_override,
+            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_search_menu, USDCHUNKS_OT_pick_menu_item,
+            USDCHUNKS_OT_revert_override,
             USDCHUNKS_OT_list_resize, USDCHUNKS_OT_add_node)
 
 
@@ -1593,6 +1732,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    chunk_blender.release_previews()
     try:
         bpy.types.NODE_MT_add.remove(_draw_add_menu)
     except Exception:  # pragma: no cover - never appended

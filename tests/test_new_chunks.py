@@ -6,8 +6,10 @@ import io
 import time
 import zipfile
 import threading
+import weakref
 
 import pytest
+from PySide6 import QtCore
 from pxr import Usd, UsdShade, Sdf
 
 from usd_chunks import chunk, chunk_cook, chunk_registry
@@ -189,15 +191,11 @@ class TestBindMaterial:
 
 
 # ---------------------------------------------------------------------------
-# AMDMaterialXLibrary -- load-only (no network calls)
-# main() creates a MaterialGridWidget so it requires a running QApplication.
+# AMDMaterialXLibrary -- load-only (no network calls). No Qt: the picker is an ImageMenu,
+# which each frontend draws for itself.
 # ---------------------------------------------------------------------------
 
 class TestAMDMaterialXLibrary:
-    @pytest.fixture(autouse=True)
-    def _require_qapp(self, qapp):  # noqa: ARG002 -- injected for side-effect only
-        """Ensure QApplication exists before creating Qt widgets in main()."""
-
     def setup_method(self):
         self.mod = _load("chunks.materials.AMDMaterialXLibrary")
 
@@ -210,7 +208,7 @@ class TestAMDMaterialXLibrary:
     def test_has_required_params(self):
         c = self.mod.main()
         assert c.get_param("target_primpath") is not None
-        assert c.get_param("material_grid") is not None
+        assert isinstance(c.get_param("material"), chunk.ImageMenu)
         assert c.get_param("resolution") is not None
         assert c.get_param("picked_title") is not None
         assert c.get_param("resolved_material_path") is not None
@@ -680,8 +678,8 @@ class TestAMDMaterialXAsyncApply:
 
     A cold-cache download is seconds of network. Doing it inline froze usdview's event
     loop for the whole time -- no viewport, no interaction. apply_material now runs only
-    the download on a worker thread and hops back via QTimer.singleShot(0, ...) for every
-    USD/Qt touch (the project's standard main-thread hop).
+    the download on a worker thread and hops back through the host's call_later for every
+    USD/Qt touch -- here a QTimer on the application, as usdview does it.
     """
 
     @pytest.fixture(autouse=True)
@@ -699,6 +697,10 @@ class TestAMDMaterialXAsyncApply:
         class _StageScene(_DummyScene):
             def get_stage(self):
                 return stage
+
+            def call_later(self, fn, delay=0.0):
+                QtCore.QTimer.singleShot(int(delay * 1000), qapp, fn)
+                return lambda: None
 
         scene = _StageScene()
         chunk_registry.ChunkRegistry().initialize(scene, "pytest")
@@ -730,7 +732,7 @@ class TestAMDMaterialXAsyncApply:
             return _FakeZipResponse(TestAMDMaterialXLibraryChildCreation._fake_zip_bytes())
 
         monkeypatch.setattr(self.mod.requests, "get", _slow_get)
-        monkeypatch.setattr(self.mod, "_selected_title", "Gold")
+        c.get_param("material").value = "Gold"
 
         applied_on: list = []
         real_execute = self.mod.execute
@@ -770,3 +772,28 @@ class TestAMDMaterialXAsyncApply:
         )
         assert c.get_param("picked_title").value == "Gold"
         assert c.get_param("resolved_material_path").value == "/materials/Gold"
+
+
+class TestAMDMaterialXCatalogFeedsTheMenu:
+    """The catalog fills every library node's Material menu, and thumbnails follow."""
+
+    def setup_method(self):
+        self.mod = _load("chunks.materials.AMDMaterialXLibrary")
+
+    def test_catalog_and_thumbnails_reach_the_menu(self, monkeypatch, tmp_path):
+        thumbs = tmp_path / "thumbs"
+        thumbs.mkdir()
+        (thumbs / "r1.jpg").write_bytes(b"jpeg")
+        materials = [{"title": "Gold", "renders_order": ["r1"]}, {"title": "Oak", "renders": []}]
+        monkeypatch.setattr(self.mod, "_all_materials", [])
+        monkeypatch.setattr(self.mod, "_thumb_paths", {})
+        monkeypatch.setattr(self.mod, "_menus", weakref.WeakSet())
+        c = self.mod.main()
+        menu = c.get_param("material")
+        self.mod._menus.add(menu)
+
+        self.mod._catalog_ready(materials, str(tmp_path), None)  # nothing to download
+
+        assert menu.menu_items == ["Gold", "Oak"]
+        # Gold's thumbnail was already on disk; Oak has no render to show.
+        assert menu.item_images == {"Gold": str(thumbs / "r1.jpg")}

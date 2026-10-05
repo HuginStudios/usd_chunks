@@ -206,6 +206,22 @@ class UsdviewScene(chunk_scene.SceneSender):
     def get_stage(self) -> Usd.Stage:
         return self.usdviewAPI.stage  # type: ignore
 
+    def call_later(self, fn, delay: float = 0.0):
+        """QTimer.singleShot on the application, so a worker thread's call lands on the main
+        thread's loop -- a bare singleShot from a thread with no loop never fires."""
+        cancelled = []
+
+        def fire():
+            if not cancelled:
+                fn()
+
+        QtCore.QTimer.singleShot(max(0, int(delay * 1000)), QtCore.QCoreApplication.instance(), fire)
+        return lambda: cancelled.append(True)
+
+    def get_host(self) -> tuple[str, str]:
+        # usdview ships with USD, so its version is USD's: (0, 26, 5) -> "0.26.5".
+        return "usdview", ".".join(str(part) for part in Usd.GetVersion())
+
     def get_selected_prims(self) -> list[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
 
