@@ -522,6 +522,36 @@ def get_depth(node: DagNode) -> int:
     return _depth(node)
 
 
+def layer_sort_key(node: DagNode) -> int:
+    """Where a chunk's layer sorts among its graph's: get_depth, counted from the graph's start.
+
+    get_depth measures a chunk inside a chunkgroup from the start of the group: the first
+    chunk in it has no inputs of its own and measures 0. Its layer then sorted under the
+    chunks feeding the group, and whatever it changed on their prims lost -- a Poly Reduce
+    in a group left the mesh it reduced at full resolution. So each owner up the chain that
+    has inputs puts the chunk one level below the deepest of them. Outside a group nothing
+    changes: no owner has inputs, and this is get_depth.
+
+    Kept apart from get_depth on purpose: the depth cache is invalidated by walking
+    downstream, and making a chunk depend on its group's inputs there would need that
+    walk to reach every chunk inside every group below a change.
+
+    Args:
+        node (DagNode): The chunk's node.
+
+    Returns:
+        int: The sort key; larger sorts stronger.
+    """
+    key = get_depth(node)
+    owner = node.get_owner_node()
+    while owner is not None:
+        inputs = list(owner._connections.inputs.values())
+        if inputs:
+            key += 1 + max(get_depth(dep) for dep in inputs)
+        owner = owner.get_owner_node()
+    return key
+
+
 def _upstream(node: DagNode) -> list[tuple[int, DagNode]]:
     """What node's depth is measured against, each paired with what it adds.
 

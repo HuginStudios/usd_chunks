@@ -6139,20 +6139,7 @@ def _load_chunks(
                 # just above) when sort_keys are all 0, so the initial insertion order needs
                 # correction here.
                 if lm.initialized:
-                    layer_to_sk: dict[str, int] = {
-                        lay.identifier: c.get_dag_node().get_sort_key()
-                        for _, c in deferred
-                        if (lay := lm.get_layer(c))
-                    }
-                    # Snapshot before iterating: reassigning subLayerPaths below can
-                    # reactively cascade into chunk execute()s (e.g. an Edit Target chunk
-                    # reacting to the resulting STAGE_CONTENTS_CHANGED), which can call
-                    # get_or_create_layer() and add/remove graph_layers entries -- mutating
-                    # the dict this loop is reading, mid-iteration.
-                    for g_layer in list(lm.graph_layers.values()):
-                        sl = list(g_layer.subLayerPaths)
-                        sl.sort(key=lambda ident: layer_to_sk.get(ident, 0), reverse=True)
-                        g_layer.subLayerPaths = sl  # type: ignore
+                    lm.sort_chunk_layers(c for _, c in deferred)
 
                 # Home every chunk's bookkeeping now, while the exec chain is final (it came
                 # from the file and the dependency restore above only mirrored it) and before
