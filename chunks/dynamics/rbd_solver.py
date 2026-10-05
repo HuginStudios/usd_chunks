@@ -3134,6 +3134,11 @@ def _run(owner, notice, sender) -> None:
             if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
                 lreg.clear_layer(layer.identifier)
 
+    # Read now, not in finish: finish moves the bake's layer to the top of the stack, which
+    # recomposes the stage and expires `prim`. Asking it for its name then raised -- every
+    # time a script reopened a saved RBD scene, since the bake now runs during the load.
+    prim_name = prim.GetName()
+
     def finish(_result):
         if _chunk.get_edit_context() is None:
             return  # the chunk went away while it was simulating
@@ -3147,8 +3152,8 @@ def _run(owner, notice, sender) -> None:
                 scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
         except Exception:
             pass
-        _report(_chunk, f"settled {prim.GetName()}" if settle_only else
-                f"baked {frame_count} frames on {prim.GetName()}"
+        _report(_chunk, f"settled {prim_name}" if settle_only else
+                f"baked {frame_count} frames on {prim_name}"
                 + (f"\n{collider_warning}" if collider_warning else ""))
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
