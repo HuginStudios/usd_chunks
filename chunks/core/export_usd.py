@@ -175,40 +175,15 @@ def _strip_chunk_prims(flat_layer, only_paths=None) -> None:
     so it's directly inside whichever real layer was active when each chunk last
     authored -- a real layer's export (or a full UsdUtils.FlattenLayerStack(stage)) can
     carry chunk-graph prims mixed in alongside real content. This turns that into
-    "Baked": real content only, no chunk graph. Mirrors usdchunks_cli.py's --printout
-    stripping: sorted shallowest-first so removing a parent Chunk prim's spec also
-    removes its descendants, with an existence guard for children already gone by the
-    time their turn comes up, and the emptied /chunks scope goes too.
+    "Baked": real content only, no chunk graph. The work is chunk_stage.strip_chunks,
+    the same code scene.export() runs.
 
     only_paths, if given, restricts stripping to those specific prim paths -- used by
     "Based on Settings" to strip only chunks whose target layer is marked Baked,
     leaving Procedural-marked chunks' bookkeeping in place. Otherwise every Chunk-typed
     prim found in flat_layer is stripped.
     """
-    if only_paths is not None:
-        candidates = (Sdf.Path(p) for p in only_paths)
-    else:
-        tmp = Usd.Stage.Open(flat_layer)
-        candidates = (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == "Chunk")
-    chunk_paths = sorted(candidates, key=lambda p: p.pathElementCount)
-    for path in chunk_paths:
-        spec = flat_layer.GetPrimAtPath(path)
-        if not spec:
-            continue
-        parent = spec.nameParent
-        if parent:
-            del parent.nameChildren[spec.name]
-        else:
-            del flat_layer.pseudoRoot.nameChildren[spec.name]
-
-    # Take the scope they hung under with them, once it is empty. Nothing lives AT
-    # /chunks, so a Baked export that stripped every chunk still ended with an empty
-    # `def Scope "chunks" {}` -- the one piece of the graph left in a file that is
-    # supposed to carry none. It stays if anything is still under it, which is what
-    # "Based on Settings" wants when it strips only the Baked-marked chunks.
-    root = flat_layer.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
-    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
-        del flat_layer.pseudoRoot.nameChildren[root.name]
+    chunk_stage.strip_chunks(flat_layer, only_paths)
 
 
 def _baked_chunk_prim_paths(_chunk, stage) -> list:

@@ -6308,31 +6308,57 @@ def flatten_without_chunks(stage):
     the later lookup for those children simply finds nothing.
     """
     flat = UsdUtils.FlattenLayerStack(stage)
-    tmp = Usd.Stage.Open(flat)
-    chunk_paths = sorted(
-        (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME),
-        key=lambda p: p.pathElementCount,
-    )
+    strip_chunks(flat)
+    return flat
+
+
+def strip_chunks(layer, only_paths=None) -> None:
+    """Remove the Chunk prims from `layer`, in place, and everything that pointed at them.
+
+    Shared by scene.export() and the Export USD chunk, so both write the same plain USD.
+
+    Args:
+        layer: The layer to clean.
+        only_paths: Strip just these chunk prim paths and leave every other chunk in
+            place. None strips every Chunk prim in the layer.
+    """
+    if only_paths is None:
+        tmp = Usd.Stage.Open(layer)
+        candidates = (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME)
+    else:
+        candidates = (Sdf.Path(p) for p in only_paths)
+    # Shallowest path first, so removing a parent Chunk takes its children with it and
+    # the later lookup for those children simply finds nothing.
+    chunk_paths = sorted(candidates, key=lambda p: p.pathElementCount)
     for path in chunk_paths:
-        spec = flat.GetPrimAtPath(path)
+        spec = layer.GetPrimAtPath(path)
         if not spec:
             continue  # already removed as child of a shallower Chunk
         parent = spec.nameParent
         if parent:
             del parent.nameChildren[spec.name]
         else:
-            del flat.pseudoRoot.nameChildren[spec.name]
+            del layer.pseudoRoot.nameChildren[spec.name]
 
     # Chunks connect the attributes they drive to their own params (a camera's focalLength
     # to Camera.inputs:...:focalLength). The values are already flattened in, so the links
-    # would only point at prims this file no longer has.
+    # would only point at prims this file no longer has. That includes a chunk whose prim
+    # sat in another layer and so was never in `chunk_paths`: any link into the chunk
+    # scope that has nothing left to land on goes too.
+    chunks_root = Sdf.Path(chunk_naming.CHUNKS_ROOT)
+
+    def is_gone(target):
+        if any(target.HasPrefix(c) for c in chunk_paths):
+            return True
+        return target.HasPrefix(chunks_root) and not layer.GetPrimAtPath(target.GetPrimPath())
+
     def drop_links_to_chunks(path):
         if not path.IsPropertyPath():
             return
-        prop = flat.GetPropertyAtPath(path)
+        prop = layer.GetPropertyAtPath(path)
         links = prop.connectionPathList if isinstance(prop, Sdf.AttributeSpec) else prop.targetPathList
         items = list(links.GetAddedOrExplicitItems())
-        kept = [t for t in items if not any(t.HasPrefix(c) for c in chunk_paths)]
+        kept = [t for t in items if not is_gone(t)]
         if len(kept) == len(items):
             return
         if kept:
@@ -6341,17 +6367,36 @@ def flatten_without_chunks(stage):
         else:
             links.ClearEdits()  # no `.connect = None` left behind
 
-    flat.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
+    layer.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
 
     # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
     # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
     # left in a file whose whole point is to carry none -- and it is enough to make a
-    # delivered asset look like it wants usd_chunks installed. Only when it IS empty: a
-    # stage that parks something else there keeps both the scope and that something.
-    root = flat.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
-    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
-        del flat.pseudoRoot.nameChildren[root.name]
-    return flat
+    # delivered asset look like it wants usd_chunks installed. A layer that only held
+    # chunk bookkeeping also leaves the `over`s that framed it (`over "chunks"` / `over
+    # "ChunkGroup"`), with nothing in them. Only when it IS empty: a stage that parks
+    # something else there keeps both the scope and that something.
+    root = layer.GetPrimAtPath(chunks_root)
+    if root and root.typeName in (chunk_naming.CHUNKS_ROOT_TYPENAME, ""):
+        _prune_empty_overs(root)
+        if not root.nameChildren and (root.typeName or root.specifier == Sdf.SpecifierOver):
+            del layer.pseudoRoot.nameChildren[root.name]
+
+
+def _prune_empty_overs(spec) -> None:
+    """Delete the child `over`s under `spec` that hold nothing, deepest first."""
+    for child in list(spec.nameChildren):
+        _prune_empty_overs(child)
+        if (
+            child.specifier == Sdf.SpecifierOver
+            and not child.nameChildren
+            and not child.properties
+            and not child.variantSets
+            and not child.hasReferences
+            and not child.hasPayloads
+            and not child.HasInfo("apiSchemas")
+        ):
+            del spec.nameChildren[child.name]
 
 
 def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
