@@ -176,22 +176,29 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     inline: it becomes a sublayer of dst_layer, where the internal layer stood. Flattening
     it in would pull the whole file into dst_layer, and turn its relative paths absolute.
     """
-    remaining = []
+    # dst_layer's own content first (strongest), then every internal layer under it, in
+    # its sublayer order -- flattened together, once. Flattened one internal layer at a
+    # time, each copy replaced the root prims the last one wrote: with two (a chunkgroup
+    # brings its own graph layer) a prim's purpose from one was lost under the other's /ball.
+    own_content = Sdf.Layer.CreateAnonymous()
+    own_content.TransferContent(dst_layer)
+    own_content.subLayerPaths = []
+    own, remaining = [own_content], []
     for path in dst_layer.subLayerPaths:
         if path not in internal_ids:
             remaining.append(path)
-            continue
-        internal_layer = Sdf.Layer.Find(path)
-        if not internal_layer:
-            continue
-        own, real = [], []
-        _collect_internal_layers(internal_layer, internal_ids, own, real)
+        elif (internal_layer := Sdf.Layer.Find(path)) is not None:
+            real = []
+            _collect_internal_layers(internal_layer, internal_ids, own, real)
+            remaining.extend(real)
+    if len(own) > 1:
         scratch = Sdf.Layer.CreateAnonymous()
         scratch.subLayerPaths = [layer.identifier for layer in own]
         flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(scratch))
+        for name in list(dst_layer.rootPrims.keys()):
+            del dst_layer.rootPrims[name]
         for prim_spec in flat.rootPrims.values():
             Sdf.CopySpec(flat, prim_spec.path, dst_layer, prim_spec.path)
-        remaining.extend(real)
     dst_layer.subLayerPaths = remaining
 
 
