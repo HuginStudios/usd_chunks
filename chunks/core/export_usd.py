@@ -10,7 +10,7 @@ import os
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk, chunk_naming, chunk_registry, chunk_utils
+from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
 
