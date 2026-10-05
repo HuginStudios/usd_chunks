@@ -881,8 +881,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             name: The node's name; the module's own when omitted.
             **params: See `set`.
         """
-        if name:
-            new.name = name
         # Plain values before the add, so the chunk's first cook -- the one add_chunk
         # triggers -- already sees them, rather than cooking the defaults and then once more
         # per param. Values only, no cook, under the same guard MenuEntry.create sets for
@@ -895,6 +893,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
+            # Under the guard too: renaming a chunk is a change like any other, and made
+            # first it cooked the chunk once on its defaults (a Preview Surface authored
+            # /materials/surface before its own Material Path was set).
+            if name:
+                new.name = name
             self.set(new, **early)
         finally:
             new._executing = prev
