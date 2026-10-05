@@ -1,7 +1,8 @@
-"""Set Variant's two dropdowns are read off the prim, and follow the stage.
+"""Set Variant's two dropdowns are read off the prim as they open.
 
 Variant Set lists the sets on the first prim Prim Path resolves to; Variant Selection lists
 the variants of the chosen set, with (none) to clear. They were two free-text fields.
+Nothing keeps them current in between: the chunk listens to no stage (menu_items hook).
 """
 from __future__ import annotations
 
@@ -35,6 +36,16 @@ def _add_set(stage, path, name, variants):
             vset.AddVariant(v)
 
 
+def _opened(menu):
+    """The menu's items as a frontend shows them: asked for as it opens (Menu.refresh_items)."""
+    menu.refresh_items()
+    return menu.menu_items
+
+
+def _listens_globally(node):
+    return [d["conn"].get_method() for d in node._callbacks.callbacks if d["conn"].globally]
+
+
 @pytest.fixture
 def scene(qapp):
     stage = Usd.Stage.CreateInMemory()
@@ -63,7 +74,7 @@ def _set_variant(qapp, scene, prim_path):
 def test_the_set_menu_lists_the_prims_variant_sets(qapp, scene) -> None:
     node = _set_variant(qapp, scene, "/asset")
 
-    assert sorted(node.get_param("variant_set").menu_items) == ["LOD", "color"]
+    assert sorted(_opened(node.get_param("variant_set"))) == ["LOD", "color"]
 
 
 def test_the_selection_menu_follows_the_chosen_set(qapp, scene) -> None:
@@ -72,40 +83,42 @@ def test_the_selection_menu_follows_the_chosen_set(qapp, scene) -> None:
     node.get_param("variant_set").value = "color"
     qapp.processEvents()
     # USD hands variant names back sorted.
-    assert node.get_param("variant_selection").menu_items == ["(none)", "blue", "red"]
+    assert _opened(node.get_param("variant_selection")) == ["(none)", "blue", "red"]
 
     node.get_param("variant_set").value = "LOD"
     qapp.processEvents()
-    assert node.get_param("variant_selection").menu_items == ["(none)", "high", "low"]
+    assert _opened(node.get_param("variant_selection")) == ["(none)", "high", "low"]
 
 
 def test_the_menus_follow_the_stage(qapp, scene) -> None:
     """A set added after the chunk exists -- by an upstream chunk cooking, in practice --
-    shows up without touching this chunk's params."""
+    is there the next time the menu opens, without touching this chunk's params, and
+    without the chunk listening to the stage for it."""
     node = _set_variant(qapp, scene, "/other")
-    assert node.get_param("variant_set").menu_items == []
+    assert _opened(node.get_param("variant_set")) == []
 
     _add_set(scene.get_stage(), "/other", "season", ["summer", "winter"])
     qapp.processEvents()
 
-    assert node.get_param("variant_set").menu_items == ["season"]
+    assert _opened(node.get_param("variant_set")) == ["season"]
+    assert _listens_globally(node) == []
 
 
 def test_the_menus_fill_on_a_blocked_chunk(qapp, scene) -> None:
     """A node created in the graph while the context has a view is blocked until it is
     wired in, and blocking suppresses its params' VALUE_CHANGED -- so the prim-path
-    callback never fires. The typed path is still recorded on the chunk prim, and that
-    stage edit is what has to fill the dropdowns. They used to stay empty until wired."""
+    callback never fires. They used to stay empty until wired; read as they open, a
+    blocked chunk's menus fill like any other's."""
     node = _set_variant(qapp, scene, "/other")           # no sets on /other
     node.set_blocked(True)
 
     node.get_param("primpath_location").value = "/asset"
     qapp.processEvents()
-    assert sorted(node.get_param("variant_set").menu_items) == ["LOD", "color"]
+    assert sorted(_opened(node.get_param("variant_set"))) == ["LOD", "color"]
 
     node.get_param("variant_set").value = "color"
     qapp.processEvents()
-    assert node.get_param("variant_selection").menu_items == ["(none)", "blue", "red"]
+    assert _opened(node.get_param("variant_selection")) == ["(none)", "blue", "red"]
 
 
 def test_none_clears_and_a_variant_selects(qapp, scene) -> None:
@@ -132,19 +145,19 @@ def test_a_value_the_prim_does_not_offer_stays_listed(qapp, scene) -> None:
     qapp.processEvents()
 
     assert node.get_param("variant_set").value == "season"
-    assert "season" in node.get_param("variant_set").menu_items
+    assert "season" in _opened(node.get_param("variant_set"))
 
     _add_set(scene.get_stage(), "/other", "season", ["summer", "winter"])
     qapp.processEvents()
-    assert node.get_param("variant_set").menu_items == ["season"], "listed once, now for real"
-    assert node.get_param("variant_selection").menu_items == ["(none)", "summer", "winter"]
+    assert _opened(node.get_param("variant_set")) == ["season"], "listed once, now for real"
+    assert _opened(node.get_param("variant_selection")) == ["(none)", "summer", "winter"]
 
 
 def test_a_saved_selection_survives_a_reload_ahead_of_its_variant_set(qapp, tmp_path) -> None:
     """The Menu-on-load trap (see test_edit_target reload history): the file restores the
     value before the Add Variants chunk upstream has cooked the set it names. An empty menu
-    accepts any value, the refresh is held off while loading, and the menus fill in once
-    the stage settles -- with the saved value still selected."""
+    accepts any value, and the menus are read only as they open, by which time the stage
+    has settled -- with the saved value still selected."""
 
     stage = Usd.Stage.CreateInMemory()
     sc = _Scene(stage)
@@ -183,6 +196,6 @@ def test_a_saved_selection_survives_a_reload_ahead_of_its_variant_set(qapp, tmp_
     restored = next(c for c in sc2.get_chunks() if c.get_config().module == "set_variant")
     assert restored.get_param("variant_set").value == "color"
     assert restored.get_param("variant_selection").value == "red"
-    assert restored.get_param("variant_set").menu_items == ["color"]
-    assert restored.get_param("variant_selection").menu_items == ["(none)", "blue", "red"]
+    assert _opened(restored.get_param("variant_set")) == ["color"]
+    assert _opened(restored.get_param("variant_selection")) == ["(none)", "blue", "red"]
     assert stage2.GetPrimAtPath("/asset").GetVariantSets().GetVariantSet("color").GetVariantSelection() == "red"

@@ -593,10 +593,9 @@ def test_the_transform_updates_when_only_the_params_change() -> None:
     assert matrix.ExtractTranslation()[1] == pytest.approx(7.0)
 
 
-def test_the_freecam_lock_keeps_the_transform_params_out_of_it() -> None:
-    """While the lock is on the freecam re-authors the transform on every CAMERA_CHANGED, so
-    a param write here would be silently overwritten a frame later. Not writing is the honest
-    behaviour; the handle suppression itself is still an open question."""
+def test_the_freecam_lock_cooks_what_the_params_say() -> None:
+    """The freecam moves the params, not the prim (_follow_freecam), so locked or not the
+    cook authors the params -- there is no placement on the prim they disagree with."""
     camera_mod, c, stage = _camera_chunk_and_stage()
     c.get_param("primpath_location").value = "/cameras/cam1"
     node = _CamNode(c, stage)
@@ -608,7 +607,7 @@ def test_the_freecam_lock_keeps_the_transform_params_out_of_it() -> None:
 
     prim = stage.GetPrimAtPath(c.get_param("primpath_location").value)
     matrix = UsdGeom.Xformable(prim).GetLocalTransformation()
-    assert matrix.ExtractTranslation()[0] != pytest.approx(99.0)
+    assert matrix.ExtractTranslation()[0] == pytest.approx(99.0)
 
 
 def test_the_camera_composes_transforms_the_same_way_transform_py_does() -> None:
@@ -721,19 +720,12 @@ def test_a_failing_hook_leaves_the_handle_visible() -> None:
 
 
 def _fly_freecam_to(camera_mod, chunk_obj, stage, path, translate):
-    """Place the prim the way `_apply_freecam_transform` does, rather than reimplementing it.
+    """Follow the freecam the way `_apply_freecam_transform` does, rather than reimplementing it.
 
-    It used to call MakeMatrixXform() here, which is what the freecam itself used to do --
-    but that resets xformOpOrder to a lone `xformOp:transform`, so once the camera owned a
-    named op the simulation stopped matching the thing it was simulating. The test then
-    described a state the code could no longer produce, and failed for that instead of for a
-    real regression. Migration from a genuine legacy op has its own test below.
+    Into the params: the freecam no longer authors the prim itself, the cook does, so a
+    flight reaches the chunks wired below like any other edit.
     """
-    matrix = Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate))
-    # Recorded on the chunk as well, as the real callback does: the framework clears the
-    # camera's layer before every cook, so the flight is kept on the chunk, not the prim.
-    setattr(chunk_obj, camera_mod._FLOWN_MATRIX, matrix)
-    camera_mod._author_matrix(chunk_obj, stage, stage.GetPrimAtPath(path), matrix)
+    camera_mod._follow_freecam(chunk_obj, Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translate)))
 
 
 def _cook(camera_mod, node):
@@ -944,10 +936,9 @@ def test_the_freecam_lock_constrains_placement_but_not_scale() -> None:
     camera_mod.execute(node)
 
     c.get_param("lock_to_freecam").value = True
-    camera_mod._author_matrix(
-        c, stage, stage.GetPrimAtPath(path),
-        camera_mod._with_local_scale(c, Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0))),
-    )
+    _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
+    _cook(camera_mod, node)
+    path = c.get_param("primpath_location").value
 
     placed = Gf.Transform(UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetLocalTransformation())
     assert placed.GetTranslation() == Gf.Vec3d(100.0, 50.0, -200.0), "the freecam still places it"
@@ -959,12 +950,21 @@ def test_the_freecam_lock_constrains_placement_but_not_scale() -> None:
     assert c.get_param("sx").value == pytest.approx(5.0)
 
 
-def test_an_unscaled_camera_takes_the_freecam_matrix_untouched() -> None:
-    """The common case must not go the long way round and pick up float noise."""
-    camera_mod, c, _stage = _camera_chunk_and_stage()
-    matrix = Gf.Matrix4d().SetTranslate(Gf.Vec3d(1.0, 2.0, 3.0))
+def test_following_the_freecam_where_it_already_is_writes_nothing() -> None:
+    """Each write cooks the camera and points the viewport at it again, and the freecam
+    reports that back: a param rewritten with float noise every time would never settle."""
+    camera_mod, c, stage = _camera_chunk_and_stage()
+    matrix = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 1, 0), 30.0))
+    matrix.SetTranslateOnly(Gf.Vec3d(1.0, 2.0, 3.0))
+    camera_mod._follow_freecam(c, matrix)
+    written = []
+    for name in ("tx", "ty", "tz", "rx", "ry", "rz"):
+        c.get_param(name).add_callback(lambda notice, sender, n=name: written.append(n))
 
-    assert camera_mod._with_local_scale(c, matrix) == matrix
+    camera_mod._follow_freecam(c, matrix)
+
+    assert written == []
+    assert c.get_param("ry").value == pytest.approx(30.0)
 
 def test_adopting_never_overwrites_a_real_edit() -> None:
     """It only fires while every param is still at its default, so a user who has typed a
@@ -976,7 +976,8 @@ def test_adopting_never_overwrites_a_real_edit() -> None:
 
     c.get_param("ty").value = 5.0
     path = c.get_param("primpath_location").value
-    _fly_freecam_to(camera_mod, c, stage, path, Gf.Vec3d(100.0, 50.0, -200.0))
+    camera_mod._author_matrix(c, stage, stage.GetPrimAtPath(path),
+                              Gf.Matrix4d().SetTranslate(Gf.Vec3d(100.0, 50.0, -200.0)))
     camera_mod.execute(node)
 
     assert c.get_param("ty").value == pytest.approx(5.0)

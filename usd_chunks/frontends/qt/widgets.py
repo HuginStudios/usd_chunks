@@ -997,6 +997,9 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         QtCore.QTimer.singleShot(0, self, self._show_as_menu)
 
     def _show_as_menu(self) -> None:
+        # A menu of what is on the stage is filled as it opens (Menu.refresh_items); the
+        # menu_items notice rebuilds this combo's entries before they are read below.
+        self.param.refresh_items()
         menu = QtWidgets.QMenu(self)
         current = self.currentText()
         for i in range(self.count()):

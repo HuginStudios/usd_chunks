@@ -1264,9 +1264,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         (export_chunks), so a param that never gets an attr is a param that does not survive
         a save.
 
-        For example, unticking a Camera's Lock to Free Camera hands the flown placement into
-        the transform params (camera.py's `_adopt_existing_transform`) during a cook -- the
-        live camera would be right while the file carried no placement at all. Every chunk
+        For example, a Camera on a prim that already carries a placement takes it into its
+        transform params (camera.py's `_adopt_existing_transform`) during a cook -- the live
+        camera would be right while the file carried no placement at all. Every chunk
         that renames its own prim path mid-cook when the one it wanted was taken (camera,
         light, the render_* chunks) depends on this the same way.
 
@@ -6275,8 +6275,8 @@ def _resync_lofted_menus(chunks: Iterable[core.ChunkBase]) -> None:
     """Copy every lofted Menu's items from its inner Menu again, once a load is over.
 
     _restore_lofted_params wires the mirror (_mirror_menu_items) and syncs it once, but
-    that is before CHUNK_LOADED -- and a Menu whose items come off the stage fills them
-    there (Set Variant reads its prim in that callback). During a load no attribute
+    that is before CHUNK_LOADED -- and a Menu that fills its items there (Layer's After
+    Layer list, from the stage) does so after it. During a load no attribute
     change sends a notice, so the fill went unheard and the group's dropdown came back
     holding only the saved value. One explicit pass, the same shape as the second
     _resolve_pending_expressions pass and for the same reason.
@@ -7102,6 +7102,9 @@ def _mirror_menu_items(inner_param: core.ChunkParamBase, context_param: core.Chu
             context_param.menu_items = items
 
     context_param._loft_menu_items = _mirror  # strong-ref pin
+    # Opening the group's menu asks the inner chunk's module for the items (menu_items hook),
+    # and _mirror copies them across: the group's module knows nothing of them.
+    context_param._loft_inner_menu = weakref.ref(inner_param)
     context_param._loft_menu_items_conn = NoticeConnection(
         method=_mirror,
         alias=ChunkNoticeAlias.ATTRIBUTE_CHANGED,

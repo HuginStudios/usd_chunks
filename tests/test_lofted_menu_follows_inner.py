@@ -9,7 +9,8 @@ saved value and never heard about the real one.
 
 Not a reopen-only bug either: an inner Menu whose items follow the stage (Set Variant's
 do, off the prim at Prim Path) changed under a live loft without the group's copy
-noticing.
+noticing. Those items are read as the menu opens now (the menu_items hook), so opening
+the group's copy asks the inner one.
 """
 from __future__ import annotations
 
@@ -78,6 +79,13 @@ def _mk(scene, key, context=None):
     return cs[0]
 
 
+def _opened(menu):
+    """The menu's items as a frontend shows them: asked for as it opens (Menu.refresh_items).
+    A lofted menu asks its inner one, whose items it mirrors."""
+    menu.refresh_items()
+    return list(menu.menu_items)
+
+
 def _lofted_menu(group, suffix):
     return next(p for p in group.get_my_params() if p.name.endswith(suffix))
 
@@ -99,7 +107,7 @@ def lofted(qapp):
     _settle(qapp)
     inner.get_param("variant_selection").value = "red"
     _settle(qapp)
-    assert inner.get_param("variant_selection").menu_items == ["(none)", "blue", "red"]
+    assert _opened(inner.get_param("variant_selection")) == ["(none)", "blue", "red"]
 
     chunk_stage.loft_param_to_context(inner.get_param("variant_set"), group)
     chunk_stage.loft_param_to_context(inner.get_param("variant_selection"), group)
@@ -108,7 +116,7 @@ def lofted(qapp):
 
 
 def test_a_fresh_loft_carries_the_items(lofted):
-    assert _lofted_menu(lofted["group"], "variant_selection").menu_items == ["(none)", "blue", "red"]
+    assert _opened(_lofted_menu(lofted["group"], "variant_selection")) == ["(none)", "blue", "red"]
 
 
 def test_the_lofted_menu_follows_the_inner_menus_items(qapp, lofted):
@@ -118,8 +126,8 @@ def test_the_lofted_menu_follows_the_inner_menus_items(qapp, lofted):
     inner.get_param("primpath_location").value = "/other"
     _settle(qapp)
 
-    assert inner.get_param("variant_set").menu_items == ["season", "color"]
-    assert _lofted_menu(group, "variant_set").menu_items == ["season", "color"]
+    assert _opened(inner.get_param("variant_set")) == ["season", "color"]
+    assert _opened(_lofted_menu(group, "variant_set")) == ["season", "color"]
 
 
 def test_picking_through_the_lofted_menu_still_reaches_the_inner_one(qapp, lofted):
@@ -147,8 +155,8 @@ def test_a_reopened_lofted_menu_offers_every_item_not_just_the_saved_one(qapp, l
     inner2 = next(c for c in group2.get_my_params() if c.name == lofted["inner"].name)
     sel2 = _lofted_menu(group2, "variant_selection")
     assert sel2.value == "red", "the saved pick comes back"
-    assert inner2.get_param("variant_selection").menu_items == ["(none)", "blue", "red"]
-    assert sel2.menu_items == ["(none)", "blue", "red"], (
+    assert _opened(inner2.get_param("variant_selection")) == ["(none)", "blue", "red"]
+    assert _opened(sel2) == ["(none)", "blue", "red"], (
         f"a reopened lofted menu must offer what the inner one offers, got {sel2.menu_items}"
     )
 
@@ -166,9 +174,9 @@ def test_a_reopened_lofted_menu_follows_a_prim_that_arrives_later(qapp, lofted, 
     group2 = next(c for c in scene2.get_chunks() if c.name == lofted["group"].name)
     sel2 = _lofted_menu(group2, "variant_selection")
     # No prim yet: Set Variant lists its clear entry plus the kept pick, and so must the loft.
-    assert sel2.menu_items == ["(none)", "red"]
+    assert _opened(sel2) == ["(none)", "red"]
 
     _add_set(stage2, "/asset", "color", ["red", "blue"])
     _settle(qapp)
 
-    assert sel2.menu_items == ["(none)", "blue", "red"]
+    assert _opened(sel2) == ["(none)", "blue", "red"]

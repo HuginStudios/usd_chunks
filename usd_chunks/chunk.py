@@ -401,6 +401,45 @@ class Menu(ChunkParamBase[str]):
         if list(self.menu_items or []) != items:
             self.menu_items = items
 
+    def refresh_items(self) -> None:
+        """Ask the chunk's module for this menu's items, as the menu is about to open.
+
+        A menu of what is on the stage -- the SkelRoots a Skel Pose can pose -- is wanted
+        only when someone looks at it. A chunk opts in with a module-level function::
+
+            def menu_items(node, param_name):
+                return _skel_roots(node.get_stage()) if param_name == "primpath_location" else None
+
+        so it need not listen to the stage to keep a list current that nobody opens, and
+        need not cook to fill it either: a cook is skipped when nothing it reads changed,
+        and a stage walk would be a read of everything. A frontend calls this before it
+        shows the list; None from the hook leaves the items as they are.
+
+        A Menu lofted onto a chunkgroup refreshes the inner Menu it stands for, whose items
+        it mirrors (chunk_stage._mirror_menu_items).
+        """
+        inner = getattr(self, "_loft_inner_menu", None)
+        if inner is not None:
+            if (inner_menu := inner()) is not None:
+                inner_menu.refresh_items()
+            return
+        node = self.get_chunk()
+        hook = node._module_hook(MENU_ITEMS_HOOK) if node is not None else None
+        if hook is None:
+            return
+        try:
+            items = hook(node, self.name)
+        except Exception:
+            # A failing hook leaves the list as it was: a stale list beats an empty one.
+            logger.exception("menu_items hook failed for %r on chunk %r", self.name, node.name)
+            return
+        if items is not None:
+            self.set_items(items)
+
+
+#: The module hook Menu.refresh_items calls: `menu_items(node, param_name) -> list | None`.
+MENU_ITEMS_HOOK = "menu_items"
+
 
 class Button(ChunkParamBase):
     """A button param.

@@ -149,12 +149,17 @@ def draw_param(param, width: float = 150.0) -> bool:
             _label(name)
             items = list(getattr(param, "menu_items", None) or [])
             current = str(param.value) if param.value is not None else ""
-            index = items.index(current) if current in items else 0
-            if items:
-                imgui.set_next_item_width(width)
-                changed, index = imgui.combo(ident, index, items)
-                if changed:
-                    param.value = items[index]
+            # Drawn even with nothing to list: a menu of what is on the stage fills itself
+            # as it opens (Menu.refresh_items), and an empty one has to be openable.
+            shown = items or [current]
+            index = shown.index(current) if current in shown else 0
+            imgui.set_next_item_width(width)
+            changed, index = imgui.combo(ident, index, shown)
+            if changed and items:
+                param.value = items[index]
+            if imgui.is_item_activated() and hasattr(param, "refresh_items"):
+                # Shown from the next frame.
+                param.refresh_items()
         elif kind == ChunkFlags.ParamType.COLOR_PICKER:
             _label(name)
             value = param.value or (0.0, 0.0, 0.0)

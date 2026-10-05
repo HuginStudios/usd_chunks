@@ -9,9 +9,10 @@ was set, and executing a chunk sets exactly that flag for the whole call.
 The flag is there to stop USD changes bouncing *back* into params while a chunk authors
 content. Suppressing the outbound record as well was collateral, and it lost two things
 users noticed. The reported one: a Camera placed with Lock to Free Camera, whose placement
-is taken into the transform params by camera.py's `_adopt_existing_transform` on the cook
-after the lock comes off. The live camera was right, the saved file carried no placement at
-all, and reopening put it back at the origin.
+was taken into the transform params by camera.py's `_adopt_existing_transform` on the cook
+after the lock came off. The live camera was right, the saved file carried no placement at
+all, and reopening put it back at the origin. (The lock now writes the params itself, outside
+any cook -- camera.py's `_follow_freecam` -- and the tests below keep the round trip honest.)
 """
 
 from __future__ import annotations
@@ -108,8 +109,8 @@ def _flown(scene: SceneSender, translation) -> None:
 def test_a_camera_flown_into_place_is_still_there_after_a_reopen(tmp_path) -> None:
     """Fly, tick Lock to Free Camera, untick it to freeze the shot, save.
 
-    Unticking hands the placement back into the transform params (camera.py's
-    `_adopt_existing_transform`), so the live chunk is correct either way -- what was missing
+    The placement is in the transform params (camera.py's `_follow_freecam`), so the live
+    chunk is correct either way -- what was missing
     is that a param set during that cook never got an attr on the chunk prim, so the file
     carried no placement at all and the camera reopened at the origin.
     """

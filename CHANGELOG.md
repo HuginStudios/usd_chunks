@@ -101,6 +101,15 @@ This file starts with the first release; development before that is in the commi
   otherwise. A param `add_dependency` across two chunks used to warn and now raises; use
   `connect_value`. The RBD Solver now goes stale through its own cook instead of a global
   listener.
+- Menus of what is on the stage fill as they open. A module's new `menu_items(node,
+  param_name)` hook gives a Menu its items when the Qt, Flet, ImGui or Blender frontend
+  shows it. Skel Pose, Set Variant and Set Camera use it, and no longer listen to the stage;
+  Skel Pose walked the whole stage on every stage change to keep its Character menu current.
+- Camera's Lock to Free Camera sets the camera's translate and rotate params instead of
+  writing its transform straight onto the prim. The cook authors it, so the chunks wired
+  below see each move, and the params always match the camera.
+- Layer and Export USD wait for their saved values to load before refreshing from the stage,
+  and Layer writes its After Layer list only when it changed.
 - Opening a network no longer re-cooks what several exec roots share. Each root used to
   solve everything below it, so a Merge of six References and the Scatter below it cooked
   once per root; a root that an earlier root's solve already cooked is now skipped.
