@@ -1243,6 +1243,33 @@ def define_in_edit_layer(stage, path, type_name: str) -> None:
         spec.typeName = type_name or "Xform"
 
 
+def set_payloads_loaded(node, stage: Usd.Stage, paths, load: bool) -> None:
+    """Unload the payloads at and under `paths`, or load back the ones `node` unloaded.
+
+    For a chunk's Load checkbox. Load state is the stage's, not something a layer holds, so
+    the chunk applies it each time it cooks. Loading only puts back what this chunk
+    unloaded: a checked box never loads a payload someone unloaded by hand.
+
+    Args:
+        node: The chunk, which remembers what it unloaded.
+        stage: The scene's stage (not a cook stage).
+        paths: Prim paths.
+        load: The checkbox.
+    """
+    held: set = getattr(node, "_unloaded_by_me", set())
+    if load:
+        if held:
+            stage.LoadAndUnload({Sdf.Path(p) for p in held}, set())
+        node._unloaded_by_me = set()
+        return
+    wanted = {str(p) for p in paths}
+    unload = {Sdf.Path(p) for p in wanted - held}
+    reload = {Sdf.Path(p) for p in held - wanted}
+    if unload or reload:
+        stage.LoadAndUnload(reload, unload)
+    node._unloaded_by_me = wanted
+
+
 def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform"):
     """Define `path` with `type_name`, giving every ancestor along the way a type too.
 
