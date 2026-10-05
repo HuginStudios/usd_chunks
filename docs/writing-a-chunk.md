@@ -49,6 +49,19 @@ every node. If that matters, cache it at module level.
 own layer, so anything it writes lands in the wrong place. Anything that changes the stage
 goes in a callback, in `execute()`, or in `commit()`.
 
+**Callbacks hear their own chunk, never another one.** Chunks talk to each other only
+through wires: an exec input, or an `@Node.param@` expression. Both are drawn in the graph
+and saved in the file. A change in a chunk above yours reaches your chunk as a cook of your
+`execute()`, not as a notice. So:
+
+- `add_callback(..., sender=...)` takes your own chunk or one of its params. Another chunk's
+  param raises a `ValueError`.
+- `listen_globally=True` is for the stage and the host only: stage edits, prim selection,
+  the viewport camera. It lists cameras for a menu, for example. Listening globally to
+  another chunk's notices (`CHUNK_CHANGED`, `PARAM_CHANGED`, ...) raises a `ValueError`.
+- A param can't depend on another chunk's param through `add_dependency`. Use
+  `connect_value`, which writes the expression for you.
+
 [`docs/example.md`](example.md) has a longer example with notes on the param types,
 groups, flags and callback signatures you can use in `main()`.
 

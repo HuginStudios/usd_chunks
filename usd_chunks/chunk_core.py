@@ -2430,7 +2430,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return f"@{other_chunk.name}.{other.name}@"
 
     def add_dependency(self, input: chunk_notice.ChunkNoticePropagator) -> int:
-        """Add a DagNode input, warning if it crosses a chunk boundary.
+        """Add a DagNode input; refused across a chunk boundary.
 
         A param-level dependency is in-memory only: ChunkStageSync._on_dependency_added
         authors inputs:chunk for ChunkBase pairs and returns early for anything else, so
@@ -2438,22 +2438,27 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         graph, and is gone after a reload. Within one chunk that is exactly right -- this
         is the dirty/ordering edge behind set_function, and it can drive attributes
         (menu_items, a label, visibility) that no expression can reach. Across two chunks
-        it silently loses the connection the caller thought they made; an expression is
-        the mechanism that persists. See connect_value, which redirects rather than warns.
+        it is a connection nobody can see, and the solve no longer tells a chunk what
+        reaches it across one (chunk_notice: chunks speak only through wires), so it would
+        not even update. An expression is the wire that persists; connect_value redirects
+        to one.
 
         Args:
             input: The propagator to depend on.
 
         Returns:
             The dependency index.
+
+        Raises:
+            ValueError: input is a param of another chunk.
         """
         if isinstance(input, ChunkParamBase) and (pair := self._cross_chunk_ref(input)):
             mine, theirs = pair
             ref = self._expression_ref_to(input, theirs) or f"@{theirs.name}.<param>@"
-            logger.warning(
-                "Param dependency %s.%s <- %s.%s crosses chunks: it is not authored to USD "
-                "and will not survive a reload. Use an expression instead: %s.%s = \"%s\"",
-                mine.name, self.name, theirs.name, input.name, mine.name, self.name, ref,
+            raise ValueError(
+                f"Param dependency {mine.name}.{self.name} <- {theirs.name}.{input.name} crosses "
+                f"chunks: chunks connect only through wires. Use an expression instead: "
+                f"{mine.name}.{self.name} = \"{ref}\" (or connect_value, which authors one)"
             )
         return super().add_dependency(input)
 
@@ -2467,7 +2472,9 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             other: The param to follow.
 
         Raises:
-            ValueError: The two params' types are not compatible.
+            ValueError: The two params' types are not compatible, or other is in another
+                chunk and no @Node.param@ reaches it -- its name resolves to a different
+                param of that chunk.
         """
         my_t = self.evaluate_type()
         other_t = other.evaluate_type()
@@ -2479,13 +2486,21 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         # where the DagNode edge below would quietly vanish on the next load. The type
         # check above still ran, which the raw expression path skips.
         if pair := self._cross_chunk_ref(other):
-            if ref := self._expression_ref_to(other, pair[1]):
-                logger.debug(
-                    "connect_value across chunks (%s -> %s): authoring %s",
-                    pair[1].name, pair[0].name, ref,
+            ref = self._expression_ref_to(other, pair[1])
+            if ref is None:
+                # Chunks connect only through wires, and an expression is the only wire a
+                # param can have to another chunk's.
+                raise ValueError(
+                    f"Can't connect {pair[0].name}.{self.name} to {pair[1].name}.{other.name}: "
+                    f"no @{pair[1].name}.<param>@ reaches it, as its name resolves to another "
+                    "param of that chunk. Give it a name of its own."
                 )
-                self.value = ref
-                return
+            logger.debug(
+                "connect_value across chunks (%s -> %s): authoring %s",
+                pair[1].name, pair[0].name, ref,
+            )
+            self.value = ref
+            return
 
         idx = -1
         # If other already is connected to self, then we can use that index

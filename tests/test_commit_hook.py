@@ -100,29 +100,8 @@ class TestCommitDispatch:
 
         assert calls == ["a", "b", "c"]
 
-    def test_param_wired_chunks_still_ordered(self):
-        """A param-level add_dependency leaves no chunk-level edge to sort on, so the
-        ordering has to come from depth, where ownership pulls a chunk at least as deep as
-        its deepest param.
-
-        Note this is the in-memory add_dependency API, NOT what the node graph does -- a
-        dragged param port authors an expression and creates no DAG edge at all. That path
-        is covered by TestCommitOrderFromStage, which orders from the stage instead."""
-        chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
-        calls = []
-        upstream = self._chunk("upstream", calls)
-        downstream = self._chunk("downstream", calls)
-
-        out = chunk.Slider("out", default_value=0.0)
-        upstream.add_param(out)
-        inp = chunk.Slider("in", default_value=0.0)
-        downstream.add_param(inp)
-        inp.add_dependency(out)
-
-        assert downstream.get_dependencies() == []
-        chunk_scheduler.commit_all([downstream, upstream])
-
-        assert calls == ["upstream", "downstream"]
+    # Param-wired chunks are ordered from the stage (TestCommitOrderFromStage): a param of
+    # one chunk depending on another chunk's in memory is refused (add_dependency).
 
     def test_disabled_chunk_does_not_commit(self):
         chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
