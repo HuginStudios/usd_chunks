@@ -2070,7 +2070,7 @@ def parent_context(context: str, available) -> str | None:
 VIEW_MODULE = "view"
 VIEW_SLOT_ATTR = "view:slot"
 ACTIVE_VIEW_ATTR = "chunk:activeView"
-VIEW_SLOTS = (1, 2, 3)
+VIEW_SLOTS = (1, 2)
 
 
 def context_has_view(scene, context) -> bool:
@@ -2084,7 +2084,7 @@ def context_has_view(scene, context) -> bool:
 def _free_view_slot(stage: Usd.Stage, parent_path: str) -> int | None:
     """The lowest unused slot among this container's views.
 
-    Scoped to the container, not the stage: each graph has its own slots 1-3. A global
+    Scoped to the container, not the stage: each graph has its own slots 1-2. A global
     scan runs out of slots once a few contexts have views, which made "Set View" silently
     do nothing and numbered the View{slot} names across contexts.
     """
@@ -2114,7 +2114,32 @@ def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> int | Non
     return None
 
 
-def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | None:
+def _view_in_slot(stage: Usd.Stage, parent_path: str, slot: int) -> Usd.Prim | None:
+    """The view holding `slot` in this container, or None."""
+    for prim in stage.Traverse():
+        if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
+            continue
+        if str(prim.GetPath().GetParentPath()) != parent_path:
+            continue
+        if prim.GetAttribute(VIEW_SLOT_ATTR).Get() == slot:
+            return prim
+    return None
+
+
+def _rewire_view(stage: Usd.Stage, view_prim: Usd.Prim, target_prim_path: str) -> None:
+    """Point an existing view's exec input at `target_prim_path`."""
+    exec_in = view_prim.GetAttribute(EXEC_INPUT)
+    if not (exec_in and exec_in.IsValid()):
+        exec_in = view_prim.CreateAttribute(EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+    # Update in place where the wire already lives, as connect() does.
+    home = chunk_utils.get_attr_home_layer(exec_in)
+    layer = home or chunk_utils.get_bookkeeping_layer(stage, None)
+    with Usd.EditContext(stage, layer):
+        exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{EXEC_OUTPUT}")])
+
+
+def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
+                    slot: int | None = None) -> int | None:
     """Create a view node wired to `target_prim_path`.
 
     All USD and registry work -- no toolkit -- so every frontend creates views the same way.
@@ -2123,11 +2148,14 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | Non
         stage: The stage to author on.
         scene: The scene to add the view chunk to.
         target_prim_path: Prim path of the node to view.
+        slot: The slot to put the view in ("Set View 1/2"). When that slot already has a
+            view in this container, that view is re-pointed at the target instead of a
+            second one being made. None takes the lowest free slot.
 
     Returns:
-        The view's slot, or None if the target is missing or is itself a view. When a view
-        is already wired to that prim its EXISTING slot comes back rather than a duplicate
-        being made, so a caller can simply activate what it gets either way.
+        The view's slot, or None if the target is missing or is itself a view. With no
+        `slot`, a view already wired to that prim gives its EXISTING slot back rather than
+        a duplicate being made, so a caller can simply activate what it gets either way.
     """
     target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
     if not target.IsValid():
@@ -2135,14 +2163,21 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str) -> int | Non
     if target.GetAttribute(CHUNK_TYPE_ATTR).Get() == VIEW_MODULE:
         return None
 
-    existing = existing_view_slot_for(stage, target_prim_path)
-    if existing is not None:
-        return existing
-
     parent_path = str(Sdf.Path(target_prim_path).GetParentPath())
-    slot = _free_view_slot(stage, parent_path)
-    if slot is None:
-        return None
+    if slot is not None:
+        if slot not in VIEW_SLOTS:
+            return None
+        holder = _view_in_slot(stage, parent_path, slot)
+        if holder is not None:
+            _rewire_view(stage, holder, target_prim_path)
+            return slot
+    else:
+        existing = existing_view_slot_for(stage, target_prim_path)
+        if existing is not None:
+            return existing
+        slot = _free_view_slot(stage, parent_path)
+        if slot is None:
+            return None
 
     registry = chunk_registry.ChunkRegistry()
     module = registry.get_chunk_module(VIEW_MODULE)

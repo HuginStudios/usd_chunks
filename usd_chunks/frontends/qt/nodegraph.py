@@ -2815,15 +2815,15 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        # 1/2/3-to-switch-view-slot: same fallback pattern as Ctrl+C/V/D/X above -- native
+        # 1/2-to-switch-view-slot: same fallback pattern as Ctrl+C/V/D/X above -- native
         # keyPressEvent (chunk_qt_nodegraph.py ChunkGraphView.keyPressEvent) has the same
         # logic, but depends on ChunkGraphView holding real native Qt focus, which usdview's
         # MainWindow routinely reclaims. F/L/Ctrl+C/V/D/X were already hardened against that
         # via this router; the view-slot keys were never added to it, so they're the one
         # shortcut still riding the fragile native-focus path. Also gated on
         # `not typing_in_proxy` -- these ARE digits, so without that guard this swallowed
-        # every "1"/"2"/"3" typed into e.g. Layer's "Layer Name" field.
-        if not typing_in_proxy and event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
+        # every "1"/"2" typed into e.g. Layer's "Layer Name" field.
+        if not typing_in_proxy and event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2):
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
@@ -4136,7 +4136,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._layout_selected_or_all()
             event.accept()
             return
-        if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2, QtCore.Qt.Key.Key_3):
+        if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2):
             slot = event.key() - QtCore.Qt.Key.Key_0
             # Switch to that view slot only if a view exists for it; never toggle to "no view"
             # (slot 0), which would block the whole graph. Keeps an active view at all times.
@@ -4694,7 +4694,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
             if s is not None:
                 used.add(s)
-        slot = next((s for s in (1, 2, 3) if s not in used), None)
+        slot = next((s for s in chunk_graph.VIEW_SLOTS if s not in used), None)
         if slot is None:
             return
         # Same first-time chunk-prim bookkeeping as _create_view_node_for_prim's slot write:
@@ -4715,7 +4715,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # whatever runs next is how it actually showed up.
         QtCore.QTimer.singleShot(0, self, lambda s=slot: self._view_state.set_slot(s))
 
-    def _create_view_node_for_prim(self, target_prim_path: str, keep_selection: bool = False) -> None:
+    def _create_view_node_for_prim(self, target_prim_path: str, keep_selection: bool = False,
+                                   slot: int | None = None) -> None:
         """Create a view node wired to target_prim_path, then activate its slot.
 
         The creation itself is chunk_graph.create_view_for, shared with the Flet and ImGui
@@ -4726,6 +4727,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             keep_selection: Put the selection back afterwards. Adding a chunk selects it,
                 which is right when a person asked for the view and wrong when the graph
                 added one on its own: a paste or duplicate lost the nodes it had selected.
+            slot: Put the view in this slot ("Set View 1/2"), re-pointing the view that
+                already holds it. None takes the lowest free slot.
         """
         registry = chunk_registry.ChunkRegistry()
         if not registry.initialized:
@@ -4735,11 +4738,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not (stage and scene):
             return
         selected = list(scene.get_selected_chunks()) if keep_selection else []
-        slot = chunk_graph.create_view_for(stage, scene, target_prim_path)
+        slot = chunk_graph.create_view_for(stage, scene, target_prim_path, slot)
         if slot is None:
             return
         if selected:
             scene.set_selected_chunks(selected)
+        graph_scene = self.scene()
+        if isinstance(graph_scene, ChunkGraphScene):
+            # A re-pointed view authored its exec input directly; draw the moved wire.
+            graph_scene._build_edges()
+        if slot == self._view_state.active_slot:
+            # set_slot would be a no-op, but the slot's view may now look at another node.
+            QtCore.QTimer.singleShot(0, self, lambda: self._recook_active_view())
+            return
         # Context object, as elsewhere: the view can be gone before this fires.
         switch = self._set_slot_quietly if keep_selection else self._view_state.set_slot
         QtCore.QTimer.singleShot(0, self, lambda s=slot: switch(s))
@@ -4761,8 +4772,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if node is not None:
             node.set_pinned(pinned)
 
-    def _on_create_view_for_path(self, prim_path: str) -> None:
-        self._create_view_node_for_prim(prim_path)
+    def _on_create_view_for_path(self, prim_path: str, slot: int) -> None:
+        self._create_view_node_for_prim(prim_path, slot=slot)
 
     def _on_view_slot_changed(self, slot: int) -> None:
         self._recook_active_view(select_view=not self._quiet_slot_change)

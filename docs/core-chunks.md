@@ -9,7 +9,7 @@ These two chunks don't change the stage themselves. They control *when* things c
 ## 🔎 At a glance
 
 - **View** decides what's shown and what runs. A graph with no View gets one
-  automatically. After that, right-click a chunk and choose **Set View** to move it there.
+  automatically. After that, right-click a chunk and choose **Set View 1** or **Set View 2** to move it there.
 - **ChunkGroup** is a subnet. Double-click its header to go inside and build like in any
   other graph. Click the path at the top-left of the graph to come back out.
 
@@ -22,20 +22,21 @@ The rest of this page goes into more detail on both.
 *everything*, and `--all` cooks everything even when there is a view.
 
 **Adding a view:** if a graph has no View, one is added and connected for you. After
-that, right-click the chunk whose output you want to see and choose **Set View**. That
-creates a View, connects it to the chunk's output, and makes it active. If the
-chunk is already connected to a view, the menu shows **Activate View N** instead.
+that, right-click the chunk whose output you want to see and choose **Set View 1** or **Set
+View 2**. If that view already exists it's reconnected to this chunk; otherwise it's
+created and connected. Either way it becomes active. The slot already looking at the
+chunk is shown ticked.
 
-For example: build Mesh → Transform, right-click Transform and choose **Set View**.
+For example: build Mesh → Transform, right-click Transform and choose **Set View 1**.
 Move the Transform's sliders and the viewport updates. Only Mesh and Transform cook,
 because nothing else is connected to the view.
 
-**Switching between views:** a graph can have up to three views, numbered 1 to 3. Press
-`1`, `2` or `3` to switch between the ones that exist. Pressing a number with no view does
+**Switching between views:** a graph can have up to two views, numbered 1 and 2. Press
+`1` or `2` to switch between the ones that exist. Pressing a number with no view does
 nothing, so you can't blank the graph by accident.
 
 The active view has an orange header, and the others are dimmed. Each graph level (the top
-level, or the inside of a [ChunkGroup](#chunkgroup)) has its own three views. When you
+level, or the inside of a [ChunkGroup](#chunkgroup)) has its own two views. When you
 open a saved file, the view that was active when you saved is active again.
 
 ## ChunkGroup

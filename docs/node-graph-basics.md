@@ -50,12 +50,12 @@ differently:
 
 Only chunks connected to the active [View](core-chunks.md#view) cook. A new chain does
 nothing until it's connected to one.
-**Right-click the chunk whose output you want to see and choose Set View.** That creates a
-View, connects it to the chunk's output, and makes it active. If the chunk is already
-connected to a view, the menu shows **Activate View N** instead. Until then, the nodes are
+**Right-click the chunk whose output you want to see and choose Set View 1 or Set View 2.**
+That connects that View to the chunk's output (creating it if needed) and makes it active.
+The slot already looking at the chunk is shown ticked. Until then, the nodes are
 set up but don't run. This is on purpose, not a bug.
 
-A graph can have up to three views. Press `1`, `2` or `3` to switch the active one. It only
+A graph can have up to two views. Press `1` or `2` to switch the active one. It only
 switches to a number that has a view in the current graph, so you can't blank the graph by
 accident.
 
@@ -64,7 +64,7 @@ accident.
 | Key | Does |
 | --- | --- |
 | `F` | Frame the selection (or everything, if nothing is selected). |
-| `1` / `2` / `3` | Switch to that view, if it exists. |
+| `1` / `2` | Switch to that view, if it exists. |
 | `L` | Auto-layout the selection, or the whole graph if nothing is selected. |
 | `C` | Collapse the selection, or the whole graph if nothing is selected. |
 | `D` | Disable or enable the selection. |

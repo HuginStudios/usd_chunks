@@ -69,7 +69,7 @@ class TestCreatingViews:
             view.set_selection([node])
             view.create_view()
         count = len(view.prims)
-        # Slots are 1-3 and the open already took one, so this asks for a fourth.
+        # Slots are 1-2 and the open already took one, so this asks for a third.
         view.set_selection(content_nodes(view))
         view.create_view()
         assert len(view.prims) == count

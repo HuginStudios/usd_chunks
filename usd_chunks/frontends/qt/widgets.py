@@ -12,6 +12,7 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
+from usd_chunks.graph import engine as chunk_graph
 
 import logging
 import re
@@ -1877,14 +1878,14 @@ _VIEW_COL_HEADER = "#c87830"
 class ViewSlotState(QtCore.QObject):
     """Shared view-slot state for a context tab.
 
-    Holds the active view slot (0 = none, 1–3 = active) and notifies connected
+    Holds the active view slot (0 = none, 1–2 = active) and notifies connected
     widgets when it changes.  The actual blocking/muting logic lives in
     ChunkGraphView; this object is the lightweight communication bus between
     the nodegraph and the params panel.
     """
 
-    slot_changed = QtCore.Signal(int)   # 0 = off, 1–3 = active slot
-    create_view_for = QtCore.Signal(str)  # prim path -- handled by ChunkGraphView
+    slot_changed = QtCore.Signal(int)   # 0 = off, 1–2 = active slot
+    create_view_for = QtCore.Signal(str, int)  # (prim path, slot) -- handled by ChunkGraphView
     pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) -- a Pin/Unpin menu toggle
 
     def __init__(self, parent=None):
@@ -2026,12 +2027,15 @@ class ViewSlotState(QtCore.QObject):
                             if str(conn_path.GetPrimPath()) == prim_path:
                                 existing_view_slot = p.GetAttribute("view:slot").Get()
 
-        if existing_view_slot is not None:
-            view_action = menu.addAction(f"Activate View {existing_view_slot}")
-        elif is_view_chunk:
-            view_action = None
-        else:
-            view_action = menu.addAction("Set View")
+        # One entry per slot: picking a slot that already has a view re-points that view
+        # here. The slot already viewing this chunk is shown checked.
+        view_actions: dict = {}
+        if not is_view_chunk:
+            for slot in chunk_graph.VIEW_SLOTS:
+                act = menu.addAction(f"Set View {slot}")
+                act.setCheckable(True)
+                act.setChecked(slot == existing_view_slot)
+                view_actions[act] = slot
 
         res = self._exec_menu(menu, global_pos)
         if not res:
@@ -2067,11 +2071,12 @@ class ViewSlotState(QtCore.QObject):
             for target in targets:
                 chunk_stage.set_chunk_pinned(target, new_pinned)
                 self.pin_changed.emit(target, new_pinned)
-        elif view_action and res == view_action:
-            if existing_view_slot is not None:
-                self.set_slot(existing_view_slot)
+        elif res in view_actions:
+            slot = view_actions[res]
+            if slot == existing_view_slot:
+                self.set_slot(slot)
             else:
-                self.create_view_for.emit(prim_path)
+                self.create_view_for.emit(prim_path, slot)
         elif copy_action and res == copy_action:
             graph_view._copy_selected_to_clipboard()
         elif cut_action and res == cut_action:
@@ -2330,11 +2335,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
-            if event.key() in (
-                QtCore.Qt.Key.Key_1,
-                QtCore.Qt.Key.Key_2,
-                QtCore.Qt.Key.Key_3,
-            ):
+            if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2):
                 slot = event.key() - QtCore.Qt.Key.Key_0
                 cur = self._view_state.active_slot
                 self._view_state.set_slot(0 if cur == slot else slot)
