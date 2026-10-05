@@ -62,6 +62,11 @@ except ImportError:  # pragma: no cover - exercised only on a machine without mu
     _mj = None
     _HAS_MUJOCO = False
 
+try:  # optional: finds near neighbours fast; a dense check stands in without it
+    from scipy.spatial import cKDTree as _KDTree
+except ImportError:  # pragma: no cover
+    _KDTree = None
+
 logger = logging.getLogger(__name__)
 
 NS = "fracture:"
@@ -71,10 +76,19 @@ THICKNESS = "rbd:colliderThickness"
 
 # Contact bitmasks: a pair collides when either one's contype meets the other's conaffinity.
 # Bodies collide with bodies and with the world; world parts never with each other (a rotor
-# turning inside its housing would otherwise fight it); a parked body with nothing.
+# turning inside its housing would otherwise fight it); a parked body with nothing. The world
+# takes every bit, so a body on one of the overlap bits (_overlap_mask) still lands on it.
+_ALL_BITS = 0x7FFFFFFF
 _BODY = (1, 1)
-_WORLD = (0, 1)
+_WORLD = (0, _ALL_BITS)
 _PARKED = (0, 0)
+# Bits 1-30: one per group of bodies that started inside each other (Rest Until Hit).
+_OVERLAP_BITS = 30
+
+
+def _overlap_mask(bit: int) -> tuple[int, int]:
+    """Masks for a body on overlap *bit*: it collides with everything but its own group."""
+    return 1 << bit, _ALL_BITS & ~(1 << bit)
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +332,10 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
     # state -- every body back in the parking lot, the clock back to zero -- which reads as the
     # simulation vanishing mid-shot. Off: a bad step is rolled back and repaired below.
     spec.option.disableflags |= _mj.mjtDisableBit.mjDSBL_AUTORESET
-    spec.option.sleep_tolerance = float(job.get("sleep_tolerance", 0.5))
+    # Slow enough to sleep, in scene units/s -- scaled by gravity, the one number here that
+    # knows the scene's units. A flat 0.5 is right for centimetres; in metres it is a hundred
+    # times too fast, and a rock dropped from rest went to sleep in mid-air before it got there.
+    spec.option.sleep_tolerance = float(job.get("sleep_tolerance", 0.5 * (g_mag / 981.0 if g_mag else 1.0)))
     spec.memory = int(96 * 1024 * 1024 + n_slots * 48 * 1024)
 
     lowest = None
@@ -387,11 +404,23 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
     k_idx = np.arange(n_slots)
     park_pos = 1e5 * ax_a + np.outer(k_idx % side, ax_a) * pitch + np.outer(k_idx // side, ax_b) * pitch
 
+    # Rest Until Hit: bodies that start at frame 0 are built where they start, not parked,
+    # so a reset puts them back there -- asleep (see _rest_until_hit).
+    rest = bool(job.get("rest_until_hit", False))
+    start_pose = {}
+    if rest:
+        for gi, (key, pos, quat, _lin, _ang, when) in enumerate(groups):
+            s = slot_of.get((gi, key))
+            if s is not None and when <= 0.0:
+                start_pose[s] = (pos, quat)
+
     density = float(job["density"])
     for s in range(n_slots):
         b = spec.worldbody.add_body()
         b.name = f"s{s}"
-        b.pos = list(map(float, park_pos[s]))
+        b.pos = list(map(float, start_pose[s][0] if s in start_pose else park_pos[s]))
+        if s in start_pose:
+            b.quat = list(map(float, start_pose[s][1]))
         b.sleep = _mj.mjtSleepPolicy.mjSLEEP_INIT
         b.gravcomp = 1.0
         jt = b.add_joint()
@@ -489,10 +518,14 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
     recovered = 0
     born = np.zeros(n_slots)
 
+    # Per slot: the overlap bit it is on, 0 for none. See _rest_until_hit.
+    overlap_bit = np.zeros(n_slots, dtype=np.int64)
+    slot_tree = model.body_treeid[slot_body] if n_slots else np.zeros(0, dtype=np.int64)
+
     def _set_collide(s, on):
         # The body's masks too: the broad phase filters on the body's own copy (the OR of
         # its geoms'), which compile fixed and a geom edit does not update.
-        ct, ca = _BODY if on else _PARKED
+        ct, ca = (_overlap_mask(overlap_bit[s]) if overlap_bit[s] else _BODY) if on else _PARKED
         g, b = slot_geom[s], slot_body[s]
         model.geom_contype[g], model.geom_conaffinity[g] = ct, ca
         model.body_contype[b], model.body_conaffinity[b] = ct, ca
@@ -506,13 +539,13 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
         _set_collide(s, False)
         alive[s] = False
 
-    def _place(s, pos, quat, lin, ang_local, t):
+    def _place(s, pos, quat, lin, ang_local, t, wake=True):
         qa, da = slot_qadr[s], slot_dadr[s]
         data.qpos[qa:qa + 3] = pos
         data.qpos[qa + 3:qa + 7] = quat
         data.qvel[da:da + 3] = lin
         data.qvel[da + 3:da + 6] = ang_local
-        if not data.qvel[da:da + 6].any():
+        if wake and not data.qvel[da:da + 6].any():
             data.qvel[da + 3] = 1e-3  # a sleeping body wakes on a non-zero velocity, only that
         _set_collide(s, True)
         alive[s] = True
@@ -521,7 +554,7 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
     pending = sorted(range(len(groups)), key=lambda g: groups[g][5])
     delayed = 0
 
-    def _start(gi, t) -> bool:
+    def _start(gi, t, wake=True) -> bool:
         nonlocal delayed
         key, pos, quat, lin, ang, when = groups[gi]
         s = slot_of.get((gi, key))
@@ -538,7 +571,7 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
                     return False
         q = np.asarray(quat, dtype=np.float64)
         _place(s, pos, q, np.asarray(lin, dtype=np.float64),
-               _quat_to_mat(q).T @ np.asarray(ang, dtype=np.float64), t)
+               _quat_to_mat(q).T @ np.asarray(ang, dtype=np.float64), t, wake)
         return True
 
     breaks = []
@@ -593,6 +626,7 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
         ang = rot @ ang_local
         _park(s)
         for c in children[s]:
+            overlap_bit[c] = overlap_bit[s]  # a piece fills its parent's room, overlaps and all
             off = rot @ offsets[c]
             push = off / max(np.linalg.norm(off), 1e-9) * kick
             _place(c, pos + off, quat, lin + np.cross(ang, off) + push, ang_local, t)
@@ -616,8 +650,125 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
     orientations = np.zeros((frames, n_slots, 4), dtype=np.float32)
     alive_rec = np.zeros((frames, n_slots), dtype=bool)
 
+    def _rest_until_hit():
+        """Start the bodies that rest on something asleep, and keep the ones that start inside
+        each other from pushing apart.
+
+        A house fractured part by part is a stack of convex hulls: the walls' hull is a solid
+        block with the door, the trim and the roof's eaves inside it. Simulated as it is, every
+        one of those is pushed out of the block at once and the house explodes on frame 1.
+        Here a body touching anything at frame 0 sleeps until something awake touches it, and
+        bodies that start interpenetrating share an overlap bit, so they pass through each
+        other until their bounding spheres part (_release_overlaps). A sleeping group wakes
+        together (_wake_overlaps).
+
+        Returns (overlap groups, bodies resting).
+        """
+        firsts = [gi for gi in pending if groups[gi][5] <= 0.0]
+        for gi in firsts:
+            _start(gi, 0.0)
+        # A little margin for this one look: parts built flush (a picket on its rail) sit a
+        # rounding error apart and make no contact at zero margin, which broke the chain that
+        # tells a fence it stands on the ground.
+        margin = model.geom_margin.copy()
+        model.geom_margin[:] = 0.01 * float(np.median(slot_radius)) if n_slots else 0.0
+        _mj.mj_forward(model, data)
+        model.geom_margin[:] = margin
+        ncon = data.ncon
+        con = data.contact
+        pair = body_slot[model.geom_bodyid[con.geom[:ncon]]] if ncon else np.zeros((0, 2), dtype=np.int64)
+        dist = con.dist[:ncon]
+        # Resting: touching the world, or close to another body -- bounding spheres meeting.
+        # Contact alone missed most of a fence: its pickets hover a hair off the ground and off
+        # their rails, touch nothing, and fell on frame 1. What falls is what is alone in the
+        # air, the way a dropped rock is.
+        touching = np.zeros(n_slots, dtype=bool)
+        touching[pair[(pair >= 0) & (pair[:, ::-1] < 0)]] = True
+        starts_now = np.flatnonzero(alive)
+        if len(starts_now) > 1:
+            centre = data.xpos[slot_body[starts_now]]
+            r = slot_radius[starts_now]
+            if _KDTree is not None:
+                near = _KDTree(centre).query_ball_point(centre, r + r.max())
+                for i, others in enumerate(near):
+                    for j in others:
+                        if j != i and np.linalg.norm(centre[i] - centre[j]) < r[i] + r[j]:
+                            touching[starts_now[i]] = True
+                            break
+            else:
+                gap = np.linalg.norm(centre[:, None] - centre[None], axis=2) - (r[:, None] + r[None])
+                np.fill_diagonal(gap, 1.0)
+                touching[starts_now[(gap < 0.0).any(axis=1)]] = True
+        # Deeper than a touch: a few percent of the smaller body.
+        smaller = np.minimum(slot_radius[np.maximum(pair[:, 0], 0)], slot_radius[np.maximum(pair[:, 1], 0)])
+        deep = (pair >= 0).all(axis=1) & (dist < -0.02 * smaller)
+        parent = list(range(n_slots))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for a, b in pair[deep]:
+            parent[find(int(a))] = find(int(b))
+        members = {}
+        for s in sorted({int(x) for x in pair[deep].reshape(-1)}):
+            members.setdefault(find(s), []).append(s)
+        for n, group in enumerate(members.values()):
+            overlap_bit[group] = 1 + n % _OVERLAP_BITS
+
+        # Back to the built state, which puts every body to sleep where it was built; then
+        # place the starts again, waking only the ones that are not resting. Placed after the
+        # forward pass: a forward pass zeroes a sleeping body's velocity, and with it the wake.
+        _mj.mj_resetData(model, data)
+        _drive(0, 0.0)
+        _mj.mj_forward(model, data)
+        resting = 0
+        for gi in firsts:
+            key, _pos, _quat, lin, ang, _when = groups[gi]
+            s = slot_of.get((gi, key))
+            still = s is not None and touching[s] and not np.any(lin) and not np.any(ang)
+            _start(gi, 0.0, wake=not still)
+            resting += bool(still)
+            pending.remove(gi)
+        return len(members), resting
+
+    def _wake_overlaps():
+        """Wake every body of an overlap group as soon as one of them is awake."""
+        on = np.flatnonzero(alive & (overlap_bit > 0))
+        if not len(on):
+            return
+        asleep = data.tree_asleep[slot_tree[on]] >= 0
+        if not asleep.any():
+            return
+        awake_bits = set(overlap_bit[on[~asleep]].tolist())
+        for s in on[asleep]:
+            if overlap_bit[s] in awake_bits:
+                data.qvel[slot_dadr[s] + 3] = 1e-3
+
+    def _release_overlaps():
+        """Put a body back on the ordinary bit once its sphere is clear of its group's."""
+        on = np.flatnonzero(alive & (overlap_bit > 0))
+        if not len(on):
+            return
+        # From qpos, not xpos: a piece born from a break this frame has not been through
+        # kinematics yet, and its xpos is still the parking lot -- clear of everything.
+        centre = data.qpos[slot_qadr[on][:, None] + np.arange(3)]
+        r = slot_radius[on]
+        gap = np.linalg.norm(centre[:, None, :] - centre[None, :, :], axis=2) - (r[:, None] + r[None, :])
+        same = overlap_bit[on][:, None] == overlap_bit[on][None, :]
+        np.fill_diagonal(same, False)
+        clear = ~((gap < 0.0) & same).any(axis=1)
+        for s in on[clear]:
+            overlap_bit[s] = 0
+            _set_collide(s, True)
+
     _drive(0, 0.0)
     _mj.mj_forward(model, data)
+    overlap_groups = resting = 0
+    if rest and n_slots:
+        overlap_groups, resting = _rest_until_hit()
     t = 0.0
     started = time.perf_counter()
     last_live = started
@@ -632,6 +783,9 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
             if not _start(gi, t):
                 waiting.append(gi)
         pending[:0] = waiting
+        if overlap_groups:
+            _wake_overlaps()
+            _release_overlaps()
         if n_slots:
             _mj.mj_kinematics(model, data)
             positions[f] = data.xpos[slot_body]
@@ -695,6 +849,8 @@ def simulate(job: dict, progress=None, cancel=None, live=None, live_seconds=4.0)
             breaks=len(breaks),
             recovered=recovered,
             delayed_starts=delayed,
+            resting=resting,
+            overlap_groups=overlap_groups,
             pieces_by_generation=by_gen.tolist(),
             build_seconds=build_seconds,
             sim_seconds=time.perf_counter() - started,
@@ -1161,6 +1317,8 @@ def summary(result) -> str:
     gens = " ".join(f"{g}:{n}" for g, n in enumerate(st["pieces_by_generation"]) if n)
     text = (f"{st['bodies']} bodies · {st['breaks']} breaks · {st['sim_seconds']:.0f}s\n"
             f"pieces by generation {gens}")
+    if st.get("resting") or st.get("overlap_groups"):
+        text += f"\n{st.get('resting', 0)} resting until hit · {st.get('overlap_groups', 0)} overlap groups"
     if st.get("recovered"):
         text += f"\n{st['recovered']} unstable steps rolled back"
     return text

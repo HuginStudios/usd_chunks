@@ -3283,6 +3283,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
             cooldown=max(0.0, _chunk.get_param("break_delay", is_f).value),
             kick=_chunk.get_param("break_kick", is_f).value,
         ),
+        rest_until_hit=_chunk.get_param("rest_until_hit", chunk.is_param_t(bool)).value,
         seed=_chunk.get_param("turb_seed", is_i).value,
     )
     if any(forces.get("wind", ())) or forces.get("turbulence"):
@@ -3875,6 +3876,12 @@ def main() -> chunk.Chunk:
                                     "cannot shatter a body to gravel within a single step."))
     brk_grp.add_param(chunk.Spinbox("break_kick", "Break Kick", default_value=10.0,
                                     tooltip="Speed the pieces spring apart with, scene units/s."))
+    brk_grp.add_param(chunk.Checkbox(
+        "rest_until_hit", "Rest Until Hit", default_value=False,
+        tooltip="Bodies that start resting on something stay still until something hits them, and "
+        "bodies that start inside each other do not push apart. For a model fractured part by part, "
+        "such as a house, which would otherwise explode on the first frame.",
+    ))
     chunk_api.add_param(brk_grp)
 
 
