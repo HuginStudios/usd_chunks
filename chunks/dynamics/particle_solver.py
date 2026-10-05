@@ -1422,8 +1422,8 @@ def _after_read_back(node, layer, stage, start_frame, frame_count, promote):
 
 
 def _is_headless():
-    """No UI, so no event loop and nobody to press Run."""
-    return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
+    """No UI, so no event loop and nobody to press Run (sim_bake.is_unattended)."""
+    return sim_bake.is_unattended()
 
 
 def cache_key(node):
