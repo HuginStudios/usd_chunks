@@ -3459,8 +3459,8 @@ def _only_presentation_changed(sender) -> bool:
 
 
 def _is_headless() -> bool:
-    """No UI, so no event loop and nobody to press a button."""
-    return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
+    """No UI, so no event loop and nobody to press a button (sim_bake.is_unattended)."""
+    return sim_bake.is_unattended()
 
 
 def execute(node) -> None:
