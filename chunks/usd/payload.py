@@ -8,6 +8,15 @@ def file_changed(owner, notice, sender):
     chunk_stage.suggest_location_from_file(notice.data)
 
 
+def _define_in_edit_layer(stage, path, type_name: str) -> None:
+    """Write a `def` for `path` into the edit target's layer, keeping the prim's type."""
+    target = stage.GetEditTarget()
+    spec = Sdf.CreatePrimInLayer(target.GetLayer(), target.MapToSpecPath(path))
+    spec.specifier = Sdf.SpecifierDef
+    if not spec.typeName:
+        spec.typeName = type_name or "Xform"
+
+
 def execute(node):
     payload_path = node.get_param("file_path").value
     if not payload_path:
@@ -43,6 +52,12 @@ def execute(node):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             prim = stage.DefinePrim(target_path, "Xform")
+        elif chunk_utils.is_composed_in(prim):
+            # Valid, but only because another Payload chunk's file defines it. With two
+            # chunks on one prim each saw the other's payload, neither defined the prim,
+            # and it ended up an `over`. DefinePrim will not help: it returns a prim that
+            # is already defined without writing anything.
+            _define_in_edit_layer(stage, target_path, prim.GetTypeName())
         prim.GetPayloads().AddPayload(ref)
 
 
