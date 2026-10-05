@@ -152,12 +152,37 @@ class UsdviewScene(chunk_scene.SceneSender):
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
     def should_install_packages(self, packages, chunk_name: str) -> bool:
+        if chunk_notice._loading_stage is not None:
+            # Not while a scene loads. The dialog runs its own event loop, and usdview's
+            # queued work then runs on a half-loaded stage: opening a scene with an RBD
+            # Solver crashed in the prim tree (_resizePrimView). Say no for now, so the
+            # chunk loads without it, and ask once the load is over.
+            QtCore.QTimer.singleShot(
+                0, QtCore.QCoreApplication.instance(), lambda: self._ask_after_load(packages, chunk_name)
+            )
+            return False
         target = chunk_registry.ChunkDependencyManager().target_dir()
         return chunk_qt.confirm_dial(
             f"OK to install {', '.join(packages)} for chunk {chunk_name}?",
             title="Missing chunk dependencies",
             detail=f"pip will install into {target}. Without it the chunk cannot load.",
         )
+
+    def _ask_after_load(self, packages, chunk_name: str) -> None:
+        """Ask about packages a chunk missed while the scene was loading, and install on a yes."""
+        if chunk_notice._loading_stage is not None:
+            QtCore.QTimer.singleShot(
+                100, QtCore.QCoreApplication.instance(), lambda: self._ask_after_load(packages, chunk_name)
+            )
+            return
+        deps = chunk_registry.ChunkDependencyManager()
+        if chunk_qt.confirm_dial(
+            f"OK to install {', '.join(packages)} for chunk {chunk_name}?",
+            title="Missing chunk dependencies",
+            detail=f"pip will install into {deps.target_dir()}. The scene is already open, so "
+            f"reopen it afterwards to load {chunk_name} with them.",
+        ) and deps.install(packages, chunk_name):
+            logger.info("Installed %s for %s. Reopen the scene to load it.", ", ".join(packages), chunk_name)
 
     def run_install(self, packages, chunk_name: str, run):
         return chunk_qt.progress_dial(
