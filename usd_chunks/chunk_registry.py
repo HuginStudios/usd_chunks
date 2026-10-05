@@ -43,7 +43,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
-from usd_chunks import chunk_cache, chunk_cook, cook_cache
+from usd_chunks import chunk_cache, chunk_cook, chunk_scheduler, cook_cache
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
@@ -2205,6 +2205,31 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
         return self._chunk_target.get(c)
 
+    def sort_chunk_layers(self, chunks) -> None:
+        """Order every graph layer's chunk layers so a chunk downstream of another wins.
+
+        Each chunk layer is placed when it is made, and a chunk is made before it is wired,
+        so placement alone leaves layers in creation order. A View re-sorts them on every
+        recook (closest to the View wins); this is the same correction for a graph with no
+        View -- a load, or a script still building -- by chunkgroup-aware dependency depth
+        (chunk_scheduler.layer_sort_key). Only a graph layer whose order changes is written.
+
+        Args:
+            chunks: The chunks whose layers to sort.
+        """
+        keys = {
+            layer.identifier: chunk_scheduler.layer_sort_key(c.get_dag_node())
+            for c in chunks
+            if (layer := self.get_layer(c)) is not None
+        }
+        # A snapshot: writing subLayerPaths can cascade into get_or_create_layer, which
+        # edits graph_layers while this loop would still be reading it.
+        for g_layer in list(self.graph_layers.values()):
+            current = list(g_layer.subLayerPaths)
+            ordered = sorted(current, key=lambda ident: keys.get(ident, 0), reverse=True)
+            if ordered != current:
+                g_layer.subLayerPaths = ordered  # type: ignore
+
     def defer_placement(self) -> bool:
         """Hold chunk layers made from now on in one loading layer, until the graph is wired.
 
@@ -2384,7 +2409,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                     target.subLayerPaths.insert(0, parent.identifier)
 
             # The sort_key is used to determine the order of the chunk sublayers
-            index = c.get_dag_node().get_sort_key()
+            index = chunk_scheduler.layer_sort_key(c.get_dag_node())
             if index > len(parent.subLayerPaths) - 1:
                 index = len(parent.subLayerPaths)
 
