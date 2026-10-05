@@ -2205,6 +2205,20 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         """
         return self._chunk_target.get(c)
 
+    def target_of_layer(self, layer: Sdf.Layer) -> Sdf.Layer | None:
+        """The real layer a chunk layer's content lands in (get_chunk_target, by layer).
+
+        Args:
+            layer: A chunk's own layer.
+
+        Returns:
+            Its chunk's target, or None if no tracked chunk owns `layer`.
+        """
+        for c, owned in self.chunk_layers.items():
+            if owned is not None and owned.identifier == layer.identifier:
+                return self._chunk_target.get(c)
+        return None
+
     def defer_placement(self) -> bool:
         """Hold chunk layers made from now on in one loading layer, until the graph is wired.
 

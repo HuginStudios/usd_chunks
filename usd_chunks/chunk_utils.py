@@ -985,7 +985,11 @@ def get_unique_path(stage, prim_path, own_layer=None):
             expression the resolved path is returned as-is -- expressions define an explicit
             derived path, so uniqueness bumping would be wrong.
         own_layer: The layer the asking chunk authors into, if any. A prim that only this
-            layer defines is the chunk's own, not a collision.
+            layer defines is the chunk's own, not a collision. With it, only a `def` that
+            lands in the same real layer counts as taken: another chunk behind the same Edit
+            Target, or that layer itself. The same path defined in another file (a
+            department's publish) or behind another Edit Target is another opinion on the
+            prim, the way USD layering works, and keeps its name.
 
     Returns:
         A prim path free on the stage.
@@ -1004,6 +1008,11 @@ def get_unique_path(stage, prim_path, own_layer=None):
     if not stage:
         return prim_path
 
+    layers = chunk_registry.ChunkLayerManager()
+    # Where the asking chunk's content really lands: its Edit Target's layer (or the session
+    # layer), or own_layer itself for a chunk with no layer of its own.
+    own_target = (layers.target_of_layer(own_layer) or own_layer) if own_layer is not None else None
+
     def _is_taken(path):
         prim = stage.GetPrimAtPath(path)
         if not (prim.IsValid() and prim.GetTypeName()):
@@ -1011,7 +1020,9 @@ def get_unique_path(stage, prim_path, own_layer=None):
         if own_layer is None:
             return True
         return any(
-            spec.layer != own_layer and spec.specifier == Sdf.SpecifierDef
+            spec.layer != own_layer
+            and spec.specifier == Sdf.SpecifierDef
+            and (layers.target_of_layer(spec.layer) or spec.layer) == own_target
             for spec in prim.GetPrimStack()
         )
 

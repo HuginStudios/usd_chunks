@@ -1848,12 +1848,13 @@ def test_get_unique_path_does_not_count_the_chunks_own_prim() -> None:
 
     # Authored straight into the layer: DefinePrim over an already-defined prim of the same
     # type authors nothing, so it would not give the other layer a spec at all.
+    # Defined by another layer as well, it is that layer's opinion on the same prim, not a
+    # collision: department layers define the same prims all the time. Only a def landing in
+    # the same real layer is (test_unique_path_per_target_layer).
     other = Sdf.Layer.CreateAnonymous()
     Sdf.CreatePrimInLayer(other, Sdf.Path("/cameras/cam1")).specifier = Sdf.SpecifierDef
     stage.GetSessionLayer().subLayerPaths.append(other.identifier)
-    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam2", (
-        "defined by another layer as well, it is a real collision"
-    )
+    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam1"
 
 
 # ---------------------------------------------------------------------------
