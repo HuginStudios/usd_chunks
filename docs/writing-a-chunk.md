@@ -57,10 +57,34 @@ and saved in the file. A change in a chunk above yours reaches your chunk as a c
 - `add_callback(..., sender=...)` takes your own chunk or one of its params. Another chunk's
   param raises a `ValueError`.
 - `listen_globally=True` is for the stage and the host only: stage edits, prim selection,
-  the viewport camera. It lists cameras for a menu, for example. Listening globally to
-  another chunk's notices (`CHUNK_CHANGED`, `PARAM_CHANGED`, ...) raises a `ValueError`.
+  the viewport camera. Listening globally to another chunk's notices (`CHUNK_CHANGED`,
+  `PARAM_CHANGED`, ...) raises a `ValueError`.
 - A param can't depend on another chunk's param through `add_dependency`. Use
   `connect_value`, which writes the expression for you.
+
+**A stage listener stays small.** When you do listen to the stage or the host:
+
+- Read the stage and set only your own chunk's params. Never author USD in the callback.
+  `execute()` authors from the params, so the change reaches the chunks wired below.
+  Camera's Lock to Free Camera works this way: the freecam sets translate and rotate.
+- Write only when the value actually changed. Every write can cook your chunk.
+- Wait for `CHUNK_LOADED` before writing. Saved values are restored after `main()`, and a
+  write before then can overwrite them.
+- Return early on rounds that can't matter to you. A stage listener runs on every stage
+  change, for every instance of your chunk.
+
+Most of the time you don't need a listener at all. A menu of what's on the stage (the
+cameras, a prim's variant sets, the SkelRoots) is only needed when someone opens it. Give
+your module a `menu_items` hook instead, and every frontend asks it as the menu opens:
+
+```python
+def menu_items(node, param_name):
+    if param_name == "camera":
+        return [str(p.GetPath()) for p in node.get_stage().Traverse() if p.IsA(UsdGeom.Camera)]
+    return None   # this menu keeps its items
+```
+
+The current value always stays listed, so a saved pick survives until the stage offers it.
 
 [`docs/example.md`](example.md) has a longer example with notes on the param types,
 groups, flags and callback signatures you can use in `main()`.

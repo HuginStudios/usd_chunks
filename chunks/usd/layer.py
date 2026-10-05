@@ -7,6 +7,9 @@ from usd_chunks import chunk_stage
 
 _INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
 
+#: Set once CHUNK_LOADED has fired -- values are in, the after-layer menu may refresh.
+_IN_SCENE = "_layer_in_scene"
+
 
 def _refresh_after_layer(owner, notice, sender):
     """Rebuild the after-layer menu from the current parent layer's sublayers.
@@ -18,6 +21,10 @@ def _refresh_after_layer(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
+        return
+    if not getattr(_chunk, _IN_SCENE, False):
+        # Held off until CHUNK_LOADED: a saved After Layer choice is restored after main()
+        # registers this, and resetting a value the list does not hold yet would drop it.
         return
     if _chunk.is_blocked():
         # This is listen_globally=True, so it fires for EVERY Layer instance on
@@ -63,9 +70,16 @@ def _refresh_after_layer(owner, notice, sender):
         # makes are themselves stage content changes -- so this global handler still fires for
         # the half-dismantled chunk. Nothing left to refresh.
         return
-    after_menu.menu_items = after_items
+    # Only on a change: every stage change round lands here, for every Layer chunk.
+    if list(after_menu.menu_items or []) != after_items:
+        after_menu.menu_items = after_items
     if after_menu.value not in after_items:
         after_menu.value = after_items[0]
+
+
+def _chunk_loaded(owner, notice, sender):
+    setattr(owner.get_chunk(), _IN_SCENE, True)
+    _refresh_after_layer(owner, notice, sender)
 
 
 def _update_visibility(owner):
@@ -325,11 +339,11 @@ def main():
 
     _update_visibility(layerChunk)
 
+    layerChunk.add_callback(_chunk_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
     layerChunk.add_callback(
         _refresh_after_layer,
         notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
         listen_globally=True,
-        send_on_create=True,
     )
 
     return layerChunk

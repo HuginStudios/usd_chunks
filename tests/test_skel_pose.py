@@ -116,11 +116,27 @@ class TestCharacterMenu:
         _build_character(stage, root_path="/Crowd/Extra")
         scene = _make_scene(stage)
         node, _ = _make_chunk(scene)
-        assert list(node.get_param("primpath_location").menu_items) == ["/Char", "/Crowd/Extra"]
-        node.get_param("primpath_location").value = "/Crowd/Extra"
+        menu = node.get_param("primpath_location")
+        menu.refresh_items()  # what a frontend does as the menu opens
+        assert list(menu.menu_items) == ["/Char", "/Crowd/Extra"]
+        menu.value = "/Crowd/Extra"
         stage.RemovePrim("/Crowd/Extra")
-        assert node.get_param("primpath_location").value == "/Crowd/Extra", "a value the stage lost is kept, not coerced"
-        assert list(node.get_param("primpath_location").menu_items) == ["/Char", "/Crowd/Extra"]
+        menu.refresh_items()
+        assert menu.value == "/Crowd/Extra", "a value the stage lost is kept, not coerced"
+        assert list(menu.menu_items) == ["/Char", "/Crowd/Extra"]
+
+    def test_the_menu_fills_as_it_opens_not_by_listening(self):
+        """Nothing upstream reaches it but its wire: a SkelRoot arriving is seen on opening."""
+        stage = Usd.Stage.CreateInMemory()
+        scene = _make_scene(stage)
+        node, _ = _make_chunk(scene)
+        menu = node.get_param("primpath_location")
+        _build_character(stage)
+        assert list(menu.menu_items) == [], "the menu was kept current by a stage listener"
+        menu.refresh_items()
+        assert list(menu.menu_items) == ["/Char"]
+        for data in node._callbacks.callbacks:
+            assert not data["conn"].globally, f"{data['conn'].get_method()} listens to the stage"
 
 
 class TestLofting:
@@ -225,6 +241,7 @@ class TestPose:
         first = module._rig(node)
         assert module._rig(node) is first
         _build_character(stage, root_path="/Other")
+        node.get_param("primpath_location").refresh_items()
         assert list(node.get_param("primpath_location").menu_items) == ["/Char", "/Other"],             "a SkelRoot arriving on the stage shows up in the Character menu"
         node.get_param("primpath_location").value = "/Other"
         assert module._rig(node) is not first, "re-targeting drops the cache"

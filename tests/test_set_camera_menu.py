@@ -1,7 +1,7 @@
 """Set Camera's dropdown lists the stage's cameras, follows the stage, and sets the viewport.
 
-Same menu rules as Set Variant: read off the stage, refreshed on every stage edit, and a
-value the stage does not offer right now stays listed rather than being coerced away.
+Same menu rules as Set Variant: read off the stage as it opens -- no stage listener --
+and a value the stage does not offer right now stays listed rather than being coerced away.
 """
 from __future__ import annotations
 
@@ -60,10 +60,20 @@ def _set_camera(qapp, scene):
     return node
 
 
+def _opened(menu):
+    """The menu's items as a frontend shows them: asked for as it opens (Menu.refresh_items)."""
+    menu.refresh_items()
+    return menu.menu_items
+
+
+def _listens_globally(node):
+    return [d["conn"].get_method() for d in node._callbacks.callbacks if d["conn"].globally]
+
+
 def test_the_menu_lists_the_stages_cameras(qapp, scene) -> None:
     node = _set_camera(qapp, scene)
 
-    assert node.get_param("camera").menu_items == ["/cameras/main", "/cameras/closeup"]
+    assert _opened(node.get_param("camera")) == ["/cameras/main", "/cameras/closeup"]
 
 
 def test_the_menu_follows_the_stage(qapp, scene) -> None:
@@ -72,7 +82,8 @@ def test_the_menu_follows_the_stage(qapp, scene) -> None:
     _define_camera(scene.get_stage(), "/cameras/wide")
     qapp.processEvents()
 
-    assert "/cameras/wide" in node.get_param("camera").menu_items
+    assert "/cameras/wide" in _opened(node.get_param("camera"))
+    assert _listens_globally(node) == []
 
 
 def test_picking_a_camera_sets_the_viewport(qapp, scene) -> None:
@@ -95,7 +106,7 @@ def test_a_pick_the_stage_lacks_stays_listed(qapp, scene) -> None:
     qapp.processEvents()
 
     assert menu.value == "/cameras/closeup"
-    assert "/cameras/closeup" in menu.menu_items
+    assert "/cameras/closeup" in _opened(menu)
 
 
 def test_a_recook_with_the_same_pick_leaves_the_viewport_alone(qapp, scene) -> None:

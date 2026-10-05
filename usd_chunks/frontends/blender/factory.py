@@ -38,6 +38,7 @@ frontend and the conformance test both guard the import.
 from __future__ import annotations
 
 import logging
+import time
 
 import bpy
 
@@ -118,6 +119,12 @@ def _enum_items(param):
 #: recent list per property is the documented way round it.
 _enum_cache: dict = {}
 
+#: When each (node, param) last asked its module for its items (Menu.refresh_items).
+#: Blender calls an items callback on every redraw of the panel, not only when the menu
+#: opens, and the hook may walk the stage -- so it is asked at most this often.
+_REFRESH_EVERY = 1.0
+_refreshed: dict = {}
+
 
 def _enum_items_cb(param_name: str):
     """An `items=` CALLBACK for a Menu, rather than a fixed list.
@@ -132,6 +139,11 @@ def _enum_items_cb(param_name: str):
         # Blender calls this with no instance in some contexts (a tooltip, an RNA walk).
         chunk = self.get_chunk() if self is not None and hasattr(self, "get_chunk") else None
         param = chunk.get_param(param_name) if chunk is not None else None
+        key = (getattr(self, "name", ""), param_name)
+        now = time.monotonic()
+        if hasattr(param, "refresh_items") and now - _refreshed.get(key, -_REFRESH_EVERY) >= _REFRESH_EVERY:
+            _refreshed[key] = now
+            param.refresh_items()
         items = _enum_items(param)
         _enum_cache[(getattr(self, "name", ""), param_name)] = items
         return items

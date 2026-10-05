@@ -29,6 +29,15 @@ def _discover_export_layers(stage):
     return layers
 
 
+#: Set once CHUNK_LOADED has fired -- the saved rows are in, the list may rebuild.
+_IN_SCENE = "_export_usd_in_scene"
+
+
+def _chunk_loaded(owner, notice, sender):
+    setattr(owner.get_chunk(), _IN_SCENE, True)
+    _refresh_layer_rows(owner, notice, sender)
+
+
 def _refresh_layer_rows(owner, notice, sender):
     """Rebuild the per-layer export list from the real layers currently in the stage.
 
@@ -47,6 +56,10 @@ def _refresh_layer_rows(owner, notice, sender):
     _chunk = owner.get_chunk()
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
+        return
+    if not getattr(_chunk, _IN_SCENE, False):
+        # Held off until CHUNK_LOADED: the saved rows, and the checkboxes on them, are
+        # restored after main() registers this, and a rebuild before then would race them.
         return
 
     rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
@@ -625,11 +638,11 @@ def main():
 
     export_layers.add_param(chunk.Checkbox("bake", "Bake chunk outputs", default_value=False))
     chunk_api.add_param(export_layers)
+    chunk_api.add_callback(_chunk_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
     chunk_api.add_callback(
         _refresh_layer_rows,
         notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
         listen_globally=True,
-        send_on_create=True,
     )
 
     export_all_btn = chunk.Button(
