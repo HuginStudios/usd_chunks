@@ -94,6 +94,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Chunks talk to each other only through wires: an exec input or an `@Node.param@`
+  expression. A change no longer sends notices to the chunks wired below it; they are
+  marked dirty and cooked. A callback can't listen to another chunk's param, and
+  `listen_globally` is only for the stage and the host. Both raise a `ValueError`
+  otherwise. A param `add_dependency` across two chunks used to warn and now raises; use
+  `connect_value`. The RBD Solver now goes stale through its own cook instead of a global
+  listener.
 - Opening a network no longer re-cooks what several exec roots share. Each root used to
   solve everything below it, so a Merge of six References and the Scatter below it cooked
   once per root; a root that an earlier root's solve already cooked is now skipped.

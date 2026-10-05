@@ -1314,12 +1314,22 @@ class ChunkNoticePropagator:
             self._solve_downstream()
 
     def _solve_downstream(self):
-        """Solve this object's already-dirty node and everything downstream of it."""
+        """Solve this object's already-dirty node and everything downstream of it.
+
+        Notices stay within a chunk. A change is announced up through what owns it -- a
+        param, its group, its chunk, the chunkgroup holding that -- but not across a wire
+        to another chunk: that chunk is marked dirty and handed to chunk_cook, and hears
+        nothing. Chunks speak to each other only through wires, which the graph draws and
+        USD stores, so nothing a chunk does depends on a channel nobody can see.
+        """
         node = self.get_dag_node()
         # Built only when it is logged: it named every node of every solve, a drag step's
         # thirty of them, for a message nobody reads.
         debug = logger.isEnabledFor(logging.DEBUG)
         msg = "\n====== SOLVE ======\n"
+        # The nodes reached only across a wire from another chunk: they announce nothing,
+        # and what they pass up to their owners is no change of the owner's either.
+        quiet: set[DagNode] = set()
         for n in node.solve_outputs():
             if not (prop := n.propagator):
                 continue
@@ -1328,16 +1338,24 @@ class ChunkNoticePropagator:
                 msg += f"solved: {n.name}\n"
 
             changes = [(alias, iprop) for alias, iprop in n.iter_changes() if iprop]
-            for alias, iprop in changes:
-                if alias == prop.get_notice_alias():
-                    continue
-
+            here = _chunk_of(prop)
+            own = [(alias, iprop) for alias, iprop in changes
+                   if not _foreign(alias, iprop, here, quiet)]
+            if changes and not own:
+                quiet.add(n)
                 if debug:
-                    msg += f"   {alias.name}\n"
-                prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
+                    msg += "   (only across a wire: dirtied, not told)\n"
+            else:
+                for alias, iprop in own:
+                    if alias == prop.get_notice_alias():
+                        continue
 
-            if (notice := prop.send_self()) and debug:
-                msg += f"   {notice.alias.name}\n"
+                    if debug:
+                        msg += f"   {alias.name}\n"
+                    prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
+
+                if (notice := prop.send_self()) and debug:
+                    msg += f"   {notice.alias.name}\n"
 
             # A pure state change (selection, collapse, disable) must not re-run the module.
             # Data changes (params/inputs) and a direct dirty solve (execute-on-creation,
@@ -1577,7 +1595,25 @@ class ChunkNoticePropagator:
                 Defaults to False.
             private (bool): Keep the callback out of serialization and copies, which is what a
                 callback added inside __init__ needs. Defaults to False.
+
+        Raises:
+            ValueError: It would hear another chunk. Chunks speak to each other only through
+                wires: listen_globally is for the stage and the host (SCENE_ALIASES), and a
+                sender is this object's own chunk or something in it.
         """
+        if listen_globally and notice_alias not in SCENE_ALIASES:
+            raise ValueError(
+                f"listen_globally hears every chunk's {notice_alias.name}; a chunk may listen "
+                f"globally only to the stage and the host ({', '.join(sorted(a.name for a in SCENE_ALIASES))}). "
+                "To react to another chunk, wire it in."
+            )
+        if sender is not None and (mine := _chunk_of(self)) is not None \
+                and (theirs := _chunk_of(sender)) is not None and theirs is not mine:
+            raise ValueError(
+                f"{getattr(self, 'name', self)} listens to {getattr(sender, 'name', sender)} of "
+                f"another chunk ({getattr(theirs, 'name', theirs)}): to react to another chunk, "
+                "wire it in -- an exec input, or an @Node.param@ expression."
+            )
         # If sender is not set and we should not listen for global notices, the sender will be self
         if sender is None and not listen_globally:
             sender = self
@@ -1660,6 +1696,44 @@ class _SharedGlobalListener:
     def Revoke(self):
         if (connection := self._connection()) is not None:
             self._dispatch.subscribers.discard(connection)
+
+
+#: What a chunk may listen to from everywhere (add_callback's listen_globally): the stage and
+#: the host -- what anyone may be reading, whoever wrote it. Never another chunk's notices:
+#: chunks speak to each other only through wires (ChunkNoticePropagator._solve_downstream).
+SCENE_ALIASES = frozenset({
+    ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
+    ChunkNoticeAlias.PROP_SELECTION_CHANGED,
+    ChunkNoticeAlias.CAMERA_CHANGED,
+    ChunkNoticeAlias.OBJECT_CHANGED,
+    ChunkNoticeAlias.STAGE_CHANGED,
+    ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
+    ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED,
+})
+
+
+def _chunk_of(prop) -> ChunkNoticePropagator | None:
+    """The chunk prop is or belongs to: the nearest owner that is a chunk; None outside any.
+
+    A chunk is told by can_cook, which only ChunkBase defines -- this module cannot import it.
+    """
+    while prop is not None and not callable(getattr(prop, "can_cook", None)):
+        prop = prop.get_owner()
+    return prop
+
+
+def _foreign(alias: ChunkNoticeAlias, source, here, quiet: set[DagNode]) -> bool:
+    """Whether a change reached a node of chunk `here` only across a wire from another chunk.
+
+    Directly -- an input from a node of another chunk -- or passed up by a node that was
+    itself reached only that way (one in `quiet`).
+    """
+    if source.get_dag_node() in quiet:
+        return True
+    if alias is not ChunkNoticeAlias.INPUT_CHANGED or here is None:
+        return False
+    there = _chunk_of(source)
+    return there is not None and there is not here
 
 
 # One entry per alias, for the lifetime of the process -- never torn down, same as the

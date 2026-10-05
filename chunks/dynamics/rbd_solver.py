@@ -3391,71 +3391,37 @@ def _on_auto_sim_toggled(owner, notice, sender) -> None:
         _schedule_auto_run(_chunk)
 
 
-def _on_any_chunk_changed(owner, notice, sender) -> None:
-    """Global CHUNK_CHANGED listener -- catches an upstream chunk (e.g. a Transform feeding
-    the collider or target prim) changing, even though it's wired via a live-drawn graph
-    connection rather than DagNode.add_dependency(). Real graph wiring (_author_connection in
-    frontends/qt/nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
-    calls add_dependency, so ChunkNoticeAlias.INPUT_CHANGED (which is purely a DagNode concept)
-    never fires between two chunks connected that way. view_cook_list walks the same
-    real USD connections recook_for_view and get_upstream_stage already trust, so membership in
-    it is the correct, already-battle-tested definition of "is this chunk really upstream of me".
+def _control_changed(owner, notice, sender) -> None:
+    """A control changed (Run, Auto Simulate, the readout, ...): the cook it brings is ours.
+
+    Every param change cooks its chunk, and execute() takes any cook it did not ask for as an
+    input having changed. A control is not an input, so it says so first: the callbacks run
+    during the solve, before the cook. Not for a change that brings no cook -- the readout
+    is a Label, which nothing computes from -- or the mark would outlive it and swallow the
+    next real change. Asked here, inside the notice, while the solve still holds the verdict.
     """
-    _chunk = owner.get_chunk()
-    if sender is None or sender is _chunk:
+    if owner.get_dag_node().only_presentation_changed():
         return
-    # The cheap answers first: this hears every change to every chunk in the scene, and the
-    # upstream walk below is the expensive part. A solver already stale with Auto Simulate
-    # off has nothing left to do whatever changed -- which is its state all through a load.
-    auto_sim_param = _chunk.get_param("auto_sim", chunk.is_param_t(bool))
-    if auto_sim_param is None:
-        return  # still being built, or already being torn down
-    auto_sim = auto_sim_param.value
-    if not auto_sim and _chunk.has_state(chunk.ChunkFlags.State.STALE):
-        return
-    if _only_presentation_changed(sender):
-        return
-    scene = chunk_registry.ChunkRegistry().scene
-    stage = _chunk.get_stage()
-    if not scene or not stage:
-        return
-    if sender not in chunk_stage.view_cook_list(_chunk, stage, scene):
-        return
-    _chunk.set_state(chunk.ChunkFlags.State.STALE)
-    if auto_sim:
-        _schedule_auto_run(_chunk)
+    owner.get_chunk()._rbd_controls_cook = True
 
 
-def _only_presentation_changed(sender) -> bool:
-    """Whether an upstream chunk changed in a way nothing computes from.
+def _note_input_change(node) -> None:
+    """A cook no control asked for: an input changed, so the bake is out of date.
 
-    The listener above is deliberately broad -- it exists because graph wiring never calls
-    add_dependency, so INPUT_CHANGED never fires between two chunks wired that way. The cost of
-    that breadth is that it also hears the changes `propagate_dirty` already decided were
-    presentation only, and re-bakes a simulation for each one.
-
-    With Auto Simulate on and a Scatter Brush upstream, every brush stroke propagates as a
-    presentation change, not a data change -- so nothing dirties the chain, and without this
-    check the solver would re-bake off this notice on every stroke.
-
-    Asked of the framework rather than answered here, so the DISABLED carve-out keeps working:
-    disabling a chunk is a state change, but it decides whether that chunk cooks, and is
-    therefore a real simulation input. DagNode.only_presentation_changed reads back the
-    verdict chunk_scheduler recorded when the change was propagated, rather than re-asking
-    each sender's is_presentation_change(), which would re-read an old_value/value pair that
-    has since moved on.
-
-    Only meaningful *inside* the notice. `_changes` is cleared in a `finally` once the whole
-    solve finishes (chunk_scheduler.solve), and the notices fire during it -- so this reads a
-    populated record here and an empty one anywhere else, so a test must ask from inside
-    the notice too.
+    An input is one of the solver's own params (which _mark_stale marked already) or a chunk
+    wired into it: a chunk upstream reaches the solver only through its wires, and only
+    when what it changed is something the solver reads (skip_cook) -- not for a change
+    nothing computes from, such as a Scatter Brush stroke, which cooks nothing. So this
+    is where an upstream change marks the solver, and Auto Simulate re-bakes from here,
+    once the chunks above have cooked.
     """
-    try:
-        # Nothing recorded reads as False, i.e. assume it mattered: a missed re-run is a
-        # wrong simulation, an extra one is only slow.
-        return sender.get_dag_node().only_presentation_changed()
-    except Exception:  # noqa: BLE001 - never let this stop a legitimate re-run
-        return False
+    if getattr(node, "_rbd_controls_cook", False):
+        node._rbd_controls_cook = False
+        return
+    node.set_state(chunk.ChunkFlags.State.STALE)
+    auto_sim = node.get_param("auto_sim", chunk.is_param_t(bool))
+    if auto_sim is not None and auto_sim.value:
+        _schedule_auto_run(node)
 
 
 def _is_headless() -> bool:
@@ -3481,6 +3447,7 @@ def execute(node) -> None:
         # The framework cleared this layer for the cook; put the last bake back. Baking
         # again would cost a full simulation on every tweak upstream.
         sim_bake.restore(node, node.get_edit_context())
+        _note_input_change(node)
         return
     node._rbd_cache_checked = True
     node._rbd_cache_only = True
@@ -3927,16 +3894,13 @@ def main() -> chunk.Chunk:
     chunk_api.add_param(sim_grp)
 
     # Any real simulation input marks the chunk stale (orange node border) until the next
-    # successful Run; an upstream chunk changing does the same via the global listener above.
+    # successful Run; an upstream chunk changing does the same through the cook it brings
+    # (_note_input_change). A control says its cook is not an input changing.
     for p in chunk_api.get_params():
         if getattr(p, "name", None) not in _STALE_IGNORE_PARAMS:
             p.add_callback(_mark_stale, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED, send_on_create=False)
-    chunk_api.add_callback(
-        _on_any_chunk_changed,
-        notice_alias=chunk.ChunkNoticeAlias.CHUNK_CHANGED,
-        listen_globally=True,
-        send_on_create=False,
-    )
+        else:
+            p.add_callback(_control_changed, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED, send_on_create=False)
     chunk_api.set_state(chunk.ChunkFlags.State.STALE)
 
     return chunk_api
