@@ -8,6 +8,10 @@ button's callback by hand.
 
 from __future__ import annotations
 
+import importlib.util
+
+import pytest
+
 from usd_chunks import Scene, sim_bake
 
 
@@ -16,6 +20,7 @@ def test_a_script_counts_as_unattended() -> None:
         assert sim_bake.is_unattended()
 
 
+@pytest.mark.skipif(importlib.util.find_spec("mujoco") is None, reason="needs mujoco")
 def test_rbd_bakes_on_cook_in_a_script() -> None:
     with Scene() as scene:
         ground = scene.create.cube(prim_path="/ground", width=10.0, height=0.2, depth=10.0, name="ground_mesh")
