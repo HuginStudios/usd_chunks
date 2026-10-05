@@ -75,6 +75,36 @@ def test_no_view_is_made_when_the_container_has_no_slot_left():
     assert chunk_graph.create_view_for(stage, None, "/chunks/node") is None
 
 
+def test_setting_a_taken_slot_repoints_its_view():
+    """Set View 1 on another node moves View1 there rather than making a second view."""
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/chunks/a", "Chunk")
+    stage.DefinePrim("/chunks/b", "Chunk")
+    view = _view(stage, "/chunks/View1", 1, target="/chunks/a")
+
+    assert chunk_graph.create_view_for(stage, None, "/chunks/b", slot=1) == 1
+    assert view.GetAttribute(chunk_graph.EXEC_INPUT).GetConnections() == [
+        Sdf.Path(f"/chunks/b.{chunk_graph.EXEC_OUTPUT}")]
+
+
+def test_a_node_can_be_set_into_both_slots():
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/chunks/a", "Chunk")
+    _view(stage, "/chunks/View1", 1, target="/chunks/a")
+    view2 = _view(stage, "/chunks/View2", 2, target="/chunks/x")
+
+    assert chunk_graph.create_view_for(stage, None, "/chunks/a", slot=2) == 2
+    assert view2.GetAttribute(chunk_graph.EXEC_INPUT).GetConnections() == [
+        Sdf.Path(f"/chunks/a.{chunk_graph.EXEC_OUTPUT}")]
+
+
+def test_a_slot_outside_the_two_is_refused():
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/chunks/a", "Chunk")
+
+    assert chunk_graph.create_view_for(stage, None, "/chunks/a", slot=3) is None
+
+
 def test_switching_views_in_a_missing_context_is_refused():
     stage = Usd.Stage.CreateInMemory()
 

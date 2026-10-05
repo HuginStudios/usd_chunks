@@ -845,7 +845,7 @@ class GraphView:
             return self.dive_out()
         if key == "enter" and len(self.selected_nodes) == 1:
             return self.dive_into(next(iter(self.selected_nodes)))
-        if key in ("0", "1", "2", "3") and not event.ctrl:
+        if key in ("0", "1", "2") and not event.ctrl:
             return self.set_active_slot(int(key))
         if key == "v" and not event.ctrl:
             return self.create_view()

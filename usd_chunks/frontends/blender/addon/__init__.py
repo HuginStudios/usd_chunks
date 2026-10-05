@@ -350,7 +350,7 @@ class USDCHUNKS_OT_set_view_slot(bpy.types.Operator):
     bl_label = "Set Active View"
     bl_options = {"REGISTER"}
 
-    slot: bpy.props.IntProperty(default=1, min=0, max=3)
+    slot: bpy.props.IntProperty(default=1, min=0, max=2)
 
     def execute(self, context):
         view = get_view()
@@ -675,15 +675,15 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
         box.label(text="Active view")
         row = box.row(align=True)
         active = view.active_slot() if view else 0
-        for slot in (0, 1, 2, 3):
+        for slot in (0, 1, 2):
             op = row.operator(USDCHUNKS_OT_set_view_slot.bl_idname,
                               text="none" if slot == 0 else str(slot),
                               depress=(slot == active))
             op.slot = slot
         # The keys, so nobody has to find them in the keymap editor: they mirror the Qt
-        # and Flet graphs (V, 0-3, L, Ctrl+G) where Blender had no habit to keep, and
+        # and Flet graphs (V, 0-2, L, Ctrl+G) where Blender had no habit to keep, and
         # Blender's own (X, Shift+D, Ctrl+C/X/V, M, Tab) where it did.
-        box.label(text="V view  0-3 slot  L layout  Ctrl+G group", icon="EVENT_V")
+        box.label(text="V view  0-2 slot  L layout  Ctrl+G group", icon="EVENT_V")
 
         if tree is not None and tree.chunk_network_path:
             layout.label(text=tree.chunk_network_path.rsplit("\\", 1)[-1], icon="FILE")
@@ -738,7 +738,6 @@ _KEYS = (
     (USDCHUNKS_OT_set_view_slot, "ZERO", {}, {"slot": 0}),
     (USDCHUNKS_OT_set_view_slot, "ONE", {}, {"slot": 1}),
     (USDCHUNKS_OT_set_view_slot, "TWO", {}, {"slot": 2}),
-    (USDCHUNKS_OT_set_view_slot, "THREE", {}, {"slot": 3}),
 )
 
 
