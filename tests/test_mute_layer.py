@@ -1,4 +1,4 @@
-"""The Mute Layer chunk: mute layers picked from a list or matched by a glob pattern."""
+"""The Mute Layer chunk: mute layers picked from a list or matched by a path pattern."""
 
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def test_mutes_again_when_the_saved_scene_is_opened(tmp_path) -> None:
 
 
 def test_a_pattern_matches_the_full_path_too(tmp_path) -> None:
-    """`*_cfx*` finds _cfx anywhere in a file layer's path, folders included."""
+    """Patterns work as in prim path fields: `**` crosses folders, `*` stays in one."""
     folder = tmp_path / "shot_cfx"
     folder.mkdir()
     Sdf.Layer.CreateNew(str(folder / "sim.usda")).Save()
@@ -142,5 +142,14 @@ def test_a_pattern_matches_the_full_path_too(tmp_path) -> None:
         rows = subs.get_param("imports", chunk.is_inst(chunk.ListGroup))
         rows.size = 1
         rows.get_indexed_param("sublayer_path", 0, chunk.is_param_t(str)).value = str(folder / "sim.usda")
-        scene.create.mute_layer(subs, pattern="*_cfx*")
+        mute = scene.create.mute_layer(subs, pattern="*_cfx*")
+        assert _muted_names(scene.get_stage()) == [], "`*` does not reach into the folder name"
+        scene.set(mute, pattern="**/shot_cfx/**")
         assert _muted_names(scene.get_stage()) == ["sim.usda"]
+
+
+def test_commas_separate_patterns_too() -> None:
+    with Scene() as scene:
+        _three_layers(scene)
+        scene.create.mute_layer(pattern="light_key,fx")
+        assert _muted_names(scene.get_stage()) == ["fx", "light_key"]
