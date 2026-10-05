@@ -8,7 +8,10 @@ def execute(node):
     primpath_param = node.get_param("primpath_location")
     prim_type = node.get_param("prim_type").value
     for path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
-        stage.DefinePrim(path, prim_type)
+        stage.DefinePrim(path, prim_type)  # defines any missing parents too
+        # Into this chunk's own layer even when another layer already defines the prim the
+        # same way: DefinePrim writes nothing then, and the layer's publish lost the def.
+        chunk_utils.define_in_edit_layer(stage, path, prim_type)
 
 
 def main():

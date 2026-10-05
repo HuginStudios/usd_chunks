@@ -1228,6 +1228,21 @@ def _claim_unique_path(stage, param):
         param.value = unique_path
 
 
+def define_in_edit_layer(stage, path, type_name: str) -> None:
+    """Make sure the edit target's layer holds a `def` for `path`, with a type.
+
+    DefinePrim writes nothing for a prim that is already defined with that type -- by
+    another department's layer, say, or a payload. A chunk that means to define the prim
+    in its own layer then leaves that layer without it, and its publish is missing the def.
+    The type is set only where the layer has none, so a type already chosen there wins.
+    """
+    target = stage.GetEditTarget()
+    spec = Sdf.CreatePrimInLayer(target.GetLayer(), target.MapToSpecPath(path))
+    spec.specifier = Sdf.SpecifierDef
+    if not spec.typeName:
+        spec.typeName = type_name or "Xform"
+
+
 def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform"):
     """Define `path` with `type_name`, giving every ancestor along the way a type too.
 
