@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pxr import Sdf
 
-from usd_chunks import Scene, chunk_utils
+from usd_chunks import Scene, chunk, chunk_naming, chunk_utils
 from usd_chunks.chunk_stage import exec_input_connections, get_chunk_prim_path
 
 
@@ -50,3 +50,29 @@ def test_a_scripted_group_gets_its_exec_input() -> None:
         group = scene.create.chunkgroup(mesh, name="make_proxy")
         prim = scene.get_stage().GetPrimAtPath(get_chunk_prim_path(group))
         assert [str(c.GetPrimPath()) for c in exec_input_connections(prim)] == [get_chunk_prim_path(mesh)]
+
+
+def test_a_baked_export_carries_the_groups_work_and_none_of_its_bookkeeping(tmp_path) -> None:
+    """The group's inner chunks now keep their bookkeeping in the Edit Target's layer, as
+    `over`s (the group itself is in the session layer). Stripping looked for Chunk-typed
+    prims only, so those overs stayed in the published file as a second root prim."""
+    with Scene() as scene:
+        layer = scene.create.layer(layer_name="proxy")
+        with scene.create.edit_target(layer, edit_target="proxy"):
+            mesh = scene.create.cube(prim_path="/ball/proxy", name="proxy_mesh")
+            group = scene.create.chunkgroup(mesh, name="make_proxy")
+            with group:
+                scene.create.set_metadata(prim_path="/ball/proxy", metadata_key="purpose",
+                                          metadata_value="proxy", name="purpose")
+        exporter = scene.create.export_usd(group, output_dir=str(tmp_path), keep_session_layer=False)
+        rows = exporter.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
+        for i in range(rows.size):
+            keep = rows.get_indexed_param(rows.get_param("layer_name"), i).value == "proxy"
+            rows.get_indexed_param(rows.get_param("export_enabled"), i).value = keep
+            rows.get_indexed_param(rows.get_param("bake"), i).value = keep
+        scene.commit()
+
+    out = Sdf.Layer.FindOrOpen(str(tmp_path / "proxy.usda"))
+    assert [p.name for p in out.rootPrims] == ["ball"], "no chunk bookkeeping left as a root"
+    assert not out.GetPrimAtPath(chunk_naming.CHUNKS_ROOT)
+    assert out.GetAttributeAtPath("/ball/proxy.purpose").default == "proxy", "the group's work is there"
