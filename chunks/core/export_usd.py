@@ -142,10 +142,28 @@ def _read_export_disabled_layer_names(_chunk) -> set:
     return _unchecked_layer_names(_chunk, "export_enabled")
 
 
+def _collect_internal_layers(layer, internal_ids: set, own: list, real: list) -> None:
+    """Walk `layer` and the internal layers under it, strongest first.
+
+    Adds a content-only copy of each internal layer to `own` (its sublayer list cleared,
+    so composing the copies never pulls a real file in), and every real sublayer path the
+    walk meets to `real`.
+    """
+    copy = Sdf.Layer.CreateAnonymous()
+    copy.TransferContent(layer)
+    copy.subLayerPaths = []
+    own.append(copy)
+    for path in layer.subLayerPaths:
+        if path not in internal_ids:
+            real.append(path)
+        elif (sub := Sdf.Layer.Find(path)) is not None:
+            _collect_internal_layers(sub, internal_ids, own, real)
+
+
 def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     """Replace any reference to a ChunkLayerManager-internal layer in dst_layer's own
-    subLayerPaths with that layer's fully-flattened real content, inlined directly --
-    rather than dropping the reference outright.
+    subLayerPaths with that layer's own content, inlined directly -- rather than dropping
+    the reference outright.
 
     Internal layers (graph_layer / per-chunk procedural layers) are pure implementation
     detail with no meaning outside this session, so they were never meant to be their own
@@ -153,6 +171,10 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     can live nested *inside* one, so simply dropping the reference would silently discard
     real content along with it. Sibling references to other layers being exported for real (light.usda, etc.) are
     untouched here -- those get rewritten to the sibling filename separately, not inlined.
+
+    A real file an internal layer sublayers (a Sublayer chunk's path) is not content to
+    inline: it becomes a sublayer of dst_layer, where the internal layer stood. Flattening
+    it in would pull the whole file into dst_layer, and turn its relative paths absolute.
     """
     remaining = []
     for path in dst_layer.subLayerPaths:
@@ -162,9 +184,14 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
         internal_layer = Sdf.Layer.Find(path)
         if not internal_layer:
             continue
-        flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(internal_layer))
+        own, real = [], []
+        _collect_internal_layers(internal_layer, internal_ids, own, real)
+        scratch = Sdf.Layer.CreateAnonymous()
+        scratch.subLayerPaths = [layer.identifier for layer in own]
+        flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(scratch))
         for prim_spec in flat.rootPrims.values():
             Sdf.CopySpec(flat, prim_spec.path, dst_layer, prim_spec.path)
+        remaining.extend(real)
     dst_layer.subLayerPaths = remaining
 
 
@@ -338,7 +365,9 @@ def commit(node):
     procedural_names = _read_procedural_layer_names(_chunk)
     discovered = _discover_export_layers(stage)
     real_layers = [(n, lyr) for n, lyr in discovered if n not in disabled_names]
-    skipped_ids = {lyr.identifier for n, lyr in discovered if n in disabled_names}
+    # A skipped layer that lives in a file (a department's published layer) is still
+    # there to point at, so only the in-session ones have their references dropped.
+    skipped_ids = {lyr.identifier for n, lyr in discovered if n in disabled_names and lyr.anonymous}
     baked_names = {n for n, _l in discovered if n not in procedural_names}
 
     layers = []
@@ -609,7 +638,8 @@ def main():
         default_value=True,
         tooltip="Checked (default): this layer is written as its own file. Unchecked: "
         "skip it entirely — any other exported layer that sublayers it has that "
-        "reference dropped, not inlined, so its content isn't written anywhere. Bake "
+        "reference dropped, not inlined, so its content isn't written anywhere. A layer "
+        "loaded from a file is the exception: it stays referenced by its own path. Bake "
         "chunk outputs below is cleared while this is unchecked, since it has "
         "nothing to apply to, and comes back from Bake all when this is re-checked.",
     )
