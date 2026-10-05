@@ -1582,7 +1582,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         dependency = notice.data
         if not isinstance(dependent, core.ChunkBase) or not isinstance(dependency, core.ChunkBase):
             return
-        dep_prim = self._stage.GetPrimAtPath(Sdf.Path(f"{_resolve_chunk_root(dependent)}/{dependent.name}"))
+        # get_chunk_prim_path, not root + name: for a chunkgroup the root is the group's own
+        # path, so the lookup missed and a scripted group's exec input was never written.
+        dep_prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dependent)))
         if not dep_prim.IsValid():
             return
         src_path = Sdf.Path(exec_output_path(dependency))

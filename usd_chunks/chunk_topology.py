@@ -280,7 +280,7 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
     if (memoised := memo.get(key)) is not None:
         return memoised
 
-    result = session
+    result = None
     # Every node on an unbranched run above prim has this same answer, so the walk both
     # stops at the first one already memoised and leaves the answer on the rest. Without
     # that the memo only ever holds the node that was asked about, and a chain restored or
@@ -300,6 +300,17 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
             result = upstream
             break
         shared.append(upstream_key)
+
+    if result is None:
+        # Nothing upstream inside this graph. A chunk inside a chunkgroup is still behind
+        # whatever the group is behind: the first chunk in a group has no exec input of its
+        # own, so the walk stopped at the group's edge and its content landed in the session
+        # layer, not the Edit Target's layer the group sits after.
+        parent = prim.GetParent()
+        if parent and parent.GetTypeName() == _CHUNK_PRIM_TYPENAME:
+            result = nearest_upstream_edit_layer(stage, parent)
+        else:
+            result = session
 
     memo[key] = result
     for shared_key in shared:
