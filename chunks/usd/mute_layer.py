@@ -1,12 +1,12 @@
-"""Mute Layer chunk -- mutes the layers you pick from a list or match with a regex.
+"""Mute Layer chunk -- mutes the layers you pick from a list or match with a pattern.
 
 Requires: pxr (OpenUSD), usd_chunks.
 """
 
 from __future__ import annotations
 
-import re
 import weakref
+from fnmatch import fnmatchcase
 
 from pxr import Sdf, Tf, Usd
 
@@ -45,21 +45,21 @@ def _candidate_layers(stage: Usd.Stage) -> dict[str, str]:
     return layers
 
 
-def _wanted(query: tuple[str, str], layers: dict[str, str]) -> tuple[set[str], str]:
-    """The identifiers of the layers to mute, and an error for the status line, if any.
+def _wanted(query: tuple[str, str], layers: dict[str, str]) -> set[str]:
+    """The identifiers of the layers to mute.
 
-    A layer is muted when it is the one picked in the list, or when the regex finds a
-    match in its name or its identifier (the full path, for a file).
+    A layer is muted when it is the one picked in the list, or when one of the patterns
+    matches its name or its identifier (the full path, for a file). Patterns are globs, as
+    in Houdini: `*` is any text, `?` any one character, several are separated by spaces.
+    Case matters.
     """
     picked, pattern = query
-    wanted = {i for i, name in layers.items() if picked != _NONE and name == picked}
-    if pattern:
-        try:
-            regex = re.compile(pattern)
-        except re.error as err:
-            return wanted, f"Bad regex: {err}"
-        wanted |= {i for i, name in layers.items() if regex.search(name) or regex.search(i)}
-    return wanted, ""
+    globs = pattern.split()
+    return {
+        i for i, name in layers.items()
+        if (picked != _NONE and name == picked)
+        or any(fnmatchcase(name, g) or fnmatchcase(i, g) for g in globs)
+    }
 
 
 def _is_active(node, stage: Usd.Stage) -> bool:
@@ -89,9 +89,9 @@ def _reconcile(node, query: tuple[str, str] | None = None) -> None:
 
     Args:
         node: The Mute Layer chunk.
-        query: (picked layer, regex), read from the params. Only execute() passes it, and
+        query: (picked layer, patterns), read from the params. Only execute() passes it, and
             the listeners reuse the last one. They also run while the engine is still
-            building the chunk, when its params read their defaults, and an empty regex
+            building the chunk, when its params read their defaults, and an empty pattern
             read then unmuted everything.
     """
     stage = node.get_scene_stage()
@@ -112,7 +112,7 @@ def _reconcile(node, query: tuple[str, str] | None = None) -> None:
         layers.update({i: name for i, name in held.items() if i not in layers})
 
         node._mute_was_active = _is_active(node, stage)
-        wanted, error = _wanted(query, layers) if node._mute_was_active else (set(), "")
+        wanted = _wanted(query, layers) if node._mute_was_active else set()
         mute = sorted(i for i in wanted if not stage.IsLayerMuted(i))
         unmute = sorted(i for i in held.keys() - wanted if stage.IsLayerMuted(i))
         # Taken before muting. An anonymous layer (a Layer chunk's) that nothing else holds
@@ -129,12 +129,12 @@ def _reconcile(node, query: tuple[str, str] | None = None) -> None:
         if getattr(node, "_deleting", False):
             node._mute_watch = None  # all unmuted: stop listening
             return
-        _show_status(node, layers, error)
+        _show_status(node, layers)
     finally:
         node._mute_reconciling = False
 
 
-def _show_status(node, names: dict[str, str], error: str) -> None:
+def _show_status(node, names: dict[str, str]) -> None:
     """Refresh the layer list and the read-only line saying what is muted."""
     picker = node.get_param("layer")
     status = node.get_param("muted")
@@ -146,7 +146,7 @@ def _show_status(node, names: dict[str, str], error: str) -> None:
         items.append(picker.value)
     if list(picker.menu_items) != items:
         picker.menu_items = items
-    text = error or ", ".join(sorted(node._muted_by_me.values())) or "nothing"
+    text = ", ".join(sorted(node._muted_by_me.values())) or "nothing"
     if status.value != text:
         status.value = text
 
@@ -217,9 +217,11 @@ def main():
     chunk_api.add_param(
         chunk.LineEdit(
             "pattern",
-            "Regex",
-            tooltip="Also mute every layer whose name or path this regex finds a match in, "
-            "for example `^light` or `fx_v\\d+`. Works together with Layer above.",
+            "Pattern",
+            tooltip="Also mute every layer whose name or path matches. `*` is any text and "
+            "`?` any one character, so `*_cfx*` mutes every layer with _cfx in it. Separate "
+            "several with spaces: `*_cfx* light_*`. Case matters. Works together with Layer "
+            "above.",
         )
     )
     muted = chunk.LineEdit(
@@ -246,8 +248,10 @@ def config():
         description="""
         Mute Layer chunk -- mutes layers on the stage.
 
-        Pick one layer from Layer, or type a regex in Regex to mute every layer whose
-        name or path it matches. Both work at once. Muted shows what is muted now.
+        Pick one layer from Layer, or type a pattern in Pattern to mute every layer whose
+        name or path it matches. Patterns are globs, as in Houdini: `*_cfx*` mutes every
+        layer with _cfx in it, and several patterns go in one field, separated by spaces.
+        Both work at once. Muted shows what is muted now.
 
         The list holds every layer the stage uses, also ones brought in by a reference
         or payload. It leaves out the root layer, the session layer, and the chunk
