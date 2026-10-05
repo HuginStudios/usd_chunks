@@ -48,7 +48,9 @@ def execute(node):
             ref = Sdf.Payload(payload_path)
 
     primpath_param = node.get_param("primpath_location")
+    targets = []
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
+        targets.append(target_path)
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             prim = stage.DefinePrim(target_path, "Xform")
@@ -59,6 +61,7 @@ def execute(node):
             # is already defined without writing anything.
             _define_in_edit_layer(stage, target_path, prim.GetTypeName())
         prim.GetPayloads().AddPayload(ref)
+    chunk_utils.set_payloads_loaded(node, node.get_scene_stage(), targets, node.get_param("load").value)
 
 
 def main():
@@ -75,6 +78,11 @@ def main():
     # prim location
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     PayloadChunk.add_param(primpath)
+    PayloadChunk.add_param(chunk.Checkbox(
+        "load", "Load", default_value=True,
+        tooltip="Unchecked: the payload is unloaded, for a lighter stage. Checked loads back "
+        "what this unloaded; it never loads a payload unloaded by hand.",
+    ))
 
     return PayloadChunk
 
