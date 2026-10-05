@@ -196,6 +196,19 @@ def test_reload_modules_recreates_as_many_chunks_as_there_were(scene):
     assert len(of_module) == 2
 
 
+@pytest.mark.parametrize("taken, expected", [
+    ({"Cube"}, "Cube1"),
+    ({"Cube5"}, "Cube6"),
+    # Numbered past the try cap: the stub names above are uuids, and one ending in four
+    # digits or more failed here about one run in seven.
+    ({"Cube1000"}, "Cube1001"),
+    ({"_stub_9ed263c0543d457588f31d1344d83763"}, "_stub_9ed263c0543d457588f31d1344d83764"),
+])
+def test_a_clashing_name_gets_the_next_number(taken, expected):
+    (name,) = taken
+    assert chunk.ChunkGroupBase.get_valid_child_name(name, set(taken)) == expected
+
+
 def test_export_writes_the_module_source(scene, tmp_path):
     module = register_stub_module()
     out = tmp_path / "exported.py"

@@ -3174,12 +3174,14 @@ class ChunkGroupBase(ChunkContainerBase):
 
         name = orig_name + suffix
 
-        while name in reserved_names:
+        # Capped on tries, not on the number: a name ending in 1000 or more (Cube1000, or a
+        # uuid's hex) started past the cap and failed on its first clash.
+        for _ in range(max_iter):
+            if name not in reserved_names:
+                return name
             name = orig_name + str(idx)
             idx += 1
-            if idx > max_iter:
-                raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
-        return name
+        raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
 
 
 class ChunkListGroupBase(ChunkGroupBase):

@@ -132,7 +132,7 @@ def test_a_chunk_reading_outside_its_inputs_widens_its_mask_to_what_it_read():
         gen.get_param("size").value = 5.0
 
         assert _size(scene, "/Reader") == 10.0
-        assert Sdf.Path("/Gen") in reader._skip_mask
+        assert Sdf.Path("/Gen") in skip_cook.record(reader).mask
         cooks.clear()
         gen.get_param("size").value = 6.0
         assert cooks == ["Gen", "Reader"]
@@ -157,7 +157,7 @@ def test_a_cook_that_writes_somewhere_new_is_run_again_where_it_can():
         stage = scene.get_stage()
         assert stage.GetPrimAtPath("/Moved").GetAttribute("size").Get() == 0.5
         assert not stage.GetPrimAtPath("/Gen")
-        assert Sdf.Path("/Moved") in gen._skip_mask
+        assert Sdf.Path("/Moved") in skip_cook.record(gen).mask
 
 
 def test_disabling_a_chunk_above_reaches_what_reads_it():
@@ -239,7 +239,7 @@ def test_a_cook_reading_what_a_chunk_below_it_edits_stays_upstream_only():
 
         gen.get_param("size").value = 3.0
 
-        assert not getattr(reader, "_skip_sees_all", False)
+        assert not skip_cook.record(reader).sees_all
 
 
 def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
@@ -254,8 +254,8 @@ def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
         reader.get_param("target").value = "/Sibling"
 
         assert _size(scene, "/Reader") == 2.0
-        assert reader._skip_sees_all
-        assert reader._skip_mask is not None
+        assert skip_cook.record(reader).sees_all
+        assert skip_cook.record(reader).mask is not None
 
 
 def test_changed_paths_ignore_a_parent_only_gaining_a_child():
