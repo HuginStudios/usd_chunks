@@ -10,9 +10,12 @@ import os
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk, chunk_naming, chunk_registry, chunk_utils
+from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
+
+
+_USD_EXTENSIONS = (".usd", ".usda", ".usdc")
 
 
 def _discover_export_layers(stage):
@@ -57,6 +60,7 @@ def _refresh_layer_rows(owner, notice, sender):
     name_t = rows.get_param("layer_name")
     bake_t = rows.get_param("bake")
     export_t = rows.get_param("export_enabled")
+    file_t = rows.get_param("file_name")
 
     new_names = [name for name, _layer in layers]
     # Compared against the names this handler itself last wrote, not against a fresh read
@@ -85,6 +89,7 @@ def _refresh_layer_rows(owner, notice, sender):
             rows.get_indexed_param(name_t, i).value: (
                 rows.get_indexed_param(export_t, i).value,
                 rows.get_indexed_param(bake_t, i).value,
+                rows.get_indexed_param(file_t, i).value,
             )
             for i in range(rows.size)
         }
@@ -99,9 +104,10 @@ def _refresh_layer_rows(owner, notice, sender):
         bake_all = _chunk.get_param("bake_all")
         bake_default = bool(bake_all.value) if bake_all is not None else False
         for i, (name, _layer) in enumerate(layers):
-            prev_export, prev_bake = kept.get(name, (True, bake_default))
+            prev_export, prev_bake, prev_file = kept.get(name, (True, bake_default, ""))
             rows.get_indexed_param(name_t, i).value = name
             rows.get_indexed_param(bake_t, i).value = prev_bake
+            rows.get_indexed_param(file_t, i).value = prev_file
             export_row = rows.get_indexed_param(export_t, i)
             export_row.value = prev_export
             if i >= old_size:
@@ -128,6 +134,19 @@ def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
         for i in range(rows.size)
         if not rows.get_indexed_param(box_t, i).value
     }
+
+
+def _read_file_names(_chunk) -> dict:
+    """Layer name -> the File Name typed on its row, for the rows that have one."""
+    rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
+    if rows is None:
+        return {}
+    name_t, file_t = rows.get_param("layer_name"), rows.get_param("file_name")
+    names = {}
+    for i in range(rows.size):
+        if given := (rows.get_indexed_param(file_t, i).value or "").strip():
+            names[rows.get_indexed_param(name_t, i).value] = given
+    return names
 
 
 def _read_procedural_layer_names(_chunk) -> set:
@@ -352,18 +371,22 @@ def commit(node):
 
     # Assign every exported layer its output filename up front, so cross-references
     # between them can be rewritten regardless of which order they're processed in.
+    # A row's File Name, when set, replaces the layer's name; a USD extension in it wins
+    # over Format, for that one file.
+    given_names = _read_file_names(_chunk)
     filenames = {}
     used_names = set()
     for name, layer in layers:
-        base, _ext = os.path.splitext(name or "layer")
+        base, given_ext = os.path.splitext(given_names.get(name) or name or "layer")
         base = base or "layer"
+        file_ext = given_ext if name in given_names and given_ext in _USD_EXTENSIONS else ext
         candidate = base
         i = 1
         while candidate in used_names:
             candidate = f"{base}_{i}"
             i += 1
         used_names.add(candidate)
-        filenames[layer.identifier] = candidate + ext
+        filenames[layer.identifier] = candidate + file_ext
 
     def _relocate(path):
         if path in filenames:
@@ -624,6 +647,14 @@ def main():
     export_layers.add_param(export_enabled)
 
     export_layers.add_param(chunk.Checkbox("bake", "Bake chunk outputs", default_value=False))
+    export_layers.add_param(
+        chunk.LineEdit(
+            "file_name",
+            "File Name",
+            tooltip="The file this layer is written to, in Output Directory. Blank: the "
+            "layer's own name. Without an extension, Format picks it.",
+        )
+    )
     chunk_api.add_param(export_layers)
     chunk_api.add_callback(
         _refresh_layer_rows,
