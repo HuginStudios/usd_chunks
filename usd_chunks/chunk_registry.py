@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 from importlib import util
-from importlib.metadata import PackageNotFoundError, packages_distributions
+from importlib.metadata import PackageNotFoundError, distributions, packages_distributions
 from importlib.metadata import version as distribution_version
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Sequence
@@ -590,9 +590,17 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         return reg.scene.should_install_packages(list(packages), chunk_name)
 
     def update_cache(self):
-        """Record every installed package, from `pip list` over the interpreter and the dependency dir."""
+        """Record every installed package: what Python can import, then `pip list` on top."""
         if not self.initialized:
             return
+
+        # What Python itself can see, everywhere on sys.path: site-packages, PYTHONPATH
+        # folders, the dependency dir. Needs no pip. usdview's bundled Python ships without
+        # pip, so `pip list` below finds nothing there -- and every requirement read as
+        # missing, even mujoco and numpy that were on PYTHONPATH all along.
+        for dist in distributions():
+            if (name := dist.metadata["Name"]) and dist.version:
+                self._cache[name].add(dist.version)
 
         # Search the current interpreters' environment
         args = [sys.executable, "-m", "pip", "list", "--format", "freeze"]
