@@ -1013,6 +1013,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         _, context, _, view = self._active_view_of(target)
         if view is not None:
             chunk_stage.recook_for_view(self.get_stage(), self, context, view)
+        elif (layers := chunk_registry.ChunkLayerManager()).initialized:
+            # No View to put the layers in chain order, so each new chunk's layer would keep
+            # the place it got when made -- before it was wired -- and an upstream chunk's
+            # opinions would win over it.
+            layers.sort_chunk_layers(self.get_chunks())
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
