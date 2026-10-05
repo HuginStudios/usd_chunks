@@ -47,3 +47,22 @@ def test_asks_right_away_outside_a_load(host, monkeypatch) -> None:
 
     scene.should_install_packages(["mujoco>=3.1,<4"], "rbd_solver")
     assert len(asked) == 1 and queued == []
+
+
+def test_auto_install_during_a_load_runs_without_the_dialog(host, monkeypatch) -> None:
+    """USD_CHUNK_AUTO_INSTALL=1 skips the question, so pip runs mid-load: no dialog then."""
+    scene, _asked, _queued = host
+    monkeypatch.setattr(usdview.chunk_qt, "progress_dial", lambda *a: pytest.fail("progress dialog during a load"))
+    monkeypatch.setattr(chunk_notice, "_loading_stage", object())
+
+    assert scene.run_install(["mujoco>=3.1,<4"], "rbd_solver", lambda on_line=None: (0, "ok")) == (0, "ok")
+
+
+def test_auto_install_outside_a_load_shows_progress(host, monkeypatch) -> None:
+    scene, _asked, _queued = host
+    shown = []
+    monkeypatch.setattr(usdview.chunk_qt, "progress_dial", lambda title, label, run: shown.append(label) or run())
+    monkeypatch.setattr(chunk_notice, "_loading_stage", None)
+
+    scene.run_install(["mujoco>=3.1,<4"], "rbd_solver", lambda on_line=None: (0, "ok"))
+    assert len(shown) == 1

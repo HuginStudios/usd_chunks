@@ -185,6 +185,13 @@ class UsdviewScene(chunk_scene.SceneSender):
             logger.info("Installed %s for %s. Reopen the scene to load it.", ", ".join(packages), chunk_name)
 
     def run_install(self, packages, chunk_name: str, run):
+        if chunk_notice._loading_stage is not None:
+            # Not behind the progress dialog while a scene loads: its event loop crashes
+            # usdview the same way the question did (see should_install_packages). With
+            # USD_CHUNK_AUTO_INSTALL=1 nothing is asked, so the install lands here mid-load.
+            # Run pip in place instead; usdview just waits for it.
+            logger.info("Installing %s for chunk %s...", ", ".join(packages), chunk_name)
+            return run()
         return chunk_qt.progress_dial(
             "Installing chunk dependencies",
             f"Installing {', '.join(packages)} for chunk {chunk_name}...",
