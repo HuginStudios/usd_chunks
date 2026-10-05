@@ -6,11 +6,10 @@ Requires: pxr (OpenUSD), usd_chunks.
 from __future__ import annotations
 
 import weakref
-from fnmatch import fnmatchcase
 
 from pxr import Sdf, Tf, Usd
 
-from usd_chunks import chunk, chunk_registry
+from usd_chunks import chunk, chunk_registry, chunk_utils
 
 _NONE = "(none)"
 
@@ -49,16 +48,15 @@ def _wanted(query: tuple[str, str], layers: dict[str, str]) -> set[str]:
     """The identifiers of the layers to mute.
 
     A layer is muted when it is the one picked in the list, or when one of the patterns
-    matches its name or its identifier (the full path, for a file). Patterns are globs, as
-    in Houdini: `*` is any text, `?` any one character, several are separated by spaces.
-    Case matters.
+    matches its name or its identifier (the full path, for a file). The patterns are the
+    same globs prim path fields take (chunk_utils.glob_to_regex), split the same way.
     """
     picked, pattern = query
-    globs = pattern.split()
+    globs = [chunk_utils.glob_to_regex(g) for g in chunk_utils.split_patterns(pattern)]
     return {
         i for i, name in layers.items()
         if (picked != _NONE and name == picked)
-        or any(fnmatchcase(name, g) or fnmatchcase(i, g) for g in globs)
+        or any(rx.match(name) or rx.match(i) for rx in globs)
     }
 
 
@@ -218,10 +216,11 @@ def main():
         chunk.LineEdit(
             "pattern",
             "Pattern",
-            tooltip="Also mute every layer whose name or path matches. `*` is any text and "
-            "`?` any one character, so `*_cfx*` mutes every layer with _cfx in it. Separate "
-            "several with spaces: `*_cfx* light_*`. Case matters. Works together with Layer "
-            "above.",
+            tooltip="Also mute every layer whose name or path matches, with the same patterns "
+            "as prim paths: `*_cfx*` mutes every layer named with _cfx in it, `**/cfx/**` "
+            "every layer in a cfx folder. `*` stays within one folder, `**` crosses them, `?` "
+            "is one character. Separate several with spaces or commas. Case matters. Works "
+            "together with Layer above.",
         )
     )
     muted = chunk.LineEdit(
@@ -249,9 +248,10 @@ def config():
         Mute Layer chunk -- mutes layers on the stage.
 
         Pick one layer from Layer, or type a pattern in Pattern to mute every layer whose
-        name or path it matches. Patterns are globs, as in Houdini: `*_cfx*` mutes every
-        layer with _cfx in it, and several patterns go in one field, separated by spaces.
-        Both work at once. Muted shows what is muted now.
+        name or path it matches. Patterns work as in prim path fields: `*_cfx*` mutes every
+        layer named with _cfx in it, and `**/cfx/**` every layer in a cfx folder. Several
+        patterns go in one field, separated by spaces or commas. Both work at once. Muted
+        shows what is muted now.
 
         The list holds every layer the stage uses, also ones brought in by a reference
         or payload. It leaves out the root layer, the session layer, and the chunk

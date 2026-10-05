@@ -413,6 +413,45 @@ def resolve_collection_members(stage: Usd.Stage, name: str) -> list[str]:
     return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage)]
 
 
+def split_patterns(text: str) -> list[str]:
+    """Split a field of paths or glob patterns on whitespace and commas, dropping empties."""
+    return [token for token in re.split(r"[\s,]+", text.strip()) if token]
+
+
+def glob_to_regex(pattern: str) -> re.Pattern:
+    """Compile a path glob to a regex that matches the whole path.
+
+    - ``*`` matches any characters within one path component (no slash crossing)
+    - ``**`` matches any characters across any number of path components
+    - ``?`` matches one character within one path component
+
+    Shared by prim paths (resolve_prim_paths) and layer paths (the Mute Layer chunk), so
+    a pattern means the same in every field that takes one.
+
+    Args:
+        pattern: The glob.
+
+    Returns:
+        The compiled regex. Use .match: it is anchored at the end, and match anchors the start.
+    """
+    parts = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i:i+2] == "**":
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(parts) + "$")
+
+
 def _glob_root(pattern: str) -> str:
     """The deepest path a glob's matches all lie under: its components before the first glob.
 
@@ -429,13 +468,7 @@ def _glob_root(pattern: str) -> str:
 def resolve_prim_paths(stage, location_str):
     """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
-    Glob rules (Houdini-style):
-
-    - ``*`` matches any characters within one path component (no slash crossing)
-    - ``**`` matches any characters across any number of path components
-    - ``?`` matches one character within one path component
-
-    For example:
+    Globs follow glob_to_regex. For example:
 
     - ``/geo/*`` -- direct children of /geo only
     - ``/geo/**`` -- everything recursively under /geo
@@ -459,28 +492,8 @@ def resolve_prim_paths(stage, location_str):
     Returns:
         The resolved prim paths.
     """
-    def _to_re(pattern):
-        parts = []
-        i = 0
-        while i < len(pattern):
-            if pattern[i:i+2] == "**":
-                parts.append(".*")
-                i += 2
-            elif pattern[i] == "*":
-                parts.append("[^/]*")
-                i += 1
-            elif pattern[i] == "?":
-                parts.append("[^/]")
-                i += 1
-            else:
-                parts.append(re.escape(pattern[i]))
-                i += 1
-        return re.compile("".join(parts) + "$")
-
     paths = []
-    for token in re.split(r"[\s,]+", location_str.strip()):
-        if not token:
-            continue
+    for token in split_patterns(location_str):
         if token.startswith("%"):
             paths.extend(resolve_collection_members(stage, token[1:]))
             continue
@@ -492,7 +505,7 @@ def resolve_prim_paths(stage, location_str):
             paths.append(token)
             continue
         _anchor, pattern, selections = split_variant_path(token)
-        rx = _to_re(pattern)
+        rx = glob_to_regex(pattern)
         matched = []
         with author_in_variant_context(stage, token) if selections else nullcontext():
             # Walked from the pattern's fixed part, not from /: every match is under it, so
