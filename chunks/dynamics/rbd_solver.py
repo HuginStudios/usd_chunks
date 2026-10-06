@@ -2064,16 +2064,6 @@ def _authored(attr):
     return None
 
 
-def _gravity(node, stage: Usd.Stage) -> float:
-    """The Gravity param in scene units/s²; 0 means Earth gravity in this stage's units.
-
-    Same rule as the Particle Solver. The old default, a fixed -981, was right only in a
-    centimetre scene: in a metre one bodies fell a hundred times too fast.
-    """
-    value = node.get_param("gravity", chunk.is_param_t(float)).value
-    return value or -9.81 / UsdGeom.GetStageMetersPerUnit(stage)
-
-
 def _scene_gravity(stage: Usd.Stage, fallback: float):
     """Gravity from a UsdPhysics.Scene on the stage, as the signed scalar this chunk uses.
 
@@ -2929,7 +2919,7 @@ def _run(owner, notice, sender) -> None:
 
     frame_count = _chunk.get_param("frame_count", is_i).value
     fps = _chunk.get_param("fps", is_f).value
-    gravity = _gravity(_chunk, stage)
+    gravity = sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage)
     substeps = max(1, _chunk.get_param("substeps", is_i).value)
     start_frame = _chunk.get_param("start_frame", is_i).value
     friction = _chunk.get_param("friction", is_f).value
@@ -3270,7 +3260,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
 
     job = dict(
         up_idx=up_idx,
-        gravity=_gravity(_chunk, stage),
+        gravity=sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage),
         fps=fps,
         frames=frame_count,
         substeps=max(1, _chunk.get_param("substeps", is_i).value),

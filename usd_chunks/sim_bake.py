@@ -47,7 +47,7 @@ import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, cook_cache
 
@@ -446,6 +446,15 @@ def _child(source: str, function: str, job: str, out: str) -> None:
     result = getattr(module, function)(progress=progress, **kwargs)
     with open(out, "wb") as f:
         pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def gravity(value: float, stage: Usd.Stage) -> float:
+    """A solver's Gravity param in scene units/s²; 0 means Earth gravity in stage's units.
+
+    A fixed default is right in one unit only: -981 in a metre scene made bodies fall a
+    hundred times too fast.
+    """
+    return value or -9.81 / UsdGeom.GetStageMetersPerUnit(stage)
 
 
 # ------------------------------------------------------------------------------------------

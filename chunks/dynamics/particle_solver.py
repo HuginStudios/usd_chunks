@@ -1133,8 +1133,7 @@ def _run(owner, notice, sender):
     frame_count = max(2, node.get_param("frame_count", is_i).value)
     start_frame = node.get_param("start_frame", is_i).value
     fps = max(1.0, node.get_param("fps", is_f).value)
-    # 0 = Earth gravity in this stage's units, rather than a -981 that is only right in cm.
-    gravity_w = node.get_param("gravity", is_f).value or -9.81 / UsdGeom.GetStageMetersPerUnit(stage)
+    gravity_w = sim_bake.gravity(node.get_param("gravity", is_f).value, stage)
     seed = node.get_param("seed", is_i).value
     max_particles = max(1, node.get_param("max_particles", is_i).value)
     rng = np.random.default_rng(seed)
