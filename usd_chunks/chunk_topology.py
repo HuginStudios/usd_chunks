@@ -102,7 +102,9 @@ def _iter_exec_upstream(stage: Usd.Stage, start: Sdf.Path):
         frontier = next_frontier
 
 
-_edit_layer_memo: dict[str, Sdf.Layer] = {}
+_edit_layer_memo: dict[str, Sdf.Layer | object] = {}
+# What the memo holds for "no Edit Target chunk upstream" (memo.get's None means "not asked").
+_NO_UPSTREAM = object()
 _edit_layer_memo_stage: weakref.ref | None = None
 _edit_layer_memo_frozen = False
 
@@ -218,14 +220,33 @@ def freeze_edit_layer_memo():
 
 
 def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | None:
-    """The layer a chunk at prim's position should author into.
+    """The layer a chunk at prim's position should author its driven content into.
 
-    That is the layer published by the nearest Edit Target chunk reachable by walking the
-    exec chain (inputs:chunk) upstream from prim, or the session layer if there is no
-    upstream Edit Target. A pure function of graph topology, never of which chunk ran last.
-    prim's own marker is deliberately skipped (an Edit Target chunk defines the target for
-    everything *downstream* of it, not for its own bookkeeping -- that follows whatever is
-    upstream of it, or the session layer).
+    That is upstream_edit_target_layer, or the session layer when no Edit Target chunk is
+    upstream. Driven content is cook output, so it never follows the stage's own edit
+    target -- unlike a chunk's prim, which does (chunk_utils.get_bookkeeping_layer).
+
+    Args:
+        stage: The stage.
+        prim: The chunk prim.
+
+    Returns:
+        The layer, or None without a stage.
+    """
+    if not stage:
+        return None
+    return upstream_edit_target_layer(stage, prim) or stage.GetSessionLayer()
+
+
+def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | None:
+    """The layer published by the nearest Edit Target chunk upstream of prim, if any.
+
+    Found by walking the exec chain (inputs:chunk) upstream from prim. None means no Edit
+    Target chunk routes this position and the caller picks its own fallback. A pure
+    function of graph topology, never of which chunk ran last. prim's own marker is
+    deliberately skipped (an Edit Target chunk defines the target for everything
+    *downstream* of it, not for its own bookkeeping -- that follows whatever is upstream
+    of it).
 
     Memoised per prim path, because being a pure function of topology also makes it a walk
     of the entire exec chain above prim, and it is asked once per get_edit_context --
@@ -239,14 +260,10 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
         prim: The chunk prim.
 
     Returns:
-        The layer, the session layer when nothing upstream publishes one, or None without a
-        stage.
+        The layer, or None when nothing upstream publishes one (or without a stage).
     """
-    if not stage:
+    if not (stage and prim and prim.IsValid()):
         return None
-    session = stage.GetSessionLayer()
-    if not (prim and prim.IsValid()):
-        return session
 
     # Answers are keyed by prim path, and prim paths repeat across stages -- /chunks/Dot in a
     # file just opened is the same string as /chunks/Dot in the stage it replaced, while the
@@ -278,7 +295,7 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
 
     key = str(prim.GetPath())
     if (memoised := memo.get(key)) is not None:
-        return memoised
+        return None if memoised is _NO_UPSTREAM else memoised
 
     result = None
     # Every node on an unbranched run above prim has this same answer, so the walk both
@@ -297,7 +314,8 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
             continue
         upstream_key = str(path)
         if (upstream := memo.get(upstream_key)) is not None:
-            result = upstream
+            if upstream is not _NO_UPSTREAM:
+                result = upstream
             break
         shared.append(upstream_key)
 
@@ -308,11 +326,11 @@ def nearest_upstream_edit_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer |
         # layer, not the Edit Target's layer the group sits after.
         parent = prim.GetParent()
         if parent and parent.GetTypeName() == _CHUNK_PRIM_TYPENAME:
-            result = nearest_upstream_edit_layer(stage, parent)
-        else:
-            result = session
+            result = upstream_edit_target_layer(stage, parent)
 
-    memo[key] = result
+    # None is memoised too, as a sentinel: "nothing upstream" is as costly to re-derive.
+    stored = _NO_UPSTREAM if result is None else result
+    memo[key] = stored
     for shared_key in shared:
-        memo[shared_key] = result
+        memo[shared_key] = stored
     return result

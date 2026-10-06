@@ -40,6 +40,7 @@ from usd_chunks.chunk_topology import (  # noqa: F401  re-exported
     get_chunk_prim_path,
     invalidate_edit_layer_memo,
     nearest_upstream_edit_layer,
+    upstream_edit_target_layer,
 )
 
 logger = logging.getLogger(__name__)
@@ -2159,16 +2160,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     ) -> Sdf.Layer | None:
         """Where a *brand new* chunk's bookkeeping prim should be authored, from its predecessors.
 
-        The chunk's own prim is not wired into the chain yet, so nearest_upstream_edit_layer on
-        it would resolve to the session-layer default.
+        The chunk's own prim is not wired into the chain yet, so upstream_edit_target_layer on
+        it would find nothing.
 
-        CONTEXT chunks (containers) always pin to the session layer, like get_bookkeeping_layer.
-        Otherwise: if a predecessor is itself an Edit Target chunk, its published layer applies;
-        else recurse up from that predecessor. Falls back to the session layer.
+        A CONTEXT chunk (container) goes to the stage's edit target, like
+        get_bookkeeping_layer. Otherwise: if a predecessor is itself
+        an Edit Target chunk, its published layer applies; else recurse up from that
+        predecessor. With no Edit Target upstream, the stage's edit target
+        (chunk_utils.host_edit_layer) -- so a chunk made while a department's sublayer is the
+        target is saved in that department's file.
         """
-        session = self._stage.GetSessionLayer() if self._stage else None
+        if not self._stage:
+            return None
+        host = chunk_utils.host_edit_layer(self._stage)
         if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-            return session
+            return host
         deps = [d for _, d in chunk.get_dependencies() if isinstance(d, core.ChunkBase)]
         if not deps and prev_chunk is not None:
             deps = [prev_chunk]
@@ -2178,10 +2184,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 continue
             layer = _prim_edit_target_layer(self._stage, dep_prim)
             if layer is None:
-                layer = nearest_upstream_edit_layer(self._stage, dep_prim)
+                layer = upstream_edit_target_layer(self._stage, dep_prim)
             if layer is not None:
                 return layer
-        return session
+        return host
 
     def _define_prim(self, chunk: core.ChunkBase, prev_chunk: core.ChunkBase | None = None) -> Usd.Prim:
         # Author the prim at the exact path _on_param_added registered (chunk._exec_prim_path),
@@ -2223,6 +2229,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
         with book_ctx():
             prim = self._stage.DefinePrim(Sdf.Path(target_path), _CHUNK_PRIM_TYPENAME)
+            # Not the session layer: nothing opens it on its own, and a def there would make
+            # a container composed in from a file look owned (chunk_utils.is_composed_in).
+            if book_layer is not None and book_layer != self._stage.GetSessionLayer():
+                _define_containers_in(self._stage, book_layer, Sdf.Path(target_path).GetParentPath())
 
             ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
             if not ui_api.GetPosAttr().HasAuthoredValue():
@@ -2472,6 +2482,41 @@ def _define_chunk_parent(stage: Usd.Stage, path: str) -> Usd.Prim:
     """
     typename = _CHUNKS_ROOT_TYPENAME if str(path) == _CHUNKS_ROOT else _CHUNK_PRIM_TYPENAME
     return stage.DefinePrim(Sdf.Path(path), typename)
+
+
+def _define_containers_in(stage: Usd.Stage, layer: Sdf.Layer, path: Sdf.Path) -> None:
+    """Give path and every prim above it a `def` in layer, typed as it composes.
+
+    A chunk made while a department's sublayer is the edit target is defined in that file,
+    but its chunkgroup may be defined in another -- and DefinePrim then leaves only bare
+    `over`s above it, so the file opened on its own has chunks under nothing. Each
+    container is given its identity there too: specifier, type and info:chunkType, which
+    never change, so repeating them in several files cannot go stale.
+
+    Args:
+        stage: The stage, for what each prim composes to.
+        layer: The layer the chunk was just defined in.
+        path: The chunk's parent path.
+    """
+    if path.isEmpty or path == Sdf.Path.absoluteRootPath:
+        return
+    with Sdf.ChangeBlock():
+        for prefix in path.GetPrefixes():
+            composed = stage.GetPrimAtPath(prefix)
+            if not (composed and composed.IsValid()):
+                return
+            spec = layer.GetPrimAtPath(prefix) or Sdf.CreatePrimInLayer(layer, prefix)
+            if spec.specifier != Sdf.SpecifierDef:
+                spec.specifier = Sdf.SpecifierDef
+            if not spec.typeName and composed.GetTypeName():
+                spec.typeName = composed.GetTypeName()
+            type_attr = composed.GetAttribute(_CHUNK_TYPE_ATTR)
+            chunk_type = type_attr.Get() if type_attr and type_attr.IsValid() else None
+            if chunk_type and _CHUNK_TYPE_ATTR not in spec.attributes:
+                attr_spec = Sdf.AttributeSpec(
+                    spec, _CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, Sdf.VariabilityUniform
+                )
+                attr_spec.default = chunk_type
 
 
 def exec_output_path(chunk: core.ChunkBase) -> str:
@@ -4174,6 +4219,25 @@ def connect_exec(
     return dst_attr
 
 
+def _reconcile_destination(stage: Usd.Stage, chunk: core.ChunkBase, prim: Usd.Prim) -> Sdf.Layer | None:
+    """Where reconcile_edit_targets should move a chunk's bookkeeping, or None to leave it.
+
+    A chunk with an Edit Target chunk upstream belongs in the layer it publishes. One
+    without stays where it is defined -- it was put
+    there by the stage's edit target when it was made, and a later change of that target
+    must not drag it along -- unless it was defined in a layer an Edit Target chunk routed
+    it to and no longer does (an anonymous layer that is neither the session nor the root
+    layer). Then it goes where a new chunk would (chunk_utils.host_edit_layer).
+    """
+    routed = upstream_edit_target_layer(stage, prim)
+    if routed is not None:
+        return routed
+    home = chunk_utils.chunk_def_layer(prim)
+    if home is None or not home.anonymous or home in (stage.GetSessionLayer(), stage.GetRootLayer()):
+        return None
+    return chunk_utils.host_edit_layer(stage)
+
+
 def reconcile_edit_targets(
     stage: Usd.Stage,
     scene: chunk_scene.SceneSender,
@@ -4184,7 +4248,7 @@ def reconcile_edit_targets(
     """Move every chunk's bookkeeping to the Edit Target resolved for its exec-chain position.
 
     For each regular (non-CONTEXT) chunk whose effective edit layer
-    (nearest_upstream_edit_layer) no longer matches where its bookkeeping prim lives, move
+    (_reconcile_destination) no longer matches where its bookkeeping prim lives, move
     the prim spec there and re-execute it so ChunkLayerManager.get_chunk_layer re-nests the
     chunk's driven content under the new target too (its graph layer reparents -- see
     chunk_registry.get_chunk_layer). A chunk already homed correctly moves nothing and is
@@ -4248,7 +4312,7 @@ def reconcile_edit_targets(
             # Migrating would have carried a shot's override out of the shot file.
             if chunk_utils.is_composed_in(prim):
                 continue
-            dst = nearest_upstream_edit_layer(stage, prim)
+            dst = _reconcile_destination(stage, chunk, prim)
             if dst is None:
                 continue
             # Migration only moves opinions between layers, never changes what they
