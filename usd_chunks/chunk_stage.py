@@ -4806,6 +4806,27 @@ def _reorder_graph_layers_by_rank(graph_layers: Iterable[Sdf.Layer], ident_rank:
         _reorder_sublayers(g_layer, ident_rank)
 
 
+def sort_chunk_layers(lm: ChunkLayerManager, chunks: Iterable[core.ChunkBase]) -> None:
+    """Order chunk layers by chain depth (layer_sort_key), for a graph with no View to do it.
+
+    Each chunk layer is placed when it is made, before it is wired, so placement alone
+    leaves creation order and an upstream chunk's opinions win. A View re-sorts on every
+    recook; this does the same for a load, or a script still building.
+
+    Args:
+        lm: The layer manager.
+        chunks: The chunks whose layers to sort.
+    """
+    rank = {
+        layer.identifier: chunk_scheduler.layer_sort_key(c.get_dag_node())
+        for c in chunks
+        if (layer := lm.get_layer(c)) is not None
+    }
+    # A snapshot: writing subLayerPaths can cascade into get_or_create_layer, which edits
+    # graph_layers while this loop would still be reading it.
+    _reorder_graph_layers_by_rank(list(lm.graph_layers.values()), rank)
+
+
 def _reorder_sublayers(layer: Sdf.Layer, ident_rank: dict) -> None:
     """Sort layer's ranked sublayers strongest first, within the slots they already hold."""
     current = list(layer.subLayerPaths)
@@ -6139,7 +6160,7 @@ def _load_chunks(
                 # just above) when sort_keys are all 0, so the initial insertion order needs
                 # correction here.
                 if lm.initialized:
-                    lm.sort_chunk_layers(c for _, c in deferred)
+                    sort_chunk_layers(lm, (c for _, c in deferred))
 
                 # Home every chunk's bookkeeping now, while the exec chain is final (it came
                 # from the file and the dependency restore above only mirrored it) and before

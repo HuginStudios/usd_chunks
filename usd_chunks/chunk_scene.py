@@ -1017,7 +1017,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # No View to put the layers in chain order, so each new chunk's layer would keep
             # the place it got when made -- before it was wired -- and an upstream chunk's
             # opinions would win over it.
-            layers.sort_chunk_layers(self.get_chunks())
+            chunk_stage.sort_chunk_layers(layers, self.get_chunks())
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
