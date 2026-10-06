@@ -122,31 +122,26 @@ def _refresh_layer_rows(owner, notice, sender):
         _chunk._export_refreshing = False
 
 
-def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
-    """Return the set of layer names whose row checkbox `checkbox_name` is unchecked."""
+def _row_values(_chunk, param_name: str) -> list[tuple[str, object]]:
+    """(layer name, value of `param_name`) for every layer row."""
     rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
     if rows is None:
-        return set()
-    name_t = rows.get_param("layer_name")
-    box_t = rows.get_param(checkbox_name)
-    return {
-        rows.get_indexed_param(name_t, i).value
+        return []
+    name_t, value_t = rows.get_param("layer_name"), rows.get_param(param_name)
+    return [
+        (rows.get_indexed_param(name_t, i).value, rows.get_indexed_param(value_t, i).value)
         for i in range(rows.size)
-        if not rows.get_indexed_param(box_t, i).value
-    }
+    ]
+
+
+def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
+    """Return the set of layer names whose row checkbox `checkbox_name` is unchecked."""
+    return {name for name, checked in _row_values(_chunk, checkbox_name) if not checked}
 
 
 def _read_file_names(_chunk) -> dict:
     """Layer name -> the File Name typed on its row, for the rows that have one."""
-    rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
-    if rows is None:
-        return {}
-    name_t, file_t = rows.get_param("layer_name"), rows.get_param("file_name")
-    names = {}
-    for i in range(rows.size):
-        if given := (rows.get_indexed_param(file_t, i).value or "").strip():
-            names[rows.get_indexed_param(name_t, i).value] = given
-    return names
+    return {name: given for name, value in _row_values(_chunk, "file_name") if (given := (value or "").strip())}
 
 
 def _read_procedural_layer_names(_chunk) -> set:
