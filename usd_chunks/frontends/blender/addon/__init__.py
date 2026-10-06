@@ -316,11 +316,43 @@ def _stage_for_tree(tree):
         if layer.ImportFromString(tree.chunk_network_embedded):
             return Usd.Stage.Open(layer)
         logger.warning("usd_chunks: the network stored in %s did not parse", tree.name)
-    return Usd.Stage.CreateInMemory()
+    return new_network_stage()
+
+
+def blender_space() -> tuple[str, float]:
+    """(up axis, meters per unit) of Blender's scene: Z-up, metres times the Unit Scale."""
+    scene = getattr(bpy.context, "scene", None)
+    scale = getattr(getattr(scene, "unit_settings", None), "scale_length", 1.0) or 1.0
+    return "Z", float(scale)
+
+
+def stamp_space(stage) -> None:
+    """Author Blender's space on stage's root layer, where the layer does not say its own.
+
+    A network is opened in other hosts too, and each turns it from the space it was
+    authored in into its own -- Houdini's chunkgroups do (hosts/houdini/space.py). That
+    space is the root layer's upAxis and metersPerUnit, as usdview's save stamps them. A
+    network with neither reads as USD's fallbacks, Y-up centimetres, which for one made
+    in Blender is wrong both ways. A file that already says is left as it says: an opened
+    network keeps the space it was authored in.
+    """
+    up, meters = blender_space()
+    info = stage.GetRootLayer().pseudoRoot
+    if not info.HasInfo("upAxis"):
+        info.SetInfo("upAxis", up)
+    if not info.HasInfo("metersPerUnit"):
+        info.SetInfo("metersPerUnit", meters)
+
+
+def new_network_stage():
+    """An empty stage for a network started in Blender, in Blender's space."""
+    stage = Usd.Stage.CreateInMemory()
+    stamp_space(stage)
+    return stage
 
 
 def write_network(view, path: str) -> None:
-    """Write the open network to `path`, positions included.
+    """Write the open network to `path`, positions and space included.
 
     Save when the root layer already is that file; Export otherwise -- a network started
     with New lives in an anonymous layer, which has nowhere to Save() to.
@@ -329,6 +361,8 @@ def write_network(view, path: str) -> None:
     # here instead. Without this a layout done in Blender is lost, because the tree is
     # a view and the next reload overwrites it from USD.
     view.pull_positions_from_tree()
+    # And its space, for a network that never had one written (see stamp_space).
+    stamp_space(view.stage)
     root = view.stage.GetRootLayer()
     path = os.path.normcase(os.path.abspath(bpy.path.abspath(path)))
     if not root.anonymous and os.path.normcase(os.path.abspath(root.realPath)) == path:
@@ -564,7 +598,7 @@ class USDCHUNKS_OT_new_network(bpy.types.Operator):
     def execute(self, context):
         tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
         _show_tree(context, tree)
-        _open_stage(Usd.Stage.CreateInMemory(), tree=tree)
+        _open_stage(new_network_stage(), tree=tree)
         self.report({"INFO"}, "new chunk network")
         return {"FINISHED"}
 
