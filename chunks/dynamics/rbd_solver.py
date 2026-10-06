@@ -3463,11 +3463,6 @@ def _only_presentation_changed(sender) -> bool:
         return False
 
 
-def _is_headless() -> bool:
-    """No UI, so no event loop and nobody to press a button (sim_bake.is_unattended)."""
-    return sim_bake.is_unattended()
-
-
 def execute(node) -> None:
     """Bake on cook -- headless; interactively, only fetch a cached bake.
 
@@ -3479,7 +3474,7 @@ def execute(node) -> None:
     without baking renders a motionless scene that looks entirely plausible -- so it bakes,
     or loads the cache.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         _run(node, None, None)
         return
     if getattr(node, "_rbd_cache_checked", False):
@@ -3503,7 +3498,7 @@ def _schedule_auto_run(root_chunk) -> None:
     Headless there is nothing to debounce and no Qt event loop for a QTimer to fire in; the
     bake happens in execute() instead, when the cook reaches this chunk.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         # Headless, execute() bakes instead: the cook calls it in dependency order, once
         # every upstream chunk has cooked. Running here too baked against a half-cooked
         # network -- a solver fired by the first upstream chunk's change, before the
@@ -3557,7 +3552,7 @@ def main() -> chunk.Chunk:
     # button. Neither is true in `usdchunks run` or a sweep: nobody is watching a border and
     # nobody can press anything, so cooking the network produced a chunk that quietly baked
     # nothing and a scene that rendered a motionless, entirely plausible-looking result.
-    interactive = not _is_headless()
+    interactive = not sim_bake.is_unattended()
     auto_sim = chunk.Checkbox(
         "auto_sim",
         "Auto Simulate",

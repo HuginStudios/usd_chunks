@@ -1421,11 +1421,6 @@ def _after_read_back(node, layer, stage, start_frame, frame_count, promote):
         pass
 
 
-def _is_headless():
-    """No UI, so no event loop and nobody to press Run (sim_bake.is_unattended)."""
-    return sim_bake.is_unattended()
-
-
 def cache_key(node):
     """What the cook cache keys a bake on: its inputs, while Run asks (sim_bake)."""
     return sim_bake.input_key(node)
@@ -1439,7 +1434,7 @@ def execute(node):
     last bake back -- the framework clears this layer before each -- rather than simulate
     again on every tweak. Under ``usdchunks run`` nobody can press Run, so it bakes.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         _run(node, None, None)
         return
     if getattr(node, "_particle_cache_checked", False):
