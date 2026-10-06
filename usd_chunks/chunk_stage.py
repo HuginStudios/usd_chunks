@@ -2935,6 +2935,39 @@ def revert_param_override(param: core.ChunkParamBase) -> None:
     param.value = attr.Get()
 
 
+def adopt_composed_values(chunk: core.ChunkBase) -> None:
+    """Set each of chunk's params to what its chunk prim composes now, or its default.
+
+    For a change made to the prim from outside the chunk's own write path -- an Override
+    Chunk Prim writing into its layer, or that layer going away -- which the stage mirror
+    does not hear while a cook has it suppressed. The values set are the composed ones, so
+    the write path finds them already authored and writes nothing back; a param whose value
+    changes dirties the chunk and it cooks as after any edit. An expression is left alone,
+    as in _mirror_changed_params, and so are list-group rows.
+
+    Args:
+        chunk: The chunk to bring in line with its prim.
+    """
+    stage = chunk.get_scene_stage()
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
+    if not (prim and prim.IsValid()):
+        return
+    # By name, not _param_attr_path: a param still at its default has no attribute of its
+    # own yet, so nothing is bound to the one an override has just made.
+    for param_path, param in (*_iter_chunk_params(chunk), *_iter_chunk_vectors(chunk)):
+        if _under_list_group(param, chunk) or param.has_flag(ChunkFlags.ParamFlags.OUTPUT):
+            continue
+        raw = getattr(param, "raw_value", None)
+        if isinstance(raw, str) and chunk_utils.has_expression(raw):
+            continue
+        attr = prim.GetAttribute(f"{_INPUTS_PREFIX}{param_path.replace('.', ':')}")
+        value = attr.Get(0) if attr and attr.IsValid() else None
+        if value is None:
+            value = getattr(param, "default_value", None)
+        if value is not None and not _values_agree(value, param.value):
+            param.value = value
+
+
 def _storage_attr(param: core.ChunkParamBase) -> Usd.Attribute | None:
     """The chunk-prim attribute holding this param's value, once it has one."""
     path = getattr(param, "_param_attr_path", None)
@@ -6465,7 +6498,20 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     anchored.
     """
     stage = scene.get_stage()
-    owned = _owned_stage(stage)
+    # Chunk layers hold cook output. Nearly all of it is scene content, outside the chunk
+    # prims copied below, but an Override Chunk Prim cooks opinions onto another chunk's
+    # prim: its cook makes them again, and saved they would outlive the chunk. Only a layer
+    # with something under /chunks is left out, and not one that is also where some chunk
+    # keeps its prim (an Edit Target's layer); with none, the live stage is flattened as before.
+    lm = chunk_registry.ChunkLayerManager()
+    chunks = list(scene.get_chunks())
+    homes = {chunk_utils.get_bookkeeping_layer(stage, c) for c in chunks}
+    cook_layers = [
+        layer.identifier for c in chunks
+        if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes
+        and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT) is not None
+    ]
+    owned = _owned_stage(stage, cook_layers)
     resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
     try:
         flat = UsdUtils.FlattenLayerStack(owned, resolve)
@@ -6752,7 +6798,7 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
     return next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == str(host_path)), None)
 
 
-def _owned_stage(stage: Usd.Stage) -> Usd.Stage:
+def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     """The stage as seen through only the layers the chunk system owns -- for flattening.
 
     UsdUtils.FlattenLayerStack takes every layer in the root layer stack, foreign ones
@@ -6767,11 +6813,14 @@ def _owned_stage(stage: Usd.Stage) -> Usd.Stage:
     prims, so nothing needs composing, and a scene's worth of content would otherwise be
     composed a second time on every save. With no foreign layer present the live stage
     itself comes back, and the save is what it always was.
+
+    also_mute names more layers to leave out the same way, such as the chunks' cook layers.
     """
     foreign = [
         layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
         if chunk_utils.is_foreign_layer(layer, stage)
     ]
+    foreign.extend(also_mute)
     if not foreign:
         return stage
     owned = Usd.Stage.OpenMasked(
