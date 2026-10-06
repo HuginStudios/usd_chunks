@@ -43,7 +43,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
-from usd_chunks import chunk_cache, chunk_cook, cook_cache
+from usd_chunks import chunk_cache, chunk_cook, chunk_scheduler, cook_cache
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
@@ -2398,7 +2398,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                     target.subLayerPaths.insert(0, parent.identifier)
 
             # The sort_key is used to determine the order of the chunk sublayers
-            index = c.get_dag_node().get_sort_key()
+            index = chunk_scheduler.layer_sort_key(c.get_dag_node())
             if index > len(parent.subLayerPaths) - 1:
                 index = len(parent.subLayerPaths)
 
