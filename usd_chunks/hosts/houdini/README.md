@@ -69,6 +69,10 @@ where it was written, and two small Python LOPs at the group's boundary, `space_
 Houdini's. Upstream prims come out as they went in; only what the group made is turned.
 A chunk editing an upstream prim in place is turned with it.
 
+What sets no units means a different thing on each side. A network file that sets none is
+read as USD's default, centimetres (0.01). A Solaris stage that sets none is in Houdini's
+Y-up metres, and the chunks cooking on it see those.
+
 The file is written by usd_chunks' own serializer (the scripting API, `export_worker.py`),
 in a process of its own under Houdini's Python, so it is exactly what Qt would save.
 

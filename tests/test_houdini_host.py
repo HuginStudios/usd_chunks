@@ -160,6 +160,7 @@ SCRIPT = textwrap.dedent(r"""
     upstream = hou.node("/stage").createNode("cube", "Upstream")
     group.setInput(0, upstream)
     cache.Clear()
+    out["solaris_space"] = list(space.stage_space(upstream.stage()))
     out["upstream_before"] = size(upstream.stage(), "/Upstream")
     cache.Clear()
     out["upstream_through_group"] = size(group.stage(), "/Upstream")
@@ -388,3 +389,9 @@ def test_a_chunkgroup_turns_its_network_space_into_houdinis(result):
 
 def test_upstream_content_passes_through_a_chunkgroup_unchanged(result):
     assert result["upstream_through_group"] == pytest.approx(result["upstream_before"], rel=1e-6)
+
+
+def test_a_stage_that_sets_no_units_is_in_houdinis_metres(result):
+    # A Solaris stage authors no upAxis or metersPerUnit: it is Houdini's Y-up metres, not
+    # USD's centimetre fallback.
+    assert result["solaris_space"] == ["Y", 1.0]

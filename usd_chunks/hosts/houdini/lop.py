@@ -124,6 +124,8 @@ def _on_stage(scene: HoudiniScene, node: hou.Node):
 
     Inside a chunkgroup the stage has the group's up axis and units rather than the
     input's: the chunks cook in the space their network was authored in (see space).
+    Outside one it always authors both, Houdini's where the input sets none, so a chunk
+    reading the stage's units sees Houdini's metres rather than USD's centimetre fallback.
     """
     input_stage = _input_stage(node)
     root = Sdf.Layer.CreateAnonymous("usdchunks_input")
@@ -136,9 +138,9 @@ def _on_stage(scene: HoudiniScene, node: hou.Node):
                     "upAxis", "metersPerUnit", "defaultPrim"):
             if info.HasInfo(key):
                 root.pseudoRoot.SetInfo(key, info.GetInfo(key))
-    if (network := space.group_space(node)) is not None:
-        root.pseudoRoot.SetInfo("upAxis", network[0])
-        root.pseudoRoot.SetInfo("metersPerUnit", network[1])
+    up, mpu = space.group_space(node) or space.stage_space(input_stage)
+    root.pseudoRoot.SetInfo("upAxis", up)
+    root.pseudoRoot.SetInfo("metersPerUnit", mpu)
     stage = Usd.Stage.Open(root)
     layers = chunk_registry.ChunkLayerManager()
     layers.reset()

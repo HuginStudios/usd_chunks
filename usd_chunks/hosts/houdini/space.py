@@ -38,10 +38,18 @@ _OP_SUFFIX = {IN_NODE: "usdchunks_to_network", OUT_NODE: "usdchunks_to_host"}
 
 
 def stage_space(stage: Usd.Stage | None) -> tuple[str, float]:
-    """(up axis, meters per unit) of a stage: Houdini's own defaults when there is none."""
-    if stage is None:
-        return "Y", 1.0
-    return str(UsdGeom.GetStageUpAxis(stage)).upper(), float(UsdGeom.GetStageMetersPerUnit(stage))
+    """(up axis, meters per unit) of a Houdini stage: Houdini's own for what it does not set.
+
+    A Solaris stage usually authors neither. USD's fallback units are centimetres, but a
+    stage in Houdini is in Houdini's space -- Y-up metres -- unless it says otherwise.
+    """
+    up, mpu = "Y", 1.0
+    if stage is not None:
+        if stage.HasAuthoredMetadata(UsdGeom.Tokens.upAxis):
+            up = str(UsdGeom.GetStageUpAxis(stage)).upper()
+        if stage.HasAuthoredMetadata(UsdGeom.Tokens.metersPerUnit):
+            mpu = float(UsdGeom.GetStageMetersPerUnit(stage))
+    return up, mpu
 
 
 def group_of(node: hou.Node) -> hou.Node | None:
