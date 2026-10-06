@@ -1,20 +1,11 @@
 from __future__ import annotations
 from pxr import Sdf
-from usd_chunks import chunk, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_stage, chunk_utils, sdf_authoring
 
 
 def file_changed(owner, notice, sender):
     """Callback for changing payload paths: suggest a prim location from the file name."""
     chunk_stage.suggest_location_from_file(notice.data)
-
-
-def _define_in_edit_layer(stage, path, type_name: str) -> None:
-    """Write a `def` for `path` into the edit target's layer, keeping the prim's type."""
-    target = stage.GetEditTarget()
-    spec = Sdf.CreatePrimInLayer(target.GetLayer(), target.MapToSpecPath(path))
-    spec.specifier = Sdf.SpecifierDef
-    if not spec.typeName:
-        spec.typeName = type_name or "Xform"
 
 
 def execute(node):
@@ -57,7 +48,8 @@ def execute(node):
             # chunks on one prim each saw the other's payload, neither defined the prim,
             # and it ended up an `over`. DefinePrim will not help: it returns a prim that
             # is already defined without writing anything.
-            _define_in_edit_layer(stage, target_path, prim.GetTypeName())
+            spec = sdf_authoring.Writer(stage).define(target_path)
+            spec.typeName = spec.typeName or prim.GetTypeName() or "Xform"
         prim.GetPayloads().AddPayload(ref)
 
 
