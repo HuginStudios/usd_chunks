@@ -60,6 +60,15 @@ and those Merge LOPs can be inside; a Solaris node has no chunk to become, so ex
 and names it -- put Solaris nodes upstream, feeding the group's input. A Houdini expression
 other than those references is exported as its current value.
 
+**Network space** -- a network authored in Blender or usdview is often Z-up in centimetres;
+Houdini is Y-up in metres. A chunkgroup keeps the space its network was authored in (its
+Network Space parms: Up Axis and Meters per Unit, set from the file on import and written
+back on export). Its chunks cook in that space, so a Transform's `ty` means what it meant
+where it was written, and two small Python LOPs at the group's boundary, `space_in` and
+`space_out`, turn upstream content into the network's space and the result back into
+Houdini's. Upstream prims come out as they went in; only what the group made is turned.
+A chunk editing an upstream prim in place is turned with it.
+
 The file is written by usd_chunks' own serializer (the scripting API, `export_worker.py`),
 in a process of its own under Houdini's Python, so it is exactly what Qt would save.
 
@@ -77,6 +86,7 @@ From a script: `chunkgroup.import_file(path, hou.node("/stage"))` and
 | `tools.py` | Writes and loads the TAB menu's shelf file (one tool per chunk and variant). |
 | `chunkgroup.py` | The chunkgroup node: importing a network into one, exporting one. |
 | `export_worker.py` | Writes an exported chunkgroup with the scripting API, in its own process. |
+| `space.py` | A chunkgroup's network space: its parms, `space_in`/`space_out`, the conversion. |
 | `python3.11libs/pythonrc.py` | Startup: dependency dir on `sys.path`, TAB menu once the UI is up. |
 | `build_hda.py` | Regenerates the HDA (`hython build_hda.py`). Only needed when its contents change. |
 

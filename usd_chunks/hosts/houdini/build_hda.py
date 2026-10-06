@@ -26,7 +26,7 @@ import hou
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(HERE))))
 
-from usd_chunks.hosts.houdini import chunkgroup, lop, parms, tools  # noqa: E402
+from usd_chunks.hosts.houdini import chunkgroup, lop, parms, space, tools  # noqa: E402
 
 OUT = os.path.join(HERE, "otls", "usdchunks_chunk.hda")
 ON_DELETED = "from usd_chunks.hosts.houdini import lop\nlop.on_deleted(kwargs)\n"
@@ -83,6 +83,19 @@ def _chunkgroup_type(network: hou.Node, library: str) -> None:
         script_callback_language=hou.scriptLanguage.Python,
         help="Write this chunkgroup as a usd_chunks network (.usda) that usdview, Blender "
              "and the usdchunks CLI open. Only chunk nodes can be inside it."))
+    network_space = hou.FolderParmTemplate(
+        "network_space", "Network Space", folder_type=hou.folderType.Collapsible)
+    network_space.addParmTemplate(hou.StringParmTemplate(
+        space.UP_PARM, "Up Axis", 1, default_value=("Y",), menu_items=("Y", "Z"),
+        menu_labels=("Y", "Z"), menu_type=hou.menuType.Normal,
+        help="The up axis this network was authored in. Its chunks cook in it, and the "
+             "result is turned into Houdini's. Set from the file on import."))
+    network_space.addParmTemplate(hou.FloatParmTemplate(
+        space.MPU_PARM, "Meters per Unit", 1, default_value=(1.0,), min=0.001, max=1.0,
+        min_is_strict=True,
+        help="The units this network was authored in (0.01 = centimetres). Its result is "
+             "scaled into Houdini's. Set from the file on import."))
+    group.append(network_space)
     _finish(definition, group, "A usd_chunks chunkgroup: chunk nodes, kept together, "
                                "exported as one network.")
     definition.save(library, asset)

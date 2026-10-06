@@ -46,7 +46,7 @@ from usd_chunks import chunk_stage
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.chunk_process import python_executable
 from usd_chunks.graph import engine as chunk_graph
-from usd_chunks.hosts.houdini import lop, parms
+from usd_chunks.hosts.houdini import lop, parms, space
 from usd_chunks.hosts.houdini.scene import ensure_scene
 
 logger = logging.getLogger(__name__)
@@ -249,6 +249,8 @@ def _import_children(container: Usd.Prim, parent: hou.Node, group_prim: Usd.Prim
             node.setInput(0, merge)
         elif sources:
             node.setInput(0, sources[0])
+        elif group_prim is not None and (entry := parent.node(space.IN_NODE)) is not None:
+            node.setInput(0, entry)  # the group's input, turned into its network space
         elif group_prim is not None and parent.indirectInputs():
             node.setInput(0, parent.indirectInputs()[0])
 
@@ -267,24 +269,38 @@ def _import_children(container: Usd.Prim, parent: hou.Node, group_prim: Usd.Prim
     return None
 
 
-def create_group(parent: hou.Node, name: str = "chunkgroup") -> hou.Node:
-    """An empty chunkgroup node in parent, its contents the user's to edit."""
-    node = parent.createNode(GROUP_TYPE, name)
-    node.allowEditingOfContents()
-    return node
+def _prepare(group: hou.Node, network_space: tuple[str, float] | None = None) -> hou.Node:
+    """Unlock a new chunkgroup node, give it its network space and its boundary nodes."""
+    group.allowEditingOfContents()
+    up, mpu = network_space or space.stage_space(None)
+    group.parm(space.UP_PARM).set(up)
+    group.parm(space.MPU_PARM).set(mpu)
+    space.ensure_nodes(group)
+    return group
+
+
+def create_group(parent: hou.Node, name: str = "chunkgroup",
+                 network_space: tuple[str, float] | None = None) -> hou.Node:
+    """An empty chunkgroup node in parent, its contents the user's to edit.
+
+    network_space is the (up axis, meters per unit) its chunks cook in; Houdini's own when
+    omitted, as for a group started here.
+    """
+    return _prepare(parent.createNode(GROUP_TYPE, name), network_space)
 
 
 def create_from_tool(kwargs) -> hou.Node | None:
     """The TAB menu's Chunkgroup entry: an empty chunkgroup node where the user is working."""
     node = loptoolutils.genericTool(kwargs, GROUP_TYPE, nodename="chunkgroup")
-    if node is not None:
-        node.allowEditingOfContents()
-    return node
+    return _prepare(node) if node is not None else None
 
 
 def import_group(prim: Usd.Prim, parent: hou.Node) -> hou.Node:
-    """A chunkgroup prim as a chunkgroup node in parent, its chunks inside."""
-    group = create_group(parent, prim.GetName())
+    """A chunkgroup prim as a chunkgroup node in parent, its chunks inside.
+
+    The group keeps the space the file was authored in, so its chunks cook as they did there.
+    """
+    group = create_group(parent, prim.GetName(), space.stage_space(prim.GetStage()))
     inner = {a.GetPrimPath() for c in _chunk_children(prim) for attr in c.GetAttributes()
              for a in attr.GetConnections()}
     for attr in prim.GetAttributes():
@@ -292,9 +308,10 @@ def import_group(prim: Usd.Prim, parent: hou.Node) -> hou.Node:
         if name.startswith(_INPUTS) and not _is_exec(attr) and prim.GetPath() in inner:
             _group_parm(group, attr)
     out = _import_children(prim, group, prim)
-    output = next((c for c in group.children() if c.type().name() == "output"), None)
-    if output is not None and out is not None:
-        output.setInput(0, out)
+    exit_node = group.node(space.OUT_NODE) or next(
+        (c for c in group.children() if c.type().name() == "output"), None)
+    if exit_node is not None and out is not None:
+        exit_node.setInput(0, out)
         out.setDisplayFlag(True)
     if not any(c.GetAttribute(_POS) for c in _chunk_children(prim)):
         group.layoutChildren()
@@ -357,7 +374,11 @@ def _exec_inputs(node: hou.Node) -> list[str]:
     for source in node.inputs():
         if source is None:
             continue
-        if source.type().name() == "merge":
+        if space.is_space_node(source):
+            # space_in is the group's input, and a chunk wired to it has no exec input;
+            # space_out passes through to what feeds the group's output.
+            names += _exec_inputs(source) if source.name() == space.OUT_NODE else []
+        elif source.type().name() == "merge":
             names += _exec_inputs(source)
         else:
             names.append(source.name())
@@ -466,7 +487,7 @@ def _collect(group: hou.Node, foreign: list[str]) -> dict:
     nodes = []
     for child in group.children():
         kind = child.type().name()
-        if kind in _PLUMBING:
+        if kind in _PLUMBING or space.is_space_node(child):
             continue
         if kind == lop.HDA_TYPE:
             node = _chunk_spec(child, group, public)
@@ -484,8 +505,12 @@ def _collect(group: hou.Node, foreign: list[str]) -> dict:
         if (pt := group.parmTuple(name)) is not None:
             values = pt.eval()
             params[name] = _jsonable(values[0] if len(values) == 1 else values)
-    return {"name": group.name(), "output": feeding[0] if feeding else "",
+    spec = {"name": group.name(), "output": feeding[0] if feeding else "",
             "params": params, "nodes": _ordered(nodes)}
+    if group.parm(space.UP_PARM) is not None:
+        spec["up_axis"] = group.evalParm(space.UP_PARM).upper()
+        spec["meters_per_unit"] = float(group.evalParm(space.MPU_PARM))
+    return spec
 
 
 def export(group: hou.Node, path: str) -> str:

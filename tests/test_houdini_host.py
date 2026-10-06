@@ -135,10 +135,34 @@ SCRIPT = textwrap.dedent(r"""
     out["export_loft"] = net.GetPrimAtPath("/chunks/Net").GetAttribute("inputs:House_floors").Get()
     out["export_positions"] = {n: list(prims[f"/chunks/Net/{n}"].GetAttribute("ui:nodegraph:node:pos").Get())
                                for n in ("House", "Ground", "Move")}
+    from pxr import UsdGeom
+    out["export_space"] = [str(UsdGeom.GetStageUpAxis(net)), UsdGeom.GetStageMetersPerUnit(net)]
     again = chunkgroup.import_file(exported, hou.node("/stage"))[0]
     out["reimport_children"] = sorted(c.name() for c in again.children())
     out["reimport_exprs"] = [again.node("Move").parm("primpath_location").expression(),
                              again.node("House").parm("floors").expression()]
+    # Network space: the group cooks Z-up in centimetres and comes out in Houdini's Y-up
+    # metres, so its House is the one Houdini builds itself, a hundredth the size.
+    from usd_chunks.hosts.houdini import space
+    out["group_space"] = [group.evalParm(space.UP_PARM), group.evalParm(space.MPU_PARM)]
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+
+    def size(stage, path):
+        return list(cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange().GetSize())
+
+    cache.Clear()
+    out["house_in_group"] = size(group.stage(), "/House")
+    native = lop.create(hou.node("/stage"), "house", name="NativeHouse")
+    cache.Clear()
+    out["house_native"] = size(native.stage(), "/House")
+    upstream = hou.node("/stage").createNode("cube", "Upstream")
+    group.setInput(0, upstream)
+    cache.Clear()
+    out["upstream_before"] = size(upstream.stage(), "/cube1")
+    cache.Clear()
+    out["upstream_through_group"] = size(group.stage(), "/cube1")
+    group.setInput(0, None)
+
     group.createNode("cube", "SolarisCube")
     try:
         chunkgroup.export(group, exported)
@@ -153,6 +177,10 @@ SCRIPT = textwrap.dedent(r"""
 #: A saved network, as Qt writes one: a chunkgroup whose public param feeds a chunk, an
 #: exec chain, an expression wire between two chunks, and a View on the last.
 NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 0.01
+        upAxis = "Z"
+    )
 
     def Scope "chunks"
     {
@@ -343,3 +371,17 @@ def test_positions_survive_the_round_trip(result):
     assert result["export_positions"]["House"] == pytest.approx([0, 0], abs=1e-3)
     assert result["export_positions"]["Ground"] == pytest.approx([260, 0], abs=1e-3)
     assert result["export_positions"]["Move"] == pytest.approx([520, 0], abs=1e-3)
+
+
+def test_a_chunkgroup_keeps_the_space_its_network_was_authored_in(result):
+    assert result["group_space"] == ["Z", pytest.approx(0.01)]
+    assert result["export_space"] == ["Z", pytest.approx(0.01)]
+
+
+def test_a_chunkgroup_turns_its_network_space_into_houdinis(result):
+    # Z-up centimetres in, Y-up metres out: the same house Houdini builds, at 1/100.
+    assert result["house_in_group"] == pytest.approx([v * 0.01 for v in result["house_native"]], rel=1e-3)
+
+
+def test_upstream_content_passes_through_a_chunkgroup_unchanged(result):
+    assert result["upstream_through_group"] == pytest.approx(result["upstream_before"], rel=1e-6)

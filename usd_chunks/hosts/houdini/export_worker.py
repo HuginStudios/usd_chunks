@@ -14,6 +14,7 @@ Imports no hou: Houdini's pxr is imported through the plain interpreter.
 The spec, one dict per chunkgroup::
 
     {"name": "ChunkGroup", "output": "PreviewSurface", "params": {"SwedishHouse_floors": 1},
+     "up_axis": "Z", "meters_per_unit": 0.01,
      "nodes": [{"kind": "chunk", "name": "SwedishHouse", "type": "house", "pos": [x, y],
                 "inputs": ["AddMesh"], "values": {"footprint_grp.width": 5.6},
                 "lists": {"imports": {"size": 2, "rows": {"sublayer_path": ["a", "b"]}}},
@@ -26,7 +27,7 @@ from __future__ import annotations
 import json
 import sys
 
-from pxr import Sdf
+from pxr import Sdf, UsdGeom
 
 from usd_chunks import Scene, chunk_core, chunk_stage
 from usd_chunks.chunk_naming import CHUNKS_ROOT
@@ -104,6 +105,13 @@ def _place(layer: Sdf.Layer, prim_path: Sdf.Path, spec: dict) -> None:
 def export(spec: dict, path: str) -> str:
     """Build spec as a network and save it to path. Returns the group's prim path."""
     with Scene.new() as scene:
+        # The network's own space, before anything cooks: the chunks build in it, and the
+        # file records it for whatever opens it next (see hosts/houdini/space.py).
+        stage = scene.get_stage()
+        if spec.get("up_axis") in ("Y", "Z"):
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y if spec["up_axis"] == "Y" else UsdGeom.Tokens.z)
+        if spec.get("meters_per_unit"):
+            UsdGeom.SetStageMetersPerUnit(stage, float(spec["meters_per_unit"]))
         group = scene.peek_root_context() or scene.get_root_context()
         group.name = spec["name"]
         made: dict = {}

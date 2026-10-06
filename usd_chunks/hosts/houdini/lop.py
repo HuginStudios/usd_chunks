@@ -31,7 +31,7 @@ import loptoolutils
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.hosts.houdini import parms
+from usd_chunks.hosts.houdini import parms, space
 from usd_chunks.hosts.houdini.scene import HoudiniScene, ensure_scene
 
 logger = logging.getLogger(__name__)
@@ -115,13 +115,17 @@ def _input_stage(node: hou.Node) -> Usd.Stage | None:
 
 
 @contextmanager
-def _on_stage(scene: HoudiniScene, input_stage: Usd.Stage | None):
+def _on_stage(scene: HoudiniScene, node: hou.Node):
     """The scene's stage, for one cook: a private stage over the node's input.
 
     ChunkLayerManager serves a single stage, and a Solaris network has one per node, so it
     is pointed at this one for the duration. Every chunk layer it hands out is cleared by
     the cook that uses it, so forgetting the last node's is not losing anything.
+
+    Inside a chunkgroup the stage has the group's up axis and units rather than the
+    input's: the chunks cook in the space their network was authored in (see space).
     """
+    input_stage = _input_stage(node)
     root = Sdf.Layer.CreateAnonymous("usdchunks_input")
     if input_stage is not None:
         source = input_stage.GetRootLayer()
@@ -132,6 +136,9 @@ def _on_stage(scene: HoudiniScene, input_stage: Usd.Stage | None):
                     "upAxis", "metersPerUnit", "defaultPrim"):
             if info.HasInfo(key):
                 root.pseudoRoot.SetInfo(key, info.GetInfo(key))
+    if (network := space.group_space(node)) is not None:
+        root.pseudoRoot.SetInfo("upAxis", network[0])
+        root.pseudoRoot.SetInfo("metersPerUnit", network[1])
     stage = Usd.Stage.Open(root)
     layers = chunk_registry.ChunkLayerManager()
     layers.reset()
@@ -152,7 +159,7 @@ def cook(lop: hou.LopNode) -> None:
         chunk = chunk_for(node)
         with _no_stage(scene):
             parms.push(node, chunk)
-        with _on_stage(scene, _input_stage(node)):
+        with _on_stage(scene, node):
             chunk._cook()
             layer = chunk_registry.ChunkLayerManager().get_layer(chunk)
             out = Sdf.Layer.CreateAnonymous(f"usdchunks_{node.name()}")
@@ -202,7 +209,7 @@ def press_button(kwargs) -> None:
     scene = ensure_scene()
     with _no_stage(scene):
         parms.push(node, chunk)
-    with _on_stage(scene, _input_stage(node)):
+    with _on_stage(scene, node):
         param.click()
     parms.pull(node, chunk)
 
@@ -215,7 +222,7 @@ def menu_items(node: hou.Node, parm_name: str) -> list[str]:
         if param is None:
             return []
         if hasattr(param, "refresh_items"):
-            with _on_stage(ensure_scene(), _input_stage(node)):
+            with _on_stage(ensure_scene(), node):
                 param.refresh_items()
         items = [str(i) for i in (getattr(param, "menu_items", None) or [])]
     except Exception:
