@@ -11,7 +11,7 @@ import os
 from pxr import Sdf, Usd, UsdUtils
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks import chunk_stage
+from usd_chunks import chunk_notice, chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
 
 
@@ -56,6 +56,11 @@ def _refresh_layer_rows(owner, notice, sender):
     listener -- without this guard, checking a box would immediately trigger a rebuild
     that resets it straight back to the default before it could ever be read.
     """
+    if chunk_notice._loading_stage is not None:
+        # The rows are being restored from the saved scene, one array at a time, while the
+        # stage is still filling in. A rebuild now pairs half-restored values with layers
+        # that are not all there yet; the first refresh after the load does it properly.
+        return
     _chunk = owner.get_chunk()
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
@@ -98,14 +103,21 @@ def _refresh_layer_rows(owner, notice, sender):
         # silently reset every checkbox the user had already set on the layers that are
         # still there. A layer that has gone (or one that has just appeared) simply isn't
         # in this map and falls back to the defaults below.
-        kept = {
+        #
+        # Remembered for the session, not only across this one rebuild: a layer can drop out
+        # of the stage for a moment (a recook moves layers around) and come back on the next
+        # refresh. Kept only from the rows still there, it came back with the defaults --
+        # an Export the user had unchecked was checked again, a File Name was gone.
+        kept = getattr(_chunk, "_export_row_settings", {})
+        kept.update({
             rows.get_indexed_param(name_t, i).value: (
                 rows.get_indexed_param(export_t, i).value,
                 rows.get_indexed_param(bake_t, i).value,
                 rows.get_indexed_param(file_t, i).value,
             )
             for i in range(rows.size)
-        }
+        })
+        _chunk._export_row_settings = kept
 
         # Only indices >= old_size get a genuinely new ChunkGroupBase (and therefore a
         # fresh export_enabled proxy) from ChunkListGroupBase.value_changed's row-creation
@@ -499,6 +511,10 @@ def _export_enabled_changed(owner, notice, sender):
     row's" Bake box actually grayed out every row's, and which way the column ended up
     came down to whichever row's callback happened to fire last.
     """
+    if chunk_notice._loading_stage is not None:
+        # Restoring a saved Export checkbox is not the user ticking it: resetting Bake from
+        # Bake all here threw away the Bake the scene was saved with.
+        return
     row = sender.get_owner()
     if row is None:
         return
