@@ -50,6 +50,7 @@ from pathlib import Path
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, cook_cache
+from usd_chunks.chunk_process import python_executable
 
 try:
     from PySide6 import QtCore
@@ -367,7 +368,7 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(
-        [sys.executable, "-m", "usd_chunks.sim_bake", source, function.__name__, str(job), str(out)],
+        [python_executable(), "-m", "usd_chunks.sim_bake", source, function.__name__, str(job), str(out)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, creationflags=flags,
         cwd=str(folder),
     )
