@@ -1,0 +1,30 @@
+# Dialog script for usdchunks::chunk automatically generated
+
+{
+    name	usdchunks::chunk
+    script	usdchunks::chunk
+    label	"USD Chunk"
+
+    help {
+    }
+
+    inputlabel	1	"Input Stage"
+    inputlabel	2	"Input 2"
+    inputlabel	3	"Input 3"
+    inputlabel	4	"Input 4"
+
+    parm {
+        name    "usdchunks_type"
+        label   "Chunk Module"
+        type    string
+        invisible
+        default { "" }
+    }
+    parm {
+        name    "usdchunks_variant"
+        label   "Chunk Variant"
+        type    string
+        invisible
+        default { "" }
+    }
+}

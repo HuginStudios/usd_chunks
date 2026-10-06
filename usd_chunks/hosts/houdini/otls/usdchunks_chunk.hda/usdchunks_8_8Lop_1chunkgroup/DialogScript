@@ -1,0 +1,25 @@
+# Dialog script for usdchunks::chunkgroup automatically generated
+
+{
+    name	usdchunks::chunkgroup
+    script	usdchunks::chunkgroup
+    label	"USD Chunkgroup"
+
+    help {
+    }
+
+    inputlabel	1	"Input Stage"
+    inputlabel	2	"Input 2"
+    inputlabel	3	"Input 3"
+    inputlabel	4	"Input 4"
+
+    parm {
+        name    "export_network"
+        label   "Export Network..."
+        type    button
+        default { "0" }
+        help    "Write this chunkgroup as a usd_chunks network (.usda) that usdview, Blender and the usdchunks CLI open. Only chunk nodes can be inside it."
+        parmtag { "script_callback" "from usd_chunks.hosts.houdini import chunkgroup; chunkgroup.export_from_button(kwargs)" }
+        parmtag { "script_callback_language" "python" }
+    }
+}

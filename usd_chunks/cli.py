@@ -19,6 +19,7 @@ from pathlib import Path
 
 from pxr import Usd
 from usd_chunks import chunk_naming, configure_logging
+from usd_chunks.chunk_process import python_executable
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
@@ -487,7 +488,7 @@ def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False, param
     directory = _variant_dir(out, index)
     os.makedirs(directory, exist_ok=True)
     cmd = [
-        sys.executable, "-m", "usd_chunks.cli", "run", usda,
+        python_executable(), "-m", "usd_chunks.cli", "run", usda,
         *params,
         f"{wedge_name}.current_index={index}",
         "--export", os.path.join(directory, "variant.usda"),
@@ -603,7 +604,7 @@ def _sweep_batched(args, name, indices):
         print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}, batched")
         workers = [
             subprocess.Popen([
-                sys.executable, "-m", "usd_chunks.cli", "sweep", args.usda, *args.params,
+                python_executable(), "-m", "usd_chunks.cli", "sweep", args.usda, *args.params,
                 "--out", args.out, "--only", ",".join(str(i) for i in part), "--prepare-only",
                 *(["--all"] if args.all else []),
             ])
@@ -741,7 +742,8 @@ def cmd_deps(args):
 
 
 def cmd_plugin_path(args):
-    """Print the directory to put on PXR_PLUGINPATH_NAME for a given host.
+    """Print the directory of a host integration: the one to put on PXR_PLUGINPATH_NAME for
+    usdview, the Houdini package's hpath for houdini (hosts/houdini/install.py writes it).
 
     Resolved from the installed package rather than the source tree, so the printed path
     is correct whether usd_chunks was pip-installed or is being run from a checkout.
@@ -966,11 +968,12 @@ def main():
             "  usdchunks plugin-path\n"
             "  for /f \"delims=\" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   (Windows cmd)\n"
             '  export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"    (POSIX)\n'
+            "  usdchunks plugin-path --host houdini   (the Houdini package's hpath)\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
     plugin_path_parser.add_argument(
-        "--host", choices=["usdview"], default="usdview", help="Which host integration (default: usdview)"
+        "--host", choices=["usdview", "houdini"], default="usdview", help="Which host integration (default: usdview)"
     )
 
     # Overrides are positionals after a positional, and argparse settles a trailing
