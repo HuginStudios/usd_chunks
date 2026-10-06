@@ -273,8 +273,11 @@ def _prepare(group: hou.Node, network_space: tuple[str, float] | None = None) ->
     """Unlock a new chunkgroup node, give it its network space and its boundary nodes."""
     group.allowEditingOfContents()
     up, mpu = network_space or space.stage_space(None)
-    group.parm(space.UP_PARM).set(up)
-    group.parm(space.MPU_PARM).set(mpu)
+    # A node type built before the Network Space parms has none to set; its group then
+    # cooks in Houdini's space, as groups did before (space.group_space reads None).
+    if group.parm(space.UP_PARM) is not None:
+        group.parm(space.UP_PARM).set(up)
+        group.parm(space.MPU_PARM).set(mpu)
     space.ensure_nodes(group)
     return group
 
