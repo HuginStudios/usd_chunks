@@ -1582,7 +1582,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         dependency = notice.data
         if not isinstance(dependent, core.ChunkBase) or not isinstance(dependency, core.ChunkBase):
             return
-        dep_prim = self._stage.GetPrimAtPath(Sdf.Path(f"{_resolve_chunk_root(dependent)}/{dependent.name}"))
+        # get_chunk_prim_path, not root + name: for a chunkgroup the root is the group's own
+        # path, so the lookup missed and a scripted group's exec input was never written.
+        dep_prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dependent)))
         if not dep_prim.IsValid():
             return
         src_path = Sdf.Path(exec_output_path(dependency))
@@ -6367,36 +6369,34 @@ def strip_chunks(layer, only_paths=None) -> None:
         else:
             links.ClearEdits()  # no `.connect = None` left behind
 
-    layer.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
-
     # The scope the chunks hung under is recipe as well. Nothing lives AT /chunks, so once
     # its chunks are gone an empty `def Scope "chunks" {}` is the one trace of the network
     # left in a file whose whole point is to carry none -- and it is enough to make a
     # delivered asset look like it wants usd_chunks installed. A layer that only held
-    # chunk bookkeeping also leaves the `over`s that framed it (`over "chunks"` / `over
-    # "ChunkGroup"`), with nothing in them. Only when it IS empty: a stage that parks
-    # something else there keeps both the scope and that something.
+    # chunk bookkeeping also leaves `over`s behind: the ones that framed it (`over
+    # "chunks"` / `over "ChunkGroup"`), and the bookkeeping of chunks defined in another
+    # layer -- a chunkgroup's inner chunks write theirs into the Edit Target's layer, while
+    # the group itself is in the session layer. Any subtree under /chunks with no `def` in
+    # it is one of those. Something else parked there is a `def`, and stays.
     root = layer.GetPrimAtPath(chunks_root)
-    if root and root.typeName in (chunk_naming.CHUNKS_ROOT_TYPENAME, ""):
-        _prune_empty_overs(root)
-        if not root.nameChildren and (root.typeName or root.specifier == Sdf.SpecifierOver):
-            del layer.pseudoRoot.nameChildren[root.name]
+    is_scope = root and root.typeName in (chunk_naming.CHUNKS_ROOT_TYPENAME, "")
+    if is_scope:
+        _prune_over_only(root)
+    # After the pruning, so links into what it removed go too.
+    layer.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
+    if is_scope and not root.nameChildren and (root.typeName or root.specifier == Sdf.SpecifierOver):
+        del layer.pseudoRoot.nameChildren[root.name]
 
 
-def _prune_empty_overs(spec) -> None:
-    """Delete the child `over`s under `spec` that hold nothing, deepest first."""
+def _prune_over_only(spec) -> bool:
+    """Delete the children of `spec` with no `def` below them; True if `spec` still has one."""
+    has_def = spec.specifier == Sdf.SpecifierDef
     for child in list(spec.nameChildren):
-        _prune_empty_overs(child)
-        if (
-            child.specifier == Sdf.SpecifierOver
-            and not child.nameChildren
-            and not child.properties
-            and not child.variantSets
-            and not child.hasReferences
-            and not child.hasPayloads
-            and not child.HasInfo("apiSchemas")
-        ):
+        if _prune_over_only(child):
+            has_def = True
+        else:
             del spec.nameChildren[child.name]
+    return has_def
 
 
 def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
