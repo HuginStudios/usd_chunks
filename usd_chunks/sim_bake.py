@@ -113,8 +113,21 @@ def in_background() -> bool:
     return chunk_registry.ChunkRegistry().plugin not in _INLINE_HOSTS
 
 
+#: Hosts with nobody at them: no button to press, no timer to wait for.
+_UNATTENDED_HOSTS = (None, "", "cli", "script")
+
 #: Hosts with no running event loop: bakes run inline there.
-_INLINE_HOSTS = (None, "", "cli", "pytest", "script")
+_INLINE_HOSTS = (*_UNATTENDED_HOSTS, "pytest")
+
+
+def is_unattended() -> bool:
+    """Whether nobody can press Run: `usdchunks run`, a sweep, or a script (Scene.new()).
+
+    A solver bakes on cook there, since a cook that only waits for a button bakes nothing
+    and leaves a motionless scene that looks entirely plausible. The test host is not in
+    the list: the tests drive the interactive path.
+    """
+    return chunk_registry.ChunkRegistry().plugin in _UNATTENDED_HOSTS
 
 
 def is_running(node) -> bool:

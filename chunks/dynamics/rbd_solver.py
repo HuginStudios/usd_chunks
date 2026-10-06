@@ -3134,6 +3134,11 @@ def _run(owner, notice, sender) -> None:
             if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
                 lreg.clear_layer(layer.identifier)
 
+    # Read now, not in finish: finish moves the bake's layer to the top of the stack, which
+    # recomposes the stage and expires `prim`. Asking it for its name then raised -- every
+    # time a script reopened a saved RBD scene, since the bake now runs during the load.
+    prim_name = prim.GetName()
+
     def finish(_result):
         if _chunk.get_edit_context() is None:
             return  # the chunk went away while it was simulating
@@ -3147,8 +3152,8 @@ def _run(owner, notice, sender) -> None:
                 scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
         except Exception:
             pass
-        _report(_chunk, f"settled {prim.GetName()}" if settle_only else
-                f"baked {frame_count} frames on {prim.GetName()}"
+        _report(_chunk, f"settled {prim_name}" if settle_only else
+                f"baked {frame_count} frames on {prim_name}"
                 + (f"\n{collider_warning}" if collider_warning else ""))
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
@@ -3424,11 +3429,6 @@ def _note_input_change(node) -> None:
         _schedule_auto_run(node)
 
 
-def _is_headless() -> bool:
-    """No UI, so no event loop and nobody to press a button."""
-    return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
-
-
 def execute(node) -> None:
     """Bake on cook -- headless; interactively, only fetch a cached bake.
 
@@ -3440,7 +3440,7 @@ def execute(node) -> None:
     without baking renders a motionless scene that looks entirely plausible -- so it bakes,
     or loads the cache.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         _run(node, None, None)
         return
     if getattr(node, "_rbd_cache_checked", False):
@@ -3465,7 +3465,7 @@ def _schedule_auto_run(root_chunk) -> None:
     Headless there is nothing to debounce and no Qt event loop for a QTimer to fire in; the
     bake happens in execute() instead, when the cook reaches this chunk.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         # Headless, execute() bakes instead: the cook calls it in dependency order, once
         # every upstream chunk has cooked. Running here too baked against a half-cooked
         # network -- a solver fired by the first upstream chunk's change, before the
@@ -3519,7 +3519,7 @@ def main() -> chunk.Chunk:
     # button. Neither is true in `usdchunks run` or a sweep: nobody is watching a border and
     # nobody can press anything, so cooking the network produced a chunk that quietly baked
     # nothing and a scene that rendered a motionless, entirely plausible-looking result.
-    interactive = not _is_headless()
+    interactive = not sim_bake.is_unattended()
     auto_sim = chunk.Checkbox(
         "auto_sim",
         "Auto Simulate",
