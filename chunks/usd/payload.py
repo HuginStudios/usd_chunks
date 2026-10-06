@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pxr import Sdf
-from usd_chunks import chunk, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_stage, chunk_utils, sdf_authoring
 
 
 def file_changed(owner, notice, sender):
@@ -48,7 +48,8 @@ def execute(node):
             # chunks on one prim each saw the other's payload, neither defined the prim,
             # and it ended up an `over`. DefinePrim will not help: it returns a prim that
             # is already defined without writing anything.
-            chunk_utils.define_in_edit_layer(stage, target_path, prim.GetTypeName())
+            spec = sdf_authoring.Writer(stage).define(target_path)
+            spec.typeName = spec.typeName or prim.GetTypeName() or "Xform"
         prim.GetPayloads().AddPayload(ref)
 
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, sdf_authoring
 
 
 def execute(node):
@@ -11,7 +11,7 @@ def execute(node):
         stage.DefinePrim(path, prim_type)  # defines any missing parents too
         # Into this chunk's own layer even when another layer already defines the prim the
         # same way: DefinePrim writes nothing then, and the layer's publish lost the def.
-        chunk_utils.define_in_edit_layer(stage, path, prim_type)
+        sdf_authoring.Writer(stage).define(path, prim_type)
 
 
 def main():
