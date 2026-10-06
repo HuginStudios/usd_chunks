@@ -6379,31 +6379,24 @@ def strip_chunks(layer, only_paths=None) -> None:
     # the group itself is in the session layer. Any subtree under /chunks with no `def` in
     # it is one of those. Something else parked there is a `def`, and stays.
     root = layer.GetPrimAtPath(chunks_root)
-    if root and root.typeName in (chunk_naming.CHUNKS_ROOT_TYPENAME, ""):
+    is_scope = root and root.typeName in (chunk_naming.CHUNKS_ROOT_TYPENAME, "")
+    if is_scope:
         _prune_over_only(root)
     # After the pruning, so links into what it removed go too.
     layer.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
-    root = layer.GetPrimAtPath(chunks_root)
-    if (
-        root
-        and root.typeName in (chunk_naming.CHUNKS_ROOT_TYPENAME, "")
-        and not root.nameChildren
-        and (root.typeName or root.specifier == Sdf.SpecifierOver)
-    ):
+    if is_scope and not root.nameChildren and (root.typeName or root.specifier == Sdf.SpecifierOver):
         del layer.pseudoRoot.nameChildren[root.name]
 
 
-def _prune_over_only(spec) -> None:
-    """Delete the children of `spec` whose whole subtree is `over`s: bookkeeping, no prims."""
+def _prune_over_only(spec) -> bool:
+    """Delete the children of `spec` with no `def` below them; True if `spec` still has one."""
+    has_def = spec.specifier == Sdf.SpecifierDef
     for child in list(spec.nameChildren):
-        if _has_def(child):
-            _prune_over_only(child)
+        if _prune_over_only(child):
+            has_def = True
         else:
             del spec.nameChildren[child.name]
-
-
-def _has_def(spec) -> bool:
-    return spec.specifier == Sdf.SpecifierDef or any(_has_def(c) for c in spec.nameChildren)
+    return has_def
 
 
 def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
