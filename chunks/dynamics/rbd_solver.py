@@ -2919,7 +2919,7 @@ def _run(owner, notice, sender) -> None:
 
     frame_count = _chunk.get_param("frame_count", is_i).value
     fps = _chunk.get_param("fps", is_f).value
-    gravity = _chunk.get_param("gravity", is_f).value
+    gravity = sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage)
     substeps = max(1, _chunk.get_param("substeps", is_i).value)
     start_frame = _chunk.get_param("start_frame", is_i).value
     friction = _chunk.get_param("friction", is_f).value
@@ -3260,7 +3260,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
 
     job = dict(
         up_idx=up_idx,
-        gravity=_chunk.get_param("gravity", is_f).value,
+        gravity=sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage),
         fps=fps,
         frames=frame_count,
         substeps=max(1, _chunk.get_param("substeps", is_i).value),
@@ -3887,8 +3887,9 @@ def main() -> chunk.Chunk:
         chunk.Spinbox(
             "gravity",
             "Gravity",
-            default_value=-981.0,
-            tooltip="Gravity along the scene's up axis, in scene units/s². Default -981 assumes centimetres.",
+            default_value=0.0,
+            tooltip="Along the up axis, in scene units/s². 0 = Earth gravity in this stage's "
+            "units (-981 in a centimetre scene, -9.81 in a metre one).",
         )
     )
     chunk_api.add_param(sim_grp)
