@@ -485,8 +485,24 @@ def collect(group: hou.Node) -> dict:
     return spec
 
 
+def public_parms(group: hou.Node) -> list[str]:
+    """The names of a chunkgroup's public params: its spare parms, less the type's own.
+
+    Houdini lists the Network Space folder as spare once a parm is added to the node, so
+    folders are skipped.
+    """
+    own = {EXPORT_PARM, space.UP_PARM, space.MPU_PARM}
+    names = []
+    for parm in group.spareParms():
+        name = parm.tuple().name()
+        if isinstance(parm.parmTemplate(), hou.FolderSetParmTemplate) or name in own or name in names:
+            continue
+        names.append(name)
+    return names
+
+
 def _collect(group: hou.Node, foreign: list[str]) -> dict:
-    public = {p.tuple().name() for p in group.spareParms()} - {EXPORT_PARM}
+    public = set(public_parms(group))
     nodes = []
     for child in group.children():
         kind = child.type().name()

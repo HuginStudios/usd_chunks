@@ -105,10 +105,11 @@ SCRIPT = textwrap.dedent(r"""
     created = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_NETWORK"], hou.node("/stage"))
     group = created[0]
     out["import_top"] = [n.name() for n in created]
-    out["import_group_parms"] = [p.name() for p in group.spareParms()]
+    out["import_group_parms"] = chunkgroup.public_parms(group)
     out["import_children"] = sorted(c.name() for c in group.children())
     out["import_wires"] = {c.name(): [i.name() for i in c.inputs() if i] for c in group.children()}
     out["import_output"] = [i.name() for i in group.node("output0").inputs() if i]
+    out["space_out_input"] = [i.name() for i in group.node("space_out").inputs() if i]
     out["import_exprs"] = {
         "floors": group.node("House").parm("floors").expression(),
         "primpath": group.node("Move").parm("primpath_location").expression(),
@@ -153,14 +154,15 @@ SCRIPT = textwrap.dedent(r"""
     cache.Clear()
     out["house_in_group"] = size(group.stage(), "/House")
     native = lop.create(hou.node("/stage"), "house", name="NativeHouse")
+    native.parm("floors").set(2)  # as the network's public param sets it
     cache.Clear()
     out["house_native"] = size(native.stage(), "/House")
     upstream = hou.node("/stage").createNode("cube", "Upstream")
     group.setInput(0, upstream)
     cache.Clear()
-    out["upstream_before"] = size(upstream.stage(), "/cube1")
+    out["upstream_before"] = size(upstream.stage(), "/Upstream")
     cache.Clear()
-    out["upstream_through_group"] = size(group.stage(), "/cube1")
+    out["upstream_through_group"] = size(group.stage(), "/Upstream")
     group.setInput(0, None)
 
     group.createNode("cube", "SolarisCube")
@@ -312,7 +314,7 @@ def test_a_saved_hip_cooks_the_same_after_reload(result):
 
 def test_a_network_imports_as_a_subnet_of_chunk_lops(result):
     assert result["import_top"] == ["Net"]
-    assert result["import_children"] == ["Ground", "House", "Move", "output0"]
+    assert result["import_children"] == ["Ground", "House", "Move", "output0", "space_in", "space_out"]
     assert result["import_errors"] == []
 
 
@@ -324,7 +326,8 @@ def test_a_groups_public_params_are_parms_on_the_subnet(result):
 def test_exec_wires_become_lop_wires_and_the_view_the_output(result):
     assert result["import_wires"]["Ground"] == ["House"]
     assert result["import_wires"]["Move"] == ["Ground"]
-    assert result["import_output"] == ["Move"]
+    assert result["import_output"] == ["space_out"]
+    assert result["space_out_input"] == ["Move"]
 
 
 def test_a_param_wire_becomes_a_channel_reference(result):
@@ -351,7 +354,7 @@ def test_a_chunkgroup_exports_as_a_network(result):
 
 
 def test_an_exported_network_imports_back_the_same(result):
-    assert result["reimport_children"] == ["Ground", "House", "Move", "output0"]
+    assert result["reimport_children"] == ["Ground", "House", "Move", "output0", "space_in", "space_out"]
     assert result["reimport_exprs"] == ['chs("../Ground/prim_path")', 'ch("../House_floors")']
 
 

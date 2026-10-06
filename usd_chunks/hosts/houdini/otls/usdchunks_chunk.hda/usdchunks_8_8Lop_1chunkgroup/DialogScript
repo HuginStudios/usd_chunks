@@ -22,4 +22,29 @@
         parmtag { "script_callback" "from usd_chunks.hosts.houdini import chunkgroup; chunkgroup.export_from_button(kwargs)" }
         parmtag { "script_callback_language" "python" }
     }
+    groupcollapsible {
+        name    "network_space"
+        label   "Network Space"
+
+        parm {
+            name    "usdchunks_up_axis"
+            label   "Up Axis"
+            type    string
+            default { "Y" }
+            help    "The up axis this network was authored in. Its chunks cook in it, and the result is turned into Houdini's. Set from the file on import."
+            menu {
+                "Y" "Y"
+                "Z" "Z"
+            }
+        }
+        parm {
+            name    "usdchunks_meters_per_unit"
+            label   "Meters per Unit"
+            type    float
+            default { "1" }
+            help    "The units this network was authored in (0.01 = centimetres). Its result is scaled into Houdini's. Set from the file on import."
+            range   { 0.001! 1 }
+        }
+    }
+
 }
