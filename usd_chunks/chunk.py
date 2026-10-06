@@ -441,6 +441,25 @@ class Menu(ChunkParamBase[str]):
 MENU_ITEMS_HOOK = "menu_items"
 
 
+class ImageMenu(Menu):
+    """A Menu whose items have pictures: a material library, a set of presets.
+
+    Still a Menu -- the value is the picked item's name, it saves, wires and refreshes
+    (menu_items hook) exactly like one, and a frontend that knows nothing about pictures
+    shows a plain dropdown. Qt draws a searchable grid of tiles; Blender its own
+    thumbnail picker (template_icon_view).
+
+    Attributes:
+        item_images: item -> path of a local image file. Items with no entry, or whose file
+            is not there yet, show without a picture; assign a new dict to update it (the
+            frontends redraw on the change), e.g. as thumbnails finish downloading.
+        tile_size: The edge of a tile's picture, in pixels.
+    """
+
+    item_images: dict[str, str] = field(factory=dict)
+    tile_size: int = field(default=96)
+
+
 class Button(ChunkParamBase):
     """A button param.
 

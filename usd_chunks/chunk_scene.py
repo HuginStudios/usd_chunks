@@ -53,6 +53,10 @@ graph_center_hook: Callable[[], tuple[float, float] | None] | None = None
 _SCRIPT_NODE_STEP = 260.0
 
 
+def _no_op() -> None:
+    """What call_later returns when there is nothing left to cancel."""
+
+
 class SceneSender(chunk_notice.ChunkNoticePropagator):
     """Scene access for one DCC: the stage, its selection and time, and notices for changes.
 
@@ -651,6 +655,30 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             Usd.Property | None: Selected property
         """
         return None
+
+    def call_later(self, fn: Callable[[], Any], delay: float = 0.0) -> Callable[[], None]:
+        """Run `fn` on the main thread after `delay` seconds; returns a function that cancels it.
+
+        The one way module code gets back to the main thread, which is the only thread that
+        may touch USD or the host's UI: a download finishing on a worker thread hands its
+        result over with this, and a debounce cancels the last call and makes a new one.
+        Safe to call from any thread.
+
+        A host with an event loop overrides this (usdview with a QTimer, Blender with
+        bpy.app.timers). Here, with no loop to wait in -- `usdchunks run`, a script -- `fn`
+        runs now, and `delay` is ignored: nothing would ever wake up to run it later.
+        """
+        fn()
+        return _no_op
+
+    def get_host(self) -> tuple[str, str]:
+        """(name, version) of the application this scene lives in, e.g. ("blender", "5.1.0").
+
+        What a module's `hosts` config is matched against (ChunkModule.should_load_for_host).
+        Lower-case name; ("", "") for no particular host, which loads only modules that
+        name none.
+        """
+        return "", ""
 
     @abstractmethod
     def get_active_camera(self) -> Gf.Camera | None:

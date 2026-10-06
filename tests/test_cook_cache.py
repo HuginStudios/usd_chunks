@@ -221,6 +221,45 @@ def test_the_environment_switches_it_off(monkeypatch):
         assert _entries() == []
 
 
+def _always_module(cooks: list):
+    module = _cached_module(cooks)
+    module.config.cache_cook = False
+    module.config.cache_always = True  # implies cache_cook
+    return module
+
+
+def test_cache_always_has_no_toggle_and_still_reads_back():
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _always_module(cooks))
+        assert c.get_param(cook_cache.TOGGLE) is None
+
+        c._cook()
+
+        assert len(cooks) == 1
+        assert len(_entries()) == 1
+
+
+def test_cache_always_ignores_the_environment_switch(monkeypatch):
+    monkeypatch.setenv(cook_cache.ENV, "0")
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _always_module(cooks))
+        c._cook()
+
+        assert len(cooks) == 1
+        assert len(_entries()) == 1
+
+
+def test_cache_always_stores_a_fast_cook(monkeypatch):
+    """The floor that keeps quick cooks out is for a shortcut; here the entry is the result."""
+    monkeypatch.setattr(cook_cache, "_MIN_COOK_S", 3600.0)
+    cooks: list = []
+    with Scene() as scene:
+        _add(scene, _always_module(cooks))
+        assert len(_entries()) == 1
+
+
 def test_refresh_cooks_and_rewrites(monkeypatch):
     cooks: list = []
     with Scene() as scene:

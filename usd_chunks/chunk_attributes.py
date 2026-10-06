@@ -376,7 +376,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # dirties) on its own. Menus refreshed from the stage -- Edit Target, Layer --
             # rewrite their lists on every layer-stack edit, so dirtying for it made their
             # cooks (which edit the layer stack) dirty each other forever.
-            if self.name == "menu_items":
+            if self.name in ("menu_items", "item_images"):  # an ImageMenu's pictures, likewise
                 return True
             return False
 

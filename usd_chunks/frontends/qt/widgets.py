@@ -1171,6 +1171,223 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             self.value_changed((color.redF(), color.greenF(), color.blueF()))
 
 
+class _FlowLayout(QtWidgets.QLayout):
+    """Left to right, wrapping: as many tiles per row as the width holds."""
+
+    def __init__(self, parent=None, spacing=4):
+        super().__init__(parent)
+        self._items: list[QtWidgets.QLayoutItem] = []
+        self.setSpacing(spacing)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def clear(self):
+        while self._items:
+            item = self.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._layout(QtCore.QRect(0, 0, width, 0), dry_run=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._layout(rect, dry_run=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QtCore.QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        return size + QtCore.QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def expandingDirections(self):
+        return QtCore.Qt.Orientations(QtCore.Qt.Orientation(0))
+
+    def _layout(self, rect: QtCore.QRect, dry_run: bool) -> int:
+        sp = self.spacing()
+        x, y, row_h = rect.x(), rect.y(), 0
+        for item in self._items:
+            w, h = item.sizeHint().width(), item.sizeHint().height()
+            if x + w > rect.right() and row_h:
+                x, y, row_h = rect.x(), y + row_h + sp, 0
+            if not dry_run:
+                item.setGeometry(QtCore.QRect(x, y, w, h))
+            x += w + sp
+            row_h = max(row_h, h)
+        return y + row_h - rect.y()
+
+
+class _ImageTile(QtWidgets.QFrame):
+    """One item: its picture (when it has one) over its name."""
+
+    clicked = QtCore.Signal(str)
+
+    def __init__(self, item: str, size: int):
+        super().__init__()
+        self.item = item
+        self._path = ""
+        self.setFixedWidth(size + 8)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+        self._picture = QtWidgets.QLabel()
+        self._picture.setFixedSize(size, size)
+        self._picture.setScaledContents(True)
+        self._picture.setStyleSheet("background:#333;")
+        layout.addWidget(self._picture)
+        name = QtWidgets.QLabel(item)
+        name.setWordWrap(True)
+        name.setMaximumWidth(size + 4)
+        name.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(name)
+        self.set_selected(False)
+
+    def set_image(self, path: str) -> None:
+        if path == self._path:
+            return
+        pixmap = QtGui.QPixmap(path) if path else QtGui.QPixmap()
+        if not pixmap.isNull():
+            self._path = path
+            self._picture.setPixmap(pixmap)
+
+    def set_selected(self, selected: bool) -> None:
+        color = "#4a90d9" if selected else "#2a2a2a"
+        self.setStyleSheet(f"QFrame {{ border: 2px solid {color}; border-radius: 3px; }}")
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.item)
+        super().mousePressEvent(event)
+
+
+class ChunkImageMenuWidget(ChunkParamWidgetBase[chunk.ImageMenu], QtWidgets.QWidget):
+    """An ImageMenu as a searchable grid of tiles.
+
+    Tiles are built a page at a time as the grid scrolls: a catalog of hundreds of items
+    would otherwise build every tile, for every node showing one, on every scene open. The
+    current value is pinned to the front of the first page, so it is visible without
+    scrolling to wherever it sits in the list.
+    """
+
+    PAGE_SIZE = 40
+
+    def __init__(self, param: chunk.ImageMenu):
+        super().__init__(param)
+        self._tiles: dict[str, _ImageTile] = {}
+        self._pending: list[str] = []
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        self._search = QtWidgets.QLineEdit()
+        self._search.setPlaceholderText("Search...")
+        outer.addWidget(self._search)
+        self._scroll = QtWidgets.QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        container = QtWidgets.QWidget()
+        self._flow = _FlowLayout(container, spacing=4)
+        self._scroll.setWidget(container)
+        outer.addWidget(self._scroll)
+        self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+        self._search_timer = QtCore.QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._rebuild)
+        self._search.textChanged.connect(self._search_timer.start)
+
+        self.add_callback(self._items_changed, param.get_attribute_sender("menu_items"))
+        self.add_callback(self._images_changed, param.get_attribute_sender("item_images"))
+        self.setFixedHeight(360)
+        self.setup_chunk_widget()
+        self._rebuild()
+
+    # ChunkParamWidgetBase
+
+    def get_value(self):
+        return self.param.value
+
+    def set_value(self, value):
+        if isinstance(value, str) and chunk_utils.has_expression(value):
+            value = self.param.value
+        for item, tile in self._tiles.items():
+            tile.set_selected(item == value)
+
+    def set_label(self, _text):
+        pass
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # A menu of runtime data is filled as it is about to be looked at (Menu.refresh_items).
+        self.param.refresh_items()
+
+    # Private
+
+    def _items_changed(self, _notice, _sender):
+        self._rebuild()
+
+    def _images_changed(self, _notice, _sender):
+        images = self.param.item_images or {}
+        for item, tile in self._tiles.items():
+            tile.set_image(images.get(item, ""))
+
+    def _rebuild(self):
+        term = self._search.text().lower()
+        items = [i for i in (self.param.menu_items or []) if i and term in i.lower()]
+        current = self.param.value
+        if current in items:
+            items.remove(current)
+            items.insert(0, current)
+        self._flow.clear()
+        self._tiles.clear()
+        self._pending = items
+        self._load_next_page()
+
+    def _load_next_page(self):
+        page, self._pending = self._pending[: self.PAGE_SIZE], self._pending[self.PAGE_SIZE:]
+        images = self.param.item_images or {}
+        size = self.param.tile_size or 96
+        for item in page:
+            tile = _ImageTile(item, size)
+            tile.set_image(images.get(item, ""))
+            tile.set_selected(item == self.param.value)
+            tile.clicked.connect(self._on_clicked)
+            self._tiles[item] = tile
+            self._flow.addWidget(tile)
+
+    def _on_scroll(self, value: int):
+        if self._pending and value >= self._scroll.verticalScrollBar().maximum() - 50:
+            self._load_next_page()
+
+    def _on_clicked(self, item: str):
+        self.set_value(item)
+        self.value_changed(item)
+
+
 class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
@@ -1199,7 +1416,12 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
             None: If failed to create a widget
         """
         key = param.evaluate_type()
-        widget_class = self.get_map().get(key, None)
+        # An ImageMenu is a Menu by type, so frontends without a grid show a dropdown;
+        # this one has a grid.
+        if isinstance(param, chunk.ImageMenu):
+            widget_class = ChunkImageMenuWidget
+        else:
+            widget_class = self.get_map().get(key, None)
 
         if not widget_class:
             logger.warning("Could not create widget for param %s: missing mapping in Qt factory", param.name)

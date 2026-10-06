@@ -63,6 +63,19 @@ def active_stage():
     return None if view is None else view.stage
 
 
+def current_time() -> Usd.TimeCode:
+    """Blender's timeline frame, subframe included, as the time the stage is drawn at.
+
+    Blender's frame numbers are used as USD time codes directly, the way usdview's
+    timeline is: a stage authored at 24 time codes per second lines up with a 24 fps
+    scene. Default time with no scene, so a headless caller still gets the static values.
+    """
+    scene = bpy.context.scene
+    if scene is None:
+        return Usd.TimeCode.Default()
+    return Usd.TimeCode(scene.frame_current + scene.frame_subframe)
+
+
 def _headlight(engine, rv3d) -> None:
     """A camera-relative light, the same "Camera Light" usdview defaults to -- with
     enableLighting on and no light authored anywhere on the stage, Storm has nothing to
@@ -224,7 +237,7 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     if path is not None:
         return path
     origin, direction = ray_from_region(region, rv3d, mouse_x, mouse_y)
-    return pick_by_bounds(stage, origin, direction)
+    return pick_by_bounds(stage, origin, direction, current_time())
 
 
 def _draw():
@@ -256,6 +269,8 @@ def _draw():
 
         params = _state["renderParams"]
         params.enableLighting = _state["lighting"]
+        # The timeline drives the stage: animation, value clips and Skel Pose play here.
+        params.frame = current_time()
         params.drawMode = getattr(UsdImagingGL.DrawMode,
                                   _DRAW_MODE_ATTRS[_state["draw_mode"]])
 
@@ -298,6 +313,14 @@ def _redraw() -> None:
         for area in window.screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()
+
+
+def _on_frame_change(*_args) -> None:
+    """Redraw on a frame change. Blender only redraws a 3D view whose own depsgraph
+    changed, and a stage with no Blender objects animating would otherwise hold its frame.
+    """
+    if _state["handle"] is not None:
+        _redraw()
 
 
 class USDCHUNKS_OT_toggle_hydra_view(bpy.types.Operator):
@@ -534,10 +557,14 @@ def register() -> None:
     # ON by default: showing the live stage is the whole point of this module. It costs
     # nothing until a network is open, since _draw returns immediately with no stage.
     enable_hydra_view()
+    if _on_frame_change not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(_on_frame_change)
     logger.info("Hydra stage view ON -- 3D viewport > N panel > USDChunks to toggle")
 
 
 def unregister() -> None:
+    if _on_frame_change in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(_on_frame_change)
     disable_hydra_view()
     _unregister_keymap()
     for cls in reversed(_CLASSES):

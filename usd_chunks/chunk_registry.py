@@ -78,6 +78,9 @@ _NO_WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 logger = logging.getLogger(__name__)
 
+#: A `hosts` config entry: a host name, then an optional version specifier ("blender>=5.1").
+_HOST_ENTRY = re.compile(r"^\s*([A-Za-z_][\w-]*)\s*(.*)$")
+
 _T = TypeVar("_T")
 
 
@@ -1355,7 +1358,8 @@ class ChunkModule:
                 c._config = self.config
                 # Here, at creation, so a load restores a saved untick onto it like any
                 # other param -- values are read back before the chunk joins the scene.
-                if self.config.cache_cook and c.get_param(cook_cache.TOGGLE) is None:
+                if (self.config.cache_cook and not self.config.cache_always
+                        and c.get_param(cook_cache.TOGGLE) is None):
                     c.add_param(core.Checkbox(
                         cook_cache.TOGGLE, "Cache Result", default_value=True,
                         tooltip="Read this node's result back from the cook cache when "
@@ -1383,6 +1387,40 @@ class ChunkModule:
     def has_main(self):
         """Whether the module defines a main function."""
         return self._has_main
+
+    def should_load_for_host(self, name: str, version: str) -> bool:
+        """Whether config.hosts lets the module load in host `name` at `version`.
+
+        Empty hosts means every host. Otherwise one entry must name this host, and its
+        specifier (if any) must admit the version: "blender>=5.1" admits "5.1.0", and a
+        host that reports no version only matches an entry without a specifier.
+
+        Args:
+            name: The host's name, from SceneSender.get_host().
+            version: Its version string.
+
+        Returns:
+            bool: True if the module may load here
+        """
+        hosts = self.config.hosts if self.config else None
+        if not hosts:
+            return True
+        for entry in hosts:
+            match = _HOST_ENTRY.match(entry or "")
+            if match is None or match.group(1).lower() != (name or "").lower():
+                continue
+            spec = match.group(2).strip()
+            if not spec:
+                return True
+            if SpecifierSet is None or not version:
+                continue
+            try:
+                if Version(version) in SpecifierSet(spec):
+                    return True
+            except (InvalidSpecifier, InvalidVersion):
+                logger.warning("%s: cannot compare host %s %s against %r",
+                               self.module_name, name, version, entry)
+        return False
 
     def should_load_for_plugin(self, plugin_name: str) -> bool:
         """Check if the module may be used with a plugin.
@@ -1803,6 +1841,12 @@ class ChunkRegistry(metaclass=RegistrySingleton):
             return
         if not module.should_load_for_filter():
             logger.info("Skipping %s. Module is excluded in CHUNK_MODULE_FILTER", module.module_name)
+            return
+        get_host = getattr(self.scene, "get_host", None)  # a bare test scene may not have one
+        host, host_version = get_host() if get_host is not None else ("", "")
+        if not module.should_load_for_host(host, host_version):
+            logger.info("Skipping %s. Module is for %s, not %s %s", module.module_name,
+                        ", ".join(module.config.hosts), host or "this host", host_version)
             return
 
         name = module.module_name

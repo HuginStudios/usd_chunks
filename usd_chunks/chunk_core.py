@@ -4127,6 +4127,11 @@ class ChunkConfig(AttributesBase):
     category: str = attrs.field(default="Chunks")
     description: str = attrs.field(default="Chunk description...")
     load_for_plugin: str | None = attrs.field(default=None)
+    # The host applications the module runs in, each a name with an optional version
+    # specifier: ["houdini>=21.5", "blender>=5.1"]. Empty, or not set: every host. Matched
+    # against SceneSender.get_host() by ChunkModule.should_load_for_host; elsewhere the
+    # module is skipped as quietly as a load_for_plugin miss.
+    hosts: list[str] = attrs.field(factory=list)
     requirements: list[str] = attrs.field(factory=list)
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
@@ -4137,6 +4142,11 @@ class ChunkConfig(AttributesBase):
     # cache_result checkbox to opt out one node; USD_CHUNKS_COOK_CACHE=0 opts out all of
     # them. See cook_cache.
     cache_cook: bool = attrs.field(default=False)
+    # cache_cook that cannot be turned off: no cache_result checkbox, USD_CHUNKS_COOK_CACHE=0
+    # does not apply, and a fast cook is stored too. For a chunk whose result is
+    # only reproducible where it was made -- Blender Import's, from a .blend that may be
+    # gone -- so the cache entry is the result, not a shortcut to it. Implies cache_cook.
+    cache_always: bool = attrs.field(default=False)
     # Kept out of the chunk menu. For a type that exists so something can be SAVED and read
     # back rather than created by hand -- `runtime`, the type a chunk built in the
     # interpreter is written as. It still has to be a registered module, since that is how

@@ -16,7 +16,6 @@ import sys
 from collections.abc import Generator
 from pathlib import Path
 
-from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache, sim_bake
@@ -3462,8 +3461,10 @@ def _schedule_auto_run(root_chunk) -> None:
     settle for _AUTO_RUN_DELAY_MS before re-running, rather than baking on every keystroke/drag
     tick while a param is being edited.
 
-    Headless there is nothing to debounce and no Qt event loop for a QTimer to fire in; the
-    bake happens in execute() instead, when the cook reaches this chunk.
+    Headless there is nothing to debounce and no event loop to wait in; the bake happens
+    in execute() instead, when the cook reaches this chunk. Interactively the host waits
+    (SceneSender.call_later), so this runs in usdview and Blender alike: a new change
+    cancels the wait the last one started.
     """
     if sim_bake.is_unattended():
         # Headless, execute() bakes instead: the cook calls it in dependency order, once
@@ -3472,13 +3473,14 @@ def _schedule_auto_run(root_chunk) -> None:
         # colliders it needed existed -- and then again, a full simulation per upstream.
         return
 
-    timer = getattr(root_chunk, "_auto_run_timer", None)
-    if timer is None:
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(lambda: _run(root_chunk, None, None))
-        root_chunk._auto_run_timer = timer
-    timer.start(_AUTO_RUN_DELAY_MS)
+    scene = root_chunk.get_scene()
+    if scene is None:
+        return
+    cancel = getattr(root_chunk, "_auto_run_cancel", None)
+    if cancel is not None:
+        cancel()
+    root_chunk._auto_run_cancel = scene.call_later(
+        lambda: _run(root_chunk, None, None), _AUTO_RUN_DELAY_MS / 1000.0)
 
 
 def main() -> chunk.Chunk:

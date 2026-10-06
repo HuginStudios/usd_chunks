@@ -86,6 +86,11 @@ def menu_items(node, param_name):
 
 The current value always stays listed, so a saved pick survives until the stage offers it.
 
+A chunk that follows the host application's own scene (Blender's objects, say) defines
+`host_changed(node)`. The host calls it, debounced, after the user edits the scene; the
+module decides whether what it reads moved and calls `node.execute()` if so. Blender's
+add-on calls it today; see `chunks/modelling/blender_import.py`.
+
 [`docs/example.md`](example.md) has a longer example with notes on the param types,
 groups, flags and callback signatures you can use in `main()`.
 
@@ -112,10 +117,12 @@ defaults below.
 | `category` | `"Chunks"` | Where the chunk appears in the create menu. Use a [`StandardCategory`][usd_chunks.chunk.StandardCategory] member (`MODELLING`, `DYNAMICS`, `TRANSFORM`, `UTILS`, `RIGS`, `USER`, `EXAMPLES`, `USD`, `PROPERTIES`, `USD_RENDER`, `USD_LAYER`, `CORE`, `MATERIALS`, `MTLX`) or a plain string for your own. |
 | `description` | `"Chunk description..."` | Shown in tooltips and the create menu. `ChunkGroup`'s `doc` param uses the same text to describe what a saved network does, for a person or an AI reading the file. |
 | `load_for_plugin` | `None` | Only load the chunk in one host plugin (e.g. `"chunk_usdview"`), if it only works there. |
+| `hosts` | `[]` | The applications the chunk runs in, each a name with an optional minimum version: `["houdini>=21.5", "blender>=5.1"]`. Empty or not set: every host. Elsewhere the chunk is skipped. Import a host-only module (`bpy`, `hou`) under `try`/`except ImportError`, so other hosts can still read `config()`. |
 | `requirements` | `[]` | pip packages the module needs, e.g. `["numpy>=2,<3"]`. If one is missing and the module fails to import, it's skipped instead of crashing. usdview and `usdchunks run` ask whether to install the missing ones into `USD_CHUNK_DEPENDENCY_DIR` (see [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables)). |
 | `required_modules` | `[]` | Other chunk *modules* that must be loaded for this one to work. |
 | `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being cleared and rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
 | `cache_cook` | `False` | Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See [Caching a slow cook](#caching-a-slow-cook). |
+| `cache_always` | `False` | `cache_cook` that can't be turned off: no **Cache Result** checkbox, `USD_CHUNKS_COOK_CACHE=0` doesn't apply, and quick cooks are stored too. For a result that is expensive or impossible to remake anywhere else, such as Blender Import's. |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
 | `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) chunk uses this. |
 | `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs. |
@@ -286,6 +293,21 @@ Some engines hold Python's GIL while they compute (Taichi does), which stops the
 a thread. Call the solve through `sim_bake.in_subprocess(ctx, solve, **job)` to run it in a
 separate Python process. `promote`, `keep` and `restore` handle the bake's layer: put it in
 front of the layers it animates, and put it back after the next cook clears it.
+
+For smaller work of your own -- a download, a wait before re-running -- get back to the main
+thread with `node.get_scene().call_later(fn, delay=0.0)`. It works in every host (usdview,
+Blender) and from any thread, and returns a function that cancels the call, which is all a
+debounce needs:
+
+```python
+def _schedule(node):
+    cancel = getattr(node, "_pending", None)
+    if cancel:
+        cancel()                      # a newer change: the last wait no longer counts
+    node._pending = node.get_scene().call_later(lambda: rerun(node), delay=0.6)
+```
+
+Don't import Qt for this. A chunk that imports PySide6 doesn't load in a host without it.
 
 ### Skipping cooks nothing reached
 
