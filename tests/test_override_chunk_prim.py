@@ -24,6 +24,8 @@ from usd_chunks.chunk_stage import (
     export_chunks,
     get_chunk_prim_path,
     initialize,
+    layer_label,
+    param_held_by,
     sort_chunk_layers,
 )
 
@@ -204,3 +206,38 @@ class TestTheTargetFollowsItsPrim:
         assert "Transform" in cooks and "Transform1" in cooks
         stronger.Clear()
         assert target.get_param("translate_grp.tx").value == 0.0
+
+
+class TestEditingAnOverriddenParam:
+    """The target's own edit of a param an override holds: where it lands, and what says so.
+
+    With the root layer as the edit target, as a shot opened in usdview has it: the target's
+    edit goes there, under the override's layer.
+    """
+
+    def test_the_edit_is_kept_beneath_the_override_and_shows_once_it_goes(self, shot):
+        stage, scene, _, _ = shot
+        stage.SetEditTarget(stage.GetRootLayer())
+        target = _by_name(scene, "Transform")
+        node = _override(target.get_context(), target, tx=5.0)
+        tx = target.get_param("translate_grp.tx")
+        tx.value = 2.0
+        own = chunk_registry.ChunkLayerManager().get_layer(node)
+        path = f"{get_chunk_prim_path(target)}.{_TX}"
+        assert own.GetAttributeAtPath(path).default == 5.0
+        assert stage.GetRootLayer().GetAttributeAtPath(path).default == 2.0
+        # The override is stronger: the target shows and cooks with its value.
+        assert tx.value == 5.0
+        node.request_delete()
+        assert tx.value == 2.0
+
+    def test_the_param_says_which_override_holds_it(self, shot):
+        stage, scene, _, _ = shot
+        stage.SetEditTarget(stage.GetRootLayer())
+        target = _by_name(scene, "Transform")
+        node = _override(target.get_context(), target, tx=5.0)
+        tx, ty = target.get_param("translate_grp.tx"), target.get_param("translate_grp.ty")
+        assert param_held_by(tx) == chunk_registry.ChunkLayerManager().get_layer(node)
+        assert layer_label(param_held_by(tx)) == node.name
+        assert param_held_by(ty) is None
+        assert param_held_by(node.get_param("translate_grp.tx")) is None

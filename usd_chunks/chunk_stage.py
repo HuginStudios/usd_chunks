@@ -453,6 +453,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._pending_info_changes: set[Sdf.Path] = set()
         # inputs: properties a running cook changed, for _adopt_cooked_inputs once it ends.
         self._cooked_inputs: set[str] = set()
+        # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
+        self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
@@ -1103,6 +1105,45 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if names and chunk is not skip:
                 _adopt_inputs(chunk, names)
 
+    def _follow_composed(self, chunk: core.ChunkBase, param) -> None:
+        """Once the solve has written everything, set param to what its prim composes.
+
+        Its edit lands in its home (chunk_utils.get_attr_home_layer), and usually that is
+        what composes. Not when a stronger layer holds the input -- an Override Chunk Prim's,
+        a department's above this one (chunk_stage.param_held_by): the param would keep the
+        value it was given while the prim says otherwise, and the chunk would cook with a
+        value USD does not have. After the solve, not now: a bound param writes from its own
+        data_changed, in no set order with this listener, and reading before it had written
+        would undo the edit instead.
+
+        Args:
+            chunk: The param's chunk.
+            param: The param (or vector) just edited.
+        """
+        owner = param.get_owner()
+        target = owner if isinstance(owner, core.ChunkVectorBase) else param
+        names = _param_object_path(chunk, target)
+        if not names:
+            return
+        pending = self._follow_pending.setdefault(id(chunk), (chunk, set()))[1]
+        pending.add(":".join(names))
+
+        def follow():
+            entry = self._follow_pending.pop(id(chunk), None)
+            stage = chunk.get_scene_stage()
+            if entry is None or stage is None:
+                return
+            # Only what a stronger layer holds. Anything else is the param's own value, on
+            # its way to USD: a chunk prim's writes can be debounced, so the attribute may
+            # not be there yet, and reading it then would put the param back to its default.
+            held = [n for n in entry[1] if _input_held_by(chunk, stage, n) is not None]
+            if held:
+                _adopt_inputs(chunk, held)
+
+        # Outside a solve nothing says the write is done, so nothing is read.
+        if not chunk_cook.defer_to_batch_end(("follow_composed", id(chunk)), follow):
+            self._follow_pending.pop(id(chunk), None)
+
     def _adopt_cooked_inputs(self, chunk: core.ChunkBase) -> None:
         """After chunk's cook: what it changed on other chunk prims' inputs: (chunk_cook.after_cook)."""
         # Not from a cook inside another one: the outer cook may be part way through its
@@ -1262,10 +1303,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         refresh = functools.partial(self._refresh_gizmo_anchors, chunk)
                         if not chunk_cook.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
                             refresh()
+                        self._follow_composed(chunk, owner)
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_vector_input(chunk, owner)
+                        self._follow_composed(chunk, owner)
             return
 
         if attr_sender.name != "name":
@@ -2956,6 +2999,74 @@ def param_override_source(param: core.ChunkParamBase) -> Sdf.Layer | None:
             return spec.layer if local else None
         local = True
     return None
+
+
+def param_held_by(param: core.ChunkParamBase) -> Sdf.Layer | None:
+    """The layer whose opinion on this param is stronger than where the param writes, or None.
+
+    The other side of param_override_source. There the param's own value sits over one
+    composed in; here something sits over the param's own: an Override Chunk Prim's layer,
+    or a department layer stronger than the one this chunk's prim is written in. An edit
+    to the param still lands, in its home (chunk_utils.get_attr_home_layer), but the value
+    composed -- and so the one the param shows and cooks with -- is the stronger one's.
+    Without saying so the field just springs back.
+
+    Args:
+        param: The param, or a vector part (its vector's attribute is the one asked about).
+
+    Returns:
+        The stronger layer, or None.
+    """
+    chunk = param.get_chunk()
+    stage = param.get_scene_stage() if chunk else None
+    if stage is None:
+        return None
+    owner = param.get_owner()
+    target = owner if isinstance(owner, core.ChunkVectorBase) else param
+    names = _param_object_path(chunk, target)
+    return _input_held_by(chunk, stage, ":".join(names)) if names else None
+
+
+def _input_held_by(chunk: core.ChunkBase, stage: Usd.Stage, name: str) -> Sdf.Layer | None:
+    """param_held_by for the chunk prim's input of that name (translate_grp:tx)."""
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return None
+    attr = prim.GetAttribute(_INPUTS_PREFIX + name)
+    if not attr:
+        return None
+    specs = [s for s in attr.GetPropertyStack(Usd.TimeCode.Default()) if s.HasDefaultValue()]
+    if not specs or specs[0].path != attr.GetPath():
+        return None  # nothing, or the strongest is across an arc: weaker than any local layer
+    strongest = specs[0].layer
+    home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, chunk)
+    if strongest == home:
+        return None
+    stack = stage.GetLayerStack(includeSessionLayers=True)
+    if strongest not in stack or home not in stack:
+        return None
+    return strongest if stack.index(strongest) < stack.index(home) else None
+
+
+def layer_label(layer: Sdf.Layer) -> str:
+    """A layer as a user knows it: the chunk whose cook layer it is, or its file name.
+
+    A chunk's procedural layer is named anon:<address>:<tag>, which says nothing to anyone;
+    the chunk it belongs to is what they put on the graph.
+
+    Args:
+        layer: The layer.
+
+    Returns:
+        The chunk's name, or the layer's display name (its identifier when it has none).
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    scene = _chunk_mod.get_scene()
+    if lm.initialized and scene is not None and chunk_registry.is_chunk_internal_layer(layer):
+        for chunk in scene.get_chunks():
+            if lm.get_layer(chunk) == layer:
+                return chunk.name
+    return layer.GetDisplayName() or layer.identifier
 
 
 def revert_param_override(param: core.ChunkParamBase) -> None:

@@ -343,6 +343,11 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
       payload, so the spec's layer is not even in the local layer stack and
       Usd.EditContext on it raises "not in the local LayerStack".
 
+    And on a chunk prim, a chunk's procedural layer is passed over altogether: what one
+    holds there is another chunk's cook output (an Override Chunk Prim's `over`), cleared
+    and rewritten on its next cook. An edit written into it would show until then and
+    vanish; written beneath it, it is kept and shows once the override goes.
+
     Args:
         attr: The attribute to update.
 
@@ -350,6 +355,8 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
         The layer, or None only when the attr has no spec anywhere yet.
     """
     stack = attr.GetPropertyStack(Usd.TimeCode.Default())
+    if stack and attr.GetPrim().GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME:
+        stack = [s for s in stack if not chunk_registry.is_chunk_internal_layer(s.layer)]
     if not stack:
         return None
     spec = stack[0]
