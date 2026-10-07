@@ -409,6 +409,11 @@ def push_chunk_values(stage: Usd.Stage, chunk: core.ChunkBase) -> None:
         _push_driven_values(stage, vector)
 
 
+def _adopt_cooked_inputs(chunk: core.ChunkBase) -> None:
+    """chunk_cook.after_cook's hook: the stage sync of the moment reads what the cook changed."""
+    ChunkStageSync()._adopt_cooked_inputs(chunk)
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """Singleton that keeps a Chunk prim on the stage for every chunk in the scene.
 
@@ -446,6 +451,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # apart from info-only changes because they justify different amounts of looking.
         self._pending_resyncs: set[Sdf.Path] = set()
         self._pending_info_changes: set[Sdf.Path] = set()
+        # inputs: properties a running cook changed, for _adopt_cooked_inputs once it ends.
+        self._cooked_inputs: set[str] = set()
+        chunk_cook.after_cook(_adopt_cooked_inputs)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
@@ -909,6 +917,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # has to be recorded -- suppression stops us reacting now, not the prims existing.
         self._pending_resyncs.update(notice.GetResyncedPaths())
         self._pending_info_changes.update(notice.GetChangedInfoOnlyPaths())
+        if chunk_notice._executing_chunk is not None and chunk_notice._usd_write_active:
+            # A cook writing onto a chunk prim's inputs -- an Override Chunk Prim's `over`,
+            # or its layer being cleared -- changes that chunk's params, and the guard below
+            # is up for the whole cook. Kept for after it (_adopt_cooked_inputs), read from
+            # the composed stage then rather than replayed, so a write half done is never
+            # seen. Names only: which prims are chunk prims is sorted out then.
+            self._cooked_inputs.update(
+                str(p) for paths in (notice.GetResyncedPaths(), notice.GetChangedInfoOnlyPaths())
+                for p in paths if p.IsPropertyPath() and p.name.startswith(_INPUTS_PREFIX)
+            )
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
         # Resolve the stage from the notice itself, like _on_contents_changed does, rather
@@ -939,6 +957,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._reconcile_changed_exec_inputs(all_changed, notice)
         self._mirror_changed_params(stage, all_changed)
+        self._adopt_changed_inputs(all_changed)
         self._prune_vanished(stage, {str(p) for p in notice.GetResyncedPaths()})
         for chunk in self._scene.get_chunks():
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
@@ -1059,6 +1078,39 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if (val is not None and not _values_agree(val, param.value)
                         and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
                     param.value = val
+
+    def _adopt_changed_inputs(self, paths: Iterable[str], skip: core.ChunkBase | None = None) -> None:
+        """Bring each chunk whose prim's inputs: changed in line with what the prim composes.
+
+        By name, where _mirror_changed_params goes by binding: a param still at its default
+        has no attribute, so nothing is bound to one that another layer then authors -- and
+        when the layer holding it goes, the param goes back to its default, which the bound
+        mirror (reading only values that exist) never did.
+
+        Args:
+            paths: Changed property paths; only <chunk prim>.inputs:* ones count.
+            skip: A chunk to leave alone -- the one whose cook made the changes.
+        """
+        by_prim: dict[str, list[str]] = {}
+        for path in paths:
+            prim_path, sep, name = str(path).partition(".")
+            if sep and name.startswith(_INPUTS_PREFIX):
+                by_prim.setdefault(prim_path, []).append(name[len(_INPUTS_PREFIX):])
+        if not by_prim or not self._scene:
+            return
+        for chunk in self._scene.get_chunks():
+            names = by_prim.get(self._chunk_prim_paths.get(id(chunk), ""))
+            if names and chunk is not skip:
+                _adopt_inputs(chunk, names)
+
+    def _adopt_cooked_inputs(self, chunk: core.ChunkBase) -> None:
+        """After chunk's cook: what it changed on other chunk prims' inputs: (chunk_cook.after_cook)."""
+        # Not from a cook inside another one: the outer cook may be part way through its
+        # own writes, and its end reads them all.
+        if not getattr(self, "_cooked_inputs", None) or chunk_notice._executing_chunk is not None:
+            return
+        paths, self._cooked_inputs = self._cooked_inputs, set()
+        self._adopt_changed_inputs(paths, skip=chunk)
 
     def _reconcile_changed_exec_inputs(self, all_changed: set[str], notice) -> None:
         """Mirror any changed inputs:chunk connection into the Python DAG.
@@ -2935,34 +2987,43 @@ def revert_param_override(param: core.ChunkParamBase) -> None:
     param.value = attr.Get()
 
 
-def adopt_composed_values(chunk: core.ChunkBase) -> None:
-    """Set each of chunk's params to what its chunk prim composes now, or its default.
+def _adopt_inputs(chunk: core.ChunkBase, names: Iterable[str] | None = None) -> None:
+    """Set chunk's params to what its chunk prim composes now, or their defaults.
 
-    For a change made to the prim from outside the chunk's own write path -- an Override
-    Chunk Prim writing into its layer, or that layer going away -- which the stage mirror
-    does not hear while a cook has it suppressed. The values set are the composed ones, so
-    the write path finds them already authored and writes nothing back; a param whose value
-    changes dirties the chunk and it cooks as after any edit. An expression is left alone,
-    as in _mirror_changed_params, and so are list-group rows.
+    The prim is where a param's value lives; the param holds it for the module. Anything
+    that authors the prim's inputs: -- an Override Chunk Prim cooking an `over` onto it, a
+    layer muted or removed, a hand edit in usdview -- comes back through here. The values set
+    are the composed ones, so the write path finds them already authored and writes nothing
+    back; a param whose value changes dirties the chunk and it cooks as after any edit. An
+    expression is left alone, as in _mirror_changed_params, and so are list-group rows.
 
     Args:
         chunk: The chunk to bring in line with its prim.
+        names: The input names to read (translate_grp:tx), or None for all of them.
     """
     stage = chunk.get_scene_stage()
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
     if not (prim and prim.IsValid()):
         return
+    wanted = None if names is None else set(names)
     # By name, not _param_attr_path: a param still at its default has no attribute of its
     # own yet, so nothing is bound to the one an override has just made.
     for param_path, param in (*_iter_chunk_params(chunk), *_iter_chunk_vectors(chunk)):
+        name = param_path.replace(".", ":")
+        if wanted is not None and name not in wanted:
+            continue
         if _under_list_group(param, chunk) or param.has_flag(ChunkFlags.ParamFlags.OUTPUT):
             continue
         raw = getattr(param, "raw_value", None)
         if isinstance(raw, str) and chunk_utils.has_expression(raw):
             continue
-        attr = prim.GetAttribute(f"{_INPUTS_PREFIX}{param_path.replace('.', ':')}")
-        value = attr.Get(0) if attr and attr.IsValid() else None
-        if value is None:
+        attr = prim.GetAttribute(f"{_INPUTS_PREFIX}{name}")
+        if attr and attr.IsValid():
+            # An attribute with no value yet is one being made -- the write path creates,
+            # then sets -- and the set that follows says what it holds.
+            value = attr.Get(0)
+        else:
+            # No layer has it any more: the param is back at its default.
             value = getattr(param, "default_value", None)
         if value is not None and not _values_agree(value, param.value):
             param.value = value

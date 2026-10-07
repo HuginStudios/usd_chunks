@@ -2643,6 +2643,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         layer_hierarchy: dict[Sdf.Layer, Sdf.Layer] = {}
 
+        # Muted first, as a disable would, and outside the guard below: a mute reports each
+        # property it takes away, so what the layer held on other chunk prims -- an Override
+        # Chunk Prim's `over`s -- goes back through the stage mirror like any edit. Dropping
+        # it from subLayerPaths reports only the root, which names nothing.
+        muted_here = bool(self.stage and not layer.empty and not self.stage.IsLayerMuted(layer.identifier))
+        if muted_here:
+            self.stage.MuteLayer(layer.identifier)
+
         # subLayerPaths edits below are plain Sdf writes that fire StageContentsChanged
         # like any other stage edit. Without this guard, each one re-enters
         # ChunkStageSync._on_contents_changed -> load_chunks mid-cascade (e.g. while
@@ -2662,6 +2670,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                             p.subLayerPaths.remove(parent.identifier)
 
                     parent.subLayerPaths = sublayer_paths  # type: ignore
+            if muted_here:
+                # Out of the stage's muted set too: the identifier embeds an address, and a
+                # recycled one would bring some later layer up muted.
+                self.stage.UnmuteLayer(layer.identifier)
         finally:
             chunk_notice._usd_write_active = prev_w
         self.chunk_layers.pop(chunk_hash, None)

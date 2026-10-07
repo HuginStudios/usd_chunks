@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import weakref
 
 from pxr import Sdf, Tf, Usd
 
@@ -35,16 +34,6 @@ _TARGET = "chunk_path"
 # ---------------------------------------------------------------------------
 # The target's params, as this chunk's own
 # ---------------------------------------------------------------------------
-
-
-def _chunk_at(node, path: str):
-    """The chunk whose prim is at path, or None."""
-    # The app's scene when the node has left its own: a deleted chunk still tells its target.
-    scene = node.get_scene() or chunk.get_scene()
-    for candidate in scene.get_chunks() if scene else ():
-        if chunk_stage.get_chunk_prim_path(candidate) == path:
-            return candidate
-    return None
 
 
 def _param_path(param, node) -> str:
@@ -174,70 +163,24 @@ def edits(node) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Telling the target
-# ---------------------------------------------------------------------------
-
-
-def _tell_targets(node) -> None:
-    """Bring the target chunks in line with what their prims compose now.
-
-    The current target and the one before it: a cook that moved to a new target took its
-    edits off the old one too, since the framework cleared the layer.
-    """
-    for path in dict.fromkeys(getattr(node, "_ocp_targets", ())):
-        if path and (target_chunk := _chunk_at(node, path)) is not None:
-            chunk_stage.adopt_composed_values(target_chunk)
-
-
-def _watch(node, stage: Usd.Stage) -> None:
-    """Tell the target when this chunk's layer comes or goes.
-
-    Deleting, disabling or bypassing the chunk removes or mutes its layer, and the edits go
-    with it, but the target's params still hold them: the stage mirror only follows the
-    target's own attributes being written. A layer going away resyncs what it held, here
-    the target's attributes.
-
-    Same shape as mute_layer's watcher: the listener holds the node weakly, so it does not
-    keep a deleted chunk alive, and the node holds the callback, because Tf does not.
-    """
-    if getattr(node, "_ocp_watch_stage", None) is stage:
-        return
-    ref = weakref.ref(node)
-
-    def changed(notice, _sender):
-        owner = ref()
-        if owner is None:
-            return
-        targets = [Sdf.Path(p) for p in getattr(owner, "_ocp_targets", ()) if p]
-        resynced = notice.GetResyncedPaths()
-        if any(t.HasPrefix(r.GetPrimPath()) for t in targets for r in resynced):
-            _tell_targets(owner)
-
-    node._ocp_watch_callback = changed
-    node._ocp_watch = Tf.Notice.Register(Usd.Notice.ObjectsChanged, changed, stage)
-    node._ocp_watch_stage = stage
-
-
-# ---------------------------------------------------------------------------
 # Cook
 # ---------------------------------------------------------------------------
 
 
 def execute(node: chunk.Chunk) -> None:
-    """Write every change onto the target chunk prim. The framework has already cleared the layer."""
+    """Write every change onto the target chunk prim. The framework has already cleared the layer.
+
+    That is all: the target's params are what its prim composes, so it follows this layer as
+    it does any other -- as it changes, and when it goes because this chunk is deleted,
+    disabled or re-pointed. The framework reads the target's prim after each.
+    """
     stage = node.get_stage()
     if not stage:
         return
     target = node.get_param(_TARGET).value
     if getattr(node, "_ocp_built_for", None) != target:
         _build(node)
-    node._ocp_targets = (getattr(node, "_ocp_targets", (None,))[-1], target)
-    _watch(node, node.get_scene_stage() or stage)
-    try:
-        _apply(node, stage, target)
-    finally:
-        # The stage mirror is silent during a cook, so the targets are told here.
-        _tell_targets(node)
+    _apply(node, stage, target)
 
 
 def _apply(node, stage: Usd.Stage, target: str) -> None:
