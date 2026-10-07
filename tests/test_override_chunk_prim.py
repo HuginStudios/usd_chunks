@@ -18,6 +18,7 @@ from pxr import Sdf, Usd
 
 from graph_fixtures import _Scene, make_network
 from usd_chunks import chunk_cook, chunk_registry
+from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_stage import (
     ChunkStageSync,
     export_chunks,
@@ -172,3 +173,34 @@ class TestReopening:
         finally:
             for c in list(again.get_chunks()):
                 c.request_delete()
+
+
+class TestTheTargetFollowsItsPrim:
+    """The target's params are what its prim composes: whatever authors it, they follow."""
+
+    def test_disabling_it_restores_the_target_and_enabling_reapplies(self, shot):
+        _, scene, _, _ = shot
+        target = _by_name(scene, "Transform")
+        node = _override(target.get_context(), target, tx=5.0)
+        tx = target.get_param("translate_grp.tx")
+        node.set_state(ChunkFlags.State.DISABLED)
+        assert tx.value == 0.0
+        node.unset_state(ChunkFlags.State.DISABLED)
+        assert tx.value == 5.0
+
+    def test_an_attribute_set_in_a_stronger_layer_reaches_the_chunk(self, shot, cooks):
+        """No override chunk at all: an `over` authored by hand, onto an input the chunk has
+        never written, is taken up and cooked -- and taken back when the layer drops it."""
+        stage, scene, _, _ = shot
+        target = _by_name(scene, "Transform")
+        stronger = Sdf.Layer.CreateAnonymous("stronger")
+        stage.GetRootLayer().subLayerPaths.insert(0, stronger.identifier)
+        prim = stage.GetPrimAtPath(get_chunk_prim_path(target))
+        assert not prim.GetAttribute(_TX)
+        cooks.clear()
+        with Usd.EditContext(stage, stronger):
+            prim.CreateAttribute(_TX, Sdf.ValueTypeNames.Double).Set(3.0)
+        assert target.get_param("translate_grp.tx").value == 3.0
+        assert "Transform" in cooks and "Transform1" in cooks
+        stronger.Clear()
+        assert target.get_param("translate_grp.tx").value == 0.0
