@@ -19,7 +19,9 @@ from pxr import Ar, Gf, Sdf, Usd, UsdGeom, UsdShade
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_topology import get_chunk_prim_path, nearest_upstream_edit_layer
+from usd_chunks.chunk_topology import (
+    get_chunk_prim_path, nearest_upstream_edit_layer, upstream_edit_target_layer,
+)
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -92,8 +94,9 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
 
     Use this instead of hardcoding stage.GetSessionLayer() for override/redirect-style
     opinions (variant selections, shader input redirects, etc.) so they follow whatever
-    Edit Target applies at the authoring chunk's place in the graph, same as chunk prim
-    bookkeeping does.
+    Edit Target applies at the authoring chunk's place in the graph. These are cook output,
+    so with no Edit Target upstream they stay in the session layer; a chunk's own prim
+    falls back to the stage's edit target instead (get_bookkeeping_layer).
 
     The fallback for a missing `owner` is safe despite being ambient state because its sole
     writer (ChunkNoticePropagator.execute) save/restores it around each module run -- set to
@@ -127,34 +130,77 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
 def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
     """Where a chunk's own bookkeeping belongs: its node prim's storage attrs, wiring and position.
 
-    That is get_edit_layer(stage, owner) for a regular chunk, or always the session layer for
-    a CONTEXT chunk (Tab containers, groups), regardless of what target is currently active.
+    In order:
 
-    CONTEXT chunks are structural scaffolding for the graph itself, not content --
-    letting their own bookkeeping follow whatever target applies at their position would
-    split a single container's own prim across layers over its lifetime, recreating the
-    exact per-layer graph scatter get_edit_layer avoids for content. Regular (non-CONTEXT)
-    chunks have no such risk, so they follow get_edit_layer like everything else.
+    - a chunk composed in from a file the chunk system does not own: the stage's edit
+      target (host_edit_layer) -- what is written on it is an override.
+    - a regular chunk with an Edit Target chunk upstream: the layer that Edit Target
+      publishes, so a network can route its own branches (render geo, proxy geo) in one go.
+    - otherwise the layer the chunk's prim is already defined in, so a chunk never splits
+      across layers, or for one not defined yet, the stage's edit target (host_edit_layer)
+      -- the same place USD puts any other new prim, whatever the host defaults it to
+      (usdview: the session layer; Blender, Flet, ImGui: the root). With the target on a
+      department sublayer, a new chunk is saved in that department's file.
+
+    CONTEXT chunks (Tab containers, groups) take the last rule: they are structural
+    scaffolding, so an Edit Target chunk inside never moves them, but they live in a file
+    like the chunks they hold.
 
     Args:
         stage: The stage being authored.
-        owner: The chunk; None (the caller couldn't resolve an owning chunk) is treated as
-            non-CONTEXT.
+        owner: The chunk; None falls back to the chunk whose execute() is running
+            (chunk_notice._executing_chunk), and is otherwise treated as a new chunk.
 
     Returns:
-        The layer to author bookkeeping into.
+        The layer to author bookkeeping into, or None without a stage.
     """
-    if owner is not None and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-        return stage.GetSessionLayer()
-    if owner is not None:
+    if stage is None:
+        return None
+    if owner is None:
+        owner = chunk_notice._executing_chunk
+    if owner is None:
+        return host_edit_layer(stage)
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
+    if prim and prim.IsValid():
         # A chunk composed in from a sequence file has an Edit Target chain of its own,
         # and it is the sequence's: what the shot writes on such a chunk is an override,
         # and it goes where the host's edit target points (host_edit_layer), not down the
         # sequence's chain.
-        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
         if is_composed_in(prim):
             return host_edit_layer(stage)
-    return get_edit_layer(stage, owner)
+        if not owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            routed = upstream_edit_target_layer(stage, prim)
+            if routed is not None:
+                return routed
+        if (home := chunk_def_layer(prim)) is not None:
+            return home
+    return host_edit_layer(stage)
+
+
+def chunk_def_layer(prim: Usd.Prim) -> Sdf.Layer | None:
+    """The strongest owned layer holding a `def` for this chunk prim.
+
+    That is where the chunk lives, and where anything first authored on it later goes, so
+    one chunk's specs stay in one layer however the stage's edit target moves afterwards.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        The layer, or None when no owned layer defines the prim (it is composed in, or not
+        defined yet).
+    """
+    path = prim.GetPath()
+    stage = prim.GetStage()
+    for spec in prim.GetPrimStack():
+        if spec.path != path or spec.specifier != Sdf.SpecifierDef:
+            continue
+        # A def in a file the chunk system does not own is only ever overridden, never
+        # written into (is_foreign_layer), and an internal layer is cook output.
+        if is_foreign_layer(spec.layer, stage) or chunk_registry.is_chunk_internal_layer(spec.layer):
+            continue
+        return spec.layer
+    return None
 
 
 def host_edit_layer(stage: Usd.Stage) -> Sdf.Layer:

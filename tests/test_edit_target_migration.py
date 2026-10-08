@@ -280,7 +280,7 @@ class TestEditTargetMigration:
         c.execute()
 
         cpath = Sdf.Path(get_chunk_prim_path(c))
-        assert stage.GetSessionLayer().GetPrimAtPath(cpath) is not None
+        assert stage.GetEditTarget().GetLayer().GetPrimAtPath(cpath) is not None
         # Seed the destination with the bare `over` an attr write would have left there.
         Sdf.CreatePrimInLayer(layer_a, cpath)
         assert layer_a.GetPrimAtPath(cpath).specifier == Sdf.SpecifierOver
@@ -321,9 +321,9 @@ class TestEditTargetMigration:
         assert all(getattr(c, "_deleting", False) for c in chunks)
         assert not scene.get_chunks()
 
-    def test_deleting_edit_target_falls_back_to_session(self):
+    def test_deleting_edit_target_falls_back_to_the_stage_edit_target(self):
         """Deleting the Edit Target leaves the downstream chunk with no upstream target, so
-        its bookkeeping falls back to the session layer (removed from layerA)."""
+        its bookkeeping falls back to the stage's edit target (removed from layerA)."""
         scene, stage = self._setup()
         _, layer_a = self._create_layer(scene, "layerA")
         et = _make(scene, self.edit_mod, "edit_target")
@@ -337,7 +337,7 @@ class TestEditTargetMigration:
 
         et.request_delete()
 
-        assert stage.GetSessionLayer().GetPrimAtPath(cpath) is not None
+        assert stage.GetEditTarget().GetLayer().GetPrimAtPath(cpath) is not None
         assert layer_a.GetPrimAtPath(cpath) is None
 
 
