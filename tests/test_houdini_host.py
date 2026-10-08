@@ -182,6 +182,13 @@ SCRIPT = textwrap.dedent(r"""
     out["upstream_through_group"] = size(group.stage(), "/Upstream")
     group.setInput(0, None)
 
+    plain = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_NO_VIEW"], hou.node("/stage"))[0]
+    inner = plain.node("Inner")
+    out["no_view_output"] = [i.name() for i in plain.node("space_out").inputs() if i]
+    out["no_view_inner_output"] = [i.name() for i in inner.node("space_out").inputs() if i]
+    out["no_view_prims"] = [str(p.GetPath()) for p in plain.stage().Traverse()
+                            if not str(p.GetPath()).startswith("/HoudiniLayerInfo")]
+
     group.createNode("cube", "SolarisCube")
     try:
         chunkgroup.export(group, exported)
@@ -250,6 +257,48 @@ NETWORK = textwrap.dedent("""    #usda 1.0
 """)
 
 
+#: A network as it is often saved: no View anywhere, in the group or in the group inside it.
+#: usd_chunks cooks such a group through the end of its exec chain.
+NO_VIEW_NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 1
+        upAxis = "Y"
+    )
+
+    def Scope "chunks"
+    {
+        def Chunk "Plain"
+        {
+            uniform token info:chunkType = "chunkgroup"
+            uniform token outputs:chunk
+
+            def Chunk "Ball"
+            {
+                uniform token info:chunkType = "mesh"
+                string inputs:mesh_type = "sphere"
+                string inputs:prim_path = "/ball"
+                uniform token outputs:chunk
+            }
+
+            def Chunk "Inner"
+            {
+                uniform token info:chunkType = "chunkgroup"
+                token inputs:chunk.connect = </chunks/Plain/Ball.outputs:chunk>
+                uniform token outputs:chunk
+
+                def Chunk "Move"
+                {
+                    uniform token info:chunkType = "transform"
+                    string inputs:primpath_location = "/ball"
+                    float inputs:translate_grp:tx = 3
+                    uniform token outputs:chunk
+                }
+            }
+        }
+    }
+""")
+
+
 @pytest.fixture(scope="module")
 def result(tmp_path_factory):
     hython = _hython()
@@ -261,6 +310,8 @@ def result(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("houdini")
     network = tmp / "network.usda"
     network.write_text(NETWORK)
+    no_view = tmp / "no_view.usda"
+    no_view.write_text(NO_VIEW_NETWORK)
     script = tmp / "check.py"
     script.write_text(SCRIPT)
     env = dict(os.environ)
@@ -271,6 +322,7 @@ def result(tmp_path_factory):
         "USD_CHUNKS_TEST_HDA": str(HDA),
         "USD_CHUNKS_TEST_HIP": str(tmp / "scene.hip"),
         "USD_CHUNKS_TEST_NETWORK": str(network),
+        "USD_CHUNKS_TEST_NO_VIEW": str(no_view),
     })
     proc = subprocess.run([hython, str(script)], env=env, capture_output=True, text=True, timeout=600)
     line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("USD_CHUNKS_RESULT")), None)
@@ -354,6 +406,12 @@ def test_exec_wires_become_lop_wires_and_the_view_the_output(result):
     assert result["import_wires"]["Move"] == ["Ground"]
     assert result["import_output"] == ["space_out"]
     assert result["space_out_input"] == ["Move"]
+
+
+def test_a_group_with_no_view_outputs_the_end_of_its_chain(result):
+    assert result["no_view_output"] == ["Inner"]
+    assert result["no_view_inner_output"] == ["Move"]
+    assert "/ball" in result["no_view_prims"]
 
 
 def test_a_param_wire_becomes_a_channel_reference(result):

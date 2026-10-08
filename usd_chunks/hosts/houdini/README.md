@@ -51,7 +51,7 @@ it like any subnet. It is also the unit that travels between hosts.
   chunk with no exec input takes the group's input;
 - a param wired to another param (`@AddMesh.prim_path@`) becomes `chs("../AddMesh/prim_path")`,
   and one wired to a public param `ch("../SwedishHouse_floors")`;
-- the active View becomes the group's output.
+- the active View becomes the group's output; with no View, the end of its chain does.
 
 **Export** -- the chunkgroup node's **Export Network...** button writes it back as a network
 file that usdview, Blender and the CLI open: the same references become param wires and

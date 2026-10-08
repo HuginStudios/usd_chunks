@@ -20,6 +20,7 @@ becomes what Houdini would have built by hand:
   ``chs("../AddMesh/prim_path")``; to a group's public param -> ``ch("../floors")``;
 - a View -> the subnet's output (the active view slot's, chunk:activeView), or the display
   flag at the top level. Views are usd_chunks' way of picking an output; Houdini has its own.
+  With no View, the end of the exec chain is the output, as usd_chunks cooks it.
 
 Values go chunk-side first (the param, as the loader sets it) and reach the parms through
 parms.pull, so a parm is named and typed exactly as one made from the TAB menu.
@@ -266,7 +267,11 @@ def _import_children(container: Usd.Prim, parent: hou.Node, group_prim: Usd.Prim
         targets = [c.GetPrimPath() for c in chunk_stage.exec_input_connections(view)]
         if targets and targets[0] in nodes:
             return nodes[targets[0]]
-    return None
+    # No View wired to anything: the end of the exec chain, as usd_chunks cooks a group
+    # without one (chunk_stage.exec_tails).
+    consumed = {c.GetPrimPath() for prim in _chunk_children(container)
+                for c in chunk_stage.exec_input_connections(prim)}
+    return next((node for path, node in nodes.items() if path not in consumed), None)
 
 
 def _prepare(group: hou.Node, network_space: tuple[str, float] | None = None) -> hou.Node:
