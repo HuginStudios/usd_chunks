@@ -1186,6 +1186,40 @@ def test_a_new_network_saves_to_a_file_it_never_had(tmp_path):
     assert out.exists()
 
 
+def test_a_new_network_saves_in_blenders_space(tmp_path):
+    """Blender is Z-up in metres times its Unit Scale; a saved network has to say so, or
+    every other host reads it as USD's fallback Y-up centimetres and turns it wrong."""
+    units = bpy.context.scene.unit_settings
+    before = units.scale_length
+    units.scale_length = 0.5
+    try:
+        tree = bpy.data.node_groups.new("spaced", bg.TREE_ID)
+        addon._open_stage(addon.new_network_stage(), tree=tree)
+        out = tmp_path / "spaced.usda"
+        addon.write_network(addon.get_view(), str(out))
+    finally:
+        units.scale_length = before
+    saved = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageUpAxis(saved) == UsdGeom.Tokens.z
+    assert UsdGeom.GetStageMetersPerUnit(saved) == pytest.approx(0.5)
+
+
+def test_an_opened_network_keeps_the_space_it_was_authored_in(tmp_path):
+    """A file that says its own space -- usdview's Y-up centimetres here -- keeps it."""
+    path, context = make_network(tmp_path / "authored.usda")
+    layer = Sdf.Layer.FindOrOpen(path)
+    layer.pseudoRoot.SetInfo("upAxis", "Y")
+    layer.pseudoRoot.SetInfo("metersPerUnit", 0.01)
+    layer.Save()
+    tree = bpy.data.node_groups.new("authored", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    out = tmp_path / "authored_out.usda"
+    addon.write_network(addon.get_view(), str(out))
+    saved = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageUpAxis(saved) == UsdGeom.Tokens.y
+    assert UsdGeom.GetStageMetersPerUnit(saved) == pytest.approx(0.01)
+
+
 def test_saving_the_blend_keeps_a_network_with_no_file(tmp_path):
     """An untitled network rides along in the .blend and reopens from there."""
     path, context = make_network(tmp_path / "embed.usda")

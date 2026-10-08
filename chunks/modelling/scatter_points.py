@@ -763,7 +763,7 @@ def _on_points_input_changed(owner, notice, sender) -> None:
     _update_sampling_params(owner.get_chunk())
 
 
-def _painted_points(stage, points_path):
+def _painted_points(stage, points_path, up=None):
     """Points a brush placed by hand, with the surface normal recorded at each.
 
     Empty whenever nothing is wired, which is the common case and costs one path lookup.
@@ -784,7 +784,7 @@ def _painted_points(stage, points_path):
         return [], []
     normals = cloud.GetNormalsAttr().Get()
 
-    up = Gf.Vec3f(0, 0, 1)
+    up = up or Gf.Vec3f(0, 0, 1)
     positions = [Gf.Vec3f(*p) for p in points]
     facing = [Gf.Vec3f(*n) for n in normals] if normals else []
     # Points placed before normals were recorded still work; they simply lie flat.
@@ -1083,9 +1083,14 @@ def _align_quat(from_dir, to_dir):
     return Gf.Quatf(math.cos(half), axis[0] * s, axis[1] * s, axis[2] * s)
 
 
-def _normal_to_quat(normal):
-    """Rotation taking +Z to the given normal direction."""
-    return _align_quat(Gf.Vec3f(0, 0, 1), normal)
+def _normal_to_quat(normal, up=None):
+    """Rotation taking the prototype's up to the given normal direction.
+
+    A prototype stands along the stage's up axis -- a House builds along whichever one the
+    stage has -- so that, not +Z, is what turns onto the normal. Taking +Z on a Y-up stage
+    (Houdini's) tipped every instance on its side while the source prim stood upright.
+    """
+    return _align_quat(up or Gf.Vec3f(0, 0, 1), normal)
 
 
 def _axis_quat(axis, angle_rad):
@@ -1141,7 +1146,7 @@ def _random_quat(rng):
 def _compute_orientation(mode, normal, rng, proto=None, world_up=None):
     """Base orientation for one instance, before random spin/tilt."""
     if mode == "Align to Normal":
-        return _normal_to_quat(normal)
+        return _normal_to_quat(normal, world_up)
     if mode == "Random":
         return _random_quat(rng)
     if mode == "Long Axis Up" and proto is not None:
@@ -1692,7 +1697,7 @@ def execute(node):
     # Read here, used at the dispatch below. Nothing about a painted cloud depends on the
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
-    placed, placed_normals = _painted_points(scratch_stage, points_input)
+    placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
     sizes = None  # scales the sampler already drew, when spacing follows scale
 
     with Usd.EditContext(stage, layer):
@@ -1803,16 +1808,15 @@ def execute(node):
                 sp = max(spacing, 2.0)
                 n = int(math.sqrt(max_count))
                 off = (n - 1) * sp / 2
-                positions = [
-                    Gf.Vec3f(
-                        x * sp - off + rng.uniform(-sp * 0.3, sp * 0.3),
-                        y * sp - off + rng.uniform(-sp * 0.3, sp * 0.3),
-                        0,
-                    )
-                    for x in range(n)
-                    for y in range(n)
-                ]
-                normals = [Gf.Vec3f(0, 0, 1)] * len(positions)
+                # On the ground plane of the stage's own up axis: X/Y when Z is up, X/Z when Y
+                # is. Two draws per point in the same order, so a Z-up grid is unchanged.
+                positions = []
+                for x in range(n):
+                    for y in range(n):
+                        a = x * sp - off + rng.uniform(-sp * 0.3, sp * 0.3)
+                        b = y * sp - off + rng.uniform(-sp * 0.3, sp * 0.3)
+                        positions.append(axis_vec[lat_a] * a + axis_vec[lat_b] * b)
+                normals = [world_up] * len(positions)
             levels = [0] * len(positions)
 
         count = len(positions)

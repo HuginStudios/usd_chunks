@@ -1,0 +1,2 @@
+from usd_chunks.hosts.houdini import lop
+lop.on_deleted(kwargs)

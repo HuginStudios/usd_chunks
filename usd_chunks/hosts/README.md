@@ -11,3 +11,7 @@ When using this plugin for usdview, set
 **PXR_PLUGINPATH_NAME**="path/to/usd_chunks/hosts/usdview"
 
 or print the right path for an installed copy with `usdchunks plugin-path --host usdview`.
+
+**houdini** makes every chunk a Solaris LOP, under TAB > usdchunks. Houdini wires the
+chunks and decides when they cook; their params are native Houdini parms. Set it up once
+with `hython usd_chunks/hosts/houdini/install.py` -- see `houdini/README.md`.

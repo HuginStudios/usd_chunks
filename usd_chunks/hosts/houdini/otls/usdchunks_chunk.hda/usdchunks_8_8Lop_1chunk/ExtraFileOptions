@@ -1,0 +1,6 @@
+{
+	"OnDeleted/IsPython":{
+		"type":"bool",
+		"value":true
+	}
+}

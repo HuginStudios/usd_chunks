@@ -114,7 +114,7 @@ The ChunkWidgetDocker of the chunk_qt plugin listen to this notice, and will cre
 
 
 # Application plugins
-Host entry points live in `usd_chunks.hosts`. Currently, we provide a plugin for Usdview only. The Kraken host may be expanded on later, but is currently in internal development.
+Host entry points live in `usd_chunks.hosts`: a plugin for Usdview, and one for Houdini Solaris, where every chunk is a LOP with native parms and Houdini owns the wiring (see `usd_chunks/hosts/houdini/README.md`).
 
 Application plugins will vary in their implementations as the applications will load plugins differently. In some cases an application plugin may not be necessary at all.
 
