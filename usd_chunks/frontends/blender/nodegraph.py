@@ -962,9 +962,15 @@ class BlenderGraphView:
             return
         self._ensuring_view = True
         try:
+            before = len(self.scene.get_chunks())
             slot, activate = chunk_graph.default_view_slot(
                 self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
             if slot is None:
+                if len(self.scene.get_chunks()) != before:
+                    # An Output was made: the tree needs its node.
+                    self.chunks = {chunk_stage.get_chunk_prim_path(c): c
+                                   for c in self.scene.get_chunks()}
+                    self.reload()
                 return
             self.chunks = {chunk_stage.get_chunk_prim_path(c): c
                            for c in self.scene.get_chunks()}

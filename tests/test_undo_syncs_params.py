@@ -123,7 +123,8 @@ def _resync_param(stage, attr_path, value):
     exercise the path that already worked.
     """
     path = Sdf.Path(attr_path)
-    layer = stage.GetSessionLayer()
+    # Where the chunk's prim was authored: the stage's edit target.
+    layer = stage.GetEditTarget().GetLayer()
     with Usd.EditContext(stage, layer):
         prim_spec = layer.GetPrimAtPath(path.GetPrimPath())
         prop = prim_spec.properties.get(path.name) if prim_spec else None

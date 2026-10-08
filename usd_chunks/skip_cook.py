@@ -503,7 +503,11 @@ def read_hidden(watch: _Watch, inputs: Iterable[Sdf.Path], hidden: dict[str, tup
     for other, own in hidden.values():
         listed = any((spec := own.GetPrimAtPath(path)) is not None and spec.nameChildren
                      for path in watch.children)
-        if listed or any(path in above or _covered(path, subtrees) for path in output_paths(own)):
+        # Not what it writes under /chunks: an opinion on a chunk prim is a param (an
+        # Override Chunk Prim's edit), and it reaches its chunk as a param value, not by the
+        # cook reading the stage.
+        written = (p for p in output_paths(own) if not p.HasPrefix(_CHUNKS_ROOT))
+        if listed or any(path in above or _covered(path, subtrees) for path in written):
             readers.append(other)
     return readers
 

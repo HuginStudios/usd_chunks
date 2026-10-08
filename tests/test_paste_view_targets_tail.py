@@ -89,7 +89,7 @@ def _view_targets(scene, stage):
     """What each view chunk is pointed at."""
     out = []
     for c in scene.get_chunks():
-        if not chunk_stage.is_view_chunk(c):
+        if not chunk_stage.is_terminal_chunk(c):
             continue
         prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
         if not (prim and prim.IsValid()):
@@ -116,12 +116,12 @@ def _drop_views(scene, qapp, gv, stage):
     gv._suppress_default_view = True
     try:
         for c in list(scene.get_chunks()):
-            if chunk_stage.is_view_chunk(c):
+            if chunk_stage.is_terminal_chunk(c):
                 c.request_delete()
         qapp.processEvents()
     finally:
         gv._suppress_default_view = False
-    assert not any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()), (
+    assert not any(chunk_stage.is_terminal_chunk(c) for c in scene.get_chunks()), (
         "precondition: no view before the paste"
     )
 

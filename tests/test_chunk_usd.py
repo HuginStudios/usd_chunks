@@ -461,6 +461,9 @@ def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
     Sdf.Layer.CreateNew(str(out)).Save()
 
     stage1 = Usd.Stage.Open(str(out))
+    # As usdview opens it. Targeting the root, the chunk below would be authored into the
+    # file's layer, which Sdf shares with stage2 -- so stage2 would rightly load it.
+    stage1.SetEditTarget(stage1.GetSessionLayer())
 
     class _Scene(_DummyScene):
         def __init__(self):

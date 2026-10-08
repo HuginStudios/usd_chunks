@@ -163,18 +163,19 @@ class ImGuiGraphView:
         self._ensure_view()
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open.
+        """Give the context an Output (or, failing that, a view) on open.
 
         Without one nothing cooks, so a network opened here would look right and do
         nothing.
         """
+        before = len(self.scene.get_chunks())
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
-        if slot is None:
+        if slot is None and len(self.scene.get_chunks()) == before:
             return
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
-        if activate:
+        if slot is not None and activate:
             self.set_active_slot(slot)
 
     # -- reading -----------------------------------------------------------

@@ -34,13 +34,13 @@ import hashlib
 import os
 import shutil
 import subprocess
-import venv as venv_module
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable
 
 from usd_chunks.store.providers import StoreProvider, discovered_stores, resolve_across_stores
 from usd_chunks import chunk_naming
+from usd_chunks.chunk_process import python_executable
 
 try:
     from pxr import Sdf, Usd
@@ -545,10 +545,16 @@ def provision_venv(packages: dict[str, str], venv_dir, system_site_packages: boo
     if not packages:
         return None, [], []
 
-    builder = venv_module.EnvBuilder(
-        with_pip=True, system_site_packages=system_site_packages, clear=False
+    # `-m venv` under chunk_process.python_executable rather than venv.EnvBuilder in this
+    # process: EnvBuilder copies the running interpreter, which in a host like Houdini is
+    # the application (houdini.exe), not a Python.
+    created = subprocess.run(
+        [python_executable(), "-m", "venv", *(["--system-site-packages"] if system_site_packages else []),
+         str(venv_dir)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
-    builder.create(str(venv_dir))
+    if created.returncode != 0:
+        return None, [], [f"could not create a venv: {(created.stdout or b'').decode(errors='replace').strip()}"]
     python = venv_python(venv_dir)
     if not python.exists():
         return None, [], [f"venv created but no interpreter at {python}"]

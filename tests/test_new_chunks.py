@@ -403,13 +403,13 @@ class TestAMDMaterialXLibraryChildCreation:
         self.mod.execute(c)
 
         # The child chunk prims must exist in the user's persistent edit layer -- the
-        # session layer by default (get_bookkeeping_layer's fallback for a CONTEXT chunk,
+        # stage's edit target (get_bookkeeping_layer's fallback for a CONTEXT chunk,
         # which AMD is) -- not in AMD's anonymous execute layer, which is Clear()ed on
         # every execute() run. Previously checked stage.GetRootLayer() here, which a bare
         # Usd.Stage.CreateInMemory() never authors bookkeeping into at all; that
         # mismatch silently failed this test regardless of whether the real bug (below)
         # was present, so it never actually caught it.
-        session_layer = stage.GetSessionLayer()
+        session_layer = stage.GetEditTarget().GetLayer()
         amd_layer = c.get_edit_context()
         ref_spec = session_layer.GetPrimAtPath(Sdf.Path(f'{_chunk_path("AMDMaterialXLibrary")}/Reference'))
         bind_spec = session_layer.GetPrimAtPath(Sdf.Path(f'{_chunk_path("AMDMaterialXLibrary")}/BindMaterial'))

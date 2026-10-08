@@ -154,18 +154,17 @@ class TestGroupingAndDiving:
 
 
 class TestViewSlots:
-    def test_a_network_opens_with_an_active_view(self, view):
-        """Every frontend creates one on open, as Qt always has: recook_for_view cooks the
-        active view's upstream tree and blocks the rest, so a context without a view cooks
-        nothing at all."""
-        assert view.active_slot() == 1
-        assert sorted(
-            prim.GetAttribute("view:slot").Get()
-            for prim in view.prims.values()
-            if (prim.GetAttribute("info:chunkType").Get() or "") == "view"
-        ) == [1]
+    def test_a_network_opens_with_an_output_and_no_view(self, view):
+        """Every frontend gives a context an Output on open: with no active view a context
+        cooks to its Output, and with neither it cooks nothing at all."""
+        types = [prim.GetAttribute("info:chunkType").Get() or "" for prim in view.prims.values()]
+        assert types.count("output") == 1
+        assert "view" not in types
+        assert view.active_slot() == 0
 
-    def test_switching_to_an_empty_slot_is_refused(self, view):
+    def test_switching_to_an_empty_slot_is_refused(self, view, first):
+        view.set_selection([first])
+        view.create_view()
         view.set_active_slot(2)
         assert view.active_slot() == 1, "an empty slot must not become active"
         assert "no view in slot 2" in view.status
@@ -175,7 +174,7 @@ class TestViewSlots:
         before = set(view.prims)
         view.create_view()
         assert set(view.prims) - before, "no view node was created"
-        assert view.active_slot() == 2
+        assert view.active_slot() == 1
 
 
 class TestImmediateModeWidgets:

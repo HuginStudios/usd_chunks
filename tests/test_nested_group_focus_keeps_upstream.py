@@ -85,7 +85,7 @@ def nested(qapp):
     g1 = mk("chunkgroup")
     t1 = mk("transform", context=g1)
     settle()
-    view = next(c for c in reg.scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    view = chunk_stage.find_output_chunk(stage, reg.scene, None)
     connect_exec(stage, reg.scene, get_chunk_prim_path(sub), get_chunk_prim_path(g1))
     connect_exec(stage, reg.scene, get_chunk_prim_path(g1), get_chunk_prim_path(view))
     settle()

@@ -1,17 +1,25 @@
 from __future__ import annotations
 from usd_chunks import chunk
-from pxr import Tf
+from pxr import Sdf, Tf
 
 
-def text_changed(owner: chunk.TextEdit, notice, sender):
-    layer = owner.get_edit_context()
+def execute(node):
+    """Import the text into the chunk's layer, on every cook.
+
+    A cook clears the layer first, and a host may hand the chunk a new layer for each one
+    (Houdini does, per node), so the text is imported here rather than only when it changes.
+    """
+    layer = node.get_edit_context()
     if not layer:
         return
-    layer.Clear()
+    # Parsed as .usda, then copied in: ImportFromString keeps the layer's own format, and an
+    # anonymous layer is not .usda everywhere (Houdini's are "sdf", which refuses "#usda").
+    text = Sdf.Layer.CreateAnonymous(".usda")
     try:
-        layer.ImportFromString(str(owner.value))
+        text.ImportFromString(str(node.get_param("code").value))
     except Tf.ErrorException:
-        pass
+        return
+    layer.TransferContent(text)
 
 
 def main():
@@ -23,8 +31,6 @@ def main():
 
     text = chunk.TextEdit("code", default_value=default)
     text.set_flag(chunk.ChunkFlags.ParamFlags.USD_SYNTAX_HIGHLIGHT)
-    text.add_callback(text_changed, send_on_create=True)
-
     myChunk.add_param(text)
 
     return myChunk

@@ -1,0 +1,28 @@
+Operator:     usdchunks::chunk
+Label:        USD Chunk
+Path:         oplib:/usdchunks::Lop/chunk?usdchunks::Lop/chunk
+Icon:         NETWORKS_lop
+Table:        Lop
+License:      
+Extra:        
+User:         
+Inputs:       0 to 1
+Subnet:       true
+Python:       false
+Empty:        false
+Modified:     Thu Oct  8 13:10:30 2026
+
+Operator:     usdchunks::chunkgroup
+Label:        USD Chunkgroup
+Path:         oplib:/usdchunks::Lop/chunkgroup?usdchunks::Lop/chunkgroup
+Icon:         NETWORKS_lop
+Table:        Lop
+License:      
+Extra:        
+User:         
+Inputs:       0 to 1
+Subnet:       true
+Python:       false
+Empty:        false
+Modified:     Thu Oct  8 13:10:30 2026
+

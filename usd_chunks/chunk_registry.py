@@ -44,6 +44,7 @@ except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
 from usd_chunks import chunk_cache, chunk_cook, chunk_scheduler, cook_cache
+from usd_chunks.chunk_process import python_executable
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
 
@@ -426,7 +427,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
                 atexit.register(self._write_cache)
 
     def _env_cache_file(self):
-        checksum = chunk_cache.compute_checksum(sys.executable)
+        checksum = chunk_cache.compute_checksum(python_executable())
         return os.path.join(self.package_dir, f"{checksum}_chunk_package_cache.json")
 
     def _write_cache(self):
@@ -525,7 +526,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             logger.warning(
                 "Chunk %s needs %s, which is not installed. Install it with:\n"
                 "    %s -m pip install -t \"%s\" %s",
-                chunk_name or "module", ", ".join(missing), sys.executable, self.package_dir, quoted,
+                chunk_name or "module", ", ".join(missing), python_executable(), self.package_dir, quoted,
             )
         return missing
 
@@ -542,7 +543,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not self.initialized or not packages:
             return False
         packages = list(packages)
-        args = [sys.executable, "-m", "pip", "install", "-t", self.package_dir]
+        args = [python_executable(), "-m", "pip", "install", "-t", self.package_dir]
         args.extend(packages)
 
         def run(on_line=None):
@@ -606,7 +607,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
                 self._cache[name].add(dist.version)
 
         # Search the current interpreters' environment
-        args = [sys.executable, "-m", "pip", "list", "--format", "freeze"]
+        args = [python_executable(), "-m", "pip", "list", "--format", "freeze"]
 
         proc = subprocess.run(
             args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -618,7 +619,7 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
             self._cache[pname].add(pversion)
 
         # Search the pip_dep_dir
-        args = [sys.executable, "-m", "pip", "list", "--path", self.package_dir, "--format", "freeze"]
+        args = [python_executable(), "-m", "pip", "list", "--path", self.package_dir, "--format", "freeze"]
 
         proc = subprocess.run(
             args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -2643,6 +2644,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         layer_hierarchy: dict[Sdf.Layer, Sdf.Layer] = {}
 
+        # Muted first, as a disable would, and outside the guard below: a mute reports each
+        # property it takes away, so what the layer held on other chunk prims -- an Override
+        # Chunk Prim's `over`s -- goes back through the stage mirror like any edit. Dropping
+        # it from subLayerPaths reports only the root, which names nothing.
+        muted_here = bool(self.stage and not layer.empty and not self.stage.IsLayerMuted(layer.identifier))
+        if muted_here:
+            self.stage.MuteLayer(layer.identifier)
+
         # subLayerPaths edits below are plain Sdf writes that fire StageContentsChanged
         # like any other stage edit. Without this guard, each one re-enters
         # ChunkStageSync._on_contents_changed -> load_chunks mid-cascade (e.g. while
@@ -2662,6 +2671,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                             p.subLayerPaths.remove(parent.identifier)
 
                     parent.subLayerPaths = sublayer_paths  # type: ignore
+            if muted_here:
+                # Out of the stage's muted set too: the identifier embeds an address, and a
+                # recycled one would bring some later layer up muted.
+                self.stage.UnmuteLayer(layer.identifier)
         finally:
             chunk_notice._usd_write_active = prev_w
         self.chunk_layers.pop(chunk_hash, None)

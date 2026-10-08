@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_notice, chunk_registry, chunk_utils, skip_cook
+from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_utils, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -1309,6 +1309,20 @@ class HashVal:
         return c
 
 
+def group_parent_path(group) -> str:
+    """The prim path a group sits under: what decides which groups are its siblings.
+
+    A restored group knows its own prim path. A group being created does not yet, so it
+    takes its parent group's path, or the /chunks scope for one with no parent.
+    """
+    path = getattr(group, "prim_path", None)
+    if path:
+        return path.rsplit("/", 1)[0] or "/"
+    ref = getattr(group, "_parent_context", None)
+    parent = ref() if ref else None
+    return (getattr(parent, "prim_path", None) or chunk_naming.CHUNKS_ROOT) if parent else chunk_naming.CHUNKS_ROOT
+
+
 class ChunkCommon(AttributesBase):
     """Base class for all chunk objects, holding the attributes every one of them supports.
 
@@ -1493,6 +1507,15 @@ class ChunkCommon(AttributesBase):
         if not isinstance(owner, NameSyncedContainer) or not name or name == current:
             return name
         taken = owner._names.maps[0]
+        if self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and hasattr(self, "_parent_context"):
+            # A group sits in the scene's flat container next to every other group, but it
+            # is unique by prim path: only the groups under the same parent prim are its
+            # siblings (group_parent_path).
+            home = group_parent_path(self)
+            taken = {
+                other.name: other.get_hash() for other in owner.get_my_params()
+                if other.has_flag(ChunkFlags.GroupFlags.CONTEXT) and group_parent_path(other) == home
+            }
         if name in taken and taken[name] != own_key:
             return ChunkGroupBase.get_valid_child_name(name, set(taken))
         return name
@@ -1854,6 +1877,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             raw = self.raw_value
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             val = notice.data.value
+            refused = None  # (locked layer, the value USD still composes) for a refused edit
             if val is not None:
                 prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
@@ -1886,9 +1910,15 @@ class ChunkUsdAttributeSupport(AttributesBase):
                             # so it always comes back empty there and the edit would otherwise
                             # fall through to the fallback -- outside the variant entirely.
                             # Re-enter the selections recorded at bind time instead.
-                            fallback = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
-                                stage, self.get_chunk()
-                            )
+                            fallback = chunk_utils.param_storage_layer(stage, usd_attr, self.get_chunk())
+                            # A locked file (read-only, or edit permission off) takes no edit:
+                            # the change is refused and the param goes back to what USD
+                            # composes. Outside a variant only -- a variant edit goes into the
+                            # chunk's own layer, which is never locked.
+                            if not self._var_selections and chunk_utils.is_layer_locked(fallback):
+                                refused = (fallback, usd_attr.Get(0))
+                                usd_attr = None
+                        if usd_attr:
                             with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
                                 if not is_expr:
                                     current = usd_attr.Get(0)
@@ -1934,10 +1964,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     # The wire is gone; text left behind would come back as the
                                     # wire on the next load.
                                     chunk_utils.clear_expression_text(usd_attr)
-                    if not self.is_blocked():
+                    if not self.is_blocked() and refused is None:
                         self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = prev_write
+            if refused is not None:
+                locked, composed = refused
+                logger.warning(
+                    "%s.%s not changed: %s is locked (read-only, or not editable). Set the "
+                    "stage's edit target to a layer you can edit to override it there.",
+                    self.get_chunk().name if self.get_chunk() else "?", self.name,
+                    locked.GetDisplayName() or locked.identifier,
+                )
+                if not is_expr and composed is not None and composed != val:
+                    self.value = composed
 
         return my_notice
 

@@ -82,15 +82,13 @@ def test_the_outermost_group_is_found_by_its_path(opened):
     assert chunk_stage.get_chunk_prim_path(found) == "/chunks/Outer"
 
 
-def test_opening_wires_the_default_view_to_the_end_of_the_outer_chain(opened):
+def test_opening_wires_the_default_output_to_the_end_of_the_outer_chain(opened):
     stage, scene = opened
     context = chunk_graph.default_context(stage)
 
-    slot, _ = chunk_graph.default_view_slot(
-        stage, scene, context, scene.get_context_for_prim_path(context))
+    chunk_graph.default_view_slot(stage, scene, context, scene.get_context_for_prim_path(context))
 
-    assert slot == 1
-    views = [c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c)]
-    wired = [str(t.GetPrimPath()) for v in views
-             for t in chunk_stage.exec_input_connections(stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(v)))]
+    outputs = [c for c in scene.get_chunks() if chunk_stage.is_output_chunk(c)]
+    wired = [str(t.GetPrimPath()) for o in outputs
+             for t in chunk_stage.exec_input_connections(stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(o)))]
     assert wired == ["/chunks/Outer/Last"], "not Move, inside the nested group"

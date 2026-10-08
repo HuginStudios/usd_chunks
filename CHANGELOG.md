@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
+  instead of a View. With no active View a graph cooks to its Output, a ChunkGroup
+  delivers its inner Output, and `usdchunks run` cooks to the Output whichever View the file
+  was saved with. Views are for looking. Files saved with only Views keep working as before.
 - `chunk.change_block()`: values set inside it are one change, so what they affect cooks
   once when the block ends rather than once per value. For scripts, and for modules that
   set many params of their own (the Wedge uses it).
