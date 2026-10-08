@@ -34,14 +34,14 @@ def execute(node: chunk.Chunk) -> None:
 
 
 def update(owner: chunk.Chunk, notice, sender: chunk.LineEdit):
-    prims = sender.get_prims()
-
-    prim: Usd.Prim = prims[0]
     stage = owner.get_stage()
     if not stage:
         return
 
     param = owner.get_param("schemas", chunk.is_inst(chunk.Menu))
+    # Empty until a prim is picked, and this also runs when the chunk is created.
+    prims = sender.get_prims()
+    prim: Usd.Prim | None = prims[0] if prims else None
 
     if not prim or prim == stage.GetPseudoRoot():
         param.menu_items = []
@@ -54,8 +54,13 @@ def update(owner: chunk.Chunk, notice, sender: chunk.LineEdit):
             continue
 
         if schema_reg.IsAppliedAPISchema(t) and not schema_reg.IsMultipleApplyAPISchema(t):
-            if prim.CanApplyAPI(t):
-                schema_list.append(t.typeName)
+            try:
+                if prim.CanApplyAPI(t):
+                    schema_list.append(t.typeName)
+            except Tf.ErrorException:
+                # A schema whose plugin registered it half-way: UsdMtlxMaterialXConfigAPI
+                # raises "IsA() was given an Unknown base type", which emptied the menu.
+                continue
 
     param.menu_items = schema_list
 
