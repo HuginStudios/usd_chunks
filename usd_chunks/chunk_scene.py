@@ -473,8 +473,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return res if isinstance(res, ChunkBase) else None
 
     def get_context_for_prim_path(self, path: str) -> ChunkBase | None:
-        """Return the CONTEXT chunk whose prim_path matches path, or None."""
-        for c in self.get_chunks():
+        """Return the CONTEXT chunk whose prim_path matches path, or None.
+
+        Searches every container (get_contexts), not only graph nodes: a loaded file's
+        outermost chunkgroup is a node in no graph, and is the context shown first.
+        """
+        for c in self.get_contexts():
             if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 if getattr(c, "prim_path", None) == path:
                     return c

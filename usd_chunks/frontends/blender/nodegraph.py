@@ -964,7 +964,7 @@ class BlenderGraphView:
         try:
             before = len(self.scene.get_chunks())
             slot, activate = chunk_graph.default_view_slot(
-                self.stage, self.scene, self.context, self.chunks.get(self.context))
+                self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
             if slot is None:
                 if len(self.scene.get_chunks()) != before:
                     # An Output was made: the tree needs its node.
@@ -1333,7 +1333,7 @@ class BlenderGraphView:
         made = chunk_graph.paste_nodes(
             self.scene, self.stage, nodes, edges,
             to_usd=lambda rx, ry: (x + rx, y + ry),
-            nest=chunk_graph.nest_target(self.chunks.get(self.context)),
+            nest=chunk_graph.nest_target(chunk_graph.context_chunk(self.scene, self.chunks, self.context)),
             chunks=self.chunks)
 
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
@@ -1382,7 +1382,7 @@ class BlenderGraphView:
         """
         created, error = chunk_graph.create_from_entry(
             self.scene, entry, (x, y),
-            chunk_graph.nest_target(self.chunks.get(self.context)))
+            chunk_graph.nest_target(chunk_graph.context_chunk(self.scene, self.chunks, self.context)))
         if error:
             self.status = error
         if not created:
@@ -1469,7 +1469,7 @@ class BlenderGraphView:
             return
         chosen = [p for p in self.selected_nodes if p in self.prims]
         slot = chunk_graph.new_view_slot(self.stage, self.scene,
-                                         self.chunks.get(self.context),
+                                         chunk_graph.context_chunk(self.scene, self.chunks, self.context),
                                          chosen[0] if chosen else None)
         if slot is None:
             self.status = "no view created"

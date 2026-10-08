@@ -730,7 +730,7 @@ class GraphView:
 
     def _nest_target(self):
         """The chunk new chunks should be parented to: the group being shown, or None."""
-        return chunk_graph.nest_target(self.chunks.get(self.context))
+        return chunk_graph.nest_target(chunk_graph.context_chunk(self.scene, self.chunks, self.context))
 
     # -- view slots --------------------------------------------------------
 
@@ -783,7 +783,7 @@ class GraphView:
             return self.refresh()
         chosen = [p for p in self.selected_nodes if p in self.prims]
         slot = chunk_graph.new_view_slot(self.stage, self.scene,
-                                         self.chunks.get(self.context),
+                                         chunk_graph.context_chunk(self.scene, self.chunks, self.context),
                                          chosen[0] if chosen else None)
         if slot is None:
             self.status = "no view created"
@@ -799,7 +799,7 @@ class GraphView:
         """
         before = len(self.scene.get_chunks())
         slot, activate = chunk_graph.default_view_slot(
-            self.stage, self.scene, self.context, self.chunks.get(self.context))
+            self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
         if slot is None and len(self.scene.get_chunks()) == before:
             return
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
