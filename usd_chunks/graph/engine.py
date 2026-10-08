@@ -1577,6 +1577,27 @@ def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) 
     )
 
 
+def context_chunk(scene, chunks: dict, context: str):
+    """The chunk of the context shown at prim path `context`, or None at the top level.
+
+    `chunks` is a frontend's graph nodes by prim path, which leaves out a loaded file's
+    outermost chunkgroup -- a node in no graph, yet the context a network opens on. Looking
+    only there gave None for it, and None means the top level: every chunk in the file.
+
+    Args:
+        scene: The scene, or None.
+        chunks: Prim path -> chunk, as a frontend keeps them.
+        context: Prim path of the context.
+
+    Returns:
+        The context's chunk, or None.
+    """
+    found = chunks.get(context)
+    if found is None and scene is not None:
+        found = scene.get_context_for_prim_path(context)
+    return found
+
+
 def nest_target(chunk):
     """The context new chunks should be parented to, or None to leave them at the root.
 

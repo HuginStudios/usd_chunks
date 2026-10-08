@@ -169,7 +169,7 @@ class ImGuiGraphView:
         nothing.
         """
         slot, activate = chunk_graph.default_view_slot(
-            self.stage, self.scene, self.context, self.chunks.get(self.context))
+            self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
         if slot is None:
             return
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
@@ -477,7 +477,7 @@ class ImGuiGraphView:
         self.status = f"cut {count}"
 
     def _nest_target(self):
-        return chunk_graph.nest_target(self.chunks.get(self.context))
+        return chunk_graph.nest_target(chunk_graph.context_chunk(self.scene, self.chunks, self.context))
 
     def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
@@ -579,7 +579,7 @@ class ImGuiGraphView:
 
     def context_chunk(self):
         """The chunk object for the context being shown, if there is one."""
-        return self.chunks.get(self.context)
+        return chunk_graph.context_chunk(self.scene, self.chunks, self.context)
 
     def active_slot(self) -> int:
         return chunk_graph.read_active_slot(self.stage, self.context)
