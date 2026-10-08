@@ -13,15 +13,16 @@ A cook:
 2. opens a private stage over the node's input stage and makes it the scene's for the
    duration, with the chunk's layer above the input as ChunkLayerManager places it;
 3. runs the chunk through ChunkBase._cook, the same path every host cooks with;
-4. hands Houdini a copy of the chunk's layer as a sublayer of the node's output. A copy,
-   because the chunk's own layer is cleared by its next cook, and Houdini may still be
-   holding the stage it built from this one.
+4. merges the chunk's layer into Houdini's active layer, the chunk's edits winning, as any
+   Solaris node authors (see layers). A Layer chunk node starts a new active layer first,
+   through the Configure Layer inside the node type, and names it.
 
 What the cook changed on the chunk -- outputs, hidden groups -- goes back to the parms
 afterwards (parms.pull), since a node's parms cannot be written while it cooks.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from contextlib import contextmanager
@@ -30,25 +31,33 @@ import hou
 import loptoolutils
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_registry
-from usd_chunks.hosts.houdini import parms, space
+from usd_chunks import chunk_core as core, chunk_registry
+from usd_chunks.chunk_naming import CHUNKS_ROOT
+from usd_chunks.hosts.houdini import layers, parms, space
 from usd_chunks.hosts.houdini.scene import HoudiniScene, ensure_scene
 
 logger = logging.getLogger(__name__)
 
 #: The node type every chunk node is.
 HDA_TYPE = "usdchunks::chunk"
-#: Hidden parm holding the variant's menu path ("Materials/standard_surface/Gold"), or "".
-VARIANT_PARM = "usdchunks_variant"
 #: The Python Script LOP inside the node type.
 COOK_NODE = "cook"
+#: Inside the node type: the Configure Layer a Layer chunk starts its new layer with, and
+#: the switch that sends only a Layer chunk through it.
+NEW_LAYER_NODE = "new_layer"
+SWITCH_NODE = "layer_switch"
 COOK_CODE = "from usd_chunks.hosts.houdini import lop\nlop.cook(hou.pwd())\n"
 
 #: node session id -> its chunk, for the session.
 _chunks: dict[int, object] = {}
-#: node session id -> the layer its last cook handed Houdini. Houdini holds it too
-#: (addHeldLayer); this is so the anonymous layer is not dropped between the two.
+#: node session id -> a copy of the chunk's layer as its last cook merged it.
 _outputs: dict[int, Sdf.Layer] = {}
+#: node session id -> saved values import could not set yet, by param path: params the
+#: chunk builds in its own cook (a Light's attributes). Set by the first cook that has them.
+_pending: dict[int, dict[str, object]] = {}
+#: Node user data holding the chunk's transform op id (chunk_utils.XFORM_OP_ID_ATTR). usdview
+#: keeps it on the chunk's prim, which a node's stage does not hold; here it saves with the .hip.
+XFORM_OP_KEY = "usdchunks_xform_op_id"
 
 
 def node_type() -> hou.NodeType | None:
@@ -83,7 +92,7 @@ def chunk_for(node: hou.Node):
         return chunk
     scene = ensure_scene()
     module_name = node.evalParm(parms.TYPE_PARM)
-    entry = _entry(module_name, node.evalParm(VARIANT_PARM))
+    entry = _entry(module_name, node.evalParm(parms.VARIANT_PARM))
     if entry is None:
         raise hou.NodeError(
             f"No chunk module '{module_name}'. Is its folder on USD_CHUNK_DIRS?")
@@ -93,8 +102,71 @@ def chunk_for(node: hou.Node):
     chunk = created[0]
     with _no_stage(scene):
         scene.add_chunk(chunk)
+    object.__setattr__(chunk, "_xform_op_suffix", _xform_op_id(node))
     _chunks[key] = chunk
     return chunk
+
+
+def _xform_op_id(node: hou.Node) -> str:
+    """The node's transform op id: the one it recorded, else one minted from its name and path.
+
+    Minted as chunk_utils does from a chunk's prim path, so two nodes never share an op and
+    the same network names its ops the same way each time it is built.
+    """
+    if saved := node.userData(XFORM_OP_KEY):
+        return saved
+    name = re.sub(r"\W+", "_", node.name()).strip("_") or "Transform"
+    return f"{name}_{hashlib.sha1(node.path().encode()).hexdigest()[:8]}"
+
+
+def set_xform_op_id(node: hou.Node, op_id: str) -> None:
+    """Give the node the transform op id a saved network recorded for its chunk."""
+    node.setUserData(XFORM_OP_KEY, op_id)
+    object.__setattr__(chunk_for(node), "_xform_op_suffix", op_id)
+
+
+def defer_value(node: hou.Node, path: str, value) -> None:
+    """Set param `path` to `value` once a cook has built it."""
+    _pending.setdefault(node.sessionId(), {})[path] = value
+
+
+def _apply_pending(node: hou.Node, chunk) -> None:
+    pending = _pending.get(node.sessionId())
+    for path in list(pending or ()):
+        if (param := chunk.get_param(path)) is not None:
+            param.value = pending.pop(path)
+
+
+def _drive_attributes(chunk, stage: Usd.Stage, layer: Sdf.Layer) -> None:
+    """Write each param tied to another prim's attribute onto it, in the chunk's layer.
+
+    A param show_attribute or connect_usd_attr tied to a prim's attribute (a Light's
+    intensity, a Camera's focal length) drives it elsewhere through a connection from the
+    chunk's prim. A node's stage holds no chunk prims, so the value is written itself,
+    where it differs from what the attribute already holds.
+    """
+    for _, param in chunk.iter_hierarchy():
+        if (not isinstance(param, core.ChunkUsdAttributeSupport) or isinstance(param, core.ChunkGroupBase)
+                or param.get_chunk() is not chunk):
+            continue
+        value = getattr(param, "value", None)
+        if value is None:
+            continue
+        paths = list(param._driven_attr_paths)
+        if (own := param._param_attr_path) and not own.startswith(CHUNKS_ROOT + "/"):
+            paths.append(own)
+        for path in paths:
+            attr = stage.GetAttributeAtPath(Sdf.Path(path))
+            if not (attr and attr.IsValid()):
+                continue
+            try:
+                current = attr.Get()
+                if parms.same(current, value) or (current is None and not value):
+                    continue  # unchanged, or empty where the attribute holds nothing at all
+                with Usd.EditContext(stage, layer):
+                    attr.Set(value)
+            except Exception as exc:  # a value the attribute's type does not take
+                logger.debug("could not write %s = %r: %s", path, value, exc)
 
 
 @contextmanager
@@ -161,11 +233,18 @@ def cook(lop: hou.LopNode) -> None:
         chunk = chunk_for(node)
         with _no_stage(scene):
             parms.push(node, chunk)
-        with _on_stage(scene, node):
+        before = parms.names(chunk)
+        with _on_stage(scene, node) as stage:
             chunk._cook()
+            with _no_stage(scene):
+                # Params the cook built (a Light's attributes) take their parms' values, or
+                # the values import saved for them.
+                parms.push(node, chunk, skip=before)
+                _apply_pending(node, chunk)
             layer = chunk_registry.ChunkLayerManager().get_layer(chunk)
             out = Sdf.Layer.CreateAnonymous(f"usdchunks_{node.name()}")
             if layer is not None:
+                _drive_attributes(chunk, stage, layer)
                 out.TransferContent(layer)
     except hou.Error:
         raise
@@ -173,9 +252,17 @@ def cook(lop: hou.LopNode) -> None:
         logger.exception("chunk node %s failed to cook", node.path())
         raise hou.NodeError(f"{type(exc).__name__}: {exc}") from exc
 
-    lop.editableStage()  # Houdini takes held layers and sublayers only after this
-    lop.addHeldLayer(out.identifier)
-    lop.addSubLayer(out.identifier)
+    module = node.evalParm(parms.TYPE_PARM)
+    if module == layers.EDIT_TARGET_MODULE:
+        param = chunk.get_param("edit_target")
+        problem = layers.check_edit_target(str(param.value or "") if param else "", _input_stage(node))
+        if problem:
+            raise hou.NodeError(problem)
+    active = lop.editableLayer()
+    layers.merge(active, out)
+    if module == layers.LAYER_MODULE:
+        param = chunk.get_param("layer_name")
+        layers.tag(active, (str(param.value or "").strip() if param else "") or node.name())
     _outputs[node.sessionId()] = out
     scene.call_later(lambda: _after_cook(node, chunk))
 
@@ -195,6 +282,8 @@ def _after_cook(node: hou.Node, chunk) -> None:
     if not parms.interface_matches(node, chunk):
         parms.build_interface(node, chunk)
     parms.pull(node, chunk)
+    if node.userData(XFORM_OP_KEY) is None:
+        node.setUserData(XFORM_OP_KEY, chunk._xform_op_suffix)  # kept through renames and reloads
 
 
 def press_button(kwargs) -> None:
@@ -256,7 +345,7 @@ def _node_name(entry) -> str:
 def setup(node: hou.Node, entry) -> object:
     """Make node the chunk entry describes: name the module, build the parms."""
     node.parm(parms.TYPE_PARM).set(entry.module.module_name)
-    node.parm(VARIANT_PARM).set("/".join(entry.namespace) if entry.presets is not None else "")
+    node.parm(parms.VARIANT_PARM).set("/".join(entry.namespace) if entry.presets is not None else "")
     _chunks.pop(node.sessionId(), None)
     chunk = chunk_for(node)
     parms.build_interface(node, chunk)

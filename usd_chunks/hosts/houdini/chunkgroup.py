@@ -20,6 +20,7 @@ becomes what Houdini would have built by hand:
   ``chs("../AddMesh/prim_path")``; to a group's public param -> ``ch("../floors")``;
 - a View -> the subnet's output (the active view slot's, chunk:activeView), or the display
   flag at the top level. Views are usd_chunks' way of picking an output; Houdini has its own.
+  With no View, the end of the exec chain is the output, as usd_chunks cooks it.
 
 Values go chunk-side first (the param, as the loader sets it) and reach the parms through
 parms.pull, so a parm is named and typed exactly as one made from the TAB menu.
@@ -42,7 +43,7 @@ import loptoolutils
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_core as core
-from usd_chunks import chunk_stage
+from usd_chunks import chunk_stage, chunk_utils
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.chunk_process import python_executable
 from usd_chunks.graph import engine as chunk_graph
@@ -144,6 +145,8 @@ def _restore_values(node: hou.Node, prim: Usd.Prim) -> list[tuple[object, Usd.At
     chunk = lop.chunk_for(node)
     scene = ensure_scene()
     wired = []
+    if (op_id := prim.GetAttribute(chunk_utils.XFORM_OP_ID_ATTR)) and op_id.HasValue():
+        lop.set_xform_op_id(node, op_id.Get())
     with lop._no_stage(scene):
         for attr in prim.GetAttributes():
             name = attr.GetName()
@@ -165,7 +168,9 @@ def _restore_values(node: hou.Node, prim: Usd.Prim) -> list[tuple[object, Usd.At
                 continue
             param = chunk.get_param(path)
             if param is None:
-                logger.info("%s: no param %s on %s; skipped", prim.GetPath(), path, node.path())
+                # Not built yet: a param the chunk makes in its cook (a Light's attributes).
+                if (value := attr.Get()) is not None and not attr.HasAuthoredConnections():
+                    lop.defer_value(node, path, value)
                 continue
             if attr.HasAuthoredConnections():
                 wired.append((param, attr))
@@ -266,7 +271,11 @@ def _import_children(container: Usd.Prim, parent: hou.Node, group_prim: Usd.Prim
         targets = [c.GetPrimPath() for c in chunk_stage.exec_input_connections(view)]
         if targets and targets[0] in nodes:
             return nodes[targets[0]]
-    return None
+    # No View wired to anything: the end of the exec chain, as usd_chunks cooks a group
+    # without one (chunk_stage.exec_tails).
+    consumed = {c.GetPrimPath() for prim in _chunk_children(container)
+                for c in chunk_stage.exec_input_connections(prim)}
+    return next((node for path, node in nodes.items() if path not in consumed), None)
 
 
 def _prepare(group: hou.Node, network_space: tuple[str, float] | None = None) -> hou.Node:
@@ -390,7 +399,7 @@ def _exec_inputs(node: hou.Node) -> list[str]:
 
 def _is_default(param, value) -> bool:
     default = getattr(param, "default_value", None)
-    return default is not None and parms._same(default, value)
+    return default is not None and parms.same(default, value)
 
 
 def _parm_expression(pt: hou.ParmTuple) -> str | None:

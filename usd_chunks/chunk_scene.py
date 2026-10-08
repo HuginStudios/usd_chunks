@@ -738,6 +738,36 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         fn()
         return _no_op
 
+    def user_layers(self, stage: Usd.Stage) -> list[tuple[str, Sdf.Layer]]:
+        """The layers a user picks or exports on stage, by name, strongest first.
+
+        What Export USD lists and Edit Target offers. Here every layer in the stack, the
+        session layer's included. A host whose stack holds layers of its own overrides it
+        (Houdini lists only the layers a Layer chunk named, and files).
+
+        Args:
+            stage: The stage.
+
+        Returns:
+            (name, layer) pairs.
+        """
+        return [(layer.GetDisplayName() or layer.identifier, layer)
+                for layer in stage.GetLayerStack(includeSessionLayers=True)]
+
+    def export_layer(self, layer: Sdf.Layer) -> Sdf.Layer:
+        """The layer to write to a file for layer: here layer itself.
+
+        A host that keeps bookkeeping of its own in its layers returns a copy without it
+        (Houdini's HoudiniLayerInfo prim).
+
+        Args:
+            layer: The layer about to be written.
+
+        Returns:
+            The layer to write.
+        """
+        return layer
+
     def get_host(self) -> tuple[str, str]:
         """(name, version) of the application this scene lives in, e.g. ("blender", "5.1.0").
 

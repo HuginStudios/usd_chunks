@@ -538,6 +538,38 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     return spec.layer
 
 
+def user_layers(stage: Usd.Stage) -> list[tuple[str, Sdf.Layer]]:
+    """The layers a user picks or exports on stage, by name, strongest first.
+
+    Asks the host's scene (SceneSender.user_layers): in usdview that is the whole layer
+    stack, in Houdini only the layers a Layer chunk named, and files.
+
+    Args:
+        stage: The stage.
+
+    Returns:
+        (name, layer) pairs, session layer included.
+    """
+    hook = getattr(chunk_registry.ChunkRegistry().scene, "user_layers", None)  # a bare test scene has none
+    if hook is not None:
+        return hook(stage)
+    return [(layer.GetDisplayName() or layer.identifier, layer)
+            for layer in stage.GetLayerStack(includeSessionLayers=True)]
+
+
+def export_layer(layer: Sdf.Layer) -> Sdf.Layer:
+    """The layer to write to a file for layer, as the host's scene has it (SceneSender.export_layer).
+
+    Args:
+        layer: The layer about to be written.
+
+    Returns:
+        layer, or a copy without the host's own bookkeeping.
+    """
+    hook = getattr(chunk_registry.ChunkRegistry().scene, "export_layer", None)
+    return hook(layer) if hook is not None else layer
+
+
 def chunk_internal_layer_ids() -> set:
     """Identifiers of layers owned by the chunk graph itself.
 

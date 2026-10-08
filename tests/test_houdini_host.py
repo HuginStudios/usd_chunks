@@ -77,7 +77,112 @@ SCRIPT = textwrap.dedent(r"""
     scene.flush_pending()
     out["pivot_after_center"] = xform.evalParm("px")
 
+    def settles(node):
+        # Whether node stops cooking once its after-cook updates have run.
+        for _ in range(3):
+            node.stage()
+            scene.flush_pending()
+        count = node.cookCount()
+        for _ in range(2):
+            node.stage()
+            scene.flush_pending()
+        return node.cookCount() == count
+
+    out["mesh_settles"] = settles(mesh)
+    layer = lop.create(net, "layer")
+    layer.setInput(0, mesh)
+    out["layer_settles"] = settles(layer)
+
     out["menu"] = lop.menu_items(mesh, "mesh_type")[:4]
+
+    # Params tied to another prim's attribute: a Light's (show_attribute) and a Camera's
+    # (connect_usd_attr). Houdini's stage holds no chunk prims to drive them from.
+    light = lop.create(net, "light", name="Key")
+    for _ in range(3):
+        light.stage()
+        scene.flush_pending()
+    light.parm("intensity").set(7.0)
+    for _ in range(3):
+        light.stage()
+        scene.flush_pending()
+    lights = [p for p in light.stage().Traverse() if p.GetTypeName().endswith("Light")]
+    out["light_intensity"] = lights[0].GetAttribute("inputs:intensity").Get() if lights else None
+    camera = lop.create(net, "camera", name="Cam")
+    camera.parm("focalLength").set(35.0)
+    camera.stage()
+    scene.flush_pending()
+    cams = [p for p in camera.stage().Traverse() if p.GetTypeName() == "Camera"]
+    out["camera_focal"] = cams[0].GetAttribute("focalLength").Get() if cams else None
+
+    inline = lop.create(net, "inline_usd", name="Inline")
+    inline.stage()
+    scene.flush_pending()
+    out["inline_prims"] = [str(p.GetPath()) for p in inline.stage().Traverse() if p.GetTypeName() == "Sphere"]
+
+    # Two Transform chunks on one prim: each owns an op, so both apply.
+    first_move = lop.create(net, "transform", name="MoveA")
+    first_move.setInput(0, mesh)
+    first_move.parm("primpath_location").set("/mesh")
+    first_move.parm("tx").set(1)
+    second_move = lop.create(net, "transform", name="MoveB")
+    second_move.setInput(0, first_move)
+    second_move.parm("primpath_location").set("/mesh")
+    second_move.parm("tx").set(2)
+    from pxr import UsdGeom as _G
+    moved = second_move.stage().GetPrimAtPath("/mesh")
+    out["two_moves_ops"] = [str(o) for o in moved.GetAttribute("xformOpOrder").Get() or []]
+    out["two_moves_tx"] = _G.Xformable(moved).ComputeLocalToWorldTransform(0).ExtractTranslation()[0]
+
+    # Layers: a Layer chunk starts a new active layer and names it; the chunks after it,
+    # through an Edit Target pointing at it, all author into that one layer.
+    from usd_chunks.hosts.houdini import layers
+    before = lop.create(net, "mesh", name="Before")
+    before.parm("prim_path").set("/before")
+    new_layer = lop.create(net, "layer", name="Mats")
+    new_layer.setInput(0, before)
+    new_layer.parm("layer_name").set("mats")
+    target = lop.create(net, "edit_target", name="Target")
+    target.setInput(0, new_layer)
+    target.parm("edit_target").set("mats")
+    first = lop.create(net, "mesh", name="First")
+    first.setInput(0, target)
+    first.parm("prim_path").set("/twice")
+    first.parm("mesh_type").set("sphere")
+    second = lop.create(net, "mesh", name="Second")
+    second.setInput(0, first)
+    second.parm("prim_path").set("/twice")
+    second.parm("mesh_type").set("cube")
+    stage = second.stage()
+    named = dict(layers.user_layers(stage))
+    out["named_layers"] = list(named)
+    mats = named.get("mats")
+    out["mats_prims"] = sorted(str(p.path) for p in mats.rootPrims) if mats else []
+    out["layer_errors"] = [n.name() for n in (before, new_layer, target, first, second) if n.errors()]
+    twice = stage.GetPrimAtPath("/twice")
+    out["twice_counts"] = len(twice.GetAttribute("faceVertexCounts").Get() or [])
+    out["save_path"] = new_layer.node(lop.NEW_LAYER_NODE).evalParm("savepath")
+    scene.flush_pending()
+    out["target_menu"] = lop.menu_items(target, "edit_target")[::2]
+    later = lop.create(net, "layer", name="Later")
+    later.setInput(0, second)
+    later.parm("layer_name").set("later")
+    back = lop.create(net, "edit_target", name="Back")
+    back.setInput(0, later)
+    back.parm("edit_target").set("mats")
+    back.stage()
+    out["older_target_error"] = " ".join(back.errors())
+
+    export = lop.create(net, "export_usd", name="Publish")
+    export.setInput(0, second)
+    publish_dir = os.path.join(os.path.dirname(os.environ["USD_CHUNKS_TEST_HIP"]), "publish")
+    export.parm("output_dir").set(publish_dir)
+    export.stage()
+    scene.flush_pending()
+    out["export_rows"] = [p.eval() for p in export.parms() if p.name().startswith("export_layers_layer_name")]
+    export.parm("export_all").pressButton()
+    out["published"] = sorted(os.listdir(publish_dir)) if os.path.isdir(publish_dir) else []
+    mats_file = os.path.join(publish_dir, "mats.usda")
+    out["published_mats"] = open(mats_file).read() if os.path.isfile(mats_file) else ""
 
     sub = lop.create(net, "sublayer")
     sub.parm("imports").set(2)
@@ -166,6 +271,26 @@ SCRIPT = textwrap.dedent(r"""
     out["upstream_through_group"] = size(group.stage(), "/Upstream")
     group.setInput(0, None)
 
+    plain = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_NO_VIEW"], hou.node("/stage"))[0]
+    inner = plain.node("Inner")
+    out["no_view_output"] = [i.name() for i in plain.node("space_out").inputs() if i]
+    out["no_view_inner_output"] = [i.name() for i in inner.node("space_out").inputs() if i]
+    out["no_view_prims"] = [str(p.GetPath()) for p in plain.stage().Traverse()
+                            if not str(p.GetPath()).startswith("/HoudiniLayerInfo")]
+
+    layered = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_LAYERED"], hou.node("/stage"))[0]
+    out["imported_target"] = layered.node("Target").evalParm("edit_target")
+    lit = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_LIT"], hou.node("/stage"))[0]
+    for _ in range(3):
+        lit.stage()
+        scene.flush_pending()
+    key = lit.stage().GetPrimAtPath("/lights/key")
+    out["imported_intensity"] = key.GetAttribute("inputs:intensity").Get() if key else None
+    out["imported_intensity_parm"] = lit.node("Key").evalParm("intensity")
+    out["imported_op"] = [str(o) for o in key.GetAttribute("xformOpOrder").Get() or []] if key else []
+    layered.stage()
+    out["imported_target_errors"] = list(layered.node("Target").errors())
+
     group.createNode("cube", "SolarisCube")
     try:
         chunkgroup.export(group, exported)
@@ -234,6 +359,118 @@ NETWORK = textwrap.dedent("""    #usda 1.0
 """)
 
 
+#: A network as it is often saved: no View anywhere, in the group or in the group inside it.
+#: usd_chunks cooks such a group through the end of its exec chain.
+NO_VIEW_NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 1
+        upAxis = "Y"
+    )
+
+    def Scope "chunks"
+    {
+        def Chunk "Plain"
+        {
+            uniform token info:chunkType = "chunkgroup"
+            uniform token outputs:chunk
+
+            def Chunk "Ball"
+            {
+                uniform token info:chunkType = "mesh"
+                string inputs:mesh_type = "sphere"
+                string inputs:prim_path = "/ball"
+                uniform token outputs:chunk
+            }
+
+            def Chunk "Inner"
+            {
+                uniform token info:chunkType = "chunkgroup"
+                token inputs:chunk.connect = </chunks/Plain/Ball.outputs:chunk>
+                uniform token outputs:chunk
+
+                def Chunk "Move"
+                {
+                    uniform token info:chunkType = "transform"
+                    string inputs:primpath_location = "/ball"
+                    float inputs:translate_grp:tx = 3
+                    uniform token outputs:chunk
+                }
+            }
+        }
+    }
+""")
+
+
+#: A light whose intensity lives in a param its cook builds, then a Transform that recorded
+#: its op name, as the sh010 light scene saves them.
+LIT_NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 1
+        upAxis = "Y"
+    )
+
+    def Scope "chunks"
+    {
+        def Chunk "Lit"
+        {
+            uniform token info:chunkType = "chunkgroup"
+            uniform token outputs:chunk
+
+            def Chunk "Key"
+            {
+                uniform token info:chunkType = "light"
+                string inputs:light_type = "DistantLight"
+                string inputs:primpath_location = "/lights/key"
+                float inputs:attr_grp:inputs:intensity = 2.5
+                uniform token outputs:chunk
+            }
+
+            def Chunk "Aim"
+            {
+                custom uniform string chunk:xformOpId = "aim_key_5c63f397"
+                uniform token info:chunkType = "transform"
+                token inputs:chunk.connect = </chunks/Lit/Key.outputs:chunk>
+                string inputs:primpath_location = "/lights/key"
+                uniform token outputs:chunk
+            }
+        }
+    }
+""")
+
+
+#: A Layer and an Edit Target pointing at it by name, as lookdev saves them.
+LAYERED_NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 1
+        upAxis = "Y"
+    )
+
+    def Scope "chunks"
+    {
+        def Chunk "Layered"
+        {
+            uniform token info:chunkType = "chunkgroup"
+            uniform token outputs:chunk
+
+            def Chunk "Mats"
+            {
+                uniform token info:chunkType = "layer"
+                string inputs:layer_name = "mats"
+                uniform token outputs:chunk
+            }
+
+            def Chunk "Target"
+            {
+                uniform token info:chunkType = "edit_target"
+                token inputs:chunk.connect = </chunks/Layered/Mats.outputs:chunk>
+                string inputs:edit_target = "mats"
+                uniform token outputs:chunk
+            }
+        }
+    }
+""")
+
+
 @pytest.fixture(scope="module")
 def result(tmp_path_factory):
     hython = _hython()
@@ -245,6 +482,12 @@ def result(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("houdini")
     network = tmp / "network.usda"
     network.write_text(NETWORK)
+    no_view = tmp / "no_view.usda"
+    no_view.write_text(NO_VIEW_NETWORK)
+    layered = tmp / "layered.usda"
+    layered.write_text(LAYERED_NETWORK)
+    lit = tmp / "lit.usda"
+    lit.write_text(LIT_NETWORK)
     script = tmp / "check.py"
     script.write_text(SCRIPT)
     env = dict(os.environ)
@@ -255,6 +498,9 @@ def result(tmp_path_factory):
         "USD_CHUNKS_TEST_HDA": str(HDA),
         "USD_CHUNKS_TEST_HIP": str(tmp / "scene.hip"),
         "USD_CHUNKS_TEST_NETWORK": str(network),
+        "USD_CHUNKS_TEST_NO_VIEW": str(no_view),
+        "USD_CHUNKS_TEST_LAYERED": str(layered),
+        "USD_CHUNKS_TEST_LIT": str(lit),
     })
     proc = subprocess.run([hython, str(script)], env=env, capture_output=True, text=True, timeout=600)
     line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("USD_CHUNKS_RESULT")), None)
@@ -285,6 +531,62 @@ def test_a_parm_change_recooks(result):
 def test_chunks_wire_through_lop_inputs(result):
     assert 'over "mesh"' in result["xform_layer"]
     assert "(5, 0, 0, 1)" in result["xform_layer"]
+
+
+def test_a_chunk_node_stops_cooking_once_its_parms_are_shown(result):
+    assert result["mesh_settles"]
+
+
+def test_a_chunk_writing_session_state_stops_cooking(result):
+    # Layer writes its new layer's id, which differs every cook, into a hidden param.
+    assert result["layer_settles"]
+
+
+def test_a_layer_and_edit_target_send_the_chunks_after_them_into_one_named_layer(result):
+    assert result["layer_errors"] == []
+    assert result["named_layers"] == ["mats"]
+    assert result["mats_prims"] == ["/HoudiniLayerInfo", "/twice"]
+
+
+def test_edit_target_offers_the_named_layers(result):
+    assert "mats" in result["target_menu"]
+
+
+def test_a_later_chunk_wins_over_an_earlier_one_in_the_same_layer(result):
+    assert result["twice_counts"] == 6  # the cube, over the sphere before it
+
+
+def test_a_layer_gets_a_save_path_for_a_usd_rop(result):
+    assert result["save_path"].replace("\\", "/").endswith("/usd/mats.usda")
+
+
+def test_an_edit_target_pointing_at_an_older_layer_says_it_is_not_supported(result):
+    assert "not the newest layer" in result["older_target_error"]
+
+
+def test_export_usd_lists_and_writes_only_the_named_layers(result):
+    assert result["export_rows"] == ["mats"]
+    assert result["published"] == ["mats.usda"]
+    assert 'def Mesh "twice"' in result["published_mats"]
+    assert "HoudiniLayerInfo" not in result["published_mats"]  # Houdini's bookkeeping, as a ROP drops it
+
+
+def test_a_lights_attribute_parm_drives_the_light(result):
+    assert result["light_intensity"] == pytest.approx(7.0)
+
+
+def test_a_cameras_parm_drives_the_camera(result):
+    assert result["camera_focal"] == pytest.approx(35.0)
+
+
+def test_inline_usd_cooks_its_text_into_the_node(result):
+    # It wrote its layer from a callback only; a node's cook starts from an empty layer.
+    assert result["inline_prims"] == ["/sphere"]
+
+
+def test_two_transforms_on_one_prim_each_own_an_op(result):
+    assert len(set(result["two_moves_ops"])) == 2
+    assert result["two_moves_tx"] == pytest.approx(3.0)
 
 
 def test_a_button_runs_its_callback_and_shows_what_it_set(result):
@@ -329,6 +631,28 @@ def test_exec_wires_become_lop_wires_and_the_view_the_output(result):
     assert result["import_wires"]["Move"] == ["Ground"]
     assert result["import_output"] == ["space_out"]
     assert result["space_out_input"] == ["Move"]
+
+
+def test_a_group_with_no_view_outputs_the_end_of_its_chain(result):
+    assert result["no_view_output"] == ["Inner"]
+    assert result["no_view_inner_output"] == ["Move"]
+    assert "/ball" in result["no_view_prims"]
+
+
+def test_an_imported_light_keeps_the_intensity_its_file_saved(result):
+    # The param only exists once the light has cooked, after import set the others.
+    assert result["imported_intensity"] == pytest.approx(2.5)
+    assert result["imported_intensity_parm"] == pytest.approx(2.5)
+
+
+def test_an_imported_transform_keeps_the_op_name_its_file_recorded(result):
+    assert result["imported_op"] == ["xformOp:transform:aim_key_5c63f397"]
+
+
+def test_an_imported_edit_target_keeps_the_layer_it_names(result):
+    # Its menu lists layers only once a cook has seen them; the saved name must survive that.
+    assert result["imported_target"] == "mats"
+    assert result["imported_target_errors"] == []
 
 
 def test_a_param_wire_becomes_a_channel_reference(result):
