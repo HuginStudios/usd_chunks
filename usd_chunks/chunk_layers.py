@@ -155,6 +155,84 @@ def find_cook_sublayer(home: Sdf.Layer) -> Sdf.Layer | None:
     return None
 
 
+def map_layer(src: Sdf.Layer, dst: Sdf.Layer, to_source) -> list[Sdf.Path]:
+    """Copy src into dst through an arc: every path src authors, in the namespace of the
+    layer stack the arc brings in.
+
+    A cook authors at stage paths. For its result to travel with an asset -- through every
+    reference, payload, inherit or variant that brings the asset's layers in -- it has to
+    sit in the asset's own namespace, inside the asset's layer stack. to_source is that
+    arc's map, stage path -> source path (Pcp.MapFunction.MapTargetToSource), and it is the
+    same map for every kind of arc.
+
+    A path it cannot map is outside what the arc carries -- a house's chunk moving one of
+    the shot's prims. A prim spec that holds nothing but children there (an ancestor the
+    cook only passed through) is skipped; one with properties, or a property targeting
+    such a path, is an escape, and the result cannot travel with the asset.
+
+    Args:
+        src: The cook's layer, at stage paths.
+        dst: Where the mapped copy goes; written into as it is, the caller clears it.
+        to_source: Stage path -> source path, an empty path when it does not map.
+
+    Returns:
+        The stage paths that escaped; empty when all of src mapped.
+    """
+    escaped: list[Sdf.Path] = []
+
+    def map_targets(list_op, owner_path):
+        mapped = {}
+        for field in ("explicitItems", "prependedItems", "appendedItems", "deletedItems"):
+            items = []
+            for target in getattr(list_op, field):
+                if (path := to_source(target)).isEmpty:
+                    escaped.append(owner_path)
+                    return None
+                items.append(path)
+            mapped[field] = items
+        return mapped
+
+    def copy_targets(src_spec, dst_spec):
+        for prop in src_spec.properties:
+            if isinstance(prop, Sdf.AttributeSpec):
+                list_op, dst_op = prop.connectionPathList, dst_spec.attributes[prop.name].connectionPathList
+            else:
+                list_op, dst_op = prop.targetPathList, dst_spec.relationships[prop.name].targetPathList
+            if not (list_op.isExplicit or list_op.prependedItems or list_op.appendedItems
+                    or list_op.deletedItems):
+                continue
+            if (mapped := map_targets(list_op, prop.path)) is None:
+                continue
+            dst_op.ClearEdits()
+            if list_op.isExplicit:
+                dst_op.explicitItems = mapped["explicitItems"]
+            else:
+                dst_op.prependedItems = mapped["prependedItems"]
+                dst_op.appendedItems = mapped["appendedItems"]
+                dst_op.deletedItems = mapped["deletedItems"]
+        for child in src_spec.nameChildren:
+            copy_targets(child, dst.GetPrimAtPath(to_source(child.path)))
+
+    def visit(spec):
+        if (mapped := to_source(spec.path)).isEmpty:
+            if spec.properties:
+                escaped.append(spec.path)
+            for child in spec.nameChildren:
+                visit(child)
+            return
+        parent = mapped.GetParentPath()
+        if parent != Sdf.Path.absoluteRootPath:
+            Sdf.CreatePrimInLayer(dst, parent)
+        Sdf.CopySpec(src, spec.path, dst, mapped)
+        # CopySpec re-roots only the paths under the spec it copies; every target is
+        # mapped again through the arc, so one pointing at another mapped subtree is right.
+        copy_targets(spec, dst.GetPrimAtPath(mapped))
+
+    for root in src.rootPrims:
+        visit(root)
+    return escaped
+
+
 def add_cook_sublayer(home: Sdf.Layer) -> Sdf.Layer:
     """Give home a cook sublayer: an empty X.cook file beside it, listed as home's strongest
     sublayer -- so home's own opinions beat its cook, and its cook beats everything weaker.

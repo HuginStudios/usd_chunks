@@ -2148,7 +2148,18 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._loading_layer: Sdf.Layer | None = None
         # The cook layer of each file layer that defines chunks, by that layer's identifier;
         # see cook_layer_for.
-        self._cook_layers: dict[str, Sdf.Layer] = {}
+        if not hasattr(self, "_cook_layers"):
+            self._cook_layers: dict[str, Sdf.Layer] = {}
+        # A chunk an arc brings in: its result mapped into the asset's cook layer, and
+        # whether its own layer is off the stage meanwhile. See settle_cook. Kept over a
+        # second initialize: a mirror dropped here would still be listed by its cook layer,
+        # a file layer that outlives this, and an anonymous identifier is reused once its
+        # layer is freed -- the next mirror would then look listed already and never compose.
+        # reset() takes them out of their cook layers first.
+        if not hasattr(self, "_mirrors"):
+            self._mirrors: dict[core.ChunkHash, Sdf.Layer] = {}
+            self._parked: set = set()
+        chunk_cook.after_cook(self.settle_cook)
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
         # can answer in one lookup. Maintained beside the two dicts rather than derived from
@@ -2179,7 +2190,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._retired_chunks = set()
         self._deferred_placement = None
         self._loading_layer = None
+        for mirror in getattr(self, "_mirrors", {}).values():
+            self._drop_mirror(mirror)
         self._cook_layers = {}
+        self._mirrors = {}
+        self._parked = set()
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -2468,6 +2483,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
             if layer.identifier not in parent.subLayerPaths:
                 parent.subLayerPaths.insert(index, layer.identifier)
+            # Back on the stage, at stage paths, for whatever is about to author into it; the
+            # next cook maps it into the asset again (settle_cook).
+            self._parked.discard(c.get_hash())
 
             # If a chunk connection changed after the chunk layer was created, the layer may have been
             # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
@@ -2550,6 +2568,67 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.internal_layer_ids.add(cook.identifier)
         self._cook_layers[home.identifier] = cook
         return cook
+
+    def settle_cook(self, c: core.ChunkCommon) -> None:
+        """Put the result of a chunk an arc brings in where the arc's other content is.
+
+        A cook runs in the session layer at stage paths, like any other. For a chunk whose
+        `def` comes in by an arc (chunk_utils.arc_def_node) -- a house referenced, payloaded,
+        inherited or switched in by a variant -- whose layers list a cook sublayer, that is
+        the wrong strength and the wrong place: the result belongs inside the house, so it is
+        as weak as the arc and goes wherever the house goes. So after each cook the result is
+        mapped through the arc's own map (chunk_layers.map_layer) into a mirror under the
+        house's cook layer, and the chunk's layer comes off the stage until it is next
+        authored into (get_or_create_layer puts it back).
+
+        A result reaching outside the house -- a path the arc does not carry -- cannot
+        travel with it, and stays in the session layer as before.
+
+        Run after every cook (chunk_cook.after_cook).
+
+        Args:
+            c: The chunk that cooked.
+        """
+        if not (self.initialized and self.stage) or not isinstance(c, core.ChunkBase):
+            return
+        chunk_hash = c.get_hash()
+        layer = self.chunk_layers.get(chunk_hash)
+        if layer is None or not layer.anonymous or chunk_hash in self._retired_chunks:
+            return
+        prim = self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))
+        if not (prim and prim.IsValid()) or (node := chunk_utils.arc_def_node(prim)) is None:
+            return
+        home = node.layerStack.identifier.rootLayer
+        if home.anonymous or (cook := self.cook_layer_for(home)) is None:
+            return
+        with self._internal_sublayer_edit():
+            if (mirror := self._mirrors.get(chunk_hash)) is None:
+                mirror = Sdf.Layer.CreateAnonymous(f"{c.name}_mapped")
+                self.internal_layer_ids.add(mirror.identifier)
+                self._mirrors[chunk_hash] = mirror
+            mirror.Clear()
+            escaped = chunk_layers.map_layer(layer, mirror, node.mapToRoot.MapTargetToSource)
+            if escaped:
+                logger.debug("%s writes outside the asset it came in with (%s): its result "
+                             "stays in the session layer", c.name, escaped[0])
+                mirror.Clear()
+                if mirror.identifier in cook.subLayerPaths:
+                    cook.subLayerPaths.remove(mirror.identifier)
+                return
+            if mirror.identifier not in cook.subLayerPaths:
+                cook.subLayerPaths.insert(0, mirror.identifier)
+            for parent in self.graph_layers.values():
+                if layer.identifier in parent.subLayerPaths:
+                    parent.subLayerPaths.remove(layer.identifier)
+            self._parked.add(chunk_hash)
+
+    def _drop_mirror(self, mirror: Sdf.Layer) -> None:
+        """Take a deleted chunk's mapped result out of its asset's cook layer."""
+        with self._internal_sublayer_edit():
+            for cook in self._cook_layers.values():
+                if mirror.identifier in cook.subLayerPaths:
+                    cook.subLayerPaths.remove(mirror.identifier)
+        self.internal_layer_ids.discard(mirror.identifier)
 
     def is_muted(self, c: core.ChunkHash) -> bool:
         """Check if a chunk's layer is muted.
@@ -2728,6 +2807,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         finally:
             chunk_notice._usd_write_active = prev_w
         self.chunk_layers.pop(chunk_hash, None)
+        self._parked.discard(chunk_hash)
+        if (mirror := self._mirrors.pop(chunk_hash, None)) is not None:
+            self._drop_mirror(mirror)
         # Dropped with the mapping: the identifier embeds an address, and addresses are
         # recycled, so a leftover entry would eventually claim an unrelated layer.
         self.internal_layer_ids.discard(layer.identifier)
@@ -2752,8 +2834,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # leaving usdview showing sibling prims (e.g. a ScatterInstancer whose def lives
             # in another chunk's layer) as if removed until the next edit forces a refresh.
             self.stage.MuteLayer(layer.identifier)
+            # Its result in an asset's cook layer goes with it (settle_cook).
+            if (mirror := self._mirrors.get(c.get_hash())) is not None:
+                self.stage.MuteLayer(mirror.identifier)
         elif self.is_muted(c) and not c.is_blocked():
             # Only un-mute a disable-muted layer. A view-driven block also mutes the layer, and
             # this handler runs on EVERY state change (incl. selection) -- without the is_blocked
             # guard, selecting an out-of-view node would un-mute it and show its output.
             self.stage.UnmuteLayer(layer.identifier)
+            if (mirror := self._mirrors.get(c.get_hash())) is not None:
+                self.stage.UnmuteLayer(mirror.identifier)
