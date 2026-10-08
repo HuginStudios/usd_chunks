@@ -101,7 +101,7 @@ def groups(qapp):
     # One tail per group, so each group's own cook reaches all of its content.
     connect_exec(stage, scene, get_chunk_prim_path(pa), get_chunk_prim_path(ga2))
     connect_exec(stage, scene, get_chunk_prim_path(pb), get_chunk_prim_path(gb2))
-    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    view = chunk_stage.find_output_chunk(stage, scene, None)
     connect_exec(stage, scene, get_chunk_prim_path(ga), get_chunk_prim_path(gb))
     connect_exec(stage, scene, get_chunk_prim_path(gb), get_chunk_prim_path(view))
     settle()
@@ -209,7 +209,7 @@ def test_a_chunk_inside_the_group_reads_the_upstream_group_when_naming(qapp):
     gb = mk("chunkgroup")
     dupe_b = mk("duplicate_prim", context=gb)
     settle()
-    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    view = chunk_stage.find_output_chunk(stage, scene, None)
     connect_exec(stage, scene, get_chunk_prim_path(ga), get_chunk_prim_path(gb))
     connect_exec(stage, scene, get_chunk_prim_path(gb), get_chunk_prim_path(view))
     settle()

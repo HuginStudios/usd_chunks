@@ -104,7 +104,7 @@ def network(qapp):
     stray = prim("/stray")
     settle()
 
-    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    view = chunk_stage.find_output_chunk(stage, scene, None)
     connect_exec(stage, scene, get_chunk_prim_path(up), get_chunk_prim_path(group))
     # Inside the group, the inner chunk reads what the group brings in -- which is what
     # puts the parent chain on the group's own cook_list.
@@ -177,12 +177,10 @@ def test_a_group_with_anything_stale_inside_stays_stale(network):
 
 
 def _make_view_active(network):
-    stage, view, root = network["stage"], network["view"], network["root"]
-    prim = stage.GetPrimAtPath(get_chunk_prim_path(view))
-    slot_attr = prim.GetAttribute(chunk_graph.VIEW_SLOT_ATTR)
-    if not (slot_attr and slot_attr.Get()):
-        prim.CreateAttribute(chunk_graph.VIEW_SLOT_ATTR, Sdf.ValueTypeNames.Int, custom=True).Set(1)
-    chunk_graph.write_active_slot(stage, root.prim_path, prim.GetAttribute(chunk_graph.VIEW_SLOT_ATTR).Get())
+    """A View on the group, made the active slot: it, not the Output, says what cooks."""
+    stage, scene, root = network["stage"], network["scene"], network["root"]
+    slot = chunk_graph.create_view_for(stage, scene, get_chunk_prim_path(network["group"]))
+    chunk_graph.write_active_slot(stage, root.prim_path, slot)
 
 
 def test_a_host_that_opts_in_skips_roots_no_active_view_reaches(network):

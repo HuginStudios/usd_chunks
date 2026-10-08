@@ -1,0 +1,15 @@
+from __future__ import annotations
+from usd_chunks import chunk
+from usd_chunks.chunk_core import ChunkConfig
+
+
+def config():
+    return ChunkConfig(
+        terminal=True,
+        category=chunk.StandardCategory.CORE,
+        description="What this graph delivers: the end of its chain. Cooks with no active view, and is what a run, a reference or a stronger layer cooks to.",
+    )
+
+
+def main():
+    return chunk.Chunk("Output")

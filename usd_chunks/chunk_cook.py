@@ -58,6 +58,23 @@ _batch_deferred: dict | None = None
 # Follow-up work held until the outermost flush has cooked, by key, outside a batch.
 _solve_deferred: dict = {}
 
+# What runs after every cook, once its write guard is down. See after_cook().
+_after_cook_hooks: list[Callable] = []
+
+
+def after_cook(fn: Callable) -> None:
+    """Run fn(chunk) after every cook that ran a module, once the cook's write guard is down.
+
+    For what sits above this module and has to hear what a cook changed, which the stage
+    listeners skip while it runs: ChunkStageSync re-reading the chunk prims another chunk's
+    cook wrote onto. Registering fn again runs it once.
+
+    Args:
+        fn: Called with the chunk that cooked.
+    """
+    if fn not in _after_cook_hooks:
+        _after_cook_hooks.append(fn)
+
 
 def queue(prop) -> bool:
     """Inside batched_solve(), hold prop's solve back until the block ends.
@@ -397,6 +414,8 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
             skip_cook.unaccounted(chunk)
             clear_cook_stale(chunk)
             stamp(stage, chunk)
+    for fn in _after_cook_hooks:
+        fn(chunk)
     return True
 
 

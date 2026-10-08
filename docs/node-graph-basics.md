@@ -12,7 +12,7 @@
 That's all you need for a working chunk. The rest of this page covers connecting several
 nodes, keyboard shortcuts, disabled and locked nodes, and working inside a ChunkGroup. For
 how the graph is stored (prims, ports, USD connections), see [The graph is
-USD](index.md#the-graph-is-usd). For more on View and ChunkGroup, see [View and
+USD](index.md#the-graph-is-usd). For more on Output, View and ChunkGroup, see [Output, View and
 ChunkGroup](core-chunks.md).
 
 ## Opening the graph
@@ -46,9 +46,10 @@ differently:
   connection, not just a line on screen (see [The graph is
   USD](index.md#the-graph-is-usd) and [Expressions](expressions.md)).
 
-## Nothing cooks without a View
+## Nothing cooks without an Output or a View
 
-Only chunks connected to the active [View](core-chunks.md#view) cook. A new chain does
+Only chunks connected to the active [View](core-chunks.md#view) cook, or with no active
+View, the ones connected to the graph's [Output](core-chunks.md#output). A new chain does
 nothing until it's connected to one.
 **Right-click the chunk whose output you want to see and choose Set View 1 or Set View 2.**
 That connects that View to the chunk's output (creating it if needed) and makes it active.

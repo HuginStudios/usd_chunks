@@ -56,10 +56,13 @@ copied in one can be pasted in another — so assign *into* the lists, never reb
 **View slots**
 
 `read_active_slot`, `write_active_slot`, `activate_view_slot`, `new_view_slot`,
-`default_view_slot`. A view is what drives execution: `chunk_stage.recook_for_view` cooks the
-active view's upstream tree and blocks everything else, so **a context with no view cooks
-nothing at all**. Call `default_view_slot` when you open a graph. Every non-Qt frontend
-shipped without it once and looked correct while doing nothing.
+`default_view_slot`, `context_has_output`, `create_output_for`. The active view drives
+execution while there is one: `chunk_stage.recook_for_view` cooks its upstream tree and
+blocks everything else. With no active view a context cooks to its Output, so **a context
+with neither cooks nothing at all**. Call `default_view_slot` when you open a graph: it
+gives a context with neither an Output (and returns no slot, so reload if the chunk count
+changed). Every non-Qt frontend once shipped without it and looked correct while doing
+nothing.
 
 **Navigation and layout**
 

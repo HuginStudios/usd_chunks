@@ -419,16 +419,36 @@ def test_a_context_that_has_a_view_gets_no_second_one(graph):
     assert chunk_graph.ensure_default_view(graph.stage, graph.scene, ctx) is None
 
 
-def test_default_view_slot_activates_only_when_the_file_records_none(graph):
-    graph.make("a")
+def test_on_open_a_context_gets_an_output_on_its_tail_and_no_view(graph):
+    a, b = graph.make("a"), graph.make("b")
+    graph.wire_exec(a, b)
     ctx = _context_chunk(graph)
 
-    slot, activate = chunk_graph.default_view_slot(graph.stage, graph.scene, graph.context, ctx)
-    assert (slot, activate) == (1, True)
+    assert chunk_graph.default_view_slot(graph.stage, graph.scene, graph.context, ctx) == (None, False)
 
-    chunk_graph.write_active_slot(graph.stage, graph.context, 1)
-    _, activate_again = chunk_graph.default_view_slot(graph.stage, graph.scene, graph.context, ctx)
-    assert activate_again is False, "a recorded choice must not be activated over"
+    assert not chunk_graph.context_has_view(graph.scene, ctx)
+    (output,) = [c for c in graph.scene.get_chunks() if chunk_stage.is_output_chunk(c)]
+    exec_in = graph.stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(output)).GetAttribute(
+        chunk_graph.EXEC_INPUT
+    )
+    assert [str(p.GetPrimPath()) for p in exec_in.GetConnections()] == [graph.path(b)]
+
+
+def test_on_open_a_context_gets_one_output_only(graph):
+    graph.make("a")
+    ctx = _context_chunk(graph)
+    chunk_graph.default_view_slot(graph.stage, graph.scene, graph.context, ctx)
+    chunk_graph.default_view_slot(graph.stage, graph.scene, graph.context, ctx)
+    assert len([c for c in graph.scene.get_chunks() if chunk_stage.is_output_chunk(c)]) == 1
+
+
+def test_a_file_with_a_view_gets_no_output(graph):
+    """Saved before Outputs: its active view still drives it, and the file is left alone."""
+    graph.make("a")
+    ctx = _context_chunk(graph)
+    chunk_graph.ensure_default_view(graph.stage, graph.scene, ctx)
+    chunk_graph.default_view_slot(graph.stage, graph.scene, graph.context, ctx)
+    assert not chunk_graph.context_has_output(graph.scene, ctx)
 
 
 def test_new_view_slot_on_a_node_takes_the_next_slot(graph):

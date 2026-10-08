@@ -1,4 +1,6 @@
-"""A chunkgroup must not take the name of the group it sits inside.
+"""A chunkgroup must not take the name of the group it sits inside, or a sibling's.
+
+It may share a name with a group anywhere else: a group is unique by prim path, as in USD.
 
 The scene's flat container makes every chunk name unique as it is added, but a CONTEXT is
 not in that container -- so the one collision it cannot see is the one that matters most: a
@@ -44,9 +46,11 @@ def scene(qapp):
     chunk_registry.ChunkLayerManager().initialize(stage)
     _chunk_usd_init(stage, sender)
 
-    def mk(context=None):
+    def mk(context=None, name=None):
         mod = reg.get_chunk_module("chunkgroup")
         cs = mod.create() if mod.loaded else mod.load()
+        if name:
+            cs[0].name = name
         prev = sender._current_context
         sender._current_context = weakref.ref(context) if context is not None else None
         try:
@@ -91,3 +95,22 @@ def test_the_prim_paths_still_nest(scene):
     middle = mk(outer)
 
     assert get_chunk_prim_path(middle).startswith(get_chunk_prim_path(outer) + "/")
+
+
+
+def test_a_new_group_is_not_renamed_for_a_namesake_elsewhere(scene):
+    """A group is unique by prim path, as in USD: b in a and b in c are both b. Only
+    siblings and the groups it sits inside count."""
+    sender, mk = scene
+    a, c = mk(name="a"), mk(name="c")
+    b_in_a, b_in_c = mk(a, name="b"), mk(c, name="b")
+    assert (b_in_a.name, b_in_c.name) == ("b", "b")
+    assert get_chunk_prim_path(b_in_a).endswith("/a/b")
+    assert get_chunk_prim_path(b_in_c).endswith("/c/b")
+
+
+def test_a_sibling_still_gets_numbered(scene):
+    sender, mk = scene
+    a = mk(name="a")
+    first, second = mk(a, name="b"), mk(a, name="b")
+    assert first.name != second.name

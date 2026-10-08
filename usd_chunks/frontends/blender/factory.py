@@ -537,8 +537,10 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     # here) is marked, the way Qt gives it an amber label: the field shows a value nobody
     # on this graph typed, and "what did we change" is the question a shot asks of a
     # sequence. Blender's alert red is the nearest built-in "this is not the default".
+    # Held by a stronger layer (chunk_stage.param_held_by) is marked the same way: the
+    # value shown is not this graph's either, and an edit here will not show.
     override_source = chunk_stage.param_override_source(param)
-    layout.alert = override_source is not None
+    layout.alert = override_source is not None or chunk_stage.param_held_by(param) is not None
     # A PRIM_SELECTION field gets a pin button beside it, same as Qt's -- pulling in
     # whatever the viewport-click picker last found (chunk_blender_nodegraph.pin_prim /
     # set_picked_prim_paths), which is this frontend's counterpart of the Qt/usdview

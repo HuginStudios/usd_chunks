@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import threading
 import logging
 import weakref
 from abc import abstractmethod
@@ -37,6 +38,7 @@ from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkHash,
     NameSyncedContainer,
     all_chunks,
+    group_parent_path,
     check_chunk_type,
     is_inst,
 )
@@ -51,6 +53,30 @@ graph_center_hook: Callable[[], tuple[float, float] | None] | None = None
 
 #: Space between two nodes a script makes, in a row. The same as the default layout's.
 _SCRIPT_NODE_STEP = 260.0
+
+
+# call_later's hand-offs from other threads, waiting for the main thread (run_pending).
+_pending_calls: list[Callable[[], Any]] = []
+_pending_lock = threading.Lock()
+
+
+def run_pending() -> None:
+    """Run what other threads handed to call_later, on this (the main) thread.
+
+    For a scene with no event loop: call_later drains this on every main-thread call, and
+    `usdchunks run` before it writes anything. A host with a loop never queues here.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    while True:
+        with _pending_lock:
+            if not _pending_calls:
+                return
+            fn = _pending_calls.pop(0)
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - one bad hand-off must not stop the rest
+            logger.exception("a call handed to the main thread failed")
 
 
 def _no_op() -> None:
@@ -259,6 +285,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self._modified = True
 
+    def _sibling_names(self, parent, chunk) -> set[str]:
+        """The names chunk may not take in parent: the other groups nested in it.
+
+        Groups sit in the flat scene container, not in their parent's children, so they are
+        found by the parent they record; plain chunks in parent are in get_reserved_names.
+        """
+        home = group_parent_path(chunk)
+        return {
+            other.name for other in self.chunks.get_my_params()
+            if other is not chunk
+            and other.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+            and group_parent_path(other) == home
+        }
+
     def add_chunk(self, c: ChunkBase, notify: bool = True) -> ChunkBase | None:
         """Adds a chunk to the root of the scene.
 
@@ -292,7 +332,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             and c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
             and getattr(c, "prim_path", None)
         )
-        if c.name in names and not restoring:
+        # A group is checked against its siblings once its parent is known, below: it is
+        # unique by prim path, so only another chunk in the same parent can clash.
+        if c.name in names and not restoring and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             c.name = c.get_valid_child_name(c.name, set(names))
         try:
             c.check_hierarchy()
@@ -346,8 +388,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # renamed exactly the groups a file is most authoritative about. During a load,
             # nothing here renames anything.
             loading = chunk_notice._loading_stage is not None
-            if parent_ctx is not None and not restoring and not loading:
-                reserved = set(names) | set(parent_ctx.get_reserved_names())
+            if not restoring and not loading:
+                # Its siblings -- the chunks and groups in the same parent -- and the names
+                # of the groups it sits inside, so a breadcrumb never repeats itself. A group
+                # is unique by prim path, as in USD, so /chunks/ChunkGroup/a/b next to
+                # /chunks/ChunkGroup/c/b is fine; checking every group in the scene renamed
+                # the second one b1 for no reason.
+                reserved = self._sibling_names(parent_ctx, c)
+                if parent_ctx is not None:
+                    reserved |= set(parent_ctx.get_reserved_names())
+                ancestor = parent_ctx
+                while ancestor is not None:
+                    reserved.add(ancestor.name)
+                    ref = getattr(ancestor, "_parent_context", None)
+                    ancestor = ref() if ref else None
                 if c.name in reserved:
                     c.name = c.get_valid_child_name(c.name, reserved)
             self._current_context = weakref.ref(c)
@@ -666,8 +720,21 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         A host with an event loop overrides this (usdview with a QTimer, Blender with
         bpy.app.timers). Here, with no loop to wait in -- `usdchunks run`, a script -- `fn`
-        runs now, and `delay` is ignored: nothing would ever wake up to run it later.
+        runs now on the main thread, and `delay` is ignored: nothing would ever wake up to
+        run it later. From any other thread it is queued for the main thread instead
+        (run_pending), never run where it was called: a download finishing on a pool thread
+        that set a param from there cooked USD off the main thread and crashed.
         """
+        if threading.current_thread() is not threading.main_thread():
+            with _pending_lock:
+                _pending_calls.append(fn)
+
+            def cancel() -> None:
+                with _pending_lock:
+                    if fn in _pending_calls:
+                        _pending_calls.remove(fn)
+            return cancel
+        run_pending()
         fn()
         return _no_op
 
