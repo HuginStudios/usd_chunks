@@ -43,7 +43,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
-from usd_chunks import chunk_cache, chunk_cook, chunk_scheduler, cook_cache
+from usd_chunks import chunk_cache, chunk_cook, chunk_layers, chunk_scheduler, cook_cache
 from usd_chunks.chunk_process import python_executable
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -2146,6 +2146,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._deferred_placement: dict[core.ChunkHash, weakref.ReferenceType] | None = None
         # Where those layers sit meanwhile; see defer_placement.
         self._loading_layer: Sdf.Layer | None = None
+        # The cook layer of each file layer that defines chunks, by that layer's identifier;
+        # see cook_layer_for.
+        self._cook_layers: dict[str, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
         # can answer in one lookup. Maintained beside the two dicts rather than derived from
@@ -2176,6 +2179,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._retired_chunks = set()
         self._deferred_placement = None
         self._loading_layer = None
+        self._cook_layers = {}
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -2389,6 +2393,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # (nearest upstream Edit Target), not from whichever chunk executed last.
             owner_chunk = c if isinstance(c, core.ChunkBase) else None
             target = chunk_utils.get_edit_layer(self.stage, owner_chunk)
+            # No Edit Target upstream: the cook belongs with the layer that defines the chunk,
+            # just under it, not in the session layer over everything -- a layout procedural
+            # must not beat what lighting authors by hand.
+            if target == self.stage.GetSessionLayer() and (home := self._home_layer(c)):
+                target = self.cook_layer_for(home) or target
         self._chunk_target[c.get_hash()] = target
 
         # Create a graph layer - these are used for organising the layers. When chunks are part of
@@ -2500,6 +2509,47 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             chunk_notice._internal_layer_write_active = prev_internal
 
         return layer
+
+    def _home_layer(self, c: core.ChunkCommon) -> Sdf.Layer | None:
+        """The file layer whose turn c cooks in (chunk_utils.chunk_pass), or None.
+
+        A department or an asset layer -- layout.usda, geo.usda, mtl.usda -- or the root. An
+        anonymous layer is None: it has no file to keep a cook sublayer beside.
+        """
+        if not isinstance(c, core.ChunkBase):
+            return None
+        prim = self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))
+        if not (prim and prim.IsValid()):
+            return None
+        home = chunk_utils.chunk_pass(prim)
+        return None if home is None or home.anonymous else home
+
+    def cook_layer_for(self, home: Sdf.Layer) -> Sdf.Layer | None:
+        """The layer cooks of chunks defined in home nest under: home's cook sublayer.
+
+        layout.usda lists layout.cook.usda (chunk_layers.find_cook_sublayer), so the cook
+        sits just under the layer that defines it: stronger layers -- lighting's, authored or
+        cooked -- beat it, and so do home's own hand edits. The graph layers go under it in
+        memory; neither file is written, so both may be locked.
+
+        Opt-in by the link: a home listing none is never given one here, since that would
+        dirty a file merely by opening it -- its chunks cook into the session layer as
+        before. Whoever owns the file adds the link (chunk_layers.add_cook_sublayer).
+
+        Args:
+            home: A file layer that defines chunks.
+
+        Returns:
+            The cook layer, internal to the chunk system (is_chunk_internal_layer), or None
+            when home lists none.
+        """
+        if (cook := self._cook_layers.get(home.identifier)) is not None:
+            return cook
+        if (cook := chunk_layers.find_cook_sublayer(home)) is None:
+            return None
+        self.internal_layer_ids.add(cook.identifier)
+        self._cook_layers[home.identifier] = cook
+        return cook
 
     def is_muted(self, c: core.ChunkHash) -> bool:
         """Check if a chunk's layer is muted.

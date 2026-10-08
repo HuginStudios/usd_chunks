@@ -19,10 +19,18 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from network_files import run_and_read, save_cubes, save_network
-from usd_chunks import chunk_stage, chunk_utils
+from usd_chunks import chunk_layers, chunk_registry, chunk_stage, chunk_utils
 from usd_chunks.chunk_script import Scene
 
 _TZ = "inputs:translate_grp:tz"
+
+
+def _link_cook_sublayers(shot_dir, *departments):
+    """Publish each department with its cook sublayer, as its owner would."""
+    for department in departments:
+        home = Sdf.Layer.FindOrOpen(str(shot_dir / f"{department}.usda"))
+        chunk_layers.add_cook_sublayer(home)
+        home.Save()
 
 
 @pytest.fixture
@@ -97,23 +105,74 @@ def test_the_stack_implies_layout_feeds_lighting_and_writes_nothing(shot):
         scene.close()
 
 
-def test_a_cooked_result_beats_a_stronger_layers_hand_authored_value(shot):
-    """Results are always on top: cook output sits in the session layer, so layout's cooked
-    op order beats the one lighting.usda authors by hand on the same prim. Changing a weaker
-    department's result goes through its chunks -- an `over` on its params, as above, an
-    Override Chunk Prim, or a chunk in lighting's own turn. Nothing re-ranks results by
-    layer: that would be composing them ourselves."""
+def test_a_stronger_layers_hand_authored_value_beats_a_weaker_layers_cook(shot):
+    """A cook sits at the strength of the layer that defines its chunk: layout's cook goes
+    in layout's cook sublayer, just under layout.usda, so lighting.usda's hand-authored op
+    order on the same prim wins -- a layout procedural no longer beats what lighting
+    authors. Results used to sit in the session layer, over everything."""
     shot_dir, _ = shot
+    _link_cook_sublayers(shot_dir, "layout", "lighting")
     lighting = Sdf.Layer.FindOrOpen(str(shot_dir / "lighting.usda"))
     stage = Usd.Stage.Open(lighting)
     over = stage.OverridePrim("/a")
     UsdGeom.Xformable(over).CreateXformOpOrderAttr().Set(["xformOp:translate"])
     over.CreateAttribute("xformOp:translate", Sdf.ValueTypeNames.Double3).Set(Gf.Vec3d(0, 0, 7))
     lighting.Save()
-    run_and_read(shot_dir / "shot.usda", "a")
-    result = Usd.Stage.Open(str(shot_dir / "out.usda"))
-    order = result.GetPrimAtPath("/a").GetAttribute("xformOpOrder").Get()
-    assert any(op.startswith("xformOp:transform:A1") for op in order), order
+    z = run_and_read(shot_dir / "shot.usda", "ab")
+    assert z == pytest.approx({"a": 7.0, "b": 2.0})
+
+
+def test_a_departments_cook_nests_under_its_own_layer(shot):
+    """Each department's chunks cook into a cook layer sublayered under that department's
+    file, in memory, and shot.usda is never given one."""
+    shot_dir, paths = shot
+    _link_cook_sublayers(shot_dir, "layout", "lighting")
+    scene = Scene.open(str(shot_dir / "shot.usda"), "pytest")
+    try:
+        stage = scene.get_stage()
+        lm = chunk_registry.ChunkLayerManager()
+        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in scene.get_chunks()}
+        for chunk_path, department in ((paths["A1"], "layout"), (paths["B1"], "lighting")):
+            cook = lm.get_chunk_target(by_path[chunk_path].get_hash())
+            assert cook == Sdf.Layer.Find(str(shot_dir / f"{department}.cook.usda"))
+        assert stage.GetRootLayer().subLayerPaths == ["./lighting.usda", "./layout.usda", "./set.usda"]
+    finally:
+        scene.close()
+
+
+def test_a_listed_cook_sublayer_is_used_and_never_written(shot):
+    """A department published with its cook sublayer -- layout.usda lists layout.cook.usda --
+    has its chunks cook into that layer in memory; neither file is written, so both may be
+    locked."""
+    shot_dir, paths = shot
+    cook_file = shot_dir / "layout.cook.usda"
+    _link_cook_sublayers(shot_dir, "layout")
+    before = {p: p.read_bytes() for p in (shot_dir / "layout.usda", cook_file)}
+    scene = Scene.open(str(shot_dir / "shot.usda"), "pytest")
+    try:
+        lm = chunk_registry.ChunkLayerManager()
+        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in scene.get_chunks()}
+        cook = lm.get_chunk_target(by_path[paths["A1"]].get_hash())
+        assert cook == Sdf.Layer.Find(str(cook_file))
+    finally:
+        scene.close()
+    assert {p: p.read_bytes() for p in before} == before
+
+
+def test_a_layer_without_a_cook_sublayer_cooks_into_the_session_layer(shot):
+    """Opt-in by the link: lighting lists no cook sublayer, so its chunks cook into the
+    session layer as before -- giving it one on open would dirty the file."""
+    shot_dir, paths = shot
+    _link_cook_sublayers(shot_dir, "layout")
+    scene = Scene.open(str(shot_dir / "shot.usda"), "pytest")
+    try:
+        lm = chunk_registry.ChunkLayerManager()
+        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in scene.get_chunks()}
+        target = lm.get_chunk_target(by_path[paths["B1"]].get_hash())
+        assert target == scene.get_stage().GetSessionLayer()
+        assert not Sdf.Layer.Find(str(shot_dir / "lighting.usda")).dirty
+    finally:
+        scene.close()
 
 
 def _house_shot(tmp_path, shot_chunks: bool):
