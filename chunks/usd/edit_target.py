@@ -188,6 +188,9 @@ def main():
     edit_target = chunk.Menu(
         "edit_target", "Edit Target",
         menu_items=["Session Layer"], default_value="Session Layer",
+        # The items are the stage's layers as last seen, so a saved choice is set before the
+        # layer it names is listed; _refresh_edit_target drops it if it never resolves.
+        dynamic_items=True,
         tooltip="The layer to make the stage's current edit target. Kept in sync "
         "automatically as the stage's layer stack changes. If a Layer chunk "
         "feeds this one directly, \"" + _FOLLOW_UPSTREAM + "\" appears — pick it to "

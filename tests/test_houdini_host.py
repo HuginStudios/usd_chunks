@@ -240,6 +240,11 @@ SCRIPT = textwrap.dedent(r"""
     out["no_view_prims"] = [str(p.GetPath()) for p in plain.stage().Traverse()
                             if not str(p.GetPath()).startswith("/HoudiniLayerInfo")]
 
+    layered = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_LAYERED"], hou.node("/stage"))[0]
+    out["imported_target"] = layered.node("Target").evalParm("edit_target")
+    layered.stage()
+    out["imported_target_errors"] = list(layered.node("Target").errors())
+
     group.createNode("cube", "SolarisCube")
     try:
         chunkgroup.export(group, exported)
@@ -350,6 +355,39 @@ NO_VIEW_NETWORK = textwrap.dedent("""    #usda 1.0
 """)
 
 
+#: A Layer and an Edit Target pointing at it by name, as lookdev saves them.
+LAYERED_NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 1
+        upAxis = "Y"
+    )
+
+    def Scope "chunks"
+    {
+        def Chunk "Layered"
+        {
+            uniform token info:chunkType = "chunkgroup"
+            uniform token outputs:chunk
+
+            def Chunk "Mats"
+            {
+                uniform token info:chunkType = "layer"
+                string inputs:layer_name = "mats"
+                uniform token outputs:chunk
+            }
+
+            def Chunk "Target"
+            {
+                uniform token info:chunkType = "edit_target"
+                token inputs:chunk.connect = </chunks/Layered/Mats.outputs:chunk>
+                string inputs:edit_target = "mats"
+                uniform token outputs:chunk
+            }
+        }
+    }
+""")
+
+
 @pytest.fixture(scope="module")
 def result(tmp_path_factory):
     hython = _hython()
@@ -363,6 +401,8 @@ def result(tmp_path_factory):
     network.write_text(NETWORK)
     no_view = tmp / "no_view.usda"
     no_view.write_text(NO_VIEW_NETWORK)
+    layered = tmp / "layered.usda"
+    layered.write_text(LAYERED_NETWORK)
     script = tmp / "check.py"
     script.write_text(SCRIPT)
     env = dict(os.environ)
@@ -374,6 +414,7 @@ def result(tmp_path_factory):
         "USD_CHUNKS_TEST_HIP": str(tmp / "scene.hip"),
         "USD_CHUNKS_TEST_NETWORK": str(network),
         "USD_CHUNKS_TEST_NO_VIEW": str(no_view),
+        "USD_CHUNKS_TEST_LAYERED": str(layered),
     })
     proc = subprocess.run([hython, str(script)], env=env, capture_output=True, text=True, timeout=600)
     line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("USD_CHUNKS_RESULT")), None)
@@ -492,6 +533,12 @@ def test_a_group_with_no_view_outputs_the_end_of_its_chain(result):
     assert result["no_view_output"] == ["Inner"]
     assert result["no_view_inner_output"] == ["Move"]
     assert "/ball" in result["no_view_prims"]
+
+
+def test_an_imported_edit_target_keeps_the_layer_it_names(result):
+    # Its menu lists layers only once a cook has seen them; the saved name must survive that.
+    assert result["imported_target"] == "mats"
+    assert result["imported_target_errors"] == []
 
 
 def test_a_param_wire_becomes_a_channel_reference(result):
