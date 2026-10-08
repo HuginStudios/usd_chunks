@@ -95,6 +95,39 @@ SCRIPT = textwrap.dedent(r"""
 
     out["menu"] = lop.menu_items(mesh, "mesh_type")[:4]
 
+    # Params tied to another prim's attribute: a Light's (show_attribute) and a Camera's
+    # (connect_usd_attr). Houdini's stage holds no chunk prims to drive them from.
+    light = lop.create(net, "light", name="Key")
+    for _ in range(3):
+        light.stage()
+        scene.flush_pending()
+    light.parm("intensity").set(7.0)
+    for _ in range(3):
+        light.stage()
+        scene.flush_pending()
+    lights = [p for p in light.stage().Traverse() if p.GetTypeName().endswith("Light")]
+    out["light_intensity"] = lights[0].GetAttribute("inputs:intensity").Get() if lights else None
+    camera = lop.create(net, "camera", name="Cam")
+    camera.parm("focalLength").set(35.0)
+    camera.stage()
+    scene.flush_pending()
+    cams = [p for p in camera.stage().Traverse() if p.GetTypeName() == "Camera"]
+    out["camera_focal"] = cams[0].GetAttribute("focalLength").Get() if cams else None
+
+    # Two Transform chunks on one prim: each owns an op, so both apply.
+    first_move = lop.create(net, "transform", name="MoveA")
+    first_move.setInput(0, mesh)
+    first_move.parm("primpath_location").set("/mesh")
+    first_move.parm("tx").set(1)
+    second_move = lop.create(net, "transform", name="MoveB")
+    second_move.setInput(0, first_move)
+    second_move.parm("primpath_location").set("/mesh")
+    second_move.parm("tx").set(2)
+    from pxr import UsdGeom as _G
+    moved = second_move.stage().GetPrimAtPath("/mesh")
+    out["two_moves_ops"] = [str(o) for o in moved.GetAttribute("xformOpOrder").Get() or []]
+    out["two_moves_tx"] = _G.Xformable(moved).ComputeLocalToWorldTransform(0).ExtractTranslation()[0]
+
     # Layers: a Layer chunk starts a new active layer and names it; the chunks after it,
     # through an Edit Target pointing at it, all author into that one layer.
     from usd_chunks.hosts.houdini import layers
@@ -242,6 +275,14 @@ SCRIPT = textwrap.dedent(r"""
 
     layered = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_LAYERED"], hou.node("/stage"))[0]
     out["imported_target"] = layered.node("Target").evalParm("edit_target")
+    lit = chunkgroup.import_file(os.environ["USD_CHUNKS_TEST_LIT"], hou.node("/stage"))[0]
+    for _ in range(3):
+        lit.stage()
+        scene.flush_pending()
+    key = lit.stage().GetPrimAtPath("/lights/key")
+    out["imported_intensity"] = key.GetAttribute("inputs:intensity").Get() if key else None
+    out["imported_intensity_parm"] = lit.node("Key").evalParm("intensity")
+    out["imported_op"] = [str(o) for o in key.GetAttribute("xformOpOrder").Get() or []] if key else []
     layered.stage()
     out["imported_target_errors"] = list(layered.node("Target").errors())
 
@@ -355,6 +396,43 @@ NO_VIEW_NETWORK = textwrap.dedent("""    #usda 1.0
 """)
 
 
+#: A light whose intensity lives in a param its cook builds, then a Transform that recorded
+#: its op name, as the sh010 light scene saves them.
+LIT_NETWORK = textwrap.dedent("""    #usda 1.0
+    (
+        metersPerUnit = 1
+        upAxis = "Y"
+    )
+
+    def Scope "chunks"
+    {
+        def Chunk "Lit"
+        {
+            uniform token info:chunkType = "chunkgroup"
+            uniform token outputs:chunk
+
+            def Chunk "Key"
+            {
+                uniform token info:chunkType = "light"
+                string inputs:light_type = "DistantLight"
+                string inputs:primpath_location = "/lights/key"
+                float inputs:attr_grp:inputs:intensity = 2.5
+                uniform token outputs:chunk
+            }
+
+            def Chunk "Aim"
+            {
+                custom uniform string chunk:xformOpId = "aim_key_5c63f397"
+                uniform token info:chunkType = "transform"
+                token inputs:chunk.connect = </chunks/Lit/Key.outputs:chunk>
+                string inputs:primpath_location = "/lights/key"
+                uniform token outputs:chunk
+            }
+        }
+    }
+""")
+
+
 #: A Layer and an Edit Target pointing at it by name, as lookdev saves them.
 LAYERED_NETWORK = textwrap.dedent("""    #usda 1.0
     (
@@ -403,6 +481,8 @@ def result(tmp_path_factory):
     no_view.write_text(NO_VIEW_NETWORK)
     layered = tmp / "layered.usda"
     layered.write_text(LAYERED_NETWORK)
+    lit = tmp / "lit.usda"
+    lit.write_text(LIT_NETWORK)
     script = tmp / "check.py"
     script.write_text(SCRIPT)
     env = dict(os.environ)
@@ -415,6 +495,7 @@ def result(tmp_path_factory):
         "USD_CHUNKS_TEST_NETWORK": str(network),
         "USD_CHUNKS_TEST_NO_VIEW": str(no_view),
         "USD_CHUNKS_TEST_LAYERED": str(layered),
+        "USD_CHUNKS_TEST_LIT": str(lit),
     })
     proc = subprocess.run([hython, str(script)], env=env, capture_output=True, text=True, timeout=600)
     line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("USD_CHUNKS_RESULT")), None)
@@ -485,6 +566,19 @@ def test_export_usd_lists_and_writes_only_the_named_layers(result):
     assert "HoudiniLayerInfo" not in result["published_mats"]  # Houdini's bookkeeping, as a ROP drops it
 
 
+def test_a_lights_attribute_parm_drives_the_light(result):
+    assert result["light_intensity"] == pytest.approx(7.0)
+
+
+def test_a_cameras_parm_drives_the_camera(result):
+    assert result["camera_focal"] == pytest.approx(35.0)
+
+
+def test_two_transforms_on_one_prim_each_own_an_op(result):
+    assert len(set(result["two_moves_ops"])) == 2
+    assert result["two_moves_tx"] == pytest.approx(3.0)
+
+
 def test_a_button_runs_its_callback_and_shows_what_it_set(result):
     assert result["pivot_after_center"] == pytest.approx(0.0, abs=1e-6)
 
@@ -533,6 +627,16 @@ def test_a_group_with_no_view_outputs_the_end_of_its_chain(result):
     assert result["no_view_output"] == ["Inner"]
     assert result["no_view_inner_output"] == ["Move"]
     assert "/ball" in result["no_view_prims"]
+
+
+def test_an_imported_light_keeps_the_intensity_its_file_saved(result):
+    # The param only exists once the light has cooked, after import set the others.
+    assert result["imported_intensity"] == pytest.approx(2.5)
+    assert result["imported_intensity_parm"] == pytest.approx(2.5)
+
+
+def test_an_imported_transform_keeps_the_op_name_its_file_recorded(result):
+    assert result["imported_op"] == ["xformOp:transform:aim_key_5c63f397"]
 
 
 def test_an_imported_edit_target_keeps_the_layer_it_names(result):

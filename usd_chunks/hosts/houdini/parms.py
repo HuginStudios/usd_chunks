@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 
 import hou
@@ -377,10 +377,10 @@ def build_interface(node: hou.Node, chunk) -> None:
 # --------------------------------------------------------------------------- values
 
 
-def _same(a, b) -> bool:
+def same(a, b) -> bool:
     if isinstance(a, (tuple, list)) or isinstance(b, (tuple, list)):
         try:
-            return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+            return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
         except TypeError:
             return False
     if isinstance(a, float) or isinstance(b, float):
@@ -420,7 +420,12 @@ def _is_transient(param) -> bool:
     return bool(param.has_flag(ChunkFlags.ParamFlags.TRANSIENT))
 
 
-def push(node: hou.Node, chunk) -> None:
+def names(chunk) -> set[str]:
+    """The parm names the chunk's params have now."""
+    return {e.name for e in entries(chunk)}
+
+
+def push(node: hou.Node, chunk, skip: Collection[str] = ()) -> None:
     """Parm values -> chunk params, for every parm whose value differs.
 
     Evaluated during the node's cook, which is also what makes Houdini recook the node
@@ -429,6 +434,8 @@ def push(node: hou.Node, chunk) -> None:
     layer id differs every cook, and reading it back would recook the node forever.
     """
     for e in entries(chunk):
+        if e.name in skip:
+            continue
         pt = node.parmTuple(e.name)
         if pt is None:
             continue
@@ -440,7 +447,7 @@ def push(node: hou.Node, chunk) -> None:
         if e.kind not in ("value", "vector") or _is_output(e.param) or _is_transient(e.param):
             continue
         value = _read(pt, e.param, e.kind)
-        if not _same(value, e.param.value):
+        if not same(value, e.param.value):
             e.param.value = value
 
 
@@ -479,7 +486,7 @@ def pull(node: hou.Node, chunk) -> None:
         if any(p.keyframes() for p in pt):
             continue
         value = param.value
-        if value is None or _same(_read(pt, param, e.kind), value):
+        if value is None or same(_read(pt, param, e.kind), value):
             continue
         try:
             pt.set(tuple(value) if e.kind == "vector" or PT.COLOR_PICKER in param.get_type() else (value,))

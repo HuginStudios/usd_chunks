@@ -43,7 +43,7 @@ import loptoolutils
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_core as core
-from usd_chunks import chunk_stage
+from usd_chunks import chunk_stage, chunk_utils
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.chunk_process import python_executable
 from usd_chunks.graph import engine as chunk_graph
@@ -145,6 +145,8 @@ def _restore_values(node: hou.Node, prim: Usd.Prim) -> list[tuple[object, Usd.At
     chunk = lop.chunk_for(node)
     scene = ensure_scene()
     wired = []
+    if (op_id := prim.GetAttribute(chunk_utils.XFORM_OP_ID_ATTR)) and op_id.HasValue():
+        lop.set_xform_op_id(node, op_id.Get())
     with lop._no_stage(scene):
         for attr in prim.GetAttributes():
             name = attr.GetName()
@@ -166,7 +168,9 @@ def _restore_values(node: hou.Node, prim: Usd.Prim) -> list[tuple[object, Usd.At
                 continue
             param = chunk.get_param(path)
             if param is None:
-                logger.info("%s: no param %s on %s; skipped", prim.GetPath(), path, node.path())
+                # Not built yet: a param the chunk makes in its cook (a Light's attributes).
+                if (value := attr.Get()) is not None and not attr.HasAuthoredConnections():
+                    lop.defer_value(node, path, value)
                 continue
             if attr.HasAuthoredConnections():
                 wired.append((param, attr))
@@ -395,7 +399,7 @@ def _exec_inputs(node: hou.Node) -> list[str]:
 
 def _is_default(param, value) -> bool:
     default = getattr(param, "default_value", None)
-    return default is not None and parms._same(default, value)
+    return default is not None and parms.same(default, value)
 
 
 def _parm_expression(pt: hou.ParmTuple) -> str | None:
