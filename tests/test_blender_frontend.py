@@ -644,7 +644,7 @@ def test_a_hidden_groups_params_are_hidden_with_it(view):
     node = _add(view, "mesh")
     chunk = node.get_chunk()
     shown = [p.name for p in chunk_blender.iter_drawable(chunk)]
-    assert shown == ["prim_path", "mesh_type"], shown
+    assert shown == ["prim_path", "mesh_type", "cache_result"], shown  # the cook cache's toggle
     assert node.inputs["dimx1"].hide and node.inputs["dimx"].hide
     node.mesh_type = "grid"
     _flush(view)
@@ -1112,7 +1112,8 @@ def cam_state():
 
 def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     """The Camera chunk's "Set as Viewport Camera" had nothing to land on in Blender."""
-    prim = _camera_prim(Usd.Stage.CreateInMemory(), focal=50.0)
+    stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    prim = _camera_prim(stage, focal=50.0)
     addon.BlenderScene(prim.GetStage()).set_viewport_camera(prim)
     obj = bpy.context.scene.camera
     assert obj is not None and obj.name == addon.camera.MIRROR_NAME
@@ -1127,7 +1128,8 @@ def test_release_hands_back_the_camera_the_mirror_replaced(cam_state):
     own = bpy.data.objects.new("own_cam", bpy.data.cameras.new("own_cam"))
     scene.collection.objects.link(own)
     scene.camera = own
-    prim = _camera_prim(Usd.Stage.CreateInMemory())
+    stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    prim = _camera_prim(stage)
     sender = addon.BlenderScene(prim.GetStage())
     sender.set_viewport_camera(prim)
     sender.set_viewport_camera(prim)  # a locked camera re-claims on every move
@@ -1137,7 +1139,8 @@ def test_release_hands_back_the_camera_the_mirror_replaced(cam_state):
 
 def test_the_mirror_follows_the_prim_at_the_timeline_frame(cam_state):
     """An animated camera plays in Blender: the mirror is sampled at the current frame."""
-    prim = _camera_prim(Usd.Stage.CreateInMemory())
+    stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    prim = _camera_prim(stage)
     focal = UsdGeom.Camera(prim).GetFocalLengthAttr()
     focal.Set(20.0, 1)
     focal.Set(80.0, 11)
@@ -1177,7 +1180,19 @@ def test_the_hydra_view_draws_at_the_timeline_frame():
 # saving: the network goes wherever the .blend goes
 # ---------------------------------------------------------------------------
 
-def test_a_new_network_saves_to_a_file_it_never_had(tmp_path):
+@pytest.fixture
+def addon_on():
+    """The add-on registered, as an enabled add-on is: the tree properties saving reads exist.
+
+    The view fixture registers the node types only, so these tests passed or failed by
+    whether an earlier test had left the add-on registered.
+    """
+    addon.register()
+    yield
+    addon.unregister()
+
+
+def test_a_new_network_saves_to_a_file_it_never_had(tmp_path, addon_on):
     """Save on a network started with New called Save() on an anonymous layer."""
     tree = bpy.data.node_groups.new("fresh", bg.TREE_ID)
     addon._open_stage(Usd.Stage.CreateInMemory(), tree=tree)
@@ -1186,7 +1201,7 @@ def test_a_new_network_saves_to_a_file_it_never_had(tmp_path):
     assert out.exists()
 
 
-def test_saving_the_blend_keeps_a_network_with_no_file(tmp_path):
+def test_saving_the_blend_keeps_a_network_with_no_file(tmp_path, addon_on):
     """An untitled network rides along in the .blend and reopens from there."""
     path, context = make_network(tmp_path / "embed.usda")
     tree = bpy.data.node_groups.new("embed", bg.TREE_ID)
@@ -1198,7 +1213,7 @@ def test_saving_the_blend_keeps_a_network_with_no_file(tmp_path):
     assert len(chunk_prims(stage)) == len(chunk_prims(addon.get_view().stage))
 
 
-def test_saving_the_blend_flags_an_edited_network_but_leaves_its_file(tmp_path):
+def test_saving_the_blend_flags_an_edited_network_but_leaves_its_file(tmp_path, addon_on):
     """The .usda is the user's: Ctrl+S in Blender warns about edits, never writes them."""
     path, context = make_network(tmp_path / "ride.usda")
     before = open(path, encoding="utf-8").read()
