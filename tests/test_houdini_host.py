@@ -95,6 +95,57 @@ SCRIPT = textwrap.dedent(r"""
 
     out["menu"] = lop.menu_items(mesh, "mesh_type")[:4]
 
+    # Layers: a Layer chunk starts a new active layer and names it; the chunks after it,
+    # through an Edit Target pointing at it, all author into that one layer.
+    from usd_chunks.hosts.houdini import layers
+    before = lop.create(net, "mesh", name="Before")
+    before.parm("prim_path").set("/before")
+    new_layer = lop.create(net, "layer", name="Mats")
+    new_layer.setInput(0, before)
+    new_layer.parm("layer_name").set("mats")
+    target = lop.create(net, "edit_target", name="Target")
+    target.setInput(0, new_layer)
+    target.parm("edit_target").set("mats")
+    first = lop.create(net, "mesh", name="First")
+    first.setInput(0, target)
+    first.parm("prim_path").set("/twice")
+    first.parm("mesh_type").set("sphere")
+    second = lop.create(net, "mesh", name="Second")
+    second.setInput(0, first)
+    second.parm("prim_path").set("/twice")
+    second.parm("mesh_type").set("cube")
+    stage = second.stage()
+    named = dict(layers.user_layers(stage))
+    out["named_layers"] = list(named)
+    mats = named.get("mats")
+    out["mats_prims"] = sorted(str(p.path) for p in mats.rootPrims) if mats else []
+    out["layer_errors"] = [n.name() for n in (before, new_layer, target, first, second) if n.errors()]
+    twice = stage.GetPrimAtPath("/twice")
+    out["twice_counts"] = len(twice.GetAttribute("faceVertexCounts").Get() or [])
+    out["save_path"] = new_layer.node(lop.NEW_LAYER_NODE).evalParm("savepath")
+    scene.flush_pending()
+    out["target_menu"] = lop.menu_items(target, "edit_target")[::2]
+    later = lop.create(net, "layer", name="Later")
+    later.setInput(0, second)
+    later.parm("layer_name").set("later")
+    back = lop.create(net, "edit_target", name="Back")
+    back.setInput(0, later)
+    back.parm("edit_target").set("mats")
+    back.stage()
+    out["older_target_error"] = " ".join(back.errors())
+
+    export = lop.create(net, "export_usd", name="Publish")
+    export.setInput(0, second)
+    publish_dir = os.path.join(os.path.dirname(os.environ["USD_CHUNKS_TEST_HIP"]), "publish")
+    export.parm("output_dir").set(publish_dir)
+    export.stage()
+    scene.flush_pending()
+    out["export_rows"] = [p.eval() for p in export.parms() if p.name().startswith("export_layers_layer_name")]
+    export.parm("export_all").pressButton()
+    out["published"] = sorted(os.listdir(publish_dir)) if os.path.isdir(publish_dir) else []
+    mats_file = os.path.join(publish_dir, "mats.usda")
+    out["published_mats"] = open(mats_file).read() if os.path.isfile(mats_file) else ""
+
     sub = lop.create(net, "sublayer")
     sub.parm("imports").set(2)
     sub.stage()
@@ -362,6 +413,35 @@ def test_a_chunk_node_stops_cooking_once_its_parms_are_shown(result):
 def test_a_chunk_writing_session_state_stops_cooking(result):
     # Layer writes its new layer's id, which differs every cook, into a hidden param.
     assert result["layer_settles"]
+
+
+def test_a_layer_and_edit_target_send_the_chunks_after_them_into_one_named_layer(result):
+    assert result["layer_errors"] == []
+    assert result["named_layers"] == ["mats"]
+    assert result["mats_prims"] == ["/HoudiniLayerInfo", "/twice"]
+
+
+def test_edit_target_offers_the_named_layers(result):
+    assert "mats" in result["target_menu"]
+
+
+def test_a_later_chunk_wins_over_an_earlier_one_in_the_same_layer(result):
+    assert result["twice_counts"] == 6  # the cube, over the sphere before it
+
+
+def test_a_layer_gets_a_save_path_for_a_usd_rop(result):
+    assert result["save_path"].replace("\\", "/").endswith("/usd/mats.usda")
+
+
+def test_an_edit_target_pointing_at_an_older_layer_says_it_is_not_supported(result):
+    assert "not the newest layer" in result["older_target_error"]
+
+
+def test_export_usd_lists_and_writes_only_the_named_layers(result):
+    assert result["export_rows"] == ["mats"]
+    assert result["published"] == ["mats.usda"]
+    assert 'def Mesh "twice"' in result["published_mats"]
+    assert "HoudiniLayerInfo" not in result["published_mats"]  # Houdini's bookkeeping, as a ROP drops it
 
 
 def test_a_button_runs_its_callback_and_shows_what_it_set(result):

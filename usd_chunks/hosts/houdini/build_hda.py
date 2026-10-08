@@ -4,8 +4,9 @@
 
 The library holds two types:
 
-- ``usdchunks::chunk`` -- one chunk: a subnet with a Python Script LOP calling lop.cook, two
-  hidden parms naming the chunk, and an OnDeleted hook.
+- ``usdchunks::chunk`` -- one chunk: a subnet with a Python Script LOP calling lop.cook (a
+  Layer chunk through a Configure Layer starting a new layer first), two hidden parms naming
+  the chunk, and an OnDeleted hook.
 - ``usdchunks::chunkgroup`` -- a chunkgroup: an empty subnet whose contents are the user's
   (each node is unlocked on creation), with an Export Network button. Its public params are
   added per node, as spare parms.
@@ -26,7 +27,7 @@ import hou
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(HERE))))
 
-from usd_chunks.hosts.houdini import chunkgroup, lop, parms, space, tools  # noqa: E402
+from usd_chunks.hosts.houdini import chunkgroup, layers, lop, parms, space, tools  # noqa: E402
 
 OUT = os.path.join(HERE, "otls", "usdchunks_chunk.hda")
 ON_DELETED = "from usd_chunks.hosts.houdini import lop\nlop.on_deleted(kwargs)\n"
@@ -51,9 +52,21 @@ def _finish(definition: hou.HDADefinition, group: hou.ParmTemplateGroup, comment
 
 def _chunk_type(network: hou.Node, library: str) -> None:
     subnet = _empty_subnet(network, "usdchunks_chunk")
+    # A Layer chunk starts a new active layer before it cooks; every other chunk goes
+    # straight through. A switch, so the rest never meet Configure Layer at all.
+    source = subnet.indirectInputs()[0]
+    new_layer = subnet.createNode("configurelayer", lop.NEW_LAYER_NODE)
+    new_layer.setInput(0, source)
+    new_layer.parm("startnewlayer").set(1)
+    new_layer.parm("setsavepath").set(1)
+    new_layer.parm("savepath").set(layers.SAVE_PATH)
+    switch = subnet.createNode("switch", lop.SWITCH_NODE)
+    switch.setInput(0, source)
+    switch.setInput(1, new_layer)
+    switch.parm("input").setExpression(layers.NEW_LAYER_SWITCH)
     cook = subnet.createNode("pythonscript", lop.COOK_NODE)
     cook.parm("python").set(lop.COOK_CODE)
-    cook.setInput(0, subnet.indirectInputs()[0])
+    cook.setInput(0, switch)
     output = next(c for c in subnet.children() if c.type().name() == "output")
     output.setInput(0, cook)
     subnet.layoutChildren()

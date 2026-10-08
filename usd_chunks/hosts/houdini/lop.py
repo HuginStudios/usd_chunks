@@ -13,9 +13,9 @@ A cook:
 2. opens a private stage over the node's input stage and makes it the scene's for the
    duration, with the chunk's layer above the input as ChunkLayerManager places it;
 3. runs the chunk through ChunkBase._cook, the same path every host cooks with;
-4. hands Houdini a copy of the chunk's layer as a sublayer of the node's output. A copy,
-   because the chunk's own layer is cleared by its next cook, and Houdini may still be
-   holding the stage it built from this one.
+4. merges the chunk's layer into Houdini's active layer, the chunk's edits winning, as any
+   Solaris node authors (see layers). A Layer chunk node starts a new active layer first,
+   through the Configure Layer inside the node type, and names it.
 
 What the cook changed on the chunk -- outputs, hidden groups -- goes back to the parms
 afterwards (parms.pull), since a node's parms cannot be written while it cooks.
@@ -31,7 +31,7 @@ import loptoolutils
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk_registry
-from usd_chunks.hosts.houdini import parms, space
+from usd_chunks.hosts.houdini import layers, parms, space
 from usd_chunks.hosts.houdini.scene import HoudiniScene, ensure_scene
 
 logger = logging.getLogger(__name__)
@@ -40,12 +40,15 @@ logger = logging.getLogger(__name__)
 HDA_TYPE = "usdchunks::chunk"
 #: The Python Script LOP inside the node type.
 COOK_NODE = "cook"
+#: Inside the node type: the Configure Layer a Layer chunk starts its new layer with, and
+#: the switch that sends only a Layer chunk through it.
+NEW_LAYER_NODE = "new_layer"
+SWITCH_NODE = "layer_switch"
 COOK_CODE = "from usd_chunks.hosts.houdini import lop\nlop.cook(hou.pwd())\n"
 
 #: node session id -> its chunk, for the session.
 _chunks: dict[int, object] = {}
-#: node session id -> the layer its last cook handed Houdini. Houdini holds it too
-#: (addHeldLayer); this is so the anonymous layer is not dropped between the two.
+#: node session id -> a copy of the chunk's layer as its last cook merged it.
 _outputs: dict[int, Sdf.Layer] = {}
 
 
@@ -171,9 +174,17 @@ def cook(lop: hou.LopNode) -> None:
         logger.exception("chunk node %s failed to cook", node.path())
         raise hou.NodeError(f"{type(exc).__name__}: {exc}") from exc
 
-    lop.editableStage()  # Houdini takes held layers and sublayers only after this
-    lop.addHeldLayer(out.identifier)
-    lop.addSubLayer(out.identifier)
+    module = node.evalParm(parms.TYPE_PARM)
+    if module == layers.EDIT_TARGET_MODULE:
+        param = chunk.get_param("edit_target")
+        problem = layers.check_edit_target(str(param.value or "") if param else "", _input_stage(node))
+        if problem:
+            raise hou.NodeError(problem)
+    active = lop.editableLayer()
+    layers.merge(active, out)
+    if module == layers.LAYER_MODULE:
+        param = chunk.get_param("layer_name")
+        layers.tag(active, (str(param.value or "").strip() if param else "") or node.name())
     _outputs[node.sessionId()] = out
     scene.call_later(lambda: _after_cook(node, chunk))
 
