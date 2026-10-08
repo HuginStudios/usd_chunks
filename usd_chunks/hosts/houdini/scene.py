@@ -20,6 +20,7 @@ except ImportError:
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.hosts.houdini import layers
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,14 @@ class HoudiniScene(SceneSender):
 
     def get_host(self) -> tuple[str, str]:
         return ("houdini", hou.applicationVersionString())
+
+    def user_layers(self, stage):
+        """The layers a Layer chunk named, and files: the rest of the stack is Houdini's."""
+        return layers.user_layers(stage)
+
+    def export_layer(self, layer):
+        """layer without Houdini's own bookkeeping prim."""
+        return layers.without_houdini_info(layer)
 
     def call_later(self, fn, delay: float = 0.0):
         """Run fn on Houdini's main thread once it is idle; returns a cancel function.

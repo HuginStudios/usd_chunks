@@ -23,13 +23,9 @@ def _discover_export_layers(stage):
     excluding Session Layer -- it's handled separately and always holds full bookkeeping.
     """
     internal_ids = chunk_utils.chunk_internal_layer_ids()
-    session_layer = stage.GetSessionLayer()
-    layers = []
-    for layer in stage.GetLayerStack(includeSessionLayers=True):
-        if layer.identifier == session_layer.identifier or layer.identifier in internal_ids:
-            continue
-        layers.append((layer.GetDisplayName() or layer.identifier, layer))
-    return layers
+    session_id = stage.GetSessionLayer().identifier
+    return [(name, layer) for name, layer in chunk_utils.user_layers(stage)
+            if layer.identifier != session_id and layer.identifier not in internal_ids]
 
 
 #: Set once CHUNK_LOADED has fired -- the saved rows are in, the list may rebuild.
@@ -322,7 +318,7 @@ def _export_flattened(_chunk, stage) -> None:
         _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
         _strip_chunk_prims(flat)
-    flat.Export(output_path)
+    chunk_utils.export_layer(flat).Export(output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
 
 
@@ -392,7 +388,9 @@ def commit(node):
     baked_names = {n for n, _l in discovered if n not in procedural_names}
 
     layers = []
-    if _chunk.get_param("keep_session_layer", chunk.is_param_t(bool)).value:
+    # Only where the host counts it as the user's: Houdini's session layer is its own.
+    if (_chunk.get_param("keep_session_layer", chunk.is_param_t(bool)).value
+            and any(lyr.identifier == session_layer.identifier for _n, lyr in chunk_utils.user_layers(stage))):
         layers.append(("SessionLayer", session_layer))
     layers.extend(real_layers)
 
@@ -448,7 +446,7 @@ def commit(node):
                 # here rather than inlining, via _relocate's internal_ids handling below.
                 UsdUtils.ModifyAssetPaths(export_layer, _relocate)
 
-        export_layer.Export(out_path)
+        chunk_utils.export_layer(export_layer).Export(out_path)
         print(f"[ExportUSD] Layer '{name}' exported to {out_path}")
 
 

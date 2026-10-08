@@ -4,7 +4,8 @@ Every chunk is a LOP. In a LOP network press TAB and look under **usdchunks**, w
 sit in their categories (Modelling, Transforms, USD, ...), or just type a chunk's name.
 
 - **Houdini owns the graph.** Chunk nodes wire to each other and to any Solaris node with
-  ordinary LOP connections; a chunk reads its input stage and adds its own layer on top.
+  ordinary LOP connections; a chunk reads its input stage and authors into the active
+  layer, as any Solaris node does.
   usd_chunks' own wiring (exec inputs, `@Node.param@`) is not used here -- reference another
   node's parm with Houdini's `ch("../mesh1/radius")` instead.
 - **Params are native parms.** Sliders, toggles, menus, colour and vector parms, folders,
@@ -51,7 +52,7 @@ it like any subnet. It is also the unit that travels between hosts.
   chunk with no exec input takes the group's input;
 - a param wired to another param (`@AddMesh.prim_path@`) becomes `chs("../AddMesh/prim_path")`,
   and one wired to a public param `ch("../SwedishHouse_floors")`;
-- the active View becomes the group's output.
+- the active View becomes the group's output; with no View, the end of its chain does.
 
 **Export** -- the chunkgroup node's **Export Network...** button writes it back as a network
 file that usdview, Blender and the CLI open: the same references become param wires and
@@ -79,24 +80,39 @@ in a process of its own under Houdini's Python, so it is exactly what Qt would s
 From a script: `chunkgroup.import_file(path, hou.node("/stage"))` and
 `chunkgroup.export(node, path)`.
 
+## Layers
+
+A chunk node authors into Houdini's active layer, so the chunks in a row share one layer
+until something starts a new one.
+
+- **Layer** starts a new active layer and names it with its Layer Name (the node's name if
+  blank). It also sets the layer's save path to `$HIP/usd/<name>.usda`, for a USD ROP.
+  Houdini always puts a new layer on top, so its Insert options do nothing here.
+- **Edit Target** pointing at the newest named layer, or at Follow Upstream Layer, needs
+  nothing: the chunks after it already author there. Pointing at an older layer is not
+  supported yet, and the node says so.
+- **Export USD** lists and writes the named layers and the files in the stack. Houdini's own
+  layers are left out, and so is its HoudiniLayerInfo prim, as a USD ROP drops it.
+
 ## How it works
 
 | File | Role |
 |---|---|
-| `otls/usdchunks_chunk.hda` | The node types (expanded, text): `usdchunks::chunk`, a subnet with a Python Script LOP calling `lop.cook` and two hidden parms naming the chunk; `usdchunks::chunkgroup`, an empty subnet with the Export Network button. |
+| `otls/usdchunks_chunk.hda` | The node types (expanded, text): `usdchunks::chunk`, a subnet with a Python Script LOP calling `lop.cook` (a Layer chunk's through a Configure Layer starting a new layer) and two hidden parms naming the chunk; `usdchunks::chunkgroup`, an empty subnet with the Export Network button. |
 | `lop.py` | Creating, cooking, deleting a chunk node; button and menu callbacks. |
 | `parms.py` | Chunk params <-> Houdini parms. |
 | `scene.py` | `HoudiniScene`, the SceneSender. |
 | `tools.py` | Writes and loads the TAB menu's shelf file (one tool per chunk and variant). |
 | `chunkgroup.py` | The chunkgroup node: importing a network into one, exporting one. |
 | `export_worker.py` | Writes an exported chunkgroup with the scripting API, in its own process. |
+| `layers.py` | Merging a chunk's layer into the active layer; named layers, Layer and Edit Target. |
 | `space.py` | A chunkgroup's network space: its parms, `space_in`/`space_out`, the conversion. |
 | `python3.11libs/pythonrc.py` | Startup: dependency dir on `sys.path`, TAB menu once the UI is up. |
 | `build_hda.py` | Regenerates the HDA (`hython build_hda.py`). Only needed when its contents change. |
 
 A cook pushes the parms into the chunk, opens a private stage over the node's input,
-runs the chunk through the same `ChunkBase._cook` every host uses, and sublayers a copy of
-the chunk's layer into the node's output. What the cook changed on the chunk -- an OUTPUT
+runs the chunk through the same `ChunkBase._cook` every host uses, and merges the chunk's
+layer into the active layer, the chunk's edits winning. What the cook changed on the chunk -- an OUTPUT
 param, a group a menu hid -- is shown on the parms after the cook.
 
 ## Not yet
@@ -104,6 +120,8 @@ param, a group a menu hid -- is shown on the parms after the cook.
 - Interactive chunks (`interactive=True`, authoring straight into a file layer) and chunks
   that build Qt widgets (`chunk.Custom`) have no Houdini form.
 - Gizmos and the viewport camera hooks.
+- Edit Target pointing at an older layer than the newest; Mute Layer (it mutes on the
+  node's own stage only, so nothing after it sees the mute).
 - Baking a Solaris node into an Inline USD chunk on export (export refuses it for now).
 - A chunk needing pip packages asks to install them only when put down from the TAB menu;
   a .hip loading never stops on a dialog, and the node errors until they are installed.

@@ -59,8 +59,8 @@ def _resolve_layer(stage, selection):
     possibly later in the same load if it executes after this chunk).
     """
     tag = selection.rsplit(":", 1)[-1] if selection.startswith("anon:") else selection
-    for layer in stage.GetLayerStack(includeSessionLayers=True):
-        if layer.identifier == selection or layer.GetDisplayName() in (selection, tag):
+    for name, layer in chunk_utils.user_layers(stage):
+        if layer.identifier == selection or name in (selection, tag):
             return layer
     return None
 
@@ -99,8 +99,7 @@ def _refresh_edit_target(owner, notice, sender):
     # _resolve_layer already matches on it. Falls back to the identifier only for a
     # layer with no display name at all (e.g. an anonymous root layer).
     target_items = ["Session Layer"] + [
-        layer.GetDisplayName() or layer.identifier
-        for layer in stage.GetLayerStack(includeSessionLayers=True)
+        name for name, layer in chunk_utils.user_layers(stage)
         if layer.identifier != session_id and layer.identifier not in internal_ids
     ]
     if _find_upstream_create_layer(_chunk) is not None:
@@ -189,6 +188,9 @@ def main():
     edit_target = chunk.Menu(
         "edit_target", "Edit Target",
         menu_items=["Session Layer"], default_value="Session Layer",
+        # The items are the stage's layers as last seen, so a saved choice is set before the
+        # layer it names is listed; _refresh_edit_target drops it if it never resolves.
+        dynamic_items=True,
         tooltip="The layer to make the stage's current edit target. Kept in sync "
         "automatically as the stage's layer stack changes. If a Layer chunk "
         "feeds this one directly, \"" + _FOLLOW_UPSTREAM + "\" appears — pick it to "
