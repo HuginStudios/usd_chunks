@@ -416,11 +416,17 @@ def _is_output(param) -> bool:
     return bool(param.has_flag(ChunkFlags.ParamFlags.OUTPUT))
 
 
+def _is_transient(param) -> bool:
+    return bool(param.has_flag(ChunkFlags.ParamFlags.TRANSIENT))
+
+
 def push(node: hou.Node, chunk) -> None:
     """Parm values -> chunk params, for every parm whose value differs.
 
     Evaluated during the node's cook, which is also what makes Houdini recook the node
-    when any of these parms changes (or a channel reference they hold does).
+    when any of these parms changes (or a channel reference they hold does). So outputs and
+    session state, which the chunk writes and pull only shows, are not read: a Layer's new
+    layer id differs every cook, and reading it back would recook the node forever.
     """
     for e in entries(chunk):
         pt = node.parmTuple(e.name)
@@ -431,7 +437,7 @@ def push(node: hou.Node, chunk) -> None:
             if size != e.param.size:
                 e.param.size = size
             continue
-        if e.kind not in ("value", "vector") or _is_output(e.param):
+        if e.kind not in ("value", "vector") or _is_output(e.param) or _is_transient(e.param):
             continue
         value = _read(pt, e.param, e.kind)
         if not _same(value, e.param.value):

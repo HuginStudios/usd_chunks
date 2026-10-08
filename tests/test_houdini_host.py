@@ -89,6 +89,9 @@ SCRIPT = textwrap.dedent(r"""
         return node.cookCount() == count
 
     out["mesh_settles"] = settles(mesh)
+    layer = lop.create(net, "layer")
+    layer.setInput(0, mesh)
+    out["layer_settles"] = settles(layer)
 
     out["menu"] = lop.menu_items(mesh, "mesh_type")[:4]
 
@@ -302,6 +305,11 @@ def test_chunks_wire_through_lop_inputs(result):
 
 def test_a_chunk_node_stops_cooking_once_its_parms_are_shown(result):
     assert result["mesh_settles"]
+
+
+def test_a_chunk_writing_session_state_stops_cooking(result):
+    # Layer writes its new layer's id, which differs every cook, into a hidden param.
+    assert result["layer_settles"]
 
 
 def test_a_button_runs_its_callback_and_shows_what_it_set(result):
