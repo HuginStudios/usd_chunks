@@ -43,6 +43,10 @@ PT = ChunkFlags.ParamType
 
 #: The node type's own parm naming the chunk module. Never a chunk param's name.
 TYPE_PARM = "usdchunks_type"
+#: The node type's own parm holding the variant's menu path ("Materials/standard_surface/Gold"), or "".
+VARIANT_PARM = "usdchunks_variant"
+#: The node type's own parms: every other parm on a chunk node is one of its chunk's params.
+TYPE_PARMS = (TYPE_PARM, VARIANT_PARM)
 
 _LOP = "from usd_chunks.hosts.houdini import lop\n"
 #: Menu items come from the chunk each time the menu opens.
@@ -74,7 +78,7 @@ class Entry:
 
 
 def _names() -> dict:
-    return {"used": {TYPE_PARM}}
+    return {"used": set(TYPE_PARMS)}
 
 
 def _unique(base: str, scope: str, names: dict) -> str:
@@ -334,7 +338,7 @@ def template_names(parm_templates) -> list[str]:
     """Every template name in parm_templates, folders' contents included, in order."""
     names = []
     for template in parm_templates:
-        if template.name() == TYPE_PARM:
+        if template.name() in TYPE_PARMS:
             continue
         names.append(template.name())
         if isinstance(template, hou.FolderParmTemplate):
@@ -351,12 +355,12 @@ def build_interface(node: hou.Node, chunk) -> None:
     """Replace node's spare parms with the chunk's params, keeping values that still fit."""
     old = {}
     for pt in node.spareParms():
-        if pt.name() != TYPE_PARM and not pt.keyframes():
+        if pt.name() not in TYPE_PARMS and not pt.keyframes():
             old[pt.name()] = pt.eval()
 
     group = node.parmTemplateGroup()
     for template in list(group.entries()):
-        if template.name() != TYPE_PARM:
+        if template.name() not in TYPE_PARMS:
             group.remove(template.name())
     for template in templates(chunk):
         group.append(template)

@@ -64,7 +64,7 @@ def _chunk_type(network: hou.Node, library: str) -> None:
     definition = asset.type().definition()
     group = hou.ParmTemplateGroup()
     group.append(hou.StringParmTemplate(parms.TYPE_PARM, "Chunk Module", 1, is_hidden=True))
-    group.append(hou.StringParmTemplate(lop.VARIANT_PARM, "Chunk Variant", 1, is_hidden=True))
+    group.append(hou.StringParmTemplate(parms.VARIANT_PARM, "Chunk Variant", 1, is_hidden=True))
     definition.addSection("OnDeleted", ON_DELETED)
     definition.setExtraFileOption("OnDeleted/IsPython", True)
     _finish(definition, group, "A usd_chunks chunk. Made from the TAB menu's usdchunks entries.")

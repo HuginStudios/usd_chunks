@@ -77,6 +77,19 @@ SCRIPT = textwrap.dedent(r"""
     scene.flush_pending()
     out["pivot_after_center"] = xform.evalParm("px")
 
+    def settles(node):
+        # Whether node stops cooking once its after-cook updates have run.
+        for _ in range(3):
+            node.stage()
+            scene.flush_pending()
+        count = node.cookCount()
+        for _ in range(2):
+            node.stage()
+            scene.flush_pending()
+        return node.cookCount() == count
+
+    out["mesh_settles"] = settles(mesh)
+
     out["menu"] = lop.menu_items(mesh, "mesh_type")[:4]
 
     sub = lop.create(net, "sublayer")
@@ -285,6 +298,10 @@ def test_a_parm_change_recooks(result):
 def test_chunks_wire_through_lop_inputs(result):
     assert 'over "mesh"' in result["xform_layer"]
     assert "(5, 0, 0, 1)" in result["xform_layer"]
+
+
+def test_a_chunk_node_stops_cooking_once_its_parms_are_shown(result):
+    assert result["mesh_settles"]
 
 
 def test_a_button_runs_its_callback_and_shows_what_it_set(result):

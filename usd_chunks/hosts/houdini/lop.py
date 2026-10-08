@@ -38,8 +38,6 @@ logger = logging.getLogger(__name__)
 
 #: The node type every chunk node is.
 HDA_TYPE = "usdchunks::chunk"
-#: Hidden parm holding the variant's menu path ("Materials/standard_surface/Gold"), or "".
-VARIANT_PARM = "usdchunks_variant"
 #: The Python Script LOP inside the node type.
 COOK_NODE = "cook"
 COOK_CODE = "from usd_chunks.hosts.houdini import lop\nlop.cook(hou.pwd())\n"
@@ -83,7 +81,7 @@ def chunk_for(node: hou.Node):
         return chunk
     scene = ensure_scene()
     module_name = node.evalParm(parms.TYPE_PARM)
-    entry = _entry(module_name, node.evalParm(VARIANT_PARM))
+    entry = _entry(module_name, node.evalParm(parms.VARIANT_PARM))
     if entry is None:
         raise hou.NodeError(
             f"No chunk module '{module_name}'. Is its folder on USD_CHUNK_DIRS?")
@@ -256,7 +254,7 @@ def _node_name(entry) -> str:
 def setup(node: hou.Node, entry) -> object:
     """Make node the chunk entry describes: name the module, build the parms."""
     node.parm(parms.TYPE_PARM).set(entry.module.module_name)
-    node.parm(VARIANT_PARM).set("/".join(entry.namespace) if entry.presets is not None else "")
+    node.parm(parms.VARIANT_PARM).set("/".join(entry.namespace) if entry.presets is not None else "")
     _chunks.pop(node.sessionId(), None)
     chunk = chunk_for(node)
     parms.build_interface(node, chunk)
