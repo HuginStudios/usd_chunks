@@ -114,6 +114,11 @@ SCRIPT = textwrap.dedent(r"""
     cams = [p for p in camera.stage().Traverse() if p.GetTypeName() == "Camera"]
     out["camera_focal"] = cams[0].GetAttribute("focalLength").Get() if cams else None
 
+    inline = lop.create(net, "inline_usd", name="Inline")
+    inline.stage()
+    scene.flush_pending()
+    out["inline_prims"] = [str(p.GetPath()) for p in inline.stage().Traverse() if p.GetTypeName() == "Sphere"]
+
     # Two Transform chunks on one prim: each owns an op, so both apply.
     first_move = lop.create(net, "transform", name="MoveA")
     first_move.setInput(0, mesh)
@@ -572,6 +577,11 @@ def test_a_lights_attribute_parm_drives_the_light(result):
 
 def test_a_cameras_parm_drives_the_camera(result):
     assert result["camera_focal"] == pytest.approx(35.0)
+
+
+def test_inline_usd_cooks_its_text_into_the_node(result):
+    # It wrote its layer from a callback only; a node's cook starts from an empty layer.
+    assert result["inline_prims"] == ["/sphere"]
 
 
 def test_two_transforms_on_one_prim_each_own_an_op(result):
