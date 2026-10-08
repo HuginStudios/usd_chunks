@@ -1201,6 +1201,24 @@ def test_a_new_network_saves_to_a_file_it_never_had(tmp_path, addon_on):
     assert out.exists()
 
 
+def test_a_saved_network_keeps_every_chunk_wherever_it_is_authored(tmp_path, addon_on):
+    """Save wrote the root layer only. Behind an Edit Target, chunk prims live in the layer
+    it names, and a chunk added in Blender in the session layer: both were dropped."""
+    path, context = make_network(tmp_path / "targeted.usda", modules=("layer", "edit_target", "transform"),
+                                 positions=((0.0, 0.0), (300.0, 0.0), (600.0, 0.0)))
+    tree = bpy.data.node_groups.new("targeted", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    view = addon.get_view()
+    entry = next(e for e in chunk_registry.ChunkRegistry().get_menu_entries()
+                 if e.module.module_name == "transform" and e.presets is None)
+    view.create_chunk(entry, 900.0, 0.0)
+    out = tmp_path / "saved.usda"
+
+    addon.write_network(view, str(out))
+
+    assert chunk_prims(Usd.Stage.Open(str(out))) == chunk_prims(view.stage)
+
+
 def test_saving_the_blend_keeps_a_network_with_no_file(tmp_path, addon_on):
     """An untitled network rides along in the .blend and reopens from there."""
     path, context = make_network(tmp_path / "embed.usda")

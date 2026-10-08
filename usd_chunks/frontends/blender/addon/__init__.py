@@ -32,6 +32,7 @@ import heapq
 import itertools
 import logging
 import os
+import tempfile
 import threading
 import time
 
@@ -320,21 +321,28 @@ def _stage_for_tree(tree):
 
 
 def write_network(view, path: str) -> None:
-    """Write the open network to `path`, positions included.
+    """Write the open network to `path`, positions included, as usdview saves one.
 
-    Save when the root layer already is that file; Export otherwise -- a network started
-    with New lives in an anonymous layer, which has nowhere to Save() to.
+    Every chunk prim, wherever it is authored (chunk_stage.save_scene). Writing the root
+    layer alone lost most of a network: on load, chunk prims move into the session layer
+    and into the layers Edit Target chunks name, and a test_shot3 network saved that way
+    kept 2 of its 22 chunks.
     """
     # Blender owns dragging, so there is no move event to hook; positions are collected
     # here instead. Without this a layout done in Blender is lost, because the tree is
     # a view and the next reload overwrites it from USD.
     view.pull_positions_from_tree()
-    root = view.stage.GetRootLayer()
-    path = os.path.normcase(os.path.abspath(bpy.path.abspath(path)))
-    if not root.anonymous and os.path.normcase(os.path.abspath(root.realPath)) == path:
-        root.Save()
-    else:
-        root.Export(path)
+    chunk_stage.save_scene(view.scene, os.path.abspath(bpy.path.abspath(path)))
+
+
+def network_text(view) -> str:
+    """The open network as .usda text, as write_network writes it, for one with no file."""
+    view.pull_positions_from_tree()
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "network.usda")
+        chunk_stage.export_chunks(view.scene, path)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
 
 
 def network_unsaved(view) -> bool:
@@ -375,8 +383,7 @@ def _on_save_pre(*_args) -> None:
         return
     try:
         if not tree.chunk_network_path:
-            view.pull_positions_from_tree()
-            tree.chunk_network_embedded = view.stage.GetRootLayer().ExportToString()
+            tree.chunk_network_embedded = network_text(view)
         elif network_unsaved(view):
             name = bpy.path.basename(tree.chunk_network_path)
             logger.warning("usd_chunks: %s has unsaved edits; the .blend does not save them",
