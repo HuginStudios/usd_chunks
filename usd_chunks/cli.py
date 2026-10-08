@@ -20,7 +20,7 @@ from pathlib import Path
 from pxr import Usd
 from usd_chunks import chunk_naming, configure_logging
 from usd_chunks.chunk_process import python_executable
-from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene
@@ -28,6 +28,7 @@ from usd_chunks.chunk_stage import flatten_without_chunks
 from usd_chunks.chunk_stage import (
     commit_order_from_stage,
     find_group_active_view,
+    find_output_chunk,
     is_view_chunk,
     recook_focus,
 )
@@ -356,7 +357,10 @@ def cmd_pin(args):
 
 
 def _active_view(stage, scene):
-    """The view chunk that drives the stage, or None if the file has none.
+    """The chunk that drives the stage: the file's Output, else a view, else None.
+
+    The Output first: it is what the file delivers, and a view is only where someone last
+    looked. A file saved before Output nodes falls back to its active view.
 
     A network is only worth cooking if something looks at it. The UI has always worked this
     way -- recook_focus establishes the active view and mutes everything the view cannot
@@ -375,6 +379,8 @@ def _active_view(stage, scene):
     cooking everything, because silently producing nothing for every existing recipe would
     be worse than cooking too much.
     """
+    if (output := find_output_chunk(stage, scene, None)) is not None:
+        return output
     everything = list(_all_chunks(scene.get_chunks()))
     views = [c for c in everything if is_view_chunk(c)]
     if not views:
@@ -428,6 +434,10 @@ def cmd_run(args):
     view = None if getattr(args, "all", False) else _active_view(stage, scene)
     if view is not None:
         recook_focus(stage, scene, None, view)
+
+    # Whatever a worker thread handed back during the cook (a download finishing) runs
+    # here, on the main thread, before anything is written.
+    chunk_scene.run_pending()
 
     # The solve has settled, so anything the network declared as an output on disk (an
     # Export USD chunk, ...) gets written now -- before --export/--printout report on the

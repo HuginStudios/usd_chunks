@@ -794,16 +794,17 @@ class GraphView:
         self.set_active_slot(slot)
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open. Without one, nothing cooks -- a network would
-        look right and do nothing.
+        """Give the context an Output (or, failing that, a view) on open. Without one,
+        nothing cooks -- a network would look right and do nothing.
         """
+        before = len(self.scene.get_chunks())
         slot, activate = chunk_graph.default_view_slot(
             self.stage, self.scene, self.context, self.chunks.get(self.context))
-        if slot is None:
+        if slot is None and len(self.scene.get_chunks()) == before:
             return
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
-        if activate:
+        if slot is not None and activate:
             self.set_active_slot(slot)
 
     # -- keyboard ----------------------------------------------------------

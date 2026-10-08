@@ -94,15 +94,16 @@ def make_network(path, modules=("transform", "transform"),
 
 
 def content_nodes(view):
-    """The graph's content nodes, sorted, excluding view chunks.
+    """The graph's content nodes, sorted, excluding view and Output chunks.
 
-    Every frontend now creates a view on open -- a context without one cooks nothing, so
-    it is real behaviour rather than decoration. Tests that mean "the chunks I built"
-    have to say so, or they pick up the View node and assert the wrong count.
+    Every frontend now gives a context an Output on open -- a context with neither an
+    Output nor a view cooks nothing, so it is real behaviour rather than decoration. Tests
+    that mean "the chunks I built" have to say so, or they pick up the Output or a View
+    node and assert the wrong count.
     """
     return sorted(
         path for path, prim in view.prims.items()
-        if (prim.GetAttribute("info:chunkType").Get() or "") != "view"
+        if (prim.GetAttribute("info:chunkType").Get() or "") not in ("view", "output")
     )
 
 

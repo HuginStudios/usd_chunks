@@ -2060,14 +2060,16 @@ def parent_context(context: str, available) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# View nodes
+# View and Output nodes
 #
-# A view is what drives execution: chunk_stage.recook_for_view cooks the active view's
-# upstream tree and blocks everything else. A context with no view therefore cooks
-# NOTHING, which is why every frontend makes one on open (default_view_slot).
+# The active view drives execution while there is one: chunk_stage.recook_for_view cooks
+# its upstream tree and blocks everything else. With no active view a context cooks to its
+# Output. A context with neither cooks NOTHING, which is why every frontend gives it an
+# Output on open (default_view_slot -> ensure_default_output).
 # ---------------------------------------------------------------------------
 
 VIEW_MODULE = "view"
+OUTPUT_MODULE = "output"
 VIEW_SLOT_ATTR = "view:slot"
 ACTIVE_VIEW_ATTR = "chunk:activeView"
 VIEW_SLOTS = (1, 2)
@@ -2222,6 +2224,91 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
     return slot
 
 
+def context_has_output(scene, context) -> bool:
+    """True when this context -- or the whole graph, if context is None -- has an Output."""
+    return any(
+        chunk_stage.is_output_chunk(chunk) and (context is None or chunk.get_context() == context)
+        for chunk in scene.get_chunks()
+    )
+
+
+def create_output_for(stage: Usd.Stage, scene, target_prim_path: str) -> str | None:
+    """Create the Output of target_prim_path's graph, wired from it.
+
+    All USD and registry work -- no toolkit -- so every frontend creates Outputs the same way.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene to add the Output chunk to.
+        target_prim_path: Prim path of the node that ends the chain.
+
+    Returns:
+        The Output's prim path, or None if the target is missing or is itself terminal, or
+        there is no Output module.
+    """
+    target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
+    if not target.IsValid():
+        return None
+    if target.GetAttribute(CHUNK_TYPE_ATTR).Get() in (VIEW_MODULE, OUTPUT_MODULE):
+        return None
+
+    module = chunk_registry.ChunkRegistry().get_chunk_module(OUTPUT_MODULE)
+    if module is None:
+        return None
+    made = module.create() if module.loaded else module.load()
+    if not made:
+        return None
+    output_chunk = made[0]
+    output_chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+    # Read the target's position BEFORE add_chunk: adding fires CHUNK_LOADED, which a
+    # frontend may answer by rebuilding its graph.
+    target_x, target_y = node_position(target)
+
+    scene.add_chunk(output_chunk)
+    output_path = chunk_stage.get_chunk_prim_path(output_chunk)
+    output_prim = stage.GetPrimAtPath(Sdf.Path(output_path))
+    if not output_prim.IsValid():
+        return None
+
+    # As for a view: first-time bookkeeping belongs where this chunk's Edit Target
+    # resolves, not wherever the stage's ambient edit target points.
+    with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, output_chunk)):
+        exec_in = output_prim.GetAttribute(EXEC_INPUT)
+        if not (exec_in and exec_in.IsValid()):
+            exec_in = output_prim.CreateAttribute(EXEC_INPUT, Sdf.ValueTypeNames.Token,
+                                                  custom=False)
+        exec_in.SetConnections([Sdf.Path(f"{target_prim_path}.{EXEC_OUTPUT}")])
+
+        pos = output_prim.GetAttribute(POS_ATTR)
+        if not pos:
+            pos = output_prim.CreateAttribute(POS_ATTR, Sdf.ValueTypeNames.Float2)
+        pos.Set(Gf.Vec2f(float(target_x) + 280.0, float(target_y)))
+    return output_path
+
+
+def ensure_default_output(stage: Usd.Stage, scene, context) -> str | None:
+    """Give this context an Output if it has neither an Output nor a view.
+
+    A context with neither cooks nothing, so this is what makes a new network run. A file
+    saved before Outputs, with only views, is left as it is: its active view still drives it.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the context lives in.
+        context: The context's chunk.
+
+    Returns:
+        The new Output's prim path, or None if there was nothing to do.
+    """
+    if context_has_output(scene, context) or context_has_view(scene, context):
+        return None
+    tails = chunk_stage.exec_tails(stage, scene, context)
+    if not tails:
+        return None
+    return create_output_for(stage, scene, chunk_stage.get_chunk_prim_path(tails[0]))
+
+
 def ensure_default_view(stage: Usd.Stage, scene, context) -> int | None:
     """Give this context a view if it has none, wired to the end of its exec chain.
 
@@ -2368,7 +2455,11 @@ def new_view_slot(stage: Usd.Stage, scene, context_chunk,
 
 def default_view_slot(stage: Usd.Stage, scene, context: str,
                       context_chunk) -> tuple[int | None, bool]:
-    """The view to give a context on open.
+    """The view to give a context on open -- none, now that a context gets an Output.
+
+    A context with neither an Output nor a view gets an Output (ensure_default_output),
+    and is recooked to it here, so there is no slot to activate. A view is only made when
+    no Output module is registered.
 
     ensure_default_view returns the EXISTING slot when a view is already wired to the tail,
     so a file that already records a slot must not have it activated again -- that would
@@ -2388,6 +2479,16 @@ def default_view_slot(stage: Usd.Stage, scene, context: str,
         the file already records a slot.
     """
     if scene is None:
+        return None, False
+    if context_has_output(scene, context_chunk):
+        return None, False
+    try:
+        made = ensure_default_output(stage, scene, context_chunk)
+        if made is not None:
+            chunk_stage.recook_for_view(stage, scene, context_chunk, None)
+            return None, False
+    except (AttributeError, KeyError, RuntimeError, ValueError):
+        logger.exception("could not create a default Output")
         return None, False
     already = read_active_slot(stage, context)
     try:

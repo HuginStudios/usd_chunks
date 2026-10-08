@@ -137,6 +137,12 @@ QLabel[chunkExpression="true"] {
 QLabel[chunkOverride="true"] {
     color: #e0b060;
 }
+QLabel[chunkHeld="true"] {
+    color: #d07a6a;
+}
+QLabel[chunkLocked="true"] {
+    color: #808080;
+}
 """
 
 # Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
@@ -1597,14 +1603,39 @@ class LabeledWidget(QtWidgets.QWidget):
             return
         try:
             source = chunk_stage.param_override_source(self.widget.param)
+            # The other way round, and the one that matters more: a stronger layer holds
+            # this value (chunk_stage.param_held_by), so an edit here is kept but does not
+            # show -- the field springs back, and without this nothing says why.
+            holder = chunk_stage.param_held_by(self.widget.param)
+            # An edit would land in a locked file (read-only, or edit permission off), so it
+            # is refused -- said up front rather than discovered by the field springing back.
+            lock = chunk_stage.param_locked_by(self.widget.param)
         except ReferenceError:
             return
-        overridden = source is not None
-        if self.label.property("chunkOverride") != overridden:
+        overridden = source is not None and holder is None
+        held = holder is not None
+        locked = lock is not None
+        if (self.label.property("chunkOverride") != overridden
+                or self.label.property("chunkHeld") != held
+                or self.label.property("chunkLocked") != locked):
             self.label.setProperty("chunkOverride", overridden)
+            self.label.setProperty("chunkHeld", held)
+            self.label.setProperty("chunkLocked", locked)
             self.label.style().unpolish(self.label)
             self.label.style().polish(self.label)
-        if overridden and not self.label.property("chunkExpression"):
+        if self.label.property("chunkExpression"):
+            return
+        if locked:
+            self.label.setToolTip(
+                f"Locked: {lock.GetDisplayName() or lock.identifier} can't be edited. Set the "
+                "edit target to a layer you can edit to override it there"
+            )
+        elif held:
+            self.label.setToolTip(
+                f"Overridden by {chunk_stage.layer_label(holder)}: an edit here is kept "
+                "beneath it and shows once it goes"
+            )
+        elif overridden:
             self.label.setToolTip(f"Overrides {source.GetDisplayName() or source.identifier}")
 
     def _sync_expression_mark(self):

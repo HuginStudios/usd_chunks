@@ -410,6 +410,11 @@ def push_chunk_values(stage: Usd.Stage, chunk: core.ChunkBase) -> None:
         _push_driven_values(stage, vector)
 
 
+def _adopt_cooked_inputs(chunk: core.ChunkBase) -> None:
+    """chunk_cook.after_cook's hook: the stage sync of the moment reads what the cook changed."""
+    ChunkStageSync()._adopt_cooked_inputs(chunk)
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """Singleton that keeps a Chunk prim on the stage for every chunk in the scene.
 
@@ -447,6 +452,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # apart from info-only changes because they justify different amounts of looking.
         self._pending_resyncs: set[Sdf.Path] = set()
         self._pending_info_changes: set[Sdf.Path] = set()
+        # inputs: properties a running cook changed, for _adopt_cooked_inputs once it ends.
+        self._cooked_inputs: set[str] = set()
+        # id(chunk) -> where its prim composes from (chunk_utils.composition_sources), for
+        # _adopt_resynced_inputs to tell a recomposed chunk from one merely resynced.
+        self._sources: dict[int, tuple] = {}
+        # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
+        self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
+        chunk_cook.after_cook(_adopt_cooked_inputs)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
@@ -910,6 +923,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # has to be recorded -- suppression stops us reacting now, not the prims existing.
         self._pending_resyncs.update(notice.GetResyncedPaths())
         self._pending_info_changes.update(notice.GetChangedInfoOnlyPaths())
+        if chunk_notice._executing_chunk is not None and chunk_notice._usd_write_active:
+            # A cook writing onto a chunk prim's inputs -- an Override Chunk Prim's `over`,
+            # or its layer being cleared -- changes that chunk's params, and the guard below
+            # is up for the whole cook. Kept for after it (_adopt_cooked_inputs), read from
+            # the composed stage then rather than replayed, so a write half done is never
+            # seen. Names only: which prims are chunk prims is sorted out then.
+            self._cooked_inputs.update(
+                str(p) for paths in (notice.GetResyncedPaths(), notice.GetChangedInfoOnlyPaths())
+                for p in paths if p.IsPropertyPath() and p.name.startswith(_INPUTS_PREFIX)
+            )
         if chunk_notice._usd_write_active or self._reconciling_exec or not self._scene:
             return
         # Resolve the stage from the notice itself, like _on_contents_changed does, rather
@@ -940,6 +963,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             return
         self._reconcile_changed_exec_inputs(all_changed, notice)
         self._mirror_changed_params(stage, all_changed)
+        self._adopt_changed_inputs(all_changed)
+        self._adopt_resynced_inputs(notice.GetResyncedPaths())
         self._prune_vanished(stage, {str(p) for p in notice.GetResyncedPaths()})
         for chunk in self._scene.get_chunks():
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
@@ -1060,6 +1085,113 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if (val is not None and not _values_agree(val, param.value)
                         and not (isinstance(raw, str) and chunk_utils.has_expression(raw))):
                     param.value = val
+
+    def _adopt_changed_inputs(self, paths: Iterable[str], skip: core.ChunkBase | None = None) -> None:
+        """Bring each chunk whose prim's inputs: changed in line with what the prim composes.
+
+        By name, where _mirror_changed_params goes by binding: a param still at its default
+        has no attribute, so nothing is bound to one that another layer then authors -- and
+        when the layer holding it goes, the param goes back to its default, which the bound
+        mirror (reading only values that exist) never did.
+
+        Args:
+            paths: Changed property paths; only <chunk prim>.inputs:* ones count.
+            skip: A chunk to leave alone -- the one whose cook made the changes.
+        """
+        by_prim: dict[str, list[str]] = {}
+        for path in paths:
+            prim_path, sep, name = str(path).partition(".")
+            if sep and name.startswith(_INPUTS_PREFIX):
+                by_prim.setdefault(prim_path, []).append(name[len(_INPUTS_PREFIX):])
+        if not by_prim or not self._scene:
+            return
+        for chunk in self._scene.get_chunks():
+            names = by_prim.get(self._chunk_prim_paths.get(id(chunk), ""))
+            if names and chunk is not skip:
+                _adopt_inputs(chunk, names)
+
+    def _adopt_resynced_inputs(self, resynced: Iterable[Sdf.Path]) -> None:
+        """A chunk whose prim now composes from different sources re-reads all its inputs.
+
+        A resync recomposes a prim from scratch and reports the prim, not which inputs:
+        changed. H1 under a house whose version went v1 -> v2 is the same prim path with
+        another file's values behind it. Which chunks that applies to is read from USD: the
+        fingerprint of each one's prim index (chunk_utils.composition_sources) against the
+        one recorded before. Making, pasting or grouping chunks resyncs too, but leaves the
+        sources of the chunks already there alone, so their pending edits are not overwritten.
+
+        Not for the pseudo-root: every sublayer insert resyncs it, which is every cook layer
+        placed, and fingerprinting every chunk on each would be the whole cost of a cook.
+        """
+        roots = [p for p in resynced if p.IsPrimPath() and p != Sdf.Path.absoluteRootPath]
+        if not roots or not self._scene or not self._stage:
+            return
+        for chunk in self._scene.get_chunks():
+            path = self._chunk_prim_paths.get(id(chunk))
+            if not path or not any(Sdf.Path(path).HasPrefix(root) for root in roots):
+                continue
+            sources = chunk_utils.composition_sources(self._stage.GetPrimAtPath(path))
+            before = self._sources.get(id(chunk))
+            self._sources[id(chunk)] = sources
+            if before is not None and before != sources:
+                _adopt_inputs(chunk)
+
+    def record_sources(self, chunks: Iterable[core.ChunkBase]) -> None:
+        """Note where each chunk's prim composes from, for _adopt_resynced_inputs."""
+        if not self._stage:
+            return
+        for chunk in chunks:
+            if path := self._chunk_prim_paths.get(id(chunk)):
+                self._sources[id(chunk)] = chunk_utils.composition_sources(
+                    self._stage.GetPrimAtPath(path))
+
+    def _follow_composed(self, chunk: core.ChunkBase, param) -> None:
+        """Once the solve has written everything, set param to what its prim composes.
+
+        Its edit lands in its home (chunk_utils.get_attr_home_layer), and usually that is
+        what composes. Not when a stronger layer holds the input -- an Override Chunk Prim's,
+        a department's above this one (chunk_stage.param_held_by): the param would keep the
+        value it was given while the prim says otherwise, and the chunk would cook with a
+        value USD does not have. After the solve, not now: a bound param writes from its own
+        data_changed, in no set order with this listener, and reading before it had written
+        would undo the edit instead.
+
+        Args:
+            chunk: The param's chunk.
+            param: The param (or vector) just edited.
+        """
+        owner = param.get_owner()
+        target = owner if isinstance(owner, core.ChunkVectorBase) else param
+        names = _param_object_path(chunk, target)
+        if not names:
+            return
+        pending = self._follow_pending.setdefault(id(chunk), (chunk, set()))[1]
+        pending.add(":".join(names))
+
+        def follow():
+            entry = self._follow_pending.pop(id(chunk), None)
+            stage = chunk.get_scene_stage()
+            if entry is None or stage is None:
+                return
+            # Only what a stronger layer holds. Anything else is the param's own value, on
+            # its way to USD: a chunk prim's writes can be debounced, so the attribute may
+            # not be there yet, and reading it then would put the param back to its default.
+            held = [n for n in entry[1] if _input_held_by(chunk, stage, n) is not None]
+            if held:
+                _adopt_inputs(chunk, held)
+
+        # Outside a solve nothing says the write is done, so nothing is read.
+        if not chunk_cook.defer_to_batch_end(("follow_composed", id(chunk)), follow):
+            self._follow_pending.pop(id(chunk), None)
+
+    def _adopt_cooked_inputs(self, chunk: core.ChunkBase) -> None:
+        """After chunk's cook: what it changed on other chunk prims' inputs: (chunk_cook.after_cook)."""
+        # Not from a cook inside another one: the outer cook may be part way through its
+        # own writes, and its end reads them all.
+        if not getattr(self, "_cooked_inputs", None) or chunk_notice._executing_chunk is not None:
+            return
+        paths, self._cooked_inputs = self._cooked_inputs, set()
+        self._adopt_changed_inputs(paths, skip=chunk)
 
     def _reconcile_changed_exec_inputs(self, all_changed: set[str], notice) -> None:
         """Mirror any changed inputs:chunk connection into the Python DAG.
@@ -1211,10 +1343,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         refresh = functools.partial(self._refresh_gizmo_anchors, chunk)
                         if not chunk_cook.defer_to_batch_end(("gizmo_anchors", id(chunk)), refresh):
                             refresh()
+                        self._follow_composed(chunk, owner)
                 elif isinstance(owner, core.ChunkVectorBase):
                     chunk = owner.get_chunk()
                     if chunk and id(chunk) in self._chunk_prim_paths:
                         self._sync_vector_input(chunk, owner)
+                        self._follow_composed(chunk, owner)
             return
 
         if attr_sender.name != "name":
@@ -1588,6 +1722,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         dep_prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dependent)))
         if not dep_prim.IsValid():
             return
+        if get_chunk_prim_path(dependency) in implied_sources(dep_prim):
+            return  # the layer stack's edge, derived on every read and never authored
         src_path = Sdf.Path(exec_output_path(dependency))
         # Nothing below this is worth doing for an edge USD already has -- and on load that
         # is every edge, since load_chunks mirrors add_dependency FROM the authored
@@ -2007,6 +2143,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         else:
             root = _resolve_chunk_root(chunk)
         prim_path = f"{root}/{chunk.name}"
+        # A group restored from the stage already knows where it is -- a network an arc
+        # composed in sits at /World/house/chunks/ChunkGroup, not under /chunks -- and its
+        # prim path is its identity. Rebuilding it from the parent and name moved it.
+        own_path = getattr(chunk, "prim_path", None) if is_group else None
+        if own_path and own_path != prim_path and self._stage.GetPrimAtPath(own_path):
+            root, prim_path = str(Sdf.Path(own_path).GetParentPath()), own_path
         # If the path is already tracked it's either (a) a load -- load_chunks pre-registers paths
         # before add_chunk -- or (b) a name collision the add_chunk dedup missed. The dedup checks
         # the scene-root container, but a group's siblings live under its parent context, so two
@@ -2051,9 +2193,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
         # View-follows-tail -- ONLY for chunks created in the Params tab (_params_tab_create).
         # The new chunk was chained after `prev` (prev -> new); if a view was fed by `prev`,
-        # move it onto `new` (prev -> new -> view). In the node graph the user wires manually,
-        # so we don't auto-repoint the view there.
-        if _params_tab_create and prev is not None and not is_view_chunk(chunk):
+        # move it onto `new` (prev -> new -> view). Never an Output: it stays wherever the
+        # user wired it. In the node graph the user wires manually, so we don't auto-repoint
+        # the view there.
+        if _params_tab_create and prev is not None and not is_terminal_chunk(chunk):
             self._rewire_views_from_source(prev, chunk)
 
     def _rewire_views_from_source(self, old_src: core.ChunkBase, new_src: core.ChunkBase) -> None:
@@ -2114,7 +2257,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # terminal, so it must not be treated as the chain tail itself).
         context_chunks = [
             c for c in self._scene.get_chunks()
-            if c.get_context() == context and c is not exclude and not is_view_chunk(c)
+            if c.get_context() == context and c is not exclude and not is_terminal_chunk(c)
         ]
         # Also include ChunkGroup chunks (CONTEXT with a USD prim) that belong here.
         # Plain tab contexts are excluded -- they have no prim and no exec connections.
@@ -2263,7 +2406,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # in every chunk of every saved file for no information at all.
             # Views are never auto-pinned, regardless of which surface/flow created them --
             # see is_chunk_pinned's matching unconditional view special case.
-            if bool(_pin_new_chunks) and not is_view_chunk(chunk):
+            if bool(_pin_new_chunks) and not is_terminal_chunk(chunk):
                 pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
                 pinned_attr.SetVariability(Sdf.VariabilityUniform)
                 if not pinned_attr.HasAuthoredValue():
@@ -2563,6 +2706,214 @@ def is_view_chunk(chunk: core.ChunkBase) -> bool:
     """Return True if chunk is a view-type chunk."""
     cfg = chunk.get_config()
     return bool(cfg and cfg.module == "view")
+
+
+def is_output_chunk(chunk: core.ChunkBase) -> bool:
+    """Return True if chunk is a graph's Output: what the graph delivers and cooks to."""
+    cfg = chunk.get_config()
+    return bool(cfg and cfg.module == "output")
+
+
+def is_terminal_chunk(chunk: core.ChunkBase) -> bool:
+    """Return True for a chain-ending marker (a view or an Output), which has no content.
+
+    Read from the module's config, so any terminal chunk is never taken for a chain's tail,
+    cooked, pinned or copied.
+    """
+    cfg = chunk.get_config()
+    return bool(cfg and cfg.terminal)
+
+
+def find_output_chunk(
+    stage: Usd.Stage, scene: chunk_scene.SceneSender, context: core.ChunkBase | None
+) -> core.ChunkBase | None:
+    """The Output of context's graph, or None if it has none.
+
+    A group's Output is its own, never the parent graph's (prim-path membership). For the
+    top level (context None) the shallowest Output wins, so a group's inner Output is never
+    taken for the file's.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+        context: The graph to look in, or None for the top level.
+
+    Returns:
+        The Output chunk, or None.
+    """
+    outputs = [c for c in scene.get_chunks() if is_output_chunk(c)]
+    if context is not None:
+        return next((c for c in outputs if is_node_in_context(c, context)), None)
+    return min(outputs, key=lambda c: Sdf.Path(get_chunk_prim_path(c)).pathElementCount, default=None)
+
+
+def _layer_strength(stage: Usd.Stage) -> dict[str, int]:
+    """Layer identifier -> position in the stage's layer stack, 0 the strongest."""
+    return {layer.identifier: i for i, layer in
+            enumerate(stage.GetLayerStack(includeSessionLayers=True))}
+
+
+def graph_outputs(
+    stage: Usd.Stage, scene: chunk_scene.SceneSender, context: core.ChunkBase | None
+) -> list[core.ChunkBase]:
+    """Every Output of a graph, weakest layer first.
+
+    A shot sublayering its departments composes each department's Output into one graph.
+    Delivering the graph cooks all of them, weakest first: implied edges (implied_sources)
+    usually chain them already, but a stronger layer can wire a weaker chunk after its own
+    and cut that chain, and the weaker department still delivers.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+        context: The graph, or None for the top level (the shallowest Outputs).
+
+    Returns:
+        The Outputs, weakest layer first; empty when the graph has none.
+    """
+    outputs = [c for c in scene.get_chunks() if is_output_chunk(c)]
+    if context is not None:
+        outputs = [c for c in outputs if is_node_in_context(c, context)]
+    elif outputs:
+        depth = min(Sdf.Path(get_chunk_prim_path(c)).pathElementCount for c in outputs)
+        outputs = [c for c in outputs if Sdf.Path(get_chunk_prim_path(c)).pathElementCount == depth]
+    if len(outputs) < 2:
+        return outputs
+    strength = _layer_strength(stage)
+
+    def rank(output: core.ChunkBase) -> int:
+        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(output)))
+        layer = chunk_utils.chunk_pass(prim) if prim and prim.IsValid() else None
+        return strength.get(layer.identifier, len(strength)) if layer is not None else len(strength)
+
+    return sorted(outputs, key=rank, reverse=True)
+
+
+def strongest_output(
+    stage: Usd.Stage, scene: chunk_scene.SceneSender, context: core.ChunkBase | None
+) -> core.ChunkBase | None:
+    """The Output of a graph from its strongest layer, or None when it has none."""
+    outputs = graph_outputs(stage, scene, context)
+    return outputs[-1] if outputs else None
+
+
+def _arc_network_outputs(stage: Usd.Stage) -> list[tuple[Usd.Prim, Sdf.Layer]]:
+    """The Outputs of networks composed in by an arc, and the layer that brings each in.
+
+    One per arc, whichever layer authors it: a chair the house references inside its own
+    network is a network of its own. The shallowest Outputs under each arc, the network's
+    own rather than those of groups inside it. A network hosted by a chunk (a Reference
+    chunk pointed at a network file) is left out: that chunk is a node in the graph and is
+    wired like one. Read from the prim index (chunk_utils.arc_source), so every arc counts.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    scene = registry.scene if registry.initialized else None
+    if scene is None:
+        return []
+    by_arc: dict[Sdf.Path, list[tuple[Usd.Prim, Sdf.Layer]]] = {}
+    for chunk in scene.get_chunks():
+        if not is_output_chunk(chunk):
+            continue
+        out = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+        if not (out and out.IsValid()) or (source := chunk_utils.arc_source(out)) is None:
+            continue
+        home, layer = source
+        home_prim = stage.GetPrimAtPath(home)
+        if home_prim and home_prim.GetAttribute(_CHUNK_TYPE_ATTR).Get():
+            continue
+        by_arc.setdefault(home, []).append((out, layer))
+    found = []
+    for outs in by_arc.values():
+        depth = min(o.GetPath().pathElementCount for o, _ in outs)
+        found.extend((o, lyr) for o, lyr in outs if o.GetPath().pathElementCount == depth)
+    return found
+
+
+def implied_sources(prim: Usd.Prim) -> list[str]:
+    """The chunks a chunk is fed by because of composition, not a wire.
+
+    A chunk with no exec input starts where everything weaker than it ends:
+
+    - A shot sublayers its departments, each a chain ending in its Output, and nothing is
+      wired between them. A first chunk in lighting.usda starts where layout.usda's chain
+      ends, as if wired to what feeds layout's Output -- the nearest weaker layer beside it
+      (its sibling Outputs) that brings one.
+    - A network composed in by an arc (a reference, payload, inherit or variant authored in the
+      chunk's own layer or a weaker one) cooks before it too, so a shot's chain can read
+      the referenced house it builds on.
+
+    These edges are derived from composition on every read and never authored -- the same
+    reading gives the cook order (view_cook_list), live change propagation
+    (_wired_dependencies) and the load, and nothing is written to any file.
+
+    Args:
+        prim: A chunk prim.
+
+    Returns:
+        Prim paths of the chunks feeding those Outputs; empty for a chunk with an exec
+        input, a terminal chunk, a chunk composed in by an arc itself, or one with nothing
+        weaker to follow.
+    """
+    if not (prim and prim.IsValid()) or exec_input_connections(prim):
+        return []
+    if prim.GetAttribute(_CHUNK_TYPE_ATTR).Get() in ("view", "output"):
+        return []
+    # Cheapest first: with fewer than two Outputs beside it and no network brought in by an
+    # arc there is nothing to chain -- nearly every graph -- so no layer is resolved at all.
+    siblings = [child for child in prim.GetParent().GetChildren()
+                if child.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "output"]
+    stage = prim.GetStage()
+    arc_outputs = _arc_network_outputs(stage)
+    if len(siblings) < 2 and not arc_outputs:
+        return []
+    own = chunk_utils.chunk_pass(prim)
+    if own is None:
+        return []
+    strength = _layer_strength(stage)
+    own_rank = strength.get(own.identifier)
+    if own_rank is None:
+        return []
+    ends = []
+    weaker = []
+    for output in siblings:
+        layer = chunk_utils.chunk_pass(output)
+        rank = strength.get(layer.identifier) if layer is not None else None
+        if rank is not None and rank > own_rank:
+            weaker.append((rank, output))
+    if weaker:
+        ends.append(min(weaker, key=lambda pair: pair[0])[1])
+    for output, arc_layer in arc_outputs:
+        rank = strength.get(arc_layer.identifier)
+        if rank is not None and rank >= own_rank:
+            ends.append(output)
+    # Never one that already follows this chunk through a wire: a stronger layer wiring a
+    # weaker chunk after its own (an `over` on its exec input) pushes that chunk later, and
+    # waiting for it here would close a loop.
+    own_path = str(prim.GetPath())
+    sources: list[str] = []
+    for end in ends:
+        for conn in exec_input_connections(end):
+            path = str(conn.GetPrimPath())
+            if path not in sources and not _wired_after(stage, path, own_path):
+                sources.append(path)
+    return sources
+
+
+def _wired_after(stage: Usd.Stage, path: str, ancestor: str) -> bool:
+    """Whether the chunk at path reads, through wires alone, from the one at ancestor."""
+    seen: set[str] = set()
+    todo = [path]
+    while todo:
+        current = todo.pop()
+        if current == ancestor:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        prim = stage.GetPrimAtPath(Sdf.Path(current))
+        if prim and prim.IsValid():
+            todo.extend(_connected_source_paths(prim))
+    return False
 
 
 def is_group_chunk(chunk: core.ChunkBase) -> bool:
@@ -2951,6 +3302,96 @@ def param_override_source(param: core.ChunkParamBase) -> Sdf.Layer | None:
     return None
 
 
+def param_locked_by(param: core.ChunkParamBase) -> Sdf.Layer | None:
+    """The locked layer an edit of param would land in, or None when it can be edited.
+
+    Where an edit goes is the same answer ChunkParamBase.data_changed acts on
+    (chunk_utils.param_storage_layer): with the stage's edit target on a read-only
+    department file, a layout chunk's param is locked; set it to a layer you can edit and
+    the same edit is an override there.
+    """
+    try:
+        stage = param.get_scene_stage()
+        path = getattr(param, "_param_attr_path", None)
+        if stage is None or not path or getattr(param, "_var_selections", None):
+            return None
+        attr = stage.GetAttributeAtPath(Sdf.Path(path))
+        if not attr:
+            return None
+        layer = chunk_utils.param_storage_layer(stage, attr, param.get_chunk())
+    except (AttributeError, ReferenceError):
+        return None
+    return layer if chunk_utils.is_layer_locked(layer) else None
+
+
+def param_held_by(param: core.ChunkParamBase) -> Sdf.Layer | None:
+    """The layer whose opinion on this param is stronger than where the param writes, or None.
+
+    The other side of param_override_source. There the param's own value sits over one
+    composed in; here something sits over the param's own: an Override Chunk Prim's layer,
+    or a department layer stronger than the one this chunk's prim is written in. An edit
+    to the param still lands, in its home (chunk_utils.get_attr_home_layer), but the value
+    composed -- and so the one the param shows and cooks with -- is the stronger one's.
+    Without saying so the field just springs back.
+
+    Args:
+        param: The param, or a vector part (its vector's attribute is the one asked about).
+
+    Returns:
+        The stronger layer, or None.
+    """
+    chunk = param.get_chunk()
+    stage = param.get_scene_stage() if chunk else None
+    if stage is None:
+        return None
+    owner = param.get_owner()
+    target = owner if isinstance(owner, core.ChunkVectorBase) else param
+    names = _param_object_path(chunk, target)
+    return _input_held_by(chunk, stage, ":".join(names)) if names else None
+
+
+def _input_held_by(chunk: core.ChunkBase, stage: Usd.Stage, name: str) -> Sdf.Layer | None:
+    """param_held_by for the chunk prim's input of that name (translate_grp:tx)."""
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
+    if not prim.IsValid():
+        return None
+    attr = prim.GetAttribute(_INPUTS_PREFIX + name)
+    if not attr:
+        return None
+    specs = [s for s in attr.GetPropertyStack(Usd.TimeCode.Default()) if s.HasDefaultValue()]
+    if not specs or specs[0].path != attr.GetPath():
+        return None  # nothing, or the strongest is across an arc: weaker than any local layer
+    strongest = specs[0].layer
+    home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, chunk)
+    if strongest == home:
+        return None
+    stack = stage.GetLayerStack(includeSessionLayers=True)
+    if strongest not in stack or home not in stack:
+        return None
+    return strongest if stack.index(strongest) < stack.index(home) else None
+
+
+def layer_label(layer: Sdf.Layer) -> str:
+    """A layer as a user knows it: the chunk whose cook layer it is, or its file name.
+
+    A chunk's procedural layer is named anon:<address>:<tag>, which says nothing to anyone;
+    the chunk it belongs to is what they put on the graph.
+
+    Args:
+        layer: The layer.
+
+    Returns:
+        The chunk's name, or the layer's display name (its identifier when it has none).
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    scene = _chunk_mod.get_scene()
+    if lm.initialized and scene is not None and chunk_registry.is_chunk_internal_layer(layer):
+        for chunk in scene.get_chunks():
+            if lm.get_layer(chunk) == layer:
+                return chunk.name
+    return layer.GetDisplayName() or layer.identifier
+
+
 def revert_param_override(param: core.ChunkParamBase) -> None:
     """Drop the shot's opinion on this param so the composed-in value shows through again.
 
@@ -2978,6 +3419,48 @@ def revert_param_override(param: core.ChunkParamBase) -> None:
         chunk_notice._usd_write_active = prev
     invalidate_edit_layer_memo()
     param.value = attr.Get()
+
+
+def _adopt_inputs(chunk: core.ChunkBase, names: Iterable[str] | None = None) -> None:
+    """Set chunk's params to what its chunk prim composes now, or their defaults.
+
+    The prim is where a param's value lives; the param holds it for the module. Anything
+    that authors the prim's inputs: -- an Override Chunk Prim cooking an `over` onto it, a
+    layer muted or removed, a hand edit in usdview -- comes back through here. The values set
+    are the composed ones, so the write path finds them already authored and writes nothing
+    back; a param whose value changes dirties the chunk and it cooks as after any edit. An
+    expression is left alone, as in _mirror_changed_params, and so are list-group rows.
+
+    Args:
+        chunk: The chunk to bring in line with its prim.
+        names: The input names to read (translate_grp:tx), or None for all of them.
+    """
+    stage = chunk.get_scene_stage()
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
+    if not (prim and prim.IsValid()):
+        return
+    wanted = None if names is None else set(names)
+    # By name, not _param_attr_path: a param still at its default has no attribute of its
+    # own yet, so nothing is bound to the one an override has just made.
+    for param_path, param in (*_iter_chunk_params(chunk), *_iter_chunk_vectors(chunk)):
+        name = param_path.replace(".", ":")
+        if wanted is not None and name not in wanted:
+            continue
+        if _under_list_group(param, chunk) or param.has_flag(ChunkFlags.ParamFlags.OUTPUT):
+            continue
+        raw = getattr(param, "raw_value", None)
+        if isinstance(raw, str) and chunk_utils.has_expression(raw):
+            continue
+        attr = prim.GetAttribute(f"{_INPUTS_PREFIX}{name}")
+        if attr and attr.IsValid():
+            # An attribute with no value yet is one being made -- the write path creates,
+            # then sets -- and the set that follows says what it holds.
+            value = attr.Get(0)
+        else:
+            # No layer has it any more: the param is back at its default.
+            value = getattr(param, "default_value", None)
+        if value is not None and not _values_agree(value, param.value):
+            param.value = value
 
 
 def _storage_attr(param: core.ChunkParamBase) -> Usd.Attribute | None:
@@ -3310,7 +3793,7 @@ def is_chunk_pinned(chunk: core.ChunkBase) -> bool:
     val = attr.Get() if (attr and attr.IsValid()) else None
     if val is not None:
         return bool(val)
-    if is_view_chunk(chunk):
+    if is_terminal_chunk(chunk):
         return False
     if _pin_new_chunks is not None:
         return _pin_new_chunks
@@ -4554,6 +5037,8 @@ def view_cook_list(
                 src = str(conn.GetPrimPath())
                 if src in prim_to_chunk:
                     srcs.append(src)
+        # A weaker department's chain feeds this one's first chunk through the stack.
+        srcs.extend(src for src in implied_sources(prim) if src in prim_to_chunk)
         if not is_merge_prim(prim):
             return srcs
         # A merge's slot order is what decides which branch wins, and visit order is what
@@ -4599,12 +5084,14 @@ def recook_for_view(
     view_chunk: core.ChunkBase | None,
     _synthetic_tail: bool = False,
     _force: bool = False,
+    _hidden: bool = False,
 ) -> None:
     """Apply view-driven execution for one context.
 
     With a view_chunk: reveal only its upstream tree (roots-first); every other non-view
     chunk in the context is blocked + muted (dormant, hidden). With view_chunk=None (no active
-    view): block + mute everything -- nothing cooks until a view is activated.
+    view) the context cooks to its Output: a view is for looking, the Output is what the
+    graph delivers. With neither, block + mute everything -- nothing cooks.
 
     Blocking a chunk both hides its result (its layer is muted) and stops it reacting to
     param changes (see ChunkBase.value_changed) -- so being outside the active view's tree
@@ -4629,9 +5116,19 @@ def recook_for_view(
         _force: Cook every revealed chunk, stale or not. Set for the inside of a group
             that is itself stale: a change reached the group, and its inner chunks read
             what it brings in.
+        _hidden: The context is outside its parent's cook set, so it cooks nothing at all,
+            Output or not.
     """
     lm = chunk_registry.ChunkLayerManager()
     disabled = ChunkFlags.State.DISABLED
+    # No active view: cook to the Output the graph delivers -- with departments sublayered,
+    # the strongest layer's, which reaches the weaker ones through implied edges. Handed an
+    # Output (a run, a sweep, a group's driver) means the same: deliver.
+    delivering = (view_chunk is None and not _hidden) or (
+        view_chunk is not None and is_output_chunk(view_chunk))
+    outputs = graph_outputs(stage, scene, context) if delivering else []
+    if delivering:
+        view_chunk = outputs[-1] if outputs else None
 
     def in_context(c: core.ChunkBase) -> bool:
         # Node membership (prim-path based) so a group is managed by its PARENT graph's recook
@@ -4658,6 +5155,16 @@ def recook_for_view(
     if view_chunk is None:
         cook_list: list[core.ChunkBase] = []
         cook_set: set = set()
+    elif delivering:
+        # Every Output, weakest layer first; implied edges order them already, and a chunk
+        # two Outputs reach cooks in the earlier one's turn.
+        cook_list = []
+        cook_set = set()
+        for output in outputs:
+            for c in view_cook_list(output, stage, scene):
+                if c not in cook_set:
+                    cook_set.add(c)
+                    cook_list.append(c)
     else:
         cook_list = view_cook_list(view_chunk, stage, scene)
         if _synthetic_tail:
@@ -4693,7 +5200,7 @@ def recook_for_view(
     cook_rank = {id(c): i for i, c in enumerate(cook_list)}
     deferred_groups: set = set()
     for c in sorted(scene.get_chunks(), key=lambda c: cook_rank.get(id(c), -1)):
-        if is_view_chunk(c) or not in_context(c):
+        if is_terminal_chunk(c) or not in_context(c):
             continue
         if is_group_chunk(c):
             if c in cook_set:
@@ -4703,7 +5210,7 @@ def recook_for_view(
                 # would find none of the prims it acts on.
                 deferred_groups.add(id(c))
             else:
-                recook_for_view(stage, scene, c, None)
+                recook_for_view(stage, scene, c, None, _hidden=True)
             continue
         was_blocked = c.is_blocked()
         c.set_blocked(c not in cook_set)
@@ -4756,6 +5263,12 @@ def recook_for_view(
             continue
         if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
+            # A chunk outside this graph that it still reads -- a referenced network's, through
+            # an implied edge -- was left out of the unblocking above, which goes by graph,
+            # and a focus elsewhere may have blocked it. Blocked, it would cook here once and
+            # then ignore every edit.
+            if not in_context(c) and c.is_blocked():
+                c.set_blocked(False)
             if not c.can_cook():
                 # Nothing to cook -- a chunk that works through callbacks (Property Editor).
                 # Nothing ever clears its stale mark either, so executing it would push a
@@ -4814,7 +5327,15 @@ def recook_for_view(
 
 
 def _group_output_driver(stage: Usd.Stage, scene: chunk_scene.SceneSender, group: core.ChunkBase):
-    """(what drives group's output, whether it is a stand-in exec tail rather than a view)."""
+    """(what drives group's output, whether it is a stand-in exec tail rather than a view).
+
+    The group's Output, when it has one wired to something: what a group delivers is its
+    Output, and its inner views are only for looking while inside it. Older groups with no
+    Output fall back to the inner active view, then the exec tail.
+    """
+    output = find_output_chunk(stage, scene, group)
+    if output is not None and view_cook_list(output, stage, scene):
+        return output, False
     inner_view = find_group_active_view(group, stage, scene)
     synthetic = False
     if inner_view is not None and not view_cook_list(inner_view, stage, scene):
@@ -5009,7 +5530,7 @@ def recook_focus(
         # inner chunks into view_cook_list's node-level answer.
         keep_prefixes = tuple(u + "/" for u in upstream_keep)
         for c in scene.get_chunks():
-            if is_view_chunk(c):
+            if is_terminal_chunk(c):
                 continue
             cp = get_chunk_prim_path(c)
             # Keep the focused group itself and its descendants -- recook_for_view handles those.
@@ -5069,7 +5590,7 @@ def exec_tails(
     consumed = _exec_consumers(stage)
     return [
         c for c in scene.get_chunks()
-        if not is_view_chunk(c) and is_node_in_context(c, context)
+        if not is_terminal_chunk(c) and is_node_in_context(c, context)
         and get_chunk_prim_path(c) not in consumed
     ]
 
@@ -5350,8 +5871,11 @@ def _wired_dependencies(chunk: core.ChunkBase) -> list:
     prim = _live_prim(chunk)
     if prim is None:
         return []
+    # And the edge the layer stack implies (implied_sources): a department's first chunk
+    # depends on the weaker department's chain, so a change there reaches it like a wire.
     return _chunks_at(_through_placeholders(
-        prim.GetStage(), _connected_source_paths(prim), lambda path: bool(_chunks_at([path]))
+        prim.GetStage(), [*_connected_source_paths(prim), *implied_sources(prim)],
+        lambda path: bool(_chunks_at([path]))
     ))
 
 
@@ -5427,7 +5951,7 @@ def copy_selected_chunks() -> None:
     _chunk_clipboard = [
         get_chunk_prim_path(c)
         for c in scene.get_selected_chunks()
-        if not is_view_chunk(c)
+        if not is_terminal_chunk(c)
     ]
 
 
@@ -5665,8 +6189,8 @@ def _unseen_by_active_views(
     skipped stays stale, and recook_for_view cooks it when its view is activated.
 
     Only for a host that opts in (SceneSender.load_cooks_active_views_only), and only in a
-    context that has an active view: one without cooks as before, since there is no view
-    yet to say what matters. Views themselves are never skipped.
+    context that has an active view or an Output: one with neither cooks as before, since
+    nothing says yet what matters. Views and Outputs themselves are never skipped.
 
     Args:
         stage: The stage.
@@ -5704,13 +6228,16 @@ def _unseen_by_active_views(
         attr = prim.GetAttribute("chunk:activeView") if prim and prim.IsValid() else None
         slot = attr.Get() if attr and attr.IsValid() else None
         view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
-        if view is None:
+        # No active view: the context cooks to its Outputs, as recook_for_view does.
+        ends = [view] if view is not None else graph_outputs(stage, scene, context)
+        if not ends:
             continue
         gated.append(path + "/")
-        walk(view, False)
+        for end in ends:
+            walk(end, False)
 
     def unseen(chunk: core.ChunkBase) -> bool:
-        if id(chunk) in reached or is_view_chunk(chunk):
+        if id(chunk) in reached or is_terminal_chunk(chunk):
             return False
         return get_chunk_prim_path(chunk).startswith(tuple(gated)) if gated else False
 
@@ -5743,7 +6270,7 @@ def _clear_cooked_groups(chunks: list[core.ChunkBase]) -> None:
             not chunk_cook.is_cook_stale(c)
             for c in chunks
             if get_chunk_prim_path(c).startswith(prefix)
-            and c.can_cook() and not is_view_chunk(c) and not c.has_state(disabled)
+            and c.can_cook() and not is_terminal_chunk(c) and not c.has_state(disabled)
         ):
             chunk_cook.clear_cook_stale(group)
 
@@ -5796,6 +6323,10 @@ def load_chunks(
 
     with _loading_from_file():
         _load_chunks(stage, scene, loaded_prim_paths, prims)
+    # Where each chunk now composes from, so a later resync can tell which ones changed.
+    sync = ChunkStageSync()
+    if sync.initialized and getattr(sync, "_stage", None) is stage:
+        sync.record_sources(scene.get_chunks())
 
 
 def _load_chunks(
@@ -5815,6 +6346,11 @@ def _load_chunks(
     # module-backed chunk. Nested ChunkGroups use a separate parent-context mechanism
     # (_parent_context) not covered by this reload path yet.
     context_prims = []
+    # Where a network composed in by an arc sits on the stage: the non-chunk parent of its
+    # top chunk (a referenced house's /World/house/chunks). Kept as a home like /chunks, so
+    # its chunks load where USD composed them rather than being re-made under a tab named
+    # after the file they came from.
+    network_homes: set[str] = set()
     changed_code: dict[str, dict[str, int]] = {}  # chunkType -> {saved hash: prim count}
     for prim in (stage.Traverse(_LOAD_INCLUDE_INACTIVE) if prims is None else prims):
         # The /chunks scope is structural, not a chunk: it holds the graph but is not one.
@@ -5852,6 +6388,11 @@ def _load_chunks(
             saved = chunk_utils.recorded_module_hash(prim)
             counts = changed_code.setdefault(str(chunk_type), {})
             counts[saved] = counts.get(saved, 0) + 1
+        parent = prim.GetParent()
+        if (parent and not parent.IsPseudoRoot() and str(parent.GetPath()) != _CHUNKS_ROOT
+                and parent.GetTypeName() != _CHUNK_PRIM_TYPENAME
+                and chunk_utils.arc_source(prim) is not None):
+            network_homes.add(str(parent.GetPath()))
         to_load.append((prim, mod))
 
     # One line per type, not per prim: a network of a hundred of one chunk is one change.
@@ -5893,6 +6434,10 @@ def _load_chunks(
         # tab named after whatever file happens to be open right now.
         group_chunk_by_path: dict[str, core.ChunkBase] = {}
         context_paths: set[str] = set()
+        # A network an arc composed in: its home routes its chunks to _EXISTING_CONTEXT, so
+        # they keep the paths USD gave them. No context is minted for the home itself, as
+        # for the /chunks scope.
+        context_paths.update(network_homes)
         for prim in context_prims:
             prim_path = str(prim.GetPath())
             if loaded_prim_paths is not None:
@@ -6129,14 +6674,17 @@ def _load_chunks(
                         # Every slot, in slot order -- a reloaded merge must regain ALL its branches,
                         # and regain them strongest-first so the restored DAG matches the saved file.
                         exec_conns = exec_input_connections(prim)
-                        if not exec_conns:
+                        # No wire in: the layer stack may still say what comes before it.
+                        sources = ([str(conn.GetPrimPath()) for conn in exec_conns]
+                                   or implied_sources(prim))
+                        if not sources:
                             continue
                         existing_deps = {id(d) for _, d in chunk.get_dependencies()}
                         # Through any placeholder: a wire into one must still order this
                         # chunk after the chain behind it (see _through_placeholders).
                         for source in _through_placeholders(
                             stage,
-                            [str(conn.GetPrimPath()) for conn in exec_conns],
+                            sources,
                             lambda path: path in chunk_by_path or bool(_chunks_at([path])),
                         ):
                             dep = chunk_by_path.get(source)
@@ -6529,7 +7077,20 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     anchored.
     """
     stage = scene.get_stage()
-    owned = _owned_stage(stage)
+    # Chunk layers hold cook output. Nearly all of it is scene content, outside the chunk
+    # prims copied below, but an Override Chunk Prim cooks opinions onto another chunk's
+    # prim: its cook makes them again, and saved they would outlive the chunk. Only a layer
+    # with something under /chunks is left out, and not one that is also where some chunk
+    # keeps its prim (an Edit Target's layer); with none, the live stage is flattened as before.
+    lm = chunk_registry.ChunkLayerManager()
+    chunks = list(scene.get_chunks())
+    homes = {chunk_utils.get_bookkeeping_layer(stage, c) for c in chunks}
+    cook_layers = [
+        layer.identifier for c in chunks
+        if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes
+        and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT) is not None
+    ]
+    owned = _owned_stage(stage, cook_layers)
     resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
     try:
         flat = UsdUtils.FlattenLayerStack(owned, resolve)
@@ -6816,7 +7377,7 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
     return next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == str(host_path)), None)
 
 
-def _owned_stage(stage: Usd.Stage) -> Usd.Stage:
+def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     """The stage as seen through only the layers the chunk system owns -- for flattening.
 
     UsdUtils.FlattenLayerStack takes every layer in the root layer stack, foreign ones
@@ -6831,11 +7392,14 @@ def _owned_stage(stage: Usd.Stage) -> Usd.Stage:
     prims, so nothing needs composing, and a scene's worth of content would otherwise be
     composed a second time on every save. With no foreign layer present the live stage
     itself comes back, and the save is what it always was.
+
+    also_mute names more layers to leave out the same way, such as the chunks' cook layers.
     """
     foreign = [
         layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
         if chunk_utils.is_foreign_layer(layer, stage)
     ]
+    foreign.extend(also_mute)
     if not foreign:
         return stage
     owned = Usd.Stage.OpenMasked(

@@ -576,7 +576,7 @@ def test_import_view_targets_imported_tail_not_unrelated_existing_node(graph) ->
     assert gv._suppress_default_view is False
 
     stage = gv.scene()._stage
-    views = [ch for ch in scene.get_chunks() if chunk_stage.is_view_chunk(ch)]
+    views = [ch for ch in scene.get_chunks() if chunk_stage.is_output_chunk(ch)]
     assert len(views) == 1
     view_path = get_chunk_prim_path(views[0])
     exec_in = stage.GetAttributeAtPath(Sdf.Path(f"{view_path}.inputs:chunk"))
@@ -622,7 +622,7 @@ def test_import_as_chunks_suppresses_generic_default_view_race(graph, tmp_path) 
 
     assert gv._context_has_view(scene, gv._graph_context())
     stage = gv.scene()._stage
-    views = [ch for ch in scene.get_chunks() if chunk_stage.is_view_chunk(ch)]
+    views = [ch for ch in scene.get_chunks() if chunk_stage.is_output_chunk(ch)]
     assert len(views) == 1
     view_path = get_chunk_prim_path(views[0])
     exec_in = stage.GetAttributeAtPath(Sdf.Path(f"{view_path}.inputs:chunk"))
@@ -664,15 +664,15 @@ def _write_script(path, tag, bump_ns=0):
 
 
 def _drop_script(graph, tmp_path, name, pos):
-    """Drop a script and wire it into the view, which is when a dropped script runs.
+    """Drop a script and wire it into the Output, which is when a dropped script runs.
 
-    The graph adds a View on a timer after the first nodes. Whether it landed before the
+    The graph adds an Output on a timer after the first nodes. Whether it landed before the
     drop decided whether the script ran at all, so wait for it and wire the script in.
     """
     qapp, _reg, scene, _docker = graph
     _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
-    pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
-    (view,) = [c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c)]
+    pump_until(qapp, lambda: any(chunk_stage.is_output_chunk(c) for c in scene.get_chunks()))
+    (view,) = [c for c in scene.get_chunks() if chunk_stage.is_output_chunk(c)]
     script = tmp_path / name
     _write_script(script, "v1")
     gv._handle_dropped_file(str(script), QtCore.QPointF(pos, pos), QtCore.QPoint(0, 0))

@@ -86,7 +86,7 @@ def dangling(qapp):
 
     inner_view = next(
         c for c in scene.get_chunks()
-        if chunk_stage.is_view_chunk(c)
+        if chunk_stage.is_terminal_chunk(c)
         and get_chunk_prim_path(c).startswith(get_chunk_prim_path(ga) + "/")
     )
     vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(inner_view)))
@@ -152,6 +152,6 @@ def test_an_empty_group_with_a_dangling_view_is_still_fine(qapp):
         qapp.processEvents()
         QtCore.QThread.msleep(10)
 
-    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    view = next(c for c in scene.get_chunks() if chunk_stage.is_terminal_chunk(c))
     chunk_stage.recook_focus(stage, scene, scene.get_root_context(), view)
     qapp.processEvents()

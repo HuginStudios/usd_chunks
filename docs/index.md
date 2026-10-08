@@ -12,7 +12,7 @@ screen.
 1. [Install](install.md): quick start, fixing things that don't show up, every
    environment variable, building the docs.
 2. [Using the node graph](node-graph-basics.md): creating and connecting nodes, shortcuts.
-3. [View and ChunkGroup](core-chunks.md): the two chunks that organise a graph instead of
+3. [Output, View and ChunkGroup](core-chunks.md): the chunks that organise a graph instead of
    changing the stage.
 4. [Expressions](expressions.md): make one param read another, like `@Box.size@ * 2`,
    and use USD's `${NAME}` variables.

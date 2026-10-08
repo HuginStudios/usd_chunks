@@ -14,7 +14,7 @@ import re
 import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
-from pxr import Ar, Gf, Sdf, Usd, UsdGeom, UsdShade
+from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade
 
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
@@ -203,6 +203,109 @@ def chunk_def_layer(prim: Usd.Prim) -> Sdf.Layer | None:
     return None
 
 
+def _index_nodes(node) -> Iterable:
+    """node and everything below it in a prim index, strongest first."""
+    yield node
+    for child in node.children:
+        yield from _index_nodes(child)
+
+
+def _def_node(prim: Usd.Prim):
+    """The composition node a prim's `def` comes from: the weakest one holding a def spec,
+    which is where the prim was introduced. None for a prim no layer defines."""
+    found = None
+    for node in _index_nodes(prim.GetPrimIndex().rootNode):
+        if not node.hasSpecs:
+            continue
+        for layer in node.layerStack.layers:
+            spec = layer.GetPrimAtPath(node.path)
+            if spec and spec.specifier == Sdf.SpecifierDef:
+                found = node
+                break
+    return found
+
+
+def arc_source(prim: Usd.Prim) -> tuple[Sdf.Path, Sdf.Layer] | None:
+    """Where a prim came into the stage by an arc, read from USD's own prim index.
+
+    Any arc -- reference, payload, inherit, specialize, variant, relocate -- because it asks
+    composition which node the prim's `def` comes from, rather than looking for a list of
+    metadata fields.
+
+    Args:
+        prim: A prim.
+
+    Returns:
+        (the nearest prim an arc is introduced at, as a stage path; the layer of the stage's
+        own stack that brings the outermost arc in -- the weakest one with a spec at that
+        arc's prim, where it was introduced), or None for a prim defined in the stack itself.
+        A chair a referenced house references comes back as (house's furniture prim, the
+        shot layer that references the house).
+    """
+    node = _def_node(prim)
+    if node is None or node.arcType == Pcp.ArcTypeRoot:
+        return None
+    nearest = node.parent.mapToRoot.MapSourceToTarget(node.GetIntroPath())
+    outer = node
+    while outer.parent and outer.parent.arcType != Pcp.ArcTypeRoot:
+        outer = outer.parent
+    outer_path = outer.parent.mapToRoot.MapSourceToTarget(outer.GetIntroPath())
+    stack = prim.GetPrimIndex().rootNode.layerStack.layers
+    authoring = None
+    for layer in stack:  # strongest first: the last one found is the weakest
+        if layer.GetPrimAtPath(outer_path) and not chunk_registry.is_chunk_internal_layer(layer):
+            authoring = layer
+    if authoring is None or nearest.isEmpty:
+        return None
+    return nearest, authoring
+
+
+def composition_sources(prim: Usd.Prim) -> tuple:
+    """A fingerprint of where a prim's opinions come from: its prim index's nodes.
+
+    Changes when what composes it changes -- a variant switched, an arc retargeted, a
+    payload loaded -- and stays the same when only values change. Compared before and after
+    a resync, it says whose params need reading again, with no list of what could cause it.
+    """
+    if not (prim and prim.IsValid()):
+        return ()
+    return tuple(
+        (str(node.arcType), node.layerStack.identifier.rootLayer.identifier, str(node.path))
+        for node in _index_nodes(prim.GetPrimIndex().rootNode) if node.hasSpecs
+    )
+
+
+def chunk_pass(prim: Usd.Prim) -> Sdf.Layer | None:
+    """The layer whose turn a chunk cooks in: the weakest layer of the stack that `def`s it.
+
+    A shot sublayers its departments, and the stack is the cook order: the weakest layer's
+    chunks cook first, and every stronger layer cooks on their result. The weakest `def` is
+    where the chunk was introduced; a `def` in a stronger layer is an override like any
+    other opinion, and so is an `over`, which never moves a chunk to another turn.
+
+    Unlike chunk_def_layer, a layer the chunk system does not own still counts: that is
+    exactly a department file sublayered into a shot.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        The layer, or None when no layer of the stage's layer stack defines the prim (it
+        came in through a reference, payload or inherit).
+    """
+    stage = prim.GetStage()
+    stack = {layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)}
+    path = prim.GetPath()
+    found = None
+    for spec in prim.GetPrimStack():  # strongest first
+        if spec.path != path or spec.specifier != Sdf.SpecifierDef:
+            continue
+        if spec.layer.identifier not in stack or chunk_registry.is_chunk_internal_layer(spec.layer):
+            continue
+        found = spec.layer
+    return found
+
+
 def host_edit_layer(stage: Usd.Stage) -> Sdf.Layer:
     """Where an override of composed-in content lands: the stage's own edit target.
 
@@ -367,6 +470,29 @@ def module_changed_since_cook(prim: Usd.Prim, module) -> bool:
     return bool(saved and module.source_hash and saved != module.source_hash)
 
 
+def is_layer_locked(layer: Sdf.Layer | None) -> bool:
+    """Whether an edit may not go into layer: its edit permission is off, or its file is
+    read-only on disk -- the two ways a pipeline locks a published file.
+
+    Cooking never needs this: a cook only reads such a layer. It is what a param edit that
+    would land there is refused by.
+    """
+    if layer is None:
+        return False
+    if not layer.permissionToEdit:
+        return True
+    if layer.anonymous:
+        return False
+    path = layer.realPath
+    return bool(path) and os.path.exists(path) and not os.access(path, os.W_OK)
+
+
+def param_storage_layer(stage: Usd.Stage, attr: Usd.Attribute, chunk) -> Sdf.Layer | None:
+    """Where a write of a param's storage attribute goes: wherever its spec already lives,
+    or for a new one, where this chunk's bookkeeping goes (get_bookkeeping_layer)."""
+    return get_attr_home_layer(attr) or get_bookkeeping_layer(stage, chunk)
+
+
 def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     """The layer to update an existing attribute in.
 
@@ -389,6 +515,11 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
       payload, so the spec's layer is not even in the local layer stack and
       Usd.EditContext on it raises "not in the local LayerStack".
 
+    And on a chunk prim, a chunk's procedural layer is passed over altogether: what one
+    holds there is another chunk's cook output (an Override Chunk Prim's `over`), cleared
+    and rewritten on its next cook. An edit written into it would show until then and
+    vanish; written beneath it, it is kept and shows once the override goes.
+
     Args:
         attr: The attribute to update.
 
@@ -396,6 +527,8 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
         The layer, or None only when the attr has no spec anywhere yet.
     """
     stack = attr.GetPropertyStack(Usd.TimeCode.Default())
+    if stack and attr.GetPrim().GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME:
+        stack = [s for s in stack if not chunk_registry.is_chunk_internal_layer(s.layer)]
     if not stack:
         return None
     spec = stack[0]
@@ -1661,7 +1794,11 @@ def _stable_suffix(node) -> str:
 
     if not suffix:
         suffix = _mint_suffix(node, prim, stage)
-        if prim is not None:
+        # A chunk composed in from a file this one does not own (a department's layout, a
+        # referenced house) keeps it in memory only. Minting is a function of the prim path,
+        # so every open arrives at the same id, and recording it would write an override
+        # into the shot just for opening it.
+        if prim is not None and composed_in_from(prim) is None:
             # Into the chunk's own bookkeeping layer, like every other bit of chunk
             # bookkeeping -- not wherever the ambient edit target happens to point.
             with Usd.EditContext(stage, get_bookkeeping_layer(stage, node)):
