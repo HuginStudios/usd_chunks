@@ -420,3 +420,30 @@ def test_hide_source_hides_it_from_the_start_frame_on():
     assert vis.Get(9) == UsdGeom.Tokens.inherited
     assert vis.Get(10) == UsdGeom.Tokens.invisible
     assert vis.Get(50) == UsdGeom.Tokens.invisible
+
+
+def test_inherited_motion_is_the_instances_speed_at_the_start_frame():
+    """Positions go from z=10 at frame 1 to z=1 at frame 10: one unit a frame, downwards."""
+    stage = Usd.Stage.CreateInMemory()
+    rubble = _rubble(stage)
+    motion = ps._source_motion(rubble, 10, 24.0)
+    assert motion.shape == (3, 3)
+    assert motion[:, 2] == pytest.approx([-24.0, -24.0, -24.0], abs=1e-3)
+    assert motion[:, :2] == pytest.approx(np.zeros((3, 2)), abs=1e-6)
+
+
+def test_a_still_source_has_no_motion_to_inherit():
+    stage = Usd.Stage.CreateInMemory()
+    _box(stage, "/box", (0, 0, 0), (1, 1, 1))
+    assert ps._source_motion(stage.GetPrimAtPath("/box"), 10, 24.0) is None
+
+
+def test_the_material_is_hidden_before_its_start_frame():
+    """The sim's first sample is held back to frame 1, so it showed before it began."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Sand")
+    ps._show_from(stage, "/Sand", 60)
+    vis = UsdGeom.Imageable(stage.GetPrimAtPath("/Sand")).GetVisibilityAttr()
+    assert vis.Get(1) == UsdGeom.Tokens.invisible
+    assert vis.Get(59) == UsdGeom.Tokens.invisible
+    assert vis.Get(60) == UsdGeom.Tokens.inherited

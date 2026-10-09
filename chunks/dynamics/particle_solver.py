@@ -448,9 +448,12 @@ def simulate(particles, velocity, material, *, n_grid=64, stiffness=0.0, frictio
 
     gravity = np.asarray(gravity, dtype=np.float64)
     stiffness = (stiffness or _DEFAULT_STIFFNESS[material]) * _stiffness_scale(gravity)
-    velocity = np.asarray(velocity, dtype=np.float32).reshape(3)
+    velocity = np.asarray(velocity, dtype=np.float32)
+    # One velocity for all, or one per particle (Inherit Motion).
+    velocity = velocity.reshape(3) if velocity.size == 3 else velocity.reshape(-1, 3)
     if substeps <= 0:
-        substeps = _auto_substeps(material, stiffness, gravity, np.linalg.norm(velocity), n_grid, fps)
+        speed = float(np.linalg.norm(velocity, axis=-1).max()) if velocity.size else 0.0
+        substeps = _auto_substeps(material, stiffness, gravity, speed, n_grid, fps)
     dt = (1.0 / fps) / substeps
 
     arch = ti.gpu if device == "GPU" else ti.cpu
@@ -960,6 +963,31 @@ def _sphere_track(prim, start_frame, frame_count):
     return track
 
 
+def _show_from(stage, path, frame):
+    """Make `path` invisible before `frame`: the material does not exist until it starts."""
+    prim = stage.GetPrimAtPath(path)
+    if not prim or not prim.IsValid():
+        return
+    visibility = UsdGeom.Imageable(prim).CreateVisibilityAttr()
+    visibility.Set(UsdGeom.Tokens.invisible, Usd.TimeCode(frame - 1))
+    visibility.Set(UsdGeom.Tokens.inherited, Usd.TimeCode(frame))
+
+
+def _source_motion(source, frame, fps):
+    """World velocity of each instance of an animated instancer at `frame`, or None.
+
+    From where its geometry centre was one frame earlier: an RBD bake writes positions,
+    not velocities.
+    """
+    if not source.IsA(UsdGeom.PointInstancer):
+        return None
+    now = _Instances(source, Usd.TimeCode(frame))
+    before = _Instances(source, Usd.TimeCode(frame - 1), proto_bounds=_proto_bounds(source, Usd.TimeCode(frame)))
+    if now.count == 0 or now.count != before.count:
+        return None
+    return (now.centres - before.centres) * fps
+
+
 def _hide_from(stage, path, frame):
     """Make `path` invisible from `frame` on, shown as authored before it."""
     prim = stage.GetPrimAtPath(path)
@@ -1226,6 +1254,13 @@ def _run(owner, notice, sender):
     def to_domain(p):
         return (np.asarray(p, dtype=np.float64) - origin) / size
 
+    velocity_w = _vec3(node, "initial_velocity")
+    if node.get_param("inherit_motion", chunk.is_param_t(bool)).value:
+        motion = _source_motion(source, start_frame, fps)
+        if motion is not None and len(blob_ids):
+            per_blob = np.where((blob_ids >= 0)[:, None], motion[np.clip(blob_ids, 0, None)], 0.0)
+            velocity_w = per_blob + velocity_w
+
     solid = None
     if static_prims:
         tris = [_world_triangles(p) for p in static_prims]
@@ -1261,7 +1296,7 @@ def _run(owner, notice, sender):
     gravity_n[up_idx] = gravity_w / size
     job = dict(
         particles=to_domain(particles_w),
-        velocity=_vec3(node, "initial_velocity") / size,
+        velocity=velocity_w / size,
         material=material,
         n_grid=grid_res,
         stiffness=node.get_param("stiffness", is_f).value,
@@ -1329,6 +1364,7 @@ def _run(owner, notice, sender):
 
             if node.get_param("hide_source", chunk.is_param_t(bool)).value:
                 _hide_from(stage, source_paths[0], start_frame)
+            _show_from(stage, str(sim_path), start_frame)
 
             top = UsdGeom.Points.Define(stage, surface_path)
             top.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(surface, dtype=np.float32)))
@@ -1526,6 +1562,11 @@ def main():
         "A Scatter Brush's Painted Points: a ball of Blob Radius at every dab.\n"
         "A Scatter Points instancer: a ball the size of every instance.\n"
         "Read at Start Frame, so an RBD bake hands over where its pieces are then.",
+    ))
+    chunk_api.add_param(chunk.Checkbox(
+        "inherit_motion", "Inherit Motion", default_value=False,
+        tooltip="An animated instancer (an RBD bake): each ball of material starts with the "
+        "speed its instance had at Start Frame, so rubble that breaks into sand keeps moving.",
     ))
     chunk_api.add_param(chunk.Checkbox(
         "hide_source", "Hide Source", default_value=False,
