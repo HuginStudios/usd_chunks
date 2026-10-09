@@ -225,20 +225,6 @@ def _def_node(prim: Usd.Prim):
     return found
 
 
-def arc_def_node(prim: Usd.Prim):
-    """The prim-index node an arc brings prim's `def` in by, or None for a prim defined in
-    the stage's own layer stack (or not at all).
-
-    Its layerStack is the asset's layers, and its mapToRoot the arc's map from the asset's
-    namespace to the stage's -- what a cook needs to land in the asset (ChunkLayerManager
-    .settle_cook), the same node arc_source reads where the chunk came from.
-    """
-    node = _def_node(prim)
-    if node is None or node.arcType == Pcp.ArcTypeRoot:
-        return None
-    return node
-
-
 def arc_source(prim: Usd.Prim) -> tuple[Sdf.Path, Sdf.Layer] | None:
     """Where a prim came into the stage by an arc, read from USD's own prim index.
 

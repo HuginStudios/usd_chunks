@@ -450,10 +450,6 @@ def cmd_run(args):
         order=lambda cs: commit_order_from_stage(cs, stage),
     )
 
-    # A result an arc brings in sits in its asset, as weak as the arc -- not left in the
-    # session layer by a callback since its cook (ChunkLayerManager.settle_cook).
-    chunk_registry.ChunkLayerManager().settle_all()
-
     if getattr(args, "bake", False):
         for path in chunk_registry.ChunkLayerManager().save_cook_layers():
             print(f"Baked: {path}")
