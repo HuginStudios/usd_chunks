@@ -1020,7 +1020,7 @@ def _hide_instances_from(stage, upstream, path, chosen, frame):
     if not source or not target:
         return
     ids = source.GetIdsAttr().Get(Usd.TimeCode(frame))
-    chosen_ids = {int(ids[i]) if ids else int(i) for i in np.flatnonzero(chosen)}
+    chosen_ids = {int(ids[int(i)]) if ids else int(i) for i in np.flatnonzero(chosen)}
     hidden = source.GetInvisibleIdsAttr()
     times = sorted(set(hidden.GetTimeSamples()) | {float(frame)})
     attr = target.CreateInvisibleIdsAttr()

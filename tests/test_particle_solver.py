@@ -530,6 +530,17 @@ def test_hiding_some_pieces_keeps_what_the_bake_hid():
     assert list(hidden.Get(40)) == [1]
 
 
+def test_hiding_some_pieces_goes_by_their_ids():
+    """An RBD bake writes ids; invisibleIds names those, not positions in the arrays."""
+    stage = Usd.Stage.CreateInMemory()
+    rock = _big_and_small(stage)
+    inst = UsdGeom.PointInstancer(rock)
+    inst.CreateIdsAttr().Set(Vt.Int64Array([10, 11, 12]))
+    inst.GetInvisibleIdsAttr().Set(Vt.Int64Array([12]), 1)
+    ps._hide_instances_from(stage, stage, "/rock", np.asarray([False, True, False]), 10)
+    assert list(inst.GetInvisibleIdsAttr().Get(10)) == [11]
+
+
 def test_collider_spheres_skip_hidden_and_dissolved_pieces():
     stage = Usd.Stage.CreateInMemory()
     rock = _big_and_small(stage)
