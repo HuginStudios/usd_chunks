@@ -48,6 +48,7 @@ from usd_chunks.frontends.blender.addon import brush
 from usd_chunks.frontends.blender.addon import camera
 from usd_chunks.frontends.blender.addon import dependencies
 from usd_chunks.frontends.blender.addon import gizmos
+from usd_chunks.frontends.blender.addon import undo
 from usd_chunks.frontends.blender.addon import viewport
 
 logger = logging.getLogger(__name__)
@@ -257,6 +258,8 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     view.reload()
     # A context with no view cooks nothing, so this is not cosmetic -- see ensure_view.
     view.ensure_view()
+    # From here on the network's USD rides along with Blender's undo steps.
+    undo.track(view.tree, stage)
 
 
 # ---------------------------------------------------------------------------
@@ -658,7 +661,7 @@ class USDCHUNKS_OT_auto_layout(bpy.types.Operator):
 
     bl_idname = "usd_chunks.auto_layout"
     bl_label = "Auto Layout"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         view = get_view()
@@ -674,7 +677,7 @@ class USDCHUNKS_OT_set_view_slot(bpy.types.Operator):
 
     bl_idname = "usd_chunks.set_view_slot"
     bl_label = "Set Active View"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     slot: bpy.props.IntProperty(default=1, min=0, max=2)
 
@@ -844,7 +847,7 @@ class _ChunkTreeOperator(bpy.types.Operator):
     editor first because Blender owns clicking and box-select.
     """
 
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
@@ -889,6 +892,7 @@ class USDCHUNKS_OT_copy(_ChunkTreeOperator):
     """Copy the selection to the chunk clipboard -- the one every frontend shares."""
 
     bl_idname = "usd_chunks.copy"
+    bl_options = {"REGISTER"}  # copying changes nothing to undo
     bl_label = "Copy Chunks"
 
     def run(self, context, view):
@@ -1098,16 +1102,14 @@ def _register_keymap() -> None:
 
 @bpy.app.handlers.persistent
 def _on_undo(scene, *_args) -> None:
-    """Re-derive the tree from USD after any undo or redo.
+    """Bring the network back to the undo step Blender just restored.
 
     Blender's undo restores the .blend -- the node tree, every RNA value on every node --
-    and knows nothing about the stage. Left alone, that is the one way the view and the
-    model were still allowed to disagree: Ctrl+Z after Shift+A took the node away and the
-    chunk stayed, so it came back on the next reload; Ctrl+Z after a slider edit put the
-    old number on the node while the param kept the new one. This is why the chunk
-    operators no longer carry the UNDO option -- an undo step that only ever half-applied
-    was worse than none -- and the property edits Blender records on its own are undone
-    here by rebuilding from the model, which the tree was always meant to be a view of.
+    and knows nothing about the stage. undo.py keeps a copy of the network's root layer on
+    the tree, so the step Blender restored carries the network as it was at that step: put
+    the layer back from it, then rebuild the tree and cook the graph on screen. Without
+    this, Ctrl+Z only rebuilt the tree from USD, so a param edit, a new node or a delete
+    was never undone.
 
     A memfile undo can also recreate the NodeTree datablock itself; `BlenderGraphView.tree`
     already looks the tree up by name for exactly that reason, so a reload here lands in
@@ -1117,9 +1119,25 @@ def _on_undo(scene, *_args) -> None:
     if view is None:
         return
     try:
+        restored = undo.restore(view.tree, view.stage)
+        if restored:
+            # A chunk whose prim came back (undoing a delete) is a new chunk object.
+            view.chunks = {chunk_stage.get_chunk_prim_path(c): c
+                           for c in view.scene.get_chunks()}
         view.reload()
+        if restored:
+            _cook_shown_graph(view)
     except Exception:  # pragma: no cover - an undo past the network's open
         logger.exception("could not rebuild the chunk tree after undo")
+
+
+def _cook_shown_graph(view) -> None:
+    """Cook for the graph on screen, with its active view, as Qt does (recook_focus)."""
+    context_chunk = bg.chunk_graph.context_chunk(view.scene, view.chunks, view.context)
+    slot = view.active_slot()
+    view_chunk = (chunk_stage.find_view_chunk_for_slot(
+        slot, view.stage, view.scene, context_chunk) if slot else None)
+    chunk_stage.recook_focus(view.stage, view.scene, context_chunk, view_chunk)
 
 
 def _unregister_keymap() -> None:
@@ -1170,6 +1188,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    undo.untrack()
     camera.unregister()
     brush.unregister()
     gizmos.unregister()

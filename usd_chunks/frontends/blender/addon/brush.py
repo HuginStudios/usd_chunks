@@ -276,7 +276,7 @@ class USDCHUNKS_OT_brush(bpy.types.Operator):
 
     bl_idname = "usd_chunks.brush"
     bl_label = "Paint with Chunk Brush"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):

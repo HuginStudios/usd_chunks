@@ -429,7 +429,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
 
     bl_idname = "usd_chunks.param_button"
     bl_label = "Chunk Action"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -457,7 +457,7 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
 
     bl_idname = "usd_chunks.pin_prim"
     bl_label = "Pin Picked Prim"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -509,7 +509,7 @@ class USDCHUNKS_OT_pick_menu_item(bpy.types.Operator):
 
     bl_idname = "usd_chunks.pick_menu_item"
     bl_label = "Pick"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     tree_name: bpy.props.StringProperty(options={"HIDDEN"})
     node_path: bpy.props.StringProperty(options={"HIDDEN"})
@@ -534,7 +534,7 @@ class USDCHUNKS_OT_search_menu(bpy.types.Operator):
 
     bl_idname = "usd_chunks.search_menu"
     bl_label = "Search"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
     # invoke_search_popup searches the property bl_property names.
     bl_property = "item"
 
@@ -600,7 +600,7 @@ class USDCHUNKS_OT_revert_override(bpy.types.Operator):
 
     bl_idname = "usd_chunks.revert_override"
     bl_label = "Revert Override"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -627,7 +627,7 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
 
     bl_idname = "usd_chunks.list_resize"
     bl_label = "Resize List"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     list_name: bpy.props.StringProperty()
@@ -1618,7 +1618,7 @@ class USDCHUNKS_OT_add_node(bpy.types.Operator):
 
     bl_idname = "usd_chunks.add_node"
     bl_label = "Add Chunk"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     entry_index: bpy.props.IntProperty(default=-1)
 
