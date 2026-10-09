@@ -27,7 +27,7 @@ import sys
 from imgui_bundle import hello_imgui, imgui, imgui_node_editor as ed
 from pxr import Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.frontends.imgui import factory as chunk_imgui
@@ -163,18 +163,19 @@ class ImGuiGraphView:
         self._ensure_view()
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open.
+        """Give the context an Output (or, failing that, a view) on open.
 
         Without one nothing cooks, so a network opened here would look right and do
         nothing.
         """
+        before = len(self.scene.get_chunks())
         slot, activate = chunk_graph.default_view_slot(
-            self.stage, self.scene, self.context, self.chunks.get(self.context))
-        if slot is None:
+            self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
+        if slot is None and len(self.scene.get_chunks()) == before:
             return
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
-        if activate:
+        if slot is not None and activate:
             self.set_active_slot(slot)
 
     # -- reading -----------------------------------------------------------
@@ -477,7 +478,7 @@ class ImGuiGraphView:
         self.status = f"cut {count}"
 
     def _nest_target(self):
-        return chunk_graph.nest_target(self.chunks.get(self.context))
+        return chunk_graph.nest_target(chunk_graph.context_chunk(self.scene, self.chunks, self.context))
 
     def paste_at(self, x: float, y: float, nodes=None, edges=None) -> None:
         nodes = chunk_graph.node_clipboard if nodes is None else nodes
@@ -579,7 +580,7 @@ class ImGuiGraphView:
 
     def context_chunk(self):
         """The chunk object for the context being shown, if there is one."""
-        return self.chunks.get(self.context)
+        return chunk_graph.context_chunk(self.scene, self.chunks, self.context)
 
     def active_slot(self) -> int:
         return chunk_graph.read_active_slot(self.stage, self.context)
@@ -680,6 +681,7 @@ def _quiet_introspection():
 
 
 def main(network: str, context: str | None = None):
+    configure_logging()
     view = ImGuiGraphView(network, context)
 
     def gui():

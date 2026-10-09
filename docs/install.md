@@ -117,9 +117,10 @@ There are two ways to fix it:
   mujoco is only for the RBD solver, and fast-simplification only for Poly Reduce. CAD
   Import also needs `cadquery-ocp`. Add `PySide6` only if your host doesn't have Qt
   already; usdview, Houdini and Maya do. You can also install just the ones you need.
-- Set [`USD_CHUNK_AUTO_INSTALL`](#environment-variables). Then usdview asks you about each
-  package in a chunk's `requirements` ([Writing a chunk](writing-a-chunk.md#config)) and
-  installs the ones you allow.
+- Let usd_chunks ask. When you create a chunk whose `requirements` ([Writing a
+  chunk](writing-a-chunk.md#config)) aren't installed, usdview asks "OK to install requests
+  for chunk AMDMaterialXLibrary?" and installs them if you say yes, with a progress dialog.
+  `usdchunks run` asks the same on an interactive terminal, and Blender in a popup.
 
 ### Other extras
 
@@ -183,7 +184,7 @@ create menu. This is almost always a missing pip package: the chunk failed to im
 it was left out. The console shows which package when it loads:
 
 ```
-WARNING: usd_chunks.chunk_registry: Chunk dependencies not installed: numpy>=2,<3. ...
+WARNING: usd_chunks.chunk_registry: Chunk scatter needs numpy>=2,<3, which is not installed. ...
 ```
 
 Install that package into the Python usdview uses. The full list and the fix are under [A
@@ -257,17 +258,16 @@ get the path with `python -m usd_chunks.cli plugin-path` instead.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `USD_CHUNK_DIRS` | *(empty)* | The folders your chunk modules are in, separated by `;` on Windows and `:` on macOS/Linux. Each folder is searched, including subfolders, for `.py` files with a `main()` function. See [Writing a chunk](writing-a-chunk.md). If two folders have a chunk with the same name, the one in the **first** folder is used. |
-| `USD_CHUNK_DEPENDENCY_DIR` | `<usd_chunks package>/../_installed_deps` | Where `USD_CHUNK_AUTO_INSTALL` installs the pip packages a chunk needs. It's added to `sys.path` automatically. |
-| `USD_CHUNK_AUTO_INSTALL` | off | A chunk module can list `requirements` in its `config()` ([Writing a chunk](writing-a-chunk.md#config)). With this set, usdview asks you about each missing package and installs the ones you allow into `USD_CHUNK_DEPENDENCY_DIR`. Other hosts and `usdchunks run` never install anything. When it's off, nothing is installed and a missing package only shows up as a warning, so opening someone else's network can never install packages on its own. |
+| `USD_CHUNK_DIRS` | the bundled chunks | The folders your chunk modules are in, separated by `;` on Windows and `:` on macOS/Linux. Each folder is searched, including subfolders, for `.py` files with a `main()` function. See [Writing a chunk](writing-a-chunk.md). If two folders have a chunk with the same name, the one in the **first** folder is used. A ready-made set of chunks ships with usd_chunks (the repository's `chunks/` folder) and is always searched after the folders you list, so yours win on a duplicate name. |
+| `USD_CHUNK_DEPENDENCY_DIR` | `%LOCALAPPDATA%/usd_chunks/installed_deps` (`~/.cache/...` elsewhere) | Where the pip packages a chunk needs are installed, in a `py<version>` subfolder per Python (usdview and Blender run different ones). It's added to `sys.path` automatically. |
+| `USD_CHUNK_AUTO_INSTALL` | unset (ask) | What happens when a chunk's `requirements` ([Writing a chunk](writing-a-chunk.md#config)) aren't installed. **Unset:** ask once per chunk ("OK to install requests for chunk AMDMaterialXLibrary?") -- usdview in a dialog, `usdchunks run` on an interactive terminal, Blender in a popup (with Allow Online Access on); a yes installs into `USD_CHUNK_DEPENDENCY_DIR` with progress shown, and a "no" stands until restart. CI and other non-interactive runs only warn. **`1`:** install without asking. **`0`:** never install, only warn. |
 | `USD_CHUNK_LOAD_FILTER` | *(unset, so everything loads)* | Only load the chunk modules you list, for example `USD_CHUNK_LOAD_FILTER=transform,scatter_points`. A module loads if its name appears anywhere in the string, so `transform` also lets a module called `trans` load, but not one called `transform_ops`. Useful for a quick test with only a few chunks loaded. |
 | `USD_CHUNK_VERBOSE` | off | When two chunk modules have the same name, the first `USD_CHUNK_DIRS` folder wins and the log only gets a one-line summary. Set this to log every clash, with the file that was used and the one that was skipped. |
 | `PXR_PLUGINPATH_NAME` | — | Only needed for usdview. See [usdview integration](#usdview-integration). |
 | `PYTHONPATH` | — | Only needed when running from a clone instead of an install. See [Running from a clone](#running-from-a-clone). |
-| `USD_CHUNK_LOG_LEVEL` | `INFO` | usd_chunks' own log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Any other value is treated as `INFO`. Set it to `DEBUG` to see what a reload or cook does, param by param. That includes why a [`config()`](writing-a-chunk.md#config) fell back to defaults, which is otherwise only a log line. |
+| `USD_CHUNK_LOG_LEVEL` | `INFO` | usd_chunks' own log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Any other value is treated as `INFO`. Set it to `DEBUG` to see what a reload or cook does, param by param. That includes why a [`config()`](writing-a-chunk.md#config) fell back to defaults, which is otherwise only a log line. The CLI, usdview, Blender and the graph frontends print these to the console; a script of your own calls `usd_chunks.configure_logging()` to do the same. |
 | `USD_CHUNKS_COOK_CACHE` | on | For chunks whose module sets [`cache_cook`](writing-a-chunk.md#caching-a-slow-cook). `=0` never reads or writes the cache, `=refresh` cooks every time and rewrites what is stored. |
 | `USD_CHUNKS_COOK_CACHE_DIR` | `%LOCALAPPDATA%/usd_chunks/cook_cache` (`~/.cache/usd_chunks/cook_cache` elsewhere) | Where cached cooks are kept. Safe to delete at any time. |
-| `USD_CHUNKS_SKIP_COOKS` | off | Experimental. `=1` skips the cook of a chunk when nothing it reads changed above it. See [Skipping cooks nothing reached](writing-a-chunk.md#skipping-cooks-nothing-reached). |
 | `USD_CHUNKS_COOK_CACHE_MAX_GB` | `2` | The most the cook cache may use. Each time something is stored, results unread for 30 days are deleted, then the least recently read until the folder fits. |
 | `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to ask render delegates for their settings. By default this is skipped in a GUI host like usdview (when a `QApplication` is running), because loading a second render engine there can crash it. Scripts and tests do ask. `=1` always asks, `=0` never does. Note the name starts with `USD_CHUNKS_`, unlike the other variables. |
 

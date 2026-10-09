@@ -83,7 +83,7 @@ def test_the_same_inputs_are_read_back_instead_of_cooked():
         assert len(_entries()) == 1
         c.get_param("readout").value = "stale"
 
-        assert c.cook() is True
+        assert c._cook() is True
 
         assert len(cooks) == 1
         assert _out_size(scene) == 1.0
@@ -125,12 +125,12 @@ def test_a_new_version_of_a_required_package_cooks_again(monkeypatch):
         module = _cached_module(cooks)
         module.config.requirements = ["numpy>=2"]
         c = _add(scene, module)
-        assert c.cook() is True
+        assert c._cook() is True
         assert len(cooks) == 1, "the same version reads back"
 
         versions["numpy"] = "2.1.0"
         cook_cache._PACKAGES.clear()  # a restart, as after a real upgrade
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
 
@@ -151,7 +151,7 @@ def test_a_package_with_no_install_record_counts_by_its_imported_version(monkeyp
 
         fake.__version__ = "3.10.0"
         cook_cache._PACKAGES.clear()  # a restart, as after a real upgrade
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
 
@@ -164,11 +164,11 @@ def test_a_package_added_to_the_requirements_mid_session_counts(monkeypatch):
         module = _cached_module(cooks)
         module.config.requirements = ["numpy>=2"]
         c = _add(scene, module)
-        assert c.cook() is True
+        assert c._cook() is True
         assert len(cooks) == 1
 
         module.config.requirements = ["numpy>=2", "scipy"]
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
 
@@ -204,8 +204,8 @@ def test_unticking_cache_result_always_cooks():
         c.get_param(cook_cache.TOGGLE).value = False
         count = len(cooks)
 
-        c.cook()
-        c.cook()
+        c._cook()
+        c._cook()
 
         assert len(cooks) == count + 2
 
@@ -215,10 +215,49 @@ def test_the_environment_switches_it_off(monkeypatch):
     cooks: list = []
     with Scene() as scene:
         c = _add(scene, _cached_module(cooks))
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
         assert _entries() == []
+
+
+def _always_module(cooks: list):
+    module = _cached_module(cooks)
+    module.config.cache_cook = False
+    module.config.cache_always = True  # implies cache_cook
+    return module
+
+
+def test_cache_always_has_no_toggle_and_still_reads_back():
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _always_module(cooks))
+        assert c.get_param(cook_cache.TOGGLE) is None
+
+        c._cook()
+
+        assert len(cooks) == 1
+        assert len(_entries()) == 1
+
+
+def test_cache_always_ignores_the_environment_switch(monkeypatch):
+    monkeypatch.setenv(cook_cache.ENV, "0")
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _always_module(cooks))
+        c._cook()
+
+        assert len(cooks) == 1
+        assert len(_entries()) == 1
+
+
+def test_cache_always_stores_a_fast_cook(monkeypatch):
+    """The floor that keeps quick cooks out is for a shortcut; here the entry is the result."""
+    monkeypatch.setattr(cook_cache, "_MIN_COOK_S", 3600.0)
+    cooks: list = []
+    with Scene() as scene:
+        _add(scene, _always_module(cooks))
+        assert len(_entries()) == 1
 
 
 def test_refresh_cooks_and_rewrites(monkeypatch):
@@ -227,7 +266,7 @@ def test_refresh_cooks_and_rewrites(monkeypatch):
         c = _add(scene, _cached_module(cooks))
         monkeypatch.setenv(cook_cache.ENV, "refresh")
 
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
         assert len(_entries()) == 1
@@ -238,11 +277,11 @@ def test_a_hook_input_that_changes_cooks_again():
     token = ["a"]
     with Scene() as scene:
         c = _add(scene, _cached_module(cooks, cache_key=lambda node: token[0]))
-        c.cook()
+        c._cook()
         assert len(cooks) == 1
 
         token[0] = "b"
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
 
@@ -251,7 +290,7 @@ def test_a_hook_that_cannot_say_cooks_and_stores_nothing():
     cooks: list = []
     with Scene() as scene:
         c = _add(scene, _cached_module(cooks, cache_key=lambda node: None))
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
         assert _entries() == []
@@ -265,11 +304,11 @@ def test_a_named_file_that_changes_cooks_again(tmp_path):
         c = _add(scene, _cached_module(cooks))
         c.get_param("source").value = str(source)
         count = len(cooks)
-        c.cook()
+        c._cook()
         assert len(cooks) == count
 
         source.write_text("two!", encoding="utf-8")
-        c.cook()
+        c._cook()
 
         assert len(cooks) == count + 1
 
@@ -293,7 +332,7 @@ def test_hidden_state_a_cook_sets_comes_back_with_it():
         c = _add(scene, _cached_module(cooks, extra=hide))
         c.get_param("source").unset_state(chunk.ChunkFlags.State.HIDDEN)
 
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 1
         assert c.get_param("source").has_state(chunk.ChunkFlags.State.HIDDEN)
@@ -306,7 +345,7 @@ def test_an_unreadable_entry_is_a_miss_and_is_dropped():
         (entry,) = cook_cache.cache_dir().glob("*.params")
         entry.write_bytes(b"not a pickle")
 
-        c.cook()
+        c._cook()
 
         assert len(cooks) == 2
 

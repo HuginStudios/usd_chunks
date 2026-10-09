@@ -16,7 +16,8 @@ from usd_chunks import chunk_registry
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
-from usd_chunks.chunk_stage import _CHUNKS_ROOT, _author_prim
+from usd_chunks.chunk_stage import _CHUNKS_ROOT
+from chunk_prim_authoring import _author_prim
 
 
 class _DummyScene(SceneSender):

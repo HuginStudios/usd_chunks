@@ -56,6 +56,7 @@ from typing import Any
 
 from pxr import Sdf, Usd, UsdGeom
 
+from usd_chunks.chunk_cache import user_cache_dir
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -95,27 +96,33 @@ def mode() -> str:
     return "on"
 
 
+def _always(config) -> bool:
+    """Whether config declares cache_always: cached even with the cache switched off."""
+    return bool(getattr(config, "cache_always", False))
+
+
 def cache_dir() -> Path:
     """Where entries live: USD_CHUNKS_COOK_CACHE_DIR, else %LOCALAPPDATA%/usd_chunks/cook_cache."""
     if custom := os.environ.get(ENV_DIR):
         return Path(custom)
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.cache")
-    return Path(base) / "usd_chunks" / "cook_cache"
+    return Path(user_cache_dir("cook_cache"))
 
 
 def lookup(chunk) -> CookEntry | None:
     """The cache entry for this chunk's next cook, or None when its cook is not cached.
 
     None when the cache is off, the module did not declare cache_cook, the node's
-    cache_result is unticked, or its cache_key() hook could not say.
+    cache_result is unticked, or its cache_key() hook could not say. A module declaring
+    cache_always is cached whatever the switch and has no checkbox to untick.
     """
-    if mode() == "off":
-        return None
     config = chunk.get_config()
-    if not (config and config.cache_cook):
+    always = _always(config)
+    if mode() == "off" and not always:
+        return None
+    if not (config and (config.cache_cook or always)):
         return None
     toggle = chunk.get_param(TOGGLE)
-    if toggle is not None and not toggle.value:
+    if toggle is not None and not toggle.value and not always:
         return None
     module = chunk.get_chunk_module()
     if module is None or not module.source_hash:
@@ -197,7 +204,7 @@ class CookEntry:
         if self._restored or self._before is None:
             return
         elapsed = time.perf_counter() - self._started
-        if elapsed < _MIN_COOK_S:
+        if elapsed < _MIN_COOK_S and not _always(chunk.get_config()):
             return
         after = _snapshot(chunk)
         if [name for _, name, *_ in after] != [name for _, name, *_ in self._before]:

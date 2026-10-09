@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
+import random
+import sys
 import time
+from pathlib import Path
 
 import pytest
 from pxr import Gf, Usd, UsdGeom
@@ -252,7 +256,7 @@ def test_scatter_survives_prototype_vanishing_after_upstream_read(monkeypatch) -
     # Cube, so the "typeless means unresolved" check never fired. It only ever passed
     # because the readout Label written at the end of execute() re-cooked the chunk -- a
     # Label no longer does (it is presentation_only).
-    assert scatter.cook(), "precondition: the chunk is allowed to cook"  # must not raise
+    assert scatter._cook(), "precondition: the chunk is allowed to cook"  # must not raise
 
     proto = stage.GetPrimAtPath("/ScatterInstancer/Prototypes/proto_0")
     assert proto.IsValid()
@@ -659,3 +663,31 @@ def test_row_padding_is_independent_of_along_row_padding() -> None:
     pad_x, pad_y = spans()
     assert pad_x > base_x + 1e-3, "Padding did not open the row up"
     assert abs(pad_y - base_y) < 1e-3, "Padding leaked into the row axis"
+
+
+def _scatter_module():
+    """chunks/modelling/scatter_points.py itself, for its orientation helpers."""
+
+    path = Path(__file__).resolve().parent.parent / "chunks" / "modelling" / "scatter_points.py"
+    spec = importlib.util.spec_from_file_location("_scatter_points_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look themselves up there
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("up", [Gf.Vec3f(0, 1, 0), Gf.Vec3f(0, 0, 1)], ids=["y_up", "z_up"])
+def test_align_to_normal_keeps_an_upright_prototype_upright_on_either_up_axis(up) -> None:
+    # A House stands along the stage's up axis. On flat ground the normal IS up, so aligning
+    # to it must leave the instance as it is -- it tipped 90 degrees on a Y-up stage
+    # (Houdini's) when the prototype's up was taken to be +Z.
+    mod = _scatter_module()
+    quat = mod._compute_orientation("Align to Normal", up, random.Random(0), None, up)
+    rotated = Gf.Rotation(Gf.Quatd(quat.GetReal(), Gf.Vec3d(quat.GetImaginary()))).TransformDir(Gf.Vec3d(up))
+    assert Gf.IsClose(rotated, Gf.Vec3d(up), 1e-5)
+
+    # On a slope it still turns the prototype's up onto the surface normal.
+    slope = Gf.Vec3f(0.6, 0.8, 0) if up[1] else Gf.Vec3f(0.6, 0, 0.8)
+    quat = mod._compute_orientation("Align to Normal", slope, random.Random(0), None, up)
+    rotated = Gf.Rotation(Gf.Quatd(quat.GetReal(), Gf.Vec3d(quat.GetImaginary()))).TransformDir(Gf.Vec3d(up))
+    assert Gf.IsClose(rotated, Gf.Vec3d(slope), 1e-5)

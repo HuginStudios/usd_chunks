@@ -14,12 +14,14 @@ import re
 import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
-from pxr import Ar, Gf, Sdf, Usd, UsdGeom, UsdShade
+from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade
 
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
-from usd_chunks.chunk_topology import get_chunk_prim_path, nearest_upstream_edit_layer
+from usd_chunks.chunk_topology import (
+    get_chunk_prim_path, nearest_upstream_edit_layer, upstream_edit_target_layer,
+)
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -92,8 +94,9 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
 
     Use this instead of hardcoding stage.GetSessionLayer() for override/redirect-style
     opinions (variant selections, shader input redirects, etc.) so they follow whatever
-    Edit Target applies at the authoring chunk's place in the graph, same as chunk prim
-    bookkeeping does.
+    Edit Target applies at the authoring chunk's place in the graph. These are cook output,
+    so with no Edit Target upstream they stay in the session layer; a chunk's own prim
+    falls back to the stage's edit target instead (get_bookkeeping_layer).
 
     The fallback for a missing `owner` is safe despite being ambient state because its sole
     writer (ChunkNoticePropagator.execute) save/restores it around each module run -- set to
@@ -127,34 +130,193 @@ def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
 def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
     """Where a chunk's own bookkeeping belongs: its node prim's storage attrs, wiring and position.
 
-    That is get_edit_layer(stage, owner) for a regular chunk, or always the session layer for
-    a CONTEXT chunk (Tab containers, groups), regardless of what target is currently active.
+    In order:
 
-    CONTEXT chunks are structural scaffolding for the graph itself, not content --
-    letting their own bookkeeping follow whatever target applies at their position would
-    split a single container's own prim across layers over its lifetime, recreating the
-    exact per-layer graph scatter get_edit_layer avoids for content. Regular (non-CONTEXT)
-    chunks have no such risk, so they follow get_edit_layer like everything else.
+    - a chunk composed in from a file the chunk system does not own: the stage's edit
+      target (host_edit_layer) -- what is written on it is an override.
+    - a regular chunk with an Edit Target chunk upstream: the layer that Edit Target
+      publishes, so a network can route its own branches (render geo, proxy geo) in one go.
+    - otherwise the layer the chunk's prim is already defined in, so a chunk never splits
+      across layers, or for one not defined yet, the stage's edit target (host_edit_layer)
+      -- the same place USD puts any other new prim, whatever the host defaults it to
+      (usdview: the session layer; Blender, Flet, ImGui: the root). With the target on a
+      department sublayer, a new chunk is saved in that department's file.
+
+    CONTEXT chunks (Tab containers, groups) take the last rule: they are structural
+    scaffolding, so an Edit Target chunk inside never moves them, but they live in a file
+    like the chunks they hold.
 
     Args:
         stage: The stage being authored.
-        owner: The chunk; None (the caller couldn't resolve an owning chunk) is treated as
-            non-CONTEXT.
+        owner: The chunk; None falls back to the chunk whose execute() is running
+            (chunk_notice._executing_chunk), and is otherwise treated as a new chunk.
 
     Returns:
-        The layer to author bookkeeping into.
+        The layer to author bookkeeping into, or None without a stage.
     """
-    if owner is not None and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
-        return stage.GetSessionLayer()
-    if owner is not None:
+    if stage is None:
+        return None
+    if owner is None:
+        owner = chunk_notice._executing_chunk
+    if owner is None:
+        return host_edit_layer(stage)
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
+    if prim and prim.IsValid():
         # A chunk composed in from a sequence file has an Edit Target chain of its own,
         # and it is the sequence's: what the shot writes on such a chunk is an override,
         # and it goes where the host's edit target points (host_edit_layer), not down the
         # sequence's chain.
-        prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(owner)))
         if is_composed_in(prim):
             return host_edit_layer(stage)
-    return get_edit_layer(stage, owner)
+        if not owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            routed = upstream_edit_target_layer(stage, prim)
+            if routed is not None:
+                return routed
+        if (home := chunk_def_layer(prim)) is not None:
+            return home
+    return host_edit_layer(stage)
+
+
+def chunk_def_layer(prim: Usd.Prim) -> Sdf.Layer | None:
+    """The strongest owned layer holding a `def` for this chunk prim.
+
+    That is where the chunk lives, and where anything first authored on it later goes, so
+    one chunk's specs stay in one layer however the stage's edit target moves afterwards.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        The layer, or None when no owned layer defines the prim (it is composed in, or not
+        defined yet).
+    """
+    path = prim.GetPath()
+    stage = prim.GetStage()
+    for spec in prim.GetPrimStack():
+        if spec.path != path or spec.specifier != Sdf.SpecifierDef:
+            continue
+        # A def in a file the chunk system does not own is only ever overridden, never
+        # written into (is_foreign_layer), and an internal layer is cook output.
+        if is_foreign_layer(spec.layer, stage) or chunk_registry.is_chunk_internal_layer(spec.layer):
+            continue
+        return spec.layer
+    return None
+
+
+def _index_nodes(node) -> Iterable:
+    """node and everything below it in a prim index, strongest first."""
+    yield node
+    for child in node.children:
+        yield from _index_nodes(child)
+
+
+def _def_node(prim: Usd.Prim):
+    """The composition node a prim's `def` comes from: the weakest one holding a def spec,
+    which is where the prim was introduced. None for a prim no layer defines."""
+    found = None
+    for node in _index_nodes(prim.GetPrimIndex().rootNode):
+        if not node.hasSpecs:
+            continue
+        for layer in node.layerStack.layers:
+            spec = layer.GetPrimAtPath(node.path)
+            if spec and spec.specifier == Sdf.SpecifierDef:
+                found = node
+                break
+    return found
+
+
+def arc_def_node(prim: Usd.Prim):
+    """The prim-index node an arc brings prim's `def` in by, or None for a prim defined in
+    the stage's own layer stack (or not at all).
+
+    Its layerStack is the asset's layers, and its mapToRoot the arc's map from the asset's
+    namespace to the stage's -- the same node arc_source reads where the chunk came from.
+    """
+    node = _def_node(prim)
+    if node is None or node.arcType == Pcp.ArcTypeRoot:
+        return None
+    return node
+
+
+def arc_source(prim: Usd.Prim) -> tuple[Sdf.Path, Sdf.Layer] | None:
+    """Where a prim came into the stage by an arc, read from USD's own prim index.
+
+    Any arc -- reference, payload, inherit, specialize, variant, relocate -- because it asks
+    composition which node the prim's `def` comes from, rather than looking for a list of
+    metadata fields.
+
+    Args:
+        prim: A prim.
+
+    Returns:
+        (the nearest prim an arc is introduced at, as a stage path; the layer of the stage's
+        own stack that brings the outermost arc in -- the weakest one with a spec at that
+        arc's prim, where it was introduced), or None for a prim defined in the stack itself.
+        A chair a referenced house references comes back as (house's furniture prim, the
+        shot layer that references the house).
+    """
+    node = _def_node(prim)
+    if node is None or node.arcType == Pcp.ArcTypeRoot:
+        return None
+    nearest = node.parent.mapToRoot.MapSourceToTarget(node.GetIntroPath())
+    outer = node
+    while outer.parent and outer.parent.arcType != Pcp.ArcTypeRoot:
+        outer = outer.parent
+    outer_path = outer.parent.mapToRoot.MapSourceToTarget(outer.GetIntroPath())
+    stack = prim.GetPrimIndex().rootNode.layerStack.layers
+    authoring = None
+    for layer in stack:  # strongest first: the last one found is the weakest
+        if layer.GetPrimAtPath(outer_path) and not chunk_registry.is_chunk_internal_layer(layer):
+            authoring = layer
+    if authoring is None or nearest.isEmpty:
+        return None
+    return nearest, authoring
+
+
+def composition_sources(prim: Usd.Prim) -> tuple:
+    """A fingerprint of where a prim's opinions come from: its prim index's nodes.
+
+    Changes when what composes it changes -- a variant switched, an arc retargeted, a
+    payload loaded -- and stays the same when only values change. Compared before and after
+    a resync, it says whose params need reading again, with no list of what could cause it.
+    """
+    if not (prim and prim.IsValid()):
+        return ()
+    return tuple(
+        (str(node.arcType), node.layerStack.identifier.rootLayer.identifier, str(node.path))
+        for node in _index_nodes(prim.GetPrimIndex().rootNode) if node.hasSpecs
+    )
+
+
+def chunk_pass(prim: Usd.Prim) -> Sdf.Layer | None:
+    """The layer whose turn a chunk cooks in: the weakest layer of the stack that `def`s it.
+
+    A shot sublayers its departments, and the stack is the cook order: the weakest layer's
+    chunks cook first, and every stronger layer cooks on their result. The weakest `def` is
+    where the chunk was introduced; a `def` in a stronger layer is an override like any
+    other opinion, and so is an `over`, which never moves a chunk to another turn.
+
+    Unlike chunk_def_layer, a layer the chunk system does not own still counts: that is
+    exactly a department file sublayered into a shot.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        The layer, or None when no layer of the stage's layer stack defines the prim (it
+        came in through a reference, payload or inherit).
+    """
+    stage = prim.GetStage()
+    stack = {layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)}
+    path = prim.GetPath()
+    found = None
+    for spec in prim.GetPrimStack():  # strongest first
+        if spec.path != path or spec.specifier != Sdf.SpecifierDef:
+            continue
+        if spec.layer.identifier not in stack or chunk_registry.is_chunk_internal_layer(spec.layer):
+            continue
+        found = spec.layer
+    return found
 
 
 def host_edit_layer(stage: Usd.Stage) -> Sdf.Layer:
@@ -261,6 +423,32 @@ def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
     return not layer.anonymous and layer != stage.GetRootLayer()
 
 
+def chunk_inputs_hash(prim: Usd.Prim) -> str:
+    """A digest of what a chunk prim's inputs say: every `inputs:` value and connection,
+    composed. Two cooks of one module with the same digest were handed the same params.
+
+    For a bake's stamp (ChunkLayerManager.save_cook_layers): an override in a stronger
+    layer, or an edit never saved, changes it, and the bake made before no longer matches.
+    The exec wire is left out -- what feeds a chunk is not one of its params.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        A hex digest, or "" for an invalid prim.
+    """
+    if not (prim and prim.IsValid()):
+        return ""
+    digest = hashlib.sha256()
+    for attr in sorted(prim.GetAttributes(), key=lambda a: a.GetName()):
+        name = attr.GetName()
+        if (not name.startswith("inputs:") or name == chunk_naming.EXEC_INPUT
+                or chunk_naming.EXEC_INPUT_NUMBERED.match(name)):
+            continue
+        digest.update(f"{name}={attr.Get()!r};{attr.GetConnections()!r}\n".encode())
+    return digest.hexdigest()
+
+
 def stamp_module_hash(stage: Usd.Stage, chunk) -> None:
     """Record on the chunk's prim which module source it just cooked with.
 
@@ -321,6 +509,29 @@ def module_changed_since_cook(prim: Usd.Prim, module) -> bool:
     return bool(saved and module.source_hash and saved != module.source_hash)
 
 
+def is_layer_locked(layer: Sdf.Layer | None) -> bool:
+    """Whether an edit may not go into layer: its edit permission is off, or its file is
+    read-only on disk -- the two ways a pipeline locks a published file.
+
+    Cooking never needs this: a cook only reads such a layer. It is what a param edit that
+    would land there is refused by.
+    """
+    if layer is None:
+        return False
+    if not layer.permissionToEdit:
+        return True
+    if layer.anonymous:
+        return False
+    path = layer.realPath
+    return bool(path) and os.path.exists(path) and not os.access(path, os.W_OK)
+
+
+def param_storage_layer(stage: Usd.Stage, attr: Usd.Attribute, chunk) -> Sdf.Layer | None:
+    """Where a write of a param's storage attribute goes: wherever its spec already lives,
+    or for a new one, where this chunk's bookkeeping goes (get_bookkeeping_layer)."""
+    return get_attr_home_layer(attr) or get_bookkeeping_layer(stage, chunk)
+
+
 def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     """The layer to update an existing attribute in.
 
@@ -343,6 +554,11 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
       payload, so the spec's layer is not even in the local layer stack and
       Usd.EditContext on it raises "not in the local LayerStack".
 
+    And on a chunk prim, a chunk's procedural layer is passed over altogether: what one
+    holds there is another chunk's cook output (an Override Chunk Prim's `over`), cleared
+    and rewritten on its next cook. An edit written into it would show until then and
+    vanish; written beneath it, it is kept and shows once the override goes.
+
     Args:
         attr: The attribute to update.
 
@@ -350,6 +566,8 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
         The layer, or None only when the attr has no spec anywhere yet.
     """
     stack = attr.GetPropertyStack(Usd.TimeCode.Default())
+    if stack and attr.GetPrim().GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME:
+        stack = [s for s in stack if not chunk_registry.is_chunk_internal_layer(s.layer)]
     if not stack:
         return None
     spec = stack[0]
@@ -357,6 +575,38 @@ def get_attr_home_layer(attr: Usd.Attribute) -> Sdf.Layer | None:
     if spec.path != attr.GetPath() or is_foreign_layer(spec.layer, stage):
         return host_edit_layer(stage)
     return spec.layer
+
+
+def user_layers(stage: Usd.Stage) -> list[tuple[str, Sdf.Layer]]:
+    """The layers a user picks or exports on stage, by name, strongest first.
+
+    Asks the host's scene (SceneSender.user_layers): in usdview that is the whole layer
+    stack, in Houdini only the layers a Layer chunk named, and files.
+
+    Args:
+        stage: The stage.
+
+    Returns:
+        (name, layer) pairs, session layer included.
+    """
+    hook = getattr(chunk_registry.ChunkRegistry().scene, "user_layers", None)  # a bare test scene has none
+    if hook is not None:
+        return hook(stage)
+    return [(layer.GetDisplayName() or layer.identifier, layer)
+            for layer in stage.GetLayerStack(includeSessionLayers=True)]
+
+
+def export_layer(layer: Sdf.Layer) -> Sdf.Layer:
+    """The layer to write to a file for layer, as the host's scene has it (SceneSender.export_layer).
+
+    Args:
+        layer: The layer about to be written.
+
+    Returns:
+        layer, or a copy without the host's own bookkeeping.
+    """
+    hook = getattr(chunk_registry.ChunkRegistry().scene, "export_layer", None)
+    return hook(layer) if hook is not None else layer
 
 
 def chunk_internal_layer_ids() -> set:
@@ -413,6 +663,45 @@ def resolve_collection_members(stage: Usd.Stage, name: str) -> list[str]:
     return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage)]
 
 
+def split_patterns(text: str) -> list[str]:
+    """Split a field of paths or glob patterns on whitespace and commas, dropping empties."""
+    return [token for token in re.split(r"[\s,]+", text.strip()) if token]
+
+
+def glob_to_regex(pattern: str) -> re.Pattern:
+    """Compile a path glob to a regex that matches the whole path.
+
+    - ``*`` matches any characters within one path component (no slash crossing)
+    - ``**`` matches any characters across any number of path components
+    - ``?`` matches one character within one path component
+
+    Shared by prim paths (resolve_prim_paths) and layer paths (the Mute Layer chunk), so
+    a pattern means the same in every field that takes one.
+
+    Args:
+        pattern: The glob.
+
+    Returns:
+        The compiled regex. Use .match: it is anchored at the end, and match anchors the start.
+    """
+    parts = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i:i+2] == "**":
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(parts) + "$")
+
+
 def _glob_root(pattern: str) -> str:
     """The deepest path a glob's matches all lie under: its components before the first glob.
 
@@ -429,13 +718,7 @@ def _glob_root(pattern: str) -> str:
 def resolve_prim_paths(stage, location_str):
     """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
-    Glob rules (Houdini-style):
-
-    - ``*`` matches any characters within one path component (no slash crossing)
-    - ``**`` matches any characters across any number of path components
-    - ``?`` matches one character within one path component
-
-    For example:
+    Globs follow glob_to_regex. For example:
 
     - ``/geo/*`` -- direct children of /geo only
     - ``/geo/**`` -- everything recursively under /geo
@@ -459,28 +742,8 @@ def resolve_prim_paths(stage, location_str):
     Returns:
         The resolved prim paths.
     """
-    def _to_re(pattern):
-        parts = []
-        i = 0
-        while i < len(pattern):
-            if pattern[i:i+2] == "**":
-                parts.append(".*")
-                i += 2
-            elif pattern[i] == "*":
-                parts.append("[^/]*")
-                i += 1
-            elif pattern[i] == "?":
-                parts.append("[^/]")
-                i += 1
-            else:
-                parts.append(re.escape(pattern[i]))
-                i += 1
-        return re.compile("".join(parts) + "$")
-
     paths = []
-    for token in re.split(r"[\s,]+", location_str.strip()):
-        if not token:
-            continue
+    for token in split_patterns(location_str):
         if token.startswith("%"):
             paths.extend(resolve_collection_members(stage, token[1:]))
             continue
@@ -492,7 +755,7 @@ def resolve_prim_paths(stage, location_str):
             paths.append(token)
             continue
         _anchor, pattern, selections = split_variant_path(token)
-        rx = _to_re(pattern)
+        rx = glob_to_regex(pattern)
         matched = []
         with author_in_variant_context(stage, token) if selections else nullcontext():
             # Walked from the pattern's fixed part, not from /: every match is under it, so
@@ -921,7 +1184,7 @@ def resolve_output_path(text, stage: Usd.Stage, log=None):
         if result.errors or missing or not isinstance(result.value, str):
             problem = "; ".join(result.errors) or (
                 "no value for " + ", ".join(missing) if missing
-                else "it evaluates to %r, not a path" % (result.value,)
+                else f"it evaluates to {result.value!r}, not a path"
             )
             (log or logger).warning("Output path %r left as typed: %s", text, problem)
             return text
@@ -972,7 +1235,11 @@ def get_unique_path(stage, prim_path, own_layer=None):
             expression the resolved path is returned as-is -- expressions define an explicit
             derived path, so uniqueness bumping would be wrong.
         own_layer: The layer the asking chunk authors into, if any. A prim that only this
-            layer defines is the chunk's own, not a collision.
+            layer defines is the chunk's own, not a collision. With it, only a `def` that
+            lands in the same real layer counts as taken: another chunk behind the same Edit
+            Target, or that layer itself. The same path defined in another file (a
+            department's publish) or behind another Edit Target is another opinion on the
+            prim, the way USD layering works, and keeps its name.
 
     Returns:
         A prim path free on the stage.
@@ -991,6 +1258,11 @@ def get_unique_path(stage, prim_path, own_layer=None):
     if not stage:
         return prim_path
 
+    layers = chunk_registry.ChunkLayerManager()
+    # Where the asking chunk's content really lands: its Edit Target's layer (or the session
+    # layer), or own_layer itself for a chunk with no layer of its own.
+    own_target = (layers.target_of_layer(own_layer) or own_layer) if own_layer is not None else None
+
     def _is_taken(path):
         prim = stage.GetPrimAtPath(path)
         if not (prim.IsValid() and prim.GetTypeName()):
@@ -998,7 +1270,9 @@ def get_unique_path(stage, prim_path, own_layer=None):
         if own_layer is None:
             return True
         return any(
-            spec.layer != own_layer and spec.specifier == Sdf.SpecifierDef
+            spec.layer != own_layer
+            and spec.specifier == Sdf.SpecifierDef
+            and (layers.target_of_layer(spec.layer) or spec.layer) == own_target
             for spec in prim.GetPrimStack()
         )
 
@@ -1202,6 +1476,33 @@ def _claim_unique_path(stage, param):
     unique_path = get_unique_path(stage, param, own_layer=own_layer)
     if unique_path and unique_path != param.value:
         param.value = unique_path
+
+
+def set_payloads_loaded(node, stage: Usd.Stage, paths, load: bool) -> None:
+    """Unload the payloads at and under `paths`, or load back the ones `node` unloaded.
+
+    For a chunk's Load checkbox. Load state is the stage's, not something a layer holds, so
+    the chunk applies it each time it cooks. Loading only puts back what this chunk
+    unloaded: a checked box never loads a payload someone unloaded by hand.
+
+    Args:
+        node: The chunk, which remembers what it unloaded.
+        stage: The scene's stage (not a cook stage).
+        paths: Prim paths.
+        load: The checkbox.
+    """
+    held: set = getattr(node, "_unloaded_by_me", set())
+    if load:
+        if held:
+            stage.LoadAndUnload({Sdf.Path(p) for p in held}, set())
+        node._unloaded_by_me = set()
+        return
+    wanted = {str(p) for p in paths}
+    unload = {Sdf.Path(p) for p in wanted - held}
+    reload = {Sdf.Path(p) for p in held - wanted}
+    if unload or reload:
+        stage.LoadAndUnload(reload, unload)
+    node._unloaded_by_me = wanted
 
 
 def define_with_ancestors(stage, path, type_name="Xform", ancestor_type="Xform"):
@@ -1564,7 +1865,11 @@ def _stable_suffix(node) -> str:
 
     if not suffix:
         suffix = _mint_suffix(node, prim, stage)
-        if prim is not None:
+        # A chunk composed in from a file this one does not own (a department's layout, a
+        # referenced house) keeps it in memory only. Minting is a function of the prim path,
+        # so every open arrives at the same id, and recording it would write an override
+        # into the shot just for opening it.
+        if prim is not None and composed_in_from(prim) is None:
             # Into the chunk's own bookkeeping layer, like every other bit of chunk
             # bookkeeping -- not wherever the ambient edit target happens to point.
             with Usd.EditContext(stage, get_bookkeeping_layer(stage, node)):

@@ -4,20 +4,22 @@ import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk, chunk_utils
+from usd_chunks.chunk_cache import user_cache_dir
 from usd_chunks.gizmo import runtime as chunk_gizmo
 
 #: The legacy shared transform op, from before each chunk owned a named one. Still read, so
 #: a camera saved in that form keeps its placement.
 _LEGACY_OP = "xformOp:transform"
 
-#: Set while `lock_to_freecam` owns the transform, so the first cook after it comes off knows
-#: to take the flown position back into the params instead of authoring stale ones over it.
-_FREECAM_OWNED = "_freecam_owned"
+#: Closer than this, a flown param is left as it is. Writing it would cook the camera, point
+#: the viewport at it again, and the freecam would report the move back with float noise.
+_FLOWN_TOLERANCE = 1e-6
 
-#: The placement the freecam last gave this camera while locked. Kept on the chunk rather
-#: than read back off the prim: the framework clears the camera's layer before every cook, so
-#: the prim only holds what the cook itself authors.
-_FLOWN_MATRIX = "_flown_matrix"
+#: Set while `lock_to_freecam` has this camera claiming the viewport. Only the chunk holding
+#: the claim may release it: an unlocked camera chunk hears every camera move too, and
+#: releasing on each one cancelled a snap still pending from someone else -- Set Camera
+#: switching cameras, or another chunk's "Set as Viewport Camera".
+_HOLDS_VIEW = "_holds_view"
 
 
 def _download_camera_types_cache(camera_cache):
@@ -26,13 +28,15 @@ def _download_camera_types_cache(camera_cache):
 
     res = conn.getresponse()
     data = json.loads(res.read().decode("utf-8"))
+    os.makedirs(os.path.dirname(camera_cache), exist_ok=True)
     with open(camera_cache, "w") as f:
         json.dump(data, f, indent=2)
     return data
 
 
 def _get_camera_data():
-    camera_cache = os.path.join(os.path.dirname(__file__), "cameras.json")
+    # Per-user, not beside this file: installed, that is site-packages.
+    camera_cache = user_cache_dir("cameras.json")
     if not os.path.exists(camera_cache):
         data = _download_camera_types_cache(camera_cache)
     else:
@@ -79,10 +83,12 @@ def _apply_freecam_transform(owner, notice, sender):
         # The chunk is mid-delete and its params are gone; this global listener outlives them.
         return
     if not lock.value:
-        # Also reached on every camera move while the lock is off, so the host's release
-        # must be (and is) idempotent. Here rather than only on the checkbox because the
-        # checkbox callback is this same function.
-        scene.release_viewport_camera()
+        # Also reached on every camera move while the lock is off -- by every camera chunk,
+        # so only the one whose lock claimed the view lets go of it. Here rather than only on
+        # the checkbox because the checkbox callback is this same function.
+        if getattr(_chunk, _HOLDS_VIEW, False):
+            setattr(_chunk, _HOLDS_VIEW, False)
+            scene.release_viewport_camera()
         return
 
     gf_cam = scene.get_active_camera()
@@ -93,36 +99,34 @@ def _apply_freecam_transform(owner, notice, sender):
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         return
-    # Translate and rotate only -- the chunk keeps its own scale. The freecam is a viewpoint
-    # and has no scale of its own to give, so taking its matrix whole silently replaced the
-    # camera's scale with 1: the object visibly snapped back to unscaled while the sliders
-    # went on reading what the user set, which is the worst way for the two to disagree.
-    #
-    # Through this chunk's own op, not MakeMatrixXform(). That resets xformOpOrder to a lone
-    # `xformOp:transform`, which would wipe the named op the cook authors -- so unticking the
-    # lock left the camera holding a transform from one system and an order naming the other.
-    matrix = _with_local_scale(_chunk, gf_cam.transform)
-    setattr(_chunk, _FLOWN_MATRIX, matrix)
-    _author_matrix(_chunk, stage, prim, matrix)
-    if not prim.GetAttribute("focusDistance").Get():
-        _chunk.get_param("focusDistance").value = gf_cam.focusDistance
-    # The camera just moved; the focus plane follows the point, not the camera.
-    _refocus(_chunk)
+    # Into the params, not onto the prim: the cook authors the camera from them as it does
+    # unlocked, so what the freecam did reaches the chunks wired below like any other edit,
+    # and there is never a placement on the prim the params disagree with. The cook also
+    # refocuses (_refocus), since the camera moved.
+    with chunk.change_block():
+        _follow_freecam(_chunk, gf_cam.transform)
+        if not prim.GetAttribute("focusDistance").Get():
+            _chunk.get_param("focusDistance").value = gf_cam.focusDistance
+    setattr(_chunk, _HOLDS_VIEW, True)
     scene.set_viewport_camera(prim)
 
 
-def _with_local_scale(node, matrix):
-    """A placement from elsewhere, with this chunk's own scale kept.
+def _follow_freecam(node, matrix):
+    """Set the translate and rotate params to where the freecam is.
 
-    The freecam constrains where the camera *is* and which way it looks. It is a viewpoint and
-    carries no scale worth having, so its matrix is taken for translate and rotate only and
-    the chunk's scale params are re-applied underneath -- pre-multiplied, so the scale happens
-    in the camera's own space and the placement is unaffected.
+    Translate and rotate only -- the chunk keeps its own scale. The freecam is a viewpoint
+    and has no scale of its own to give, so taking its matrix whole silently replaced the
+    camera's scale with 1: the object visibly snapped back to unscaled while the sliders
+    went on reading what the user set, which is the worst way for the two to disagree.
+
+    Only the params that moved are written (_FLOWN_TOLERANCE).
     """
-    scale = _scale_of(node)
-    if scale == Gf.Vec3d(1, 1, 1):
-        return matrix
-    return Gf.Matrix4d().SetScale(scale) * matrix
+    parts = chunk_gizmo.decompose(matrix)
+    for names, values in ((("tx", "ty", "tz"), parts["translate"]), (("rx", "ry", "rz"), parts["rotate"])):
+        for name, value in zip(names, values):
+            param = node.get_param(name)
+            if abs(float(param.value or 0.0) - float(value)) > _FLOWN_TOLERANCE:
+                param.value = float(value)
 
 
 def _scale_of(node):
@@ -270,8 +274,8 @@ def _set_as_viewport_camera(owner, notice, sender):
 def gizmo_hidden(node, gizmo):
     """Hide the transform handle while the freecam owns the transform.
 
-    `_apply_freecam_transform` re-authors the camera's transform from the DCC freecam on
-    every CAMERA_CHANGED, so a drag would be overwritten a frame later. The handle would
+    `_apply_freecam_transform` sets the transform params from the DCC freecam on every
+    CAMERA_CHANGED, so a drag would be overwritten a frame later. The handle would
     look draggable and silently snap back, which is worse than not offering it.
 
     Only the transform handle. Focus distance is untouched by the lock -- the freecam only
@@ -307,24 +311,18 @@ def _camera_matrix(node):
 _TRANSFORM_PARAMS = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz")
 
 
-def _adopt_existing_transform(node, prim, force=False):
+def _adopt_existing_transform(node, prim):
     """Seed the transform params from the prim, so a cook does not author over its placement.
 
-    Without this, unticking `lock_to_freecam` snaps the camera back: the freecam placed the
-    prim while the lock was on, our params still say something else, and the very next cook
-    authors those params straight over it. Losing a camera position you just flew to is a bad
-    way to find out the two systems disagree.
+    A camera prim that already carries a placement -- referenced in, or saved before the
+    camera owned its transform -- would otherwise be authored over by default params on the
+    first cook.
 
-    Normally only when *every* param is still at its default, so it never overwrites a real
-    edit -- a user who typed a position keeps it even if the prim carries something else.
-
-    `force` is the exception, and it is the whole reason this takes an argument: while the
-    lock is on the freecam *is* the authority, so on the tick the lock comes off there is no
-    "real edit" to protect -- the params are stale by definition. Without it, the
-    defaults-only guard would discard the flight for any camera that had ever been touched,
-    and unlocking would snap the camera back to where the gizmo left it.
+    Only when *every* param is still at its default, so it never overwrites a real edit -- a
+    user who typed a position keeps it even if the prim carries something else. The freecam
+    lock needs none of this: it writes the params themselves (_follow_freecam).
     """
-    if not force and any(
+    if any(
         node.get_param(n).value != node.get_param(n).default_value for n in _TRANSFORM_PARAMS
     ):
         return
@@ -367,38 +365,17 @@ def _author_camera_transform(node, stage):
     chunk -- the same shape Houdini's asset-reference node has, with a transform built in.
     That is what makes cross-chunk gizmo drivers unnecessary rather than merely unused: the
     handle drives params that belong to the chunk it is declared on.
+
+    The same with Lock to Free Camera on: the freecam moves the params (_follow_freecam), and
+    the cook authors them.
     """
     primpath_param = node.get_param("primpath_location")
-    if node.get_param("lock_to_freecam").value:
-        # The freecam owns the transform while the lock is on, and re-authors it on every
-        # CAMERA_CHANGED. Writing params here would be silently overwritten a frame later,
-        # which is worse than not writing them. The placement it gave is authored again,
-        # though: this cook started from a cleared layer, and a focal-length edit while
-        # locked would otherwise drop the camera back to the origin.
-        setattr(node, _FREECAM_OWNED, True)
-        if (flown := getattr(node, _FLOWN_MATRIX, None)) is not None:
-            for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
-                _author_matrix(node, stage, stage.OverridePrim(target_path), flown)
-        return
-
-    # Edge-triggered, not level-triggered: this is the first cook since the lock came off, so
-    # the params are stale by definition and adopting is not overwriting anything. Read and
-    # cleared here so it fires exactly once per lock, however many cooks follow.
-    handing_back = getattr(node, _FREECAM_OWNED, False)
-    if handing_back:
-        setattr(node, _FREECAM_OWNED, False)
-        # The flight lives on the chunk, not the prim -- see _FLOWN_MATRIX.
-        if (flown := getattr(node, _FLOWN_MATRIX, None)) is not None:
-            _seed_transform_params(node, flown)
-            setattr(node, _FLOWN_MATRIX, None)
-            handing_back = False
-
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             return
         # Take on whatever is already there before overwriting it -- see the docstring.
-        _adopt_existing_transform(node, prim, force=handing_back)
+        _adopt_existing_transform(node, prim)
 
         _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
@@ -556,6 +533,7 @@ def execute(node):
         scene = node.get_scene()
         prim = stage.GetPrimAtPath(node.get_param("primpath_location").value)
         if prim.IsValid():
+            setattr(node, _HOLDS_VIEW, True)
             scene.set_viewport_camera(prim)
 
 
@@ -590,7 +568,7 @@ def config():
             unique /cameras/camera1 path. Updated in-place when taken (outside
             variant contexts).
           - Camera Preset: real-world camera body fetched from physicallybased.info
-            (cached locally as cameras.json). Defaults to Fuji X-T5. Changing
+            (cached per user as usd_chunks/cameras.json). Defaults to Fuji X-T5. Changing
             the preset repopulates the Formats menu and applies the first sensor
             size as the default aperture values.
           - Formats: sensor format for the selected camera body. Changing the

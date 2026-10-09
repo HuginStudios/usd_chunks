@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_notice, chunk_registry, chunk_utils, cook_cache, skip_cook
+from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_utils, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -727,7 +727,11 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
             if not p:
                 raise ReferenceError("Could not find ref child")
 
-            del self._children[p]
+            # By _hashable, the key the child is filed under: a ProxyParam forwards
+            # _hashable to the param it mirrors but hashes as itself, so deleting by the
+            # object looked under the wrong key, found nothing, and the row kept a param
+            # its template had dropped.
+            del self._children[p._hashable]
 
     def _param_died(self, ref):
         self.request_delete()
@@ -1305,6 +1309,20 @@ class HashVal:
         return c
 
 
+def group_parent_path(group) -> str:
+    """The prim path a group sits under: what decides which groups are its siblings.
+
+    A restored group knows its own prim path. A group being created does not yet, so it
+    takes its parent group's path, or the /chunks scope for one with no parent.
+    """
+    path = getattr(group, "prim_path", None)
+    if path:
+        return path.rsplit("/", 1)[0] or "/"
+    ref = getattr(group, "_parent_context", None)
+    parent = ref() if ref else None
+    return (getattr(parent, "prim_path", None) or chunk_naming.CHUNKS_ROOT) if parent else chunk_naming.CHUNKS_ROOT
+
+
 class ChunkCommon(AttributesBase):
     """Base class for all chunk objects, holding the attributes every one of them supports.
 
@@ -1461,7 +1479,7 @@ class ChunkCommon(AttributesBase):
     @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
         if attr.name == "name":
-            return re.sub(r"\W+", "", str(val))[0:100]
+            return self._unique_among_siblings(re.sub(r"\W+", "", str(val))[0:100])
 
         ftype = field_type(type(self), attr)
         if inspect.isclass(ftype) and issubclass(ftype, Enum):
@@ -1472,6 +1490,35 @@ class ChunkCommon(AttributesBase):
                     return val
 
         return super().convert_attr(attr, val)
+
+    def _unique_among_siblings(self, name: str) -> str:
+        """name, numbered like add_param numbers a new child if a sibling already holds it.
+
+        A rename went straight through: two siblings then shared a name, the container's
+        name map pointed only at the renamed one, and for a chunk the prim move onto the
+        sibling's path raised -- the Qt graph's "Rename chunk" with a name already in use.
+        """
+        try:
+            owner = self.get_owner()
+            current = self.name
+            own_key = self.get_hash()
+        except AttributeError:
+            return name  # still being constructed: add_param numbers it when it is added
+        if not isinstance(owner, NameSyncedContainer) or not name or name == current:
+            return name
+        taken = owner._names.maps[0]
+        if self.has_flag(ChunkFlags.GroupFlags.CONTEXT) and hasattr(self, "_parent_context"):
+            # A group sits in the scene's flat container next to every other group, but it
+            # is unique by prim path: only the groups under the same parent prim are its
+            # siblings (group_parent_path).
+            home = group_parent_path(self)
+            taken = {
+                other.name: other.get_hash() for other in owner.get_my_params()
+                if other.has_flag(ChunkFlags.GroupFlags.CONTEXT) and group_parent_path(other) == home
+            }
+        if name in taken and taken[name] != own_key:
+            return ChunkGroupBase.get_valid_child_name(name, set(taken))
+        return name
 
     @override
     def validate_attr(self, attr: attrs.Attribute, val: Any) -> bool:
@@ -1830,6 +1877,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             raw = self.raw_value
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             val = notice.data.value
+            refused = None  # (locked layer, the value USD still composes) for a refused edit
             if val is not None:
                 prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
@@ -1862,9 +1910,15 @@ class ChunkUsdAttributeSupport(AttributesBase):
                             # so it always comes back empty there and the edit would otherwise
                             # fall through to the fallback -- outside the variant entirely.
                             # Re-enter the selections recorded at bind time instead.
-                            fallback = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
-                                stage, self.get_chunk()
-                            )
+                            fallback = chunk_utils.param_storage_layer(stage, usd_attr, self.get_chunk())
+                            # A locked file (read-only, or edit permission off) takes no edit:
+                            # the change is refused and the param goes back to what USD
+                            # composes. Outside a variant only -- a variant edit goes into the
+                            # chunk's own layer, which is never locked.
+                            if not self._var_selections and chunk_utils.is_layer_locked(fallback):
+                                refused = (fallback, usd_attr.Get(0))
+                                usd_attr = None
+                        if usd_attr:
                             with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
                                 if not is_expr:
                                     current = usd_attr.Get(0)
@@ -1910,10 +1964,20 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     # The wire is gone; text left behind would come back as the
                                     # wire on the next load.
                                     chunk_utils.clear_expression_text(usd_attr)
-                    if not self.is_blocked():
+                    if not self.is_blocked() and refused is None:
                         self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = prev_write
+            if refused is not None:
+                locked, composed = refused
+                logger.warning(
+                    "%s.%s not changed: %s is locked (read-only, or not editable). Set the "
+                    "stage's edit target to a layer you can edit to override it there.",
+                    self.get_chunk().name if self.get_chunk() else "?", self.name,
+                    locked.GetDisplayName() or locked.identifier,
+                )
+                if not is_expr and composed is not None and composed != val:
+                    self.value = composed
 
         return my_notice
 
@@ -1957,78 +2021,35 @@ class ChunkUsdAttributeSupport(AttributesBase):
 
     @abstractmethod
     def update_usd_prop(self, notice: chunk_notice.AttributeChangeNotice, sender: AttributeSender):
-        """Write the param's change to its bound USD attribute.
+        """Write the param's change to the USD relationship it is bound to, if it is one.
 
-        Invoked when the 'value' AttributeSender changes, with the attribute as notice.data.
+        Invoked when the 'value' AttributeSender changes. notice.data is that sender, never
+        the property: an attribute is written by ChunkParamBase.data_changed (and a vector's
+        by ChunkVectorBase.data_changed), so all that is left here is a relationship, which
+        those cannot write -- they look the path up with GetAttributeAtPath.
 
         Args:
-            notice (chunk_notice.AttributeChangeNotice): The notice holding the Usd.Attribute
+            notice (chunk_notice.AttributeChangeNotice): The value change
             sender (AttributeSender): The sender of the notice
         """
-        # ChunkVectorBase.data_changed already handles this write path itself (correctly,
-        # with outputs:-preferring connection routing) -- this method's SetConnections
-        # below hardcodes inputs: unconditionally, so letting both run fights over two
-        # different connection targets on every value change.
-        if isinstance(notice.data, Usd.Attribute) and not isinstance(self, ChunkVectorBase):
-            raw = getattr(self, 'raw_value', None)
-            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            # Only String-typed attrs can hold the raw expression text as their value
-            # (needed so _patch_expressions can rewrite it on rename); other types (Float,
-            # Float3, etc.) store the resolved value and keep the text in customData
-            # instead (chunk_utils.store_expression_text) -- rebuilding it from
-            # SetConnections cannot work, since the connections name only the refs and
-            # drop every operator between them.
-            if is_expr and notice.data.GetTypeName() != Sdf.ValueTypeNames.String:
-                store_val = sender.value
-            else:
-                store_val = raw if is_expr else sender.value
-            prev_write = chunk_notice._usd_write_active
-            chunk_notice._usd_write_active = True
-            try:
-                # notice.data here is always the chunk-prim's own storage attr (bound via
-                # _connect_param_attr -- connect_usd_attr's driven-content path is a
-                # separate mechanism, _author_driven_connections, scoped via
-                # get_edit_context()). It already exists (that's what being bound via
-                # _connect_param_attr means), so update it wherever its spec already
-                # lives, rather than wherever the stage's ambient/Edit-Target-driven
-                # edit target currently points -- that may have moved on since it was
-                # first authored. No home means the attr is new, and it goes where a
-                # new bookkeeping attr of this chunk would.
-                stage = notice.data.GetStage()
-                home = chunk_utils.get_attr_home_layer(notice.data) or chunk_utils.get_bookkeeping_layer(
-                    stage, self.get_chunk()
-                )
-                with Usd.EditContext(stage, home):
-                    # A non-String attr must never receive raw expression text: if an expression ref
-                    # can't resolve (e.g. a lofted cross-context ref like @ChunkGroup.tx@), sender.value
-                    # stays the expression STRING and Set() on a typed (float/etc) attr raises a
-                    # type-mismatch. The connection authored below carries the topology, so skip the
-                    # value write in that case.
-                    bad_str = isinstance(store_val, str) and not chunk_utils.attr_holds_text(notice.data)
-                    if not bad_str and notice.data.Get(0) != store_val:
-                        notice.data.Set(store_val)
-                    if is_expr:
-                        chunk_root = str(notice.data.GetPrim().GetParent().GetPath())
-                        notice.data.SetConnections([
-                            Sdf.Path(f"{chunk_root}/{node}.inputs:{attr_name}")
-                            for node, attr_name in chunk_utils.parse_expression_attrs(raw)
-                        ])
-                        # The connections carry the refs; only this carries the operators
-                        # and literals between them.
-                        chunk_utils.store_expression_text(notice.data, raw)
-                    else:
-                        chunk_utils.clear_expression_text(notice.data)
-            finally:
-                chunk_notice._usd_write_active = prev_write
-
-        elif isinstance(notice.data, Usd.Relationship) and sender.value is not None:
+        # Looked up, not read off notice.data: testing notice.data for a Relationship never
+        # matched, and a param built from a relationship (show_attribute) showed its targets
+        # but never wrote them.
+        if isinstance(rel := self.get_usd_prop(), Usd.Relationship) and isinstance(sender.value, str):
             # Currently just assume the string is a comma separated list of paths. This will likely
             # be changed in the future for a more robust approach
-            paths = sender.value.split(",")
+            paths = [x.strip() for x in sender.value.split(",") if x.strip()]
             if not all([Sdf.Path.IsValidPathString(x) for x in paths]):
                 return
             targets = [Sdf.Path(x) for x in paths]
-            notice.data.SetTargets(targets)
+            if rel.GetTargets() == targets:
+                return
+            stage = rel.GetStage()
+            # Into the chunk's own layer (and the variant it was read from), like any other
+            # edit a param makes to a real prim.
+            with chunk_utils.edit_context_for(stage, self._var_selections,
+                                              chunk_utils.chunk_write_layer(stage, self.get_chunk())):
+                rel.SetTargets(targets)
 
     @abstractmethod
     def usd_prop_changed(self):
@@ -2449,7 +2470,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         return f"@{other_chunk.name}.{other.name}@"
 
     def add_dependency(self, input: chunk_notice.ChunkNoticePropagator) -> int:
-        """Add a DagNode input, warning if it crosses a chunk boundary.
+        """Add a DagNode input; refused across a chunk boundary.
 
         A param-level dependency is in-memory only: ChunkStageSync._on_dependency_added
         authors inputs:chunk for ChunkBase pairs and returns early for anything else, so
@@ -2457,22 +2478,27 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         graph, and is gone after a reload. Within one chunk that is exactly right -- this
         is the dirty/ordering edge behind set_function, and it can drive attributes
         (menu_items, a label, visibility) that no expression can reach. Across two chunks
-        it silently loses the connection the caller thought they made; an expression is
-        the mechanism that persists. See connect_value, which redirects rather than warns.
+        it is a connection nobody can see, and the solve no longer tells a chunk what
+        reaches it across one (chunk_notice: chunks speak only through wires), so it would
+        not even update. An expression is the wire that persists; connect_value redirects
+        to one.
 
         Args:
             input: The propagator to depend on.
 
         Returns:
             The dependency index.
+
+        Raises:
+            ValueError: input is a param of another chunk.
         """
         if isinstance(input, ChunkParamBase) and (pair := self._cross_chunk_ref(input)):
             mine, theirs = pair
             ref = self._expression_ref_to(input, theirs) or f"@{theirs.name}.<param>@"
-            logger.warning(
-                "Param dependency %s.%s <- %s.%s crosses chunks: it is not authored to USD "
-                "and will not survive a reload. Use an expression instead: %s.%s = \"%s\"",
-                mine.name, self.name, theirs.name, input.name, mine.name, self.name, ref,
+            raise ValueError(
+                f"Param dependency {mine.name}.{self.name} <- {theirs.name}.{input.name} crosses "
+                f"chunks: chunks connect only through wires. Use an expression instead: "
+                f"{mine.name}.{self.name} = \"{ref}\" (or connect_value, which authors one)"
             )
         return super().add_dependency(input)
 
@@ -2486,7 +2512,9 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
             other: The param to follow.
 
         Raises:
-            ValueError: The two params' types are not compatible.
+            ValueError: The two params' types are not compatible, or other is in another
+                chunk and no @Node.param@ reaches it -- its name resolves to a different
+                param of that chunk.
         """
         my_t = self.evaluate_type()
         other_t = other.evaluate_type()
@@ -2498,13 +2526,21 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         # where the DagNode edge below would quietly vanish on the next load. The type
         # check above still ran, which the raw expression path skips.
         if pair := self._cross_chunk_ref(other):
-            if ref := self._expression_ref_to(other, pair[1]):
-                logger.debug(
-                    "connect_value across chunks (%s -> %s): authoring %s",
-                    pair[1].name, pair[0].name, ref,
+            ref = self._expression_ref_to(other, pair[1])
+            if ref is None:
+                # Chunks connect only through wires, and an expression is the only wire a
+                # param can have to another chunk's.
+                raise ValueError(
+                    f"Can't connect {pair[0].name}.{self.name} to {pair[1].name}.{other.name}: "
+                    f"no @{pair[1].name}.<param>@ reaches it, as its name resolves to another "
+                    "param of that chunk. Give it a name of its own."
                 )
-                self.value = ref
-                return
+            logger.debug(
+                "connect_value across chunks (%s -> %s): authoring %s",
+                pair[1].name, pair[0].name, ref,
+            )
+            self.value = ref
+            return
 
         idx = -1
         # If other already is connected to self, then we can use that index
@@ -2630,6 +2666,17 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     def raw_value(self) -> Any:
         """The stored value before expression evaluation. Use this for display purposes."""
         return self.__dict__.get("value")
+
+    @override
+    def _old_value_for(self, name: str) -> Any:
+        # `value` reads back resolved, so clearing a wire whose source happens to equal the
+        # value it is reset to compared equal and sent nothing: the widget stayed locked and
+        # the expression stayed in USD. An expression is compared as the text it is stored as.
+        if name == "value":
+            raw = self.__dict__.get("value")
+            if isinstance(raw, str) and chunk_utils.has_expression(raw):
+                return raw
+        return super()._old_value_for(name)
 
     @override
     def __getattribute__(self, name: str) -> Any:
@@ -3182,12 +3229,14 @@ class ChunkGroupBase(ChunkContainerBase):
 
         name = orig_name + suffix
 
-        while name in reserved_names:
+        # Capped on tries, not on the number: a name ending in 1000 or more (Cube1000, or a
+        # uuid's hex) started past the cap and failed on its first clash.
+        for _ in range(max_iter):
+            if name not in reserved_names:
+                return name
             name = orig_name + str(idx)
             idx += 1
-            if idx > max_iter:
-                raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
-        return name
+        raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
 
 
 class ChunkListGroupBase(ChunkGroupBase):
@@ -3583,133 +3632,15 @@ class ChunkBase(ChunkGroupBase):
         """
         return self._module_hook("execute") is not None
 
-    def cook(self) -> bool:
-        """Run this chunk's module into its own edit layer, now, and nothing downstream of it.
+    def _cook(self) -> bool:
+        """Run this chunk's module into its own edit layer, now: chunk_cook.cook.
 
         Owned by the framework, not meant to be overridden: a chunk's behaviour is its
-        module's execute(). Deciding WHEN to cook -- a data change rather than a pure state
-        change, not twice in one batch -- is the solve's (ChunkNoticePropagator.execute);
-        this only decides whether the chunk CAN run right now, and runs it. It does not
-        mark the chunk stale first: the solve does, so a cook that is refused leaves it
-        stale for recook_for_view to pick up.
-
-        Returns:
-            True if the module was run -- also when its layer left the stage's layer stack
-            part way through, which is skipped rather than raised. False if a guard refused
-            it (no execute(), no stage, muted, not in the layer stack yet, blocked, being
-            deleted, or already executing).
+        module's execute(). Handed what the cook needs from above chunk_cook -- where a
+        chunk's layer is, and how to stamp the module hash.
         """
-        execute = self._module_hook("execute")
-        # The scene's stage, not get_stage(): a cook started inside another chunk's masked
-        # cook would get that chunk's inputs as its stage.
-        stage = self.get_scene_stage()
-        ctx = self.get_edit_context()
-        # A disabled chunk's edit layer is muted, i.e. removed from the stage's local
-        # layer stack. Don't re-run its module: authoring into a muted layer raises
-        # ("Layer ... is not in the local LayerStack"), and a disabled chunk must not
-        # execute anyway.
-        muted = bool(stage and ctx and stage.IsLayerMuted(ctx.identifier))
-        # Separately: a chunk's own edit layer may not be inserted into the stage's
-        # local layer stack YET at all -- not muted (present-but-disabled), just not
-        # there yet. Hit live during load_chunks's bulk restore: a ListGroup proxy
-        # row's value setter (chunk_core.py's ProxyParam.__setattr__, "value" case)
-        # calls straight through to this same dispatch, bypassing the
-        # chunk_notice._loading_stage guard that suppresses every OTHER reactive path
-        # during that restore -- reaching here before get_or_create_layer has run for
-        # this specific chunk, same "not in the local LayerStack" raise as the muted
-        # case. load_chunks's own later, correctly-ordered explicit .execute() call
-        # (after every chunk's layer is properly registered) still runs normally.
-        not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
-        # A blocked chunk (view-driven: not in the active view's tree -- e.g. connected to
-        # an inactive view) must never run its module, whatever triggered the solve. recook
-        # unblocks the active view's tree before executing it, so cooking is unaffected.
-        # A chunk being deleted must not run its module -- teardown notices can land
-        # back here after its params are already detached (see request_delete).
-        # With no stage there is nothing for a module to author into: every chunk module
-        # works through get_stage(), so running one stage-less is never useful and
-        # crashes on the first stage call. The host can genuinely have no stage for a
-        # window -- usdview clears its stage before opening the next file while still
-        # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
-        # window, can reach here.
-        if not (execute is not None and stage is not None
-                and not getattr(self, '_executing', False)
-                and not getattr(self, '_deleting', False)
-                and not muted and not not_yet_in_stack and not self.is_blocked()):
-            return False
-
-        with chunk_notice.executing(self), skip_cook.unmasked():
-            if ctx:
-                try:
-                    with Usd.EditContext(stage, ctx):
-                        # What the chunks below saw, to tell them what this cook
-                        # changed (skip_cook). Anonymous only, like the Clear.
-                        skipping = skip_cook.enabled() and ctx.anonymous
-                        before = skip_cook.baseline(self, ctx) if skipping else None
-                        # A cook starts from an empty layer, so a module
-                        # authors its whole result every time and never reads
-                        # its own last one back. Anonymous only: that is a
-                        # layer this chunk alone owns and rebuilds on load.
-                        # A chunk in a context with a file layer is handed
-                        # that file layer, shared and the user's own.
-                        if ctx.anonymous:
-                            ctx.Clear()
-                        # A module that declared cache_cook may have this exact
-                        # cook on disk already -- read it back instead. Anonymous
-                        # only, for the same reason as the Clear above.
-                        cached = cook_cache.lookup(self) if ctx.anonymous else None
-                        if cached is None or not cached.restore(self, ctx):
-                            if cached is not None:
-                                cached.before_cook(self)
-                            if skipping:
-                                skip_cook.run(self, stage, ctx, execute,
-                                              chunk_registry.ChunkLayerManager().get_layer)
-                            else:
-                                execute(self)
-                        elif skipping:
-                            skip_cook.restored(self, ctx)
-                        if skip_cook.enabled() and not ctx.anonymous:
-                            skip_cook.unaccounted(self)
-                        # What a param drives is its own state, not the cook's
-                        # output -- see ChunkBase.reauthor_driven_attrs.
-                        if ctx.anonymous:
-                            self.reauthor_driven_attrs()
-                        if skipping:
-                            skip_cook.finish(self, ctx, before)
-                        if cached is not None:
-                            cached.after_cook(self, ctx)
-                    self._cook_stale = False
-                    chunk_utils.stamp_module_hash(stage, self)
-                except Tf.ErrorException:
-                    # The layer left the stage's local layer stack between the
-                    # check above and here. It can: a cook reached from inside
-                    # another cook mutes layers (a gate suppressing a branch),
-                    # and this dispatch is reached re-entrantly -- a module
-                    # setting a param during its own execute lands straight back
-                    # here for whatever that param drives.
-                    #
-                    # Re-checked rather than swallowed: only the "not in the
-                    # local LayerStack" case is skipped, and any other error a
-                    # module raises still surfaces. Skipping is right because it
-                    # is what the guards above already decided -- a chunk whose
-                    # layer is not in the stack has nowhere to author, and the
-                    # cook that put it back will run it.
-                    if stage.IsLayerMuted(ctx.identifier) or not stage.HasLocalLayer(ctx):
-                        # Logged as the solve always has, under chunk_notice.
-                        chunk_notice.logger.debug(
-                            "skipped cooking %s: its layer left the stage's "
-                            "layer stack mid-solve",
-                            self.name,
-                        )
-                    else:
-                        raise
-            else:
-                # No edit layer of its own -- author into the stage's current target.
-                execute(self)
-                if skip_cook.enabled():
-                    skip_cook.unaccounted(self)
-                self._cook_stale = False
-                chunk_utils.stamp_module_hash(stage, self)
-        return True
+        return chunk_cook.cook(
+            self, chunk_registry.ChunkLayerManager().get_layer, chunk_utils.stamp_module_hash)
 
     @override
     def get_chunk(self) -> ChunkBase | None:
@@ -3743,7 +3674,7 @@ class ChunkBase(ChunkGroupBase):
             if lm.initialized:
                 if layer := lm.get_or_create_layer(param):
                     layer.Clear()
-                    chunk_notice.mark_cook_stale(param)
+                    chunk_cook.mark_cook_stale(param)
         res = super().add_param(param, force_unique)
         if do_context_setup:
             chunk_notice.send_notice(chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, param, data=param)
@@ -4236,6 +4167,11 @@ class ChunkConfig(AttributesBase):
     category: str = attrs.field(default="Chunks")
     description: str = attrs.field(default="Chunk description...")
     load_for_plugin: str | None = attrs.field(default=None)
+    # The host applications the module runs in, each a name with an optional version
+    # specifier: ["houdini>=21.5", "blender>=5.1"]. Empty, or not set: every host. Matched
+    # against SceneSender.get_host() by ChunkModule.should_load_for_host; elsewhere the
+    # module is skipped as quietly as a load_for_plugin miss.
+    hosts: list[str] = attrs.field(factory=list)
     requirements: list[str] = attrs.field(factory=list)
     required_modules: list[str] = attrs.field(factory=list)
     module: str = attrs.field(default="")
@@ -4246,6 +4182,11 @@ class ChunkConfig(AttributesBase):
     # cache_result checkbox to opt out one node; USD_CHUNKS_COOK_CACHE=0 opts out all of
     # them. See cook_cache.
     cache_cook: bool = attrs.field(default=False)
+    # cache_cook that cannot be turned off: no cache_result checkbox, USD_CHUNKS_COOK_CACHE=0
+    # does not apply, and a fast cook is stored too. For a chunk whose result is
+    # only reproducible where it was made -- Blender Import's, from a .blend that may be
+    # gone -- so the cache entry is the result, not a shortcut to it. Implies cache_cook.
+    cache_always: bool = attrs.field(default=False)
     # Kept out of the chunk menu. For a type that exists so something can be SAVED and read
     # back rather than created by hand -- `runtime`, the type a chunk built in the
     # interpreter is written as. It still has to be a registered module, since that is how

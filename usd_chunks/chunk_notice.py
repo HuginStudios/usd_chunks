@@ -17,14 +17,12 @@ send_notice(ChunkNoticeAlias.PARAM_CHANGED, some_param, {"any": "data"})
 """
 from __future__ import annotations
 
-import collections
 import functools
 import inspect
 import itertools
 import logging
 import weakref
 from abc import abstractmethod
-from contextlib import contextmanager
 from enum import IntEnum, auto
 from collections.abc import Callable, Generator, Iterator
 from typing import (
@@ -41,7 +39,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self, override
-from usd_chunks import chunk_scheduler, skip_cook
+from usd_chunks import chunk_cook, chunk_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -64,203 +62,6 @@ _internal_layer_write_active: bool = False
 # authoring right now" so chunk_utils.get_edit_layer can resolve that chunk's Edit Target from
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
-
-# The chunks the running cook holds back until it has finished, in the order they were reached;
-# None while no cook runs. See executing().
-_held_cooks: dict | None = None
-
-# The propagators whose solve an enclosing batched_solve() is holding back, in the order they
-# asked, each with the batch clock at the time it asked; None outside a batch.
-_batched: list | None = None
-
-# Inside a batch, a clock that ticks once per queued solve and once per cook, and when each
-# chunk last cooked by it. None outside a batch. See _cooked_since.
-_batch_clock = 0
-_batch_cooked: dict | None = None
-
-# The batch clock when the solve now draining was queued; None when no queued solve is running.
-_solving_since: int | None = None
-
-# Follow-up work held until an enclosing batch has drained, by key; None outside a batch.
-_batch_deferred: dict | None = None
-
-
-def defer_to_batch_end(key, fn) -> bool:
-    """Run fn once when the enclosing batch has drained, instead of now.
-
-    For bookkeeping that only has to be right once the dust settles and costs something each
-    time -- refreshing a chunk's gizmo anchors reads every param it has, and a Wedge change
-    asked for it once per param written, hundreds of times. Deferred under the same key it
-    runs once, with the batch's final values.
-
-    Args:
-        key: Identifies the work, so asking twice runs it once.
-        fn: What to run.
-
-    Returns:
-        False outside a batch -- the caller runs fn itself, straight away.
-    """
-    if _batch_deferred is None:
-        return False
-    _batch_deferred[key] = fn
-    return True
-
-
-def _tick() -> int:
-    global _batch_clock
-    _batch_clock += 1
-    return _batch_clock
-
-
-def _cooked_since(prop) -> bool:
-    """Whether prop's chunk already cooked after the change the draining solve is for.
-
-    A batch solves the changes it held back one after another, and the first solve cooks
-    everything below them with every new value in place. Expression params re-announce their
-    value only once the param they read has changed -- which happens during that first solve,
-    so they are queued behind it, and solving them re-cooked every chunk below a second time
-    with the same values. A chunk that cooked after the queued change was made has read it
-    already: its module is skipped, while everything else the solve does -- widgets, the
-    param's own USD write -- still happens. A later change is queued with a later clock, and
-    cooks it again.
-    """
-    if _batch_cooked is None or _solving_since is None:
-        return False
-    return _batch_cooked.get(id(prop), -1) > _solving_since
-
-
-@contextmanager
-def batched_solve():
-    """Hold back every solve until the block ends, then solve once.
-
-    Setting a value solves everything downstream of it straight away, which is right for
-    one edit and wasteful for many: setting N values that feed the same chunks cooks those
-    chunks N times, each against a half-updated set of inputs, and only the last cook
-    counts. A Wedge cooking one variant sets every range it has -- dozens -- and that alone
-    cooked the chunks below it hundreds of times per variant.
-
-    Inside the block a value change only marks what it affects dirty. When the block ends,
-    each propagator that asked to solve is solved -- and the first solve already takes in
-    every dirty node it is connected to, in dependency order, so the rest are clean by the
-    time their turn comes and are skipped. Everything downstream cooks once, with all the
-    new values in place.
-
-    Solves asked for while the batch is being solved -- a param binding its storage
-    attribute sets its value, which asks for a solve -- are queued behind it rather than
-    run inside it. Run inside, each one nested a whole solve in the one before, and a batch
-    of dozens of changes nested deep enough to exhaust the stack.
-
-    Nested blocks join the outermost one.
-    """
-    global _batched, _batch_cooked, _solving_since, _batch_deferred
-    if _batched is not None:
-        yield
-        return
-    _batched = collections.deque()
-    _batch_cooked = {}
-    _batch_deferred = {}
-    try:
-        yield
-        while _batched or _batch_deferred:
-            while _batched:
-                prop, queued_at = _batched.popleft()
-                # Not re-dirtied: an earlier solve in this loop may have cleaned it along
-                # with everything else it reached, and dirtying it again would cook that twice.
-                if prop.get_dag_node().dirty:
-                    _solving_since = queued_at
-                    try:
-                        prop._solve_downstream()
-                    finally:
-                        _solving_since = None
-            # Deferred work runs once the solves have settled; anything it changes queues
-            # another round rather than being lost.
-            pending = list(_batch_deferred.values())
-            _batch_deferred.clear()
-            for fn in pending:
-                fn()
-    finally:
-        _batched = None
-        _batch_cooked = None
-        _batch_deferred = None
-
-
-def is_cook_stale(chunk) -> bool:
-    """Whether a chunk's layer may not hold the result of its current inputs.
-
-    A chunk goes stale when a change reaches it and its module does not run -- it was
-    blocked outside the active view, its layer was muted, or it had no layer to author into
-    yet -- and when its layer is created, which is empty. A cook that runs clears it.
-    chunk_stage.recook_for_view reads this to re-run only the chunks that need it: a chunk
-    that is not stale still has its last result in its layer, muted or not.
-
-    A chunk that has never cooked is stale.
-
-    Args:
-        chunk: The chunk.
-
-    Returns:
-        True if the chunk needs to cook.
-    """
-    return getattr(chunk, "_cook_stale", True)
-
-
-def mark_cook_stale(chunk) -> None:
-    """Record that a chunk's layer no longer holds the result of its inputs. See is_cook_stale."""
-    chunk._cook_stale = True
-
-
-@contextmanager
-def executing(prop):
-    """The execution scope around one chunk's module.execute(): what a cook sets while it runs.
-
-    Marks prop as executing (its own guard against being cooked re-entrantly), raises
-    _usd_write_active so the stage listeners skip the writes the module makes, and names the
-    chunk in _executing_chunk so an Edit Target resolves from its place in the graph.
-    ChunkBase.cook is the one caller; the state lives here because every listener reads it
-    from this module.
-
-    A module that sets its own params while it runs -- a Light showing its prim's attributes,
-    a Wedge writing a variant's ranges -- solves them there and then, and that solve reached
-    everything downstream of the chunk while the chunk was still half way through its own
-    cook: those chunks cooked against a layer it had not finished, and cooked again once it
-    had, when the change that started it all got to them. The param callbacks still run
-    during the cook; the chunks below are held (see _solve_downstream) and cooked once,
-    when it ends. The edit that started the cook still returns with all of them cooked.
-
-    Args:
-        prop: The chunk about to run its module.
-    """
-    global _usd_write_active, _executing_chunk, _held_cooks
-    prev_executing_chunk = _executing_chunk
-    prev_usd_write_active = _usd_write_active
-    prev_held_cooks = _held_cooks
-    held: dict = {}
-    prop._executing = True
-    _usd_write_active = True
-    _executing_chunk = getattr(prop, "get_chunk", lambda: None)()
-    _held_cooks = held
-    try:
-        yield
-    finally:
-        # Restored, not cleared: a cook can be reached from inside a guarded
-        # write (a rename triggers one), and clearing outright unsuppressed
-        # that outer write for whatever it still had left to do.
-        _usd_write_active = prev_usd_write_active
-        _executing_chunk = prev_executing_chunk
-        _held_cooks = prev_held_cooks
-        prop._executing = False
-    # Not on a raise: a module that fails ends the solve it was part of, as it always has.
-    #
-    # A chunk that has just cooked is clean. What it set on itself while it ran -- and the
-    # params it created, whose nodes start out dirty -- dirtied it again after its solve had
-    # cleaned it, and its result already takes all of that in. Left dirty, the next solve
-    # anywhere below it walked up to it (chunk_scheduler.dirty_component) and cooked it
-    # again: a Light, on every edit of the Transform after it. Cleaned before the held
-    # chunks solve, so their solves do not walk up and cook it a second time either.
-    prop.get_dag_node()._dirty = False
-    for chunk in held:
-        if chunk.get_dag_node().dirty:
-            chunk._solve_downstream()
 
 
 def _chunk_of(prop):
@@ -970,8 +771,7 @@ class DagNode:
         # distance from the roots.
         chunk_scheduler.topology_changed(self)
         # A new chunk above self: what it and everything below it cooked on is gone.
-        if skip_cook.enabled():
-            skip_cook.inputs_rewired(self)
+        chunk_cook.inputs_rewired(self)
 
         if connect_reverse:
             node.add_dependant(self)
@@ -1014,8 +814,7 @@ class DagNode:
         for key in keys:
             del self._connections.inputs[key]
         chunk_scheduler.topology_changed(self, node)
-        if skip_cook.enabled():
-            skip_cook.inputs_rewired(self)
+        chunk_cook.inputs_rewired(self)
 
         if disconnect_reverse:
             node.remove_dependant(self)
@@ -1495,38 +1294,68 @@ class ChunkNoticePropagator:
         return self._dag_node
 
     def execute(self):
-        """Dirty this object and solve everything downstream of it.
+        """Re-execute this object, and everything downstream of it, now.
 
-        Each solved object's data_changed() runs, and with it send_self(), which triggers any
-        connected callbacks. Inside batched_solve() the solve waits for the block to end.
+        Dirties it and solves downstream: each solved object's data_changed() runs, and with
+        it send_self(), which triggers any connected callbacks. When the solve has finished,
+        every chunk it reached runs its module's execute(node) once, upstream first
+        (chunk_cook.flush, then chunk_cook.cook). Inside batched_solve() it only dirties,
+        and the solve waits for the block to end; inside another chunk's cook, the chunks
+        it reaches cook once that cook has ended.
+
+        This is the one way to run a chunk again: a module's execute(node) is written, never
+        called directly, and chunk_cook.cook is the framework's step, not an API.
         """
         node = self.get_dag_node()
         node.dirty = True
-        if _batched is not None:
-            _batched.append((self, _tick()))
+        if chunk_cook.queue(self):
             return
-        self._solve_downstream()
+        with chunk_cook.solving():
+            self._solve_downstream()
 
     def _solve_downstream(self):
-        """Solve this object's already-dirty node and everything downstream of it."""
+        """Solve this object's already-dirty node and everything downstream of it.
+
+        Notices stay within a chunk. A change is announced up through what owns it -- a
+        param, its group, its chunk, the chunkgroup holding that -- but not across a wire
+        to another chunk: that chunk is marked dirty and handed to chunk_cook, and hears
+        nothing. Chunks speak to each other only through wires, which the graph draws and
+        USD stores, so nothing a chunk does depends on a channel nobody can see.
+        """
         node = self.get_dag_node()
+        # Built only when it is logged: it named every node of every solve, a drag step's
+        # thirty of them, for a message nobody reads.
+        debug = logger.isEnabledFor(logging.DEBUG)
         msg = "\n====== SOLVE ======\n"
+        # The nodes reached only across a wire from another chunk: they announce nothing,
+        # and what they pass up to their owners is no change of the owner's either.
+        quiet: set[DagNode] = set()
         for n in node.solve_outputs():
             if not (prop := n.propagator):
                 continue
 
-            msg += f"solved: {n.name}\n"
+            if debug:
+                msg += f"solved: {n.name}\n"
 
             changes = [(alias, iprop) for alias, iprop in n.iter_changes() if iprop]
-            for alias, iprop in changes:
-                if alias == prop.get_notice_alias():
-                    continue
+            here = _chunk_of(prop)
+            own = [(alias, iprop) for alias, iprop in changes
+                   if not _foreign(alias, iprop, here, quiet)]
+            if changes and not own:
+                quiet.add(n)
+                if debug:
+                    msg += "   (only across a wire: dirtied, not told)\n"
+            else:
+                for alias, iprop in own:
+                    if alias == prop.get_notice_alias():
+                        continue
 
-                msg += f"   {alias.name}\n"
-                prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
+                    if debug:
+                        msg += f"   {alias.name}\n"
+                    prop.data_changed(get_notice(alias)(iprop.get_notice_data()))
 
-            if notice := prop.send_self():
-                msg += f"   {notice.alias.name}\n"
+                if (notice := prop.send_self()) and debug:
+                    msg += f"   {notice.alias.name}\n"
 
             # A pure state change (selection, collapse, disable) must not re-run the module.
             # Data changes (params/inputs) and a direct dirty solve (execute-on-creation,
@@ -1544,54 +1373,11 @@ class ChunkNoticePropagator:
             # up in the registry by that name, and only a ChunkBase answers anything but
             # None -- which is what makes the cast below sound.
             if not state_only and prop.get_chunk_module() is not None:
-                chunk = cast("chunk_core.ChunkBase", prop)
-                # A chunk setting its own params mid-cook reaches everything below it from
-                # here. Those wait for its cook to end -- left dirty, so whichever solve gets
-                # to them next, this one's end or an enclosing one, cooks them once. See
-                # executing().
-                if (
-                    _held_cooks is not None
-                    and chunk is not _executing_chunk
-                    and _chunk_of(self) is _executing_chunk
-                ):
-                    n._dirty = True
-                    _held_cooks[chunk] = None
-                    # Its reasons go with it: the solve that holds it clears them, and
-                    # the skip decision when it is solved later needs them.
-                    if skip_cook.enabled():
-                        skip_cook.hold_reasons(chunk, changes)
-                    continue
-                if skip_cook.enabled():
-                    skip_cook.note_state(chunk)
-                    # Dirtied only by chunks above it cooking, and none of what they
-                    # changed is anything it reads: its layer already holds the result.
-                    # Not stale either -- there is nothing for recook_for_view to redo.
-                    if skip_cook.should_skip(chunk, changes):
-                        continue
-                    # A chunk with no cook of its own (a chunkgroup) changes what is
-                    # below it without a cook to say what: everything.
-                    if not chunk.can_cook():
-                        skip_cook.hand_down(chunk, skip_cook.EVERYTHING)
-                # Stale until the module actually runs below. Every reason this dispatch has
-                # for not running it -- blocked, muted, no layer yet, no stage -- leaves the
-                # layer holding a result the change never reached, and recook_for_view cooks
-                # a chunk again on exactly that. A chunk with no execute() (a chunkgroup)
-                # stays stale, which tells recook_for_view its inside needs cooking.
-                mark_cook_stale(chunk)
-                if _cooked_since(chunk):
-                    chunk._cook_stale = False
-                # The cook itself -- and every guard on whether it may run now -- is
-                # ChunkBase.cook. A chunk whose module has no execute() has nothing to run
-                # and stays stale.
-                elif chunk.cook():
-                    # True once cook() got past its guards, including when the layer left
-                    # the stack mid-cook. A module that raises ends the whole batch, and
-                    # this record with it, so there is nothing to note on that path.
-                    if _batch_cooked is not None:
-                        _batch_cooked[id(prop)] = _tick()
+                chunk_cook.dispatch(cast("chunk_core.ChunkBase", prop), n, changes, self)
 
-        msg += "====== FINISHED ======\n"
-        logger.debug(msg)
+        if debug:
+            msg += "====== FINISHED ======\n"
+            logger.debug(msg)
 
     def add_dependency(self, input: ChunkNoticePropagator) -> int:
         """Add an input. This propagator does not evaluate until all inputs are solved.
@@ -1809,7 +1595,25 @@ class ChunkNoticePropagator:
                 Defaults to False.
             private (bool): Keep the callback out of serialization and copies, which is what a
                 callback added inside __init__ needs. Defaults to False.
+
+        Raises:
+            ValueError: It would hear another chunk. Chunks speak to each other only through
+                wires: listen_globally is for the stage and the host (SCENE_ALIASES), and a
+                sender is this object's own chunk or something in it.
         """
+        if listen_globally and notice_alias not in SCENE_ALIASES:
+            raise ValueError(
+                f"listen_globally hears every chunk's {notice_alias.name}; a chunk may listen "
+                f"globally only to the stage and the host ({', '.join(sorted(a.name for a in SCENE_ALIASES))}). "
+                "To react to another chunk, wire it in."
+            )
+        if sender is not None and (mine := _chunk_of(self)) is not None \
+                and (theirs := _chunk_of(sender)) is not None and theirs is not mine:
+            raise ValueError(
+                f"{getattr(self, 'name', self)} listens to {getattr(sender, 'name', sender)} of "
+                f"another chunk ({getattr(theirs, 'name', theirs)}): to react to another chunk, "
+                "wire it in -- an exec input, or an @Node.param@ expression."
+            )
         # If sender is not set and we should not listen for global notices, the sender will be self
         if sender is None and not listen_globally:
             sender = self
@@ -1892,6 +1696,44 @@ class _SharedGlobalListener:
     def Revoke(self):
         if (connection := self._connection()) is not None:
             self._dispatch.subscribers.discard(connection)
+
+
+#: What a chunk may listen to from everywhere (add_callback's listen_globally): the stage and
+#: the host -- what anyone may be reading, whoever wrote it. Never another chunk's notices:
+#: chunks speak to each other only through wires (ChunkNoticePropagator._solve_downstream).
+SCENE_ALIASES = frozenset({
+    ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
+    ChunkNoticeAlias.PROP_SELECTION_CHANGED,
+    ChunkNoticeAlias.CAMERA_CHANGED,
+    ChunkNoticeAlias.OBJECT_CHANGED,
+    ChunkNoticeAlias.STAGE_CHANGED,
+    ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
+    ChunkNoticeAlias.STAGE_EDIT_TARGET_CHANGED,
+})
+
+
+def _chunk_of(prop) -> ChunkNoticePropagator | None:
+    """The chunk prop is or belongs to: the nearest owner that is a chunk; None outside any.
+
+    A chunk is told by can_cook, which only ChunkBase defines -- this module cannot import it.
+    """
+    while prop is not None and not callable(getattr(prop, "can_cook", None)):
+        prop = prop.get_owner()
+    return prop
+
+
+def _foreign(alias: ChunkNoticeAlias, source, here, quiet: set[DagNode]) -> bool:
+    """Whether a change reached a node of chunk `here` only across a wire from another chunk.
+
+    Directly -- an input from a node of another chunk -- or passed up by a node that was
+    itself reached only that way (one in `quiet`).
+    """
+    if source.get_dag_node() in quiet:
+        return True
+    if alias is not ChunkNoticeAlias.INPUT_CHANGED or here is None:
+        return False
+    there = _chunk_of(source)
+    return there is not None and there is not here
 
 
 # One entry per alias, for the lifetime of the process -- never torn down, same as the
@@ -2085,55 +1927,77 @@ class NoticeConnection:
 
         args = (owner, notice, sender) if self._wants_owner(meth) else (notice, sender)
         if owner:
-            # Try running the callback function with the edit context to safely add any changes to the stage
-            # to the correct layer
-
-            stage = owner.get_stage()
-            # A global USD listener hears every stage in the process, and a chunk acts on
-            # its own. Dropped before the edit context, which is the expensive part: opening
-            # one .mtlx sends hundreds of change rounds from the MaterialX plugin's private
-            # stage, and resolving the context for each cost more than the file itself.
-            # Compared by root layer, since the Python wrapper of one stage is not unique.
-            # An on-create trigger passes the notice class, not a notice, and a class's
-            # GetStage is unbound -- calling it raised for every Layer and Edit Target made.
-            notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
-            if stage and notice_stage is not None and (other := notice_stage()) is not None \
-                    and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
-                return
-            ctx = owner.get_edit_context()
-            try:
-                if stage and ctx and context:
-                    # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
-                    # from the local layer stack, so entering an EditContext on it raises
-                    # ("not in the local LayerStack"). A dormant chunk must not author anyway --
-                    # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
-                    if stage.IsLayerMuted(ctx.identifier):
-                        return
-                    if not stage.HasLocalLayer(ctx):
-                        # Not muted -- just not inserted into the local layer stack YET (hit
-                        # live during load_chunks's bulk restore: a ListGroup proxy row's
-                        # value setter bypasses the chunk_notice._loading_stage guard that
-                        # suppresses every OTHER reactive path during that restore, so this
-                        # can fire before get_or_create_layer has run for this chunk). Unlike
-                        # the muted case, skipping the call entirely would be wrong here:
-                        # nothing re-triggers this specific ATTRIBUTE_CHANGED notice later the
-                        # way load_chunks's own explicit final execute() loop does for the
-                        # reserved hook, so this would-be edit would just be lost. Call it
-                        # without the EditContext wrapper instead -- a callback that (like
-                        # chunks/usd/sublayer.py's) authors straight into its own
-                        # get_edit_context() layer object, not through the stage's ambient
-                        # edit target, works fine either way.
-                        meth(*args)
-                        return
-                    with Usd.EditContext(stage, ctx):
-                        meth(*args)
-                else:
-                    meth(*args)
-            except Exception:
-                logger.exception("failed to run method %s", meth)
+            cooking = _executing_chunk
+            if cooking is None or getattr(owner, "get_chunk", lambda: None)() is not cooking:
+                # Another chunk is cooking, and its stage is the cook's (skip_cook): only what
+                # that cook reads, and whatever is looked up there is charged to it. A Set
+                # Camera refreshing its menu by a Traverse during an Add Variants cook made Add
+                # Variants read the whole stage, so it cooked on every edit above it. The cook
+                # stage's notice is a copy -- the scene's stage hears the same layer edit -- so
+                # it is dropped, and the scene's is handled on the scene's stage. With no
+                # chunk cooking, a cook stage is being opened: muting its hidden layers is
+                # nobody's change, and every Set Camera and Set Variant rebuilt its menus
+                # for it on every masked cook.
+                notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
+                if notice_stage is not None and chunk_cook.is_cook_stage(notice_stage()):
+                    return
+                if cooking is not None:
+                    with chunk_cook.outside_cook():
+                        self._call_for_owner(owner, meth, args, notice, context)
+                    return
+            self._call_for_owner(owner, meth, args, notice, context)
             return
 
         meth(*args)
+
+    def _call_for_owner(self, owner, meth, args, notice, context):
+        """Run meth for owner, inside owner's edit context when it has one (handle_callback)."""
+        # Try running the callback function with the edit context to safely add any changes to the stage
+        # to the correct layer
+
+        stage = owner.get_stage()
+        # A global USD listener hears every stage in the process, and a chunk acts on
+        # its own. Dropped before the edit context, which is the expensive part: opening
+        # one .mtlx sends hundreds of change rounds from the MaterialX plugin's private
+        # stage, and resolving the context for each cost more than the file itself.
+        # Compared by root layer, since the Python wrapper of one stage is not unique.
+        # An on-create trigger passes the notice class, not a notice, and a class's
+        # GetStage is unbound -- calling it raised for every Layer and Edit Target made.
+        notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
+        if stage and notice_stage is not None and (other := notice_stage()) is not None \
+                and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
+            return
+        ctx = owner.get_edit_context()
+        try:
+            if stage and ctx and context:
+                # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed
+                # from the local layer stack, so entering an EditContext on it raises
+                # ("not in the local LayerStack"). A dormant chunk must not author anyway --
+                # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
+                if stage.IsLayerMuted(ctx.identifier):
+                    return
+                if not stage.HasLocalLayer(ctx):
+                    # Not muted -- just not inserted into the local layer stack YET (hit
+                    # live during load_chunks's bulk restore: a ListGroup proxy row's
+                    # value setter bypasses the chunk_notice._loading_stage guard that
+                    # suppresses every OTHER reactive path during that restore, so this
+                    # can fire before get_or_create_layer has run for this chunk). Unlike
+                    # the muted case, skipping the call entirely would be wrong here:
+                    # nothing re-triggers this specific ATTRIBUTE_CHANGED notice later the
+                    # way load_chunks's own explicit final execute() loop does for the
+                    # reserved hook, so this would-be edit would just be lost. Call it
+                    # without the EditContext wrapper instead -- a callback that (like
+                    # chunks/usd/sublayer.py's) authors straight into its own
+                    # get_edit_context() layer object, not through the stage's ambient
+                    # edit target, works fine either way.
+                    meth(*args)
+                    return
+                with Usd.EditContext(stage, ctx):
+                    meth(*args)
+            else:
+                meth(*args)
+        except Exception:
+            logger.exception("failed to run method %s", meth)
 
     def __del__(self):
         """Revoke the listener when the connection is collected."""
@@ -2187,5 +2051,6 @@ class NoticeConnection:
         if self._listener is not None:
             self._listener.Revoke()
             self._listener = None
+
 
 

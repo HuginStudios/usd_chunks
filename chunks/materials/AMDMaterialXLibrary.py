@@ -4,16 +4,17 @@ import re
 import json
 import zipfile
 import io
+import logging
 import threading
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import requests
 
-from usd_chunks import chunk_widget_api
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
 from usd_chunks.chunk_stage import chunk_prim_edit_context, connect_exec, get_chunk_prim_path
-from PySide6 import QtWidgets, QtCore, QtGui
+
+logger = logging.getLogger(__name__)
 
 API_ROOT = "https://api.matlib.gpuopen.com/api"
 CACHE_FILE_NAME = "gpuopen_materials.json"
@@ -23,13 +24,18 @@ _FALLBACK_MARKER = ".fallback_for_{resolution}"
 
 _all_materials: list[dict] = []
 _results_by_title: dict[str, dict] = {}
-_selected_title: str = ""
-_thumbnail_cache: dict[str, bytes] = {}  # render_id → jpeg bytes
 _downloading: set[str] = set()  # titles with an in-flight background download
+_catalog_loading = False  # a catalog fetch is in flight; one per session is enough
+# Every live Material menu. The catalog and thumbnails are per session, not per node, so
+# they are handed to every library node's menu as they land.
+_menus: weakref.WeakSet = weakref.WeakSet()
+_thumb_paths: dict[str, str] = {}  # title → thumbnail file on disk
+_thumbs_flush_pending = False
 
 THUMB_SIZE = 85
-PAGE_SIZE = 10
 THUMB_DIR_NAME = "thumbs"
+#: How long thumbnails gather before the menus are told: one redraw per batch, not per file.
+_THUMB_FLUSH_DELAY = 0.3
 
 # Thumbnails go through one session and a bounded pool. A thread and a bare requests.get
 # per tile would mean a fresh SSL context, a DNS lookup and a TCP handshake per thumbnail,
@@ -104,306 +110,140 @@ def _fetch_thumbnail(render_id: str, cache_dir: str) -> bytes:
     return r.content
 
 
-class _ThumbnailLoader(QtCore.QObject):
-    loaded = QtCore.Signal(str, bytes)  # render_id, jpeg bytes
+# The catalog and its thumbnails, for every library node's Material menu (an ImageMenu:
+# Qt draws it as a grid, Blender as its thumbnail picker, anything else as a dropdown).
 
-    def __init__(self, cache_dir: str = ""):
-        super().__init__()
-        self.cache_dir = cache_dir or os.path.expanduser("~/.gpuopen_cache")
 
-    def fetch(self, render_id: str):
-        if render_id in _thumbnail_cache:
-            self.loaded.emit(render_id, _thumbnail_cache[render_id])
-            return
-        # One fetch per render_id however many nodes want it: several library nodes in
-        # one scene all show the same first page.
+def _render_id(material: dict) -> str:
+    render_ids = material.get("renders_order") or material.get("renders") or []
+    return render_ids[0] if render_ids else ""
+
+
+def _titles() -> list[str]:
+    return [m.get("title", "") for m in _all_materials if m.get("title")]
+
+
+def _load_catalog(node) -> None:
+    """Fetch the catalog on a worker, then hand it to every Material menu on the main thread."""
+    global _catalog_loading
+    if _all_materials or _catalog_loading:
+        return
+    scene = node.get_scene()
+    if scene is None:
+        return
+    cache_param = node.get_param("cache_dir", chunk.is_param_t(str))
+    cache_dir = (cache_param.value if cache_param else "") or os.path.expanduser("~/.gpuopen_cache")
+    _catalog_loading = True
+
+    def _work():
+        try:
+            materials = _fetch_all_materials(cache_dir)
+        except Exception:
+            logger.warning("Could not fetch the AMD MaterialX catalog", exc_info=True)
+            materials = []
+        scene.call_later(lambda: _catalog_ready(materials, cache_dir, scene))
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
+def _catalog_ready(materials: list, cache_dir: str, scene) -> None:
+    global _all_materials, _results_by_title, _catalog_loading
+    _catalog_loading = False
+    if not materials:
+        return
+    _all_materials = materials
+    _results_by_title = {m["title"]: m for m in materials if m.get("title")}
+    titles = _titles()
+    for menu in list(_menus):
+        menu.set_items(titles)
+    _fetch_thumbnails(cache_dir, scene)
+
+
+def _fetch_thumbnails(cache_dir: str, scene) -> None:
+    """Every material's thumbnail, on the bounded pool; already on disk costs a stat.
+
+    The current picks go first, so the pictures a user is looking at arrive before the
+    rest of the catalog's.
+    """
+    picked = {menu.value for menu in _menus if menu.value}
+    ordered = sorted(_all_materials, key=lambda m: m.get("title") not in picked)
+    for material in ordered:
+        title, rid = material.get("title"), _render_id(material)
+        if not title or not rid or title in _thumb_paths:
+            continue
+        path = _thumb_path(cache_dir, rid)
+        if os.path.isfile(path):
+            _thumb_paths[title] = path
+            continue
         with _thumb_lock:
-            fut = _thumb_futures.get(render_id)
-            if fut is None:
-                fut = _thumb_pool.submit(_fetch_thumbnail, render_id, self.cache_dir)
-                _thumb_futures[render_id] = fut
-
-        def _done(f: Future):
-            data = f.result() if f.exception() is None else b""
-            with _thumb_lock:
-                _thumb_futures.pop(render_id, None)
-            if data:
-                _thumbnail_cache[render_id] = data
-                # Emitted from the pool thread; the receiver lives on the main thread so
-                # Qt queues the delivery.
-                self.loaded.emit(render_id, data)
-
-        fut.add_done_callback(_done)
+            if rid in _thumb_futures:
+                continue
+            future = _thumb_pool.submit(_fetch_thumbnail, rid, cache_dir)
+            _thumb_futures[rid] = future
+        future.add_done_callback(
+            lambda f, t=title, r=rid, p=path: _thumbnail_done(f, t, r, p, scene))
+    _flush_thumbnails()
 
 
-# Thumbnail tile
-
-
-class _FlowLayout(QtWidgets.QLayout):
-    def __init__(self, parent=None, spacing=4):
-        super().__init__(parent)
-        self._items: list[QtWidgets.QLayoutItem] = []
-        self.setSpacing(spacing)
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, index):
-        return self._items[index] if 0 <= index < len(self._items) else None
-
-    def takeAt(self, index):
-        return self._items.pop(index) if 0 <= index < len(self._items) else None
-
-    def clear(self):
-        while self._items:
-            item = self.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._layout(QtCore.QRect(0, 0, width, 0), dry_run=True)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._layout(rect, dry_run=False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QtCore.QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        m = self.contentsMargins()
-        return size + QtCore.QSize(m.left() + m.right(), m.top() + m.bottom())
-
-    def expandingDirections(self):
-        return QtCore.Qt.Orientations(QtCore.Qt.Orientation(0))
-
-    def _layout(self, rect: QtCore.QRect, dry_run: bool) -> int:
-        sp = self.spacing()
-        x, y, row_h = rect.x(), rect.y(), 0
-        for item in self._items:
-            w = item.sizeHint().width()
-            h = item.sizeHint().height()
-            if x + w > rect.right() and row_h:
-                x = rect.x()
-                y += row_h + sp
-                row_h = 0
-            if not dry_run:
-                item.setGeometry(QtCore.QRect(x, y, w, h))
-            x += w + sp
-            row_h = max(row_h, h)
-        return y + row_h - rect.y()
-
-
-class _MaterialTile(QtWidgets.QFrame):
-    clicked_title = QtCore.Signal(str)
-
-    def __init__(self, title: str, render_id: str, loader: _ThumbnailLoader):
-        super().__init__()
-        self._title = title
-        self._render_id = render_id
-
-        self.setFixedWidth(THUMB_SIZE + 8)
-        self.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
-
-        self._thumb = QtWidgets.QLabel()
-        self._thumb.setFixedSize(THUMB_SIZE, THUMB_SIZE)
-        self._thumb.setScaledContents(True)
-        self._thumb.setStyleSheet("background:#333;")
-        layout.addWidget(self._thumb)
-
-        lbl = QtWidgets.QLabel(title)
-        lbl.setWordWrap(True)
-        lbl.setMaximumWidth(THUMB_SIZE + 4)
-        lbl.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(lbl)
-
-        self.setSelected(False)
-
-        if render_id:
-            loader.loaded.connect(self._on_loaded)
-            loader.fetch(render_id)
-
-    def _on_loaded(self, render_id: str, data: bytes):
-        if render_id == self._render_id:
-            px = QtGui.QPixmap()
-            px.loadFromData(data)
-            self._thumb.setPixmap(px)
-
-    def setSelected(self, selected: bool):
-        color = "#4a90d9" if selected else "#2a2a2a"
-        self.setStyleSheet(f"QFrame {{ border: 2px solid {color}; border-radius: 3px; }}")
-
-    def mousePressEvent(self, event):
-        self.clicked_title.emit(self._title)
-        super().mousePressEvent(event)
-
-
-# Grid widget
-
-
-class MaterialGridWidget(chunk_widget_api.ChunkParamWidgetBase, QtWidgets.QWidget):
-    _catalog_ready = QtCore.Signal(list)
-
-    def __init__(self, param: chunk.Custom):
-        super().__init__(param)
-
-        self._loader = _ThumbnailLoader()  # cache_dir set by fetch_catalog_async
-        self._tiles: dict[str, _MaterialTile] = {}
-        self._page_items: list[tuple[str, dict]] = []
-        self._page_offset = 0
-
-        outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(2)
-
-        self._search = QtWidgets.QLineEdit()
-        self._search.setPlaceholderText("Search MaterialX Library…")
-        outer.addWidget(self._search)
-
-        self._scroll = QtWidgets.QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        container = QtWidgets.QWidget()
-        self._flow = _FlowLayout(container, spacing=4)
-        self._scroll.setWidget(container)
-        outer.addWidget(self._scroll)
-        self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
-
-        self._timer = QtCore.QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(300)
-        self._timer.timeout.connect(self._do_search)
-        self._search.textChanged.connect(self._timer.start)
-
-        self._catalog_ready.connect(self._on_catalog_ready)
-
-        self.setFixedHeight(360)
-        self.setup_chunk_widget()
-
-    # ChunkParamWidgetBase interface
-    def get_value(self):
-        return _selected_title
-
-    def set_value(self, _v):
-        pass
-
-    def set_label(self, _t):
-        pass
-
-    def set_hidden(self, val: bool):
-        self.setHidden(val)
-
-    def set_enabled(self, val: bool):
-        self.setEnabled(val)
-
-    def showEvent(self, event):
-        """Auto-populate from cached catalog data when shown in a second panel."""
-        super().showEvent(event)
-        if _all_materials and not self._tiles:
-            self._do_search()
-
-    # Public
-    def fetch_catalog_async(self, cache_dir: str):
-        self._loader.cache_dir = cache_dir
-
-        def _work():
-            try:
-                materials = _fetch_all_materials(cache_dir)
-                self._catalog_ready.emit(materials)
-            except Exception:
-                pass
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    # Private
-    def _on_catalog_ready(self, materials: list):
-        global _all_materials
-        _all_materials = materials
-        # Restore the previously picked selection by pinning it to the front of the first
-        # page, rather than scroll-loading page after page until the picked tile turns up
-        # -- a material deep in the catalog would otherwise build and fetch hundreds of
-        # tiles, for every node, on every scene open.
-        c = self.param.get_chunk()
-        pt = c.get_param("picked_title") if c else None
-        self._do_search(pin=pt.value if pt else "")
-
-    def _do_search(self, pin: str = ""):
-        global _results_by_title
-        term = self._search.text().lower()
-        hits = [m for m in _all_materials if term in m.get("title", "").lower()]
-        _results_by_title = {m["title"]: m for m in hits}
-        ordered = _results_by_title
-        if pin in _results_by_title:
-            ordered = {pin: _results_by_title[pin]}
-            ordered.update(_results_by_title)
-        self._reset_pages(ordered)
-        if pin in self._tiles:
-            self._set_selected(pin)
-
-    def _reset_pages(self, results: dict[str, dict]):
-        global _selected_title
-        self._flow.clear()
-        self._tiles.clear()
-        _selected_title = ""
-        self._page_items = list(results.items())
-        self._page_offset = 0
-        self._load_next_page()
-
-    def _load_next_page(self):
-        page = self._page_items[self._page_offset : self._page_offset + PAGE_SIZE]
-        if not page:
+def _thumbnail_done(future: Future, title: str, rid: str, path: str, scene) -> None:
+    """Pool thread: note the file, and ask the main thread to pass the batch on."""
+    global _thumbs_flush_pending
+    with _thumb_lock:
+        _thumb_futures.pop(rid, None)
+        if future.exception() is not None or not future.result():
             return
-        for title, mat in page:
-            render_ids = mat.get("renders_order") or mat.get("renders") or []
-            rid = render_ids[0] if render_ids else ""
-            tile = _MaterialTile(title, rid, self._loader)
-            tile.clicked_title.connect(self._on_tile_clicked)
-            self._tiles[title] = tile
-            self._flow.addWidget(tile)
-        self._page_offset += len(page)
-        if not _selected_title and self._tiles:
-            self._set_selected(next(iter(self._tiles)))
+        _thumb_paths[title] = path
+        if _thumbs_flush_pending:
+            return
+        _thumbs_flush_pending = True
+    scene.call_later(_flush_thumbnails, _THUMB_FLUSH_DELAY)
 
-    def _on_scroll(self, value: int):
-        bar = self._scroll.verticalScrollBar()
-        if value >= bar.maximum() - 50:
-            self._load_next_page()
 
-    def _on_tile_clicked(self, title: str):
-        self._set_selected(title)
-        self.param.send_self()
+def _flush_thumbnails() -> None:
+    """Main thread: give every Material menu the pictures so far."""
+    global _thumbs_flush_pending
+    with _thumb_lock:
+        _thumbs_flush_pending = False
+        images = dict(_thumb_paths)
+    for menu in list(_menus):
+        if menu.item_images != images:
+            menu.item_images = images
 
-    def _set_selected(self, title: str):
-        global _selected_title
-        _selected_title = title
-        for t, tile in self._tiles.items():
-            tile.setSelected(t == title)
+
+def menu_items(node, param_name):
+    """The catalog's titles for the Material menu (chunk.Menu.refresh_items).
+
+    The first ask starts the fetch and leaves the menu as it is; the titles arrive in
+    _catalog_ready, for every node at once.
+    """
+    if param_name != "material":
+        return None
+    menu = node.get_param("material")
+    if menu is not None:
+        _menus.add(menu)
+    if not _all_materials:
+        _load_catalog(node)
+        return None
+    return _titles()
 
 
 # Chunk callbacks
 
 
 def _on_chunk_loaded(owner, notice, sender):
-    cache_param = owner.get_param("cache_dir", chunk.is_param_t(str))
-    grid_param = owner.get_param("material_grid", chunk.is_inst(chunk.Custom))
-
-    cache_dir = cache_param.value or os.path.expanduser("~/.gpuopen_cache")
-
-    if isinstance(grid_param.custom_widget, MaterialGridWidget):
-        grid_param.custom_widget.fetch_catalog_async(cache_dir)
+    """Start the catalog now, so the Material menu is full by the time anyone opens it."""
+    menu = owner.get_param("material")
+    if menu is not None:
+        _menus.add(menu)
+        # A network saved before the menu existed knows only what it applied: show that
+        # as the pick, so the picture on the node is the material on the prim.
+        picked = owner.get_param("picked_title").value
+        if not menu.value and picked:
+            menu.value = picked
+        if _all_materials:
+            menu.set_items(_titles())
+            menu.item_images = dict(_thumb_paths)
+    _load_catalog(owner)
 
 
 def _pick_package(package_ids: list[str], resolution: str) -> dict | None:
@@ -645,14 +485,17 @@ def apply_material(owner, _notice, _sender):
 
     The split is possible because the two halves are cleanly separable: _fetch_package is
     pure network/filesystem, and the assign is pure USD. So the worker only gets the
-    package onto disk, then hands back to the main thread (QTimer.singleShot(0, ...)) to
-    set picked_title and run the normal
+    package onto disk, then hands back to the main thread (the host's call_later, read
+    here on the main thread before the worker starts) to set picked_title and run the normal
     reactive path. That path calls _fetch_package again, but by then it is a cache hit, so
     it costs nothing and there is exactly one code path that ever authors USD.
     """
-    title = _selected_title
+    title = owner.get_param("material").value or owner.get_param("picked_title").value or ""
     if not title:
         _set_status(owner, "Select a material first")
+        return
+    scene = owner.get_scene()
+    if scene is None:
         return
 
     if title in _downloading:
@@ -687,14 +530,9 @@ def apply_material(owner, _notice, _sender):
             node.get_param("picked_title").value = title
             execute(node)
 
-        # Hand back to the main thread. The context object is REQUIRED here: a bare
-        # QTimer.singleShot(0, fn) creates the timer in the calling thread, and a worker
-        # thread has no event loop to ever fire it -- the callback would simply be dropped
-        # and the assign would silently never happen. Passing a QObject that lives on the
-        # main thread (the application) queues the call onto that thread's loop instead.
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            QtCore.QTimer.singleShot(0, app, _finish)
+        # Hand back to the main thread: usdview queues it on Qt's loop, Blender on its
+        # timers. Never _finish() here -- this is the worker, and it must not touch USD.
+        scene.call_later(_finish)
 
     threading.Thread(target=_work, daemon=True).start()
 
@@ -717,8 +555,11 @@ def main():
         "Prim Path",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
-    grid_param = chunk.Custom("material_grid")
-    grid_param.custom_widget = MaterialGridWidget(grid_param)
+    material = chunk.ImageMenu(
+        "material", "Material", tile_size=THUMB_SIZE, dynamic_items=True,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="The GPUOpen MaterialX Library. Pick one, then Download & Assign.",
+    )
 
     resolution = chunk.Menu("resolution", "Resolution", menu_items=["2k", "1k", "4k"], default_value="2k")
     status = chunk.Label("status", default_value="")
@@ -755,7 +596,7 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
 
-    chunk_api.add_params([prim_path, mat_scope, grid_param, resolution, picked_title, material_path, status, advanced, apply_btn])
+    chunk_api.add_params([prim_path, mat_scope, material, resolution, picked_title, material_path, status, advanced, apply_btn])
 
     chunk_api.add_callback(
         _on_chunk_loaded,

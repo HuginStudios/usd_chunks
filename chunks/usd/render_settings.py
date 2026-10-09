@@ -403,6 +403,8 @@ def main():
         ),
         chunk.LineEdit(
             "camera", "Camera",
+            # The path a first Camera chunk takes (chunks/modelling/camera.py).
+            default_value="/cameras/camera1",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         ),
         chunk.LineEdit("products", "Products"),
@@ -510,7 +512,8 @@ def config():
           - Conform Policy: how the camera aperture is reconciled with the output
             aspect ratio when the two disagree — expandAperture, cropAperture,
             adjustApertureWidth, adjustApertureHeight, or adjustPixelAspectRatio.
-          - Camera: the camera prim to render from. Products may override it.
+          - Camera: the camera prim to render from, /cameras/camera1 unless a
+            prim was selected when the chunk was made. Products may override it.
           - Products: the RenderProduct prims this render writes, as paths or glob
             patterns, naming the Render Product chunks' prim paths.
           - Included Purposes: comma-separated purposes to include in the render,

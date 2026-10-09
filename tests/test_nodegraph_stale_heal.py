@@ -75,7 +75,8 @@ def _touch_a_property(stage, prim_path):
     Not a prim-level one: that already triggers a rebuild, so using it would prove nothing.
     """
     path = Sdf.Path(f"{prim_path}.inputs:_probe")
-    layer = stage.GetSessionLayer()
+    # Where the chunk's prim was authored: the stage's edit target.
+    layer = stage.GetEditTarget().GetLayer()
     with Usd.EditContext(stage, layer):
         prim_spec = layer.GetPrimAtPath(path.GetPrimPath())
         assert prim_spec is not None, f"no prim spec at {prim_path}"

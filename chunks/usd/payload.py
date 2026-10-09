@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pxr import Sdf
-from usd_chunks import chunk, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_stage, chunk_utils, sdf_authoring
 
 
 def file_changed(owner, notice, sender):
@@ -39,11 +39,21 @@ def execute(node):
             ref = Sdf.Payload(payload_path)
 
     primpath_param = node.get_param("primpath_location")
+    targets = []
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
+        targets.append(target_path)
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
             prim = stage.DefinePrim(target_path, "Xform")
+        elif chunk_utils.is_composed_in(prim):
+            # Valid, but only because another Payload chunk's file defines it. With two
+            # chunks on one prim each saw the other's payload, neither defined the prim,
+            # and it ended up an `over`. DefinePrim will not help: it returns a prim that
+            # is already defined without writing anything.
+            spec = sdf_authoring.Writer(stage).define(target_path)
+            spec.typeName = spec.typeName or prim.GetTypeName() or "Xform"
         prim.GetPayloads().AddPayload(ref)
+    chunk_utils.set_payloads_loaded(node, node.get_scene_stage(), targets, node.get_param("load").value)
 
 
 def main():
@@ -60,6 +70,11 @@ def main():
     # prim location
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     PayloadChunk.add_param(primpath)
+    PayloadChunk.add_param(chunk.Checkbox(
+        "load", "Load", default_value=True,
+        tooltip="Unchecked: the payload is unloaded, for a lighter stage. Checked loads back "
+        "what this unloaded; it never loads a payload unloaded by hand.",
+    ))
 
     return PayloadChunk
 

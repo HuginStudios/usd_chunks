@@ -1,0 +1,50 @@
+# Dialog script for usdchunks::chunkgroup automatically generated
+
+{
+    name	usdchunks::chunkgroup
+    script	usdchunks::chunkgroup
+    label	"USD Chunkgroup"
+
+    help {
+    }
+
+    inputlabel	1	"Input Stage"
+    inputlabel	2	"Input 2"
+    inputlabel	3	"Input 3"
+    inputlabel	4	"Input 4"
+
+    parm {
+        name    "export_network"
+        label   "Export Network..."
+        type    button
+        default { "0" }
+        help    "Write this chunkgroup as a usd_chunks network (.usda) that usdview, Blender and the usdchunks CLI open. Only chunk nodes can be inside it."
+        parmtag { "script_callback" "from usd_chunks.hosts.houdini import chunkgroup; chunkgroup.export_from_button(kwargs)" }
+        parmtag { "script_callback_language" "python" }
+    }
+    groupcollapsible {
+        name    "network_space"
+        label   "Network Space"
+
+        parm {
+            name    "usdchunks_up_axis"
+            label   "Up Axis"
+            type    string
+            default { "Y" }
+            help    "The up axis this network was authored in. Its chunks cook in it, and the result is turned into Houdini's. Set from the file on import."
+            menu {
+                "Y" "Y"
+                "Z" "Z"
+            }
+        }
+        parm {
+            name    "usdchunks_meters_per_unit"
+            label   "Meters per Unit"
+            type    float
+            default { "1" }
+            help    "The units this network was authored in (0.01 = centimetres). Its result is scaled into Houdini's. Set from the file on import."
+            range   { 0.001! 1 }
+        }
+    }
+
+}

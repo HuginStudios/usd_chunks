@@ -4,8 +4,8 @@ A DagNode edge between two params is in-memory only -- ChunkStageSync._on_depend
 authors inputs:chunk for ChunkBase pairs and returns early for anything else -- so an edge
 between params of two different chunks is never written to USD and is gone after a reload.
 Inside one chunk that edge is the right mechanism (it is what set_function reads, and it can
-drive attributes no expression can reach); across chunks an expression is, so add_dependency
-warns and connect_value redirects.
+drive attributes no expression can reach); across chunks an expression is. Chunks connect
+only through wires, so add_dependency refuses and connect_value redirects.
 """
 from __future__ import annotations
 
@@ -76,29 +76,27 @@ def _two_chunks(scene):
 
 
 # ---------------------------------------------------------------------------
-# add_dependency: warn, but still do it
+# add_dependency: refused across chunks
 # ---------------------------------------------------------------------------
 
-def test_cross_chunk_dependency_warns(scene, caplog) -> None:
+def test_cross_chunk_dependency_is_refused(scene) -> None:
     src, dst = _two_chunks(scene)
 
-    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+    with pytest.raises(ValueError, match="crosses chunks") as raised:
         dst.get_param("q").add_dependency(src.get_param("p"))
 
-    assert "crosses chunks" in caplog.text
-    assert "@src.p@" in caplog.text, "the warning must name the expression that would work"
+    assert "@src.p@" in str(raised.value), "the error must name the expression that would work"
 
 
-def test_cross_chunk_dependency_still_connects(scene, caplog) -> None:
-    """A warning, not a refusal -- existing in-memory behaviour is unchanged."""
+def test_a_refused_dependency_leaves_no_edge(scene) -> None:
+    """Refused, not half made: an edge nobody can see is what the rule keeps out."""
     src, dst = _two_chunks(scene)
     q = dst.get_param("q")
 
-    with caplog.at_level(logging.WARNING, logger=_LOGGER):
-        idx = q.add_dependency(src.get_param("p"))
+    with pytest.raises(ValueError):
+        q.add_dependency(src.get_param("p"))
 
-    assert idx >= 0
-    assert any(dep is src.get_param("p") for _, dep in q.get_dependencies())
+    assert not any(dep is src.get_param("p") for _, dep in q.get_dependencies())
 
 
 def test_same_chunk_dependency_is_silent(scene, caplog) -> None:
@@ -200,21 +198,19 @@ def test_nested_param_is_still_nameable(scene) -> None:
     assert dst.get_param("q").value == pytest.approx(2.0)
 
 
-def test_unnameable_param_falls_back_to_the_dependency(scene, caplog) -> None:
+def test_unnameable_param_is_refused(scene) -> None:
     """When no @Node.param@ can address the source -- its bare name resolves to a different
-    param, so the reference would silently point at the wrong one -- connect_value keeps the
-    in-memory edge and lets the warning stand rather than authoring a wrong expression."""
+    param, so the reference would silently point at the wrong one -- connect_value refuses
+    rather than author a wrong expression or an edge nobody can see."""
     src, dst = _two_chunks(scene)
     q = dst.get_param("q")
     q._expression_ref_to = lambda *_: None  # the name doesn't round-trip
 
-    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+    with pytest.raises(ValueError, match="no @src.<param>@ reaches it"):
         q.connect_value(src.get_param("p"))
 
-    assert "crosses chunks" in caplog.text
-    src.get_param("p").value = 5.0
-    assert q.value == pytest.approx(5.0), "in-memory edge still works"
     assert not isinstance(q.raw_value, str), "no expression authored"
+    assert not any(dep is src.get_param("p") for _, dep in q.get_dependencies()), "no edge"
 
 
 def test_expression_ref_names_a_reachable_param(scene) -> None:

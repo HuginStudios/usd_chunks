@@ -38,8 +38,11 @@ frontend and the conformance test both guard the import.
 from __future__ import annotations
 
 import logging
+import os
+import time
 
 import bpy
+import bpy.utils.previews
 
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_widget_api
@@ -99,17 +102,73 @@ def _updater(param_name: str):
     return _update
 
 
+#: Blender icons for ImageMenu pictures, keyed by file path. Made on first use: a
+#: previews collection is a Blender resource, and most sessions never show an ImageMenu.
+_previews = None
+
+
+def _icon_id(path: str) -> int:
+    """The Blender icon for an image file, 0 (no icon) while the file is not there yet."""
+    global _previews
+    if not path or not os.path.isfile(path):
+        return 0
+    if _previews is None:
+        _previews = bpy.utils.previews.new()
+    if path not in _previews:
+        try:
+            _previews.load(path, path, "IMAGE")
+        except Exception:  # an unreadable picture is an item without one
+            logger.debug("could not load %s as an icon", path, exc_info=True)
+            return 0
+    return _previews[path].icon_id
+
+
+#: Menus with more items than this get a search button beside the dropdown.
+SEARCH_FROM = 12
+
+#: id(ImageMenu) -> ((menu_items, item_images) it was built from, the enum items). The
+#: source objects are held, so an id cannot be reused while its entry is checked against.
+_image_items: dict = {}
+
+
+def release_previews() -> None:
+    """Free the icons (unregister)."""
+    global _previews
+    _image_items.clear()
+    if _previews is not None:
+        bpy.utils.previews.remove(_previews)
+        _previews = None
+
+
 def _enum_items(param):
     """`menu_items` as Blender enum tuples, never empty.
 
     An EnumProperty with no items is a registration error, and a Menu whose items are
     filled in by a callback (`set_function` on menu_items) legitimately has none at class
     build time -- so a placeholder stands in until the node is drawn.
+
+    An ImageMenu's items carry their pictures as icons -- the five-element form, which
+    Blender wants for every item once one has an icon -- and template_icon_view draws them.
     """
     items = list(getattr(param, "menu_items", None) or []) if param is not None else []
     if not items:
         return [("", "", "")]
-    return [(str(i), str(i), "") for i in items]
+    images = getattr(param, "item_images", None)
+    if images is None:
+        return [(str(i), str(i), "") for i in items]
+    # Built once per change, not per call: Blender asks for the items on every redraw of
+    # every node -- panning the editor redraws them all -- and a library of hundreds of
+    # pictures cost a stat and an icon lookup per item each time, which made moving
+    # around the network crawl. menu_items and item_images are replaced, never mutated,
+    # when they change, so identity says whether the cached list is still right.
+    source = (param.menu_items, images)
+    cached = _image_items.get(id(param))
+    if cached is not None and cached[0][0] is source[0] and cached[0][1] is source[1]:
+        return cached[1]
+    # A thumbnail that lands later comes as a new item_images dict, so it rebuilds this.
+    built = [(str(i), str(i), "", _icon_id(images.get(i, "")), n) for n, i in enumerate(items)]
+    _image_items[id(param)] = (source, built)
+    return built
 
 
 #: Keeps the tuples a dynamic enum callback returned alive, keyed by (node, param).
@@ -117,6 +176,12 @@ def _enum_items(param):
 #: collected before the menu is drawn, the entries come out as garbage. Holding the most
 #: recent list per property is the documented way round it.
 _enum_cache: dict = {}
+
+#: When each (node, param) last asked its module for its items (Menu.refresh_items).
+#: Blender calls an items callback on every redraw of the panel, not only when the menu
+#: opens, and the hook may walk the stage -- so it is asked at most this often.
+_REFRESH_EVERY = 1.0
+_refreshed: dict = {}
 
 
 def _enum_items_cb(param_name: str):
@@ -132,6 +197,11 @@ def _enum_items_cb(param_name: str):
         # Blender calls this with no instance in some contexts (a tooltip, an RNA walk).
         chunk = self.get_chunk() if self is not None and hasattr(self, "get_chunk") else None
         param = chunk.get_param(param_name) if chunk is not None else None
+        key = (getattr(self, "name", ""), param_name)
+        now = time.monotonic()
+        if hasattr(param, "refresh_items") and now - _refreshed.get(key, -_REFRESH_EVERY) >= _REFRESH_EVERY:
+            _refreshed[key] = now
+            param.refresh_items()
         items = _enum_items(param)
         _enum_cache[(getattr(self, "name", ""), param_name)] = items
         return items
@@ -389,6 +459,8 @@ def sync_to_node(node, chunk) -> None:
                 # the module docstring describes only works if this is the layer that
                 # seeds layer 2.
                 node[key] = value
+                # Seen as mirrored, not edited: sync_lofted pushes only a user's change.
+                _lofted_seen[(node.as_pointer(), key)] = _plain(node[key])
         except Exception:
             # A value with no ID-property form -- a Gf type, an Sdf.Path. Reported rather
             # than crashing the rebuild, since one odd param should not cost the graph.
@@ -404,13 +476,45 @@ def sync_lofted(node, chunk) -> None:
     user typed in it. Draw is the only moment Blender reliably gives us, which makes this
     poll-on-draw rather than event-driven -- acceptable because it only touches params
     whose value actually differs.
+
+    Only keys the node class does not declare. Blender stores a declared property's value
+    under the same ID-property key once it is set -- an EnumProperty as its item's INDEX --
+    so reading those back here wrote `0` into a Menu on every draw. That never matched the
+    menu's text, so each redraw changed a param and cooked: panning a network with a
+    material menu crawled. Declared properties sync through their own update callback.
+
+    And only what the user changed. The node's ID property is a copy taken when the node
+    was mirrored, and nothing refreshes it when the param moves on its own -- a wire, an
+    expression, a cook. Pushing every difference wrote that stale copy back over the live
+    value on every draw (a Material Library's wired prim path reset to ''), and a colour
+    -- an IDPropertyArray, never equal to the param's tuple -- was rewritten and recooked
+    every frame. So a key is pushed when the node's value differs from what this last
+    saw, which only a user edit does.
     """
+    declared = node.bl_rna.properties
     for key in list(node.keys()):
-        if key.startswith("_") or key in _RESERVED:
+        if key.startswith("_") or key in _RESERVED or key in declared:
+            continue
+        value = _plain(node[key])
+        seen_key = (node.as_pointer(), key)
+        seen = _lofted_seen.get(seen_key, _UNSEEN)
+        _lofted_seen[seen_key] = value
+        if seen is _UNSEEN or seen == value:
             continue
         param = resolve_key(chunk, key)
         if param is not None:
-            _write_param(param, node[key])
+            _write_param(param, value)
+
+
+#: (node pointer, key) -> the lofted ID property's value as sync_lofted last saw it.
+_lofted_seen: dict = {}
+_UNSEEN = object()
+
+
+def _plain(value):
+    """An ID property value as the param holds it: an IDPropertyArray becomes a tuple."""
+    to_list = getattr(value, "to_list", None)
+    return tuple(to_list()) if to_list is not None else value
 
 
 #: Node keys that are the frontend's own bookkeeping rather than a lofted param.
@@ -433,17 +537,34 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     # here) is marked, the way Qt gives it an amber label: the field shows a value nobody
     # on this graph typed, and "what did we change" is the question a shot asks of a
     # sequence. Blender's alert red is the nearest built-in "this is not the default".
+    # Held by a stronger layer (chunk_stage.param_held_by) is marked the same way: the
+    # value shown is not this graph's either, and an edit here will not show.
     override_source = chunk_stage.param_override_source(param)
-    layout.alert = override_source is not None
+    layout.alert = override_source is not None or chunk_stage.param_held_by(param) is not None
     # A PRIM_SELECTION field gets a pin button beside it, same as Qt's -- pulling in
     # whatever the viewport-click picker last found (chunk_blender_nodegraph.pin_prim /
     # set_picked_prim_paths), which is this frontend's counterpart of the Qt/usdview
     # viewport-selection pin.
     pinnable = param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION)
-    row = layout.row(align=True) if pinnable else layout
+    # A long menu gets a search button: Blender's dropdown cannot be typed into, and
+    # scrolling hundreds of entries (a material library) is no way to find one.
+    searchable = len(getattr(param, "menu_items", None) or ()) > SEARCH_FROM
+    row = layout.row(align=True) if pinnable or searchable else layout
     drawn = False
     key = prop_key(param)
-    if key == param.name and hasattr(node, key):
+    if key == param.name and hasattr(node, key) and getattr(param, "item_images", None) is not None:
+        # An ImageMenu: no dropdown. The picture of the current pick is the control --
+        # clicking it opens a grid of every item's picture (the one large picture Blender
+        # can make clickable) -- with the pick's name and the search beside it underneath.
+        # A column of its own: the body may hand over a row, which put the label, the
+        # picture and the name side by side and the picture shrank to a sliver.
+        col = layout.column()
+        col.label(text=(param.label or param.name) if text is None else text)
+        col.template_icon_view(node, key, show_labels=True, scale=6.0, scale_popup=5.0)
+        row = col.row(align=True)
+        row.label(text=param.value or "Nothing picked")
+        drawn = True
+    elif key == param.name and hasattr(node, key):
         # No `text=` at all when the caller has no opinion: a declared property already
         # carries the param's label as its RNA name, and passing text="" would blank it.
         if text is None:
@@ -456,6 +577,11 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
         row.prop(node, f'["{key}"]',
                  text=(param.label or param.name) if text is None else text)
         drawn = True
+    if drawn and searchable:
+        op = row.operator("usd_chunks.search_menu", text="", icon="VIEWZOOM")
+        op.tree_name = node.id_data.name
+        op.node_path = node.name
+        op.param_name = key
     if drawn and pinnable:
         op = row.operator("usd_chunks.pin_prim", text="", icon="EYEDROPPER")
         op.node_path = node.name

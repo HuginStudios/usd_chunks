@@ -45,6 +45,7 @@ from usd_chunks.frontends.qt.widgets import (
     LabeledWidget,  # noqa: F401
     ContainerWidget,  # noqa: F401
     confirm_dial,  # noqa: F401
+    progress_dial,  # noqa: F401
 )
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphView, droppable_paths
 
@@ -532,6 +533,12 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         return None
 
     def add_chunk_context(self, c: chunk.ChunkBase):
+        # Once per context: start-up adds a tab for every top-level context, and then the
+        # same group arrives again as a loaded chunk (a network an arc composes in has no
+        # parent group, so it is top-level) -- it got two tabs. An existing tab is left as
+        # it is, current or not.
+        if self.get_chunk_context_index(c) is not None:
+            return
         stack = ChunkTabContextStack(c, self._view_mode, self)
         idx = self.addTab(stack, c.name)
         cfg = c.get_config() if hasattr(c, "get_config") else None
@@ -892,6 +899,12 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
                     self.tab_widget.add_chunk_context(ctx)
             for c in registry.scene.get_chunks():
                 self.create_chunk_widget(c)
+            # Open on the scene's own graph. Each tab added above became current in turn, so
+            # the last one -- a referenced network's group, say -- was left driving the stage,
+            # and focusing a group mutes the rest: a shot opened showing only its house.
+            if (root := registry.scene.peek_root_context()) is not None:
+                if (idx := self.tab_widget.get_chunk_context_index(root)) is not None:
+                    self.tab_widget.setCurrentIndex(idx)
 
         self.main_layout = QtWidgets.QVBoxLayout()
         self.main_layout.setContentsMargins(0, 0, 0, 0)

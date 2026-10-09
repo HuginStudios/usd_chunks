@@ -28,15 +28,24 @@ extra of the package rather than a dependency.
 """
 from __future__ import annotations
 
+import heapq
+import itertools
 import logging
+import os
+import tempfile
+import threading
+import time
 
 import bpy
-from pxr import Gf, Usd
+from bpy.app.handlers import persistent
+from pxr import Sdf, Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.blender import nodegraph as bg
+from usd_chunks.frontends.blender.addon import camera
+from usd_chunks.frontends.blender.addon import dependencies
 from usd_chunks.frontends.blender.addon import gizmos
 from usd_chunks.frontends.blender.addon import viewport
 
@@ -65,6 +74,20 @@ class BlenderScene(SceneSender):
     def get_stage(self):
         return self._stage
 
+    def get_host(self) -> tuple[str, str]:
+        return "blender", ".".join(str(part) for part in bpy.app.version)
+
+    def call_later(self, fn, delay: float = 0.0):
+        """Queued for _run_due_calls, a timer on the main thread.
+
+        Not bpy.app.timers.register directly: that is not safe from a worker thread, and a
+        finished download calling back from one is the main reason this exists.
+        """
+        cancelled = []
+        with _later_lock:
+            heapq.heappush(_later, (time.monotonic() + delay, next(_later_order), fn, cancelled))
+        return lambda: cancelled.append(True)
+
     def set_stage(self, stage) -> None:
         self._stage = stage
 
@@ -92,13 +115,17 @@ class BlenderScene(SceneSender):
     # -- viewer questions, answered where Blender can ---------------------
 
     def get_active_camera(self):
-        camera = bpy.context.scene.camera if bpy.context.scene else None
-        if camera is None:
-            return None
-        gf = Gf.Camera()
-        matrix = camera.matrix_world
-        gf.transform = Gf.Matrix4d(*[v for row in matrix.transposed() for v in row])
-        return gf
+        """The 3D view being navigated -- Blender's free camera -- lens included."""
+        return camera.viewport_camera()
+
+    def set_viewport_camera(self, prim) -> None:
+        camera.set_viewport_camera(prim, self)
+
+    def release_viewport_camera(self) -> None:
+        camera.release_viewport_camera()
+
+    def look_at(self, point) -> None:
+        camera.look_at(point)
 
     def get_viewport_renderer(self) -> str:
         scene = bpy.context.scene
@@ -116,22 +143,70 @@ class BlenderScene(SceneSender):
     def get_end_frame(self) -> float:
         return float(bpy.context.scene.frame_end) if bpy.context.scene else 0.0
 
-    def should_install_package(self, package_name: str) -> bool:
-        """Never install into Blender's Python behind the user's back.
+    def get_start_frame(self) -> float:
+        return float(bpy.context.scene.frame_start) if bpy.context.scene else 0.0
 
-        Blender's interpreter is shared by every add-on and is replaced wholesale on
-        upgrade, so a silent pip install is both invasive and lost. A chunk whose
-        requirements are missing is skipped by the registry, which is the safe failure.
+    # Blender's frames are whole numbers plus a subframe; set both so a fractional frame
+    # a chunk asks for is the frame the Hydra view draws (viewport.current_time).
+
+    def set_current_frame(self, frame: float):
+        if bpy.context.scene:
+            whole = int(frame // 1)
+            bpy.context.scene.frame_set(whole, subframe=float(frame) - whole)
+
+    def set_end_frame(self, frame: float):
+        if bpy.context.scene:
+            bpy.context.scene.frame_end = int(round(frame))
+
+    def set_start_frame(self, frame: float):
+        if bpy.context.scene:
+            bpy.context.scene.frame_start = int(round(frame))
+
+    def should_install_packages(self, packages, chunk_name: str) -> bool:
+        """Offer the install in a moment, through a dialog; no for now.
+
+        Blender cannot block on a question while it loads chunks -- see dependencies.py,
+        which asks once the add-on is idle and registers the chunk's node type after a yes.
+        Packages go to the per-version dependency dir, never into Blender's own Python.
         """
-        logger.info("usd_chunks: %s is required by a chunk but will not be auto-installed",
-                    package_name)
+        dependencies.queue(packages, chunk_name)
         return False
+
+    def run_install(self, packages, chunk_name: str, run):
+        # Called on dependencies.py's worker thread (or inline, with USD_CHUNK_AUTO_INSTALL=1):
+        # report_line only stores the text for the modal operator to show.
+        return run(dependencies.report_line)
 
 
 #: One scene and one view per Blender session. A second node tree re-points them rather
 #: than making a second set, because the chunk registry is a singleton keyed to one scene --
 #: two live scenes would have the registry answering for whichever initialised last.
 _scene: BlenderScene | None = None
+
+
+#: call_later's queue: (due, order, fn, cancelled), drained on the main thread.
+_later: list = []
+_later_lock = threading.Lock()
+_later_order = itertools.count()
+
+#: How often the queue is checked: the resolution of a call_later delay.
+_LATER_INTERVAL = 0.05
+
+
+def _run_due_calls() -> float:
+    now = time.monotonic()
+    due = []
+    with _later_lock:
+        while _later and _later[0][0] <= now:
+            due.append(heapq.heappop(_later))
+    for _when, _order, fn, cancelled in due:
+        if cancelled:
+            continue
+        try:
+            fn()
+        except Exception:  # one failing call must not stop the queue for good
+            logger.exception("usd_chunks: a call_later callback failed")
+    return _LATER_INTERVAL
 
 
 def get_view():
@@ -147,6 +222,7 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     """
     global _scene
     _scene = BlenderScene(stage)
+    camera.attach(_scene)
     chunk_registry.ChunkRegistry().initialize(_scene, "blender")
     chunk_registry.ChunkLayerManager().initialize(stage)
     # ChunkStageSync.initialize loads the file's chunks itself, with the dedup set that
@@ -225,9 +301,241 @@ def _poll_new_trees() -> float:
         # A tree saved by a session before chunk_network_initialized existed defaults to
         # False too -- but if it already names a file, it is not blank, it just has not
         # been touched THIS session. Reopen the file rather than blanking a real network.
-        stage = Usd.Stage.Open(tree.chunk_network_path) if tree.chunk_network_path else None
-        _open_stage(stage if stage is not None else Usd.Stage.CreateInMemory(), tree=tree)
+        _open_stage(_stage_for_tree(tree), tree=tree)
     return 0.1  # reschedule in 0.1s -- this is the latency between "+ New" and Shift+A working
+
+
+def _stage_for_tree(tree):
+    """The stage a tree names: its file, else the network embedded in the .blend, else new."""
+    if tree.chunk_network_path:
+        stage = Usd.Stage.Open(bpy.path.abspath(tree.chunk_network_path))
+        if stage is not None:
+            return stage
+        logger.warning("usd_chunks: could not open %s", tree.chunk_network_path)
+    if tree.chunk_network_embedded:
+        layer = Sdf.Layer.CreateAnonymous(".usda")
+        if layer.ImportFromString(tree.chunk_network_embedded):
+            return Usd.Stage.Open(layer)
+        logger.warning("usd_chunks: the network stored in %s did not parse", tree.name)
+    return new_network_stage()
+
+
+def blender_space() -> tuple[str, float]:
+    """(up axis, meters per unit) of Blender's scene: Z-up, metres times the Unit Scale."""
+    scene = getattr(bpy.context, "scene", None)
+    scale = getattr(getattr(scene, "unit_settings", None), "scale_length", 1.0) or 1.0
+    return "Z", float(scale)
+
+
+def stamp_space(stage) -> None:
+    """Author Blender's space on stage's root layer, where the layer does not say its own.
+
+    A network is opened in other hosts too, and each turns it from the space it was
+    authored in into its own -- Houdini's chunkgroups do (hosts/houdini/space.py). That
+    space is the root layer's upAxis and metersPerUnit, as usdview's save stamps them. A
+    network with neither reads as USD's fallbacks, Y-up centimetres, which for one made
+    in Blender is wrong both ways. A file that already says is left as it says: an opened
+    network keeps the space it was authored in.
+    """
+    up, meters = blender_space()
+    info = stage.GetRootLayer().pseudoRoot
+    if not info.HasInfo("upAxis"):
+        info.SetInfo("upAxis", up)
+    if not info.HasInfo("metersPerUnit"):
+        info.SetInfo("metersPerUnit", meters)
+
+
+def new_network_stage():
+    """An empty stage for a network started in Blender, in Blender's space."""
+    stage = Usd.Stage.CreateInMemory()
+    stamp_space(stage)
+    return stage
+
+
+def write_network(view, path: str) -> None:
+    """Write the open network to `path`, positions and space included, as usdview saves one.
+
+    Every chunk prim, wherever it is authored (chunk_stage.save_scene). Writing the root
+    layer alone lost most of a network: on load, chunk prims move into the session layer
+    and into the layers Edit Target chunks name, and a test_shot3 network saved that way
+    kept 2 of its 22 chunks.
+    """
+    # Blender owns dragging, so there is no move event to hook; positions are collected
+    # here instead. Without this a layout done in Blender is lost, because the tree is
+    # a view and the next reload overwrites it from USD.
+    view.pull_positions_from_tree()
+    # And its space, for a network that never had one written (see stamp_space).
+    stamp_space(view.stage)
+    chunk_stage.save_scene(view.scene, os.path.abspath(bpy.path.abspath(path)))
+
+
+def network_text(view) -> str:
+    """The open network as .usda text, as write_network writes it, for one with no file."""
+    view.pull_positions_from_tree()
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "network.usda")
+        chunk_stage.export_chunks(view.scene, path)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+
+def network_unsaved(view) -> bool:
+    """Whether the open network's file is behind what is on screen.
+
+    Reads the root layer's dirty flag, so node positions are pulled into it first --
+    a drag is otherwise invisible to USD until Save.
+    """
+    view.pull_positions_from_tree()
+    return view.stage.GetRootLayer().dirty
+
+
+def _warn_unsaved(name: str) -> None:
+    """A popup, after the save: save_pre runs mid-save, where no UI can be drawn."""
+    def draw(menu, _context):
+        menu.layout.label(text=f"{name} has edits the .blend does not save.")
+        menu.layout.operator(USDCHUNKS_OT_save_network.bl_idname, icon="FILE_TICK")
+
+    wm = bpy.context.window_manager
+    if wm is not None and wm.windows:
+        wm.popup_menu(draw, title="Unsaved chunk network", icon="ERROR")
+
+
+@persistent
+def _on_save_pre(*_args) -> None:
+    """Saving the .blend warns about an edited network; it never writes the .usda.
+
+    The .usda is the model and the tree only a view of it, so a Ctrl+S that kept the tree
+    but silently dropped the network's edits would lose the half that matters on reopen.
+    Writing the file unasked is no better -- it is the user's, and may be shared -- so a
+    network with a file is only checked, and the user is told. One without a file
+    (started with New, never saved) has nothing to overwrite: it is stored in the tree
+    itself, and _stage_for_tree reopens it from there.
+    """
+    view = get_view()
+    tree = view.tree if view is not None else None
+    if tree is None:
+        return
+    try:
+        if not tree.chunk_network_path:
+            tree.chunk_network_embedded = network_text(view)
+        elif network_unsaved(view):
+            name = bpy.path.basename(tree.chunk_network_path)
+            logger.warning("usd_chunks: %s has unsaved edits; the .blend does not save them",
+                           name)
+            bpy.app.timers.register(lambda: _warn_unsaved(name), first_interval=0.0)
+    except Exception:  # never stop the .blend from saving
+        logger.exception("usd_chunks: could not check the chunk network on .blend save")
+
+
+#: Seconds Blender's scene must sit still before chunks hear it changed: a drag or a
+#: slider scrub is one change, not one per redraw.
+_HOST_CHANGE_DEBOUNCE = 0.25
+
+#: The module hook a chunk defines to follow Blender's own scene: `host_changed(node)`.
+#: The chunk decides what changed enough to cook (blender_import compares a fingerprint),
+#: since only its module knows what it reads.
+HOST_CHANGED_HOOK = "host_changed"
+
+
+#: The module hook naming the host objects a chunk stands in for: `host_sources(node)`.
+#: The add-on hides those in Blender's viewport, so an import is not drawn twice.
+HOST_SOURCES_HOOK = "host_sources"
+
+#: On the Blender scene: the objects the add-on hid, so it unhides only those -- never one
+#: the user hid -- and still knows them after the .blend is reopened.
+_HIDDEN_SOURCES = "usd_chunks_hidden_sources"
+
+#: How often sources are reconciled. A timer rather than events, because what changes the
+#: answer is scattered: a chunk deleted, disabled, re-pointed at another collection, or a
+#: view switched.
+_SOURCES_INTERVAL = 0.5
+
+
+def _sync_host_sources() -> float:
+    """Hide what some chunk's host_sources claims; unhide what the add-on hid and none does."""
+    try:
+        scene = bpy.context.scene
+        if scene is None:
+            return _SOURCES_INTERVAL
+        claimed = set()
+        for chunk in list(_scene.get_chunks()) if _scene is not None else ():
+            hook = chunk._module_hook(HOST_SOURCES_HOOK)
+            if hook is not None:
+                claimed.update(hook(chunk) or ())
+        view_layer = bpy.context.view_layer or scene.view_layers[0]
+        hidden = set(scene.get(_HIDDEN_SOURCES, ()))
+        changed = False
+        for name in hidden - claimed:
+            obj = bpy.data.objects.get(name)
+            if obj is not None and obj.name in view_layer.objects:
+                obj.hide_set(False, view_layer=view_layer)
+            hidden.discard(name)
+            changed = True
+        for name in claimed - hidden:
+            obj = bpy.data.objects.get(name)
+            if obj is None or obj.name not in view_layer.objects or obj.hide_get(view_layer=view_layer):
+                continue  # gone, or already hidden by the user: theirs to unhide
+            obj.hide_set(True, view_layer=view_layer)
+            hidden.add(name)
+            changed = True
+        if changed:
+            scene[_HIDDEN_SOURCES] = sorted(hidden)
+    except Exception:  # a timer that raises is unregistered for good
+        logger.exception("usd_chunks: could not reconcile hidden source objects")
+    return _SOURCES_INTERVAL
+
+
+def _notify_host_changed():
+    if _scene is None:
+        return None
+    for chunk in list(_scene.get_chunks()):
+        hook = chunk._module_hook(HOST_CHANGED_HOOK)
+        if hook is None:
+            continue
+        try:
+            hook(chunk)
+        except Exception:
+            logger.exception("usd_chunks: %s failed on chunk %r", HOST_CHANGED_HOOK, chunk.name)
+    return None  # one shot; the next change schedules the next
+
+
+@persistent
+def _on_depsgraph_update(_scene_arg, depsgraph) -> None:
+    """Blender's scene changed: tell the chunks that follow it, once things settle.
+
+    Only for changes to Blender data -- the camera mirror (camera.py) rewrites an object
+    every time a USD camera moves, and that must not read as the user editing the scene.
+    """
+    if _scene is None:
+        return
+    ids = [update.id for update in depsgraph.updates]
+    if ids and all(getattr(i, "name", "") == camera.MIRROR_NAME for i in ids):
+        return
+    if bpy.app.timers.is_registered(_notify_host_changed):
+        bpy.app.timers.unregister(_notify_host_changed)
+    bpy.app.timers.register(_notify_host_changed, first_interval=_HOST_CHANGE_DEBOUNCE)
+
+
+@persistent
+def _on_load_post(*_args) -> None:
+    """Reopen the network a freshly loaded .blend names.
+
+    `chunk_network_initialized` is saved with the tree, so after a load it reads True for
+    a tree no stage is behind -- _poll_new_trees would skip it, and the previous file's
+    view (and its stage, in the Hydra view) would stay active. Reset every flag, then open
+    the first chunk tree straight away rather than waiting for an editor to show it.
+    """
+    trees = [t for t in bpy.data.node_groups if t.bl_idname == bg.TREE_ID]
+    for tree in trees:
+        tree.chunk_network_initialized = False
+    camera.release_viewport_camera()
+    if not trees:
+        bg.clear_active_view()
+        return
+    try:
+        _open_stage(_stage_for_tree(trees[0]), tree=trees[0])
+    except Exception:
+        logger.exception("usd_chunks: could not reopen the chunk network in this .blend")
 
 
 def _active_tree():
@@ -280,6 +588,7 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
         if tree is None:
             tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
         tree.chunk_network_path = self.filepath
+        tree.chunk_network_embedded = ""
         _show_tree(context, tree)
         _open_stage(stage, tree=tree)
         self.report({"INFO"}, f"opened {self.filepath}")
@@ -296,29 +605,50 @@ class USDCHUNKS_OT_new_network(bpy.types.Operator):
     def execute(self, context):
         tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
         _show_tree(context, tree)
-        _open_stage(Usd.Stage.CreateInMemory(), tree=tree)
+        _open_stage(new_network_stage(), tree=tree)
         self.report({"INFO"}, "new chunk network")
         return {"FINISHED"}
 
 
 class USDCHUNKS_OT_save_network(bpy.types.Operator):
-    """Write node positions back and save the .usda."""
+    """Write node positions back and save the .usda; asks where for a new network."""
 
     bl_idname = "usd_chunks.save_network"
     bl_label = "Save Chunk Network"
     bl_options = {"REGISTER"}
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.usda;*.usd;*.usdc", options={"HIDDEN"})
+    #: Save As: ask for a path even when the network already has one.
+    save_as: bpy.props.BoolProperty(default=False, options={"SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        view = get_view()
+        tree = view.tree if view is not None else None
+        path = tree.chunk_network_path if tree is not None else ""
+        if path and not self.save_as:
+            self.filepath = path
+            return self.execute(context)
+        self.filepath = path or f"{tree.name if tree is not None else 'network'}.usda"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
 
     def execute(self, context):
         view = get_view()
         if view is None:
             self.report({"WARNING"}, "no chunk network open")
             return {"CANCELLED"}
-        # Blender owns dragging, so there is no move event to hook; positions are collected
-        # here instead. Without this a layout done in Blender is lost, because the tree is
-        # a view and the next reload overwrites it from USD.
-        view.pull_positions_from_tree()
-        view.stage.GetRootLayer().Save()
-        self.report({"INFO"}, "saved")
+        if not self.filepath:
+            self.report({"WARNING"}, "no file to save to")
+            return {"CANCELLED"}
+        if not os.path.splitext(self.filepath)[1]:
+            self.filepath += ".usda"
+        write_network(view, self.filepath)
+        tree = view.tree
+        if tree is not None:
+            tree.chunk_network_path = self.filepath
+            tree.chunk_network_embedded = ""  # the file is the copy now
+        self.report({"INFO"}, f"saved {self.filepath}")
         return {"FINISHED"}
 
 
@@ -345,7 +675,7 @@ class USDCHUNKS_OT_set_view_slot(bpy.types.Operator):
     bl_label = "Set Active View"
     bl_options = {"REGISTER"}
 
-    slot: bpy.props.IntProperty(default=1, min=0, max=3)
+    slot: bpy.props.IntProperty(default=1, min=0, max=2)
 
     def execute(self, context):
         view = get_view()
@@ -642,17 +972,30 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        dependencies.draw_progress(layout)
         tree = _active_tree()
+        view = get_view()
         layout.operator(USDCHUNKS_OT_new_network.bl_idname, icon="ADD")
         layout.operator(USDCHUNKS_OT_open_network.bl_idname, icon="FILE_FOLDER")
-        layout.operator(USDCHUNKS_OT_save_network.bl_idname, icon="FILE_TICK")
+        row = layout.row(align=True)
+        row.operator(USDCHUNKS_OT_save_network.bl_idname, icon="FILE_TICK")
+        row.operator(USDCHUNKS_OT_save_network.bl_idname, text="",
+                     icon="FILE_NEW").save_as = True
+        if tree is not None:
+            # Where the network lives, so "is my work on disk?" never needs a guess.
+            if not tree.chunk_network_path:
+                layout.label(text="No file yet -- kept in the .blend", icon="ERROR")
+            elif view is not None and view.stage.GetRootLayer().dirty:
+                layout.label(text=f"{bpy.path.basename(tree.chunk_network_path)} -- unsaved edits",
+                             icon="ERROR")
+            else:
+                layout.label(text=bpy.path.basename(tree.chunk_network_path), icon="FILE")
         layout.separator()
         layout.operator(USDCHUNKS_OT_auto_layout.bl_idname, icon="GRAPH")
         row = layout.row(align=True)
         row.operator(USDCHUNKS_OT_group.bl_idname, text="Group", icon="GROUP")
         row.operator(USDCHUNKS_OT_create_view.bl_idname, text="View", icon="HIDE_OFF")
 
-        view = get_view()
         box = layout.box()
         # Where you are. A network's top level is usually one group and nothing else, so
         # without this line the editor looks empty-but-for-a-node and gives no hint that
@@ -669,15 +1012,15 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
         box.label(text="Active view")
         row = box.row(align=True)
         active = view.active_slot() if view else 0
-        for slot in (0, 1, 2, 3):
+        for slot in (0, 1, 2):
             op = row.operator(USDCHUNKS_OT_set_view_slot.bl_idname,
                               text="none" if slot == 0 else str(slot),
                               depress=(slot == active))
             op.slot = slot
         # The keys, so nobody has to find them in the keymap editor: they mirror the Qt
-        # and Flet graphs (V, 0-3, L, Ctrl+G) where Blender had no habit to keep, and
+        # and Flet graphs (V, 0-2, L, Ctrl+G) where Blender had no habit to keep, and
         # Blender's own (X, Shift+D, Ctrl+C/X/V, M, Tab) where it did.
-        box.label(text="V view  0-3 slot  L layout  Ctrl+G group", icon="EVENT_V")
+        box.label(text="V view  0-2 slot  L layout  Ctrl+G group", icon="EVENT_V")
 
         if tree is not None and tree.chunk_network_path:
             layout.label(text=tree.chunk_network_path.rsplit("\\", 1)[-1], icon="FILE")
@@ -732,7 +1075,6 @@ _KEYS = (
     (USDCHUNKS_OT_set_view_slot, "ZERO", {}, {"slot": 0}),
     (USDCHUNKS_OT_set_view_slot, "ONE", {}, {"slot": 1}),
     (USDCHUNKS_OT_set_view_slot, "TWO", {}, {"slot": 2}),
-    (USDCHUNKS_OT_set_view_slot, "THREE", {}, {"slot": 3}),
 )
 
 
@@ -786,8 +1128,9 @@ def _unregister_keymap() -> None:
 
 
 def register() -> None:
+    configure_logging()
     bg.register()
-    for cls in _CLASSES:
+    for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
     # On the tree, not in a global: two trees can edit two networks, and the path has to
     # survive a .blend save so reopening the file knows what it was pointed at.
@@ -795,30 +1138,59 @@ def register() -> None:
         name="Chunk Network", subtype="FILE_PATH", default="")
     # Also per-tree: whether _open_stage has ever run for it. See _poll_new_trees.
     bpy.types.NodeTree.chunk_network_initialized = bpy.props.BoolProperty(default=False)
+    # A network with no file yet, as .usda text, written on .blend save (_on_save_pre).
+    bpy.types.NodeTree.chunk_network_embedded = bpy.props.StringProperty(
+        default="", options={"HIDDEN"})
     if not bpy.app.timers.is_registered(_poll_new_trees):
         # Short first interval: this is what stands between clicking "+ New" and the Add
         # menu / registry actually being ready, so 0.5s read as "Shift+A does nothing,
         # try again a moment later."
         bpy.app.timers.register(_poll_new_trees, first_interval=0.05, persistent=True)
     _register_keymap()
+    if _on_save_pre not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(_on_save_pre)
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
+    if _on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    if not bpy.app.timers.is_registered(_run_due_calls):
+        bpy.app.timers.register(_run_due_calls, first_interval=_LATER_INTERVAL, persistent=True)
+    if not bpy.app.timers.is_registered(_sync_host_sources):
+        bpy.app.timers.register(_sync_host_sources, first_interval=_SOURCES_INTERVAL,
+                                persistent=True)
     if _on_undo not in bpy.app.handlers.undo_post:
         bpy.app.handlers.undo_post.append(_on_undo)
     if _on_undo not in bpy.app.handlers.redo_post:
         bpy.app.handlers.redo_post.append(_on_undo)
     viewport.register()
     gizmos.register()
+    camera.register()
 
 
 def unregister() -> None:
+    camera.unregister()
     gizmos.unregister()
     viewport.unregister()
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _on_undo in handlers:
             handlers.remove(_on_undo)
+    if _on_save_pre in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(_on_save_pre)
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
+    if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
+    if bpy.app.timers.is_registered(_notify_host_changed):
+        bpy.app.timers.unregister(_notify_host_changed)
+    if bpy.app.timers.is_registered(_sync_host_sources):
+        bpy.app.timers.unregister(_sync_host_sources)
+    if bpy.app.timers.is_registered(_run_due_calls):
+        bpy.app.timers.unregister(_run_due_calls)
     _unregister_keymap()
     if bpy.app.timers.is_registered(_poll_new_trees):
         bpy.app.timers.unregister(_poll_new_trees)
-    for cls in reversed(_CLASSES):
+    dependencies.unregister()
+    for cls in reversed(dependencies.CLASSES + _CLASSES):
         try:
             bpy.utils.unregister_class(cls)
         except Exception:  # pragma: no cover - already gone
@@ -828,3 +1200,5 @@ def unregister() -> None:
         del bpy.types.NodeTree.chunk_network_path
     if hasattr(bpy.types.NodeTree, "chunk_network_initialized"):
         del bpy.types.NodeTree.chunk_network_initialized
+    if hasattr(bpy.types.NodeTree, "chunk_network_embedded"):
+        del bpy.types.NodeTree.chunk_network_embedded

@@ -49,6 +49,48 @@ every node. If that matters, cache it at module level.
 own layer, so anything it writes lands in the wrong place. Anything that changes the stage
 goes in a callback, in `execute()`, or in `commit()`.
 
+**Callbacks hear their own chunk, never another one.** Chunks talk to each other only
+through wires: an exec input, or an `@Node.param@` expression. Both are drawn in the graph
+and saved in the file. A change in a chunk above yours reaches your chunk as a cook of your
+`execute()`, not as a notice. So:
+
+- `add_callback(..., sender=...)` takes your own chunk or one of its params. Another chunk's
+  param raises a `ValueError`.
+- `listen_globally=True` is for the stage and the host only: stage edits, prim selection,
+  the viewport camera. Listening globally to another chunk's notices (`CHUNK_CHANGED`,
+  `PARAM_CHANGED`, ...) raises a `ValueError`.
+- A param can't depend on another chunk's param through `add_dependency`. Use
+  `connect_value`, which writes the expression for you.
+
+**A stage listener stays small.** When you do listen to the stage or the host:
+
+- Read the stage and set only your own chunk's params. Never author USD in the callback.
+  `execute()` authors from the params, so the change reaches the chunks wired below.
+  Camera's Lock to Free Camera works this way: the freecam sets translate and rotate.
+- Write only when the value actually changed. Every write can cook your chunk.
+- Wait for `CHUNK_LOADED` before writing. Saved values are restored after `main()`, and a
+  write before then can overwrite them.
+- Return early on rounds that can't matter to you. A stage listener runs on every stage
+  change, for every instance of your chunk.
+
+Most of the time you don't need a listener at all. A menu of what's on the stage (the
+cameras, a prim's variant sets, the SkelRoots) is only needed when someone opens it. Give
+your module a `menu_items` hook instead, and every frontend asks it as the menu opens:
+
+```python
+def menu_items(node, param_name):
+    if param_name == "camera":
+        return [str(p.GetPath()) for p in node.get_stage().Traverse() if p.IsA(UsdGeom.Camera)]
+    return None   # this menu keeps its items
+```
+
+The current value always stays listed, so a saved pick survives until the stage offers it.
+
+A chunk that follows the host application's own scene (Blender's objects, say) defines
+`host_changed(node)`. The host calls it, debounced, after the user edits the scene; the
+module decides whether what it reads moved and calls `node.execute()` if so. Blender's
+add-on calls it today; see `chunks/modelling/blender_import.py`.
+
 [`docs/example.md`](example.md) has a longer example with notes on the param types,
 groups, flags and callback signatures you can use in `main()`.
 
@@ -75,12 +117,14 @@ defaults below.
 | `category` | `"Chunks"` | Where the chunk appears in the create menu. Use a [`StandardCategory`][usd_chunks.chunk.StandardCategory] member (`MODELLING`, `DYNAMICS`, `TRANSFORM`, `UTILS`, `RIGS`, `USER`, `EXAMPLES`, `USD`, `PROPERTIES`, `USD_RENDER`, `USD_LAYER`, `CORE`, `MATERIALS`, `MTLX`) or a plain string for your own. |
 | `description` | `"Chunk description..."` | Shown in tooltips and the create menu. `ChunkGroup`'s `doc` param uses the same text to describe what a saved network does, for a person or an AI reading the file. |
 | `load_for_plugin` | `None` | Only load the chunk in one host plugin (e.g. `"chunk_usdview"`), if it only works there. |
-| `requirements` | `[]` | pip packages the module needs, e.g. `["numpy>=2,<3"]`. If one is missing and the module fails to import, it's skipped instead of crashing. With [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables) set, you're asked whether to install the missing ones into `USD_CHUNK_DEPENDENCY_DIR`. |
+| `hosts` | `[]` | The applications the chunk runs in, each a name with an optional minimum version: `["houdini>=21.5", "blender>=5.1"]`. Empty or not set: every host. Elsewhere the chunk is skipped. Import a host-only module (`bpy`, `hou`) under `try`/`except ImportError`, so other hosts can still read `config()`. |
+| `requirements` | `[]` | pip packages the module needs, e.g. `["numpy>=2,<3"]`. If one is missing and the module fails to import, it's skipped instead of crashing. usdview and `usdchunks run` ask whether to install the missing ones into `USD_CHUNK_DEPENDENCY_DIR` (see [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables)). |
 | `required_modules` | `[]` | Other chunk *modules* that must be loaded for this one to work. |
 | `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being cleared and rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
 | `cache_cook` | `False` | Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See [Caching a slow cook](#caching-a-slow-cook). |
+| `cache_always` | `False` | `cache_cook` that can't be turned off: no **Cache Result** checkbox, `USD_CHUNKS_COOK_CACHE=0` doesn't apply, and quick cooks are stored too. For a result that is expensive or impossible to remake anywhere else, such as Blender Import's. |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
-| `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) chunk uses this. |
+| `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) and [Output](core-chunks.md#output) chunks use this. |
 | `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs. |
 | `dynamic_exec_inputs` | `False` | The chunk adds a new numbered exec input port for each wire connected to it, plus one empty port for the next one. For chunks like Merge or Switch, where each incoming branch needs its own port. Unlike `exec_inputs`, the number of ports isn't fixed. |
 | `outputs` | `[]` | Extra typed output ports beyond `outputs:chunk`, as `[(name, SdfTypeName), ...]`. |
@@ -119,6 +163,16 @@ It runs with a `Usd.EditContext` already set to the chunk's own layer (unless th
 each `execute()`, so write the whole result every time. It must give the same result every
 time it runs with the same inputs. It can run many times while the graph cooks, so keep it
 fast.
+
+You write `execute(node)`; you don't call it directly. To run a chunk again, call
+`chunk.execute()`: it re-executes the chunk and everything that depends on it, the same as
+when a param changes. Changing a param or a wire already does this, so a module only needs
+it when its result is out of date in a way no param change says -- say, it restored params
+its first cook could not see.
+
+An `execute` that sets many params -- a Wedge writing a variant's ranges -- sets them inside
+`with chunk.change_block():`. Then what they drive cooks once, after the last one, rather
+than once per value.
 
 A common pattern is a chunk that does its real work in a param callback, with `execute`
 only there to redo that work after the file is opened. This is why `execute` exists,
@@ -240,12 +294,25 @@ a thread. Call the solve through `sim_bake.in_subprocess(ctx, solve, **job)` to 
 separate Python process. `promote`, `keep` and `restore` handle the bake's layer: put it in
 front of the layers it animates, and put it back after the next cook clears it.
 
+For smaller work of your own -- a download, a wait before re-running -- get back to the main
+thread with `node.get_scene().call_later(fn, delay=0.0)`. It works in every host (usdview,
+Blender) and from any thread, and returns a function that cancels the call, which is all a
+debounce needs:
+
+```python
+def _schedule(node):
+    cancel = getattr(node, "_pending", None)
+    if cancel:
+        cancel()                      # a newer change: the last wait no longer counts
+    node._pending = node.get_scene().call_later(lambda: rerun(node), delay=0.6)
+```
+
+Don't import Qt for this. A chunk that imports PySide6 doesn't load in a host without it.
+
 ### Skipping cooks nothing reached
 
-*Experimental, off by default: set `USD_CHUNKS_SKIP_COOKS=1`.*
-
 A change to a chunk dirties everything below it, but most of those chunks read nothing that
-changed: a Scatter below a Light doesn't care that the Light turned. With skipping on, a
+changed: a Scatter below a Light doesn't care that the Light turned. So a
 chunk that only the chunks above it changed doesn't cook unless one of them changed a prim
 it reads.
 

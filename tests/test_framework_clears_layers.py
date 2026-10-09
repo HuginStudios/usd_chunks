@@ -9,7 +9,7 @@ whole result.
 That made the hand-rolled cook caches (camera, light, uv_texture, urdf_import) impossible --
 skipping a cook after a clear leaves an empty layer -- and the reason most of them existed went
 with them: recook_for_view re-executed every chunk upstream of the view on every view switch,
-wire and delete. It now only executes chunks that are stale (chunk_notice.is_cook_stale). Muting
+wire and delete. It now only executes chunks that are stale (chunk_cook.is_cook_stale). Muting
 keeps a layer's content, so a clean chunk comes back with its last result.
 
 These run through the real dispatch and the scripting Scene, the way a session does.
@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf
 
-from usd_chunks import Scene, chunk_notice, chunk_registry, chunk_stage
+from usd_chunks import Scene, chunk_cook, chunk_registry, chunk_stage
 from usd_chunks.chunk_core import ChunkConfig
 
 
@@ -103,12 +103,12 @@ def test_a_cook_leaves_the_chunk_clean_and_a_new_layer_makes_it_stale():
     with Scene() as scene:
         prim = scene.create.prim(primpath_location="/p")
         prim.execute()
-        assert not chunk_notice.is_cook_stale(prim)
+        assert not chunk_cook.is_cook_stale(prim)
 
-        chunk_notice.mark_cook_stale(prim)
-        assert chunk_notice.is_cook_stale(prim)
+        chunk_cook.mark_cook_stale(prim)
+        assert chunk_cook.is_cook_stale(prim)
         prim.execute()
-        assert not chunk_notice.is_cook_stale(prim)
+        assert not chunk_cook.is_cook_stale(prim)
 
 
 def test_recook_for_view_does_not_rerun_clean_chunks(monkeypatch):
@@ -141,12 +141,12 @@ def test_recook_for_view_cooks_a_stale_chunk_and_everything_below_it(monkeypatch
         stage = a.get_stage()
         chunk_stage.recook_for_view(stage, scene, None, view)
 
-        chunk_notice.mark_cook_stale(a)
+        chunk_cook.mark_cook_stale(a)
         counts = _count_cooks(monkeypatch, a, b)
         chunk_stage.recook_for_view(stage, scene, None, view)
 
         assert counts == {a.name: 1, b.name: 1}
-        assert not chunk_notice.is_cook_stale(a) and not chunk_notice.is_cook_stale(b)
+        assert not chunk_cook.is_cook_stale(a) and not chunk_cook.is_cook_stale(b)
 
 
 def test_recook_for_view_does_not_execute_a_chunk_with_nothing_to_cook(monkeypatch):
@@ -167,7 +167,7 @@ def test_recook_for_view_does_not_execute_a_chunk_with_nothing_to_cook(monkeypat
         chunk_stage.recook_for_view(stage, scene, None, view)
 
         assert solves == [] and counts == {a.name: 0, b.name: 0}
-        assert not chunk_notice.is_cook_stale(editor)
+        assert not chunk_cook.is_cook_stale(editor)
 
 
 def test_a_light_keeps_its_params_across_a_cook():

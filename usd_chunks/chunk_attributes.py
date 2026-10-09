@@ -234,7 +234,7 @@ class AttributesMetaclass(type):
             has_attr = hasattr(inst, name)
             old_value = None
             if has_attr:
-                old_value = getattr(inst, name)
+                old_value = inst._old_value_for(name)
 
             super(res, inst).__setattr__(name, resval)
 
@@ -370,6 +370,13 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # The change still solves and still sends its notice, so callbacks and the UI are
             # unaffected; only the dirtying of readers is skipped.
             if self.name == "value" and getattr(self.get_owner(), "presentation_only", False):
+                return True
+            # A menu's item list is what the dropdown offers, not what the chunk computes
+            # from: the cook reads the value, and a value outside the new list is set (and
+            # dirties) on its own. Menus refreshed from the stage -- Edit Target, Layer --
+            # rewrite their lists on every layer-stack edit, so dirtying for it made their
+            # cooks (which edit the layer stack) dirty each other forever.
+            if self.name in ("menu_items", "item_images"):  # an ImageMenu's pictures, likewise
                 return True
             return False
 
@@ -739,6 +746,17 @@ class AttributesBase(chunk_notice.ChunkNoticePropagator, metaclass=AttributesMet
                 self._solving_attributes = False
 
         return super().data_changed(notice)
+
+    def _old_value_for(self, name: str) -> Any:
+        """The value an attribute holds before a set, for value_changed to compare against.
+
+        Args:
+            name (str): The attribute about to be set.
+
+        Returns:
+            Any: What reading the attribute gives now.
+        """
+        return getattr(self, name)
 
     def _safe_convert(self, attr: attrs.Attribute, val: Any) -> Any:
         """Wrap self.convert_attr, deferring any conversion that raises AttributeError.

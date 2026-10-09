@@ -7,7 +7,13 @@ function to dodge the cycle.
 
 from __future__ import annotations
 
+import posixpath
+
 from pxr import Sdf
+
+#: What a cook sublayer's file name adds to the stem of the layer it belongs to:
+#: layout.usda -> layout.cook.usda.
+COOK_SUFFIX = ".cook"
 
 
 def define_ancestors(layer: Sdf.Layer, defined_elsewhere=None) -> int:
@@ -113,3 +119,76 @@ def drop_broken_property_specs(layers, logger=None) -> list[str]:
             len(removed), "; ".join(removed),
         )
     return removed
+
+
+def cook_sublayer_name(home: Sdf.Layer) -> str:
+    """The file name of home's cook sublayer: layout.usda -> layout.cook.usda.
+
+    Args:
+        home: A file-backed layer that defines chunks.
+
+    Returns:
+        The bare file name, to be found beside home.
+    """
+    stem, ext = posixpath.splitext(posixpath.basename((home.realPath or home.identifier).replace("\\", "/")))
+    return f"{stem}{COOK_SUFFIX}{ext}"
+
+
+def find_cook_sublayer(home: Sdf.Layer) -> Sdf.Layer | None:
+    """home's cook sublayer, when home lists one: the layer its chunks' cooks land in.
+
+    The link is part of what a layer publishes -- written while its owner can still edit
+    it -- so a locked file still has its procedurals cook into the right place: the cook
+    fills the cook layer in memory and never needs to write either file. Listed but not on
+    disk yet (a publish that never baked) opens nothing and is treated as not listed.
+
+    Args:
+        home: A file-backed layer that defines chunks.
+
+    Returns:
+        The cook layer, or None when home lists none or it does not open.
+    """
+    name = cook_sublayer_name(home)
+    for path in home.subLayerPaths:
+        if posixpath.basename(path.replace("\\", "/")) == name:
+            return Sdf.Layer.FindOrOpenRelativeToLayer(home, path)
+    return None
+
+
+def defined_paths(layer: Sdf.Layer) -> frozenset:
+    """Every prim path layer holds a `def` at."""
+    paths = []
+
+    def visit(spec):
+        if spec.specifier == Sdf.SpecifierDef:
+            paths.append(spec.path)
+        for child in spec.nameChildren:
+            visit(child)
+
+    for root in layer.rootPrims:
+        visit(root)
+    return frozenset(paths)
+
+
+def add_cook_sublayer(home: Sdf.Layer) -> Sdf.Layer:
+    """Give home a cook sublayer: an empty X.cook file beside it, listed as home's strongest
+    sublayer -- so home's own opinions beat its cook, and its cook beats everything weaker.
+
+    An edit to home, so for its owner to make (a publish, or authoring chunks into it) --
+    never done on open. Saving home is left to the caller.
+
+    Args:
+        home: A file-backed layer that defines chunks.
+
+    Returns:
+        The cook layer.
+    """
+    if (cook := find_cook_sublayer(home)) is not None:
+        return cook
+    name = cook_sublayer_name(home)
+    path = posixpath.join(posixpath.dirname(home.realPath.replace("\\", "/")), name)
+    cook = Sdf.Layer.FindOrOpen(path) or Sdf.Layer.CreateNew(path)
+    cook.customLayerData = {**cook.customLayerData, "usdchunks:derived": True}
+    cook.Save()
+    home.subLayerPaths.insert(0, f"./{name}")
+    return cook

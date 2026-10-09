@@ -33,3 +33,6 @@ AGENTS.md
 CONTEXT.md
 CONTEXT-MAP.md
 
+
+# Old location of the camera chunk's download cache (now per user); stale copies remain.
+chunks/modelling/cameras.json

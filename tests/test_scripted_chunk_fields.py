@@ -52,7 +52,7 @@ def _field_texts(qapp):
 def test_a_wired_prim_path_shows_its_expression(app) -> None:
     qapp, scene = app
     box = scene.create.cube(prim_path="/hej")
-    scene.view(box)   # the View the graph adds after the first chunk
+    scene.set_view(box)   # the View the graph adds after the first chunk
     lift = scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
 
     pump_until(qapp, lambda: "@Mesh.prim_path@" in _field_texts(qapp))

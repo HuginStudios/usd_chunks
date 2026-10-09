@@ -10,9 +10,12 @@ import os
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk, chunk_naming, chunk_registry, chunk_utils
-from usd_chunks import chunk_stage
+from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks import chunk_notice, chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
+
+
+_USD_EXTENSIONS = (".usd", ".usda", ".usdc")
 
 
 def _discover_export_layers(stage):
@@ -20,13 +23,18 @@ def _discover_export_layers(stage):
     excluding Session Layer -- it's handled separately and always holds full bookkeeping.
     """
     internal_ids = chunk_utils.chunk_internal_layer_ids()
-    session_layer = stage.GetSessionLayer()
-    layers = []
-    for layer in stage.GetLayerStack(includeSessionLayers=True):
-        if layer.identifier == session_layer.identifier or layer.identifier in internal_ids:
-            continue
-        layers.append((layer.GetDisplayName() or layer.identifier, layer))
-    return layers
+    session_id = stage.GetSessionLayer().identifier
+    return [(name, layer) for name, layer in chunk_utils.user_layers(stage)
+            if layer.identifier != session_id and layer.identifier not in internal_ids]
+
+
+#: Set once CHUNK_LOADED has fired -- the saved rows are in, the list may rebuild.
+_IN_SCENE = "_export_usd_in_scene"
+
+
+def _chunk_loaded(owner, notice, sender):
+    setattr(owner.get_chunk(), _IN_SCENE, True)
+    _refresh_layer_rows(owner, notice, sender)
 
 
 def _refresh_layer_rows(owner, notice, sender):
@@ -44,9 +52,18 @@ def _refresh_layer_rows(owner, notice, sender):
     listener -- without this guard, checking a box would immediately trigger a rebuild
     that resets it straight back to the default before it could ever be read.
     """
+    if chunk_notice._loading_stage is not None:
+        # The rows are being restored from the saved scene, one array at a time, while the
+        # stage is still filling in. A rebuild now pairs half-restored values with layers
+        # that are not all there yet; the first refresh after the load does it properly.
+        return
     _chunk = owner.get_chunk()
     stage = _chunk.get_stage() if _chunk else None
     if not stage:
+        return
+    if not getattr(_chunk, _IN_SCENE, False):
+        # Held off until CHUNK_LOADED: the saved rows, and the checkboxes on them, are
+        # restored after main() registers this, and a rebuild before then would race them.
         return
 
     rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
@@ -57,6 +74,7 @@ def _refresh_layer_rows(owner, notice, sender):
     name_t = rows.get_param("layer_name")
     bake_t = rows.get_param("bake")
     export_t = rows.get_param("export_enabled")
+    file_t = rows.get_param("file_name")
 
     new_names = [name for name, _layer in layers]
     # Compared against the names this handler itself last wrote, not against a fresh read
@@ -81,13 +99,21 @@ def _refresh_layer_rows(owner, notice, sender):
         # silently reset every checkbox the user had already set on the layers that are
         # still there. A layer that has gone (or one that has just appeared) simply isn't
         # in this map and falls back to the defaults below.
-        kept = {
+        #
+        # Remembered for the session, not only across this one rebuild: a layer can drop out
+        # of the stage for a moment (a recook moves layers around) and come back on the next
+        # refresh. Kept only from the rows still there, it came back with the defaults --
+        # an Export the user had unchecked was checked again, a File Name was gone.
+        kept = getattr(_chunk, "_export_row_settings", {})
+        kept.update({
             rows.get_indexed_param(name_t, i).value: (
                 rows.get_indexed_param(export_t, i).value,
                 rows.get_indexed_param(bake_t, i).value,
+                rows.get_indexed_param(file_t, i).value,
             )
             for i in range(rows.size)
-        }
+        })
+        _chunk._export_row_settings = kept
 
         # Only indices >= old_size get a genuinely new ChunkGroupBase (and therefore a
         # fresh export_enabled proxy) from ChunkListGroupBase.value_changed's row-creation
@@ -99,9 +125,10 @@ def _refresh_layer_rows(owner, notice, sender):
         bake_all = _chunk.get_param("bake_all")
         bake_default = bool(bake_all.value) if bake_all is not None else False
         for i, (name, _layer) in enumerate(layers):
-            prev_export, prev_bake = kept.get(name, (True, bake_default))
+            prev_export, prev_bake, prev_file = kept.get(name, (True, bake_default, ""))
             rows.get_indexed_param(name_t, i).value = name
             rows.get_indexed_param(bake_t, i).value = prev_bake
+            rows.get_indexed_param(file_t, i).value = prev_file
             export_row = rows.get_indexed_param(export_t, i)
             export_row.value = prev_export
             if i >= old_size:
@@ -116,18 +143,26 @@ def _refresh_layer_rows(owner, notice, sender):
         _chunk._export_refreshing = False
 
 
-def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
-    """Return the set of layer names whose row checkbox `checkbox_name` is unchecked."""
+def _row_values(_chunk, param_name: str) -> list[tuple[str, object]]:
+    """(layer name, value of `param_name`) for every layer row."""
     rows = _chunk.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
     if rows is None:
-        return set()
-    name_t = rows.get_param("layer_name")
-    box_t = rows.get_param(checkbox_name)
-    return {
-        rows.get_indexed_param(name_t, i).value
+        return []
+    name_t, value_t = rows.get_param("layer_name"), rows.get_param(param_name)
+    return [
+        (rows.get_indexed_param(name_t, i).value, rows.get_indexed_param(value_t, i).value)
         for i in range(rows.size)
-        if not rows.get_indexed_param(box_t, i).value
-    }
+    ]
+
+
+def _unchecked_layer_names(_chunk, checkbox_name: str) -> set:
+    """Return the set of layer names whose row checkbox `checkbox_name` is unchecked."""
+    return {name for name, checked in _row_values(_chunk, checkbox_name) if not checked}
+
+
+def _read_file_names(_chunk) -> dict:
+    """Layer name -> the File Name typed on its row, for the rows that have one."""
+    return {name: given for name, value in _row_values(_chunk, "file_name") if (given := (value or "").strip())}
 
 
 def _read_procedural_layer_names(_chunk) -> set:
@@ -142,10 +177,28 @@ def _read_export_disabled_layer_names(_chunk) -> set:
     return _unchecked_layer_names(_chunk, "export_enabled")
 
 
+def _collect_internal_layers(layer, internal_ids: set, own: list, real: list) -> None:
+    """Walk `layer` and the internal layers under it, strongest first.
+
+    Adds a content-only copy of each internal layer to `own` (its sublayer list cleared,
+    so composing the copies never pulls a real file in), and every real sublayer path the
+    walk meets to `real`.
+    """
+    copy = Sdf.Layer.CreateAnonymous()
+    copy.TransferContent(layer)
+    copy.subLayerPaths = []
+    own.append(copy)
+    for path in layer.subLayerPaths:
+        if path not in internal_ids:
+            real.append(path)
+        elif (sub := Sdf.Layer.Find(path)) is not None:
+            _collect_internal_layers(sub, internal_ids, own, real)
+
+
 def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     """Replace any reference to a ChunkLayerManager-internal layer in dst_layer's own
-    subLayerPaths with that layer's fully-flattened real content, inlined directly --
-    rather than dropping the reference outright.
+    subLayerPaths with that layer's own content, inlined directly -- rather than dropping
+    the reference outright.
 
     Internal layers (graph_layer / per-chunk procedural layers) are pure implementation
     detail with no meaning outside this session, so they were never meant to be their own
@@ -153,16 +206,32 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     can live nested *inside* one, so simply dropping the reference would silently discard
     real content along with it. Sibling references to other layers being exported for real (light.usda, etc.) are
     untouched here -- those get rewritten to the sibling filename separately, not inlined.
+
+    A real file an internal layer sublayers (a Sublayer chunk's path) is not content to
+    inline: it becomes a sublayer of dst_layer, where the internal layer stood. Flattening
+    it in would pull the whole file into dst_layer, and turn its relative paths absolute.
     """
-    remaining = []
+    # dst_layer's own content first (strongest), then every internal layer under it, in
+    # its sublayer order -- flattened together, once. Flattened one internal layer at a
+    # time, each copy replaced the root prims the last one wrote: with two (a chunkgroup
+    # brings its own graph layer) a prim's purpose from one was lost under the other's /ball.
+    own_content = Sdf.Layer.CreateAnonymous()
+    own_content.TransferContent(dst_layer)
+    own_content.subLayerPaths = []
+    own, remaining = [own_content], []
     for path in dst_layer.subLayerPaths:
         if path not in internal_ids:
             remaining.append(path)
-            continue
-        internal_layer = Sdf.Layer.Find(path)
-        if not internal_layer:
-            continue
-        flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(internal_layer))
+        elif (internal_layer := Sdf.Layer.Find(path)) is not None:
+            real = []
+            _collect_internal_layers(internal_layer, internal_ids, own, real)
+            remaining.extend(real)
+    if len(own) > 1:
+        scratch = Sdf.Layer.CreateAnonymous()
+        scratch.subLayerPaths = [layer.identifier for layer in own]
+        flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(scratch))
+        for name in list(dst_layer.rootPrims.keys()):
+            del dst_layer.rootPrims[name]
         for prim_spec in flat.rootPrims.values():
             Sdf.CopySpec(flat, prim_spec.path, dst_layer, prim_spec.path)
     dst_layer.subLayerPaths = remaining
@@ -175,40 +244,15 @@ def _strip_chunk_prims(flat_layer, only_paths=None) -> None:
     so it's directly inside whichever real layer was active when each chunk last
     authored -- a real layer's export (or a full UsdUtils.FlattenLayerStack(stage)) can
     carry chunk-graph prims mixed in alongside real content. This turns that into
-    "Baked": real content only, no chunk graph. Mirrors usdchunks_cli.py's --printout
-    stripping: sorted shallowest-first so removing a parent Chunk prim's spec also
-    removes its descendants, with an existence guard for children already gone by the
-    time their turn comes up, and the emptied /chunks scope goes too.
+    "Baked": real content only, no chunk graph. The work is chunk_stage.strip_chunks,
+    the same code scene.export() runs.
 
     only_paths, if given, restricts stripping to those specific prim paths -- used by
     "Based on Settings" to strip only chunks whose target layer is marked Baked,
     leaving Procedural-marked chunks' bookkeeping in place. Otherwise every Chunk-typed
     prim found in flat_layer is stripped.
     """
-    if only_paths is not None:
-        candidates = (Sdf.Path(p) for p in only_paths)
-    else:
-        tmp = Usd.Stage.Open(flat_layer)
-        candidates = (p.GetPath() for p in tmp.TraverseAll() if p.GetTypeName() == "Chunk")
-    chunk_paths = sorted(candidates, key=lambda p: p.pathElementCount)
-    for path in chunk_paths:
-        spec = flat_layer.GetPrimAtPath(path)
-        if not spec:
-            continue
-        parent = spec.nameParent
-        if parent:
-            del parent.nameChildren[spec.name]
-        else:
-            del flat_layer.pseudoRoot.nameChildren[spec.name]
-
-    # Take the scope they hung under with them, once it is empty. Nothing lives AT
-    # /chunks, so a Baked export that stripped every chunk still ended with an empty
-    # `def Scope "chunks" {}` -- the one piece of the graph left in a file that is
-    # supposed to carry none. It stays if anything is still under it, which is what
-    # "Based on Settings" wants when it strips only the Baked-marked chunks.
-    root = flat_layer.GetPrimAtPath(Sdf.Path(chunk_naming.CHUNKS_ROOT))
-    if root and root.typeName == chunk_naming.CHUNKS_ROOT_TYPENAME and not root.nameChildren:
-        del flat_layer.pseudoRoot.nameChildren[root.name]
+    chunk_stage.strip_chunks(flat_layer, only_paths)
 
 
 def _baked_chunk_prim_paths(_chunk, stage) -> list:
@@ -274,7 +318,7 @@ def _export_flattened(_chunk, stage) -> None:
         _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
         _strip_chunk_prims(flat)
-    flat.Export(output_path)
+    chunk_utils.export_layer(flat).Export(output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
 
 
@@ -338,28 +382,36 @@ def commit(node):
     procedural_names = _read_procedural_layer_names(_chunk)
     discovered = _discover_export_layers(stage)
     real_layers = [(n, lyr) for n, lyr in discovered if n not in disabled_names]
-    skipped_ids = {lyr.identifier for n, lyr in discovered if n in disabled_names}
+    # A skipped layer that lives in a file (a department's published layer) is still
+    # there to point at, so only the in-session ones have their references dropped.
+    skipped_ids = {lyr.identifier for n, lyr in discovered if n in disabled_names and lyr.anonymous}
     baked_names = {n for n, _l in discovered if n not in procedural_names}
 
     layers = []
-    if _chunk.get_param("keep_session_layer", chunk.is_param_t(bool)).value:
+    # Only where the host counts it as the user's: Houdini's session layer is its own.
+    if (_chunk.get_param("keep_session_layer", chunk.is_param_t(bool)).value
+            and any(lyr.identifier == session_layer.identifier for _n, lyr in chunk_utils.user_layers(stage))):
         layers.append(("SessionLayer", session_layer))
     layers.extend(real_layers)
 
     # Assign every exported layer its output filename up front, so cross-references
     # between them can be rewritten regardless of which order they're processed in.
+    # A row's File Name, when set, replaces the layer's name; a USD extension in it wins
+    # over Format, for that one file.
+    given_names = _read_file_names(_chunk)
     filenames = {}
     used_names = set()
     for name, layer in layers:
-        base, _ext = os.path.splitext(name or "layer")
+        base, given_ext = os.path.splitext(given_names.get(name) or name or "layer")
         base = base or "layer"
+        file_ext = given_ext if name in given_names and given_ext in _USD_EXTENSIONS else ext
         candidate = base
         i = 1
         while candidate in used_names:
             candidate = f"{base}_{i}"
             i += 1
         used_names.add(candidate)
-        filenames[layer.identifier] = candidate + ext
+        filenames[layer.identifier] = candidate + file_ext
 
     def _relocate(path):
         if path in filenames:
@@ -394,7 +446,7 @@ def commit(node):
                 # here rather than inlining, via _relocate's internal_ids handling below.
                 UsdUtils.ModifyAssetPaths(export_layer, _relocate)
 
-        export_layer.Export(out_path)
+        chunk_utils.export_layer(export_layer).Export(out_path)
         print(f"[ExportUSD] Layer '{name}' exported to {out_path}")
 
 
@@ -464,6 +516,10 @@ def _export_enabled_changed(owner, notice, sender):
     row's" Bake box actually grayed out every row's, and which way the column ended up
     came down to whichever row's callback happened to fire last.
     """
+    if chunk_notice._loading_stage is not None:
+        # Restoring a saved Export checkbox is not the user ticking it: resetting Bake from
+        # Bake all here threw away the Bake the scene was saved with.
+        return
     row = sender.get_owner()
     if row is None:
         return
@@ -609,7 +665,8 @@ def main():
         default_value=True,
         tooltip="Checked (default): this layer is written as its own file. Unchecked: "
         "skip it entirely — any other exported layer that sublayers it has that "
-        "reference dropped, not inlined, so its content isn't written anywhere. Bake "
+        "reference dropped, not inlined, so its content isn't written anywhere. A layer "
+        "loaded from a file is the exception: it stays referenced by its own path. Bake "
         "chunk outputs below is cleared while this is unchecked, since it has "
         "nothing to apply to, and comes back from Bake all when this is re-checked.",
     )
@@ -619,12 +676,20 @@ def main():
     export_layers.add_param(export_enabled)
 
     export_layers.add_param(chunk.Checkbox("bake", "Bake chunk outputs", default_value=False))
+    export_layers.add_param(
+        chunk.LineEdit(
+            "file_name",
+            "File Name",
+            tooltip="The file this layer is written to, in Output Directory. Blank: the "
+            "layer's own name. Without an extension, Format picks it.",
+        )
+    )
     chunk_api.add_param(export_layers)
+    chunk_api.add_callback(_chunk_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
     chunk_api.add_callback(
         _refresh_layer_rows,
         notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
         listen_globally=True,
-        send_on_create=True,
     )
 
     export_all_btn = chunk.Button(

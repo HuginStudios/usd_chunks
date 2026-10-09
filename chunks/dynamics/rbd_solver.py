@@ -16,7 +16,6 @@ import sys
 from collections.abc import Generator
 from pathlib import Path
 
-from PySide6 import QtCore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache, sim_bake
@@ -2919,7 +2918,7 @@ def _run(owner, notice, sender) -> None:
 
     frame_count = _chunk.get_param("frame_count", is_i).value
     fps = _chunk.get_param("fps", is_f).value
-    gravity = _chunk.get_param("gravity", is_f).value
+    gravity = sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage)
     substeps = max(1, _chunk.get_param("substeps", is_i).value)
     start_frame = _chunk.get_param("start_frame", is_i).value
     friction = _chunk.get_param("friction", is_f).value
@@ -3134,6 +3133,11 @@ def _run(owner, notice, sender) -> None:
             if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
                 lreg.clear_layer(layer.identifier)
 
+    # Read now, not in finish: finish moves the bake's layer to the top of the stack, which
+    # recomposes the stage and expires `prim`. Asking it for its name then raised -- every
+    # time a script reopened a saved RBD scene, since the bake now runs during the load.
+    prim_name = prim.GetName()
+
     def finish(_result):
         if _chunk.get_edit_context() is None:
             return  # the chunk went away while it was simulating
@@ -3147,8 +3151,8 @@ def _run(owner, notice, sender) -> None:
                 scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
         except Exception:
             pass
-        _report(_chunk, f"settled {prim.GetName()}" if settle_only else
-                f"baked {frame_count} frames on {prim.GetName()}"
+        _report(_chunk, f"settled {prim_name}" if settle_only else
+                f"baked {frame_count} frames on {prim_name}"
                 + (f"\n{collider_warning}" if collider_warning else ""))
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
@@ -3260,7 +3264,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
 
     job = dict(
         up_idx=up_idx,
-        gravity=_chunk.get_param("gravity", is_f).value,
+        gravity=sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage),
         fps=fps,
         frames=frame_count,
         substeps=max(1, _chunk.get_param("substeps", is_i).value),
@@ -3283,6 +3287,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
             cooldown=max(0.0, _chunk.get_param("break_delay", is_f).value),
             kick=_chunk.get_param("break_kick", is_f).value,
         ),
+        rest_until_hit=_chunk.get_param("rest_until_hit", chunk.is_param_t(bool)).value,
         seed=_chunk.get_param("turb_seed", is_i).value,
     )
     if any(forces.get("wind", ())) or forces.get("turbulence"):
@@ -3390,76 +3395,37 @@ def _on_auto_sim_toggled(owner, notice, sender) -> None:
         _schedule_auto_run(_chunk)
 
 
-def _on_any_chunk_changed(owner, notice, sender) -> None:
-    """Global CHUNK_CHANGED listener -- catches an upstream chunk (e.g. a Transform feeding
-    the collider or target prim) changing, even though it's wired via a live-drawn graph
-    connection rather than DagNode.add_dependency(). Real graph wiring (_author_connection in
-    frontends/qt/nodegraph.py) only authors the USD inputs:chunk/inputs:* connection -- it never
-    calls add_dependency, so ChunkNoticeAlias.INPUT_CHANGED (which is purely a DagNode concept)
-    never fires between two chunks connected that way. view_cook_list walks the same
-    real USD connections recook_for_view and get_upstream_stage already trust, so membership in
-    it is the correct, already-battle-tested definition of "is this chunk really upstream of me".
+def _control_changed(owner, notice, sender) -> None:
+    """A control changed (Run, Auto Simulate, the readout, ...): the cook it brings is ours.
+
+    Every param change cooks its chunk, and execute() takes any cook it did not ask for as an
+    input having changed. A control is not an input, so it says so first: the callbacks run
+    during the solve, before the cook. Not for a change that brings no cook -- the readout
+    is a Label, which nothing computes from -- or the mark would outlive it and swallow the
+    next real change. Asked here, inside the notice, while the solve still holds the verdict.
     """
-    _chunk = owner.get_chunk()
-    if sender is None or sender is _chunk:
+    if owner.get_dag_node().only_presentation_changed():
         return
-    # The cheap answers first: this hears every change to every chunk in the scene, and the
-    # upstream walk below is the expensive part. A solver already stale with Auto Simulate
-    # off has nothing left to do whatever changed -- which is its state all through a load.
-    auto_sim_param = _chunk.get_param("auto_sim", chunk.is_param_t(bool))
-    if auto_sim_param is None:
-        return  # still being built, or already being torn down
-    auto_sim = auto_sim_param.value
-    if not auto_sim and _chunk.has_state(chunk.ChunkFlags.State.STALE):
-        return
-    if _only_presentation_changed(sender):
-        return
-    scene = chunk_registry.ChunkRegistry().scene
-    stage = _chunk.get_stage()
-    if not scene or not stage:
-        return
-    if sender not in chunk_stage.view_cook_list(_chunk, stage, scene):
-        return
-    _chunk.set_state(chunk.ChunkFlags.State.STALE)
-    if auto_sim:
-        _schedule_auto_run(_chunk)
+    owner.get_chunk()._rbd_controls_cook = True
 
 
-def _only_presentation_changed(sender) -> bool:
-    """Whether an upstream chunk changed in a way nothing computes from.
+def _note_input_change(node) -> None:
+    """A cook no control asked for: an input changed, so the bake is out of date.
 
-    The listener above is deliberately broad -- it exists because graph wiring never calls
-    add_dependency, so INPUT_CHANGED never fires between two chunks wired that way. The cost of
-    that breadth is that it also hears the changes `propagate_dirty` already decided were
-    presentation only, and re-bakes a simulation for each one.
-
-    With Auto Simulate on and a Scatter Brush upstream, every brush stroke propagates as a
-    presentation change, not a data change -- so nothing dirties the chain, and without this
-    check the solver would re-bake off this notice on every stroke.
-
-    Asked of the framework rather than answered here, so the DISABLED carve-out keeps working:
-    disabling a chunk is a state change, but it decides whether that chunk cooks, and is
-    therefore a real simulation input. DagNode.only_presentation_changed reads back the
-    verdict chunk_scheduler recorded when the change was propagated, rather than re-asking
-    each sender's is_presentation_change(), which would re-read an old_value/value pair that
-    has since moved on.
-
-    Only meaningful *inside* the notice. `_changes` is cleared in a `finally` once the whole
-    solve finishes (chunk_scheduler.solve), and the notices fire during it -- so this reads a
-    populated record here and an empty one anywhere else, so a test must ask from inside
-    the notice too.
+    An input is one of the solver's own params (which _mark_stale marked already) or a chunk
+    wired into it: a chunk upstream reaches the solver only through its wires, and only
+    when what it changed is something the solver reads (skip_cook) -- not for a change
+    nothing computes from, such as a Scatter Brush stroke, which cooks nothing. So this
+    is where an upstream change marks the solver, and Auto Simulate re-bakes from here,
+    once the chunks above have cooked.
     """
-    try:
-        # Nothing recorded reads as False, i.e. assume it mattered: a missed re-run is a
-        # wrong simulation, an extra one is only slow.
-        return sender.get_dag_node().only_presentation_changed()
-    except Exception:  # noqa: BLE001 - never let this stop a legitimate re-run
-        return False
-
-
-def _is_headless() -> bool:
-    """No UI, so no event loop and nobody to press a button."""
-    return chunk_registry.ChunkRegistry().plugin in (None, "", "cli")
+    if getattr(node, "_rbd_controls_cook", False):
+        node._rbd_controls_cook = False
+        return
+    node.set_state(chunk.ChunkFlags.State.STALE)
+    auto_sim = node.get_param("auto_sim", chunk.is_param_t(bool))
+    if auto_sim is not None and auto_sim.value:
+        _schedule_auto_run(node)
 
 
 def execute(node) -> None:
@@ -3473,13 +3439,14 @@ def execute(node) -> None:
     without baking renders a motionless scene that looks entirely plausible -- so it bakes,
     or loads the cache.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         _run(node, None, None)
         return
     if getattr(node, "_rbd_cache_checked", False):
         # The framework cleared this layer for the cook; put the last bake back. Baking
         # again would cost a full simulation on every tweak upstream.
         sim_bake.restore(node, node.get_edit_context())
+        _note_input_change(node)
         return
     node._rbd_cache_checked = True
     node._rbd_cache_only = True
@@ -3494,23 +3461,26 @@ def _schedule_auto_run(root_chunk) -> None:
     settle for _AUTO_RUN_DELAY_MS before re-running, rather than baking on every keystroke/drag
     tick while a param is being edited.
 
-    Headless there is nothing to debounce and no Qt event loop for a QTimer to fire in; the
-    bake happens in execute() instead, when the cook reaches this chunk.
+    Headless there is nothing to debounce and no event loop to wait in; the bake happens
+    in execute() instead, when the cook reaches this chunk. Interactively the host waits
+    (SceneSender.call_later), so this runs in usdview and Blender alike: a new change
+    cancels the wait the last one started.
     """
-    if _is_headless():
+    if sim_bake.is_unattended():
         # Headless, execute() bakes instead: the cook calls it in dependency order, once
         # every upstream chunk has cooked. Running here too baked against a half-cooked
         # network -- a solver fired by the first upstream chunk's change, before the
         # colliders it needed existed -- and then again, a full simulation per upstream.
         return
 
-    timer = getattr(root_chunk, "_auto_run_timer", None)
-    if timer is None:
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(lambda: _run(root_chunk, None, None))
-        root_chunk._auto_run_timer = timer
-    timer.start(_AUTO_RUN_DELAY_MS)
+    scene = root_chunk.get_scene()
+    if scene is None:
+        return
+    cancel = getattr(root_chunk, "_auto_run_cancel", None)
+    if cancel is not None:
+        cancel()
+    root_chunk._auto_run_cancel = scene.call_later(
+        lambda: _run(root_chunk, None, None), _AUTO_RUN_DELAY_MS / 1000.0)
 
 
 def main() -> chunk.Chunk:
@@ -3551,7 +3521,7 @@ def main() -> chunk.Chunk:
     # button. Neither is true in `usdchunks run` or a sweep: nobody is watching a border and
     # nobody can press anything, so cooking the network produced a chunk that quietly baked
     # nothing and a scene that rendered a motionless, entirely plausible-looking result.
-    interactive = not _is_headless()
+    interactive = not sim_bake.is_unattended()
     auto_sim = chunk.Checkbox(
         "auto_sim",
         "Auto Simulate",
@@ -3875,6 +3845,12 @@ def main() -> chunk.Chunk:
                                     "cannot shatter a body to gravel within a single step."))
     brk_grp.add_param(chunk.Spinbox("break_kick", "Break Kick", default_value=10.0,
                                     tooltip="Speed the pieces spring apart with, scene units/s."))
+    brk_grp.add_param(chunk.Checkbox(
+        "rest_until_hit", "Rest Until Hit", default_value=False,
+        tooltip="Bodies that start resting on something stay still until something hits them, and "
+        "bodies that start inside each other do not push apart. For a model fractured part by part, "
+        "such as a house, which would otherwise explode on the first frame.",
+    ))
     chunk_api.add_param(brk_grp)
 
 
@@ -3913,23 +3889,21 @@ def main() -> chunk.Chunk:
         chunk.Spinbox(
             "gravity",
             "Gravity",
-            default_value=-981.0,
-            tooltip="Gravity along the scene's up axis, in scene units/s². Default -981 assumes centimetres.",
+            default_value=0.0,
+            tooltip="Along the up axis, in scene units/s². 0 = Earth gravity in this stage's "
+            "units (-981 in a centimetre scene, -9.81 in a metre one).",
         )
     )
     chunk_api.add_param(sim_grp)
 
     # Any real simulation input marks the chunk stale (orange node border) until the next
-    # successful Run; an upstream chunk changing does the same via the global listener above.
+    # successful Run; an upstream chunk changing does the same through the cook it brings
+    # (_note_input_change). A control says its cook is not an input changing.
     for p in chunk_api.get_params():
         if getattr(p, "name", None) not in _STALE_IGNORE_PARAMS:
             p.add_callback(_mark_stale, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED, send_on_create=False)
-    chunk_api.add_callback(
-        _on_any_chunk_changed,
-        notice_alias=chunk.ChunkNoticeAlias.CHUNK_CHANGED,
-        listen_globally=True,
-        send_on_create=False,
-    )
+        else:
+            p.add_callback(_control_changed, notice_alias=chunk.ChunkNoticeAlias.PARAM_CHANGED, send_on_create=False)
     chunk_api.set_state(chunk.ChunkFlags.State.STALE)
 
     return chunk_api

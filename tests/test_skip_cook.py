@@ -1,4 +1,4 @@
-"""Skipping cooks no upstream change can reach (skip_cook, USD_CHUNKS_SKIP_COOKS=1).
+"""Skipping cooks no upstream change can reach (skip_cook).
 
 A chunk cooks on a stage populated only at its inputs and its last outputs, so what it
 read is known without anyone declaring it; what each cook changed is handed to the chunks
@@ -13,11 +13,6 @@ from chunk_stubs import register_stub_module
 from pxr import Sdf
 
 from usd_chunks import Scene, chunk, chunk_registry, skip_cook
-
-
-@pytest.fixture(autouse=True)
-def _skipping_on(monkeypatch):
-    monkeypatch.setenv(skip_cook.ENV, "1")
 
 
 def _add(scene, module):
@@ -127,7 +122,7 @@ def test_a_skip_is_decided_on_everything_above_not_just_the_chunk_before():
         assert _size(scene, "/Reader") == 8.0
 
 
-def test_a_chunk_reading_outside_its_inputs_cooks_on_the_whole_stage():
+def test_a_chunk_reading_outside_its_inputs_widens_its_mask_to_what_it_read():
     cooks: list = []
     with Scene() as scene:
         gen = _add(scene, _generator(cooks, "Gen"))
@@ -137,11 +132,18 @@ def test_a_chunk_reading_outside_its_inputs_cooks_on_the_whole_stage():
         gen.get_param("size").value = 5.0
 
         assert _size(scene, "/Reader") == 10.0
-        assert reader._skip_mask is None
+        assert Sdf.Path("/Gen") in skip_cook.record(reader).mask
         cooks.clear()
         gen.get_param("size").value = 6.0
         assert cooks == ["Gen", "Reader"]
         assert _size(scene, "/Reader") == 12.0
+
+
+def test_a_variant_selection_names_the_prim_under_it_not_the_whole_stage():
+    # As a chunk writes it -- a slash after the brace -- which Sdf.Path does not parse.
+    assert list(skip_cook._paths_in("/Car{color=Red}/_materials/Paint")) == [
+        Sdf.Path("/Car/_materials/Paint")]
+    assert list(skip_cook._paths_in("/Car{color=Red}Body")) == [Sdf.Path("/Car/Body")]
 
 
 def test_a_cook_that_writes_somewhere_new_is_run_again_where_it_can():
@@ -155,7 +157,7 @@ def test_a_cook_that_writes_somewhere_new_is_run_again_where_it_can():
         stage = scene.get_stage()
         assert stage.GetPrimAtPath("/Moved").GetAttribute("size").Get() == 0.5
         assert not stage.GetPrimAtPath("/Gen")
-        assert Sdf.Path("/Moved") in gen._skip_mask
+        assert Sdf.Path("/Moved") in skip_cook.record(gen).mask
 
 
 def test_disabling_a_chunk_above_reaches_what_reads_it():
@@ -237,7 +239,7 @@ def test_a_cook_reading_what_a_chunk_below_it_edits_stays_upstream_only():
 
         gen.get_param("size").value = 3.0
 
-        assert not getattr(reader, "_skip_sees_all", False)
+        assert not skip_cook.record(reader).sees_all
 
 
 def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
@@ -252,8 +254,8 @@ def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
         reader.get_param("target").value = "/Sibling"
 
         assert _size(scene, "/Reader") == 2.0
-        assert reader._skip_sees_all
-        assert reader._skip_mask is not None
+        assert skip_cook.record(reader).sees_all
+        assert skip_cook.record(reader).mask is not None
 
 
 def test_changed_paths_ignore_a_parent_only_gaining_a_child():

@@ -47,9 +47,10 @@ import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_registry, cook_cache
+from usd_chunks.chunk_process import python_executable
 
 try:
     from PySide6 import QtCore
@@ -113,8 +114,21 @@ def in_background() -> bool:
     return chunk_registry.ChunkRegistry().plugin not in _INLINE_HOSTS
 
 
+#: Hosts with nobody at them: no button to press, no timer to wait for.
+_UNATTENDED_HOSTS = (None, "", "cli", "script")
+
 #: Hosts with no running event loop: bakes run inline there.
-_INLINE_HOSTS = (None, "", "cli", "pytest", "script")
+_INLINE_HOSTS = (*_UNATTENDED_HOSTS, "pytest")
+
+
+def is_unattended() -> bool:
+    """Whether nobody can press Run: `usdchunks run`, a sweep, or a script (Scene.new()).
+
+    A solver bakes on cook there, since a cook that only waits for a button bakes nothing
+    and leaves a motionless scene that looks entirely plausible. The test host is not in
+    the list: the tests drive the interactive path.
+    """
+    return chunk_registry.ChunkRegistry().plugin in _UNATTENDED_HOSTS
 
 
 def is_running(node) -> bool:
@@ -354,7 +368,7 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(
-        [sys.executable, "-m", "usd_chunks.sim_bake", source, function.__name__, str(job), str(out)],
+        [python_executable(), "-m", "usd_chunks.sim_bake", source, function.__name__, str(job), str(out)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, creationflags=flags,
         cwd=str(folder),
     )
@@ -446,6 +460,15 @@ def _child(source: str, function: str, job: str, out: str) -> None:
     result = getattr(module, function)(progress=progress, **kwargs)
     with open(out, "wb") as f:
         pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def gravity(value: float, stage: Usd.Stage) -> float:
+    """A solver's Gravity param in scene units/s²; 0 means Earth gravity in stage's units.
+
+    A fixed default is right in one unit only: -981 in a metre scene made bodies fall a
+    hundred times too fast.
+    """
+    return value or -9.81 / UsdGeom.GetStageMetersPerUnit(stage)
 
 
 # ------------------------------------------------------------------------------------------

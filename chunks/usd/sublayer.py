@@ -1,7 +1,9 @@
 from __future__ import annotations
 import logging
 
-from usd_chunks import chunk, chunk_stage
+from pxr import Sdf
+
+from usd_chunks import chunk, chunk_stage, chunk_utils
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,12 @@ def _apply_sublayers(owner: chunk.Chunk) -> None:
         if edit_layer := owner.get_edit_context():
             edit_layer.subLayerPaths = paths
             logger.debug("Updated stage with sublayer. %s", paths)
+
+    # Load Payloads: the files' own root prims, so unchecked unloads every payload in what
+    # they bring in -- for a shot, the fast stage of proxies only.
+    if (load := owner.get_param("load_payloads")) is not None and (scene_stage := owner.get_scene_stage()):
+        roots = [f"/{root.name}" for p in paths if (layer := Sdf.Layer.FindOrOpen(p)) for root in layer.rootPrims]
+        chunk_utils.set_payloads_loaded(owner, scene_stage, roots, load.value)
 
 
 def execute(node: chunk.Chunk) -> None:
@@ -80,6 +88,12 @@ def main():
 
     sublayerChunk.add_param(listGroup)
     sublayerChunk.add_param(button)
+    sublayerChunk.add_param(chunk.Checkbox(
+        "load_payloads", "Load Payloads", default_value=True,
+        tooltip="Unchecked: every payload in what these files bring in is unloaded, so only "
+        "what sits outside payloads (proxies) is loaded -- a fast stage. Checked loads back "
+        "what this unloaded; it never loads a payload unloaded by hand.",
+    ))
 
     # Because the names of the ListGroup is modified when an item in the list is removed, listening to ATTRIBUTE_CHANGED
     # will result in double execution of the callback when removing an index from the ListGroup.

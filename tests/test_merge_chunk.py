@@ -17,7 +17,6 @@ from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_stage import (
     _CHUNKS_ROOT,
-    _author_prim,
     exec_input_index,
     exec_input_name,
     view_cook_list,
@@ -27,6 +26,7 @@ from usd_chunks.chunk_stage import (
     iter_exec_inputs,
     normalize_merge_slots,
 )
+from chunk_prim_authoring import _author_prim
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 

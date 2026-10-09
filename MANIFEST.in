@@ -2,11 +2,14 @@ include README.md
 include NOTICE
 recursive-include usd_chunks/resources *.png
 recursive-include usd_chunks/hosts *.json *.shelf
+include usd_chunks/frontends/blender/addon/blender_manifest.toml
 
+include setup.py
 exclude build_docs.bat
 recursive-exclude tests *
 recursive-exclude docs *
-recursive-exclude chunks *
+# chunks/ goes in the sdist so the wheel built from it can ship it (see setup.py).
+recursive-include chunks *
 recursive-exclude chunkgroups *
 
 # The web client is shelved and not part of a release.

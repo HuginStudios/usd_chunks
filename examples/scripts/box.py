@@ -2,6 +2,7 @@
 
     USD_CHUNK_DIRS=chunks python examples/scripts/box.py
 """
+from __future__ import annotations
 from usd_chunks import Scene
 
 with Scene.new() as scene:

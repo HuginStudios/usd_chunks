@@ -140,6 +140,73 @@ def test_an_open_mesh_falls_back_to_its_hull_and_says_so():
     assert "convex hull" in problem
 
 
+def _soup(stage, path, boxes, flats=()):
+    """One mesh prim holding several boxes (centre, size), plus flat quads, as triangles."""
+    verts, tris = [], []
+    for centre, size in boxes:
+        v, t = rig.box(centre, size)
+        tris.extend((np.asarray(t) + len(verts)).tolist())
+        verts.extend(np.asarray(v).tolist())
+    for quad in flats:
+        base = len(verts)
+        verts.extend(quad)
+        tris.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]])
+    m = UsdGeom.Mesh.Define(stage, path)
+    m.CreatePointsAttr([Gf.Vec3f(*map(float, p)) for p in verts])
+    m.CreateFaceVertexCountsAttr([3] * len(tris))
+    m.CreateFaceVertexIndicesAttr([int(i) for t in tris for i in t])
+    return m.GetPrim()
+
+
+@needs_manifold
+def test_loose_parts_split_a_mesh_of_separate_boards():
+    """A fence is one mesh of pickets: each is its own part, and each part is closed."""
+    stage = Usd.Stage.CreateInMemory()
+    prim = _soup(stage, "/Fence", [((x * 2.0, 0.0, 0.0), (0.2, 0.2, 1.0)) for x in range(5)])
+    parts, flat = fr._source_parts(prim)
+    assert len(parts) == 5 and flat == 0
+    assert all(solid is not None and not problem for solid, _uv, problem in parts)
+    assert fr._source_solid(prim)[2] == ""  # as one source it is closed too -- but one body
+
+
+@needs_manifold
+def test_loose_parts_keep_boxes_built_face_to_face_apart():
+    """A wall built strip by strip around a window: a tall strip, a short one beside it under
+    the window, another tall one. Joined by shared points it is one part that is not closed;
+    split across two-sided edges, the three strips."""
+    stage = Usd.Stage.CreateInMemory()
+    prim = _soup(stage, "/Wall", [((0.5, 0.0, 1.0), (1.0, 0.2, 2.0)), ((1.5, 0.0, 0.5), (1.0, 0.2, 1.0)),
+                                  ((2.5, 0.0, 1.0), (1.0, 0.2, 2.0))])
+    parts, flat = fr._source_parts(prim)
+    assert len(parts) == 3 and flat == 0
+    assert all(not problem for _solid, _uv, problem in parts)
+    vols = sorted(fr._solid_centre(solid)[0] for solid, _uv, _p in parts)
+    assert np.allclose(vols, [0.2, 0.4, 0.4], rtol=1e-3)
+
+
+@needs_manifold
+def test_a_flat_part_is_left_out_and_counted():
+    stage = Usd.Stage.CreateInMemory()
+    quad = [(5.0, 0.0, 0.0), (6.0, 0.0, 0.0), (6.0, 0.0, 1.0), (5.0, 0.0, 1.0)]
+    prim = _soup(stage, "/Gable", [((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))], flats=[quad])
+    parts, flat = fr._source_parts(prim)
+    assert len(parts) == 1 and flat == 1
+
+
+@needs_manifold
+def test_min_piece_size_stops_cutting_small_pieces():
+    stage = Usd.Stage.CreateInMemory()
+    solid = fr._source_solid(_soup(stage, "/Board", [((0.0, 0.0, 0.0), (4.0, 0.2, 0.2))]))[0].as_original()
+    rng = np.random.default_rng(3)
+    full = fr.fracture(0, solid, rng, 3, 0.2)
+    capped = fr.fracture(0, solid, np.random.default_rng(3), 3, 0.2, min_size=1.5)
+    assert len(full) == 15
+    assert len(capped) < len(full)
+    leaves = [p for p in capped if not p.children]
+    assert all(fr._longest_side(p.solid) < 1.5 or p.generation == 3 for p in leaves)
+    assert all(fr._longest_side(capped[p.parent].solid) >= 1.5 for p in capped if p.parent >= 0)
+
+
 # ---------------------------------------------------------------------------
 # The world, read the UsdPhysics way
 # ---------------------------------------------------------------------------
@@ -237,6 +304,99 @@ def test_an_animated_collider_drags_rather_than_teleports():
     assert len(world["drivers"]) == 1 and not world["spins"]
     res = brk.simulate(job)
     assert res["positions"][-1, 0, 0] > 40.0
+
+
+@needs_mujoco
+@needs_manifold
+def test_a_body_dropped_from_rest_falls_in_a_metre_scene():
+    """Sleep is judged on speed in scene units: a flat 0.5/s put a rock dropped from rest in a
+    metre scene to sleep in mid-air, where it stayed."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (600.0, 4.0, 600.0))
+    job, _world = _one_rock_job(stage, ["/World"], start=(0.0, 30.0, 0.0))
+    job["gravity"] = -9.81
+    res = brk.simulate(job)
+    assert res["positions"][0, 0, 1] - res["positions"][-1, 0, 1] > 10.0  # ~19.6 in 2 s
+
+
+def _overlap_job(rest):
+    """Two rocks resting on a floor, one inside the other; a third falls onto them."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    _box(stage, "/World/Floor", (0.0, -2.0, 0.0), (600.0, 4.0, 600.0))
+    fr.author(stage, Sdf.Path("/Fractured"), _rock_trees(count=3, generations=1, at=(0.0, 0.0, 0.0)), uv_scale=0.05)
+    frac = brk.read_fracture(stage, stage.GetPrimAtPath("/Fractured"))
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 48, 1, 24.0, 0.0, 3.0)
+    roots = sorted(k for k, p in frac["pieces"].items() if p["generation"] == 0)
+    base = [-float(np.min(frac["pieces"][k]["points"][:, 1])) - 0.05 for k in roots]  # sunk a hair: touching
+    at = [(0.0, base[0], 0.0), (6.0, base[1], 0.0), (3.0, 200.0, 0.0)]
+    starts = [dict(key=k, pos=np.asarray(p), quat=np.array([1.0, 0, 0, 0])) for k, p in zip(roots, at)]
+    job = dict(
+        up_idx=1, gravity=-981.0, fps=24.0, frames=48, substeps=8, friction=0.8, restitution=0.0,
+        density=1.0, statics=world["statics"], belts=world["belts"], drivers=world["drivers"],
+        pieces=frac["pieces"], starts=starts, breakage=dict(strength=0.0), seed=0, rest_until_hit=rest,
+    )
+    return brk.simulate(job)
+
+
+@needs_mujoco
+@needs_manifold
+def test_rest_until_hit_holds_overlapping_bodies_until_something_lands():
+    """A model fractured part by part starts with its parts' hulls inside each other. Left
+    alone they are pushed apart on the first frames; with Rest Until Hit they wait, still,
+    for the falling rock -- and then move."""
+    pushed = _overlap_job(rest=False)
+    held = _overlap_job(rest=True)
+    before = slice(0, 10)  # the third rock is still falling: it lands at ~frame 15
+
+    def moved(res, frames):
+        return np.linalg.norm(res["positions"][frames, :2] - res["positions"][0, :2], axis=2).max()
+
+    assert moved(pushed, before) > 1.0
+    assert moved(held, before) < 1e-3
+    assert held["stats"]["resting"] == 2 and held["stats"]["overlap_groups"] == 1
+    assert moved(held, slice(0, 48)) > 1.0  # woken by the landing
+    assert held["positions"][-1, 2, 1] < 100.0  # and the falling one did fall
+
+
+def _box_points(size):
+    return np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=np.float64) * np.asarray(size) * 0.5
+
+
+@needs_mujoco
+def test_pieces_of_an_overlapping_body_stay_out_of_its_group():
+    """A block with a small part inside it, as a wall's hull holds its trim. The block
+    breaks; its halves fill its room, so they keep its overlap bit and nothing is pushed
+    out. (The meteor-strike scene also caught halves let go on the frame they were born,
+    judged by the parking lot they came from; this setup is too gentle to show that.)"""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    _box(stage, "/World/Floor", (0.0, -1.0, 0.0), (60.0, 2.0, 60.0))
+    world = brk.gather_world(stage, [stage.GetPrimAtPath("/World")], 48, 1, 24.0, 0.0, 0.05)
+    half = _box_points((2.0, 4.0, 4.0))
+    pieces = {
+        (0, 0): dict(points=_box_points((4.0, 4.0, 4.0)), children=[1, 2], offset=np.zeros(3), volume=64.0, generation=0),
+        (0, 1): dict(points=half, children=[], offset=np.array([-1.0, 0, 0]), volume=32.0, generation=1),
+        (0, 2): dict(points=half, children=[], offset=np.array([1.0, 0, 0]), volume=32.0, generation=1),
+        (1, 0): dict(points=_box_points((1.0, 1.0, 1.0)), children=[], offset=np.zeros(3), volume=1.0, generation=0),
+        (2, 0): dict(points=_box_points((1.5, 1.5, 1.5)), children=[], offset=np.zeros(3), volume=3.4, generation=0),
+    }
+    q = np.array([1.0, 0, 0, 0])
+    starts = [dict(key=(0, 0), pos=np.array([0.0, 1.99, 0.0]), quat=q),
+              dict(key=(1, 0), pos=np.array([0.5, 2.0, 0.0]), quat=q),
+              dict(key=(2, 0), pos=np.array([0.0, 9.0, 0.0]), quat=q)]
+    job = dict(
+        up_idx=1, gravity=-9.81, fps=24.0, frames=48, substeps=8, friction=0.8, restitution=0.0,
+        density=1.0, statics=world["statics"], belts=world["belts"], drivers=world["drivers"],
+        pieces=pieces, starts=starts, breakage=dict(strength=0.5, kick=0.0, cooldown=0.0), seed=0,
+        rest_until_hit=True,
+    )
+    res = brk.simulate(job)
+    assert any(res["slot_key"][s] == (0, 0) for _t, s in res["breaks"])
+    v = np.linalg.norm(np.diff(res["positions"], axis=0), axis=2) * 24.0
+    v[~(res["alive"][1:] & res["alive"][:-1])] = 0.0
+    assert v.max() < 20.0  # the falling block lands at ~10 m/s
 
 
 @needs_mujoco
@@ -610,6 +770,7 @@ def test_chunky_cuts_leave_chunkier_pieces():
 
 
 
+@needs_manifold
 def test_emit_writes_a_stream_onto_the_instancer(scene):
     """What, where, when and how fast -- all instancer data, previewed by invisibleIds."""
     qapp, stage, mk = scene

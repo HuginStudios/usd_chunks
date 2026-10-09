@@ -35,9 +35,6 @@ logger = logging.getLogger(__name__)
 #: Params the chunk always has. Everything else on it is a lofted joint handle.
 _FIXED = ("primpath_location", "joints")
 
-#: Set once CHUNK_LOADED has fired -- values are in, the character menu may fill.
-_IN_SCENE = "_skel_pose_in_scene"
-
 
 class _Rig:
     """What the chunk needs to know about the character under `primpath_location`.
@@ -93,7 +90,9 @@ def _rig(node) -> _Rig | None:
     if cached is not None and cached[0] == (id(stage), path):
         return cached[1]
     rig = _read_rig(stage, path)
-    if rig is not None:
+    # Not a cook's own stage (skip_cook's stage of its inputs): a new one every cook, so
+    # caching against it replaced the scene's rig, and its watch, with one read only once.
+    if rig is not None and stage == node.get_scene_stage():
         node._rig_cache = ((id(stage), path), rig)
         _watch(node, stage)
     return rig
@@ -392,30 +391,19 @@ def _skel_roots(stage) -> list:
     return found
 
 
-def _refresh_characters(owner, _notice=None, _sender=None):
-    """Fill the Character menu with the stage's SkelRoots.
+def menu_items(node, param_name):
+    """The Character menu's items, asked for as it opens: the stage's SkelRoots.
 
-    Registered globally on stage content changes, since the character usually arrives
-    from a Reference chunk upstream, not from this chunk's own params. Held off until
-    CHUNK_LOADED: a Menu coerces a value the list does not hold, so filling it before a
-    saved value is restored would drop that value. The current value stays listed even
-    when the stage no longer offers it, for the same reason the other way round -- a
-    reload restores it before the upstream reference has cooked.
-
-    Only assigned on a change: writing menu_items cooks the chunk whether or not the
-    list differs.
+    Not kept current by listening to the stage. The character usually arrives from a
+    Reference chunk upstream, and the list is wanted only when someone opens the menu --
+    a walk of the whole stage on every stage change was paying for a list nobody looked
+    at. The current value stays listed even when the stage no longer offers it
+    (Menu.set_items): a reload restores it before the upstream reference has cooked.
     """
-    node = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
-    if node is None or node.is_blocked() or not getattr(node, _IN_SCENE, False):
-        return
-    if id(node) in _BUSY:
-        # The chunk's own cook is the stage change: it did not add a character.
-        return
-    menu = node.get_param("primpath_location")
+    if param_name != "primpath_location":
+        return None
     stage = node.get_stage()
-    if menu is None or stage is None:
-        return
-    menu.set_items(_skel_roots(stage))
+    return _skel_roots(stage) if stage is not None else None
 
 
 def _param_changed(owner, notice, _sender):
@@ -430,8 +418,6 @@ def _param_changed(owner, notice, _sender):
 def _chunk_loaded(owner, notice, sender):
     # Neither the handles nor their values survive a load on their own: the handles are
     # created at runtime, and the loader restores values before they exist.
-    setattr(owner, _IN_SCENE, True)
-    _refresh_characters(owner, notice, sender)
     _sync_joints(owner)
     execute(owner)
 
@@ -439,8 +425,9 @@ def _chunk_loaded(owner, notice, sender):
 def main():
     chunk_api = chunk.Chunk("Skel Pose")
     chunk_api.add_params([
-        # A Menu of the stage's SkelRoots rather than a typed path. Named
-        # primpath_location so the lofted handles find their anchor without declaring it.
+        # A Menu of the stage's SkelRoots, filled as it opens (menu_items), rather than a
+        # typed path. Named primpath_location so the lofted handles find their anchor
+        # without declaring it.
         chunk.Menu(
             "primpath_location", "Character",
             flags=ChunkFlags.ParamFlags.LABELED,
@@ -458,9 +445,6 @@ def main():
                            notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED)
     chunk_api.add_callback(_chunk_loaded,
                            notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
-    chunk_api.add_callback(_refresh_characters,
-                           notice_alias=chunk_notice.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
-                           listen_globally=True)
     return chunk_api
 
 

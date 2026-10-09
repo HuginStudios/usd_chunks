@@ -346,13 +346,22 @@ class FletMenuWidget(FletParamWidget):
     def apply_value(self, value):
         self.control.value = None if value is None else str(value)
 
+    def on_focus(self, event):
+        """Fill a menu of what is on the stage as it opens (Menu.refresh_items)."""
+        super().on_focus(event)
+        self.param.refresh_items()
+        options = [str(i) for i in getattr(self.param, "menu_items", [])]
+        if options != [o.key for o in self.control.options]:
+            self.control.options = [ft.dropdown.Option(o) for o in options]
+            self._update()
+
 
 class FletButtonWidget(FletParamWidget):
     CONTROL_H = 34.0
     HAS_LABEL = False
     def build(self):
-        self.control = ft.ElevatedButton(content=self.param.get_label() or self.param.name,
-                                         on_click=self.on_clicked)
+        self.control = ft.Button(content=self.param.get_label() or self.param.name,
+                                 on_click=self.on_clicked)
 
     def apply_value(self, value):
         pass

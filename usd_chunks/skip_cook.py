@@ -31,16 +31,18 @@ a cook read back from the cook cache. Each hands "everything changed" down.
 The framework's own work during a cook -- muting a gate's branches, a chunk prim's
 bookkeeping -- is on the scene, not the cook stage: ChunkCommon.get_scene_stage.
 
-Off unless USD_CHUNKS_SKIP_COOKS=1, while chunks that cannot cook on their inputs alone are
-found and made to.
+Always on. It was behind USD_CHUNKS_SKIP_COOKS=1 while chunks that cannot cook on their
+inputs alone were found and made to.
 """
 
 from __future__ import annotations
 
 import logging
-import os
+import re
+import weakref
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 from pxr import Sdf, Usd
 
@@ -50,9 +52,6 @@ from usd_chunks.chunk_naming import CHUNKS_ROOT
 
 logger = logging.getLogger(__name__)
 
-#: The switch. See the module docstring.
-ENV = "USD_CHUNKS_SKIP_COOKS"
-
 #: A change handed down that covers every path: nothing below it may skip.
 EVERYTHING = frozenset({Sdf.Path.absoluteRootPath})
 
@@ -61,12 +60,58 @@ _MAX_WIDENINGS = 3
 
 _GLOB_CHARS = set("*?[")
 
+_VARIANT_SELECTION = re.compile(r"\{[^{}]*\}")
+
 _CHUNKS_ROOT = Sdf.Path(CHUNKS_ROOT)
 
 
-def enabled() -> bool:
-    """Whether cooks go through the cook stage and may be skipped. See ENV."""
-    return os.environ.get(ENV, "").strip().lower() in ("1", "on", "true", "yes")
+@dataclass(eq=False)
+class CookRecord:
+    """What skip-cooking knows about one chunk: from its last cook, and handed down since.
+
+    One per chunk, kept here (record) rather than as attributes on the chunk: a chunk
+    carries none of the cook's bookkeeping, and all of it reads in one place.
+    """
+
+    #: What its last cook could read: its inputs, its outputs and the reads beyond them.
+    #: None when that is not known -- never cooked, rewired, read back from the cook cache,
+    #: cooked into a shared layer -- or when it cooked on the whole stage.
+    mask: frozenset[Sdf.Path] | None = None
+    #: The prims its last cook wrote; None before its first.
+    outputs: frozenset[Sdf.Path] | None = None
+    #: What its last cook looked up beyond its inputs and outputs.
+    reads: frozenset[Sdf.Path] = frozenset()
+    #: The paths the chunks above it changed since it last cooked (hand_down).
+    pending: set[Sdf.Path] = field(default_factory=set)
+    #: scene_state as its last cook left it.
+    scene: tuple | None = None
+    #: The identifier of the layer its last cook authored into.
+    layer: str | None = None
+    #: Its layer as the chunks below it last saw it, to diff its next cook against.
+    seen: Sdf.Layer | None = None
+    #: Whether what its last cook changed is everything: it changed the scene outside its
+    #: layer, or nothing is known of what it read.
+    everything: bool = True
+    #: It cannot cook on its inputs alone, and cooks on the whole stage from now on.
+    unmaskable: bool = False
+    #: It reads a sibling it is not wired to, and cooks with every chunk's layer until rewired.
+    sees_all: bool = False
+    #: Whether it was disabled when it was last solved (note_state).
+    was_disabled: bool = False
+    #: (chunk_scheduler.shape_version(), the ids of the chunks above and below it): _related.
+    related: tuple | None = None
+
+
+# Weak, so a record goes with its chunk; chunks hash by an id no copy shares.
+_records: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def record(chunk) -> CookRecord:
+    """chunk's CookRecord, made empty the first time it is asked for."""
+    rec = _records.get(chunk)
+    if rec is None:
+        rec = _records[chunk] = CookRecord()
+    return rec
 
 
 # ------------------------------------------------------------------------------------------
@@ -78,6 +123,10 @@ def enabled() -> bool:
 # every layer of a closed scene alive and went on hearing their changes -- in the test
 # suite, into listeners whose widgets were already gone, which crashed the process.
 _active: list[Usd.Stage | None] = []
+
+# A cook stage being opened, before it has a watch: a cook stage to is_cook_stage, but what
+# is looked up on it -- by listeners hearing it muted -- is no cook's read.
+_opening: list[Usd.Stage] = []
 
 
 def active_stage() -> Usd.Stage | None:
@@ -107,11 +156,19 @@ def is_cook_stage(stage: Usd.Stage | None) -> bool:
     """
     if stage is None:
         return False
+    if any(stage == opening for opening in _opening):
+        return True
     return any(stage == watched for watch in _watches for watched in watch.stages)
 
 
-def _open_cook_stage(main: Usd.Stage, mask: set[Sdf.Path], hidden: Iterable[str] = ()) -> Usd.Stage:
-    """A stage of main's layers populated at mask, muted as main is and at hidden too."""
+def _open_cook_stage(main: Usd.Stage, mask: set[Sdf.Path], hidden: Iterable[str] = (),
+                     opened: list | None = None) -> Usd.Stage:
+    """A stage of main's layers populated at mask, muted as main is and at hidden too.
+
+    Appended to opened, when given, before it is muted: muting sends a change notice from
+    it, and a listener that cannot yet tell it for a cook stage (is_cook_stage) takes it
+    for the scene's -- the edit layer memo was dropped on every masked cook.
+    """
     stage = Usd.Stage.OpenMasked(
         main.GetRootLayer(),
         main.GetSessionLayer(),
@@ -119,6 +176,8 @@ def _open_cook_stage(main: Usd.Stage, mask: set[Sdf.Path], hidden: Iterable[str]
         _population_mask(mask),
         Usd.Stage.LoadAll,
     )
+    if opened is not None:
+        opened.append(stage)
     if muted := {*main.GetMutedLayers(), *hidden}:
         stage.MuteAndUnmuteLayers(sorted(muted), [])
     return stage
@@ -240,7 +299,10 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     watch that collects what the cook looked up.
     """
     _install_watching()
-    stage = _open_cook_stage(main, mask, hidden)
+    try:
+        stage = _open_cook_stage(main, mask, hidden, _opening)
+    finally:
+        _opening.clear()
     watch = _Watch(stage, mask, hidden)
     _active.append(stage)
     _watches.append(watch)
@@ -282,8 +344,12 @@ def _paths_in(value) -> Iterator[Sdf.Path]:
         if not text.startswith("/"):
             yield Sdf.Path.absoluteRootPath
             continue
+        # A selection names a variant, not a prim: /asset{color=red}/geo is /asset/geo. A
+        # chunk writes it with a slash after the brace (split_variant_path), which Sdf.Path
+        # does not parse, and an unparsed path covered everything.
+        text = _VARIANT_SELECTION.sub("/", text)
         parts = []
-        for part in text.split("/")[1:]:
+        for part in filter(None, text.split("/")[1:]):
             if _GLOB_CHARS & set(part):
                 break
             parts.append(part)
@@ -347,14 +413,37 @@ def upstream_chunks(chunk) -> list:
     chunk authored depends on all of it.
     """
     found = {id(chunk): chunk}
-    pending = [chunk]
-    while pending:
-        for node in chunk_scheduler.upstream_closure(pending.pop().get_dag_node()):
-            owner = _chunk_of(node)
-            if owner is not None and id(owner) not in found:
-                found[id(owner)] = owner
-                pending.append(owner)
+
+    # One walk: a chunk found walks on from its own node, and what it shares with the
+    # chunks found before it is not walked again. A walk per chunk found went over the same
+    # params again and again, and was most of a first cook after opening a scene.
+    def chunk_of(node):
+        owner = _chunk_of(node)
+        if owner is None or id(owner) in found:
+            return ()
+        found[id(owner)] = owner
+        return (owner.get_dag_node(),)
+
+    chunk_scheduler.upstream_closure(chunk.get_dag_node(), also=chunk_of)
     return list(found.values())
+
+
+def _related(chunk) -> set[int]:
+    """The ids of chunk and every chunk above or below it, cached until the graph changes.
+
+    Only the graph decides it, and a drag changes values, not wiring: walked once, not on
+    every cook.
+    """
+    rec = record(chunk)
+    version = chunk_scheduler.shape_version()
+    cached = rec.related
+    if cached is not None and cached[0] == version:
+        return cached[1]
+    related = {id(c) for c in upstream_chunks(chunk)}
+    related.update(id(c) for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+                   if (c := _chunk_of(node)) is not None)
+    rec.related = (version, related)
+    return related
 
 
 def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tuple]:
@@ -375,18 +464,23 @@ def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tupl
     Returns:
         {layer identifier: (chunk, layer)} for every hidden layer.
     """
-    related = upstream_chunks(chunk)
-    related.extend(c for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
-                   if (c := _chunk_of(node)) is not None)
+    related_ids = _related(chunk)
+    chunks = chunk.get_scene().get_chunks()
     kept = {layer.identifier}
-    kept.update(own.identifier for c in related if (own := layer_of(c)) is not None)
-    related_ids = {id(c) for c in related}
+    kept.update(own.identifier for c in chunks
+                if id(c) in related_ids and (own := layer_of(c)) is not None)
     hidden: dict[str, tuple] = {}
-    for other in chunk.get_scene().get_chunks():
+    for other in chunks:
         if id(other) in related_ids:
             continue
         own = layer_of(other)
         if own is None or not own.anonymous or own.identifier in kept:
+            continue
+        # A layer that sublayers others (a Sublayer chunk's) holds no prims of its own to
+        # tell a read of it by -- read_hidden goes by its specs -- and hidden, everything it
+        # brings in vanished silently: a Bind Material in a group after one found no prim to
+        # bind. Its sublayer list is part of scene_state, so a change to it still cooks.
+        if own.subLayerPaths:
             continue
         hidden[own.identifier] = (other, own)
     return hidden
@@ -409,7 +503,11 @@ def read_hidden(watch: _Watch, inputs: Iterable[Sdf.Path], hidden: dict[str, tup
     for other, own in hidden.values():
         listed = any((spec := own.GetPrimAtPath(path)) is not None and spec.nameChildren
                      for path in watch.children)
-        if listed or any(path in above or _covered(path, subtrees) for path in output_paths(own)):
+        # Not what it writes under /chunks: an opinion on a chunk prim is a param (an
+        # Override Chunk Prim's edit), and it reaches its chunk as a param value, not by the
+        # cook reading the stage.
+        written = (p for p in output_paths(own) if not p.HasPrefix(_CHUNKS_ROOT))
+        if listed or any(path in above or _covered(path, subtrees) for path in written):
             readers.append(other)
     return readers
 
@@ -531,11 +629,39 @@ def hand_down(chunk, changed: Iterable[Sdf.Path]) -> None:
         prop = node.propagator
         if prop is None or prop is chunk or not _is_chunk(prop):
             continue
-        pending = getattr(prop, "_skip_pending", None)
-        if pending is None:
-            prop._skip_pending = set(changed)
-        else:
-            pending.update(changed)
+        record(prop).pending.update(changed)
+
+
+def passed_through(chunk, reasons: list) -> None:
+    """Hand down what a chunk with no cook of its own (a chunkgroup) changed.
+
+    Its own params are what the chunks inside it read, and a change of one changes what is
+    below it without a cook to say what: everything. Reached only because a chunk above it
+    changed, it changes nothing itself -- that chunk handed its change past it already. Nor
+    does a param of a chunk nested in it, which that chunk's own cook answers for, or a
+    change only the UI sees: a lofted menu's item list, mirrored as a scene finishes
+    loading, left every chunk below the group to cook on the first edit after opening.
+
+    Args:
+        chunk: The chunk chunk_cook.flush reached, with no execute() to run.
+        reasons: The (alias, propagator) pairs that dirtied it, as for should_skip.
+    """
+    if not reasons or any(_own_input(chunk, source) for _alias, source in reasons):
+        hand_down(chunk, EVERYTHING)
+
+
+def _own_input(chunk, source) -> bool:
+    """Whether source, a propagator that dirtied chunk, is chunk itself or one of its params."""
+    if source is chunk:
+        return True
+    if _is_chunk(source):
+        return False
+    if getattr(source, "is_presentation_change", lambda: False)():
+        return False
+    owner = source
+    while owner is not None and not _is_chunk(owner):
+        owner = owner.get_owner()
+    return owner is chunk
 
 
 def inputs_rewired(node) -> None:
@@ -543,9 +669,10 @@ def inputs_rewired(node) -> None:
     prop = node.propagator
     if prop is None or not _is_chunk(prop):
         return
-    prop._skip_mask = None
+    rec = record(prop)
+    rec.mask = None
     # Wired now, perhaps, to the sibling it read without being wired to.
-    prop._skip_sees_all = False
+    rec.sees_all = False
     hand_down(prop, EVERYTHING)
 
 
@@ -555,9 +682,10 @@ def note_state(chunk) -> None:
     A disabled chunk's layer is muted: what it wrote leaves the stage without a cook, and
     comes back the same way.
     """
+    rec = record(chunk)
     disabled = chunk.has_state(ChunkFlags.State.DISABLED)
-    if disabled != getattr(chunk, "_skip_was_disabled", False):
-        chunk._skip_was_disabled = disabled
+    if disabled != rec.was_disabled:
+        rec.was_disabled = disabled
         hand_down(chunk, EVERYTHING)
 
 
@@ -578,27 +706,33 @@ def _touches(changed: set[Sdf.Path], mask: Iterable[Sdf.Path]) -> bool:
     return any(_covered(c, set(mask)) for c in changed)
 
 
-def hold_reasons(chunk, reasons: list) -> None:
-    """Keep the reasons of a chunk held until a cook above it ends, for should_skip then."""
-    chunk._skip_held = [*(getattr(chunk, "_skip_held", None) or []), *reasons]
+def _scene_state_of(stage: Usd.Stage, states: list | None) -> tuple:
+    """scene_state(stage), read from states when it holds stage's, and added to it when not."""
+    if states is None:
+        return scene_state(stage)
+    for seen, state in states:
+        if seen == stage:
+            return state
+    state = scene_state(stage)
+    states.append((stage, state))
+    return state
 
 
-def should_skip(chunk, reasons: list) -> bool:
+def should_skip(chunk, reasons: list, states: list | None = None) -> bool:
     """Whether chunk's cook can be skipped: only chunks above it changed, and not what it reads.
 
     Args:
-        chunk: The chunk the solve is about to cook.
-        reasons: The (alias, propagator) pairs that dirtied it, from DagNode.iter_changes.
+        chunk: The chunk chunk_cook.flush is about to cook.
+        reasons: The (alias, propagator) pairs that dirtied it since it last cooked, from
+            DagNode.iter_changes, gathered by chunk_cook.dispatch.
+        states: (stage, scene_state) pairs the caller keeps between decisions, emptied
+            whenever something may have changed the scene -- a cook. One drag step decided
+            on twenty chunks of the same scene, and read its state twenty times.
     """
-    # A chunk held for the end of a cook above it (chunk_notice.executing) comes back with
-    # its reasons cleared; they were kept for this.
-    held = getattr(chunk, "_skip_held", None)
-    if held:
-        chunk._skip_held = None
-        reasons = [*reasons, *held]
-    if not enabled() or not reasons:
+    rec = record(chunk)
+    if not reasons:
         return False
-    mask = getattr(chunk, "_skip_mask", None)
+    mask = rec.mask
     if mask is None:
         return False
     for _alias, source in reasons:
@@ -610,17 +744,17 @@ def should_skip(chunk, reasons: list) -> bool:
     # writes a Stage Expression's variables the moment a row is typed, before any cook, and
     # a user can mute a layer. No cook above it would say so.
     stage = chunk.get_scene_stage()
-    if stage is None or getattr(chunk, "_skip_scene", None) != scene_state(stage):
+    if stage is None or rec.scene != _scene_state_of(stage, states):
         return False
     # Where it writes, as well as what it reads: an Edit Target above it repointed hands it
     # another layer to author into, and its result has to move there.
     layer = chunk.get_edit_context()
-    if layer is None or layer.identifier != getattr(chunk, "_skip_layer", None):
+    if layer is None or layer.identifier != rec.layer:
         return False
-    pending = getattr(chunk, "_skip_pending", None) or set()
+    pending = rec.pending or set()
     if _touches(pending, mask):
         return False
-    chunk._skip_pending = set()
+    rec.pending = set()
     logger.debug("skipped cooking %s: nothing it reads changed", chunk.name)
     return True
 
@@ -636,9 +770,11 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     The mask is the chunk's inputs and what its last cook wrote. A cook that writes
     somewhere new (a renamed prim path) fails to define it on the masked stage -- the spec
     lands in the layer all the same -- and is run again with that path in the mask. A
-    masked cook that looked something up outside its mask, or failed for any other reason,
-    is run again on the whole stage, and the chunk is cooked that way from then on: it
-    reads something its inputs do not name.
+    masked cook that looked a prim up outside its mask -- a material by a path its params
+    do not flag as one -- is run again with that prim in the mask too, and the prims it
+    looked up beyond its inputs and outputs are kept in the mask for the next cook. One
+    that walked the whole stage, kept widening, or failed for any other reason is run
+    again on the whole stage, and the chunk is cooked that way from then on.
 
     Given layer_of, a masked cook also sees only the layers of the chunks upstream of it
     (hidden_layers). One that reads what a sibling it is not wired to authors is run again
@@ -646,16 +782,17 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
 
     A first cook, with nothing written yet to say where it writes, runs on the whole stage.
     """
-    outputs = getattr(chunk, "_skip_outputs", None)
-    unmaskable = getattr(chunk, "_skip_unmaskable", False)
+    rec = record(chunk)
+    outputs = rec.outputs
+    unmaskable = rec.unmaskable
     mask: set[Sdf.Path] | None = None
     if outputs is not None and not unmaskable:
-        mask = input_paths(chunk) | set(outputs)
+        mask = input_paths(chunk) | set(outputs) | set(rec.reads)
     hidden: dict[str, tuple] = {}
-    if not _whole(mask) and layer_of is not None and not getattr(chunk, "_skip_sees_all", False):
+    if not _whole(mask) and layer_of is not None and not rec.sees_all:
         hidden = hidden_layers(chunk, layer, layer_of)
 
-    chunk._skip_pending = set()
+    rec.pending = set()
     state = scene_state(main)
     widenings = 0
     while True:
@@ -669,7 +806,10 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
             failed = True
         if _whole(mask):
             break
-        if hidden and watches and (siblings := read_hidden(watches[0], input_paths(chunk), hidden)):
+        # As the cook left them, once: resolving them is most of what a value change of a
+        # param that is an expression costs, and both checks below read them.
+        inputs = input_paths(chunk)
+        if hidden and watches and (siblings := read_hidden(watches[0], inputs, hidden)):
             layer.Clear()
             logger.info(
                 "%s reads what %s author%s without being wired to %s; cooking it on every "
@@ -677,7 +817,7 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
                 ", ".join(sorted(s.name for s in siblings)), "s" if len(siblings) == 1 else "",
                 "it" if len(siblings) == 1 else "them",
             )
-            chunk._skip_sees_all = True
+            rec.sees_all = True
             hidden = {}
             continue
         looked_up = watches[0].outside if watches else set()
@@ -688,8 +828,8 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         if not failed and not wider and not read_outside:
             break
         layer.Clear()
-        if wider and widenings < _MAX_WIDENINGS:
-            mask |= wider
+        if (wider or read_outside) and Sdf.Path.absoluteRootPath not in read_outside                 and widenings < _MAX_WIDENINGS:
+            mask |= wider | read_outside
             widenings += 1
             continue
         logger.info(
@@ -697,15 +837,22 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
             "from now on", chunk.name,
             f" (it looked up {', '.join(sorted(map(str, read_outside)))})" if read_outside else "",
         )
-        chunk._skip_unmaskable = True
+        rec.unmaskable = True
         mask = None
 
-    chunk._skip_outputs = frozenset(output_paths(layer))
-    chunk._skip_mask = frozenset(mask) if mask is not None else None
-    chunk._skip_scene = scene_state(main)
-    chunk._skip_layer = layer.identifier
+    rec.outputs = frozenset(output_paths(layer))
+    rec.mask = frozenset(mask) if mask is not None else None
+    # What it looked up beyond its inputs and outputs, from this cook alone: a read it no
+    # longer makes -- its material param pointed elsewhere -- leaves the mask with it.
+    rec.reads = frozenset()
+    if not _whole(mask) and watches:
+        base = inputs | rec.outputs | {_CHUNKS_ROOT}
+        rec.reads = frozenset(
+            path for path in watches[0].points | watches[0].children if not _covered(path, base))
+    rec.scene = scene_state(main)
+    rec.layer = layer.identifier
     # What changed is handed down by finish(), once the cook is wholly done.
-    chunk._skip_everything = chunk._skip_scene != state
+    rec.everything = rec.scene != state
 
 
 def baseline(chunk, layer: Sdf.Layer) -> Sdf.Layer:
@@ -715,7 +862,7 @@ def baseline(chunk, layer: Sdf.Layer) -> Sdf.Layer:
     layer the moment it changes, before any cook (a Light's intensity), and against the
     layer at the start of the cook that change was never a change at all.
     """
-    seen = getattr(chunk, "_skip_seen", None)
+    seen = record(chunk).seen
     return seen if seen is not None else snapshot(layer)
 
 
@@ -723,12 +870,13 @@ def finish(chunk, layer: Sdf.Layer, before: Sdf.Layer | None) -> None:
     """Hand down what chunk's layer changed since the chunks below last saw it.
 
     Called once the cook is wholly done -- its driven attributes re-authored too -- and
-    before the chunks it held (chunk_notice.executing) are solved.
+    before chunk_cook.flush decides on the chunks below it.
     """
-    everything = before is None or getattr(chunk, "_skip_everything", True)
-    chunk._skip_everything = True
+    rec = record(chunk)
+    everything = before is None or rec.everything
+    rec.everything = True
     hand_down(chunk, EVERYTHING if everything else changed_paths(before, layer))
-    chunk._skip_seen = snapshot(layer)
+    rec.seen = snapshot(layer)
 
 
 def _whole(mask: set[Sdf.Path] | None) -> bool:
@@ -766,10 +914,11 @@ def restored(chunk, layer: Sdf.Layer) -> None:
     The cache vouches for the result, not for what the module would have read to make it,
     so a restored chunk is cooked, not skipped, the next time something above it changes.
     """
-    chunk._skip_pending = set()
-    chunk._skip_outputs = frozenset(output_paths(layer))
-    chunk._skip_mask = None
-    chunk._skip_everything = False
+    rec = record(chunk)
+    rec.pending = set()
+    rec.outputs = frozenset(output_paths(layer))
+    rec.mask = None
+    rec.everything = False
 
 
 def unaccounted(chunk) -> None:
@@ -777,6 +926,7 @@ def unaccounted(chunk) -> None:
 
     Nothing is known about what it read or changed.
     """
-    chunk._skip_pending = set()
-    chunk._skip_mask = None
+    rec = record(chunk)
+    rec.pending = set()
+    rec.mask = None
     hand_down(chunk, EVERYTHING)

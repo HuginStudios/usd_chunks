@@ -1,15 +1,13 @@
 """usd_chunks: interactive UI panels ("chunks") for OpenUSD, built from plain Python modules.
 
-Importing the package checks that the OpenUSD bindings are importable, sets up the
-``usd_chunks`` logger (its level comes from ``USD_CHUNK_LOG_LEVEL``), and checks the attrs
-version.
+Importing the package checks that the OpenUSD bindings are importable, sets the
+``usd_chunks`` logger's level (from ``USD_CHUNK_LOG_LEVEL``), and checks the attrs version.
+It adds no console handler; entry points call ``configure_logging()`` for that.
 """
 from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 import os
-import sys
 import logging
-from pathlib import Path
 from typing import Final
 
 try:
@@ -55,37 +53,41 @@ _LOG_LEVELS = {
 }
 _logger.setLevel(_LOG_LEVELS.get(os.environ.get("USD_CHUNK_LOG_LEVEL", "").upper(), logging.INFO))
 
-# create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
+# A library leaves output to whoever runs it: importing adds no console handler, so a host
+# that configures logging itself does not print every message twice. Entry points (the CLI,
+# the usdview plugin, the Blender add-on, the graph frontends) call configure_logging().
+_logger.addHandler(logging.NullHandler())
+_console_handler: logging.Handler | None = None
 
-formatter = logging.Formatter("%(levelname)s: %(asctime)s - %(name)s: %(message)s", datefmt="%y-%m-%d %H:%M")
-ch.setFormatter(formatter)
-_logger.addHandler(ch)
 
-# Attempt to import necessary deps. If not found, use the installed packages from .venv
-try:
-    import attrs  # noqa: F401
-    import typing_extensions  # noqa: F401
-except ImportError as e:
-    p = Path(__file__).parent.parent / ".venv/Lib/site-packages"
-    if p.exists():
-        sys.path.append(str(p))
-    else:
-        raise e
+def configure_logging() -> None:
+    """Send ``usd_chunks`` log records to the console, unless the host already logs somewhere.
 
-    import attrs
+    Called by the entry points, not on import. Idempotent. Skipped when the root logger has a
+    handler: records propagate there, and a second handler would print each one twice.
+    """
+    global _console_handler
+    if _console_handler is not None or logging.getLogger().handlers:
+        return
+    _console_handler = logging.StreamHandler()
+    _console_handler.setLevel(logging.DEBUG)
+    _console_handler.setFormatter(logging.Formatter(
+        "%(levelname)s: %(asctime)s - %(name)s: %(message)s", datefmt="%y-%m-%d %H:%M"
+    ))
+    _logger.addHandler(_console_handler)
+
+
+import attrs  # noqa: E402
 
 ATTRS_VERSION: Final = attrs.__version_info__
 if ATTRS_VERSION < (25, 4):  # type: ignore
-    print(
-        "Found unsupported attrs version:",
-        attrs.__version__,
-        "Some functionality may not work. Consider updating to 25.4",
+    _logger.warning(
+        "Found unsupported attrs version %s. Some functionality may not work. "
+        "Consider updating to 25.4", attrs.__version__,
     )
 
 # The scripting entry point: `Scene.new()` for a script of its own, `Scene.current()` for the
 # one a host is already running (usdview's). `current_scene` stays for older scripts. Last,
 # so everything above is set up before the chunk model they pull in is imported.
-from usd_chunks.chunk_scene import current_scene  # noqa: E402
-from usd_chunks.chunk_script import Scene  # noqa: E402
+from usd_chunks.chunk_scene import current_scene as current_scene  # noqa: E402
+from usd_chunks.chunk_script import Scene as Scene  # noqa: E402

@@ -1,6 +1,7 @@
 from __future__ import annotations
+import threading
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Generic
+from typing import Any, Generic, NamedTuple
 
 from pxr import Sdf, Usd
 
@@ -11,11 +12,15 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
+from usd_chunks.graph import engine as chunk_graph
 
+import logging
 import re
 from collections.abc import Callable
 from functools import partial
 from usd_chunks.chunk_flags import ChunkFlags
+
+logger = logging.getLogger(__name__)
 
 # Re-exported under the original private name: chunk_qt imports it from here, and the
 # implementation is core (frontend-agnostic), not Qt.
@@ -131,6 +136,12 @@ QLabel[chunkExpression="true"] {
 }
 QLabel[chunkOverride="true"] {
     color: #e0b060;
+}
+QLabel[chunkHeld="true"] {
+    color: #d07a6a;
+}
+QLabel[chunkLocked="true"] {
+    color: #808080;
 }
 """
 
@@ -929,6 +940,28 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
+def _screen_pos(widget: QtWidgets.QWidget, pos: QtCore.QPoint) -> QtCore.QPoint:
+    """The screen position of a point in widget, also when it is embedded in a graph.
+
+    A widget inside a QGraphicsProxyWidget sits in a hidden window of its own, so its
+    mapToGlobal() is not where it shows. Map through the proxy and the view instead.
+
+    Args:
+        widget (QtWidgets.QWidget): The widget pos is in
+        pos (QtCore.QPoint): A point in widget's coordinates
+
+    Returns:
+        QtCore.QPoint: Where that point is on screen.
+    """
+    top = widget.window()
+    proxy = top.graphicsProxyWidget()
+    views = [v for v in proxy.scene().views() if v.isVisible()] if proxy and proxy.scene() else []
+    if not views:
+        return widget.mapToGlobal(pos)
+    scene_pos = proxy.mapToScene(QtCore.QPointF(widget.mapTo(top, pos)))
+    return views[0].viewport().mapToGlobal(views[0].mapFromScene(scene_pos))
+
+
 class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
@@ -985,28 +1018,38 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         if event.button() != QtCore.Qt.LeftButton:
             super().mousePressEvent(event)
             return
-        # QComboBox.showPopup() can't use the proxy-aware popup path for widgets
-        # that are deep descendants of a QGraphicsProxyWidget (graphicsProxyWidget()
-        # returns None for non-direct embeds).  Replace with a QMenu so the popup
-        # always appears at the correct screen position.
+        # QComboBox.showPopup() places its popup wrong for a combo embedded in the node
+        # graph. Show our own menu instead, placed by _screen_pos.
         QtCore.QTimer.singleShot(0, self, self._show_as_menu)
 
     def _show_as_menu(self) -> None:
-        menu = QtWidgets.QMenu(self)
+        # A menu of what is on the stage is filled as it opens (Menu.refresh_items); the
+        # menu_items notice rebuilds this combo's entries before they are read below.
+        self.param.refresh_items()
+        items = [self.itemText(i) for i in range(self.count())]
         current = self.currentText()
-        for i in range(self.count()):
-            text = self.itemText(i)
-            act = menu.addAction(text)
-            if text == current:
-                act.setCheckable(True)
-                act.setChecked(True)
+        # No parent: a popup whose parent is embedded in the node graph is embedded in the
+        # graph scene too, where it gets no typing and the graph takes its wheel.
+        if len(items) > _SearchableListMenu.MAX_PLAIN_ITEMS:
+            # A plain QMenu taller than the screen spreads into columns wider than it.
+            menu = _SearchableListMenu(items, current)
+            menu.picked.connect(self.setCurrentText)
+        else:
+            menu = QtWidgets.QMenu()
+            for text in items:
+                act = menu.addAction(text)
+                if text == current:
+                    act.setCheckable(True)
+                    act.setChecked(True)
+            menu.triggered.connect(self._menu_item_chosen)
         # Use popup() (non-modal), not exec_(). exec_ runs a nested event loop in which a
         # deferred node-graph rebuild can destroy this proxied combobox mid-selection; exec_'s
-        # result would then be applied to a freed C++ widget → silent crash. With popup(), if
-        # the widget is destroyed the menu (its child) goes with it and never fires triggered.
-        menu.triggered.connect(self._menu_item_chosen)
+        # result would then be applied to a freed C++ widget → silent crash. With popup(), the
+        # menu closes when this widget is destroyed, before it can fire its signals.
+        self.destroyed.connect(menu.close)
         menu.aboutToHide.connect(menu.deleteLater)
-        menu.popup(self.mapToGlobal(QtCore.QPoint(0, self.height())))
+        self._popup = menu  # unparented, so Python must keep it alive while it is open
+        menu.popup(_screen_pos(self, QtCore.QPoint(0, self.height())))
 
     def _menu_item_chosen(self, action) -> None:
         self.setCurrentText(action.text())
@@ -1163,6 +1206,223 @@ class ChunkColorPickerWidget(ChunkParamWidgetBase[chunk.ColorPicker], QtWidgets.
             self.value_changed((color.redF(), color.greenF(), color.blueF()))
 
 
+class _FlowLayout(QtWidgets.QLayout):
+    """Left to right, wrapping: as many tiles per row as the width holds."""
+
+    def __init__(self, parent=None, spacing=4):
+        super().__init__(parent)
+        self._items: list[QtWidgets.QLayoutItem] = []
+        self.setSpacing(spacing)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def clear(self):
+        while self._items:
+            item = self.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._layout(QtCore.QRect(0, 0, width, 0), dry_run=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._layout(rect, dry_run=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QtCore.QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        return size + QtCore.QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def expandingDirections(self):
+        return QtCore.Qt.Orientations(QtCore.Qt.Orientation(0))
+
+    def _layout(self, rect: QtCore.QRect, dry_run: bool) -> int:
+        sp = self.spacing()
+        x, y, row_h = rect.x(), rect.y(), 0
+        for item in self._items:
+            w, h = item.sizeHint().width(), item.sizeHint().height()
+            if x + w > rect.right() and row_h:
+                x, y, row_h = rect.x(), y + row_h + sp, 0
+            if not dry_run:
+                item.setGeometry(QtCore.QRect(x, y, w, h))
+            x += w + sp
+            row_h = max(row_h, h)
+        return y + row_h - rect.y()
+
+
+class _ImageTile(QtWidgets.QFrame):
+    """One item: its picture (when it has one) over its name."""
+
+    clicked = QtCore.Signal(str)
+
+    def __init__(self, item: str, size: int):
+        super().__init__()
+        self.item = item
+        self._path = ""
+        self.setFixedWidth(size + 8)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+        self._picture = QtWidgets.QLabel()
+        self._picture.setFixedSize(size, size)
+        self._picture.setScaledContents(True)
+        self._picture.setStyleSheet("background:#333;")
+        layout.addWidget(self._picture)
+        name = QtWidgets.QLabel(item)
+        name.setWordWrap(True)
+        name.setMaximumWidth(size + 4)
+        name.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(name)
+        self.set_selected(False)
+
+    def set_image(self, path: str) -> None:
+        if path == self._path:
+            return
+        pixmap = QtGui.QPixmap(path) if path else QtGui.QPixmap()
+        if not pixmap.isNull():
+            self._path = path
+            self._picture.setPixmap(pixmap)
+
+    def set_selected(self, selected: bool) -> None:
+        color = "#4a90d9" if selected else "#2a2a2a"
+        self.setStyleSheet(f"QFrame {{ border: 2px solid {color}; border-radius: 3px; }}")
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.item)
+        super().mousePressEvent(event)
+
+
+class ChunkImageMenuWidget(ChunkParamWidgetBase[chunk.ImageMenu], QtWidgets.QWidget):
+    """An ImageMenu as a searchable grid of tiles.
+
+    Tiles are built a page at a time as the grid scrolls: a catalog of hundreds of items
+    would otherwise build every tile, for every node showing one, on every scene open. The
+    current value is pinned to the front of the first page, so it is visible without
+    scrolling to wherever it sits in the list.
+    """
+
+    PAGE_SIZE = 40
+
+    def __init__(self, param: chunk.ImageMenu):
+        super().__init__(param)
+        self._tiles: dict[str, _ImageTile] = {}
+        self._pending: list[str] = []
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        self._search = QtWidgets.QLineEdit()
+        self._search.setPlaceholderText("Search...")
+        outer.addWidget(self._search)
+        self._scroll = QtWidgets.QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        container = QtWidgets.QWidget()
+        self._flow = _FlowLayout(container, spacing=4)
+        self._scroll.setWidget(container)
+        outer.addWidget(self._scroll)
+        self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+        self._search_timer = QtCore.QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._rebuild)
+        self._search.textChanged.connect(self._search_timer.start)
+
+        self.add_callback(self._items_changed, param.get_attribute_sender("menu_items"))
+        self.add_callback(self._images_changed, param.get_attribute_sender("item_images"))
+        self.setFixedHeight(360)
+        self.setup_chunk_widget()
+        self._rebuild()
+
+    # ChunkParamWidgetBase
+
+    def get_value(self):
+        return self.param.value
+
+    def set_value(self, value):
+        if isinstance(value, str) and chunk_utils.has_expression(value):
+            value = self.param.value
+        for item, tile in self._tiles.items():
+            tile.set_selected(item == value)
+
+    def set_label(self, _text):
+        pass
+
+    def set_hidden(self, val: bool):
+        self.setHidden(val)
+
+    def set_enabled(self, val: bool):
+        self.setEnabled(val)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # A menu of runtime data is filled as it is about to be looked at (Menu.refresh_items).
+        self.param.refresh_items()
+
+    # Private
+
+    def _items_changed(self, _notice, _sender):
+        self._rebuild()
+
+    def _images_changed(self, _notice, _sender):
+        images = self.param.item_images or {}
+        for item, tile in self._tiles.items():
+            tile.set_image(images.get(item, ""))
+
+    def _rebuild(self):
+        term = self._search.text().lower()
+        items = [i for i in (self.param.menu_items or []) if i and term in i.lower()]
+        current = self.param.value
+        if current in items:
+            items.remove(current)
+            items.insert(0, current)
+        self._flow.clear()
+        self._tiles.clear()
+        self._pending = items
+        self._load_next_page()
+
+    def _load_next_page(self):
+        page, self._pending = self._pending[: self.PAGE_SIZE], self._pending[self.PAGE_SIZE:]
+        images = self.param.item_images or {}
+        size = self.param.tile_size or 96
+        for item in page:
+            tile = _ImageTile(item, size)
+            tile.set_image(images.get(item, ""))
+            tile.set_selected(item == self.param.value)
+            tile.clicked.connect(self._on_clicked)
+            self._tiles[item] = tile
+            self._flow.addWidget(tile)
+
+    def _on_scroll(self, value: int):
+        if self._pending and value >= self._scroll.verticalScrollBar().maximum() - 50:
+            self._load_next_page()
+
+    def _on_clicked(self, item: str):
+        self.set_value(item)
+        self.value_changed(item)
+
+
 class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
     widget_map = {
         ChunkFlags.ParamType.FLOAT_SLIDER: ChunkSliderWidget,
@@ -1191,10 +1451,15 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
             None: If failed to create a widget
         """
         key = param.evaluate_type()
-        widget_class = self.get_map().get(key, None)
+        # An ImageMenu is a Menu by type, so frontends without a grid show a dropdown;
+        # this one has a grid.
+        if isinstance(param, chunk.ImageMenu):
+            widget_class = ChunkImageMenuWidget
+        else:
+            widget_class = self.get_map().get(key, None)
 
         if not widget_class:
-            print("Could not create widget for param: ", param.name, "Missing mapping in Qt factory")
+            logger.warning("Could not create widget for param %s: missing mapping in Qt factory", param.name)
             return None
 
         widget: ChunkParamWidgetBase = widget_class(param)
@@ -1367,14 +1632,39 @@ class LabeledWidget(QtWidgets.QWidget):
             return
         try:
             source = chunk_stage.param_override_source(self.widget.param)
+            # The other way round, and the one that matters more: a stronger layer holds
+            # this value (chunk_stage.param_held_by), so an edit here is kept but does not
+            # show -- the field springs back, and without this nothing says why.
+            holder = chunk_stage.param_held_by(self.widget.param)
+            # An edit would land in a locked file (read-only, or edit permission off), so it
+            # is refused -- said up front rather than discovered by the field springing back.
+            lock = chunk_stage.param_locked_by(self.widget.param)
         except ReferenceError:
             return
-        overridden = source is not None
-        if self.label.property("chunkOverride") != overridden:
+        overridden = source is not None and holder is None
+        held = holder is not None
+        locked = lock is not None
+        if (self.label.property("chunkOverride") != overridden
+                or self.label.property("chunkHeld") != held
+                or self.label.property("chunkLocked") != locked):
             self.label.setProperty("chunkOverride", overridden)
+            self.label.setProperty("chunkHeld", held)
+            self.label.setProperty("chunkLocked", locked)
             self.label.style().unpolish(self.label)
             self.label.style().polish(self.label)
-        if overridden and not self.label.property("chunkExpression"):
+        if self.label.property("chunkExpression"):
+            return
+        if locked:
+            self.label.setToolTip(
+                f"Locked: {lock.GetDisplayName() or lock.identifier} can't be edited. Set the "
+                "edit target to a layer you can edit to override it there"
+            )
+        elif held:
+            self.label.setToolTip(
+                f"Overridden by {chunk_stage.layer_label(holder)}: an edit here is kept "
+                "beneath it and shows once it goes"
+            )
+        elif overridden:
             self.label.setToolTip(f"Overrides {source.GetDisplayName() or source.identifier}")
 
     def _sync_expression_mark(self):
@@ -1870,17 +2160,33 @@ class ContainerWidget(
 _VIEW_COL_HEADER = "#c87830"
 
 
+def slot_for_key(key) -> int | None:
+    """The view slot a number key picks: 0 (the Output) for 1, a view slot for 2 and 3.
+
+    Args:
+        key (QtCore.Qt.Key): The key pressed.
+
+    Returns:
+        The slot, or None for any other key.
+    """
+    number = key - QtCore.Qt.Key.Key_0
+    if number == chunk_graph.OUTPUT_NUMBER:
+        return 0
+    return next((slot for slot in chunk_graph.VIEW_SLOTS if chunk_graph.view_number(slot) == number), None)
+
+
 class ViewSlotState(QtCore.QObject):
     """Shared view-slot state for a context tab.
 
-    Holds the active view slot (0 = none, 1–3 = active) and notifies connected
-    widgets when it changes.  The actual blocking/muting logic lives in
-    ChunkGraphView; this object is the lightweight communication bus between
+    Holds the active view slot (0 = none, so the graph cooks to its Output; 1–2 = a view)
+    and notifies connected widgets when it changes.  The actual blocking/muting logic lives
+    in ChunkGraphView; this object is the lightweight communication bus between
     the nodegraph and the params panel.
     """
 
-    slot_changed = QtCore.Signal(int)   # 0 = off, 1–3 = active slot
-    create_view_for = QtCore.Signal(str)  # prim path -- handled by ChunkGraphView
+    slot_changed = QtCore.Signal(int)   # 0 = the Output, 1–2 = active view slot
+    create_view_for = QtCore.Signal(str, int)  # (prim path, slot) -- handled by ChunkGraphView
+    set_output_for = QtCore.Signal(str)  # prim path -- "Set Output", handled by ChunkGraphView
     pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) -- a Pin/Unpin menu toggle
 
     def __init__(self, parent=None):
@@ -2006,28 +2312,42 @@ class ViewSlotState(QtCore.QObject):
         menu.addSeparator()
 
         stage: Usd.Stage | None = grp.get_stage()
-        is_view_chunk = False
+        chunk_type = None
         existing_view_slot: int | None = None
+        is_output_source = False
         if stage:
             prim = stage.GetPrimAtPath(prim_path)
             if prim.IsValid():
-                is_view_chunk = prim.GetAttribute("info:chunkType").Get() == "view"
-            if not is_view_chunk:
+                chunk_type = prim.GetAttribute("info:chunkType").Get()
+            if chunk_type not in ("view", "output"):
                 for p in stage.Traverse():
-                    if p.GetAttribute("info:chunkType").Get() != "view":
+                    p_type = p.GetAttribute("info:chunkType").Get()
+                    if p_type not in ("view", "output"):
                         continue
                     exec_in = p.GetAttribute(chunk_naming.EXEC_INPUT)
                     if exec_in.IsValid():
                         for conn_path in exec_in.GetConnections():
-                            if str(conn_path.GetPrimPath()) == prim_path:
+                            if str(conn_path.GetPrimPath()) != prim_path:
+                                continue
+                            if p_type == "output":
+                                is_output_source = True
+                            else:
                                 existing_view_slot = p.GetAttribute("view:slot").Get()
 
-        if existing_view_slot is not None:
-            view_action = menu.addAction(f"Activate View {existing_view_slot}")
-        elif is_view_chunk:
-            view_action = None
-        else:
-            view_action = menu.addAction("Set View")
+        # "Set Output" over one entry per view slot: picking a slot that already has a view
+        # re-points that view here. What already ends at this chunk is shown checked.
+        output_action = None
+        view_actions: dict = {}
+        if chunk_type not in ("view", "output"):
+            output_action = menu.addAction("Set Output")
+            output_action.setCheckable(True)
+            output_action.setChecked(is_output_source)
+        if chunk_type != "view":
+            for slot in chunk_graph.VIEW_SLOTS:
+                act = menu.addAction(f"Set View {chunk_graph.view_number(slot)}")
+                act.setCheckable(True)
+                act.setChecked(slot == existing_view_slot)
+                view_actions[act] = slot
 
         res = self._exec_menu(menu, global_pos)
         if not res:
@@ -2063,11 +2383,14 @@ class ViewSlotState(QtCore.QObject):
             for target in targets:
                 chunk_stage.set_chunk_pinned(target, new_pinned)
                 self.pin_changed.emit(target, new_pinned)
-        elif view_action and res == view_action:
-            if existing_view_slot is not None:
-                self.set_slot(existing_view_slot)
+        elif output_action and res == output_action:
+            self.set_output_for.emit(prim_path)
+        elif res in view_actions:
+            slot = view_actions[res]
+            if slot == existing_view_slot:
+                self.set_slot(slot)
             else:
-                self.create_view_for.emit(prim_path)
+                self.create_view_for.emit(prim_path, slot)
         elif copy_action and res == copy_action:
             graph_view._copy_selected_to_clipboard()
         elif cut_action and res == cut_action:
@@ -2291,13 +2614,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if not self._is_tab_context_widget or not self._view_overlay:
             return
         if slot == 0:
-            text = "View: –"
+            text = "Output"
             self._view_overlay.setStyleSheet(
-                "background: rgba(40,40,40,180); color: rgb(130,130,130);"
+                "background: rgba(58,111,143,210); color: white;"
                 "border-radius: 4px; padding: 3px 8px;"
             )
         else:
-            text = f"View: {slot}"
+            text = f"View: {chunk_graph.view_number(slot)}"
             self._view_overlay.setStyleSheet(
                 "background: rgba(200,120,48,210); color: white;"
                 "border-radius: 4px; padding: 3px 8px;"
@@ -2326,14 +2649,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
-            if event.key() in (
-                QtCore.Qt.Key.Key_1,
-                QtCore.Qt.Key.Key_2,
-                QtCore.Qt.Key.Key_3,
-            ):
-                slot = event.key() - QtCore.Qt.Key.Key_0
-                cur = self._view_state.active_slot
-                self._view_state.set_slot(0 if cur == slot else slot)
+            if (slot := slot_for_key(event.key())) is not None:
+                self._view_state.set_slot(slot)
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -2685,10 +3002,66 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return super().eventFilter(watched, event)
 
 
-def confirm_dial(msg) -> bool:
+def confirm_dial(msg, title: str | None = None, detail: str | None = None) -> bool:
     dial = QtWidgets.QMessageBox(text=msg)
+    if title:
+        dial.setWindowTitle(title)
+    if detail:
+        dial.setInformativeText(detail)
     dial.setStandardButtons(QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Yes)
     return dial.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+
+def progress_dial(title: str, label: str, run):
+    """Run `run(on_line)` on a worker thread behind a modal progress dialog; return its result.
+
+    The bar is a busy indicator -- pip does not say how much is left until it is done -- and
+    the line under the label is the last thing `run` reported, so a long download is
+    visibly moving. Modal, and the call does not return until the work has, so the caller
+    can use the result as if it had run inline; the UI repaints meanwhile.
+
+    `run` must not touch Qt: on_line only queues the text, which a timer on the main
+    thread puts on screen.
+    """
+    dial = QtWidgets.QProgressDialog(label, "", 0, 0)
+    dial.setWindowTitle(title)
+    dial.setCancelButton(None)  # pip cannot be stopped halfway cleanly
+    dial.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+    dial.setMinimumDuration(0)
+    dial.setMinimumWidth(480)
+
+    lines: list[str] = []
+    result: list = []
+    errors: list[BaseException] = []
+
+    def work():
+        try:
+            result.append(run(lines.append))
+        except BaseException as exc:  # handed back to the main thread below
+            errors.append(exc)
+
+    loop = QtCore.QEventLoop()
+    worker = threading.Thread(target=work, name="usd_chunks-pip", daemon=True)
+
+    def poll():
+        if lines:
+            dial.setLabelText(f"{label}\n{lines[-1][:120]}")
+        if not worker.is_alive():
+            timer.stop()
+            loop.quit()
+
+    timer = QtCore.QTimer()
+    timer.timeout.connect(poll)
+    dial.show()
+    worker.start()
+    timer.start(50)
+    loop.exec()
+    dial.close()
+    dial.deleteLater()
+
+    if errors:
+        raise errors[0]
+    return result[0]
 
 
 def source_code_dial(src: str, highlighter: chunk_core.SyntaxHighlightMapping):
@@ -2817,6 +3190,101 @@ class _SearchResults(QtWidgets.QTreeWidget):
         }
         target = max(0, min(count - 1, moves.get(key, row)))
         self.setCurrentItem(self.topLevelItem(target))
+
+
+class _ListItem(NamedTuple):
+    """A plain text row for _SearchResults: a label with no category."""
+
+    label: str
+    tooltip: str = ""
+
+    @property
+    def namespace(self) -> tuple:
+        return (self.label,)
+
+
+class _SearchableListMenu(QtWidgets.QMenu):
+    """A Menu param's popup when it has too many items for a plain menu.
+
+    A search field over one scrolling list, so hundreds of items (Apply Schema lists every
+    API schema a plugin registers) stay one column instead of a screen-wide grid. Typing
+    keeps the items that contain every typed word, in their menu order.
+    """
+
+    #: Items a plain QMenu shows; more get this menu.
+    MAX_PLAIN_ITEMS = 25
+
+    #: Rows on screen at once; more scroll.
+    VISIBLE_ROWS = 20
+
+    _NAV_KEYS = (
+        QtCore.Qt.Key.Key_Down,
+        QtCore.Qt.Key.Key_Up,
+        QtCore.Qt.Key.Key_PageDown,
+        QtCore.Qt.Key.Key_PageUp,
+    )
+
+    #: Emitted with the text of the item that was picked.
+    picked = QtCore.Signal(str)
+
+    def __init__(self, items: list[str], current: str, parent=None):
+        super().__init__(parent)
+        self._items = [_ListItem(text) for text in items]
+        self._width = None
+        self.search = QtWidgets.QLineEdit(placeholderText="Search...")
+        self.search.textChanged.connect(self._filter)
+        self.search.installEventFilter(self)
+        search_action = QtWidgets.QWidgetAction(self)
+        search_action.setDefaultWidget(self.search)
+        self.addAction(search_action)
+
+        self.results = _SearchResults()
+        self.results.setColumnHidden(1, True)  # no categories here
+        self.results.picked.connect(self._pick)
+        self._results_action = QtWidgets.QWidgetAction(self)
+        self._results_action.setDefaultWidget(self.results)
+        self.addAction(self._results_action)
+
+        self._filter("")
+        # Sized once for the full list, so the menu keeps its width while filtering, and
+        # the name fills the row so the highlight does too.
+        self._width = self.results.width()
+        self.results.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        if current in items:
+            item = self.results.topLevelItem(items.index(current))
+            self.results.setCurrentItem(item)
+            self.results.scrollToItem(item, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.search.setFocus()
+
+    def _filter(self, text: str) -> None:
+        words = text.lower().split()
+        shown = [item for item in self._items if all(w in item.label.lower() for w in words)]
+        self.results.show_entries(shown, self.VISIBLE_ROWS)
+        if self._width is not None:
+            self.results.setFixedWidth(self._width)
+        # A QMenu measures a widget action once and caches it; changing the action's
+        # text is what makes it measure again after the list changes size.
+        self._results_action.setText(f"{len(shown)}:{self.results.height()}")
+
+    def _pick(self, entry) -> None:
+        if entry is None:
+            return
+        self.close()
+        self.picked.emit(entry.label)
+
+    def eventFilter(self, obj, event):
+        if obj is self.search and event.type() == QtCore.QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+                self._pick(self.results.current_entry())
+                return True
+            if key in self._NAV_KEYS:
+                self.results.step(key)
+                return True
+        return super().eventFilter(obj, event)
 
 
 class FilterableChunkMenu(QtWidgets.QMenu):

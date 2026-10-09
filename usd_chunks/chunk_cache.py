@@ -13,10 +13,31 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import zlib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def user_cache_dir(*parts: str) -> str:
+    """A per-user folder for what usd_chunks keeps between runs, joined with parts.
+
+    %LOCALAPPDATA%/usd_chunks on Windows, $XDG_CACHE_HOME (else ~/.cache)/usd_chunks
+    elsewhere. Never beside the package: installed, that is site-packages, often read-only
+    and shared. Not created here; whoever writes into it does that.
+
+    Args:
+        *parts: Subfolders and/or a file name inside the usd_chunks folder.
+
+    Returns:
+        The path.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "usd_chunks", *parts)
 
 
 def compute_checksum(obj: str) -> int:

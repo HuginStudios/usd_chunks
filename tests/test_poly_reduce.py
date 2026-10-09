@@ -569,7 +569,7 @@ def test_an_unchanged_recook_does_not_redo_the_reduction(wired, monkeypatch) -> 
     real_plan = module._plan_mesh
     monkeypatch.setattr(module, "_plan_mesh", lambda *a, **k: plans.append(1) or real_plan(*a, **k))
 
-    assert node.cook()
+    assert node._cook()
 
     assert plans == [], "an unchanged recook reduced the mesh again"
     assert _triangle_count(stage) == reduced_count, "and the result is written back"

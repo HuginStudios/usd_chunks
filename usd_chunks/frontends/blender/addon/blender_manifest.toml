@@ -30,3 +30,4 @@ license = ["SPDX:Apache-2.0"]
 
 [permissions]
 files = "Read and write .usda chunk networks chosen by the user"
+network = "Install the Python packages a chunk needs, when you agree to it"

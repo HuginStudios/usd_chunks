@@ -11,7 +11,7 @@ from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore, QtGui
 
-from usd_chunks import chunk_notice, chunk_registry, chunk_scene, shader_defs
+from usd_chunks import chunk_notice, chunk_registry, chunk_scene, configure_logging, shader_defs
 from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks.frontends.qt import window_state as chunk_window_state
 from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
@@ -82,6 +82,10 @@ class UsdviewScene(chunk_scene.SceneSender):
         # a free camera we caused to be rebuilt from one the user owns, and that runs on any
         # view setting change, long before anything asks for a viewport camera.
         self._snap_prim = None
+        #: The path of _snap_prim, taken when it was handed over. The snap lands 150ms later,
+        #: and a cook in between that re-authors the camera (the Camera chunk's own button
+        #: cooks it) leaves the handle expired; the path finds the prim it became.
+        self._snap_path = None
         #: The user's own free-camera field of view, held across usdview rebuilding it.
         self._free_camera_fov = None
         #: The user's own free-camera near/far overrides (None each when usdview's defaults),
@@ -147,6 +151,53 @@ class UsdviewScene(chunk_scene.SceneSender):
     def should_install_package(self, package_name: str) -> bool:
         return chunk_qt.confirm_dial(f"Install package dependency {package_name}?")
 
+    def should_install_packages(self, packages, chunk_name: str) -> bool:
+        if chunk_notice._loading_stage is not None:
+            # Not while a scene loads. The dialog runs its own event loop, and usdview's
+            # queued work then runs on a half-loaded stage: opening a scene with an RBD
+            # Solver crashed in the prim tree (_resizePrimView). Say no for now, so the
+            # chunk loads without it, and ask once the load is over.
+            QtCore.QTimer.singleShot(
+                0, QtCore.QCoreApplication.instance(), lambda: self._ask_after_load(packages, chunk_name)
+            )
+            return False
+        target = chunk_registry.ChunkDependencyManager().target_dir()
+        return chunk_qt.confirm_dial(
+            f"OK to install {', '.join(packages)} for chunk {chunk_name}?",
+            title="Missing chunk dependencies",
+            detail=f"pip will install into {target}. Without it the chunk cannot load.",
+        )
+
+    def _ask_after_load(self, packages, chunk_name: str) -> None:
+        """Ask about packages a chunk missed while the scene was loading, and install on a yes."""
+        if chunk_notice._loading_stage is not None:
+            QtCore.QTimer.singleShot(
+                100, QtCore.QCoreApplication.instance(), lambda: self._ask_after_load(packages, chunk_name)
+            )
+            return
+        deps = chunk_registry.ChunkDependencyManager()
+        if chunk_qt.confirm_dial(
+            f"OK to install {', '.join(packages)} for chunk {chunk_name}?",
+            title="Missing chunk dependencies",
+            detail=f"pip will install into {deps.target_dir()}. The scene is already open, so "
+            f"reopen it afterwards to load {chunk_name} with them.",
+        ) and deps.install(packages, chunk_name):
+            logger.info("Installed %s for %s. Reopen the scene to load it.", ", ".join(packages), chunk_name)
+
+    def run_install(self, packages, chunk_name: str, run):
+        if chunk_notice._loading_stage is not None:
+            # Not behind the progress dialog while a scene loads: its event loop crashes
+            # usdview the same way the question did (see should_install_packages). With
+            # USD_CHUNK_AUTO_INSTALL=1 nothing is asked, so the install lands here mid-load.
+            # Run pip in place instead; usdview just waits for it.
+            logger.info("Installing %s for chunk %s...", ", ".join(packages), chunk_name)
+            return run()
+        return chunk_qt.progress_dial(
+            "Installing chunk dependencies",
+            f"Installing {', '.join(packages)} for chunk {chunk_name}...",
+            run,
+        )
+
     def primSelectionChangedCallback(self, added, removed):
         if not added and not removed:
             return
@@ -154,6 +205,22 @@ class UsdviewScene(chunk_scene.SceneSender):
 
     def get_stage(self) -> Usd.Stage:
         return self.usdviewAPI.stage  # type: ignore
+
+    def call_later(self, fn, delay: float = 0.0):
+        """QTimer.singleShot on the application, so a worker thread's call lands on the main
+        thread's loop -- a bare singleShot from a thread with no loop never fires."""
+        cancelled = []
+
+        def fire():
+            if not cancelled:
+                fn()
+
+        QtCore.QTimer.singleShot(max(0, int(delay * 1000)), QtCore.QCoreApplication.instance(), fire)
+        return lambda: cancelled.append(True)
+
+    def get_host(self) -> tuple[str, str]:
+        # usdview ships with USD, so its version is USD's: (0, 26, 5) -> "0.26.5".
+        return "usdview", ".".join(str(part) for part in Usd.GetVersion())
 
     def get_selected_prims(self) -> list[Usd.Prim]:
         return self.usdviewAPI.selectedPrims  # type: ignore
@@ -272,6 +339,7 @@ class UsdviewScene(chunk_scene.SceneSender):
         # the last moment its lens means anything.
         self._remember_free_camera_lens()
         self._snap_prim = prim
+        self._snap_path = prim.GetPath()
         self._camera_snap_timer.start(150)
 
     def _remember_free_camera_lens(self) -> None:
@@ -373,6 +441,7 @@ class UsdviewScene(chunk_scene.SceneSender):
             return
         self._camera_snap_timer.stop()
         self._snap_prim = None
+        self._snap_path = None
         # Unconditional, not waiting on a remembered fov: the prim's clipping was put on by us,
         # so even a user whose lens was never learned needs it taken off again.
         # A fov never learned is still left alone -- see _reconcile_free_camera_lens.
@@ -382,8 +451,15 @@ class UsdviewScene(chunk_scene.SceneSender):
         # IsValid: the stage can be closed between the snap being queued and this firing
         # (File > Open, or usdview's --quitAfterStartup), and usdview raises on an expired
         # prim -- which, from a timer slot, takes the application down with it.
-        if self._snap_prim is not None and self._snap_prim.IsValid():
-            self._set_viewport_camera(self._snap_prim)
+        if self._snap_prim is None:
+            return
+        if not self._snap_prim.IsValid():
+            stage = self.get_stage()
+            prim = stage.GetPrimAtPath(self._snap_path) if stage and self._snap_path else None
+            if prim is None or not prim.IsValid():
+                return
+            self._snap_prim = prim
+        self._set_viewport_camera(self._snap_prim)
 
     def _on_chunk_deleted(self, notice, sender) -> None:
         # Next tick: the prim goes after the notice.
@@ -476,6 +552,7 @@ class ChunksPluginContainer(PluginContainer):
             plugRegistry: The plugin registry to register the UI Creator plugin with.
             plugCtx: The Usdview API instance to use for module creation.
         """
+        configure_logging()
         self._openModuleSettingsCommand = plugRegistry.registerCommandPlugin(
             "ChunksPlugin.openModuleSettings", "Modules", self.openModuleSettings
         )

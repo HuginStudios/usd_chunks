@@ -169,12 +169,13 @@ def test_only_the_ancestors_are_marked_on_the_tabs(nested):
     for i in range(docker.tab_widget.count()):
         ctx = docker.tab_widget.widget(i).ctx()
         if ctx is not None:
-            colours[ctx.name] = bar.tabTextColor(i)
+            # By the group itself, not its name: groups in different parents may share one.
+            colours[id(ctx)] = bar.tabTextColor(i)
 
-    marked = colours.get(nested["outer"].name)
-    assert marked == colours.get(nested["middle"].name), "both ancestors marked alike"
-    assert colours.get(nested["sibling"].name) != marked, "an unrelated group is not"
-    assert colours.get(nested["inner"].name) != marked, "nor the tab you are on"
+    marked = colours.get(id(nested["outer"]))
+    assert marked == colours.get(id(nested["middle"])), "both ancestors marked alike"
+    assert colours.get(id(nested["sibling"])) != marked, "an unrelated group is not"
+    assert colours.get(id(nested["inner"])) != marked, "nor the tab you are on"
 
 
 def test_a_context_with_no_parent_is_a_path_of_one(qapp):

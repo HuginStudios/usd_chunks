@@ -18,7 +18,6 @@ from usd_chunks.chunk_stage import (
     _EXEC_INPUT,
     _EXEC_OUTPUT,
     _INPUTS_PREFIX,
-    _author_prim,
     _load_wire_inputs,
     _reorder_graph_layers_by_rank,
     ChunkStageSync,
@@ -34,6 +33,7 @@ from usd_chunks.chunk_stage import (
     get_upstream_stage,
     exec_output_path,
 )
+from chunk_prim_authoring import _author_prim
 from usd_chunks.chunk_utils import get_unique_path
 from usd_chunks import chunk, chunk_registry, chunk_scheduler
 from usd_chunks.chunk_core import ChunkBase, ChunkConfig, ChunkFlags
@@ -461,6 +461,9 @@ def test_reload_for_stage_resets_on_same_path_fresh_stage(tmp_path) -> None:
     Sdf.Layer.CreateNew(str(out)).Save()
 
     stage1 = Usd.Stage.Open(str(out))
+    # As usdview opens it. Targeting the root, the chunk below would be authored into the
+    # file's layer, which Sdf shares with stage2 -- so stage2 would rightly load it.
+    stage1.SetEditTarget(stage1.GetSessionLayer())
 
     class _Scene(_DummyScene):
         def __init__(self):
@@ -1848,12 +1851,13 @@ def test_get_unique_path_does_not_count_the_chunks_own_prim() -> None:
 
     # Authored straight into the layer: DefinePrim over an already-defined prim of the same
     # type authors nothing, so it would not give the other layer a spec at all.
+    # Defined by another layer as well, it is that layer's opinion on the same prim, not a
+    # collision: department layers define the same prims all the time. Only a def landing in
+    # the same real layer is (test_unique_path_per_target_layer).
     other = Sdf.Layer.CreateAnonymous()
     Sdf.CreatePrimInLayer(other, Sdf.Path("/cameras/cam1")).specifier = Sdf.SpecifierDef
     stage.GetSessionLayer().subLayerPaths.append(other.identifier)
-    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam2", (
-        "defined by another layer as well, it is a real collision"
-    )
+    assert get_unique_path(stage, "/cameras/cam1", own_layer=own) == "/cameras/cam1"
 
 
 # ---------------------------------------------------------------------------

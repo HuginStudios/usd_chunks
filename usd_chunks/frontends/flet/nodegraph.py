@@ -31,7 +31,7 @@ import flet as ft
 import flet.canvas as cv
 from pxr import Usd
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.frontends.flet import factory as chunk_flet
@@ -730,7 +730,7 @@ class GraphView:
 
     def _nest_target(self):
         """The chunk new chunks should be parented to: the group being shown, or None."""
-        return chunk_graph.nest_target(self.chunks.get(self.context))
+        return chunk_graph.nest_target(chunk_graph.context_chunk(self.scene, self.chunks, self.context))
 
     # -- view slots --------------------------------------------------------
 
@@ -783,7 +783,7 @@ class GraphView:
             return self.refresh()
         chosen = [p for p in self.selected_nodes if p in self.prims]
         slot = chunk_graph.new_view_slot(self.stage, self.scene,
-                                         self.chunks.get(self.context),
+                                         chunk_graph.context_chunk(self.scene, self.chunks, self.context),
                                          chosen[0] if chosen else None)
         if slot is None:
             self.status = "no view created"
@@ -794,16 +794,17 @@ class GraphView:
         self.set_active_slot(slot)
 
     def _ensure_view(self) -> None:
-        """Give the context a view on open. Without one, nothing cooks -- a network would
-        look right and do nothing.
+        """Give the context an Output (or, failing that, a view) on open. Without one,
+        nothing cooks -- a network would look right and do nothing.
         """
+        before = len(self.scene.get_chunks())
         slot, activate = chunk_graph.default_view_slot(
-            self.stage, self.scene, self.context, self.chunks.get(self.context))
-        if slot is None:
+            self.stage, self.scene, self.context, chunk_graph.context_chunk(self.scene, self.chunks, self.context))
+        if slot is None and len(self.scene.get_chunks()) == before:
             return
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
-        if activate:
+        if slot is not None and activate:
             self.set_active_slot(slot)
 
     # -- keyboard ----------------------------------------------------------
@@ -845,7 +846,7 @@ class GraphView:
             return self.dive_out()
         if key == "enter" and len(self.selected_nodes) == 1:
             return self.dive_into(next(iter(self.selected_nodes)))
-        if key in ("0", "1", "2", "3") and not event.ctrl:
+        if key in ("0", "1", "2") and not event.ctrl:
             return self.set_active_slot(int(key))
         if key == "v" and not event.ctrl:
             return self.create_view()
@@ -1247,6 +1248,7 @@ class GraphView:
 
 
 def main(page: ft.Page, network: str, context: str | None = None):
+    configure_logging()
     view = GraphView(network, context)
     view.page = page
     page.on_keyboard_event = view.on_key

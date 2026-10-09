@@ -1,8 +1,9 @@
 """View slots in the Flet graph.
 
-A context has up to three view slots; the active one drives execution. The slot lives on
-the context prim as chunk:activeView -- the same attribute the Qt graph reads and writes,
-so a file saved with slot 2 active opens on slot 2 in either frontend.
+A context has up to two view slots; the active one drives execution, and with none
+active the context cooks to its Output. The slot lives on the context prim as
+chunk:activeView -- the same attribute the Qt graph reads and writes, so a file saved
+with slot 2 active opens on slot 2 in either frontend.
 """
 from __future__ import annotations
 
@@ -33,16 +34,28 @@ def key(name, ctrl=False):
                             shift=False, ctrl=ctrl, alt=False, meta=False)
 
 
-class TestCreatingViews:
-    def test_a_network_opens_with_a_view(self, view):
-        """Every frontend creates one on open, as Qt always has.
+def two_views(view):
+    """A view on each content node: slots 1 and 2, the second one active."""
+    for node in content_nodes(view)[:2]:
+        view.set_selection([node])
+        view.create_view()
 
-        Not decoration: recook_for_view cooks the active view's upstream tree and blocks
-        everything else, so a context WITHOUT a view cooks nothing at all -- a network
-        would look right and do nothing.
+
+def output_nodes(view):
+    return [p for p, prim in view.prims.items()
+            if prim.GetAttribute("info:chunkType").Get() == "output"]
+
+
+class TestCreatingViews:
+    def test_a_network_opens_with_an_output(self, view):
+        """Every frontend gives a context an Output on open, and no view.
+
+        Not decoration: a context with neither cooks nothing at all -- a network would
+        look right and do nothing. Views are for looking, added when someone wants one.
         """
-        assert sorted(view.view_chunks()) == [1]
-        assert view.active_slot() == 1
+        assert len(output_nodes(view)) == 1
+        assert view.view_chunks() == {}
+        assert view.active_slot() == 0
 
     def test_v_on_a_selected_node_adds_a_view_for_it(self, view):
         node = content_nodes(view)[0]
@@ -51,7 +64,7 @@ class TestCreatingViews:
         view.on_key(key("V"))
         made = set(view.prims) - before
         assert made, "no view node was created"
-        assert sorted(view.view_chunks()) == [1, 2]
+        assert sorted(view.view_chunks()) == [1]
 
     def test_a_second_view_on_the_same_node_reuses_its_slot(self, view):
         """create_view_for returns the EXISTING slot rather than duplicating, so a caller
@@ -64,12 +77,9 @@ class TestCreatingViews:
         view.create_view()
         assert sorted(view.view_chunks()) == slots
 
-    def test_a_fourth_view_is_refused(self, view):
-        for node in content_nodes(view):
-            view.set_selection([node])
-            view.create_view()
+    def test_a_third_view_is_refused(self, view):
+        two_views(view)
         count = len(view.prims)
-        # Slots are 1-3 and the open already took one, so this asks for a fourth.
         view.set_selection(content_nodes(view))
         view.create_view()
         assert len(view.prims) == count
@@ -80,11 +90,10 @@ class TestActiveSlot:
         node = content_nodes(view)[0]
         view.set_selection([node])
         view.create_view()
-        assert view.active_slot() == 2
+        assert view.active_slot() == 1
 
     def test_switching_slots(self, view):
-        view.set_selection([content_nodes(view)[0]])
-        view.create_view()
+        two_views(view)
         view.on_key(key("1"))
         assert view.active_slot() == 1
         view.on_key(key("2"))
@@ -93,8 +102,7 @@ class TestActiveSlot:
     def test_the_slot_is_stored_on_the_context_prim(self, view):
         """Where Qt looks for it. A slot kept only in the view object would not survive a
         save, and would not be seen by the other frontend at all."""
-        view.set_selection([content_nodes(view)[0]])
-        view.create_view()
+        two_views(view)
         view.set_active_slot(2)
         prim = view.stage.GetPrimAtPath(view.context)
         assert prim.GetAttribute("chunk:activeView").Get() == 2
@@ -112,13 +120,12 @@ class TestActiveSlot:
     def test_switching_to_an_empty_slot_is_refused(self, view):
         view.set_selection([content_nodes(view)[0]])
         view.create_view()
-        view.set_active_slot(3)
-        assert view.active_slot() == 2, "an empty slot should not become active"
-        assert "no view in slot 3" in view.status
+        view.set_active_slot(2)
+        assert view.active_slot() == 1, "an empty slot should not become active"
+        assert "no view in slot 2" in view.status
 
     def test_the_slot_survives_a_reload(self, view):
-        view.set_selection([content_nodes(view)[0]])
-        view.create_view()
+        two_views(view)
         view.set_active_slot(2)
         reopened = fg.GraphView(view.network, view.context)
         assert reopened.active_slot() == 2
@@ -132,8 +139,7 @@ class TestHeaderColour:
         assert view._header_colour(path, view.prims[path]) == fg.COL_VIEW_HEADER
 
     def test_an_inactive_view_is_dimmed(self, view):
-        view.set_selection([content_nodes(view)[0]])
-        view.create_view()
+        two_views(view)
         view.set_active_slot(2)
         inactive = view.view_chunks()[1]
         colour = view._header_colour(inactive, view.prims[inactive])
@@ -141,5 +147,5 @@ class TestHeaderColour:
         assert colour != fg.COL_NODE_HEADER, "an inactive view should not look like a plain node"
 
     def test_an_ordinary_node_keeps_the_plain_header(self, view):
-        path = sorted(p for p in view.prims if p not in view.view_chunks().values())[0]
+        path = content_nodes(view)[0]
         assert view._header_colour(path, view.prims[path]) == fg.COL_NODE_HEADER

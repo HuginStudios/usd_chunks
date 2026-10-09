@@ -12,7 +12,7 @@
 That's all you need for a working chunk. The rest of this page covers connecting several
 nodes, keyboard shortcuts, disabled and locked nodes, and working inside a ChunkGroup. For
 how the graph is stored (prims, ports, USD connections), see [The graph is
-USD](index.md#the-graph-is-usd). For more on View and ChunkGroup, see [View and
+USD](index.md#the-graph-is-usd). For more on Output, View and ChunkGroup, see [Output, View and
 ChunkGroup](core-chunks.md).
 
 ## Opening the graph
@@ -46,25 +46,28 @@ differently:
   connection, not just a line on screen (see [The graph is
   USD](index.md#the-graph-is-usd) and [Expressions](expressions.md)).
 
-## Nothing cooks without a View
+## Nothing cooks without an Output or a View
 
-Only chunks connected to the active [View](core-chunks.md#view) cook. A new chain does
+Only chunks connected to the active [View](core-chunks.md#view) cook, or with no active
+View, the ones connected to the graph's [Output](core-chunks.md#output). A new chain does
 nothing until it's connected to one.
-**Right-click the chunk whose output you want to see and choose Set View.** That creates a
-View, connects it to the chunk's output, and makes it active. If the chunk is already
-connected to a view, the menu shows **Activate View N** instead. Until then, the nodes are
+**Right-click the chunk whose output you want to see and choose Set View 2 or Set View 3.**
+That connects that View to the chunk's output (creating it if needed) and makes it active.
+The slot already looking at the chunk is shown ticked. Until then, the nodes are
 set up but don't run. This is on purpose, not a bug.
 
-A graph can have up to three views. Press `1`, `2` or `3` to switch the active one. It only
-switches to a number that has a view in the current graph, so you can't blank the graph by
-accident.
+A graph can have up to two views, numbered 2 and 3. Press `2` or `3` to switch to one,
+and `1` to go back to the Output. To end the graph at another chunk, right-click it and
+choose **Set Output**. A key only switches to something the current graph has, so you
+can't blank the graph by accident.
 
 ## Keyboard shortcuts
 
 | Key | Does |
 | --- | --- |
 | `F` | Frame the selection (or everything, if nothing is selected). |
-| `1` / `2` / `3` | Switch to that view, if it exists. |
+| `1` | Cook to the Output. |
+| `2` / `3` | Switch to that view, if it exists. |
 | `L` | Auto-layout the selection, or the whole graph if nothing is selected. |
 | `C` | Collapse the selection, or the whole graph if nothing is selected. |
 | `D` | Disable or enable the selection. |

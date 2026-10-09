@@ -18,8 +18,9 @@ from importlib.resources import files
 from pathlib import Path
 
 from pxr import Usd
-from usd_chunks import chunk_naming
-from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scheduler
+from usd_chunks import chunk_naming, configure_logging
+from usd_chunks.chunk_process import python_executable
+from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene
@@ -27,6 +28,7 @@ from usd_chunks.chunk_stage import flatten_without_chunks
 from usd_chunks.chunk_stage import (
     commit_order_from_stage,
     find_group_active_view,
+    find_output_chunk,
     is_view_chunk,
     recook_focus,
 )
@@ -355,7 +357,10 @@ def cmd_pin(args):
 
 
 def _active_view(stage, scene):
-    """The view chunk that drives the stage, or None if the file has none.
+    """The chunk that drives the stage: the file's Output, else a view, else None.
+
+    The Output first: it is what the file delivers, and a view is only where someone last
+    looked. A file saved before Output nodes falls back to its active view.
 
     A network is only worth cooking if something looks at it. The UI has always worked this
     way -- recook_focus establishes the active view and mutes everything the view cannot
@@ -374,6 +379,8 @@ def _active_view(stage, scene):
     cooking everything, because silently producing nothing for every existing recipe would
     be worse than cooking too much.
     """
+    if (output := find_output_chunk(stage, scene, None)) is not None:
+        return output
     everything = list(_all_chunks(scene.get_chunks()))
     views = [c for c in everything if is_view_chunk(c)]
     if not views:
@@ -428,6 +435,10 @@ def cmd_run(args):
     if view is not None:
         recook_focus(stage, scene, None, view)
 
+    # Whatever a worker thread handed back during the cook (a download finishing) runs
+    # here, on the main thread, before anything is written.
+    chunk_scene.run_pending()
+
     # The solve has settled, so anything the network declared as an output on disk (an
     # Export USD chunk, ...) gets written now -- before --export/--printout report on the
     # composed stage.
@@ -438,6 +449,10 @@ def cmd_run(args):
         scene.get_chunks(),
         order=lambda cs: commit_order_from_stage(cs, stage),
     )
+
+    if getattr(args, "bake", False):
+        for path in chunk_registry.ChunkLayerManager().save_cook_layers():
+            print(f"Baked: {path}")
 
     if args.export:
         if args.procedural:
@@ -487,7 +502,7 @@ def _run_variant(usda, wedge_name, index, out, procedural, cook_all=False, param
     directory = _variant_dir(out, index)
     os.makedirs(directory, exist_ok=True)
     cmd = [
-        sys.executable, "-m", "usd_chunks.cli", "run", usda,
+        python_executable(), "-m", "usd_chunks.cli", "run", usda,
         *params,
         f"{wedge_name}.current_index={index}",
         "--export", os.path.join(directory, "variant.usda"),
@@ -603,7 +618,7 @@ def _sweep_batched(args, name, indices):
         print(f"Sweeping {len(indices)} variant(s) of {name} -> {args.out}, batched")
         workers = [
             subprocess.Popen([
-                sys.executable, "-m", "usd_chunks.cli", "sweep", args.usda, *args.params,
+                python_executable(), "-m", "usd_chunks.cli", "sweep", args.usda, *args.params,
                 "--out", args.out, "--only", ",".join(str(i) for i in part), "--prepare-only",
                 *(["--all"] if args.all else []),
             ])
@@ -741,7 +756,8 @@ def cmd_deps(args):
 
 
 def cmd_plugin_path(args):
-    """Print the directory to put on PXR_PLUGINPATH_NAME for a given host.
+    """Print the directory of a host integration: the one to put on PXR_PLUGINPATH_NAME for
+    usdview, the Houdini package's hpath for houdini (hosts/houdini/install.py writes it).
 
     Resolved from the installed package rather than the source tree, so the printed path
     is correct whether usd_chunks was pip-installed or is being run from a checkout.
@@ -754,6 +770,7 @@ def cmd_plugin_path(args):
 
 
 def main():
+    configure_logging()
     parser = ArgumentParser(
         prog="usdchunks",
         description="Execute and inspect USD chunk networks serialized as .usda files.",
@@ -806,6 +823,12 @@ def main():
     )
     run_parser.add_argument(
         "--printout", "-p", action="store_true", help="Print the flattened stage to stdout, Chunk prims stripped"
+    )
+    run_parser.add_argument(
+        "--bake",
+        action="store_true",
+        help="Write each cook layer's result to its file (layout.cook.usda beside the "
+             "layout.usda that lists it), so the bake is there without usd_chunks",
     )
     run_parser.add_argument(
         "--all",
@@ -965,11 +988,12 @@ def main():
             "  usdchunks plugin-path\n"
             "  for /f \"delims=\" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i   (Windows cmd)\n"
             '  export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"    (POSIX)\n'
+            "  usdchunks plugin-path --host houdini   (the Houdini package's hpath)\n"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
     plugin_path_parser.add_argument(
-        "--host", choices=["usdview"], default="usdview", help="Which host integration (default: usdview)"
+        "--host", choices=["usdview", "houdini"], default="usdview", help="Which host integration (default: usdview)"
     )
 
     # Overrides are positionals after a positional, and argparse settles a trailing

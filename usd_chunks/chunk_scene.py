@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import threading
 import logging
 import weakref
 from abc import abstractmethod
@@ -27,7 +28,7 @@ from typing import Any
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
+from usd_chunks import chunk_cook, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
 from usd_chunks.graph import engine
@@ -37,6 +38,7 @@ from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkHash,
     NameSyncedContainer,
     all_chunks,
+    group_parent_path,
     check_chunk_type,
     is_inst,
 )
@@ -51,6 +53,34 @@ graph_center_hook: Callable[[], tuple[float, float] | None] | None = None
 
 #: Space between two nodes a script makes, in a row. The same as the default layout's.
 _SCRIPT_NODE_STEP = 260.0
+
+
+# call_later's hand-offs from other threads, waiting for the main thread (run_pending).
+_pending_calls: list[Callable[[], Any]] = []
+_pending_lock = threading.Lock()
+
+
+def run_pending() -> None:
+    """Run what other threads handed to call_later, on this (the main) thread.
+
+    For a scene with no event loop: call_later drains this on every main-thread call, and
+    `usdchunks run` before it writes anything. A host with a loop never queues here.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    while True:
+        with _pending_lock:
+            if not _pending_calls:
+                return
+            fn = _pending_calls.pop(0)
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - one bad hand-off must not stop the rest
+            logger.exception("a call handed to the main thread failed")
+
+
+def _no_op() -> None:
+    """What call_later returns when there is nothing left to cancel."""
 
 
 class SceneSender(chunk_notice.ChunkNoticePropagator):
@@ -255,6 +285,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         self._modified = True
 
+    def _sibling_names(self, parent, chunk) -> set[str]:
+        """The names chunk may not take in parent: the other groups nested in it.
+
+        Groups sit in the flat scene container, not in their parent's children, so they are
+        found by the parent they record; plain chunks in parent are in get_reserved_names.
+        """
+        home = group_parent_path(chunk)
+        return {
+            other.name for other in self.chunks.get_my_params()
+            if other is not chunk
+            and other.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+            and group_parent_path(other) == home
+        }
+
     def add_chunk(self, c: ChunkBase, notify: bool = True) -> ChunkBase | None:
         """Adds a chunk to the root of the scene.
 
@@ -288,7 +332,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             and c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
             and getattr(c, "prim_path", None)
         )
-        if c.name in names and not restoring:
+        # A group is checked against its siblings once its parent is known, below: it is
+        # unique by prim path, so only another chunk in the same parent can clash.
+        if c.name in names and not restoring and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             c.name = c.get_valid_child_name(c.name, set(names))
         try:
             c.check_hierarchy()
@@ -342,8 +388,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # renamed exactly the groups a file is most authoritative about. During a load,
             # nothing here renames anything.
             loading = chunk_notice._loading_stage is not None
-            if parent_ctx is not None and not restoring and not loading:
-                reserved = set(names) | set(parent_ctx.get_reserved_names())
+            if not restoring and not loading:
+                # Its siblings -- the chunks and groups in the same parent -- and the names
+                # of the groups it sits inside, so a breadcrumb never repeats itself. A group
+                # is unique by prim path, as in USD, so /chunks/ChunkGroup/a/b next to
+                # /chunks/ChunkGroup/c/b is fine; checking every group in the scene renamed
+                # the second one b1 for no reason.
+                reserved = self._sibling_names(parent_ctx, c)
+                if parent_ctx is not None:
+                    reserved |= set(parent_ctx.get_reserved_names())
+                ancestor = parent_ctx
+                while ancestor is not None:
+                    reserved.add(ancestor.name)
+                    ref = getattr(ancestor, "_parent_context", None)
+                    ancestor = ref() if ref else None
                 if c.name in reserved:
                     c.name = c.get_valid_child_name(c.name, reserved)
             self._current_context = weakref.ref(c)
@@ -415,8 +473,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         return res if isinstance(res, ChunkBase) else None
 
     def get_context_for_prim_path(self, path: str) -> ChunkBase | None:
-        """Return the CONTEXT chunk whose prim_path matches path, or None."""
-        for c in self.get_chunks():
+        """Return the CONTEXT chunk whose prim_path matches path, or None.
+
+        Searches every container (get_contexts), not only graph nodes: a loaded file's
+        outermost chunkgroup is a node in no graph, and is the context shown first.
+        """
+        for c in self.get_contexts():
             if isinstance(c, ChunkBase) and c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 if getattr(c, "prim_path", None) == path:
                     return c
@@ -587,6 +649,44 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return False
 
+    def should_install_packages(self, packages: Sequence[str], chunk_name: str) -> bool:
+        """Whether a chunk's missing pip requirements may be installed, asked once for all of them.
+
+        The ChunkDependencyManager calls this when a chunk being loaded needs packages that
+        are not installed. A host with someone to ask asks them -- "OK to install requests
+        for chunk AMDMaterialXLibrary?" -- and returns their answer; a host without one
+        returns False, and the missing packages are named in a warning instead.
+
+        Defaults to asking should_install_package about each one, so hosts that override
+        only that keep working.
+
+        Args:
+            packages: The requirement strings to install, e.g. "requests>=2,<3".
+            chunk_name: The chunk module that needs them.
+
+        Returns:
+            bool: True to install all of them.
+        """
+        return all(self.should_install_package(p) for p in packages)
+
+    def run_install(self, packages: Sequence[str], chunk_name: str, run: Callable) -> Any:
+        """Run a pip install the user has agreed to, showing whatever progress the host can.
+
+        `run(on_line)` does the install and returns its result, calling `on_line` with each
+        line pip prints. It touches nothing but the subprocess, so a host may call it on a
+        worker thread and keep its UI alive -- but must return its result, from this call,
+        once it is done. The default just runs it.
+
+        Args:
+            packages: The requirement strings being installed.
+            chunk_name: The chunk that needs them.
+            run: The install; returns what this method must return.
+
+        Returns:
+            Whatever `run` returned.
+        """
+        return run(None)
+
     @abstractmethod
     def get_stage(self) -> Usd.Stage | None:
         """Get the current scene stage. Implemented by a host.
@@ -613,6 +713,73 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             Usd.Property | None: Selected property
         """
         return None
+
+    def call_later(self, fn: Callable[[], Any], delay: float = 0.0) -> Callable[[], None]:
+        """Run `fn` on the main thread after `delay` seconds; returns a function that cancels it.
+
+        The one way module code gets back to the main thread, which is the only thread that
+        may touch USD or the host's UI: a download finishing on a worker thread hands its
+        result over with this, and a debounce cancels the last call and makes a new one.
+        Safe to call from any thread.
+
+        A host with an event loop overrides this (usdview with a QTimer, Blender with
+        bpy.app.timers). Here, with no loop to wait in -- `usdchunks run`, a script -- `fn`
+        runs now on the main thread, and `delay` is ignored: nothing would ever wake up to
+        run it later. From any other thread it is queued for the main thread instead
+        (run_pending), never run where it was called: a download finishing on a pool thread
+        that set a param from there cooked USD off the main thread and crashed.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            with _pending_lock:
+                _pending_calls.append(fn)
+
+            def cancel() -> None:
+                with _pending_lock:
+                    if fn in _pending_calls:
+                        _pending_calls.remove(fn)
+            return cancel
+        run_pending()
+        fn()
+        return _no_op
+
+    def user_layers(self, stage: Usd.Stage) -> list[tuple[str, Sdf.Layer]]:
+        """The layers a user picks or exports on stage, by name, strongest first.
+
+        What Export USD lists and Edit Target offers. Here every layer in the stack, the
+        session layer's included. A host whose stack holds layers of its own overrides it
+        (Houdini lists only the layers a Layer chunk named, and files).
+
+        Args:
+            stage: The stage.
+
+        Returns:
+            (name, layer) pairs.
+        """
+        return [(layer.GetDisplayName() or layer.identifier, layer)
+                for layer in stage.GetLayerStack(includeSessionLayers=True)]
+
+    def export_layer(self, layer: Sdf.Layer) -> Sdf.Layer:
+        """The layer to write to a file for layer: here layer itself.
+
+        A host that keeps bookkeeping of its own in its layers returns a copy without it
+        (Houdini's HoudiniLayerInfo prim).
+
+        Args:
+            layer: The layer about to be written.
+
+        Returns:
+            The layer to write.
+        """
+        return layer
+
+    def get_host(self) -> tuple[str, str]:
+        """(name, version) of the application this scene lives in, e.g. ("blender", "5.1.0").
+
+        What a module's `hosts` config is matched against (ChunkModule.should_load_for_host).
+        Lower-case name; ("", "") for no particular host, which loads only modules that
+        name none.
+        """
+        return "", ""
 
     @abstractmethod
     def get_active_camera(self) -> Gf.Camera | None:
@@ -843,8 +1010,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             name: The node's name; the module's own when omitted.
             **params: See `set`.
         """
-        if name:
-            new.name = name
         # Plain values before the add, so the chunk's first cook -- the one add_chunk
         # triggers -- already sees them, rather than cooking the defaults and then once more
         # per param. Values only, no cook, under the same guard MenuEntry.create sets for
@@ -857,6 +1022,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
+            # Under the guard too: renaming a chunk is a change like any other, and made
+            # first it cooked the chunk once on its defaults (a Preview Surface authored
+            # /materials/surface before its own Material Path was set).
+            if name:
+                new.name = name
             self.set(new, **early)
         finally:
             new._executing = prev
@@ -893,13 +1063,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             else:
                 param.value = value
 
-    def cook(self) -> None:
-        """Run every chunk, upstream first.
+    def execute(self) -> None:
+        """Run every chunk, upstream first: chunk.execute() for the whole scene.
 
         Making a chunk and setting a value already run what they affect, so this is rarely
-        needed.
+        needed. Every chunk cooks once, in the same flush as any other cook
+        (chunk_cook.cook_all); one outside the active view stays stale until a view shows it.
         """
-        execute_roots(self.get_chunks())
+        chunk_cook.cook_all(self.get_chunks())
 
     # save, export and commit live here rather than on the script's Scene, so they work on
     # usdview's scene too (Scene.current()).
@@ -920,32 +1091,71 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
         )
 
-    def view(self, target: ChunkBase) -> ChunkBase | None:
-        """Make the active View show `target`, and cook what it now reaches.
+    def set_view(self, target: ChunkBase, view: int | None = None) -> ChunkBase | None:
+        """Show `target` in a View, make that View active, and cook what it reaches.
 
-        The same as dragging a wire from `target` into the View in the graph: the View's
-        old input is replaced. A graph with no View gets one. Nothing else is rewired.
+        The same as Set View in the graph's right-click menu: the View's old input is
+        replaced, and nothing else is rewired. Views are numbered 2 and 3, as in the graph
+        (1 is the Output, see set_output).
 
         Args:
             target: The chunk to view, usually the last one in a chain.
+            view: The View to use, 2 or 3; made if the graph does not have it yet. None
+                takes a View already showing target, else the first one the graph does
+                not have yet, else the active one.
 
         Returns:
             The View chunk, or None if no View could be made.
+
+        Raises:
+            ValueError: If view is not one of the View numbers.
         """
         stage = self.get_stage()
         target_path = chunk_stage.get_chunk_prim_path(target)
-        context_path, context, slot, view = self._active_view_of(target)
-        if view is None:
-            # Reuses a View already wired to target, or makes one.
-            slot = engine.create_view_for(stage, self, target_path)
-            view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
-            if view is None:
+        context_path, context, active, _ = self._active_view_of(target)
+        if view is not None:
+            slot = next((s for s in engine.VIEW_SLOTS if engine.view_number(s) == view), None)
+            if slot is None:
+                numbers = ", ".join(str(engine.view_number(s)) for s in engine.VIEW_SLOTS)
+                raise ValueError(f"view must be one of {numbers}, not {view!r}")
+        else:
+            slot = (engine.existing_view_slot_for(stage, target_path)
+                    or engine.free_view_slot(stage, context_path)
+                    or active or engine.VIEW_SLOTS[0])
+        holder = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context)
+        if holder is None:
+            if engine.create_view_for(stage, self, target_path, slot) is None:
+                return None
+            holder = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context)
+            if holder is None:
                 return None
         else:
-            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(view))
+            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(holder))
         engine.write_active_slot(stage, context_path, slot)
-        chunk_stage.recook_for_view(stage, self, context, view)
-        return view
+        chunk_stage.recook_for_view(stage, self, context, holder)
+        return holder
+
+    def set_output(self, target: ChunkBase) -> ChunkBase | None:
+        """End `target`'s graph at it: wire the graph's Output from it, and cook to the Output.
+
+        The same as Set Output in the graph's right-click menu. A graph with no Output gets
+        one. No View stays active, so the graph cooks to its Output: what `usdchunks run`
+        cooks and what a ChunkGroup delivers.
+
+        Args:
+            target: The chunk that ends the graph, usually the last one in a chain.
+
+        Returns:
+            The Output chunk, or None if target is a View or an Output.
+        """
+        stage = self.get_stage()
+        context_path, context, _, _ = self._active_view_of(target)
+        output_path = engine.set_output_for(stage, self, context, chunk_stage.get_chunk_prim_path(target))
+        if output_path is None:
+            return None
+        engine.write_active_slot(stage, context_path, 0)
+        chunk_stage.recook_for_view(stage, self, context, None)
+        return next((c for c in self.get_chunks() if chunk_stage.get_chunk_prim_path(c) == output_path), None)
 
     def _active_view_of(self, target: ChunkBase):
         """The graph `target` is in, and the View active there.
@@ -971,6 +1181,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         _, context, _, view = self._active_view_of(target)
         if view is not None:
             chunk_stage.recook_for_view(self.get_stage(), self, context, view)
+        elif (layers := chunk_registry.ChunkLayerManager()).initialized:
+            # No View to put the layers in chain order, so each new chunk's layer would keep
+            # the place it got when made -- before it was wired -- and an upstream chunk's
+            # opinions would win over it.
+            chunk_stage.sort_chunk_layers(layers, self.get_chunks())
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;
@@ -1094,13 +1309,3 @@ class Creator:
 def _script_name(label: str) -> str:
     """A menu label as a Python name: "Dome Light" -> "dome_light"."""
     return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
-
-
-def execute_roots(chunks) -> None:
-    """Call execute() on every root node (no dependencies), recursing into groups."""
-    for c in chunks:
-        sub = [p for p in c.get_my_params() if isinstance(p, ChunkBase)]
-        if sub:
-            execute_roots(sub)
-        elif not c.get_dependencies():
-            c.execute()

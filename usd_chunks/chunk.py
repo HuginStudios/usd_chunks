@@ -54,7 +54,8 @@ from attr import Attribute as Attribute
 from attrs import field, validators
 
 from enum import IntFlag, Enum
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, TYPE_CHECKING, cast, TypeGuard, overload
 from typing_extensions import override
 
@@ -82,7 +83,7 @@ from usd_chunks.chunk_core import (
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
-from usd_chunks import chunk_utils
+from usd_chunks import chunk_cook, chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -400,6 +401,64 @@ class Menu(ChunkParamBase[str]):
         if list(self.menu_items or []) != items:
             self.menu_items = items
 
+    def refresh_items(self) -> None:
+        """Ask the chunk's module for this menu's items, as the menu is about to open.
+
+        A menu of what is on the stage -- the SkelRoots a Skel Pose can pose -- is wanted
+        only when someone looks at it. A chunk opts in with a module-level function::
+
+            def menu_items(node, param_name):
+                return _skel_roots(node.get_stage()) if param_name == "primpath_location" else None
+
+        so it need not listen to the stage to keep a list current that nobody opens, and
+        need not cook to fill it either: a cook is skipped when nothing it reads changed,
+        and a stage walk would be a read of everything. A frontend calls this before it
+        shows the list; None from the hook leaves the items as they are.
+
+        A Menu lofted onto a chunkgroup refreshes the inner Menu it stands for, whose items
+        it mirrors (chunk_stage._mirror_menu_items).
+        """
+        inner = getattr(self, "_loft_inner_menu", None)
+        if inner is not None:
+            if (inner_menu := inner()) is not None:
+                inner_menu.refresh_items()
+            return
+        node = self.get_chunk()
+        hook = node._module_hook(MENU_ITEMS_HOOK) if node is not None else None
+        if hook is None:
+            return
+        try:
+            items = hook(node, self.name)
+        except Exception:
+            # A failing hook leaves the list as it was: a stale list beats an empty one.
+            logger.exception("menu_items hook failed for %r on chunk %r", self.name, node.name)
+            return
+        if items is not None:
+            self.set_items(items)
+
+
+#: The module hook Menu.refresh_items calls: `menu_items(node, param_name) -> list | None`.
+MENU_ITEMS_HOOK = "menu_items"
+
+
+class ImageMenu(Menu):
+    """A Menu whose items have pictures: a material library, a set of presets.
+
+    Still a Menu -- the value is the picked item's name, it saves, wires and refreshes
+    (menu_items hook) exactly like one, and a frontend that knows nothing about pictures
+    shows a plain dropdown. Qt draws a searchable grid of tiles; Blender its own
+    thumbnail picker (template_icon_view).
+
+    Attributes:
+        item_images: item -> path of a local image file. Items with no entry, or whose file
+            is not there yet, show without a picture; assign a new dict to update it (the
+            frontends redraw on the change), e.g. as thumbnails finish downloading.
+        tile_size: The edge of a tile's picture, in pixels.
+    """
+
+    item_images: dict[str, str] = field(factory=dict)
+    tile_size: int = field(default=96)
+
 
 class Button(ChunkParamBase):
     """A button param.
@@ -430,14 +489,26 @@ class LineEdit(ChunkParamBase[str]):
         super().__attrs_post_init__()
 
         if self.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION):
-            self.set_prims(self.get_scene().get_selected_prims())
+            self._seed_from_selection()
 
     @override
     def value_changed(self, attrname: str, old_value: Any, value: Any):
         if attrname == "flags" and ChunkFlags.ParamFlags.PRIM_SELECTION in value:
-            self.set_prims(self.get_scene().get_selected_prims())
+            self._seed_from_selection()
 
         return super().value_changed(attrname, old_value, value)
+
+    def _seed_from_selection(self):
+        """Fill the value from the host's selection, when it names a prim.
+
+        usdview selects the pseudo-root when nothing is picked, and "/" is no prim to seed
+        a param with: a Render Settings camera of "/" names no camera, and reads as a chunk
+        that depends on the whole stage, cooking on every edit anywhere. Without a prim
+        selected the param keeps its default.
+        """
+        prims = [p for p in self.get_scene().get_selected_prims() if str(p.GetPath()) != "/"]
+        if prims:
+            self.set_prims(prims)
 
     def set_prims(self, prims: Sequence[Usd.Prim]):
         """Set the value to a comma-separated list of these prims' paths.
@@ -653,6 +724,28 @@ class Custom(ChunkParamBase):
 def set_validators_enabled(enabled: bool):
     """Turn attrs validators on or off globally."""
     validators.set_disabled(not enabled)
+
+
+@contextmanager
+def change_block() -> Iterator[None]:
+    """Make every value set inside the block one change: what it affects cooks once, at the end.
+
+    Each value set outside a block cooks everything below it straight away. Setting several
+    cooks them several times, each time against a half-new set of values::
+
+        mc = scene.create.mychunk()
+        with chunk.change_block():
+            mc.get_param("param1").value = 1
+            mc.get_param("param2").value = 2
+        # mychunk, and everything below it, cooked once, with both values
+
+    Inside the block a value change only marks what it affects; callbacks run, and chunks
+    cook, when the block ends. Blocks nest: an inner one joins the outermost. For a script,
+    and for a module whose execute() sets many params of its own (a Wedge writing a
+    variant's ranges).
+    """
+    with chunk_cook.batched_solve():
+        yield
 
 
 usd_type_map = {

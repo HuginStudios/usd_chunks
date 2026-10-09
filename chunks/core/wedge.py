@@ -518,10 +518,10 @@ def execute(node):
         _sync_ranges(node)
         _refresh_count(node)
     index = int(node.get_param("current_index").value or 0)
-    # One batch: every range lands first, then what they drive cooks once. Set one at a
-    # time, each value re-cooked everything below the wedge against a half-new variant --
-    # hundreds of cooks per variant, where one is the answer.
-    with chunk_notice.batched_solve():
+    # One change block: every range lands first, then what they drive cooks once. Set one
+    # at a time, each value re-cooked everything below the wedge against a half-new
+    # variant -- hundreds of cooks per variant, where one is the answer.
+    with chunk.change_block():
         for name, value in sample(node, index).items():
             node.get_param(name).value = value
 

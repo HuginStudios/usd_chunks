@@ -18,6 +18,7 @@ optional extra rather than a dependency.
 from __future__ import annotations
 
 import sys
+import threading
 
 import pytest
 
@@ -41,7 +42,7 @@ from mathutils import Matrix, Vector  # noqa: E402
 from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
-from usd_chunks import chunk_registry  # noqa: E402
+from usd_chunks import chunk, chunk_registry  # noqa: E402
 from usd_chunks.chunk_core import ChunkConfig  # noqa: E402
 from usd_chunks.chunk_flags import ChunkFlags  # noqa: E402
 from usd_chunks.chunk_scene import SceneSender  # noqa: E402
@@ -62,6 +63,10 @@ class _Scene(SceneSender):
 
     def get_selected_prims(self):
         return []
+
+    def get_host(self):
+        # These run inside Blender, so Blender-only modules (hosts=["blender>=5.1"]) load.
+        return "blender", ".".join(str(part) for part in bpy.app.version)
 
 
 def _make(module):
@@ -134,7 +139,7 @@ def test_the_tree_is_rebuilt_from_usd(view):
 def test_opening_gives_the_context_a_view(view):
     """A context with no view cooks nothing, so reload wires one to the chain's tail and
     makes it the active slot -- as every other frontend does on open."""
-    assert [n.label for n in view.tree.nodes if n not in _chunk_nodes(view)] == ["View1"]
+    assert [n.label for n in view.tree.nodes if n not in _chunk_nodes(view)] == ["View2"]
     assert view.active_slot() == 1
 
 
@@ -255,10 +260,33 @@ def test_a_node_class_is_generated_per_chunk_type():
 
 
 def test_qt_only_chunks_are_skipped_not_fatal():
-    """Five chunks import PySide6 at module level and cannot load in Blender. The registry
-    skips a module whose import fails, so the add-on degrades rather than refusing to
-    start."""
-    assert "rbd_solver" not in bg._generated
+    """A chunk that imports PySide6 at module level cannot load in Blender (uv_checker and
+    the custom_widget example still do). The registry skips a module whose import fails,
+    so the add-on degrades rather than refusing to start."""
+    assert "uv_checker" not in bg._generated
+
+
+def test_a_chunk_that_only_waited_with_qt_now_loads():
+    """rbd_solver imported Qt for one debounce timer; it waits through call_later now."""
+    assert "rbd_solver" in bg._generated
+
+
+def test_call_later_from_a_worker_runs_on_the_main_thread():
+    ran = []
+    worker = threading.Thread(target=lambda: addon.BlenderScene().call_later(
+        lambda: ran.append(threading.get_ident())))
+    worker.start()
+    worker.join()
+    cancel = addon.BlenderScene().call_later(lambda: ran.append("cancelled"))
+    cancel()
+    addon._run_due_calls()
+    assert ran == [threading.get_ident()]
+
+
+def test_the_material_library_loads_without_qt():
+    """AMDMaterialXLibrary's thumbnail grid is Qt, but the chunk is not: without the import
+    guard its nodes were missing from a loaded network, and every wire through them too."""
+    assert "AMDMaterialXLibrary" in bg._generated
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +398,7 @@ def test_a_cut_wire_disconnects_in_usd(view):
 def test_a_cut_wire_does_not_heal_the_chain(view):
     """A wire the user cut is one wire. Healing would rewire the view past Move to Ref,
     which is what detaching a NODE means, not cutting a wire."""
-    view_node = _node(view, "View1")
+    view_node = _node(view, "View2")
     before = list(view.prims[view_node.name].GetAttribute("inputs:chunk").GetConnections())
     view.tree.links.remove(_wire(view, "Ref", "Move"))
     view.tree.update()
@@ -454,13 +482,13 @@ def test_collapse_is_the_state_bit_shown_as_blenders_hide(view):
     collapse survives a reload and one made in Qt shows here."""
     # A view is created collapsed (it has no body), so Blender draws it hidden from the
     # start; what matters is that a sweep leaves it exactly as it was.
-    view_hidden = _node(view, "View1").hide
+    view_hidden = _node(view, "View2").hide
     view.set_selection(set())
     view.collapse_selected_or_all()
     for label in ("Ref", "Move"):
         assert view.chunks[_node(view, label).name].has_state(ChunkFlags.State.COLLAPSED)
         assert _node(view, label).hide
-    assert _node(view, "View1").hide == view_hidden
+    assert _node(view, "View2").hide == view_hidden
     view.reload()
     assert _node(view, "Move").hide
     view.collapse_selected_or_all()
@@ -493,9 +521,9 @@ def test_a_replaced_view_ignores_notices(view):
 # ---------------------------------------------------------------------------
 
 def test_the_active_view_is_orange_and_an_inactive_one_dim(view):
-    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
+    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
     view.set_active_slot(0)
-    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
 
 
 def test_create_view_node_wires_the_selection_and_activates_it(view):
@@ -506,12 +534,12 @@ def test_create_view_node_wires_the_selection_and_activates_it(view):
     view.create_view_node()
     views = [n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("view")]
     assert len(views) == 2
-    made = next(n for n in views if n.label != "View1")
+    made = next(n for n in views if n.label != "View2")
     src = view.prims[made.name].GetAttribute("inputs:chunk").GetConnections()
     assert [str(c.GetPrimPath()) for c in src] == [ref_path]
     assert view.active_slot() == 2
     assert tuple(made.color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
-    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
 
 
 def test_a_chunkgroup_gets_the_group_header(view):
@@ -616,7 +644,7 @@ def test_a_hidden_groups_params_are_hidden_with_it(view):
     node = _add(view, "mesh")
     chunk = node.get_chunk()
     shown = [p.name for p in chunk_blender.iter_drawable(chunk)]
-    assert shown == ["prim_path", "mesh_type"], shown
+    assert shown == ["prim_path", "mesh_type", "cache_result"], shown  # the cook cache's toggle
     assert node.inputs["dimx1"].hide and node.inputs["dimx"].hide
     node.mesh_type = "grid"
     _flush(view)
@@ -1007,7 +1035,7 @@ def test_bounds_picking_finds_the_prim_under_the_ray(view):
     """The GL-free fallback: Hydra's own pick raises on some builds (pending GL errors from
     whoever drew last), and this is what keeps clicking working there."""
     stage = view.stage
-    near = UsdGeom.Xform.Define(stage, "/Near")
+    _near = UsdGeom.Xform.Define(stage, "/Near")
     UsdGeom.Cube.Define(stage, "/Near/Box")
     far = UsdGeom.Xform.Define(stage, "/Far")
     UsdGeom.Cube.Define(stage, "/Far/Box")
@@ -1050,7 +1078,7 @@ def test_a_click_on_a_mesh_finds_the_chunk_driving_its_parent(driven):
 
 def test_an_undriven_click_still_reports_the_prim_it_hit(view):
     """So ensure_transform_chunk has something to make a chunk for on the first drag."""
-    loose = view.stage.DefinePrim("/Loose", "Cube")
+    _loose = view.stage.DefinePrim("/Loose", "Cube")
     bg.set_picked_prim_paths(["/Loose"])
     try:
         found = gz._picked_prim(view.stage)
@@ -1059,3 +1087,291 @@ def test_an_undriven_click_still_reports_the_prim_it_hit(view):
         bg.set_picked_prim_paths([])
 
 
+
+
+# ---------------------------------------------------------------------------
+# the viewport camera, both ways
+# ---------------------------------------------------------------------------
+
+def _camera_prim(stage, path="/cam", focal=35.0, aperture=36.0):
+    cam = UsdGeom.Camera.Define(stage, path)
+    cam.CreateFocalLengthAttr(focal)
+    cam.CreateHorizontalApertureAttr(aperture)
+    cam.CreateVerticalApertureAttr(aperture * 2 / 3)
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.5, 500.0))
+    UsdGeom.Xformable(cam).AddTranslateOp().Set(Gf.Vec3d(1, 2, 3))
+    return cam.GetPrim()
+
+
+@pytest.fixture
+def cam_state():
+    """Each test starts with no prim claimed, and leaves none behind."""
+    yield
+    addon.camera.release_viewport_camera()
+
+
+def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
+    """The Camera chunk's "Set as Viewport Camera" had nothing to land on in Blender."""
+    stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    prim = _camera_prim(stage, focal=50.0)
+    addon.BlenderScene(prim.GetStage()).set_viewport_camera(prim)
+    obj = bpy.context.scene.camera
+    assert obj is not None and obj.name == addon.camera.MIRROR_NAME
+    assert obj.data.lens == pytest.approx(50.0)
+    assert obj.data.sensor_width == pytest.approx(36.0)
+    assert obj.data.clip_start == pytest.approx(0.5)
+    assert tuple(obj.matrix_world.translation) == pytest.approx((1, 2, 3))
+
+
+def test_release_hands_back_the_camera_the_mirror_replaced(cam_state):
+    scene = bpy.context.scene
+    own = bpy.data.objects.new("own_cam", bpy.data.cameras.new("own_cam"))
+    scene.collection.objects.link(own)
+    scene.camera = own
+    stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    prim = _camera_prim(stage)
+    sender = addon.BlenderScene(prim.GetStage())
+    sender.set_viewport_camera(prim)
+    sender.set_viewport_camera(prim)  # a locked camera re-claims on every move
+    sender.release_viewport_camera()
+    assert scene.camera == own
+
+
+def test_the_mirror_follows_the_prim_at_the_timeline_frame(cam_state):
+    """An animated camera plays in Blender: the mirror is sampled at the current frame."""
+    stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    prim = _camera_prim(stage)
+    focal = UsdGeom.Camera(prim).GetFocalLengthAttr()
+    focal.Set(20.0, 1)
+    focal.Set(80.0, 11)
+    scene = bpy.context.scene
+    scene.frame_set(1)
+    addon.camera.set_viewport_camera(prim)
+    scene.frame_set(11)
+    addon.camera._tick()
+    assert scene.camera.data.lens == pytest.approx(80.0)
+
+
+def test_the_view_reads_back_as_the_lens_it_was_built_from():
+    """Apertures come out of the projection, so camera view's own lens reads true too."""
+    lens, aperture = 50.0, 36.0
+    near, far = 0.1, 100.0
+    p00 = 2 * lens / aperture
+    window = Matrix(((p00, 0, 0, 0), (0, p00 * 1.5, 0, 0),
+                (0, 0, -(far + near) / (far - near), -2 * far * near / (far - near)),
+                (0, 0, -1, 0)))
+    view = Matrix.Translation((0, 0, -5))
+    gf = addon.camera.gf_camera_from_view(view, window, lens, near, far)
+    assert gf.horizontalAperture == pytest.approx(aperture)
+    assert gf.verticalAperture == pytest.approx(aperture / 1.5)
+    assert gf.transform.ExtractTranslation() == Gf.Vec3d(0, 0, 5)
+
+
+def test_the_hydra_view_draws_at_the_timeline_frame():
+    scene = bpy.context.scene
+    scene.frame_set(7, subframe=0.5)
+    try:
+        assert vp.current_time() == Usd.TimeCode(7.5)
+    finally:
+        scene.frame_set(1)
+
+
+# ---------------------------------------------------------------------------
+# saving: the network goes wherever the .blend goes
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def addon_on():
+    """The add-on registered, as an enabled add-on is: the tree properties saving reads exist.
+
+    The view fixture registers the node types only, so these tests passed or failed by
+    whether an earlier test had left the add-on registered.
+    """
+    addon.register()
+    yield
+    addon.unregister()
+
+
+def test_a_new_network_saves_to_a_file_it_never_had(tmp_path, addon_on):
+    """Save on a network started with New called Save() on an anonymous layer."""
+    tree = bpy.data.node_groups.new("fresh", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.CreateInMemory(), tree=tree)
+    out = tmp_path / "fresh.usda"
+    addon.write_network(addon.get_view(), str(out))
+    assert out.exists()
+
+
+def test_a_new_network_saves_in_blenders_space(tmp_path, addon_on):
+    """Blender is Z-up in metres times its Unit Scale; a saved network has to say so, or
+    every other host reads it as USD's fallback Y-up centimetres and turns it wrong."""
+    units = bpy.context.scene.unit_settings
+    before = units.scale_length
+    units.scale_length = 0.5
+    try:
+        tree = bpy.data.node_groups.new("spaced", bg.TREE_ID)
+        addon._open_stage(addon.new_network_stage(), tree=tree)
+        out = tmp_path / "spaced.usda"
+        addon.write_network(addon.get_view(), str(out))
+    finally:
+        units.scale_length = before
+    saved = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageUpAxis(saved) == UsdGeom.Tokens.z
+    assert UsdGeom.GetStageMetersPerUnit(saved) == pytest.approx(0.5)
+
+
+def test_an_opened_network_keeps_the_space_it_was_authored_in(tmp_path, addon_on):
+    """A file that says its own space -- usdview's Y-up centimetres here -- keeps it."""
+    path, context = make_network(tmp_path / "authored.usda")
+    layer = Sdf.Layer.FindOrOpen(path)
+    layer.pseudoRoot.SetInfo("upAxis", "Y")
+    layer.pseudoRoot.SetInfo("metersPerUnit", 0.01)
+    layer.Save()
+    tree = bpy.data.node_groups.new("authored", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    out = tmp_path / "authored_out.usda"
+    addon.write_network(addon.get_view(), str(out))
+    saved = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageUpAxis(saved) == UsdGeom.Tokens.y
+    assert UsdGeom.GetStageMetersPerUnit(saved) == pytest.approx(0.01)
+
+
+def test_a_saved_network_keeps_every_chunk_wherever_it_is_authored(tmp_path, addon_on):
+    """Save wrote the root layer only. Behind an Edit Target, chunk prims live in the layer
+    it names, and a chunk added in Blender in the session layer: both were dropped."""
+    path, context = make_network(tmp_path / "targeted.usda", modules=("layer", "edit_target", "transform"),
+                                 positions=((0.0, 0.0), (300.0, 0.0), (600.0, 0.0)))
+    tree = bpy.data.node_groups.new("targeted", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    view = addon.get_view()
+    entry = next(e for e in chunk_registry.ChunkRegistry().get_menu_entries()
+                 if e.module.module_name == "transform" and e.presets is None)
+    view.create_chunk(entry, 900.0, 0.0)
+    out = tmp_path / "saved.usda"
+
+    addon.write_network(view, str(out))
+
+    assert chunk_prims(Usd.Stage.Open(str(out))) == chunk_prims(view.stage)
+
+
+def test_saving_the_blend_keeps_a_network_with_no_file(tmp_path, addon_on):
+    """An untitled network rides along in the .blend and reopens from there."""
+    path, context = make_network(tmp_path / "embed.usda")
+    tree = bpy.data.node_groups.new("embed", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    tree.chunk_network_path = ""
+    addon._on_save_pre()
+    assert tree.chunk_network_embedded
+    stage = addon._stage_for_tree(tree)
+    assert len(chunk_prims(stage)) == len(chunk_prims(addon.get_view().stage))
+
+
+def test_saving_the_blend_flags_an_edited_network_but_leaves_its_file(tmp_path, addon_on):
+    """The .usda is the user's: Ctrl+S in Blender warns about edits, never writes them."""
+    path, context = make_network(tmp_path / "ride.usda")
+    before = open(path, encoding="utf-8").read()
+    tree = bpy.data.node_groups.new("ride", bg.TREE_ID)
+    tree.chunk_network_path = str(path)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    view = addon.get_view()
+    node = next(n for n in view.tree.nodes if n.name in view.prims)
+    node.location = (1234.0, -567.0)
+    addon._on_save_pre()
+    assert open(path, encoding="utf-8").read() == before
+    assert addon.network_unsaved(view)
+    assert not tree.chunk_network_embedded
+
+
+# ---------------------------------------------------------------------------
+# Blender Import: Blender objects into the chunk's layer
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def imported(view):
+    module = chunk_registry.ChunkRegistry().get_chunk_module("blender_import")
+    assert module is not None, "blender_import should load in Blender"
+    bpy.ops.mesh.primitive_monkey_add()
+    obj = bpy.context.object
+    material = bpy.data.materials.new("ImportRed")
+    obj.data.materials.append(material)
+    node = _make(module)
+    node.get_param("primpath_location").value = "/imported"
+    yield node, obj, material, module.module
+    bpy.data.objects.remove(obj)
+    bpy.data.materials.remove(material)
+
+
+def test_blender_objects_are_copied_into_the_chunk_layer(imported):
+    node, obj, _material, mod = imported
+    mod.execute(node)
+    text = node.get_edit_context().ExportToString()
+    assert "def Mesh" in text
+    # A binding that pointed inside the export root is remapped with it.
+    assert "</imported/_materials/ImportRed>" in text
+
+
+def test_only_what_the_import_reads_changes_its_fingerprint(imported):
+    node, obj, material, mod = imported
+    before = mod._fingerprint(node)
+    bpy.context.scene.cursor.location.x += 3
+    bpy.context.view_layer.update()
+    assert mod._fingerprint(node) == before
+    obj.location.x += 1
+    bpy.context.view_layer.update()
+    moved = mod._fingerprint(node)
+    assert moved != before
+    material.diffuse_color = (1, 0, 0, 1)
+    assert mod._fingerprint(node) != moved
+
+
+def test_the_camera_mirror_is_never_imported(imported, cam_state):
+    node, _obj, _material, mod = imported
+    addon.camera.set_viewport_camera(_camera_prim(Usd.Stage.CreateInMemory()))
+    assert addon.camera.MIRROR_NAME not in [o.name for o in mod._objects(node)]
+
+
+def test_imported_objects_are_hidden_once_and_only_by_the_addon(imported, monkeypatch):
+    """The Hydra view draws the import where Blender draws the original: hide the original
+    while a chunk imports it, unhide it after -- but never unhide what the user hid."""
+    node, obj, _material, _mod = imported
+    mine = bpy.data.objects.new("users_own", None)
+    bpy.context.scene.collection.objects.link(mine)
+    mine.hide_set(True)
+    monkeypatch.setattr(node, "is_blocked", lambda: False)
+    scene = _Scene(None)
+    monkeypatch.setattr(addon, "_scene", scene)
+    monkeypatch.setattr(scene, "get_chunks", lambda: [node])
+    try:
+        addon._sync_host_sources()
+        assert obj.hide_get() and mine.hide_get()
+
+        node.get_param("hide_source").value = False
+        addon._sync_host_sources()
+        assert not obj.hide_get() and mine.hide_get()
+
+        node.get_param("hide_source").value = True
+        addon._sync_host_sources()
+        monkeypatch.setattr(scene, "get_chunks", lambda: [])  # the chunk is deleted
+        addon._sync_host_sources()
+        assert not obj.hide_get() and mine.hide_get()
+    finally:
+        bpy.data.objects.remove(mine)
+
+
+def test_an_image_menu_gives_blender_icon_items():
+    """template_icon_view needs every enum item in the five-element form, icon included."""
+    menu = chunk.ImageMenu("look", "Look", menu_items=["Gold", "Oak"], dynamic_items=True)
+    items = chunk_blender._enum_items(menu)
+    assert [len(i) for i in items] == [5, 5]
+    assert [i[0] for i in items] == ["Gold", "Oak"]
+
+
+def test_a_long_menu_is_searchable(view):
+    """Blender's dropdown cannot be typed into; the search popup sets the pick instead."""
+    node = next(n for n in view.tree.nodes if n.name in view.prims and n.get_chunk() is not None)
+    chunk_ = node.get_chunk()
+    menu = chunk.ImageMenu("look", "Look", menu_items=[f"m{i}" for i in range(40)],
+                           dynamic_items=True)
+    chunk_.add_param(menu)
+    result = bpy.ops.usd_chunks.search_menu(tree_name=view.tree.name, node_path=node.name,
+                                            param_name="look", item="m17")
+    assert result == {"FINISHED"} and menu.value == "m17"

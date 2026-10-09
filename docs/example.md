@@ -189,6 +189,12 @@ def main():
     # By default, the menu enforces its value to exist in the menu_items list, so menu.value = "hello3" would fail
     # validation and revert to default value of menu_items[0]
 
+    # A menu with pictures: Qt shows a searchable grid of tiles, Blender its thumbnail picker,
+    # other frontends a plain dropdown. The value is still the item's name. Pictures are paths
+    # to local image files; assign a new dict to item_images as they arrive (downloads, say).
+    looks = chunk.ImageMenu("look", "Look", menu_items=["Gold", "Oak"],
+                            item_images={"Gold": "/path/to/gold.jpg"})
+
     # A separator holds no value, is just there for the UI.
     sep = chunk.Separator(layout=chunk.ChunkFlags.LayoutFlags.HORIZONTAL)
 

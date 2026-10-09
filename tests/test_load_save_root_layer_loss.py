@@ -76,7 +76,9 @@ def _open_and_save(path: str) -> int:
     chunk_registry.ChunkRegistry().initialize(scene, "pytest")
     chunk_registry.ChunkLayerManager().initialize(stage)
     initialize(stage, scene)
-    load_chunks(stage, scene)
+    # The paths initialize already loaded, as every real caller passes: without them a
+    # second load rebuilds the whole network beside the first.
+    load_chunks(stage, scene, ChunkStageSync()._loaded_prim_paths)
     in_memory = sum(1 for p in stage.Traverse() if p.GetTypeName() == "Chunk")
     stage.GetRootLayer().Save()
     return in_memory
