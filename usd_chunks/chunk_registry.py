@@ -34,7 +34,7 @@ from typing import (
 from typing_extensions import override
 from enum import Enum
 
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdUtils
 
 try:
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -43,7 +43,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
-from usd_chunks import chunk_cache, chunk_cook, chunk_scheduler, cook_cache
+from usd_chunks import chunk_cache, chunk_cook, chunk_layers, chunk_scheduler, cook_cache
 from usd_chunks.chunk_process import python_executable
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -2146,6 +2146,19 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._deferred_placement: dict[core.ChunkHash, weakref.ReferenceType] | None = None
         # Where those layers sit meanwhile; see defer_placement.
         self._loading_layer: Sdf.Layer | None = None
+        # The cook layer of each file layer that defines chunks, by that layer's identifier;
+        # see cook_layer_for.
+        self._cook_layers: dict[str, Sdf.Layer] = {}
+        # Per cook layer, the layer of `active = false` overs that hides what an asset's
+        # published bake makes and this stage's live cooks no longer do; see
+        # deactivate_stale_bakes. Taken out of their cook layers before being dropped: a cook
+        # layer is a file layer that outlives this, and an anonymous identifier is reused once
+        # its layer is freed -- a stale entry would then name an unrelated layer.
+        self._drop_deactivations()
+        self._deactivations: dict[str, tuple[Sdf.Layer, Sdf.Layer]] = {}
+        chunk_cook.after_cook(self._after_cook)
+        # Every chunk given a layer, for save_cook_layers to find the ones a bake holds.
+        self._placed: dict[core.ChunkHash, weakref.ReferenceType] = {}
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
         # can answer in one lookup. Maintained beside the two dicts rather than derived from
@@ -2176,6 +2189,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._retired_chunks = set()
         self._deferred_placement = None
         self._loading_layer = None
+        self._drop_deactivations()
+        self._cook_layers = {}
+        self._placed = {}
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -2389,7 +2405,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             # (nearest upstream Edit Target), not from whichever chunk executed last.
             owner_chunk = c if isinstance(c, core.ChunkBase) else None
             target = chunk_utils.get_edit_layer(self.stage, owner_chunk)
+            # No Edit Target upstream: the cook belongs with the layer that defines the chunk,
+            # just under it, not in the session layer over everything -- a layout procedural
+            # must not beat what lighting authors by hand.
+            if target == self.stage.GetSessionLayer() and (home := self._home_layer(c)):
+                target = self.cook_layer_for(home) or target
         self._chunk_target[c.get_hash()] = target
+        self._placed[c.get_hash()] = weakref.ref(c)
 
         # Create a graph layer - these are used for organising the layers. When chunks are part of
         # the same graph AND currently resolve to the same target, they become siblings in the
@@ -2500,6 +2522,311 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             chunk_notice._internal_layer_write_active = prev_internal
 
         return layer
+
+    def _home_layer(self, c: core.ChunkCommon) -> Sdf.Layer | None:
+        """The file layer whose cook sublayer c cooks into, or None.
+
+        For a chunk the stage's own layer stack defines, the layer whose turn it cooks in
+        (chunk_utils.chunk_pass): a department or an asset layer -- layout.usda, geo.usda,
+        mtl.usda -- or the root.
+
+        For a chunk an arc brings in -- a house referenced, payloaded, inherited or switched
+        in by a variant -- the layer of the stage's stack that imports it (the outermost
+        arc's, chunk_utils.arc_source), never the asset's own: an asset is shared by every
+        shot that uses it, so what one shot cooks of it is that shot's. Its cook sublayer is
+        in the stage's namespace, so the result needs no mapping; it is stronger than the
+        asset (local beats the arc) and weaker than the importing layer's own opinions, and
+        it goes wherever that layer goes.
+
+        An anonymous layer is None: it has no file to keep a cook sublayer beside.
+        """
+        if not isinstance(c, core.ChunkBase):
+            return None
+        prim = self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))
+        if not (prim and prim.IsValid()):
+            return None
+        home = chunk_utils.chunk_pass(prim)
+        if home is None and (source := chunk_utils.arc_source(prim)) is not None:
+            home = source[1]
+        return None if home is None or home.anonymous else home
+
+    def cook_layer_for(self, home: Sdf.Layer) -> Sdf.Layer | None:
+        """The layer cooks of chunks defined in home nest under: home's cook sublayer.
+
+        layout.usda lists layout.cook.usda (chunk_layers.find_cook_sublayer), so the cook
+        sits just under the layer that defines it: stronger layers -- lighting's, authored or
+        cooked -- beat it, and so do home's own hand edits. The graph layers go under it in
+        memory; neither file is written, so both may be locked.
+
+        Opt-in by the link: a home listing none is never given one here, since that would
+        dirty a file merely by opening it -- its chunks cook into the session layer as
+        before. Whoever owns the file adds the link (chunk_layers.add_cook_sublayer).
+
+        Args:
+            home: A file layer that defines chunks.
+
+        Returns:
+            The cook layer, internal to the chunk system (is_chunk_internal_layer), or None
+            when home lists none.
+        """
+        if (cook := self._cook_layers.get(home.identifier)) is not None:
+            return cook
+        if (cook := chunk_layers.find_cook_sublayer(home)) is None:
+            return None
+        # From here on the live cooks are the result: the bake saved in the file was the
+        # last one, and left in place it would compose under them -- a prim a cook no
+        # longer makes would linger. Cleared in memory only; save_cook_layers writes the
+        # next bake. What the file records about itself stays.
+        with self._internal_sublayer_edit():
+            data = dict(cook.customLayerData)
+            cook.Clear()
+            cook.customLayerData = data
+        self.internal_layer_ids.add(cook.identifier)
+        self._cook_layers[home.identifier] = cook
+        return cook
+
+    def save_cook_layers(self) -> list[str]:
+        """Write every cook layer's bake to its file: what its chunks cooked, flattened.
+
+        At runtime a cook layer only lists the layers its chunks cook into, all in memory.
+        The bake is that stack flattened (UsdUtils.FlattenLayerStack, honouring the stage's
+        mutes) and written beside the layer that lists it, so a consumer without usd_chunks
+        sees the result. The layer in memory keeps listing the live ones; it is exported,
+        never saved.
+
+        Each chunk the bake holds is stamped in the file's customLayerData under
+        usdchunks:cooks, by its prim path in the file's own namespace: its module hash, a
+        hash of its inputs, and whether its result is partial (muted, blocked outside the
+        active view, or never cooked). A bake whose stamps no longer match is stale.
+
+        Returns:
+            The files written.
+        """
+        self.deactivate_stale_bakes()
+        written = []
+        for cook in self._cook_layers.values():
+            if cook.anonymous or not self.stage:
+                continue
+            reader = Usd.Stage.Open(cook, Usd.Stage.LoadNone)
+            if muted := [i for i in self.stage.GetMutedLayers() if i != cook.identifier]:
+                reader.MuteAndUnmuteLayers(muted, [])
+            flat = UsdUtils.FlattenLayerStack(reader)
+            flat.customLayerData = {
+                **dict(cook.customLayerData),
+                "usdchunks:derived": True,
+                "usdchunks:cooks": self._bake_stamps(cook),
+            }
+            flat.Export(cook.realPath)
+            written.append(cook.realPath)
+        return written
+
+    def _after_cook(self, c: core.ChunkCommon) -> None:
+        """Note which prims a cook started or stopped defining, then -- once the solve it was
+        part of has drained -- hide what its asset's bake left (deactivate_stale_bakes).
+
+        Only a change in what the live cooks define can change what only a bake defines, so
+        a cook that defines the same prims as last time (a drag: new values, same prims)
+        adds nothing to check.
+        """
+        chunk_hash = c.get_hash()
+        if chunk_hash not in self._placed or (layer := self.chunk_layers.get(chunk_hash)) is None:
+            return
+        defined = chunk_layers.defined_paths(layer)
+        changed = defined ^ self._chunk_defs.get(chunk_hash, frozenset())
+        self._chunk_defs[chunk_hash] = defined
+        if changed:
+            self._dirty_paths |= changed
+        if not chunk_cook.defer_to_batch_end(
+                ("deactivate_stale_bakes", id(self)), self.deactivate_stale_bakes):
+            self.deactivate_stale_bakes()
+
+    def deactivate_stale_bakes(self) -> None:
+        """Hide the prims an asset's published bake makes that this stage's live cooks don't.
+
+        A shot cooks an asset's chunks into its own cook layer and never touches the asset,
+        so the bake the asset was published with still composes underneath -- with every prim
+        that network made then. A prim the live cook no longer makes would linger. So for
+        each copy of an asset whose chunks have all cooked live here, every prim that only
+        the asset's bake defines gets an `over` with `active = false`, the topmost one of a
+        subtree only, in a layer under this stage's cook layer. It is written into the shot's
+        bake with the rest (save_cook_layers), so a consumer without usd_chunks sees the same.
+
+        A copy whose chunks have not all cooked -- disabled, blocked outside the active view,
+        never cooked -- keeps its bake whole: hiding it would leave the bare asset.
+
+        Incremental, for large assets. A copy that turns live is walked once in full. After
+        that only the bake subtrees at paths whose definition changed (_after_cook) are
+        walked again, and only the overs that change are written, so a prim that stays
+        hidden is never recomposed.
+        """
+        if not (self.initialized and self.stage):
+            return
+        copies = self._live_copies()
+        dirty, self._dirty_paths = self._dirty_paths, set()
+        drop: dict[tuple, set] = {}
+        walk: dict[tuple, list] = {}
+        for key, state in self._copies.items():
+            if key not in copies:
+                drop[key] = set(state["hidden"])
+        for key, (cook, bake, map_fn, live) in copies.items():
+            state = self._copies.setdefault(
+                key, {"cook": cook, "bake": bake, "map": map_fn, "live": False, "hidden": set()})
+            hidden = state["hidden"]
+            if not live:
+                drop[key] = set(hidden)
+            elif not state["live"]:
+                drop[key] = set(hidden)
+                walk[key] = [Sdf.Path.absoluteRootPath]
+            else:
+                drop[key], walk[key] = self._dirty_roots(hidden, dirty, map_fn, bake)
+            state["live"] = live
+        with self._internal_sublayer_edit():
+            with Sdf.ChangeBlock():
+                for key, paths in drop.items():
+                    if not paths:
+                        continue
+                    state = self._copies[key]
+                    state["hidden"] -= paths
+                    if (entry := self._deactivations.get(state["cook"].identifier)) is not None:
+                        for path in paths:
+                            if (spec := entry[1].GetPrimAtPath(path)) is not None:
+                                spec.ClearInfo("active")
+                        entry[1].RemoveInertSceneDescription()
+            for key in list(drop):
+                if key not in copies:
+                    del self._copies[key]
+            found = {key: self._only_in_bake(self._copies[key], roots)
+                     for key, roots in walk.items() if roots}
+            with Sdf.ChangeBlock():
+                for key, paths in found.items():
+                    if not paths:
+                        continue
+                    state = self._copies[key]
+                    state["hidden"] |= paths
+                    overs = self._overs_layer(state["cook"])
+                    for path in paths:
+                        Sdf.CreatePrimInLayer(overs, path).active = False
+
+    def _live_copies(self) -> dict[tuple, tuple]:
+        """{copy: (cook layer, asset's bake, arc map, all its chunks live)} for every copy of
+        an asset with a published bake whose chunks cook into one of this stage's cook layers.
+        A copy is keyed by the stage path its arc is introduced at."""
+        copies: dict[tuple, list] = {}
+        cooks = {cook.identifier for cook in self._cook_layers.values()}
+        for chunk_hash, ref in list(self._placed.items()):
+            if (c := ref()) is None or chunk_hash in self._retired_chunks:
+                continue
+            # A chunk with nothing to run (an Output) neither replaces a bake nor holds one up.
+            if c._module_hook("execute") is None:
+                continue
+            cook = self._chunk_target.get(chunk_hash)
+            if cook is None or cook.identifier not in cooks:
+                continue
+            prim = self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))
+            if not (prim and prim.IsValid()) or (node := chunk_utils.arc_def_node(prim)) is None:
+                continue
+            home = node.layerStack.identifier.rootLayer
+            if (bake := chunk_layers.find_cook_sublayer(home)) is None:
+                continue
+            copy = chunk_utils.arc_source(prim)
+            key = (cook.identifier, bake.identifier, str(copy[0]) if copy else "")
+            entry = copies.setdefault(key, [cook, bake, node.mapToRoot, True])
+            if self.is_muted(chunk_hash) or c.is_blocked() or chunk_cook.is_cook_stale(c):
+                entry[3] = False
+        return {key: tuple(entry) for key, entry in copies.items()}
+
+    @staticmethod
+    def _dirty_roots(hidden: set, dirty: set, map_fn, bake: Sdf.Layer) -> tuple[set, list]:
+        """For a live copy: the hidden paths a change in definitions at dirty touches, and
+        the stage paths to walk again from.
+
+        A changed path p decides again for itself and what is below it, so hidden paths at
+        or below it are dropped and p is walked. A hidden path above it kept its children
+        out of the walks so far -- they were not composed -- so it is dropped too, and the
+        walk starts there instead. A path the bake has no prim at holds nothing to hide.
+        """
+        drop: set = set()
+        roots: set = set()
+        for path in sorted(dirty, key=lambda p: p.pathElementCount):
+            source = map_fn.MapTargetToSource(path)
+            if source.isEmpty or bake.GetPrimAtPath(source) is None:
+                continue
+            above = [h for h in hidden if path.HasPrefix(h) and h != path]
+            drop.update(h for h in hidden if h.HasPrefix(path))
+            drop.update(above)
+            roots.add(min(above, key=lambda p: p.pathElementCount) if above else path)
+        # A root inside another root is walked with it.
+        roots = {r for r in roots if not any(r != o and r.HasPrefix(o) for o in roots)}
+        return drop, sorted(roots)
+
+    def _only_in_bake(self, state: dict, roots: list) -> set:
+        """Stage paths of the topmost prims under roots that state's bake defines and nothing
+        else on the stage does -- skipping what is hidden already."""
+        bake, map_fn, hidden = state["bake"], state["map"], state["hidden"]
+        found = set()
+
+        def visit(spec):
+            path = map_fn.MapSourceToTarget(spec.path)
+            if path.isEmpty or path in hidden:
+                return
+            prim = self.stage.GetPrimAtPath(path)
+            if prim and prim.IsValid():
+                defs = [s.layer for s in prim.GetPrimStack() if s.specifier == Sdf.SpecifierDef]
+                if defs and all(layer == bake for layer in defs):
+                    found.add(path)
+                    return
+            for child in spec.nameChildren:
+                visit(child)
+
+        for root in roots:
+            if root == Sdf.Path.absoluteRootPath:
+                for spec in bake.rootPrims:
+                    visit(spec)
+            elif (spec := bake.GetPrimAtPath(map_fn.MapTargetToSource(root))) is not None:
+                visit(spec)
+        return found
+
+    def _overs_layer(self, cook: Sdf.Layer) -> Sdf.Layer:
+        """The layer of deactivating overs under cook, made on first use."""
+        if (entry := self._deactivations.get(cook.identifier)) is None:
+            entry = (cook, Sdf.Layer.CreateAnonymous("deactivate"))
+            self.internal_layer_ids.add(entry[1].identifier)
+            self._deactivations[cook.identifier] = entry
+            cook.subLayerPaths.append(entry[1].identifier)
+        return entry[1]
+
+    def _drop_deactivations(self) -> None:
+        """Take every layer of deactivating overs out of its cook layer, and forget them."""
+        with self._internal_sublayer_edit():
+            for cook, overs in getattr(self, "_deactivations", {}).values():
+                if overs.identifier in cook.subLayerPaths:
+                    cook.subLayerPaths.remove(overs.identifier)
+                self.internal_layer_ids.discard(overs.identifier)
+        self._deactivations = {}
+        self._copies: dict[tuple, dict] = {}
+        self._chunk_defs: dict[core.ChunkHash, frozenset] = {}
+        self._dirty_paths: set = set()
+
+    def _bake_stamps(self, cook: Sdf.Layer) -> dict:
+        """{chunk prim path in cook's namespace: stamp} for the chunks cook holds."""
+        stamps = {}
+        for chunk_hash, ref in self._placed.items():
+            if (c := ref()) is None or chunk_hash in self._retired_chunks:
+                continue
+            # A chunk with nothing to run (an Output) adds nothing to a bake.
+            if c._module_hook("execute") is None:
+                continue
+            if self._chunk_target.get(chunk_hash) != cook:
+                continue
+            module = c.get_chunk_module()
+            stamps[chunk_utils.get_chunk_prim_path(c)] = {
+                "module": (module.source_hash if module is not None else None) or "",
+                "inputs": chunk_utils.chunk_inputs_hash(
+                    self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))),
+                "partial": bool(self.is_muted(chunk_hash) or c.is_blocked()
+                                or chunk_cook.is_cook_stale(c)),
+            }
+        return stamps
 
     def is_muted(self, c: core.ChunkHash) -> bool:
         """Check if a chunk's layer is muted.

@@ -225,6 +225,19 @@ def _def_node(prim: Usd.Prim):
     return found
 
 
+def arc_def_node(prim: Usd.Prim):
+    """The prim-index node an arc brings prim's `def` in by, or None for a prim defined in
+    the stage's own layer stack (or not at all).
+
+    Its layerStack is the asset's layers, and its mapToRoot the arc's map from the asset's
+    namespace to the stage's -- the same node arc_source reads where the chunk came from.
+    """
+    node = _def_node(prim)
+    if node is None or node.arcType == Pcp.ArcTypeRoot:
+        return None
+    return node
+
+
 def arc_source(prim: Usd.Prim) -> tuple[Sdf.Path, Sdf.Layer] | None:
     """Where a prim came into the stage by an arc, read from USD's own prim index.
 
@@ -408,6 +421,32 @@ def is_foreign_layer(layer: Sdf.Layer, stage: Usd.Stage) -> bool:
         True for a file-backed layer other than the root layer.
     """
     return not layer.anonymous and layer != stage.GetRootLayer()
+
+
+def chunk_inputs_hash(prim: Usd.Prim) -> str:
+    """A digest of what a chunk prim's inputs say: every `inputs:` value and connection,
+    composed. Two cooks of one module with the same digest were handed the same params.
+
+    For a bake's stamp (ChunkLayerManager.save_cook_layers): an override in a stronger
+    layer, or an edit never saved, changes it, and the bake made before no longer matches.
+    The exec wire is left out -- what feeds a chunk is not one of its params.
+
+    Args:
+        prim: The chunk prim.
+
+    Returns:
+        A hex digest, or "" for an invalid prim.
+    """
+    if not (prim and prim.IsValid()):
+        return ""
+    digest = hashlib.sha256()
+    for attr in sorted(prim.GetAttributes(), key=lambda a: a.GetName()):
+        name = attr.GetName()
+        if (not name.startswith("inputs:") or name == chunk_naming.EXEC_INPUT
+                or chunk_naming.EXEC_INPUT_NUMBERED.match(name)):
+            continue
+        digest.update(f"{name}={attr.Get()!r};{attr.GetConnections()!r}\n".encode())
+    return digest.hexdigest()
 
 
 def stamp_module_hash(stage: Usd.Stage, chunk) -> None:

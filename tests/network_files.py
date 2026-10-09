@@ -124,6 +124,23 @@ def save_cubes(path: Path, names: str) -> None:
     layer.Save()
 
 
+def run(usda: Path, *args: str) -> str:
+    """`usdchunks run usda *args` in its own process; its stdout."""
+    cmd = [sys.executable, "-m", "usd_chunks.cli", "run", str(usda), *args]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
+def read_z(stage: Usd.Stage, names: str) -> dict[str, float]:
+    """Each named prim's world z on stage."""
+    z = {}
+    for name in names:
+        xform = UsdGeom.Xformable(stage.GetPrimAtPath(f"/{name}" if name[0] != "/" else name))
+        z[name] = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()[2]
+    return z
+
+
 def run_and_read(usda: Path, names: str) -> dict[str, float]:
     """`usdchunks run usda --export`, and each named prim's z in the result."""
     out = usda.parent / "out.usda"
