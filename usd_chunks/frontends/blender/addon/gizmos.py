@@ -497,6 +497,11 @@ _KEYS = (
     (USDCHUNKS_OT_transform, "S", {"mode": _SCALE}),
 )
 
+#: Where the keys are bound: (keymap name, space type). "Object Mode", not "3D View".
+#: Blender checks the Object Mode keymap first, and its own G/R/S there took every press,
+#: so a G item in "3D View" never ran.
+_KEYMAP = ("Object Mode", "EMPTY")
+
 _keymaps: list = []
 
 
@@ -505,7 +510,7 @@ def _register_keymap() -> None:
     kc = wm.keyconfigs.addon
     if kc is None:  # background/headless Blender has no addon keyconfig
         return
-    km = kc.keymaps.new(name="3D View", space_type="VIEW_3D")
+    km = kc.keymaps.new(name=_KEYMAP[0], space_type=_KEYMAP[1])
     for operator, key, props in _KEYS:
         kmi = km.keymap_items.new(operator.bl_idname, key, "PRESS")
         for name, value in props.items():
