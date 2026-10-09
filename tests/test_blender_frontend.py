@@ -1375,3 +1375,145 @@ def test_a_long_menu_is_searchable(view):
     result = bpy.ops.usd_chunks.search_menu(tree_name=view.tree.name, node_path=node.name,
                                             param_name="look", item="m17")
     assert result == {"FINISHED"} and menu.value == "m17"
+
+
+# ---------------------------------------------------------------------------
+# the brush: painting through a chunk's brush handle
+# ---------------------------------------------------------------------------
+
+from usd_chunks.frontends.blender.addon import brush as br  # noqa: E402
+
+
+def _floor(stage, path="/World/Floor", size=10.0, divisions=10):
+    """A flat grid at z=0, from (0, 0) to (size, size)."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    step = size / divisions
+    row = divisions + 1
+    mesh.GetPointsAttr().Set([Gf.Vec3f(ix * step, iy * step, 0.0)
+                              for iy in range(row) for ix in range(row)])
+    mesh.GetFaceVertexCountsAttr().Set([4] * divisions * divisions)
+    mesh.GetFaceVertexIndicesAttr().Set(
+        [i for iy in range(divisions) for ix in range(divisions)
+         for i in (iy * row + ix, iy * row + ix + 1, (iy + 1) * row + ix + 1, (iy + 1) * row + ix)])
+    return mesh
+
+
+@pytest.fixture
+def painted(view):
+    """A Scatter Brush chunk painting a floor."""
+    _floor(view.stage)
+    # Not _make: that swaps in a bare config, and the brush handle lives in the module's.
+    module = chunk_registry.ChunkRegistry().get_chunk_module("scatter_brush")
+    painter = (module.create() if module.loaded else module.load())[0]
+    painter.name = "Paint"
+    view.scene.add_chunk(painter)
+    painter.get_param("surface_prim").value = "/World/Floor"
+    painter.get_param("radius").value = 2.0
+    painter.get_param("strength").value = 1.0
+    painter.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.selected_nodes = set()
+    bg.set_picked_prim_paths([])
+    yield view, painter
+    bg.set_picked_prim_paths([])
+
+
+def test_a_brush_selected_in_the_graph_is_the_one_to_paint_with(painted):
+    view, painter = painted
+    assert br.brush_desc(view.stage, view) is None
+    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    desc = br.brush_desc(view.stage, view)
+    assert desc is not None and desc.type == "brush"
+    assert str(desc.chunk_prim) == chunk_stage.get_chunk_prim_path(painter)
+    assert [str(p) for p in desc.anchor] == ["/World/Floor"]
+
+
+def test_picking_the_painted_mesh_finds_its_brush(painted):
+    view, painter = painted
+    bg.set_picked_prim_paths(["/World/Floor"])
+    desc = br.brush_desc(view.stage, view)
+    assert desc is not None
+    assert str(desc.chunk_prim) == chunk_stage.get_chunk_prim_path(painter)
+
+
+def test_a_ray_hits_the_surface_with_a_normal_facing_it(view):
+    _floor(view.stage)
+    surface = br.Surface(view.stage, ["/World/Floor"])
+    point, normal = surface.hit((3.0, 4.0, 10.0), (0.0, 0.0, -1.0))
+    assert tuple(point) == pytest.approx((3.0, 4.0, 0.0), abs=1e-5)
+    assert tuple(normal) == pytest.approx((0.0, 0.0, 1.0), abs=1e-5)
+    # From below, the normal still faces the ray.
+    _point, normal = surface.hit((3.0, 4.0, -10.0), (0.0, 0.0, 1.0))
+    assert tuple(normal) == pytest.approx((0.0, 0.0, -1.0), abs=1e-5)
+    assert surface.hit((30.0, 4.0, 10.0), (0.0, 0.0, -1.0)) == (None, None)
+
+
+def test_the_hit_test_is_in_world_space(view):
+    """A mesh under a moved parent is hit where it is drawn, not at its local points."""
+    UsdGeom.Xform.Define(view.stage, "/World").AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 5.0))
+    _floor(view.stage)
+    surface = br.Surface(view.stage, ["/World"])
+    point, _normal = surface.hit((3.0, 4.0, 10.0), (0.0, 0.0, -1.0))
+    assert tuple(point) == pytest.approx((3.0, 4.0, 5.0), abs=1e-5)
+
+
+def test_a_surface_with_no_mesh_has_nothing_to_hit(view):
+    view.stage.DefinePrim("/Empty", "Xform")
+    surface = br.Surface(view.stage, ["/Empty", "/Missing"])
+    assert surface.tree is None
+    assert surface.hit((0.0, 0.0, 1.0), (0.0, 0.0, -1.0)) == (None, None)
+
+
+def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
+    """The whole path but the mouse: ray, hit, sample, field."""
+    view, painter = painted
+    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    desc = br.brush_desc(view.stage, view)
+    point, normal = br.Surface(view.stage, desc.anchor).hit((5.0, 5.0, 10.0), (0.0, 0.0, -1.0))
+    painter.start_gizmo()
+    assert chunk_gizmo.apply_stroke(painter, desc.name,
+                                    [(Gf.Vec3d(*point), 1.0, Gf.Vec3d(*normal))])
+    painter.stop_gizmo()
+    primvar = UsdGeom.PrimvarsAPI(view.stage.GetPrimAtPath("/World/Floor")).GetPrimvar(
+        "scatterDensity")
+    weights = list(primvar.ComputeFlattened())
+    assert max(weights) > 0.0
+    assert weights[0] == 0.0  # the corner at (0, 0) is outside a radius-2 brush at (5, 5)
+
+
+def test_the_ring_is_sized_from_the_chunks_radius(painted):
+    view, painter = painted
+    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    desc = br.brush_desc(view.stage, view)
+    assert br.brush_radius(painter, desc, default=0.5) == pytest.approx(2.0)
+    painter.get_param("radius").value = 0.0
+    assert br.brush_radius(painter, desc, default=0.5) == pytest.approx(0.5)
+
+
+def test_the_ring_lies_in_the_surface_at_its_radius():
+    centre, normal = Vector((1.0, 2.0, 3.0)), Vector((0.0, 1.0, 0.0))
+    points = br.ring_points(centre, normal, 2.0)
+    assert points[0] == pytest.approx(points[-1])
+    lifted = centre + normal * 2.0 * br._LIFT
+    for p in points:
+        offset = Vector(p) - lifted
+        assert offset.length == pytest.approx(2.0)
+        assert offset.dot(normal) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_resizing_doubles_per_step_and_halves_back():
+    step = br._RESIZE_PIXELS_PER_DOUBLING
+    assert br.resized(1.0, step) == pytest.approx(2.0)
+    assert br.resized(1.0, -step) == pytest.approx(0.5)
+    assert br.resized(1.0, 0.0) == pytest.approx(1.0)
+
+
+def test_the_brush_operator_registers_on_b():
+    br.register()
+    try:
+        assert br.USDCHUNKS_OT_brush.is_registered
+        assert hasattr(bpy.ops.usd_chunks, "brush")
+        br.register()  # idempotent: re-enabling the add-on must not raise
+    finally:
+        br.unregister()
+    assert not br.USDCHUNKS_OT_brush.is_registered
