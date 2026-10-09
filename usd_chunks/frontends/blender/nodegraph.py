@@ -846,6 +846,8 @@ def _reload_after_connect(view) -> None:
     """
     if active_view() is view:
         view.reload()
+        # A wire made or cut changes what the view reaches, so what cooks.
+        view._cook_shown_graph()
     return None
 
 
@@ -1259,6 +1261,7 @@ class BlenderGraphView:
         self.selected_nodes = set()
         self.status = f"deleted {removed}"
         self.reload()
+        self._cook_shown_graph()
 
     def toggle_disable_selected(self) -> None:
         """Flip DISABLED. A disabled chunk stays visible -- muted, in Blender's terms."""
@@ -1338,6 +1341,7 @@ class BlenderGraphView:
 
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
+        self._cook_shown_graph()
         self.set_selection({chunk_stage.get_chunk_prim_path(c) for c in made.values()})
         self.status = f"pasted {len(made)}"
 
@@ -1371,6 +1375,7 @@ class BlenderGraphView:
             return
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
+        self._cook_shown_graph()
         self.set_selection([group_path] if group_path in self.prims else ())
         self.status = f"grouped {count}"
 
@@ -1402,6 +1407,9 @@ class BlenderGraphView:
         if landed != self.context:
             self.context = landed
         self.reload()
+        # Blocks the new chunk until something wires it to the view, as Qt does: a node on
+        # its own must not cook, nor put anything on the stage.
+        self._cook_shown_graph()
 
         self.set_selection(set(made))
         self.status = f"created {created[0].name}"
@@ -1448,6 +1456,10 @@ class BlenderGraphView:
         Inside a group that keeps the group's upstream, cooks the group's own chain and
         mutes what is downstream of it; back out, the outer graph cooks again. Without it a
         dive changed only the tree, and the viewport kept showing the outer graph's cook.
+
+        Also after every structural edit (add, wire, cut, delete, paste, group), as Qt
+        recooks on each: only what the active view reaches cooks. Without it a node wired to
+        nothing cooked on every edit and put its result on the stage.
         """
         context_chunk = chunk_graph.context_chunk(self.scene, self.chunks, self.context)
         slot = self.active_slot()

@@ -1540,3 +1540,55 @@ def test_diving_in_and_out_cooks_the_graph_on_screen(view, monkeypatch):
 
     paths = [chunk_stage.get_chunk_prim_path(c) if c is not None else None for c in focused]
     assert paths == [group, top]
+
+
+# ---------------------------------------------------------------------------
+# only what the view reaches cooks, as in Qt
+# ---------------------------------------------------------------------------
+
+def _entry(module_name):
+    return next(e for e in chunk_graph.menu_entries()
+                if e.presets is None and e.module.module_name == module_name)
+
+
+def _added(view, module_name):
+    before = set(view.chunks)
+    view.create_chunk(_entry(module_name), 400.0, -300.0)
+    return next(p for p in view.chunks if p not in before and module_name in p.lower())
+
+
+def test_a_chunk_wired_to_nothing_does_not_cook(view, monkeypatch):
+    """Qt recooks after every structural edit, so a lone node is blocked. Blender never
+    did: a Mesh on its own cooked on every edit and put its result on the stage."""
+    lone = _added(view, "mesh")
+    chunk = view.chunks[lone]
+    assert chunk.is_blocked()
+    module_globals = chunk._module_hook("execute").__globals__
+    real_execute = module_globals["execute"]
+    cooked = []
+    monkeypatch.setitem(module_globals, "execute",
+                        lambda node: (cooked.append(node), real_execute(node)))
+    chunk.get_param("mesh_type").value = "cube"
+    chunk.get_param("prim_path").value = "/Lonely"
+    assert cooked == []
+    assert not view.stage.GetPrimAtPath("/Lonely")
+
+
+def test_wiring_a_chunk_in_unblocks_it_and_cutting_blocks_it(view):
+    lone = _added(view, "mesh")
+    chunk = view.chunks[lone]
+    output = next(n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("output"))
+    move = _node(view, "Move")
+    old = next(l for l in view.tree.links if l.to_node == output)
+    view.tree.links.remove(old)
+    view.tree.links.new(move.outputs[0], view.tree.nodes[lone].inputs[0])
+    view.tree.links.new(view.tree.nodes[lone].outputs[0], output.inputs[0])
+    view.tree.update()
+    bg._reload_after_connect(view)  # what the one-tick timer does in Blender proper
+    assert not chunk.is_blocked()
+
+    link = next(l for l in view.tree.links if l.from_node.name == lone)
+    view.tree.links.remove(link)
+    view.tree.update()
+    bg._reload_after_connect(view)
+    assert chunk.is_blocked()
