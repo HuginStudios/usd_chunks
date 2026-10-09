@@ -17,9 +17,8 @@ Note the layer-content-restore tests below pass either way: re-importing a layer
 reported as info-only, so it does NOT model a real undo. They are kept as a regression
 guard, and as a warning to anyone who reaches for that as a stand-in for undo again.
 
-The real engine cannot be driven from here -- hugin is a binary built for Python 3.11
-against the bundle's USD and does not import under this interpreter -- so the resync case
-is provoked directly through Sdf instead.
+The real engine cannot be driven from here -- it is a host-side binary that lives outside
+this repository -- so the resync case is provoked directly through Sdf instead.
 """
 from __future__ import annotations
 

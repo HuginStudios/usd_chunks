@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in the core, a frontend or the CLI does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The two things that make a report actionable are the exact
+        steps and your environment.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact command or steps. A small `.usda` or a chunk module that reproduces it
+        helps most.
+      placeholder: |
+        1. usdchunks run scene.usda --export out.usda
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Tracebacks or log output, if any.
+      render: text
+  - type: dropdown
+    id: host
+    attributes:
+      label: Running under
+      options:
+        - usdview
+        - Blender
+        - Another DCC (say which below)
+        - usdchunks CLI
+        - Python script
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, OpenUSD version, usd_chunks version or commit.
+      placeholder: Windows 11, Python 3.11, OpenUSD 26.05, usd_chunks 0.1.0
+    validations:
+      required: true

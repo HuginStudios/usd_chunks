@@ -1,0 +1,26 @@
+name: Feature request
+description: A gap in the core runtime, graph, frontends or CLI.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is the usd_chunks core. New chunks live in your own
+        `USD_CHUNK_DIRS`, not here -- but if a chunk you wrote ran into a gap in the core,
+        that gap is exactly what this template is for.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How you would want it to work. A sketch of the chunk code helps.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you have tried
