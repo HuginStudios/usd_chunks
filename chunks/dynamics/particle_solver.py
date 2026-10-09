@@ -945,12 +945,16 @@ def _time_varying(prim):
     return False
 
 
-def _sphere_track(prim, start_frame, frame_count):
+def _sphere_track(prim, start_frame, frame_count, exclude=None):
     """World-space (centres, radii) of a moving collider at every frame.
 
     An instancer -- the RBD Solver's usual bake -- is one sphere per instance. Anything else
     is one sphere around its bounds, which is coarse, but a rigid body that is simply falling
     into the material is the case this is for.
+
+    A hidden instance is not there -- an RBD bake parks every piece a break has not made yet
+    -- and neither is one in `exclude`, an instance that turned into the material itself:
+    both get no sphere, or the material would pile up against pieces nobody can see.
     """
     track = []
     # Measured once: the instances move, their prototypes do not. Per frame, 1,464 Fracture
@@ -960,7 +964,10 @@ def _sphere_track(prim, start_frame, frame_count):
         tc = Usd.TimeCode(start_frame + f)
         if bounds is not None:
             inst = _Instances(prim, tc, bounds)
-            track.append((inst.centres, inst.radii))
+            radii = np.where(inst.visible, inst.radii, 0.0)
+            if exclude is not None and len(exclude) == len(radii):
+                radii = np.where(exclude, 0.0, radii)
+            track.append((inst.centres, radii))
             continue
         rng = UsdGeom.BBoxCache(tc, [UsdGeom.Tokens.default_]).ComputeWorldBound(prim).ComputeAlignedRange()
         if rng.IsEmpty():
@@ -998,6 +1005,33 @@ def _source_motion(source, frame, fps):
     # measured from there it shot off as a streak.
     motion[~before.visible] = 0.0
     return motion
+
+
+def _hide_instances_from(stage, upstream, path, chosen, frame):
+    """Hide the `chosen` instances of the instancer at `path` from `frame` on.
+
+    Written as the instancer's own invisibleIds plus these, at every time it has a value:
+    a stronger layer's time samples replace a weaker one's at every frame, so writing only
+    from `frame` on would also hide nothing the RBD bake hid before it, and hold the first
+    sample back to the start.
+    """
+    source = UsdGeom.PointInstancer(upstream.GetPrimAtPath(path))
+    target = UsdGeom.PointInstancer(stage.GetPrimAtPath(path))
+    if not source or not target:
+        return
+    ids = source.GetIdsAttr().Get(Usd.TimeCode(frame))
+    chosen_ids = {int(ids[i]) if ids else int(i) for i in np.flatnonzero(chosen)}
+    hidden = source.GetInvisibleIdsAttr()
+    times = sorted(set(hidden.GetTimeSamples()) | {float(frame)})
+    attr = target.CreateInvisibleIdsAttr()
+    base = hidden.Get()
+    if base is not None:
+        attr.Set(base)
+    for t in times:
+        now = {int(i) for i in (hidden.Get(Usd.TimeCode(t)) or [])}
+        if t >= frame:
+            now |= chosen_ids
+        attr.Set(Vt.Int64Array(sorted(now)), Usd.TimeCode(t))
 
 
 def _hide_from(stage, path, frame):
@@ -1137,7 +1171,7 @@ def _proto_fills(prim, spacing, rng, time):
     return fills
 
 
-def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default(), shape=False):
+def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default(), shape=False, only=None):
     """World-space starting particles, plus which blob each belongs to (-1 for none).
 
     The source is read at `time`, the Start Frame, so an animated source (an RBD bake)
@@ -1150,7 +1184,7 @@ def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default(), shape=
         fills = _proto_fills(source, spacing, rng, time) if shape else None
         parts, ids = [], []
         for i in range(inst.count):
-            if not inst.visible[i]:
+            if not inst.visible[i] or (only is not None and not only[i]):
                 continue
             local = fills[inst.proto_idx[i]] if fills is not None and inst.proto_idx[i] < len(fills) else None
             if local is not None and len(local):
@@ -1290,9 +1324,16 @@ def _run(owner, notice, sender):
     logger.debug("domain origin %s size %.3f spacing %.4f source %s colliders %s",
                  origin, size, spacing, probe, collider_bounds)
 
+    # Max Piece Size: only the instances up to that size turn into material -- the sand a rock
+    # breaks into -- while the big pieces stay rigid bodies.
+    chosen = None
+    max_size = node.get_param("max_piece_size", is_f).value
+    if source.IsA(UsdGeom.PointInstancer) and max_size > 0.0:
+        probe_inst = _Instances(source, start_time)
+        chosen = probe_inst.visible & (probe_inst.radii * 2.0 <= max_size)
     particles_w, blob_ids, source_instances = _emit(
         source, spacing, blob_radius, rng, start_time,
-        shape=node.get_param("instance_fill", is_s).value == _FILL_SHAPE)
+        shape=node.get_param("instance_fill", is_s).value == _FILL_SHAPE, only=chosen)
     subsampled = ""
     if len(particles_w) > max_particles:
         keep = np.sort(rng.choice(len(particles_w), max_particles, replace=False))
@@ -1320,7 +1361,9 @@ def _run(owner, notice, sender):
 
     sphere_frames = None
     if moving_prims:
-        tracks = [_sphere_track(p, start_frame, frame_count) for p in moving_prims]
+        tracks = [_sphere_track(p, start_frame, frame_count,
+                                exclude=chosen if p.GetPath() == source.GetPath() else None)
+                  for p in moving_prims]
         sphere_frames = []
         for f in range(frame_count):
             centres = np.concatenate([t[f][0] for t in tracks]).reshape(-1, 3)
@@ -1414,7 +1457,10 @@ def _run(owner, notice, sender):
                                          width * 0.5, colour, material_path, start_frame)
 
             if node.get_param("hide_source", chunk.is_param_t(bool)).value:
-                _hide_from(stage, source_paths[0], start_frame)
+                if chosen is not None:
+                    _hide_instances_from(stage, upstream, source_paths[0], chosen, start_frame)
+                else:
+                    _hide_from(stage, source_paths[0], start_frame)
             _show_from(stage, str(sim_path), start_frame)
 
             top = UsdGeom.Points.Define(stage, surface_path)
@@ -1619,6 +1665,12 @@ def main():
         tooltip="An instancer source. Ball: a ball the size of each instance. Shape: each "
         "instance's own shape filled, so rubble turns to sand where it lies, with nothing "
         "added. A shape too thin to hold any material becomes a ball.",
+    ))
+    chunk_api.add_param(chunk.Spinbox(
+        "max_piece_size", "Max Piece Size", default_value=0.0, min_value=0.0,
+        tooltip="An instancer source. Only instances up to this size (their longest side, in "
+        "scene units) turn into material; the bigger ones stay as they are -- the big pieces "
+        "of a breaking rock stay rigid and the small bits crumble to sand. 0 = every instance.",
     ))
     chunk_api.add_param(chunk.Checkbox(
         "inherit_motion", "Inherit Motion", default_value=False,

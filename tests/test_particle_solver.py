@@ -491,3 +491,50 @@ def test_a_piece_born_this_frame_inherits_no_motion():
     motion = ps._source_motion(rubble, 10, 24.0)
     assert motion[1] == pytest.approx([0.0, 0.0, 0.0])
     assert motion[0][2] == pytest.approx(-24.0, abs=1e-3)
+
+
+def _big_and_small(stage):
+    """A rock's rubble: one big piece (2 across) and two small ones (0.2), the third hidden
+    until frame 10 as an RBD bake keeps a piece a break has not made yet."""
+    _box(stage, "/rock/Prototypes/big", (-1, -1, -1), (1, 1, 1))
+    _box(stage, "/rock/Prototypes/small", (-0.1, -0.1, -0.1), (0.1, 0.1, 0.1))
+    inst = UsdGeom.PointInstancer.Define(stage, "/rock")
+    inst.CreatePrototypesRel().SetTargets(["/rock/Prototypes/big", "/rock/Prototypes/small"])
+    inst.CreateProtoIndicesAttr().Set([0, 1, 1])
+    inst.CreatePositionsAttr().Set(Vt.Vec3fArray([(0, 0, 1), (3, 0, 0.1), (5, 0, 0.1)]))
+    hidden = inst.CreateInvisibleIdsAttr()
+    hidden.Set(Vt.Int64Array([2]), 1)
+    hidden.Set(Vt.Int64Array([]), 10)
+    return stage.GetPrimAtPath("/rock")
+
+
+def test_only_small_pieces_turn_into_material():
+    stage = Usd.Stage.CreateInMemory()
+    rock = _big_and_small(stage)
+    inst = ps._Instances(rock, Usd.TimeCode(10))
+    chosen = inst.visible & (inst.radii * 2.0 <= 0.5)
+    assert list(chosen) == [False, True, True]
+    particles, ids, _inst = ps._emit(rock, 0.02, 0.5, np.random.default_rng(0), Usd.TimeCode(10),
+                                     shape=True, only=chosen)
+    assert set(np.unique(ids)) == {1, 2}
+    assert particles[:, 0].min() > 2.5  # nothing from the big piece at x=0
+
+
+def test_hiding_some_pieces_keeps_what_the_bake_hid():
+    stage = Usd.Stage.CreateInMemory()
+    rock = _big_and_small(stage)
+    ps._hide_instances_from(stage, stage, "/rock", np.asarray([False, True, False]), 10)
+    hidden = UsdGeom.PointInstancer(rock).GetInvisibleIdsAttr()
+    assert list(hidden.Get(1)) == [2]       # before: what the bake hid, nothing added
+    assert list(hidden.Get(10)) == [1]      # from the handoff: the piece that became sand
+    assert list(hidden.Get(40)) == [1]
+
+
+def test_collider_spheres_skip_hidden_and_dissolved_pieces():
+    stage = Usd.Stage.CreateInMemory()
+    rock = _big_and_small(stage)
+    early = ps._sphere_track(rock, 1, 1)[0][1]
+    assert early[2] == 0.0 and early[0] > 0.9           # parked piece is no collider
+    later = ps._sphere_track(rock, 10, 1, exclude=np.asarray([False, True, False]))[0][1]
+    assert later[1] == 0.0                              # turned into sand: no collider
+    assert later[0] > 0.9 and later[2] > 0.0            # the big piece and the other bit are
