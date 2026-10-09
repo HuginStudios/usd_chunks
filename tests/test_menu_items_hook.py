@@ -6,7 +6,6 @@ speak to each other only through wires).
 """
 from __future__ import annotations
 
-from PySide6 import QtWidgets
 
 import pytest
 
@@ -92,6 +91,5 @@ def test_the_qt_combo_box_fills_as_it_opens(qapp) -> None:
     box._show_as_menu()
 
     assert [box.itemText(i) for i in range(box.count())] == ["/a", "/b"]
-    for popup in box.findChildren(QtWidgets.QMenu):
-        popup.close()
+    box._popup.close()
     box.deleteLater()
