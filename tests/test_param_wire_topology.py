@@ -200,8 +200,8 @@ def test_view_slots_are_counted_per_container():
     for slot in chunk_graph.VIEW_SLOTS:
         _view_prim(stage, f"/chunks/tabA/View{slot}", slot)
 
-    assert chunk_graph._free_view_slot(stage, "/chunks/tabA") is None
-    assert chunk_graph._free_view_slot(stage, "/chunks/tabB") == 1, \
+    assert chunk_graph.free_view_slot(stage, "/chunks/tabA") is None
+    assert chunk_graph.free_view_slot(stage, "/chunks/tabB") == 1, \
         "another container's views used up this one's slots"
 
 
@@ -209,4 +209,4 @@ def test_the_lowest_free_slot_is_reused():
     stage = Usd.Stage.CreateInMemory()
     _view_prim(stage, "/chunks/tab/View2", 2)
 
-    assert chunk_graph._free_view_slot(stage, "/chunks/tab") == 1
+    assert chunk_graph.free_view_slot(stage, "/chunks/tab") == 1

@@ -102,9 +102,9 @@ def test_only_mutes_while_the_view_reaches_it() -> None:
         mute = scene.create.mute_layer(pattern="fx")
         stage = scene.get_stage()
 
-        scene.view(other)  # the mute chunk is now off the viewed chain: gated off
+        scene.set_view(other)  # the mute chunk is now off the viewed chain: gated off
         assert _muted_names(stage) == []
-        scene.view(mute)
+        scene.set_view(mute)
         assert _muted_names(stage) == ["fx"]
 
 

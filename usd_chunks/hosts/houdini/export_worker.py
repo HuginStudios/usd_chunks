@@ -84,7 +84,7 @@ def _build(scene, spec: dict, group, made: dict) -> None:
                 chunk_stage.loft_param_to_context(param, group)
 
         if (out := own.get(spec.get("output") or "")) is not None:
-            scene.view(out)
+            scene.set_view(out)
 
 
 def _place(layer: Sdf.Layer, prim_path: Sdf.Path, spec: dict) -> None:

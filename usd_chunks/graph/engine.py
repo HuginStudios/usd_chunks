@@ -2123,7 +2123,7 @@ def context_has_view(scene, context) -> bool:
     )
 
 
-def _free_view_slot(stage: Usd.Stage, parent_path: str) -> int | None:
+def free_view_slot(stage: Usd.Stage, parent_path: str) -> int | None:
     """The lowest unused slot among this container's views.
 
     Scoped to the container, not the stage: each graph has its own slots 1-2. A global
@@ -2217,7 +2217,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
         existing = existing_view_slot_for(stage, target_prim_path)
         if existing is not None:
             return existing
-        slot = _free_view_slot(stage, parent_path)
+        slot = free_view_slot(stage, parent_path)
         if slot is None:
             return None
 

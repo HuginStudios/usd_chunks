@@ -164,8 +164,9 @@ All three lines do the same thing. Both kinds of wire are saved with the network
 
 ## Build one chain
 
-In usdview, only the chunks wired into the active View cook. The rest are switched off.
-So build your network as one chain: give each chunk the one before it as its input.
+In usdview, only the chunks wired into the graph's Output cook, or into the active View
+while one is active. The rest are switched off. So build your network as one chain: give
+each chunk the one before it as its input.
 
 ``` py
 ground = scene.create.ground(prim_path="/set/ground")
@@ -173,22 +174,32 @@ box = scene.create.cube(ground, prim_path="/set/box")                           
 scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=0.5)  # box -> Transform
 ```
 
-A chunk you make without an input starts a new, separate chain. It stays off until a View
-points at it. This is on purpose, so you can build a side branch and view it later.
+A chunk you make without an input starts a new, separate chain. It stays off until the
+Output or a View points at it. This is on purpose, so you can build a side branch and look
+at it later.
 
-To point the View at a chunk, use `scene.view()`:
+To end the graph at a chunk, use `scene.set_output()`. To look at a chunk, use
+`scene.set_view()`:
 
 ``` py
 lift = scene.create.transform(box, primpath_location=box.get_param("prim_path"), ty=3.0)
-scene.view(lift)      # the View now shows lift, and it cooks
+scene.set_output(lift)        # the graph now ends at lift, and it cooks
+scene.set_view(box)           # look at box for now, in View 2
+scene.set_view(lift, view=3)  # and at lift in View 3
 ```
 
-It does what dragging a wire into the View does in the graph: the View's old input is
-replaced, and what the View now reaches cooks. If the graph has no View, it makes one.
+| Call | Does |
+| --- | --- |
+| `scene.set_output(chunk)` | What **Set Output** does in the graph: the Output's wire moves to `chunk`, no View stays active, and the graph cooks to the Output. A graph with no Output gets one. |
+| `scene.set_view(chunk)` | What **Set View** does: the View's old input is replaced, that View becomes active, and what it reaches cooks. It uses a View already showing `chunk`, else the first View the graph doesn't have yet, else the active one. |
+| `scene.set_view(chunk, view=3)` | The same, in View 3. Views are numbered 2 and 3, as in the graph, since 1 is the Output. |
 
-A script's own `Scene.new()` has no View, so all its chunks cook, until you call
-`scene.view()`. Build one chain there
-too: the saved network then works when you open it in usdview.
+`usdchunks run` cooks to the Output, and a ChunkGroup delivers its Output, so end a script
+with `scene.set_output()`. Use `scene.set_view()` to look at something along the way.
+
+A script's own `Scene.new()` has no Output or View, so all its chunks cook, until you call
+one of these. Build one chain there too: the saved network then works when you open it in
+usdview.
 
 ## `with` blocks
 
@@ -238,11 +249,12 @@ Edit Target is what sends edits to it.
 - The first node goes to the middle of the graph view. The next ones go in a row to its
   right. Each `with` block starts a new row.
 - Leaving the `with` block does not close usdview's scene.
-- If the graph has no View yet, it adds one at the end of your chain.
-- If the graph already has a View, new chunks start switched off, the same as nodes you
-  make in the graph: they are not in the View's chain yet. To see them, call
-  `scene.view(last)` with the chain's last chunk. In the graph, you can instead select that node and press **V**, which makes a
-  second View. Press **2** or **3** to switch between Views, and **1** to go back to the Output.
+- If the graph has no Output yet, it adds one at the end of your chain.
+- If the graph already has an Output, new chunks start switched off, the same as nodes you
+  make in the graph: they are not in the Output's chain yet. To cook them, call
+  `scene.set_output(last)` with the chain's last chunk, or `scene.set_view(last)` to look
+  at it. In the graph, you can instead select that node and press **V**, which makes a
+  View. Press **2** or **3** to switch between Views, and **1** to go back to the Output.
 
 ## Examples
 
