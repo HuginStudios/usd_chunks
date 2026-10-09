@@ -260,10 +260,15 @@ def test_a_node_class_is_generated_per_chunk_type():
 
 
 def test_qt_only_chunks_are_skipped_not_fatal():
-    """A chunk that imports PySide6 at module level cannot load in Blender (uv_checker and
-    the custom_widget example still do). The registry skips a module whose import fails,
+    """A chunk that imports PySide6 at module level cannot load in Blender (the
+    custom_widget example still does). The registry skips a module whose import fails,
     so the add-on degrades rather than refusing to start."""
-    assert "uv_checker" not in bg._generated
+    assert "custom_widget" not in bg._generated
+
+
+def test_uv_checker_loads_without_qt():
+    """uv_checker imported Qt for one error popup; Qt is optional there now."""
+    assert "uv_checker" in bg._generated
 
 
 def test_a_chunk_that_only_waited_with_qt_now_loads():
