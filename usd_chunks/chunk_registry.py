@@ -2621,8 +2621,22 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return written
 
     def _after_cook(self, c: core.ChunkCommon) -> None:
-        """Once the solve a cook was part of has drained, hide what its asset's bake left."""
-        if c.get_hash() in self._placed and not chunk_cook.defer_to_batch_end(
+        """Note which prims a cook started or stopped defining, then -- once the solve it was
+        part of has drained -- hide what its asset's bake left (deactivate_stale_bakes).
+
+        Only a change in what the live cooks define can change what only a bake defines, so
+        a cook that defines the same prims as last time (a drag: new values, same prims)
+        adds nothing to check.
+        """
+        chunk_hash = c.get_hash()
+        if chunk_hash not in self._placed or (layer := self.chunk_layers.get(chunk_hash)) is None:
+            return
+        defined = chunk_layers.defined_paths(layer)
+        changed = defined ^ self._chunk_defs.get(chunk_hash, frozenset())
+        self._chunk_defs[chunk_hash] = defined
+        if changed:
+            self._dirty_paths |= changed
+        if not chunk_cook.defer_to_batch_end(
                 ("deactivate_stale_bakes", id(self)), self.deactivate_stale_bakes):
             self.deactivate_stale_bakes()
 
@@ -2639,10 +2653,66 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
         A copy whose chunks have not all cooked -- disabled, blocked outside the active view,
         never cooked -- keeps its bake whole: hiding it would leave the bare asset.
+
+        Incremental, for large assets. A copy that turns live is walked once in full. After
+        that only the bake subtrees at paths whose definition changed (_after_cook) are
+        walked again, and only the overs that change are written, so a prim that stays
+        hidden is never recomposed.
         """
         if not (self.initialized and self.stage):
             return
-        live: dict[tuple, list] = {}
+        copies = self._live_copies()
+        dirty, self._dirty_paths = self._dirty_paths, set()
+        drop: dict[tuple, set] = {}
+        walk: dict[tuple, list] = {}
+        for key, state in self._copies.items():
+            if key not in copies:
+                drop[key] = set(state["hidden"])
+        for key, (cook, bake, map_fn, live) in copies.items():
+            state = self._copies.setdefault(
+                key, {"cook": cook, "bake": bake, "map": map_fn, "live": False, "hidden": set()})
+            hidden = state["hidden"]
+            if not live:
+                drop[key] = set(hidden)
+            elif not state["live"]:
+                drop[key] = set(hidden)
+                walk[key] = [Sdf.Path.absoluteRootPath]
+            else:
+                drop[key], walk[key] = self._dirty_roots(hidden, dirty, map_fn, bake)
+            state["live"] = live
+        with self._internal_sublayer_edit():
+            with Sdf.ChangeBlock():
+                for key, paths in drop.items():
+                    if not paths:
+                        continue
+                    state = self._copies[key]
+                    state["hidden"] -= paths
+                    if (entry := self._deactivations.get(state["cook"].identifier)) is not None:
+                        for path in paths:
+                            if (spec := entry[1].GetPrimAtPath(path)) is not None:
+                                spec.ClearInfo("active")
+                        entry[1].RemoveInertSceneDescription()
+            for key in list(drop):
+                if key not in copies:
+                    del self._copies[key]
+            found = {key: self._only_in_bake(self._copies[key], roots)
+                     for key, roots in walk.items() if roots}
+            with Sdf.ChangeBlock():
+                for key, paths in found.items():
+                    if not paths:
+                        continue
+                    state = self._copies[key]
+                    state["hidden"] |= paths
+                    overs = self._overs_layer(state["cook"])
+                    for path in paths:
+                        Sdf.CreatePrimInLayer(overs, path).active = False
+
+    def _live_copies(self) -> dict[tuple, tuple]:
+        """{copy: (cook layer, asset's bake, arc map, all its chunks live)} for every copy of
+        an asset with a published bake whose chunks cook into one of this stage's cook layers.
+        A copy is keyed by the stage path its arc is introduced at."""
+        copies: dict[tuple, list] = {}
+        cooks = {cook.identifier for cook in self._cook_layers.values()}
         for chunk_hash, ref in list(self._placed.items()):
             if (c := ref()) is None or chunk_hash in self._retired_chunks:
                 continue
@@ -2650,7 +2720,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if c._module_hook("execute") is None:
                 continue
             cook = self._chunk_target.get(chunk_hash)
-            if cook is None or cook.identifier not in self._cooks_by_id():
+            if cook is None or cook.identifier not in cooks:
                 continue
             prim = self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))
             if not (prim and prim.IsValid()) or (node := chunk_utils.arc_def_node(prim)) is None:
@@ -2658,37 +2728,48 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             home = node.layerStack.identifier.rootLayer
             if (bake := chunk_layers.find_cook_sublayer(home)) is None:
                 continue
-            # One entry per copy of the asset: the stage path its arc is introduced at.
             copy = chunk_utils.arc_source(prim)
             key = (cook.identifier, bake.identifier, str(copy[0]) if copy else "")
-            entry = live.setdefault(key, [cook, bake, node.mapToRoot, True])
+            entry = copies.setdefault(key, [cook, bake, node.mapToRoot, True])
             if self.is_muted(chunk_hash) or c.is_blocked() or chunk_cook.is_cook_stale(c):
                 entry[3] = False
-        with self._internal_sublayer_edit():
-            for _, overs in self._deactivations.values():
-                overs.Clear()
-            hide: dict[str, set] = {}
-            for cook, bake, map_fn, all_live in live.values():
-                if all_live:
-                    hide.setdefault(cook.identifier, set()).update(
-                        self._only_in_bake(bake, map_fn))
-            for cook_id, paths in hide.items():
-                cook = self._cooks_by_id()[cook_id]
-                if (entry := self._deactivations.get(cook_id)) is None:
-                    entry = (cook, Sdf.Layer.CreateAnonymous("deactivate"))
-                    self.internal_layer_ids.add(entry[1].identifier)
-                    self._deactivations[cook_id] = entry
-                    cook.subLayerPaths.append(entry[1].identifier)
-                for path in sorted(paths):
-                    Sdf.CreatePrimInLayer(entry[1], path).active = False
+        return {key: tuple(entry) for key, entry in copies.items()}
 
-    def _only_in_bake(self, bake: Sdf.Layer, map_fn) -> set:
-        """Stage paths of the topmost prims bake defines and nothing else on the stage does."""
+    @staticmethod
+    def _dirty_roots(hidden: set, dirty: set, map_fn, bake: Sdf.Layer) -> tuple[set, list]:
+        """For a live copy: the hidden paths a change in definitions at dirty touches, and
+        the stage paths to walk again from.
+
+        A changed path p decides again for itself and what is below it, so hidden paths at
+        or below it are dropped and p is walked. A hidden path above it kept its children
+        out of the walks so far -- they were not composed -- so it is dropped too, and the
+        walk starts there instead. A path the bake has no prim at holds nothing to hide.
+        """
+        drop: set = set()
+        roots: set = set()
+        for path in sorted(dirty, key=lambda p: p.pathElementCount):
+            source = map_fn.MapTargetToSource(path)
+            if source.isEmpty or bake.GetPrimAtPath(source) is None:
+                continue
+            above = [h for h in hidden if path.HasPrefix(h) and h != path]
+            drop.update(h for h in hidden if h.HasPrefix(path))
+            drop.update(above)
+            roots.add(min(above, key=lambda p: p.pathElementCount) if above else path)
+        # A root inside another root is walked with it.
+        roots = {r for r in roots if not any(r != o and r.HasPrefix(o) for o in roots)}
+        return drop, sorted(roots)
+
+    def _only_in_bake(self, state: dict, roots: list) -> set:
+        """Stage paths of the topmost prims under roots that state's bake defines and nothing
+        else on the stage does -- skipping what is hidden already."""
+        bake, map_fn, hidden = state["bake"], state["map"], state["hidden"]
         found = set()
 
         def visit(spec):
             path = map_fn.MapSourceToTarget(spec.path)
-            prim = self.stage.GetPrimAtPath(path) if not path.isEmpty else None
+            if path.isEmpty or path in hidden:
+                return
+            prim = self.stage.GetPrimAtPath(path)
             if prim and prim.IsValid():
                 defs = [s.layer for s in prim.GetPrimStack() if s.specifier == Sdf.SpecifierDef]
                 if defs and all(layer == bake for layer in defs):
@@ -2697,12 +2778,22 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             for child in spec.nameChildren:
                 visit(child)
 
-        for root in bake.rootPrims:
-            visit(root)
+        for root in roots:
+            if root == Sdf.Path.absoluteRootPath:
+                for spec in bake.rootPrims:
+                    visit(spec)
+            elif (spec := bake.GetPrimAtPath(map_fn.MapTargetToSource(root))) is not None:
+                visit(spec)
         return found
 
-    def _cooks_by_id(self) -> dict[str, Sdf.Layer]:
-        return {cook.identifier: cook for cook in self._cook_layers.values()}
+    def _overs_layer(self, cook: Sdf.Layer) -> Sdf.Layer:
+        """The layer of deactivating overs under cook, made on first use."""
+        if (entry := self._deactivations.get(cook.identifier)) is None:
+            entry = (cook, Sdf.Layer.CreateAnonymous("deactivate"))
+            self.internal_layer_ids.add(entry[1].identifier)
+            self._deactivations[cook.identifier] = entry
+            cook.subLayerPaths.append(entry[1].identifier)
+        return entry[1]
 
     def _drop_deactivations(self) -> None:
         """Take every layer of deactivating overs out of its cook layer, and forget them."""
@@ -2712,6 +2803,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                     cook.subLayerPaths.remove(overs.identifier)
                 self.internal_layer_ids.discard(overs.identifier)
         self._deactivations = {}
+        self._copies: dict[tuple, dict] = {}
+        self._chunk_defs: dict[core.ChunkHash, frozenset] = {}
+        self._dirty_paths: set = set()
 
     def _bake_stamps(self, cook: Sdf.Layer) -> dict:
         """{chunk prim path in cook's namespace: stamp} for the chunks cook holds."""

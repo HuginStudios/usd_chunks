@@ -203,6 +203,50 @@ def test_only_the_copy_that_cooks_live_has_its_bake_replaced(tmp_path):
         scene.close()
 
 
+def test_a_recook_defining_the_same_prims_walks_nothing(tmp_path, monkeypatch):
+    """A drag: new values, the same prims defined. Nothing about what only the bake defines
+    can have changed, so the bake is not walked and no over is touched -- what keeps this
+    cheap on a large asset."""
+    shot, h1 = _shot(tmp_path, "reference")
+    _stale_asset_bake(tmp_path)
+    scene = Scene.open(str(shot), "pytest")
+    try:
+        chunk = _cook(scene, h1)
+        lm = chunk_registry.ChunkLayerManager()
+        overs = next(iter(lm._deactivations.values()))[1]
+        before = overs.ExportToString()
+        walks = []
+        original = lm._only_in_bake
+        monkeypatch.setattr(lm, "_only_in_bake", lambda *a: walks.append(a) or original(*a))
+        chunk.get_param("tz").value = 3.0
+        assert _z(scene.get_stage(), _GEO) == pytest.approx(3.0)
+        assert walks == []
+        assert overs.ExportToString() == before
+    finally:
+        scene.close()
+
+
+def test_a_prim_the_live_cook_starts_defining_is_shown_again(tmp_path):
+    """Once the live cook defines /old itself it is no longer the bake's alone: its over
+    goes. When the cook stops defining it, the bake's is hidden again."""
+    shot, h1 = _shot(tmp_path, "reference")
+    _stale_asset_bake(tmp_path)
+    scene = Scene.open(str(shot), "pytest")
+    try:
+        chunk = _cook(scene, h1)
+        lm = chunk_registry.ChunkLayerManager()
+        stage = scene.get_stage()
+        layer = lm.get_layer(chunk)
+        Sdf.CreatePrimInLayer(layer, _OLD).specifier = Sdf.SpecifierDef
+        lm._after_cook(chunk)
+        assert stage.GetPrimAtPath(_OLD).IsActive()
+        del layer.GetPrimAtPath(_OLD.rsplit("/", 1)[0]).nameChildren["old"]
+        lm._after_cook(chunk)
+        assert not stage.GetPrimAtPath(_OLD).IsActive()
+    finally:
+        scene.close()
+
+
 def test_the_shots_bake_deactivates_it_for_plain_usd(tmp_path):
     shot, _ = _shot(tmp_path, "reference")
     _stale_asset_bake(tmp_path)

@@ -155,6 +155,21 @@ def find_cook_sublayer(home: Sdf.Layer) -> Sdf.Layer | None:
     return None
 
 
+def defined_paths(layer: Sdf.Layer) -> frozenset:
+    """Every prim path layer holds a `def` at."""
+    paths = []
+
+    def visit(spec):
+        if spec.specifier == Sdf.SpecifierDef:
+            paths.append(spec.path)
+        for child in spec.nameChildren:
+            visit(child)
+
+    for root in layer.rootPrims:
+        visit(root)
+    return frozenset(paths)
+
+
 def add_cook_sublayer(home: Sdf.Layer) -> Sdf.Layer:
     """Give home a cook sublayer: an empty X.cook file beside it, listed as home's strongest
     sublayer -- so home's own opinions beat its cook, and its cook beats everything weaker.
