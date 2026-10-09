@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from network_files import run_and_read, save_cubes, save_network
+from network_files import read_z, run, run_and_read, save_cubes, save_network
 from usd_chunks import chunk_layers, chunk_registry, chunk_stage, chunk_utils
 from usd_chunks.chunk_script import Scene
 
@@ -171,6 +171,51 @@ def test_a_layer_without_a_cook_sublayer_cooks_into_the_session_layer(shot):
         target = lm.get_chunk_target(by_path[paths["B1"]].get_hash())
         assert target == scene.get_stage().GetSessionLayer()
         assert not Sdf.Layer.Find(str(shot_dir / "lighting.usda")).dirty
+    finally:
+        scene.close()
+
+
+def _plain_open(path):
+    """path opened as a consumer without usd_chunks would: plain USD, read from disk."""
+    stage = Usd.Stage.Open(str(path))
+    for layer in stage.GetUsedLayers():
+        if not layer.anonymous:
+            layer.Reload()
+    return stage
+
+
+def test_a_bake_is_written_to_each_cook_file_and_composes_without_usd_chunks(shot):
+    """`usdchunks run --bake` writes what each department cooked into its cook file, and the
+    shot opened in plain USD -- nothing cooking -- shows every result."""
+    shot_dir, paths = shot
+    _link_cook_sublayers(shot_dir, "layout", "lighting")
+    out = run(shot_dir / "shot.usda", "--bake")
+    assert "layout.cook.usda" in out and "lighting.cook.usda" in out
+    z = read_z(_plain_open(shot_dir / "shot.usda"), "abcd")
+    assert z == pytest.approx({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+    bake = Sdf.Layer.OpenAsAnonymous(str(shot_dir / "layout.cook.usda"))
+    assert not bake.subLayerPaths, "the bake lists layers that only existed in memory"
+    data = bake.customLayerData
+    assert data["usdchunks:derived"]
+    stamps = data["usdchunks:cooks"]
+    assert {paths["A1"], paths["A2"]} <= set(stamps)
+    assert not {paths["B1"], paths["B2"]} & set(stamps), "lighting's chunks stamped in layout's bake"
+    for stamp in stamps.values():
+        assert stamp["module"] and stamp["inputs"] and not stamp["partial"]
+
+
+def test_a_live_cook_supersedes_the_saved_bake(shot):
+    """The bake is the last result; once the chunks cook, a prim only the old bake made is
+    gone -- it does not linger under the live cooks."""
+    shot_dir, _ = shot
+    _link_cook_sublayers(shot_dir, "layout")
+    bake = Sdf.Layer.FindOrOpen(str(shot_dir / "layout.cook.usda"))
+    Sdf.CreatePrimInLayer(bake, "/stale").specifier = Sdf.SpecifierDef
+    bake.Save()
+    del bake
+    scene = Scene.open(str(shot_dir / "shot.usda"), "pytest")
+    try:
+        assert not scene.get_stage().GetPrimAtPath("/stale")
     finally:
         scene.close()
 

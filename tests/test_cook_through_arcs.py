@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from network_files import save_network
+from network_files import run, save_network
 from usd_chunks import chunk_layers, chunk_stage
 from usd_chunks.chunk_script import Scene
 
@@ -89,6 +89,42 @@ def test_a_shot_opinion_beats_the_assets_cook(tmp_path):
         assert _z(scene.get_stage(), _GEO) == pytest.approx(7.0)
     finally:
         scene.close()
+
+
+def test_a_shot_opinion_beats_the_assets_cook_in_a_headless_run(tmp_path):
+    """The same in `usdchunks run --export`: a notice callback on the house's chunk while it
+    loads puts its layer back on the stage, and it must be back in the house by the export."""
+    shot, _ = _shot(tmp_path, "reference")
+    layer = Sdf.Layer.FindOrOpen(str(shot))
+    stage = Usd.Stage.Open(layer)
+    over = stage.OverridePrim(_GEO)
+    UsdGeom.Xformable(over).CreateXformOpOrderAttr().Set(["xformOp:translate"])
+    over.CreateAttribute("xformOp:translate", Sdf.ValueTypeNames.Double3).Set(Gf.Vec3d(0, 0, 7))
+    layer.Save()
+    out = tmp_path / "out.usda"
+    run(shot, "--all", "--export", str(out))
+    assert _z(Usd.Stage.Open(str(out)), _GEO) == pytest.approx(7.0)
+
+
+def test_a_baked_asset_travels_to_another_shot(tmp_path):
+    """Baked once from one shot, the house's cook is in house.cook.usda at house paths, so a
+    second shot referencing the house somewhere else -- opened in plain USD, nothing cooking
+    -- gets the moved cube too."""
+    shot, _ = _shot(tmp_path, "reference")
+    assert "house.cook.usda" in run(shot, "--bake", "--all")
+    bake = Sdf.Layer.OpenAsAnonymous(str(tmp_path / "house.cook.usda"))
+    assert set(bake.customLayerData["usdchunks:cooks"]) == {"/chunks/ChunkGroup/H1"}
+    other = Sdf.Layer.CreateNew(str(tmp_path / "other.usda"))
+    spec = Sdf.CreatePrimInLayer(other, "/Elsewhere/house")
+    spec.specifier = Sdf.SpecifierDef
+    other.GetPrimAtPath("/Elsewhere").specifier = Sdf.SpecifierDef
+    spec.referenceList.Prepend(Sdf.Reference("./house.usda", "/chunks"))
+    other.Save()
+    stage = Usd.Stage.Open(str(tmp_path / "other.usda"))
+    for layer in stage.GetUsedLayers():
+        if not layer.anonymous:
+            layer.Reload()
+    assert _z(stage, "/Elsewhere/house/geo") == pytest.approx(1.0)
 
 
 def test_a_result_outside_the_asset_stays_in_the_session_layer(tmp_path):

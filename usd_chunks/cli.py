@@ -450,6 +450,14 @@ def cmd_run(args):
         order=lambda cs: commit_order_from_stage(cs, stage),
     )
 
+    # A result an arc brings in sits in its asset, as weak as the arc -- not left in the
+    # session layer by a callback since its cook (ChunkLayerManager.settle_cook).
+    chunk_registry.ChunkLayerManager().settle_all()
+
+    if getattr(args, "bake", False):
+        for path in chunk_registry.ChunkLayerManager().save_cook_layers():
+            print(f"Baked: {path}")
+
     if args.export:
         if args.procedural:
             stage.Export(args.export)
@@ -819,6 +827,12 @@ def main():
     )
     run_parser.add_argument(
         "--printout", "-p", action="store_true", help="Print the flattened stage to stdout, Chunk prims stripped"
+    )
+    run_parser.add_argument(
+        "--bake",
+        action="store_true",
+        help="Write each cook layer's result to its file (layout.cook.usda beside the "
+             "layout.usda that lists it), so the bake is there without usd_chunks",
     )
     run_parser.add_argument(
         "--all",

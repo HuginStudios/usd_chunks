@@ -34,7 +34,7 @@ from typing import (
 from typing_extensions import override
 from enum import Enum
 
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdUtils
 
 try:
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -2159,6 +2159,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if not hasattr(self, "_mirrors"):
             self._mirrors: dict[core.ChunkHash, Sdf.Layer] = {}
             self._parked: set = set()
+            # Each mirrored chunk's prim path in the asset's own namespace, for its stamp.
+            self._mirror_source: dict[core.ChunkHash, Sdf.Path] = {}
+        # Every chunk given a layer, for save_cook_layers to find the ones a bake holds.
+        self._placed: dict[core.ChunkHash, weakref.ReferenceType] = {}
         chunk_cook.after_cook(self.settle_cook)
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
@@ -2195,6 +2199,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._cook_layers = {}
         self._mirrors = {}
         self._parked = set()
+        self._mirror_source = {}
+        self._placed = {}
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -2414,6 +2420,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             if target == self.stage.GetSessionLayer() and (home := self._home_layer(c)):
                 target = self.cook_layer_for(home) or target
         self._chunk_target[c.get_hash()] = target
+        self._placed[c.get_hash()] = weakref.ref(c)
 
         # Create a graph layer - these are used for organising the layers. When chunks are part of
         # the same graph AND currently resolve to the same target, they become siblings in the
@@ -2483,9 +2490,16 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
             if layer.identifier not in parent.subLayerPaths:
                 parent.subLayerPaths.insert(index, layer.identifier)
-            # Back on the stage, at stage paths, for whatever is about to author into it; the
-            # next cook maps it into the asset again (settle_cook).
-            self._parked.discard(c.get_hash())
+            # Back on the stage, at stage paths, for whatever is about to author into it --
+            # often only a notice callback wrapping itself in the chunk's edit context. It goes
+            # back into the asset once the batch or solve around that has drained, with
+            # whatever was written mapped too; failing that, at the next cook, bake or export
+            # (settle_all).
+            parked = c.get_hash()
+            if parked in self._parked:
+                self._parked.discard(parked)
+                chunk_cook.defer_to_batch_end(("settle_cook", parked),
+                                              lambda h=parked: self._resettle(h))
 
             # If a chunk connection changed after the chunk layer was created, the layer may have been
             # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
@@ -2565,9 +2579,79 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return cook
         if (cook := chunk_layers.find_cook_sublayer(home)) is None:
             return None
+        # From here on the live cooks are the result: the bake saved in the file was the
+        # last one, and left in place it would compose under them -- a prim a cook no
+        # longer makes would linger. Cleared in memory only; save_cook_layers writes the
+        # next bake. What the file records about itself stays.
+        with self._internal_sublayer_edit():
+            data = dict(cook.customLayerData)
+            cook.Clear()
+            cook.customLayerData = data
         self.internal_layer_ids.add(cook.identifier)
         self._cook_layers[home.identifier] = cook
         return cook
+
+    def save_cook_layers(self) -> list[str]:
+        """Write every cook layer's bake to its file: what its chunks cooked, flattened.
+
+        At runtime a cook layer only lists the layers its chunks cook into, all in memory.
+        The bake is that stack flattened (UsdUtils.FlattenLayerStack, honouring the stage's
+        mutes) and written beside the layer that lists it, so a consumer without usd_chunks
+        sees the result. The layer in memory keeps listing the live ones; it is exported,
+        never saved.
+
+        Each chunk the bake holds is stamped in the file's customLayerData under
+        usdchunks:cooks, by its prim path in the file's own namespace: its module hash, a
+        hash of its inputs, and whether its result is partial (muted, blocked outside the
+        active view, or never cooked). A bake whose stamps no longer match is stale.
+
+        Returns:
+            The files written.
+        """
+        self.settle_all()
+        written = []
+        for cook in self._cook_layers.values():
+            if cook.anonymous or not self.stage:
+                continue
+            reader = Usd.Stage.Open(cook, Usd.Stage.LoadNone)
+            if muted := [i for i in self.stage.GetMutedLayers() if i != cook.identifier]:
+                reader.MuteAndUnmuteLayers(muted, [])
+            flat = UsdUtils.FlattenLayerStack(reader)
+            flat.customLayerData = {
+                **dict(cook.customLayerData),
+                "usdchunks:derived": True,
+                "usdchunks:cooks": self._bake_stamps(cook),
+            }
+            flat.Export(cook.realPath)
+            written.append(cook.realPath)
+        return written
+
+    def _bake_stamps(self, cook: Sdf.Layer) -> dict:
+        """{chunk prim path in cook's namespace: stamp} for the chunks cook holds."""
+        stamps = {}
+        for chunk_hash, ref in self._placed.items():
+            if (c := ref()) is None or chunk_hash in self._retired_chunks:
+                continue
+            # A chunk with nothing to run (an Output) adds nothing to a bake.
+            if c._module_hook("execute") is None:
+                continue
+            if (mirror := self._mirrors.get(chunk_hash)) is not None:
+                if mirror.identifier not in cook.subLayerPaths:
+                    continue
+                key = self._mirror_source[chunk_hash]
+            elif self._chunk_target.get(chunk_hash) == cook:
+                key = chunk_utils.get_chunk_prim_path(c)
+            else:
+                continue
+            module = c.get_chunk_module()
+            stamps[str(key)] = {
+                "module": (module.source_hash if module is not None else None) or "",
+                "inputs": chunk_utils.chunk_inputs_hash(
+                    self.stage.GetPrimAtPath(Sdf.Path(chunk_utils.get_chunk_prim_path(c)))),
+                "partial": bool(self.is_muted(chunk_hash) or c.is_blocked()
+                                or chunk_cook.is_cook_stale(c)),
+            }
+        return stamps
 
     def settle_cook(self, c: core.ChunkCommon) -> None:
         """Put the result of a chunk an arc brings in where the arc's other content is.
@@ -2606,6 +2690,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 mirror = Sdf.Layer.CreateAnonymous(f"{c.name}_mapped")
                 self.internal_layer_ids.add(mirror.identifier)
                 self._mirrors[chunk_hash] = mirror
+            self._mirror_source[chunk_hash] = node.path
             mirror.Clear()
             escaped = chunk_layers.map_layer(layer, mirror, node.mapToRoot.MapTargetToSource)
             if escaped:
@@ -2621,6 +2706,18 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 if layer.identifier in parent.subLayerPaths:
                     parent.subLayerPaths.remove(layer.identifier)
             self._parked.add(chunk_hash)
+
+    def _resettle(self, chunk_hash: core.ChunkHash) -> None:
+        """settle_cook again for a mirrored chunk whose layer is back on the stage."""
+        if (chunk_hash in self._mirrors and chunk_hash not in self._parked
+                and (ref := self._placed.get(chunk_hash)) and (c := ref()) is not None):
+            self.settle_cook(c)
+
+    def settle_all(self) -> None:
+        """Put every mirrored chunk's result back into its asset (settle_cook) -- before a
+        bake or an export reads the stage, so none is left at the session layer's strength."""
+        for chunk_hash in list(self._mirrors):
+            self._resettle(chunk_hash)
 
     def _drop_mirror(self, mirror: Sdf.Layer) -> None:
         """Take a deleted chunk's mapped result out of its asset's cook layer."""
