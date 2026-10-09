@@ -706,7 +706,9 @@ def register_chunk_types(scene=None) -> list:
         try:
             _register_once(cls)
         except Exception:
-            logger.debug("could not register a node class for %s", name)
+            # A warning, not debug: the chunk is missing from the Add menu and from every
+            # graph that uses it, and nothing else says why.
+            logger.warning("could not register a node class for %s", name, exc_info=True)
             continue
         _generated[name] = cls
         made.append(name)
