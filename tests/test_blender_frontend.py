@@ -1517,3 +1517,27 @@ def test_the_brush_operator_registers_on_b():
     finally:
         br.unregister()
     assert not br.USDCHUNKS_OT_brush.is_registered
+
+
+# ---------------------------------------------------------------------------
+# a lofted param named like one of Blender's own node fields
+# ---------------------------------------------------------------------------
+
+def test_a_lofted_width_is_the_params_not_the_nodes(view):
+    """Every Blender node has `width` and `height` (its size on screen). A group lofting a
+    Mesh's width showed the node's size there, 100, and editing it resized the node."""
+    mesh = _make(chunk_registry.ChunkRegistry().get_chunk_module("mesh"))
+    mesh.name = "Slab"
+    view.scene.add_chunk(mesh)
+    mesh.get_param("mesh_type").value = "cube"
+    mesh.get_param("width").value = 8.0
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    view.set_selection({_node(view, "Slab").name})
+    view.group_selection()
+    group = next(p for p in view.prims if view.can_dive(p))
+    lofted = {q.name for q in chunk_blender.iter_drawable(view.chunks[group])}
+    assert "width" in lofted
+    node = view.tree.nodes[group]
+    assert node["width"] == pytest.approx(8.0)
+    assert node.width != pytest.approx(8.0)
