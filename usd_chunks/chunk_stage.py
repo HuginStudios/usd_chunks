@@ -2268,7 +2268,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     and c.get_config() and c.get_config().module):
                 continue
             pc = getattr(c, "_parent_context", None)
-            if (pc() if pc else None) == context:
+            # A Reference/Payload hosting a network turned CONTEXT in place and has no
+            # _parent_context: its prim says which graph it is a node of. Missed, the chunk
+            # it consumes looked like the tail, and a viewport drag of the hosted prim wired
+            # its new Transform in above the Reference.
+            if (pc() if pc else None) == context or (pc is None and is_node_in_context(c, context)):
                 context_chunks.append(c)
 
         if not context_chunks:

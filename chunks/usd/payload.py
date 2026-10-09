@@ -25,6 +25,9 @@ def execute(node):
     network = chunk_stage.network_target(payload_path, import_path)
     if network is not None:
         chunk_stage.host_network(node, payload_path, network, arc="payload", namespace=raw_path or "")
+        if raw_path:  # the namespace root, else only an untyped parent of the network's prims
+            for target_path in chunk_utils.author_in_variant_contexts(stage, node.get_param("primpath_location")):
+                _define(stage, target_path, node.get_param("prim_type").value or "Xform")
         return
     chunk_stage.unhost_network(node)
 
@@ -38,22 +41,23 @@ def execute(node):
         else:
             ref = Sdf.Payload(payload_path)
 
+    prim_type = node.get_param("prim_type").value or "Xform"
     primpath_param = node.get_param("primpath_location")
     targets = []
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         targets.append(target_path)
-        prim = stage.GetPrimAtPath(target_path)
-        if not prim.IsValid():
-            prim = stage.DefinePrim(target_path, "Xform")
-        elif chunk_utils.is_composed_in(prim):
-            # Valid, but only because another Payload chunk's file defines it. With two
-            # chunks on one prim each saw the other's payload, neither defined the prim,
-            # and it ended up an `over`. DefinePrim will not help: it returns a prim that
-            # is already defined without writing anything.
-            spec = sdf_authoring.Writer(stage).define(target_path)
-            spec.typeName = spec.typeName or prim.GetTypeName() or "Xform"
-        prim.GetPayloads().AddPayload(ref)
+        _define(stage, target_path, prim_type).GetPayloads().AddPayload(ref)
     chunk_utils.set_payloads_loaded(node, node.get_scene_stage(), targets, node.get_param("load").value)
+
+
+def _define(stage, path, prim_type):
+    """The prim at path, defined as prim_type in this chunk's own layer."""
+    prim = stage.DefinePrim(path, prim_type)  # defines any missing parents too
+    # Into this chunk's own layer even when something already defines the prim -- another
+    # Payload chunk's file, an upstream chunk: DefinePrim writes nothing then, and the prim
+    # was left an `over` without the chosen type.
+    sdf_authoring.Writer(stage).define(path, prim_type)
+    return prim
 
 
 def main():
@@ -70,6 +74,9 @@ def main():
     # prim location
     primpath = chunk.LineEdit("primpath_location", "Insert to location", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     PayloadChunk.add_param(primpath)
+    # dynamic_items: a saved or scripted type outside the list (Cube, say) is kept.
+    PayloadChunk.add_param(chunk.Menu("prim_type", "Prim Type", menu_items=["Xform", "Scope", "Material"], default_value="Xform",
+                                      dynamic_items=True))
     PayloadChunk.add_param(chunk.Checkbox(
         "load", "Load", default_value=True,
         tooltip="Unchecked: the payload is unloaded, for a lighter stage. Checked loads back "
@@ -88,8 +95,9 @@ def config():
 
         When a file is selected, the asset name is extracted and used to suggest a
         unique prim path (e.g. /MyAsset) under which the Payload will live.
-        On import, the chunk creates an Xform prim at that location (if it doesn't
-        already exist) and calls AddPayload on it.
+        On import, the chunk defines a prim of the chosen Prim Type (Xform by default)
+        at that location in its own layer, overriding the type of any weaker definition,
+        and calls AddPayload on it.
 
         The target prim inside the payloaded file is resolved in order:
           1. The explicit "Import Prim Path" field, if filled in.
