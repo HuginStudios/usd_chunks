@@ -1,7 +1,7 @@
 from __future__ import annotations
 import threading
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Any, Generic
+from typing import Any, Generic, NamedTuple
 
 from pxr import Sdf, Usd
 
@@ -1006,19 +1006,24 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         # A menu of what is on the stage is filled as it opens (Menu.refresh_items); the
         # menu_items notice rebuilds this combo's entries before they are read below.
         self.param.refresh_items()
-        menu = QtWidgets.QMenu(self)
+        items = [self.itemText(i) for i in range(self.count())]
         current = self.currentText()
-        for i in range(self.count()):
-            text = self.itemText(i)
-            act = menu.addAction(text)
-            if text == current:
-                act.setCheckable(True)
-                act.setChecked(True)
+        if len(items) > _SearchableListMenu.MAX_PLAIN_ITEMS:
+            # A plain QMenu taller than the screen spreads into columns wider than it.
+            menu = _SearchableListMenu(items, current, self)
+            menu.picked.connect(self.setCurrentText)
+        else:
+            menu = QtWidgets.QMenu(self)
+            for text in items:
+                act = menu.addAction(text)
+                if text == current:
+                    act.setCheckable(True)
+                    act.setChecked(True)
+            menu.triggered.connect(self._menu_item_chosen)
         # Use popup() (non-modal), not exec_(). exec_ runs a nested event loop in which a
         # deferred node-graph rebuild can destroy this proxied combobox mid-selection; exec_'s
         # result would then be applied to a freed C++ widget → silent crash. With popup(), if
-        # the widget is destroyed the menu (its child) goes with it and never fires triggered.
-        menu.triggered.connect(self._menu_item_chosen)
+        # the widget is destroyed the menu (its child) goes with it and never fires its signals.
         menu.aboutToHide.connect(menu.deleteLater)
         menu.popup(self.mapToGlobal(QtCore.QPoint(0, self.height())))
 
@@ -3134,6 +3139,101 @@ class _SearchResults(QtWidgets.QTreeWidget):
         }
         target = max(0, min(count - 1, moves.get(key, row)))
         self.setCurrentItem(self.topLevelItem(target))
+
+
+class _ListItem(NamedTuple):
+    """A plain text row for _SearchResults: a label with no category."""
+
+    label: str
+    tooltip: str = ""
+
+    @property
+    def namespace(self) -> tuple:
+        return (self.label,)
+
+
+class _SearchableListMenu(QtWidgets.QMenu):
+    """A Menu param's popup when it has too many items for a plain menu.
+
+    A search field over one scrolling list, so hundreds of items (Apply Schema lists every
+    API schema a plugin registers) stay one column instead of a screen-wide grid. Typing
+    keeps the items that contain every typed word, in their menu order.
+    """
+
+    #: Items a plain QMenu shows; more get this menu.
+    MAX_PLAIN_ITEMS = 25
+
+    #: Rows on screen at once; more scroll.
+    VISIBLE_ROWS = 20
+
+    _NAV_KEYS = (
+        QtCore.Qt.Key.Key_Down,
+        QtCore.Qt.Key.Key_Up,
+        QtCore.Qt.Key.Key_PageDown,
+        QtCore.Qt.Key.Key_PageUp,
+    )
+
+    #: Emitted with the text of the item that was picked.
+    picked = QtCore.Signal(str)
+
+    def __init__(self, items: list[str], current: str, parent=None):
+        super().__init__(parent)
+        self._items = [_ListItem(text) for text in items]
+        self._width = None
+        self.search = QtWidgets.QLineEdit(placeholderText="Search...")
+        self.search.textChanged.connect(self._filter)
+        self.search.installEventFilter(self)
+        search_action = QtWidgets.QWidgetAction(self)
+        search_action.setDefaultWidget(self.search)
+        self.addAction(search_action)
+
+        self.results = _SearchResults()
+        self.results.setColumnHidden(1, True)  # no categories here
+        self.results.picked.connect(self._pick)
+        self._results_action = QtWidgets.QWidgetAction(self)
+        self._results_action.setDefaultWidget(self.results)
+        self.addAction(self._results_action)
+
+        self._filter("")
+        # Sized once for the full list, so the menu keeps its width while filtering, and
+        # the name fills the row so the highlight does too.
+        self._width = self.results.width()
+        self.results.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        if current in items:
+            item = self.results.topLevelItem(items.index(current))
+            self.results.setCurrentItem(item)
+            self.results.scrollToItem(item, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.search.setFocus()
+
+    def _filter(self, text: str) -> None:
+        words = text.lower().split()
+        shown = [item for item in self._items if all(w in item.label.lower() for w in words)]
+        self.results.show_entries(shown, self.VISIBLE_ROWS)
+        if self._width is not None:
+            self.results.setFixedWidth(self._width)
+        # A QMenu measures a widget action once and caches it; changing the action's
+        # text is what makes it measure again after the list changes size.
+        self._results_action.setText(f"{len(shown)}:{self.results.height()}")
+
+    def _pick(self, entry) -> None:
+        if entry is None:
+            return
+        self.close()
+        self.picked.emit(entry.label)
+
+    def eventFilter(self, obj, event):
+        if obj is self.search and event.type() == QtCore.QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+                self._pick(self.results.current_entry())
+                return True
+            if key in self._NAV_KEYS:
+                self.results.step(key)
+                return True
+        return super().eventFilter(obj, event)
 
 
 class FilterableChunkMenu(QtWidgets.QMenu):
