@@ -2,7 +2,8 @@
 
 A plain QMenu taller than the screen spreads into side-by-side columns wider than the
 screen (Apply Schema lists every V-Ray API schema). A long menu gets a search field and a
-list capped in height instead; a short one stays a plain menu.
+list capped in height instead; a short one stays a plain menu. Either way it opens as a
+window of its own, also from a node in the graph, so typing and the wheel reach it.
 """
 
 from __future__ import annotations
@@ -25,27 +26,38 @@ def _scene():
 
 @pytest.fixture
 def open_box(qapp):
-    """Open a combo box over items; yields (box, popup)."""
-    boxes, chunks = [], []
+    """Open a combo box over items, on its own or inside a graph; yields (box, popup)."""
+    boxes, keep = [], []
 
-    def _open(items):
+    def _open(items, in_graph=False):
         c = chunk.Chunk("Menus")
         menu = chunk.Menu("pick", "Pick")
         c.add_param(menu)
-        chunks.append(c)  # the widget holds its param weakly
         attach_stub_module(c, menu_items=lambda node, param_name: list(items))
         box = ChunkComboBoxWidget(menu)
-        box.show()
+        keep.append(c)  # the widget holds its param weakly
+        if in_graph:
+            # Like a node: the combo inside a panel inside a proxy, in a zoomed, moved view.
+            panel = QtWidgets.QWidget()
+            QtWidgets.QVBoxLayout(panel).addWidget(box)
+            scene = QtWidgets.QGraphicsScene()
+            scene.addWidget(panel).setPos(40, 30)
+            view = QtWidgets.QGraphicsView(scene)
+            view.setGeometry(150, 120, 500, 400)
+            view.scale(1.5, 1.5)
+            view.show()
+            keep.extend([scene, view])
+        else:
+            box.show()
         boxes.append(box)
+        qapp.processEvents()
         box._show_as_menu()
         qapp.processEvents()
-        popup = box.findChildren(QtWidgets.QMenu)[-1]
-        return box, popup
+        return box, box._popup
 
     yield _open
     for box in boxes:
-        for popup in box.findChildren(QtWidgets.QMenu):
-            popup.close()
+        box._popup.close()
         box.deleteLater()
 
 
@@ -107,3 +119,21 @@ def test_a_short_menu_stays_a_plain_menu(open_box) -> None:
 
     assert _list(popup) is None
     assert [a.text() for a in popup.actions()] == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("items", [["a", "b", "c"], _LONG], ids=["short", "long"])
+def test_in_the_graph_the_menu_is_a_window_of_its_own(open_box, items) -> None:
+    _box, popup = open_box(items, in_graph=True)
+
+    assert popup.graphicsProxyWidget() is None, "in the graph scene: no typing, the graph takes the wheel"
+    assert popup.isWindow()
+
+
+def test_in_the_graph_the_menu_opens_under_the_combo(open_box) -> None:
+    box, popup = open_box(["a", "b", "c"], in_graph=True)
+
+    panel = box.window()
+    proxy = panel.graphicsProxyWidget()
+    view = proxy.scene().views()[0]
+    bottom_left = proxy.mapToScene(QtCore.QPointF(box.mapTo(panel, QtCore.QPoint(0, box.height()))))
+    assert popup.pos() == view.viewport().mapToGlobal(view.mapFromScene(bottom_left))

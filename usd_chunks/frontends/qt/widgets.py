@@ -940,6 +940,28 @@ class ChunkFileWidget(ChunkParamWidgetBase[chunk.FileBrowser], QtWidgets.QWidget
         self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
 
 
+def _screen_pos(widget: QtWidgets.QWidget, pos: QtCore.QPoint) -> QtCore.QPoint:
+    """The screen position of a point in widget, also when it is embedded in a graph.
+
+    A widget inside a QGraphicsProxyWidget sits in a hidden window of its own, so its
+    mapToGlobal() is not where it shows. Map through the proxy and the view instead.
+
+    Args:
+        widget (QtWidgets.QWidget): The widget pos is in
+        pos (QtCore.QPoint): A point in widget's coordinates
+
+    Returns:
+        QtCore.QPoint: Where that point is on screen.
+    """
+    top = widget.window()
+    proxy = top.graphicsProxyWidget()
+    views = [v for v in proxy.scene().views() if v.isVisible()] if proxy and proxy.scene() else []
+    if not views:
+        return widget.mapToGlobal(pos)
+    scene_pos = proxy.mapToScene(QtCore.QPointF(widget.mapTo(top, pos)))
+    return views[0].viewport().mapToGlobal(views[0].mapFromScene(scene_pos))
+
+
 class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox):
     def __init__(self, param: chunk.Menu):
         super().__init__(param)
@@ -996,10 +1018,8 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         if event.button() != QtCore.Qt.LeftButton:
             super().mousePressEvent(event)
             return
-        # QComboBox.showPopup() can't use the proxy-aware popup path for widgets
-        # that are deep descendants of a QGraphicsProxyWidget (graphicsProxyWidget()
-        # returns None for non-direct embeds).  Replace with a QMenu so the popup
-        # always appears at the correct screen position.
+        # QComboBox.showPopup() places its popup wrong for a combo embedded in the node
+        # graph. Show our own menu instead, placed by _screen_pos.
         QtCore.QTimer.singleShot(0, self, self._show_as_menu)
 
     def _show_as_menu(self) -> None:
@@ -1008,12 +1028,14 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
         self.param.refresh_items()
         items = [self.itemText(i) for i in range(self.count())]
         current = self.currentText()
+        # No parent: a popup whose parent is embedded in the node graph is embedded in the
+        # graph scene too, where it gets no typing and the graph takes its wheel.
         if len(items) > _SearchableListMenu.MAX_PLAIN_ITEMS:
             # A plain QMenu taller than the screen spreads into columns wider than it.
-            menu = _SearchableListMenu(items, current, self)
+            menu = _SearchableListMenu(items, current)
             menu.picked.connect(self.setCurrentText)
         else:
-            menu = QtWidgets.QMenu(self)
+            menu = QtWidgets.QMenu()
             for text in items:
                 act = menu.addAction(text)
                 if text == current:
@@ -1022,10 +1044,12 @@ class ChunkComboBoxWidget(ChunkParamWidgetBase[chunk.Menu], QtWidgets.QComboBox)
             menu.triggered.connect(self._menu_item_chosen)
         # Use popup() (non-modal), not exec_(). exec_ runs a nested event loop in which a
         # deferred node-graph rebuild can destroy this proxied combobox mid-selection; exec_'s
-        # result would then be applied to a freed C++ widget → silent crash. With popup(), if
-        # the widget is destroyed the menu (its child) goes with it and never fires its signals.
+        # result would then be applied to a freed C++ widget → silent crash. With popup(), the
+        # menu closes when this widget is destroyed, before it can fire its signals.
+        self.destroyed.connect(menu.close)
         menu.aboutToHide.connect(menu.deleteLater)
-        menu.popup(self.mapToGlobal(QtCore.QPoint(0, self.height())))
+        self._popup = menu  # unparented, so Python must keep it alive while it is open
+        menu.popup(_screen_pos(self, QtCore.QPoint(0, self.height())))
 
     def _menu_item_chosen(self, action) -> None:
         self.setCurrentText(action.text())
