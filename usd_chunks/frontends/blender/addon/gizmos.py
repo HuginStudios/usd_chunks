@@ -134,10 +134,15 @@ def placement_desc(prim, view):
 def _chunk_for(view, desc):
     """The live chunk object a desc names, or None. Needed for the start/stop bracket,
     which is a method on the chunk; the write itself goes by prim path.
+
+    Falls back to the scene's own lookup: a chunk made a moment ago by
+    `ensure_transform_chunk` is not in the view's table until it next reloads, so G on a
+    prim nothing drove made the chunk and then cancelled with nothing to move.
     """
-    if view is None or desc is None:
+    if desc is None:
         return None
-    return view.chunks.get(str(desc.chunk_prim))
+    found = view.chunks.get(str(desc.chunk_prim)) if view is not None else None
+    return found or chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
 
 
 def anchor_world(stage, desc):

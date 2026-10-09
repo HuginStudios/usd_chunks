@@ -993,6 +993,18 @@ def test_an_undriven_prim_gets_a_chunk_rather_than_a_direct_write(view):
     assert (moved[0], moved[1], moved[2]) == (1.0, 2.0, 3.0)
 
 
+def test_a_chunk_made_for_an_undriven_prim_is_found_at_once(view):
+    """G on a prim nothing drives makes a Transform chunk, then moves it. The view's table
+    only learns about the new chunk on its next reload, so looking there alone found
+    nothing and the gesture cancelled."""
+    loose = view.stage.DefinePrim("/Loose", "Cube")
+    desc = chunk_gizmo.ensure_transform_chunk(loose)
+    assert str(desc.chunk_prim) not in view.chunks
+    found = gz._chunk_for(view, desc)
+    assert found is not None
+    assert chunk_stage.get_chunk_prim_path(found) == str(desc.chunk_prim)
+
+
 def test_the_operator_registers_and_takes_the_transform_keys():
     assert gz.USDCHUNKS_OT_transform in gz._CLASSES
     assert {key for _op, key, _props in gz._KEYS} == {"G", "R", "S"}
