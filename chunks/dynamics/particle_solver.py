@@ -84,6 +84,11 @@ _COLOURS = {
     JELLY: (0.9, 0.35, 0.55),
 }
 
+#: How an instancer source becomes material: a ball the size of each instance, or each
+#: instance's own shape filled -- what rubble from an RBD bake needs, so it does not swell
+#: into balls when it turns to sand.
+_FILL_BALL, _FILL_SHAPE = "Ball", "Shape"
+
 _AS_POINTS = "Points"
 _AS_SPHERES = "Instanced Spheres"
 _RENDER_MODES = [_AS_POINTS, _AS_SPHERES]
@@ -905,8 +910,11 @@ class _Instances:
                 if n is not None and n < self.count:
                     self.visible[n] = False
 
+        self.local_pos, self.local_q, self.scale, self.proto_idx = local_pos, local_q, scale, proto_idx
+
         extents, centres = proto_bounds if proto_bounds is not None else _proto_bounds(prim, time)
         proto_idx = np.where((proto_idx >= 0) & (proto_idx < len(extents)), proto_idx, 0)
+        self.proto_idx = proto_idx
 
         world_scale = float(np.linalg.norm(self.matrix[0, :3]))
         self.world_q = _qmul(np.broadcast_to(self.inst_q, local_q.shape), local_q)
@@ -1099,7 +1107,33 @@ def _extent(points, pad):
     return Vt.Vec3fArray.FromNumpy(np.stack((points.min(axis=0) - pad, points.max(axis=0) + pad)).astype(np.float32))
 
 
-def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default()):
+def _proto_fills(prim, spacing, rng, time):
+    """Lattice points filling each prototype of a PointInstancer, in its instances' frame.
+
+    One fill per prototype, reused by every instance of it. In the prototype's parent space,
+    so its own transform is in, as it is for every instance drawn of it. Empty for a
+    prototype too thin to hold a point at this spacing, or one that is not closed.
+    """
+    stage = prim.GetStage()
+    fills = []
+    for target in UsdGeom.PointInstancer(prim).GetPrototypesRel().GetTargets():
+        proto = stage.GetPrimAtPath(target)
+        if not proto:
+            fills.append(np.zeros((0, 3)))
+            continue
+        v0, v1, v2 = _world_triangles(proto, time)
+        if not len(v0):
+            fills.append(np.zeros((0, 3)))
+            continue
+        to_parent = np.asarray(
+            UsdGeom.XformCache(time).GetLocalToWorldTransform(proto.GetParent()).GetInverse(),
+            dtype=np.float64)
+        v0, v1, v2 = ((v @ to_parent[:3, :3] + to_parent[3, :3]) for v in (v0, v1, v2))
+        fills.append(_fill_triangles(v0, v1, v2, spacing, rng))
+    return fills
+
+
+def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default(), shape=False):
     """World-space starting particles, plus which blob each belongs to (-1 for none).
 
     The source is read at `time`, the Start Frame, so an animated source (an RBD bake)
@@ -1109,9 +1143,20 @@ def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default()):
     """
     if source.IsA(UsdGeom.PointInstancer):
         inst = _Instances(source, time)
+        fills = _proto_fills(source, spacing, rng, time) if shape else None
         parts, ids = [], []
         for i in range(inst.count):
             if not inst.visible[i]:
+                continue
+            local = fills[inst.proto_idx[i]] if fills is not None and inst.proto_idx[i] < len(fills) else None
+            if local is not None and len(local):
+                # The instance's own shape: scaled, turned and placed as the instancer
+                # draws it, then into the world.
+                q = np.broadcast_to(inst.local_q[i], (len(local), 4))
+                placed = _qrot(q, local * inst.scale[i]) + inst.local_pos[i]
+                world = placed @ inst.matrix[:3, :3] + inst.matrix[3, :3]
+                parts.append(world)
+                ids.append(np.full(len(world), i, dtype=np.int64))
                 continue
             ball = inst.centres[i] + _ball_offsets(max(inst.radii[i], spacing * 0.5), spacing, rng)
             parts.append(ball)
@@ -1241,7 +1286,9 @@ def _run(owner, notice, sender):
     logger.debug("domain origin %s size %.3f spacing %.4f source %s colliders %s",
                  origin, size, spacing, probe, collider_bounds)
 
-    particles_w, blob_ids, source_instances = _emit(source, spacing, blob_radius, rng, start_time)
+    particles_w, blob_ids, source_instances = _emit(
+        source, spacing, blob_radius, rng, start_time,
+        shape=node.get_param("instance_fill", is_s).value == _FILL_SHAPE)
     subsampled = ""
     if len(particles_w) > max_particles:
         keep = np.sort(rng.choice(len(particles_w), max_particles, replace=False))
@@ -1562,6 +1609,12 @@ def main():
         "A Scatter Brush's Painted Points: a ball of Blob Radius at every dab.\n"
         "A Scatter Points instancer: a ball the size of every instance.\n"
         "Read at Start Frame, so an RBD bake hands over where its pieces are then.",
+    ))
+    chunk_api.add_param(chunk.Menu(
+        "instance_fill", "Instances As", menu_items=[_FILL_BALL, _FILL_SHAPE], default_value=_FILL_BALL,
+        tooltip="An instancer source. Ball: a ball the size of each instance. Shape: each "
+        "instance's own shape filled, so rubble turns to sand where it lies, with nothing "
+        "added. A shape too thin to hold any material becomes a ball.",
     ))
     chunk_api.add_param(chunk.Checkbox(
         "inherit_motion", "Inherit Motion", default_value=False,

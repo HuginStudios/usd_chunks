@@ -447,3 +447,33 @@ def test_the_material_is_hidden_before_its_start_frame():
     assert vis.Get(1) == UsdGeom.Tokens.invisible
     assert vis.Get(59) == UsdGeom.Tokens.invisible
     assert vis.Get(60) == UsdGeom.Tokens.inherited
+
+
+def test_shape_fill_fills_each_instance_as_drawn():
+    """A bar 2 long along X, instanced once as is and once turned 90 degrees about Z: its
+    material lies along X and along Y, reaches the bar's ends, and stays inside it."""
+    stage = Usd.Stage.CreateInMemory()
+    _box(stage, "/bars/Prototypes/bar", (-1.0, -0.2, -0.2), (1.0, 0.2, 0.2))
+    inst = UsdGeom.PointInstancer.Define(stage, "/bars")
+    inst.CreatePrototypesRel().SetTargets(["/bars/Prototypes/bar"])
+    inst.CreateProtoIndicesAttr().Set([0, 0])
+    inst.CreatePositionsAttr().Set(Vt.Vec3fArray([(0, 0, 0), (10, 0, 0)]))
+    turn = Gf.Rotation(Gf.Vec3d(0, 0, 1), 90).GetQuat()
+    inst.CreateOrientationsAttr().Set(Vt.QuathArray([Gf.Quath(1, 0, 0, 0), Gf.Quath(turn)]))
+    particles, ids, _inst = ps._emit(stage.GetPrimAtPath("/bars"), 0.05, 0.5,
+                                     np.random.default_rng(0), shape=True)
+    straight, turned = particles[ids == 0], particles[ids == 1] - (10, 0, 0)
+    assert np.ptp(straight[:, 0]) > 1.8 and np.ptp(straight[:, 1]) < 0.45
+    assert np.ptp(turned[:, 1]) > 1.8 and np.ptp(turned[:, 0]) < 0.45
+    assert np.abs(straight).max(axis=0) == pytest.approx([1.0, 0.2, 0.2], abs=0.06)
+
+
+def test_ball_is_still_the_default_for_an_instancer():
+    stage = Usd.Stage.CreateInMemory()
+    rubble = _rubble(stage)
+    balls, _ids, _inst = ps._emit(rubble, 0.05, 0.5, np.random.default_rng(0), Usd.TimeCode(10))
+    shaped, _ids, _inst = ps._emit(rubble, 0.05, 0.5, np.random.default_rng(0), Usd.TimeCode(10), shape=True)
+    centre = np.asarray([0.0, 0.0, 1.0])
+    reach = lambda pts: np.linalg.norm(pts[np.linalg.norm(pts - centre, axis=1) < 1.0] - centre, axis=1).max()  # noqa: E731
+    assert reach(balls) <= 0.56          # a ball of the box's half size
+    assert reach(shaped) > 0.7           # the box's corners, sqrt(3)/2 out
