@@ -1517,3 +1517,26 @@ def test_the_brush_operator_registers_on_b():
     finally:
         br.unregister()
     assert not br.USDCHUNKS_OT_brush.is_registered
+
+
+# ---------------------------------------------------------------------------
+# diving cooks the graph on screen, as Qt does
+# ---------------------------------------------------------------------------
+
+def test_diving_in_and_out_cooks_the_graph_on_screen(view, monkeypatch):
+    """A dive used to change only the tree. Inside, the viewport kept showing the outer
+    graph's cook; that left the group's own meshes and the muting of what is downstream
+    of it to whatever cooked next."""
+    view.set_selection({_node(view, "Move").name})
+    view.group_selection()
+    group = next(p for p in view.prims if view.can_dive(p))
+    top = view.context
+    focused = []
+    monkeypatch.setattr(chunk_stage, "recook_focus",
+                        lambda stage, scene, context, view_chunk: focused.append(context))
+
+    view.dive_into(group)
+    view.dive_out()
+
+    paths = [chunk_stage.get_chunk_prim_path(c) if c is not None else None for c in focused]
+    assert paths == [group, top]
