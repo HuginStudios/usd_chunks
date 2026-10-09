@@ -28,7 +28,7 @@ from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks
+from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
 logger = logging.getLogger(__name__)
 
@@ -1302,6 +1302,15 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._height,
         )
 
+    def _is_active_output(self) -> bool:
+        """True if this is an Output and no view is active, so the graph cooks to it."""
+        if not self._is_output or not self.prim.IsValid():
+            return False
+        sc = self.scene()
+        return sc is not None and any(
+            getattr(v, "_view_state", None) is not None and v._view_state.active_slot == 0 for v in sc.views()
+        )
+
     def _is_active_view(self) -> bool:
         """True if this is the view node whose slot is currently active (driving execution)."""
         if not self._is_view or not self.prim.IsValid():
@@ -1343,7 +1352,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if self._is_view:
                 head = _COL_VIEW_HEADER if self._is_active_view() else _COL_VIEW_INACTIVE
             elif self._is_output:
-                head = _COL_OUTPUT_HEADER
+                head = _COL_OUTPUT_HEADER if self._is_active_output() else _COL_VIEW_INACTIVE
             elif self._is_chunkgroup:
                 head = _COL_GROUP_HEADER
             elif self._locked:
@@ -1365,9 +1374,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # The active view (the one currently driving execution) gets a green, thicker border
         # so it's obvious which of several view nodes is live.
         is_active_view = self._is_view and self._is_active_view()
+        is_active_output = self._is_output and self._is_active_output()
         border_color = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
         border_w = 1.5
-        if is_active_view:
+        if is_active_view or is_active_output:
             border_color = _COL_VIEW_ACTIVE
             border_w = 2.5
 
@@ -1381,7 +1391,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # so it's obvious at a glance which one is driving execution.
             header_color = _COL_VIEW_HEADER if is_active_view else _COL_VIEW_INACTIVE
         elif self._is_output:
-            header_color = _COL_OUTPUT_HEADER
+            # Dim like an inactive view while a view drives the graph instead.
+            header_color = _COL_OUTPUT_HEADER if is_active_output else _COL_VIEW_INACTIVE
         elif self._is_chunkgroup:
             header_color = _COL_GROUP_HEADER
         elif self._locked:
@@ -1401,9 +1412,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         label = self.chunk.name
         if self._is_view:
             slot = self.prim.GetAttribute("view:slot").Get()
-            label = f"View [{slot}]" if slot is not None else "View"
+            label = f"View [{chunk_graph.view_number(slot)}]" if slot is not None else "View"
             if is_active_view:
                 label = "● " + label  # ● marks the active view
+        elif self._is_output:
+            label = f"Output [{chunk_graph.OUTPUT_NUMBER}]"
+            if is_active_output:
+                label = "● " + label
         elif self._is_chunkgroup:
             label = f"{label}  ▶"
         elif self._locked:
@@ -1474,6 +1489,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                         if isinstance(view, ChunkGraphView):
                             view._view_state.set_slot(slot)
                             break
+                event.accept()
+                return
+            if self._is_output:
+                for view in (self.scene().views() if self.scene() else []):
+                    if isinstance(view, ChunkGraphView):
+                        view._pick_slot(0)
+                        break
                 event.accept()
                 return
             # Debounced: a single real double-click has been observed (live log) delivering
@@ -2827,7 +2849,7 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
 
-        # 1/2-to-switch-view-slot: same fallback pattern as Ctrl+C/V/D/X above -- native
+        # 1/2/3-to-switch-view-slot (1 the Output, 2/3 the views): same fallback pattern as Ctrl+C/V/D/X above -- native
         # keyPressEvent (chunk_qt_nodegraph.py ChunkGraphView.keyPressEvent) has the same
         # logic, but depends on ChunkGraphView holding real native Qt focus, which usdview's
         # MainWindow routinely reclaims. F/L/Ctrl+C/V/D/X were already hardened against that
@@ -2835,22 +2857,14 @@ class _ProxyKeyRouter(QtCore.QObject):
         # shortcut still riding the fragile native-focus path. Also gated on
         # `not typing_in_proxy` -- these ARE digits, so without that guard this swallowed
         # every "1"/"2" typed into e.g. Layer's "Layer Name" field.
-        if not typing_in_proxy and event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2):
+        if not typing_in_proxy and (slot := slot_for_key(event.key())) is not None:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
             if view_global.contains(QtGui.QCursor.pos()):
                 if etype == QtCore.QEvent.Type.ShortcutOverride:
                     event.accept()
                     return True
                 if etype == QtCore.QEvent.Type.KeyPress:
-                    slot = event.key() - QtCore.Qt.Key.Key_0
-                    registry = chunk_registry.ChunkRegistry()
-                    stage = registry.scene.get_stage() if registry.initialized else None
-                    # Never toggle to "no view" (slot 0) if nothing exists for this slot in
-                    # this graph's own context -- that would block the whole graph.
-                    if stage and chunk_stage.find_view_chunk_for_slot(
-                        slot, stage, registry.scene, view._graph_context()
-                    ):
-                        view._view_state.set_slot(slot)
+                    view._pick_slot(slot)
                     event.accept()
                     return True
 
@@ -3056,6 +3070,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._view_state = ViewSlotState(self)
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
+        self._view_state.set_output_for.connect(self._on_set_output_for_path)
         self._view_state.pin_changed.connect(self._on_pin_changed)
 
     def _on_toggle_param_edges(self, checked: bool):
@@ -3194,11 +3209,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         painter.resetTransform()
         vp = self.viewport()
         if self._view_state.active_slot == 0:
-            text = "View: –"
-            bg = QtGui.QColor(40, 40, 40, 180)
-            fg = QtGui.QColor(120, 120, 120)
+            text = "Output"
+            bg = QtGui.QColor(_COL_OUTPUT_HEADER.red(), _COL_OUTPUT_HEADER.green(), _COL_OUTPUT_HEADER.blue(), 210)
+            fg = QtGui.QColor("#ffffff")
         else:
-            text = f"View: {self._view_state.active_slot}"
+            text = f"View: {chunk_graph.view_number(self._view_state.active_slot)}"
             bg = QtGui.QColor(_COL_VIEW_HEADER.red(), _COL_VIEW_HEADER.green(), _COL_VIEW_HEADER.blue(), 210)
             fg = QtGui.QColor("#ffffff")
         font = QtGui.QFont("monospace", 9, QtGui.QFont.Bold)
@@ -4151,22 +4166,30 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._layout_selected_or_all()
             event.accept()
             return
-        if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2):
-            slot = event.key() - QtCore.Qt.Key.Key_0
-            # Switch to that view slot only if a view exists for it; never toggle to "no view"
-            # (slot 0), which would block the whole graph. Keeps an active view at all times.
-            registry = chunk_registry.ChunkRegistry()
-            stage = registry.scene.get_stage() if registry.initialized else None
-            # Scope the check to THIS graph's context -- slots are per-context now, so a global
-            # scan would accept a slot that only exists in another tab/group, then recook
-            # (context-scoped) finds no view here and mutes everything.
-            if stage and chunk_stage.find_view_chunk_for_slot(
-                slot, stage, registry.scene, self._graph_context()
-            ):
-                self._view_state.set_slot(slot)
+        if (slot := slot_for_key(event.key())) is not None:
+            self._pick_slot(slot)
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _pick_slot(self, slot: int) -> None:
+        """Drive this graph from slot -- 0 its Output, else that view -- if it has one.
+
+        Never switches to what this graph lacks: an empty view slot, or the Output of a graph
+        with none, cooks nothing and blocks the whole graph. Scoped to THIS graph's context:
+        slots are per-context, so a global scan would accept a slot that only exists in
+        another tab or group.
+        """
+        registry = chunk_registry.ChunkRegistry()
+        stage = registry.scene.get_stage() if registry.initialized else None
+        if not stage:
+            return
+        context = self._graph_context()
+        if slot == 0:
+            if chunk_stage.graph_outputs(stage, registry.scene, context):
+                self._view_state.set_slot(0)
+        elif chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context):
+            self._view_state.set_slot(slot)
 
     def _delete_selected(self) -> None:
         graph_scene = self.scene()
@@ -4766,7 +4789,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             keep_selection: Put the selection back afterwards. Adding a chunk selects it,
                 which is right when a person asked for the view and wrong when the graph
                 added one on its own: a paste or duplicate lost the nodes it had selected.
-            slot: Put the view in this slot ("Set View 1/2"), re-pointing the view that
+            slot: Put the view in this slot ("Set View 2/3"), re-pointing the view that
                 already holds it. None takes the lowest free slot.
         """
         registry = chunk_registry.ChunkRegistry()
@@ -4797,10 +4820,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def set_view_state(self, vs: ViewSlotState) -> None:
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
         self._view_state.create_view_for.disconnect(self._on_create_view_for_path)
+        self._view_state.set_output_for.disconnect(self._on_set_output_for_path)
         self._view_state.pin_changed.disconnect(self._on_pin_changed)
         self._view_state = vs
         vs.slot_changed.connect(self._on_view_slot_changed)
         vs.create_view_for.connect(self._on_create_view_for_path)
+        vs.set_output_for.connect(self._on_set_output_for_path)
         vs.pin_changed.connect(self._on_pin_changed)
 
     def _on_pin_changed(self, target_chunk: core.ChunkBase, pinned: bool) -> None:
@@ -4814,9 +4839,58 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _on_create_view_for_path(self, prim_path: str, slot: int) -> None:
         self._create_view_node_for_prim(prim_path, slot=slot)
 
+    def _on_set_output_for_path(self, prim_path: str) -> None:
+        """Set Output: end this graph at prim_path, then cook to its Output."""
+        registry = chunk_registry.ChunkRegistry()
+        if not registry.initialized:
+            return
+        stage = registry.scene.get_stage()
+        scene = _chunk.get_scene()
+        if not (stage and scene):
+            return
+        if chunk_graph.set_output_for(stage, scene, self._graph_context(), prim_path) is None:
+            return
+        graph_scene = self.scene()
+        if isinstance(graph_scene, ChunkGraphScene):
+            # A re-pointed Output authored its exec input directly; draw the moved wire.
+            graph_scene._build_edges()
+        if self._view_state.active_slot == 0:
+            # set_slot would be a no-op, but the Output may now end at another node.
+            QtCore.QTimer.singleShot(0, self, lambda: self._recook_active_view())
+            return
+        # Context object, as elsewhere: the view can be gone before this fires.
+        QtCore.QTimer.singleShot(0, self, lambda: self._view_state.set_slot(0))
+
     def _on_view_slot_changed(self, slot: int) -> None:
+        if slot == 0:
+            self._forget_saved_view()
         self._recook_active_view(select_view=not self._quiet_slot_change)
         self.viewport().update()
+
+    def _forget_saved_view(self) -> None:
+        """Mark this context as cooking to its Output: chunk:activeView set to 0.
+
+        Only a switch to the Output lands here (nothing else sets slot 0), and without it the
+        slot saved last would bring its view back on the next rebuild or reload. Written as 0
+        where the slot already lives, so it beats that opinion; every reader takes 0 as none.
+        """
+        registry = chunk_registry.ChunkRegistry()
+        stage = registry.scene.get_stage() if registry.initialized else None
+        context = self._graph_context()
+        if not stage or context is None:
+            return
+        gp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(context)))
+        attr = gp.GetAttribute(chunk_graph.ACTIVE_VIEW_ATTR) if gp and gp.IsValid() else None
+        if not (attr and attr.IsValid() and attr.Get()):
+            return
+        prev_w = chunk_stage.chunk_notice._usd_write_active
+        chunk_stage.chunk_notice._usd_write_active = True
+        try:
+            home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, context)
+            with Usd.EditContext(stage, home):
+                attr.Set(0)
+        finally:
+            chunk_stage.chunk_notice._usd_write_active = prev_w
 
     def _set_slot_quietly(self, slot: int) -> None:
         """Switch the active view without selecting it: for a switch the graph made itself."""
@@ -4829,13 +4903,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _restore_active_view(self, changed_chunks: Iterable[core.ChunkBase] | None = None) -> None:
         """Adopt this context's saved view as the active view after a (re)build.
 
-        A freshly built graph starts at slot 0 ("no view"), which cooks everything -- but a
-        loaded file whose graph has view chunks should come up with its view driving
+        A freshly built graph starts at slot 0 (no view, so it cooks to its Output) -- but a
+        loaded file whose graph had a view active should come up with that view driving
         execution, as it was when saved. Both groups and tabs persist their slot on the
-        context prim (chunk:activeView, written by _recook_active_view); files saved
-        before that marker existed fall back to the lowest existing view:slot. With a
-        slot already active (context switch, not a load) this is just the recook the
-        build always did.
+        context prim (chunk:activeView, written by _recook_active_view, 0 once the Output is
+        picked). With no saved slot a graph with an Output stays on it; one without (a file
+        from before Outputs) falls back to the lowest existing view:slot. With a slot
+        already active (context switch, not a load) this is just the recook the build
+        always did.
 
         changed_chunks is passed straight through to _recook_active_view (see its docstring)
         on the paths that recook the CURRENT slot. The set_slot path below deliberately does
@@ -4859,6 +4934,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 if a and a.IsValid():
                     slot = a.Get()
         if not slot or not chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context):
+            slot = None
+        if slot is None and not chunk_stage.graph_outputs(stage, registry.scene, context):
+            # No saved view and no Output: a file from before Outputs, driven by a view.
             slots = []
             for c in registry.scene.get_chunks():
                 if not (chunk_stage.is_view_chunk(c) and chunk_stage.is_node_in_context(c, context)):

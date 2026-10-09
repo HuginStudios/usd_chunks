@@ -10,9 +10,10 @@ These chunks don't change the stage themselves. They control *when* things cook 
 ## 🔎 At a glance
 
 - **Output** is what a graph delivers: the end of its chain. `usdchunks run` cooks to it,
-  and so does the graph whenever no View is active.
-- **View** is where you look while working. Right-click a chunk and choose **Set View 1**
-  or **Set View 2** to look at it.
+  and so does the graph whenever no View is active. Press `1` to cook to it, or
+  right-click a chunk and choose **Set Output** to end the graph there.
+- **View** is where you look while working. Right-click a chunk and choose **Set View 2**
+  or **Set View 3** to look at it.
 - **ChunkGroup** is a subnet. Double-click its header to go inside and build like in any
   other graph. Click the path at the top-left of the graph to come back out.
 
@@ -29,6 +30,10 @@ its Views and gets no Output added.
 
 - **A View wins while it's active.** Looking at a chunk mid-chain cooks only what that
   View needs. With no active View, the graph cooks to its Output.
+- **Picking the Output works like picking a View.** Press `1`, or double-click the
+  Output's header, to cook to it. Right-click a chunk and choose **Set Output** to move
+  the Output's wire to that chunk; the graph then cooks to it. The Output is labelled
+  **Output [1]**: blue while the graph cooks to it, dimmed while a View is active.
 - **`usdchunks run` always cooks to the Output**, whichever View the file was saved with.
   A file with no Output falls back to its active View.
 - **A ChunkGroup delivers its Output** to the outer graph. Its inner Views are for
@@ -62,17 +67,18 @@ the results into the layer it names, at that layer's place in L.
 view cooks *everything*, and `--all` cooks everything regardless.
 
 **Adding a view:** right-click the chunk whose output you want to see and choose **Set
-View 1** or **Set View 2**. If that view already exists it's reconnected to this chunk; otherwise it's
+View 2** or **Set View 3**. If that view already exists it's reconnected to this chunk; otherwise it's
 created and connected. Either way it becomes active. The slot already looking at the
 chunk is shown ticked.
 
-For example: build Mesh → Transform, right-click Transform and choose **Set View 1**.
+For example: build Mesh → Transform, right-click Transform and choose **Set View 2**.
 Move the Transform's sliders and the viewport updates. Only Mesh and Transform cook,
 because nothing else is connected to the view.
 
-**Switching between views:** a graph can have up to two views, numbered 1 and 2. Press
-`1` or `2` to switch between the ones that exist. Pressing a number with no view does
-nothing, so you can't blank the graph by accident.
+**Switching between views:** a graph can have up to two views, numbered 2 and 3, since 1
+is the [Output](#output). Press `2` or `3` to switch to a view, and `1` to go back to the
+Output. Pressing a number with nothing behind it does nothing, so you can't blank the
+graph by accident.
 
 The active view has an orange header, and the others are dimmed. Each graph level (the top
 level, or the inside of a [ChunkGroup](#chunkgroup)) has its own two views. When you

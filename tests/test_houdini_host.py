@@ -672,7 +672,7 @@ def test_a_network_imports_as_a_chunkgroup_node_you_can_edit_inside(result):
 def test_a_chunkgroup_exports_as_a_network(result):
     assert result["export_prims"] == [
         ["/chunks/Net", "chunkgroup"], ["/chunks/Net/Ground", "mesh"], ["/chunks/Net/House", "house"],
-        ["/chunks/Net/Move", "transform"], ["/chunks/Net/View1", "view"]]
+        ["/chunks/Net/Move", "transform"], ["/chunks/Net/View2", "view"]]
     assert result["export_exec"] == ["/chunks/Net/Ground.outputs:chunk"]
     assert result["export_wire"] == ["/chunks/Net/Ground.inputs:prim_path"]
     assert result["export_loft"] == 2

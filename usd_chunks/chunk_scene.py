@@ -1091,32 +1091,71 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             order=lambda cs: chunk_stage.commit_order_from_stage(cs, stage),
         )
 
-    def view(self, target: ChunkBase) -> ChunkBase | None:
-        """Make the active View show `target`, and cook what it now reaches.
+    def set_view(self, target: ChunkBase, view: int | None = None) -> ChunkBase | None:
+        """Show `target` in a View, make that View active, and cook what it reaches.
 
-        The same as dragging a wire from `target` into the View in the graph: the View's
-        old input is replaced. A graph with no View gets one. Nothing else is rewired.
+        The same as Set View in the graph's right-click menu: the View's old input is
+        replaced, and nothing else is rewired. Views are numbered 2 and 3, as in the graph
+        (1 is the Output, see set_output).
 
         Args:
             target: The chunk to view, usually the last one in a chain.
+            view: The View to use, 2 or 3; made if the graph does not have it yet. None
+                takes a View already showing target, else the first one the graph does
+                not have yet, else the active one.
 
         Returns:
             The View chunk, or None if no View could be made.
+
+        Raises:
+            ValueError: If view is not one of the View numbers.
         """
         stage = self.get_stage()
         target_path = chunk_stage.get_chunk_prim_path(target)
-        context_path, context, slot, view = self._active_view_of(target)
-        if view is None:
-            # Reuses a View already wired to target, or makes one.
-            slot = engine.create_view_for(stage, self, target_path)
-            view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
-            if view is None:
+        context_path, context, active, _ = self._active_view_of(target)
+        if view is not None:
+            slot = next((s for s in engine.VIEW_SLOTS if engine.view_number(s) == view), None)
+            if slot is None:
+                numbers = ", ".join(str(engine.view_number(s)) for s in engine.VIEW_SLOTS)
+                raise ValueError(f"view must be one of {numbers}, not {view!r}")
+        else:
+            slot = (engine.existing_view_slot_for(stage, target_path)
+                    or engine.free_view_slot(stage, context_path)
+                    or active or engine.VIEW_SLOTS[0])
+        holder = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context)
+        if holder is None:
+            if engine.create_view_for(stage, self, target_path, slot) is None:
+                return None
+            holder = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context)
+            if holder is None:
                 return None
         else:
-            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(view))
+            chunk_stage.connect_exec(stage, self, target_path, chunk_stage.get_chunk_prim_path(holder))
         engine.write_active_slot(stage, context_path, slot)
-        chunk_stage.recook_for_view(stage, self, context, view)
-        return view
+        chunk_stage.recook_for_view(stage, self, context, holder)
+        return holder
+
+    def set_output(self, target: ChunkBase) -> ChunkBase | None:
+        """End `target`'s graph at it: wire the graph's Output from it, and cook to the Output.
+
+        The same as Set Output in the graph's right-click menu. A graph with no Output gets
+        one. No View stays active, so the graph cooks to its Output: what `usdchunks run`
+        cooks and what a ChunkGroup delivers.
+
+        Args:
+            target: The chunk that ends the graph, usually the last one in a chain.
+
+        Returns:
+            The Output chunk, or None if target is a View or an Output.
+        """
+        stage = self.get_stage()
+        context_path, context, _, _ = self._active_view_of(target)
+        output_path = engine.set_output_for(stage, self, context, chunk_stage.get_chunk_prim_path(target))
+        if output_path is None:
+            return None
+        engine.write_active_slot(stage, context_path, 0)
+        chunk_stage.recook_for_view(stage, self, context, None)
+        return next((c for c in self.get_chunks() if chunk_stage.get_chunk_prim_path(c) == output_path), None)
 
     def _active_view_of(self, target: ChunkBase):
         """The graph `target` is in, and the View active there.

@@ -139,7 +139,7 @@ def test_the_tree_is_rebuilt_from_usd(view):
 def test_opening_gives_the_context_a_view(view):
     """A context with no view cooks nothing, so reload wires one to the chain's tail and
     makes it the active slot -- as every other frontend does on open."""
-    assert [n.label for n in view.tree.nodes if n not in _chunk_nodes(view)] == ["View1"]
+    assert [n.label for n in view.tree.nodes if n not in _chunk_nodes(view)] == ["View2"]
     assert view.active_slot() == 1
 
 
@@ -398,7 +398,7 @@ def test_a_cut_wire_disconnects_in_usd(view):
 def test_a_cut_wire_does_not_heal_the_chain(view):
     """A wire the user cut is one wire. Healing would rewire the view past Move to Ref,
     which is what detaching a NODE means, not cutting a wire."""
-    view_node = _node(view, "View1")
+    view_node = _node(view, "View2")
     before = list(view.prims[view_node.name].GetAttribute("inputs:chunk").GetConnections())
     view.tree.links.remove(_wire(view, "Ref", "Move"))
     view.tree.update()
@@ -482,13 +482,13 @@ def test_collapse_is_the_state_bit_shown_as_blenders_hide(view):
     collapse survives a reload and one made in Qt shows here."""
     # A view is created collapsed (it has no body), so Blender draws it hidden from the
     # start; what matters is that a sweep leaves it exactly as it was.
-    view_hidden = _node(view, "View1").hide
+    view_hidden = _node(view, "View2").hide
     view.set_selection(set())
     view.collapse_selected_or_all()
     for label in ("Ref", "Move"):
         assert view.chunks[_node(view, label).name].has_state(ChunkFlags.State.COLLAPSED)
         assert _node(view, label).hide
-    assert _node(view, "View1").hide == view_hidden
+    assert _node(view, "View2").hide == view_hidden
     view.reload()
     assert _node(view, "Move").hide
     view.collapse_selected_or_all()
@@ -521,9 +521,9 @@ def test_a_replaced_view_ignores_notices(view):
 # ---------------------------------------------------------------------------
 
 def test_the_active_view_is_orange_and_an_inactive_one_dim(view):
-    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
+    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
     view.set_active_slot(0)
-    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
 
 
 def test_create_view_node_wires_the_selection_and_activates_it(view):
@@ -534,12 +534,12 @@ def test_create_view_node_wires_the_selection_and_activates_it(view):
     view.create_view_node()
     views = [n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("view")]
     assert len(views) == 2
-    made = next(n for n in views if n.label != "View1")
+    made = next(n for n in views if n.label != "View2")
     src = view.prims[made.name].GetAttribute("inputs:chunk").GetConnections()
     assert [str(c.GetPrimPath()) for c in src] == [ref_path]
     assert view.active_slot() == 2
     assert tuple(made.color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
-    assert tuple(_node(view, "View1").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
 
 
 def test_a_chunkgroup_gets_the_group_header(view):
