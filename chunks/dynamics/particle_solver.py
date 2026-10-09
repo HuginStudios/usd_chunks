@@ -993,7 +993,11 @@ def _source_motion(source, frame, fps):
     before = _Instances(source, Usd.TimeCode(frame - 1), proto_bounds=_proto_bounds(source, Usd.TimeCode(frame)))
     if now.count == 0 or now.count != before.count:
         return None
-    return (now.centres - before.centres) * fps
+    motion = (now.centres - before.centres) * fps
+    # A piece a break made this frame was hidden on the last, wherever the bake parked it:
+    # measured from there it shot off as a streak.
+    motion[~before.visible] = 0.0
+    return motion
 
 
 def _hide_from(stage, path, frame):

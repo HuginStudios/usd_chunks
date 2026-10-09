@@ -428,7 +428,8 @@ def test_inherited_motion_is_the_instances_speed_at_the_start_frame():
     rubble = _rubble(stage)
     motion = ps._source_motion(rubble, 10, 24.0)
     assert motion.shape == (3, 3)
-    assert motion[:, 2] == pytest.approx([-24.0, -24.0, -24.0], abs=1e-3)
+    # The third is hidden throughout (one held invisibleIds sample), so it inherits nothing.
+    assert motion[:, 2] == pytest.approx([-24.0, -24.0, 0.0], abs=1e-3)
     assert motion[:, :2] == pytest.approx(np.zeros((3, 2)), abs=1e-6)
 
 
@@ -477,3 +478,16 @@ def test_ball_is_still_the_default_for_an_instancer():
     reach = lambda pts: np.linalg.norm(pts[np.linalg.norm(pts - centre, axis=1) < 1.0] - centre, axis=1).max()  # noqa: E731
     assert reach(balls) <= 0.56          # a ball of the box's half size
     assert reach(shaped) > 0.7           # the box's corners, sqrt(3)/2 out
+
+
+def test_a_piece_born_this_frame_inherits_no_motion():
+    """Hidden at frame 9, wherever the bake parked it, and shown at 10: not a speed."""
+    stage = Usd.Stage.CreateInMemory()
+    rubble = _rubble(stage)
+    inst = UsdGeom.PointInstancer(rubble)
+    inst.GetInvisibleIdsAttr().Set(Vt.Int64Array([1]), 9)
+    inst.GetInvisibleIdsAttr().Set(Vt.Int64Array([]), 10)
+    inst.GetPositionsAttr().Set(Vt.Vec3fArray([(0, 0, 2), (500, 0, 2), (10, 0, 2)]), 9)
+    motion = ps._source_motion(rubble, 10, 24.0)
+    assert motion[1] == pytest.approx([0.0, 0.0, 0.0])
+    assert motion[0][2] == pytest.approx(-24.0, abs=1e-3)
