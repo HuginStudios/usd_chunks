@@ -25,6 +25,7 @@ because in Qt that derives from live widget geometry.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -2236,7 +2237,12 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
     # frontend may answer by rebuilding its graph.
     target_x, target_y = node_position(target)
 
-    scene.add_chunk(view_chunk)
+    # Into the target's own graph. add_chunk parents to the scene's current context, which
+    # a frontend's dive does not set, so a view made inside a group landed at the top level,
+    # wired across the group's edge.
+    group = nest_target(scene.get_context_for_prim_path(parent_path))
+    with scene.creating_in(group) if group is not None else contextlib.nullcontext():
+        scene.add_chunk(view_chunk)
     view_path = f"{chunk_stage._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
     view_prim = stage.GetPrimAtPath(Sdf.Path(view_path))
     if not view_prim.IsValid():
