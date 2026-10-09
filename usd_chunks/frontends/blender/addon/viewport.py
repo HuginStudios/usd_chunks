@@ -512,6 +512,9 @@ class USDCHUNKS_PT_hydra_view(bpy.types.Panel):
                         text="Picking: Ctrl+Click" if _state["picking"] else "Picking Off",
                         icon="EYEDROPPER" if _state["picking"] else "PANEL_CLOSE",
                         depress=_state["picking"])
+        # By name, not by class: brush.py imports this module. Greyed out until a brush
+        # chunk is selected in the graph or picked here.
+        layout.operator("usd_chunks.brush", text="Paint (B)", icon="BRUSH_DATA")
 
         current = _state["renderer"]
         label = _renderer_display_name(current) if current else "default"

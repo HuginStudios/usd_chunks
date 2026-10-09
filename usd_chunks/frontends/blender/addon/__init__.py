@@ -44,6 +44,7 @@ from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.blender import nodegraph as bg
+from usd_chunks.frontends.blender.addon import brush
 from usd_chunks.frontends.blender.addon import camera
 from usd_chunks.frontends.blender.addon import dependencies
 from usd_chunks.frontends.blender.addon import gizmos
@@ -1164,11 +1165,13 @@ def register() -> None:
         bpy.app.handlers.redo_post.append(_on_undo)
     viewport.register()
     gizmos.register()
+    brush.register()
     camera.register()
 
 
 def unregister() -> None:
     camera.unregister()
+    brush.unregister()
     gizmos.unregister()
     viewport.unregister()
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
