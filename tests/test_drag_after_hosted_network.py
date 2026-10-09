@@ -7,6 +7,8 @@ the auto-created Transform was wired in above the Reference.
 
 from __future__ import annotations
 
+from pxr import Sdf, Usd
+
 from graph_fixtures import make_network
 from usd_chunks import Scene
 from usd_chunks.chunk_stage import exec_input_connections, get_chunk_prim_path
@@ -30,3 +32,27 @@ def test_auto_transform_follows_the_hosting_reference(tmp_path) -> None:
         new = [name for name in wired if name not in (up.name, ref.name) and not name.startswith("View")]
         assert len(new) == 1, wired
         assert wired[new[0]] == [get_chunk_prim_path(ref)], wired
+
+
+def test_hosted_gizmo_anchors_point_under_the_namespace(tmp_path) -> None:
+    """The network file anchors its gizmos at scene prims, outside the reference: USD drops
+    those targets with a warning. Read back, a hosted chunk's anchor comes from its own
+    param instead, resolved under the namespace -- with nothing authored to get it."""
+    network, _ = make_network(tmp_path / "seq.usda", modules=("transform",), chain=False)
+    saved = Usd.Stage.Open(network)
+    inner = next(p for p in saved.Traverse()
+                 if p.GetAttribute("info:chunkType").Get() == "transform")
+    inner.CreateAttribute("inputs:primpath_location", Sdf.ValueTypeNames.String).Set("/A")
+    inner.CreateRelationship("ui:gizmo:transform:anchor").SetTargets(["/A"])
+    saved.GetRootLayer().Save()
+
+    with Scene() as scene:
+        ref = scene.create.reference(file_path=network, primpath_location="/hosted")
+        scene.commit()
+        stage = ref.get_stage()
+        hosted = stage.GetPrimAtPath(get_chunk_prim_path(ref)).GetChild(inner.GetName())
+        descs = runtime._read_gizmos(hosted)
+        assert [d.anchor for d in descs] == [(Sdf.Path("/hosted/A"),)]
+        rel = hosted.GetRelationship("ui:gizmo:transform:anchor")
+        local = stage.GetLayerStack()
+        assert not [s.layer for s in rel.GetPropertyStack() if s.layer in local]

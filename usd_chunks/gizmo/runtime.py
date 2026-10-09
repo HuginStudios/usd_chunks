@@ -572,7 +572,35 @@ def _gizmo_names(prim: Usd.Prim) -> list:
     return names
 
 
-def _read_gizmos(prim: Usd.Prim) -> list:
+def _read_anchor(prim: Usd.Prim, rel: Usd.Relationship, name: str, chunk=None) -> tuple:
+    """The anchor rel's targets, without composing one a hosted network's file wrote.
+
+    A network file anchors its gizmos at scene prims (/Headboard). Referenced in by a
+    Reference or Payload node, those lie outside the reference: USD drops them with a
+    warning on every read, and the handle never attaches. Such an anchor is recomputed
+    from the chunk's own anchor param instead, which resolves under the host's namespace.
+    """
+    if not rel:
+        return ()
+    stack = rel.GetPropertyStack()
+    if not stack or stack[0].layer in prim.GetStage().GetLayerStack():
+        return tuple(rel.GetTargets())
+    if chunk is None:
+        scene = getattr(ChunkRegistry(), "scene", None)
+        chunk = next((c for c in (scene.get_chunks() if scene else [])
+                      if (p := _chunk_prim(prim.GetStage(), c)) is not None and p.GetPath() == prim.GetPath()),
+                     None)
+    gizmo = next((g for g in get_gizmos(chunk) if g.name == name), None) if chunk is not None else None
+    if gizmo is None:
+        return ()
+    try:
+        return tuple(_anchor_targets(chunk, gizmo, prim.GetStage()))
+    except Exception:
+        logger.debug("Could not resolve anchor for gizmo %r on %s", name, prim.GetPath(), exc_info=True)
+        return ()
+
+
+def _read_gizmos(prim: Usd.Prim, chunk=None) -> list:
     descs = []
     for name in _gizmo_names(prim):
         hidden_attr = prim.GetAttribute(_attr_name(name, "hidden"))
@@ -607,7 +635,7 @@ def _read_gizmos(prim: Usd.Prim) -> list:
             type=gizmo_type,
             chunk_prim=prim.GetPath(),
             label=(label_attr.Get() if label_attr else "") or "",
-            anchor=tuple(anchor_rel.GetTargets()) if anchor_rel else (),
+            anchor=_read_anchor(prim, anchor_rel, name, chunk),
             anchor_source=(source_attr.Get() if source_attr else "") or "",
             driver=driver,
             axis=(axis_attr.Get() if axis_attr else None) or None,
@@ -724,7 +752,7 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     for chunk in chunks_for_prim(prim):
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is not None:
-            descs.extend(_read_gizmos(chunk_prim))
+            descs.extend(_read_gizmos(chunk_prim, chunk))
     # Then add anything anchored here that has not authored yet. The layer-stack route only
     # sees chunks that have already written something, and plenty have not: rbd_solver is
     # button-driven, so its offset handles -- the very things you want before running a
@@ -805,7 +833,7 @@ def _gizmos_anchored_at(prim: Usd.Prim) -> list:
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is None or chunk_prim.GetPath() == prim_path:
             continue
-        for desc in _read_gizmos(chunk_prim):
+        for desc in _read_gizmos(chunk_prim, chunk):
             if any(Sdf.Path(str(a)) == prim_path for a in desc.anchor):
                 found.append(desc)
     return found
@@ -1444,7 +1472,7 @@ def _own_transform_desc(chunk: core.ChunkBase):
     chunk_prim = _chunk_prim(stage, chunk) if stage is not None else None
     if chunk_prim is None:
         return None
-    for desc in _read_gizmos(chunk_prim):
+    for desc in _read_gizmos(chunk_prim, chunk):
         if desc.type == core.GIZMO_TRANSFORM_TYPE:
             return desc
     return None
