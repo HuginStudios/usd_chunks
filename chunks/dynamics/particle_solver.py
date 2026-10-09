@@ -889,6 +889,19 @@ class _Instances:
             n = min(len(indices), self.count)
             proto_idx[:n] = np.asarray(indices, dtype=np.int64)[:n]
 
+        # Hidden instances are not there: an RBD bake keeps every piece a break can make in
+        # its instancer and hides the ones that do not exist yet.
+        self.visible = np.ones(self.count, dtype=bool)
+        hidden = inst.GetInvisibleIdsAttr().Get(time)
+        if hidden:
+            ids = inst.GetIdsAttr().Get(time)
+            index_of = ({int(i): n for n, i in enumerate(ids)} if ids
+                        else {n: n for n in range(self.count)})
+            for i in hidden:
+                n = index_of.get(int(i))
+                if n is not None and n < self.count:
+                    self.visible[n] = False
+
         extents, centres = proto_bounds if proto_bounds is not None else _proto_bounds(prim, time)
         proto_idx = np.where((proto_idx >= 0) & (proto_idx < len(extents)), proto_idx, 0)
 
@@ -947,8 +960,18 @@ def _sphere_track(prim, start_frame, frame_count):
     return track
 
 
-def _bounds_of(prim):
-    rng = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]) \
+def _hide_from(stage, path, frame):
+    """Make `path` invisible from `frame` on, shown as authored before it."""
+    prim = stage.GetPrimAtPath(path)
+    if not prim or not prim.IsValid():
+        return
+    visibility = UsdGeom.Imageable(prim).CreateVisibilityAttr()
+    visibility.Set(UsdGeom.Tokens.inherited, Usd.TimeCode(frame - 1))
+    visibility.Set(UsdGeom.Tokens.invisible, Usd.TimeCode(frame))
+
+
+def _bounds_of(prim, time=Usd.TimeCode.Default()):
+    rng = UsdGeom.BBoxCache(time, [UsdGeom.Tokens.default_]) \
         .ComputeWorldBound(prim).ComputeAlignedRange()
     if rng.IsEmpty():
         return None
@@ -1048,15 +1071,20 @@ def _extent(points, pad):
     return Vt.Vec3fArray.FromNumpy(np.stack((points.min(axis=0) - pad, points.max(axis=0) + pad)).astype(np.float32))
 
 
-def _emit(source, spacing, blob_radius, rng):
+def _emit(source, spacing, blob_radius, rng, time=Usd.TimeCode.Default()):
     """World-space starting particles, plus which blob each belongs to (-1 for none).
+
+    The source is read at `time`, the Start Frame, so an animated source (an RBD bake)
+    hands over its material where it is when the simulation starts.
 
     Returns (particles, blob_ids, instances) -- `instances` set only for an instancer source.
     """
     if source.IsA(UsdGeom.PointInstancer):
-        inst = _Instances(source)
+        inst = _Instances(source, time)
         parts, ids = [], []
         for i in range(inst.count):
+            if not inst.visible[i]:
+                continue
             ball = inst.centres[i] + _ball_offsets(max(inst.radii[i], spacing * 0.5), spacing, rng)
             parts.append(ball)
             ids.append(np.full(len(ball), i, dtype=np.int64))
@@ -1066,13 +1094,13 @@ def _emit(source, spacing, blob_radius, rng):
 
     if source.IsA(UsdGeom.Points):
         cloud = UsdGeom.Points(source)
-        points = cloud.GetPointsAttr().Get()
+        points = cloud.GetPointsAttr().Get(time)
         if not points:
             return np.zeros((0, 3)), np.zeros(0, np.int64), None
-        matrix = np.asarray(UsdGeom.XformCache().GetLocalToWorldTransform(source), dtype=np.float64)
+        matrix = np.asarray(UsdGeom.XformCache(time).GetLocalToWorldTransform(source), dtype=np.float64)
         world = np.asarray(points, dtype=np.float64) @ matrix[:3, :3] + matrix[3, :3]
         radius = max(blob_radius, spacing * 0.5)
-        normals = cloud.GetNormalsAttr().Get()
+        normals = cloud.GetNormalsAttr().Get(time)
         if normals and len(normals) == len(world):
             # A painted point is ON the surface. Centred there, half of every ball starts
             # inside whatever was painted on, and the collider traps it underneath.
@@ -1084,7 +1112,7 @@ def _emit(source, spacing, blob_radius, rng):
         ids = np.repeat(np.arange(len(world)), len(offsets))
         return np.concatenate(parts), ids, None
 
-    v0, v1, v2 = _world_triangles(source)
+    v0, v1, v2 = _world_triangles(source, time)
     particles = _fill_triangles(v0, v1, v2, spacing, rng)
     return particles, np.full(len(particles), -1, dtype=np.int64), None
 
@@ -1170,7 +1198,8 @@ def _run(owner, notice, sender):
 
     # The domain depends on the source's extent and the particle spacing on the domain, so
     # the source is sampled twice: once coarsely to find where it is, once at the real spacing.
-    probe = _bounds_of(source)
+    start_time = Usd.TimeCode(start_frame)
+    probe = _bounds_of(source, start_time)
     if probe is None:
         report("the source has no extent")
         return
@@ -1184,7 +1213,7 @@ def _run(owner, notice, sender):
     logger.debug("domain origin %s size %.3f spacing %.4f source %s colliders %s",
                  origin, size, spacing, probe, collider_bounds)
 
-    particles_w, blob_ids, source_instances = _emit(source, spacing, blob_radius, rng)
+    particles_w, blob_ids, source_instances = _emit(source, spacing, blob_radius, rng, start_time)
     subsampled = ""
     if len(particles_w) > max_particles:
         keep = np.sort(rng.choice(len(particles_w), max_particles, replace=False))
@@ -1297,6 +1326,9 @@ def _run(owner, notice, sender):
             if node.get_param("render_as", is_s).value == _AS_SPHERES:
                 _author_sphere_instancer(stage, sim_path.AppendChild("ParticleSpheres"), positions,
                                          width * 0.5, colour, material_path, start_frame)
+
+            if node.get_param("hide_source", chunk.is_param_t(bool)).value:
+                _hide_from(stage, source_paths[0], start_frame)
 
             top = UsdGeom.Points.Define(stage, surface_path)
             top.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(surface, dtype=np.float32)))
@@ -1492,7 +1524,13 @@ def main():
         tooltip="Where the material starts.\n"
         "A mesh: its volume is filled (it must be closed).\n"
         "A Scatter Brush's Painted Points: a ball of Blob Radius at every dab.\n"
-        "A Scatter Points instancer: a ball the size of every instance.",
+        "A Scatter Points instancer: a ball the size of every instance.\n"
+        "Read at Start Frame, so an RBD bake hands over where its pieces are then.",
+    ))
+    chunk_api.add_param(chunk.Checkbox(
+        "hide_source", "Hide Source", default_value=False,
+        tooltip="Hide the source from Start Frame on, so the material replaces it: rubble "
+        "from an RBD bake turns into sand where it lies.",
     ))
     chunk_api.add_param(chunk.Menu(
         "material", "Material", menu_items=_MATERIALS, default_value=WATER,

@@ -375,3 +375,48 @@ def test_in_a_ui_the_solve_runs_in_another_process(graph, qapp, monkeypatch):
 
 
 _real_in_subprocess = sim_bake.in_subprocess
+
+
+# ---------------------------------------------------------------------------
+# an animated source hands over at Start Frame (RBD rubble -> sand)
+# ---------------------------------------------------------------------------
+
+def _rubble(stage):
+    """An RBD-bake-shaped instancer: three pieces that move, one still hidden at frame 10."""
+    _box(stage, "/rubble/Prototypes/piece", (-0.5, -0.5, -0.5), (0.5, 0.5, 0.5))
+    inst = UsdGeom.PointInstancer.Define(stage, "/rubble")
+    inst.CreatePrototypesRel().SetTargets(["/rubble/Prototypes/piece"])
+    inst.CreateProtoIndicesAttr().Set([0, 0, 0])
+    pos = inst.CreatePositionsAttr()
+    pos.Set(Vt.Vec3fArray([(0, 0, 10), (5, 0, 10), (10, 0, 10)]), 1)
+    pos.Set(Vt.Vec3fArray([(0, 0, 1), (5, 0, 1), (10, 0, 1)]), 10)
+    inst.CreateInvisibleIdsAttr().Set(Vt.Int64Array([2]), 10)
+    return stage.GetPrimAtPath("/rubble")
+
+
+def test_an_instancer_source_is_read_at_the_start_frame():
+    stage = Usd.Stage.CreateInMemory()
+    rubble = _rubble(stage)
+    particles, ids, _inst = ps._emit(rubble, 0.1, 0.5, np.random.default_rng(0), Usd.TimeCode(10))
+    assert len(particles)
+    assert particles[:, 2].max() < 2.0  # where the pieces are at frame 10, not frame 1
+
+
+def test_hidden_instances_make_no_material():
+    """An RBD bake hides the pieces a break has not made yet; they are not rubble."""
+    stage = Usd.Stage.CreateInMemory()
+    rubble = _rubble(stage)
+    particles, ids, _inst = ps._emit(rubble, 0.1, 0.5, np.random.default_rng(0), Usd.TimeCode(10))
+    assert set(np.unique(ids)) == {0, 1}
+    assert particles[:, 0].max() < 7.0
+
+
+def test_hide_source_hides_it_from_the_start_frame_on():
+    stage = Usd.Stage.CreateInMemory()
+    rubble = _rubble(stage)
+    ps._hide_from(stage, "/rubble", 10)
+    vis = UsdGeom.Imageable(rubble).GetVisibilityAttr()
+    assert vis.Get(1) == UsdGeom.Tokens.inherited
+    assert vis.Get(9) == UsdGeom.Tokens.inherited
+    assert vis.Get(10) == UsdGeom.Tokens.invisible
+    assert vis.Get(50) == UsdGeom.Tokens.invisible
