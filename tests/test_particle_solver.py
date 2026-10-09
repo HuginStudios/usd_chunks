@@ -538,3 +538,22 @@ def test_collider_spheres_skip_hidden_and_dissolved_pieces():
     later = ps._sphere_track(rock, 10, 1, exclude=np.asarray([False, True, False]))[0][1]
     assert later[1] == 0.0                              # turned into sand: no collider
     assert later[0] > 0.9 and later[2] > 0.0            # the big piece and the other bit are
+
+
+@needs_taichi
+def test_material_outside_the_container_is_left_out_not_a_crash(graph):
+    """A source bigger than the Container: before, it indexed past the grid and crashed the
+    GPU (CUDA_ERROR_ILLEGAL_ADDRESS)."""
+    stage, make = graph
+    _floor(stage, "/floor", 50.0, 0.0)
+    _box(stage, "/slab", (-10, -10, 0.5), (10, 10, 3))
+    _box(stage, "/tank", (-4, -4, 0), (4, 4, 8))
+    UsdGeom.Imageable(stage.GetPrimAtPath("/tank")).MakeInvisible()
+    solver, module = _solver(make, source_prim="/slab", collision_path="/floor", sim_path="/Slab",
+                             container_prim="/tank", frame_count=4, grid_res=24)
+    _press_run(solver, module)
+    readout = solver.get_param("readout").value
+    assert "outside the domain left out" in readout, readout
+    points = UsdGeom.Points(stage.GetPrimAtPath("/Slab/Particles")).GetPointsAttr().Get(4)
+    assert points and len(points) > 0
+    assert np.abs(np.asarray(points)[:, :2]).max() < 6.0  # the Container, made cubic and walled

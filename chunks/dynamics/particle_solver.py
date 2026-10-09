@@ -1346,6 +1346,18 @@ def _run(owner, notice, sender):
     def to_domain(p):
         return (np.asarray(p, dtype=np.float64) - origin) / size
 
+    # Material that starts outside the domain -- a source bigger than the Container -- is
+    # left out. Handed to the solver it indexed past the grid and crashed the GPU
+    # (CUDA_ERROR_ILLEGAL_ADDRESS) instead of saying anything.
+    wall = (_BOUND + 1) / grid_res
+    in_domain = np.all((to_domain(particles_w) > wall) & (to_domain(particles_w) < 1.0 - wall), axis=1)
+    if not in_domain.all():
+        subsampled += f" ({int((~in_domain).sum())} outside the domain left out)"
+        particles_w, blob_ids = particles_w[in_domain], blob_ids[in_domain]
+        if not len(particles_w):
+            report("all of the source is outside the domain -- make the Container bigger")
+            return
+
     velocity_w = _vec3(node, "initial_velocity")
     if node.get_param("inherit_motion", chunk.is_param_t(bool)).value:
         motion = _source_motion(source, start_frame, fps)
