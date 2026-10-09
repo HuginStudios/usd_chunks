@@ -1579,7 +1579,7 @@ def test_wiring_a_chunk_in_unblocks_it_and_cutting_blocks_it(view):
     chunk = view.chunks[lone]
     output = next(n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("output"))
     move = _node(view, "Move")
-    old = next(l for l in view.tree.links if l.to_node == output)
+    old = next(lk for lk in view.tree.links if lk.to_node == output)
     view.tree.links.remove(old)
     view.tree.links.new(move.outputs[0], view.tree.nodes[lone].inputs[0])
     view.tree.links.new(view.tree.nodes[lone].outputs[0], output.inputs[0])
@@ -1587,7 +1587,7 @@ def test_wiring_a_chunk_in_unblocks_it_and_cutting_blocks_it(view):
     bg._reload_after_connect(view)  # what the one-tick timer does in Blender proper
     assert not chunk.is_blocked()
 
-    link = next(l for l in view.tree.links if l.from_node.name == lone)
+    link = next(lk for lk in view.tree.links if lk.from_node.name == lone)
     view.tree.links.remove(link)
     view.tree.update()
     bg._reload_after_connect(view)
