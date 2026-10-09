@@ -2095,6 +2095,25 @@ VIEW_SLOT_ATTR = "view:slot"
 ACTIVE_VIEW_ATTR = "chunk:activeView"
 VIEW_SLOTS = (1, 2)
 
+#: The number a person picks the Output by (key 1, "Output [1]"). The view slots follow it,
+#: see view_number.
+OUTPUT_NUMBER = 1
+
+
+def view_number(slot: int) -> int:
+    """The number a view slot shows as and is picked by: its key, label and name.
+
+    The Output is 1, so slot 1 is View 2 and slot 2 is View 3. Only the display moves:
+    view:slot and chunk:activeView keep the slot, so files saved before read the same.
+
+    Args:
+        slot: A view slot, one of VIEW_SLOTS.
+
+    Returns:
+        The slot's number.
+    """
+    return slot + OUTPUT_NUMBER
+
 
 def context_has_view(scene, context) -> bool:
     """True when this context -- or the whole graph, if context is None -- has a view."""
@@ -2150,7 +2169,7 @@ def _view_in_slot(stage: Usd.Stage, parent_path: str, slot: int) -> Usd.Prim | N
 
 
 def _rewire_view(stage: Usd.Stage, view_prim: Usd.Prim, target_prim_path: str) -> None:
-    """Point an existing view's exec input at `target_prim_path`."""
+    """Point an existing view's (or Output's) exec input at `target_prim_path`."""
     exec_in = view_prim.GetAttribute(EXEC_INPUT)
     if not (exec_in and exec_in.IsValid()):
         exec_in = view_prim.CreateAttribute(EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
@@ -2171,7 +2190,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
         stage: The stage to author on.
         scene: The scene to add the view chunk to.
         target_prim_path: Prim path of the node to view.
-        slot: The slot to put the view in ("Set View 1/2"). When that slot already has a
+        slot: The slot to put the view in ("Set View 2/3"). When that slot already has a
             view in this container, that view is re-pointed at the target instead of a
             second one being made. None takes the lowest free slot.
 
@@ -2210,7 +2229,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
     if not made:
         return None
     view_chunk = made[0]
-    view_chunk.name = f"View{slot}"
+    view_chunk.name = f"View{view_number(slot)}"
     view_chunk.set_state(ChunkFlags.State.COLLAPSED)
 
     # Read the target's position BEFORE add_chunk: adding fires CHUNK_LOADED, which a
@@ -2306,6 +2325,35 @@ def create_output_for(stage: Usd.Stage, scene, target_prim_path: str) -> str | N
             pos = output_prim.CreateAttribute(POS_ATTR, Sdf.ValueTypeNames.Float2)
         pos.Set(Gf.Vec2f(float(target_x) + 280.0, float(target_y)))
     return output_path
+
+
+def set_output_for(stage: Usd.Stage, scene, context, target_prim_path: str) -> str | None:
+    """Wire context's Output from target_prim_path ("Set Output"), making one if it has none.
+
+    A graph composed from several departments has an Output per layer; the strongest one is
+    re-pointed, as the one this file is most likely to own.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the context lives in.
+        context: The graph's context chunk, or None for the top level.
+        target_prim_path: Prim path of the node that now ends the chain.
+
+    Returns:
+        The Output's prim path, or None if the target is missing or is itself a view or an
+        Output.
+    """
+    target = stage.GetPrimAtPath(Sdf.Path(target_prim_path))
+    if not target.IsValid() or target.GetAttribute(CHUNK_TYPE_ATTR).Get() in (VIEW_MODULE, OUTPUT_MODULE):
+        return None
+    output = chunk_stage.strongest_output(stage, scene, context)
+    if output is None:
+        return create_output_for(stage, scene, target_prim_path)
+    output_prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(output)))
+    if not output_prim.IsValid():
+        return None
+    _rewire_view(stage, output_prim, target_prim_path)
+    return str(output_prim.GetPath())
 
 
 def ensure_default_output(stage: Usd.Stage, scene, context) -> str | None:

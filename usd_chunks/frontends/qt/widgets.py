@@ -2160,17 +2160,33 @@ class ContainerWidget(
 _VIEW_COL_HEADER = "#c87830"
 
 
+def slot_for_key(key) -> int | None:
+    """The view slot a number key picks: 0 (the Output) for 1, a view slot for 2 and 3.
+
+    Args:
+        key (QtCore.Qt.Key): The key pressed.
+
+    Returns:
+        The slot, or None for any other key.
+    """
+    number = key - QtCore.Qt.Key.Key_0
+    if number == chunk_graph.OUTPUT_NUMBER:
+        return 0
+    return next((slot for slot in chunk_graph.VIEW_SLOTS if chunk_graph.view_number(slot) == number), None)
+
+
 class ViewSlotState(QtCore.QObject):
     """Shared view-slot state for a context tab.
 
-    Holds the active view slot (0 = none, 1–2 = active) and notifies connected
-    widgets when it changes.  The actual blocking/muting logic lives in
-    ChunkGraphView; this object is the lightweight communication bus between
+    Holds the active view slot (0 = none, so the graph cooks to its Output; 1–2 = a view)
+    and notifies connected widgets when it changes.  The actual blocking/muting logic lives
+    in ChunkGraphView; this object is the lightweight communication bus between
     the nodegraph and the params panel.
     """
 
-    slot_changed = QtCore.Signal(int)   # 0 = off, 1–2 = active slot
+    slot_changed = QtCore.Signal(int)   # 0 = the Output, 1–2 = active view slot
     create_view_for = QtCore.Signal(str, int)  # (prim path, slot) -- handled by ChunkGraphView
+    set_output_for = QtCore.Signal(str)  # prim path -- "Set Output", handled by ChunkGraphView
     pin_changed = QtCore.Signal(object, bool)  # (chunk, pinned) -- a Pin/Unpin menu toggle
 
     def __init__(self, parent=None):
@@ -2296,28 +2312,39 @@ class ViewSlotState(QtCore.QObject):
         menu.addSeparator()
 
         stage: Usd.Stage | None = grp.get_stage()
-        is_view_chunk = False
+        chunk_type = None
         existing_view_slot: int | None = None
+        is_output_source = False
         if stage:
             prim = stage.GetPrimAtPath(prim_path)
             if prim.IsValid():
-                is_view_chunk = prim.GetAttribute("info:chunkType").Get() == "view"
-            if not is_view_chunk:
+                chunk_type = prim.GetAttribute("info:chunkType").Get()
+            if chunk_type not in ("view", "output"):
                 for p in stage.Traverse():
-                    if p.GetAttribute("info:chunkType").Get() != "view":
+                    p_type = p.GetAttribute("info:chunkType").Get()
+                    if p_type not in ("view", "output"):
                         continue
                     exec_in = p.GetAttribute(chunk_naming.EXEC_INPUT)
                     if exec_in.IsValid():
                         for conn_path in exec_in.GetConnections():
-                            if str(conn_path.GetPrimPath()) == prim_path:
+                            if str(conn_path.GetPrimPath()) != prim_path:
+                                continue
+                            if p_type == "output":
+                                is_output_source = True
+                            else:
                                 existing_view_slot = p.GetAttribute("view:slot").Get()
 
-        # One entry per slot: picking a slot that already has a view re-points that view
-        # here. The slot already viewing this chunk is shown checked.
+        # "Set Output" over one entry per view slot: picking a slot that already has a view
+        # re-points that view here. What already ends at this chunk is shown checked.
+        output_action = None
         view_actions: dict = {}
-        if not is_view_chunk:
+        if chunk_type not in ("view", "output"):
+            output_action = menu.addAction("Set Output")
+            output_action.setCheckable(True)
+            output_action.setChecked(is_output_source)
+        if chunk_type != "view":
             for slot in chunk_graph.VIEW_SLOTS:
-                act = menu.addAction(f"Set View {slot}")
+                act = menu.addAction(f"Set View {chunk_graph.view_number(slot)}")
                 act.setCheckable(True)
                 act.setChecked(slot == existing_view_slot)
                 view_actions[act] = slot
@@ -2356,6 +2383,8 @@ class ViewSlotState(QtCore.QObject):
             for target in targets:
                 chunk_stage.set_chunk_pinned(target, new_pinned)
                 self.pin_changed.emit(target, new_pinned)
+        elif output_action and res == output_action:
+            self.set_output_for.emit(prim_path)
         elif res in view_actions:
             slot = view_actions[res]
             if slot == existing_view_slot:
@@ -2585,13 +2614,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if not self._is_tab_context_widget or not self._view_overlay:
             return
         if slot == 0:
-            text = "View: –"
+            text = "Output"
             self._view_overlay.setStyleSheet(
-                "background: rgba(40,40,40,180); color: rgb(130,130,130);"
+                "background: rgba(58,111,143,210); color: white;"
                 "border-radius: 4px; padding: 3px 8px;"
             )
         else:
-            text = f"View: {slot}"
+            text = f"View: {chunk_graph.view_number(slot)}"
             self._view_overlay.setStyleSheet(
                 "background: rgba(200,120,48,210); color: white;"
                 "border-radius: 4px; padding: 3px 8px;"
@@ -2620,10 +2649,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
-            if event.key() in (QtCore.Qt.Key.Key_1, QtCore.Qt.Key.Key_2):
-                slot = event.key() - QtCore.Qt.Key.Key_0
-                cur = self._view_state.active_slot
-                self._view_state.set_slot(0 if cur == slot else slot)
+            if (slot := slot_for_key(event.key())) is not None:
+                self._view_state.set_slot(slot)
                 event.accept()
                 return
         super().keyPressEvent(event)

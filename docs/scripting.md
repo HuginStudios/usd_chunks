@@ -242,7 +242,7 @@ Edit Target is what sends edits to it.
 - If the graph already has a View, new chunks start switched off, the same as nodes you
   make in the graph: they are not in the View's chain yet. To see them, call
   `scene.view(last)` with the chain's last chunk. In the graph, you can instead select that node and press **V**, which makes a
-  second View. Press **1**, **2** or **3** to switch between Views.
+  second View. Press **2** or **3** to switch between Views, and **1** to go back to the Output.
 
 ## Examples
 
