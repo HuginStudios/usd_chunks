@@ -15,6 +15,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 
 from network_files import run, save_network
 from usd_chunks import chunk_layers, chunk_registry, chunk_stage
+from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_script import Scene
 
 _GEO = "/World/house/chunks/geo"
@@ -134,6 +135,84 @@ def test_the_shots_bake_travels_with_the_shot(tmp_path):
         if not layer.anonymous:
             layer.Reload()
     assert _z(stage, "/sh010/house/chunks/geo") == pytest.approx(1.0)
+
+
+def _stale_asset_bake(tmp_path):
+    """The house as its department published it: a bake holding /chunks/old, which the
+    network makes no longer."""
+    bake = Sdf.Layer.FindOrOpen(str(tmp_path / "house.cook.usda"))
+    UsdGeom.Cube.Define(Usd.Stage.Open(bake), "/chunks/old")
+    bake.Save()
+
+
+_OLD = "/World/house/chunks/old"
+
+
+def test_a_prim_only_the_assets_bake_makes_is_deactivated_live(tmp_path):
+    """The shot's live cook of the house replaces the asset's bake: /old, which only the bake
+    defines, gets `active = false` in the shot -- and the house files are untouched."""
+    shot, h1 = _shot(tmp_path, "reference")
+    _stale_asset_bake(tmp_path)
+    house_files = {p: p.read_bytes() for p in (tmp_path / "house.usda", tmp_path / "house.cook.usda")}
+    scene = Scene.open(str(shot), "pytest")
+    try:
+        _cook(scene, h1)
+        stage = scene.get_stage()
+        assert not stage.GetPrimAtPath(_OLD).IsActive()
+        assert stage.GetPrimAtPath(_GEO).IsActive()
+        assert stage.GetPrimAtPath("/World/house/chunks").IsActive()
+        assert _z(stage, _GEO) == pytest.approx(1.0)
+    finally:
+        scene.close()
+    assert {p: p.read_bytes() for p in house_files} == house_files
+
+
+def test_a_copy_that_does_not_cook_live_keeps_its_bake(tmp_path):
+    """With the house's chunk disabled nothing replaces the bake, so nothing is hidden."""
+    shot, h1 = _shot(tmp_path, "reference")
+    _stale_asset_bake(tmp_path)
+    scene = Scene.open(str(shot), "pytest")
+    try:
+        chunk = _cook(scene, h1)
+        chunk.set_state(ChunkFlags.State.DISABLED)
+        chunk_registry.ChunkLayerManager().deactivate_stale_bakes()
+        assert scene.get_stage().GetPrimAtPath(_OLD).IsActive()
+    finally:
+        scene.close()
+
+
+def test_only_the_copy_that_cooks_live_has_its_bake_replaced(tmp_path):
+    """Two copies of the house; the second's chunk is disabled. The overs go per stage path,
+    so the first copy's /old is hidden and the second keeps its bake whole."""
+    shot, h1 = _shot(tmp_path, "reference")
+    _stale_asset_bake(tmp_path)
+    layer = Sdf.Layer.FindOrOpen(str(shot))
+    stage = Usd.Stage.Open(layer)
+    stage.DefinePrim("/World/house2/chunks").GetReferences().AddReference("./house.usda", "/chunks")
+    layer.Save()
+    scene = Scene.open(str(shot), "pytest")
+    try:
+        _cook(scene, h1)
+        second = _cook(scene, h1.replace("/World/house/", "/World/house2/"))
+        second.set_state(ChunkFlags.State.DISABLED)
+        chunk_registry.ChunkLayerManager().deactivate_stale_bakes()
+        stage = scene.get_stage()
+        assert not stage.GetPrimAtPath(_OLD).IsActive()
+        assert stage.GetPrimAtPath("/World/house2/chunks/old").IsActive()
+    finally:
+        scene.close()
+
+
+def test_the_shots_bake_deactivates_it_for_plain_usd(tmp_path):
+    shot, _ = _shot(tmp_path, "reference")
+    _stale_asset_bake(tmp_path)
+    run(shot, "--bake", "--all")
+    stage = Usd.Stage.Open(str(shot))
+    for layer in stage.GetUsedLayers():
+        if not layer.anonymous:
+            layer.Reload()
+    assert not stage.GetPrimAtPath(_OLD).IsActive()
+    assert _z(stage, _GEO) == pytest.approx(1.0)
 
 
 def test_a_result_outside_the_asset_lands_in_the_shots_cook_too(tmp_path):
