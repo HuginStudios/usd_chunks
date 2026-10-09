@@ -2237,12 +2237,7 @@ def create_view_for(stage: Usd.Stage, scene, target_prim_path: str,
     # frontend may answer by rebuilding its graph.
     target_x, target_y = node_position(target)
 
-    # Into the target's own graph. add_chunk parents to the scene's current context, which
-    # a frontend's dive does not set, so a view made inside a group landed at the top level,
-    # wired across the group's edge.
-    group = nest_target(scene.get_context_for_prim_path(parent_path))
-    with scene.creating_in(group) if group is not None else contextlib.nullcontext():
-        scene.add_chunk(view_chunk)
+    _add_to_graph_of(scene, view_chunk, target_prim_path)
     view_path = f"{chunk_stage._resolve_chunk_root(view_chunk)}/{view_chunk.name}"
     view_prim = stage.GetPrimAtPath(Sdf.Path(view_path))
     if not view_prim.IsValid():
@@ -2278,6 +2273,25 @@ def context_has_output(scene, context) -> bool:
     )
 
 
+def _add_to_graph_of(scene, chunk, target_prim_path: str) -> None:
+    """Add `chunk` to the graph `target_prim_path` is in.
+
+    add_chunk parents to the scene's current context, which the Blender, Flet and ImGui
+    graphs do not set when they dive. So a View or Output made for a chunk inside a group
+    landed at the top level, wired across the group's edge, and the group had none of its
+    own.
+
+    Args:
+        scene: The scene to add the chunk to.
+        chunk: The new chunk.
+        target_prim_path: Prim path of the chunk it is made for.
+    """
+    parent_path = str(Sdf.Path(target_prim_path).GetParentPath())
+    group = nest_target(scene.get_context_for_prim_path(parent_path))
+    with scene.creating_in(group) if group is not None else contextlib.nullcontext():
+        scene.add_chunk(chunk)
+
+
 def create_output_for(stage: Usd.Stage, scene, target_prim_path: str) -> str | None:
     """Create the Output of target_prim_path's graph, wired from it.
 
@@ -2311,7 +2325,7 @@ def create_output_for(stage: Usd.Stage, scene, target_prim_path: str) -> str | N
     # frontend may answer by rebuilding its graph.
     target_x, target_y = node_position(target)
 
-    scene.add_chunk(output_chunk)
+    _add_to_graph_of(scene, output_chunk, target_prim_path)
     output_path = chunk_stage.get_chunk_prim_path(output_chunk)
     output_prim = stage.GetPrimAtPath(Sdf.Path(output_path))
     if not output_prim.IsValid():

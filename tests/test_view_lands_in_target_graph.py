@@ -73,3 +73,28 @@ def test_the_scenes_own_context_is_left_as_it_was(grouped):
     before = scene.current_context
     chunk_graph.create_view_for(stage, scene, get_chunk_prim_path(inner))
     assert scene.current_context is before
+
+
+def test_an_output_for_a_chunk_in_a_group_is_made_in_that_group(grouped):
+    """Diving into a group gives it a default Output: it used to land at the top level."""
+    stage, scene, group, inner = grouped
+    group_path = get_chunk_prim_path(group)
+
+    made = chunk_graph.create_output_for(stage, scene, get_chunk_prim_path(inner))
+
+    assert made is not None and str(Sdf.Path(made).GetParentPath()) == group_path
+    assert chunk_graph.context_has_output(scene, group)
+
+
+def test_a_group_dived_into_gets_its_own_output(grouped):
+    """What a frontend's dive runs: the group gets an Output, the top level gets none."""
+    stage, scene, group, inner = grouped
+    top_before = [c for c in scene.get_chunks() if chunk_graph.chunk_stage.is_output_chunk(c)
+                  and c.get_context() is not group]
+
+    chunk_graph.ensure_default_output(stage, scene, group)
+
+    outputs = [c for c in scene.get_chunks() if chunk_graph.chunk_stage.is_output_chunk(c)]
+    inside = [c for c in outputs if c.get_context() is group]
+    assert len(inside) == 1
+    assert [c for c in outputs if c.get_context() is not group] == top_before
