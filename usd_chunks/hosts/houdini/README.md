@@ -17,12 +17,36 @@ Tested with Houdini 21.0.
 
 ## Setup
 
-With the usdbundle, start Houdini with `usdbundle\launchhoudini.bat`. It sets
-`HOUDINI_PATH`, `PYTHONPATH` and `USD_CHUNK_DIRS` for that session, and installs the
-missing dependency with Houdini's hython the first time (`HFS` picks the Houdini,
-`HOUDINI_EXE` what to start).
+Houdini uses its own USD and Python 3.11. Don't put another USD on `PATH` or `PYTHONPATH`
+for it. usd_chunks needs only its checkout and its chunks from outside.
 
-Or set it up for every Houdini session, once, with the `hython` of the Houdini to set up:
+**For one session**, set these before launching Houdini (`C:\src\usd_chunks` stands for
+your checkout):
+
+| Variable | Set to | Why |
+|---|---|---|
+| `HOUDINI_PATH` | `C:\src\usd_chunks\usd_chunks\hosts\houdini;&` | Finds the node types (`otls\`) and the startup script that builds the TAB menu. Keep the trailing `&`: it is Houdini's own path (quote the `set`, or cmd reads `&` as a command separator). |
+| `PYTHONPATH` | `C:\src\usd_chunks`, prepended | Makes `usd_chunks` importable by Houdini's Python. The checkout root only. |
+| `USD_CHUNK_DIRS` | `C:\src\usd_chunks\chunks`, prepended | The chunk library. Unset, the TAB menu's usdchunks folder is empty. |
+| `USD_CHUNK_DEPENDENCY_DIR` | optional | Where the missing pure-Python dependencies go. Default `%LOCALAPPDATA%\usd_chunks\installed_deps`. |
+
+Install the missing dependencies once with Houdini's own `hython`, then start Houdini from
+the same shell:
+
+```bat
+set HFS=C:\Program Files\Side Effects Software\Houdini 21.0.857
+set "HOUDINI_PATH=C:\src\usd_chunks\usd_chunks\hosts\houdini;&"
+set PYTHONPATH=C:\src\usd_chunks;%PYTHONPATH%
+set USD_CHUNK_DIRS=C:\src\usd_chunks\chunks;%USD_CHUNK_DIRS%
+"%HFS%\bin\hython.exe" C:\src\usd_chunks\usd_chunks\hosts\houdini\install.py --deps-only
+"%HFS%\bin\houdini.exe"
+```
+
+If `HOUDINI_PATH` is already set, prepend to it instead:
+`set "HOUDINI_PATH=C:\src\usd_chunks\usd_chunks\hosts\houdini;%HOUDINI_PATH%"`.
+
+**For every Houdini session**, run the installer once with the `hython` of the Houdini to
+set up:
 
 ```
 "C:\Program Files\Side Effects Software\Houdini 21.0.857\bin\hython.exe" usd_chunks/hosts/houdini/install.py
