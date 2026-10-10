@@ -1540,7 +1540,7 @@ def test_a_change_records_only_the_chunk_prims_it_touched(tracked):
     history = bundo.current_history()
     view.chunks[move_path].get_param("tz").value = 7.0
     assert view.tree[bundo.STEP_KEY] == history.key()
-    touched = {path for path, _old, _new in history.changes[history.current]}
+    touched = {path for _layer, path, _old, _new in history.changes[history.current]}
     assert touched == {Sdf.Path(move_path)}
 
 
@@ -1558,9 +1558,56 @@ def test_a_chunk_prim_outside_the_chunks_root_is_undone_too(view):
         attr.default = 4.0
         Sdf.CreatePrimInLayer(layer, "/asset/geo").typeName = "Mesh"
         history = bundo.current_history()
-        assert {p for p, _o, _n in history.changes[history.current]} == {hosted.path}
+        assert {p for _l, p, _o, _n in history.changes[history.current]} == {hosted.path}
         _blender_undoes_to(view, before)
         assert layer.GetAttributeAtPath("/asset/net/Hosted.inputs:size").default == 1.0
+    finally:
+        bundo.untrack()
+
+
+def _def_chunk(layer, path, size=None):
+    spec = Sdf.CreatePrimInLayer(layer, path)
+    spec.specifier, spec.typeName = Sdf.SpecifierDef, "Chunk"
+    if size is not None:
+        Sdf.AttributeSpec(spec, "inputs:size", Sdf.ValueTypeNames.Double).default = size
+    return spec
+
+
+def test_an_over_on_a_referenced_chunk_is_undone(view):
+    """An edit to a network a Reference chunk brought in lands as an over on its prim --
+    no type of its own, so it counts because the stage says the prim is a chunk. Undoing
+    it removes the over, which is also the path an undone Shift+A takes."""
+    asset = Sdf.Layer.CreateAnonymous("asset.usda")
+    _def_chunk(asset, "/Net")
+    _def_chunk(asset, "/Net/A", size=1.0)
+    ref = _def_chunk(view.stage.GetRootLayer(), "/asset/Ref")
+    ref.referenceList.Prepend(Sdf.Reference(asset.identifier, "/Net"))
+    bundo.track(view.tree, view.stage)
+    try:
+        before = view.tree[bundo.STEP_KEY]
+        size = view.stage.GetPrimAtPath("/asset/Ref/A").GetAttribute("inputs:size")
+        size.Set(4.0)
+        _blender_undoes_to(view, before)
+        assert size.Get() == 1.0
+        assert not view.stage.GetRootLayer().GetPrimAtPath("/asset/Ref/A")
+    finally:
+        bundo.untrack()
+
+
+def test_a_chunk_in_a_department_layer_is_undone(view):
+    """The Edit Target can put chunk prims in a sublayer, added after the network opened."""
+    bundo.track(view.tree, view.stage)
+    try:
+        dept = Sdf.Layer.CreateAnonymous("dept.usda")
+        _def_chunk(dept, "/dept/C", size=1.0)
+        view.stage.GetRootLayer().subLayerPaths.append(dept.identifier)
+        before = view.tree[bundo.STEP_KEY]
+        dept.GetAttributeAtPath("/dept/C.inputs:size").default = 4.0
+        history = bundo.current_history()
+        assert [(lid, str(p)) for lid, p, _o, _n in history.changes[history.current]] \
+            == [(dept.identifier, "/dept/C")]
+        _blender_undoes_to(view, before)
+        assert dept.GetAttributeAtPath("/dept/C.inputs:size").default == 1.0
     finally:
         bundo.untrack()
 
