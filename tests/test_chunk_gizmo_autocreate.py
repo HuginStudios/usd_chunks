@@ -238,6 +238,38 @@ def test_the_node_lands_after_the_chunk_it_was_wired_onto(scene) -> None:
     assert _pos(stage, desc.chunk_prim)[0] == tail_x + chunk_stage._NODE_STEP
 
 
+def _output_after(registry, stage, tail_prim):
+    """The graph's Output, wired from tail_prim and sitting one step right of it."""
+    out = chunk.Chunk("Output")
+    out._config = ChunkConfig(module="output", terminal=True)
+    registry.scene.add_chunk(out)
+    out_prim = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(out)))
+    with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, out)):
+        exec_in = out_prim.GetAttribute(chunk_stage._EXEC_INPUT) or out_prim.CreateAttribute(
+            chunk_stage._EXEC_INPUT, Sdf.ValueTypeNames.Token, custom=False)
+        exec_in.SetConnections([tail_prim.GetPath().AppendProperty(chunk_stage._EXEC_OUTPUT)])
+        UsdUI.NodeGraphNodeAPI.Apply(out_prim).CreatePosAttr().Set(
+            Gf.Vec2f(_pos(stage, tail_prim.GetPath())[0] + chunk_stage._NODE_STEP, 0.0))
+    return out_prim
+
+
+def test_the_node_goes_between_the_tail_and_the_output(scene) -> None:
+    """The Params-tab create this borrows leaves an Output where the user wired it. Nobody
+    wired a drag's chunk, so left there it dangled after the tail and delivered nothing."""
+    stage, registry, _module, _scene_layer = scene
+    _tail, tail_prim = _existing_node(registry, stage, "Sublayer", x=500.0)
+    out_prim = _output_after(registry, stage, tail_prim)
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+
+    new_path = Sdf.Path(str(desc.chunk_prim))
+    assert [c.GetPrimPath() for c in chunk_stage.exec_input_connections(
+        stage.GetPrimAtPath(new_path))] == [tail_prim.GetPath()]
+    assert [c.GetPrimPath() for c in chunk_stage.exec_input_connections(out_prim)] == [new_path]
+    # And out from under the new node, which took the Output's old slot.
+    assert _pos(stage, out_prim.GetPath())[0] > _pos(stage, new_path)[0]
+
+
 def test_no_tail_means_no_opinion(scene) -> None:
     """Nothing to sit after: leave the default placement alone rather than inventing one."""
     stage, _registry, _module, _scene_layer = scene

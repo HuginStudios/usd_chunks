@@ -2199,14 +2199,20 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if _params_tab_create and prev is not None and not is_terminal_chunk(chunk):
             self._rewire_views_from_source(prev, chunk)
 
-    def _rewire_views_from_source(self, old_src: core.ChunkBase, new_src: core.ChunkBase) -> None:
-        """Repoint any view whose inputs:chunk feeds off old_src onto new_src's output."""
+    def _rewire_views_from_source(
+        self, old_src: core.ChunkBase, new_src: core.ChunkBase, *, outputs: bool = False
+    ) -> None:
+        """Repoint any view whose inputs:chunk feeds off old_src onto new_src's output.
+
+        outputs=True moves an Output along too -- for a chunk the framework inserts on the
+        user's behalf (a viewport drag), which belongs between the tail and the Output.
+        """
         def _path(c):
             return self._chunk_prim_paths.get(id(c)) or f"{_resolve_chunk_root(c)}/{c.name}"
         old_path = _path(old_src)
         new_out = Sdf.Path(f"{_path(new_src)}.{_EXEC_OUTPUT}")
         for c in self._scene.get_chunks():
-            if not is_view_chunk(c):
+            if not (is_view_chunk(c) or (outputs and is_output_chunk(c))):
                 continue
             vprim = self._stage.GetPrimAtPath(Sdf.Path(_path(c)))
             if not vprim.IsValid():
