@@ -1464,9 +1464,21 @@ class BlenderGraphView:
 
         Resolve BEFORE writing: writing first persisted a slot with no view behind it, so
         the attribute said 3, nothing cooked, and the file carried that to the next open.
+        Slot 0 is the Output, and is refused in a graph with none, as Qt refuses it: it
+        would cook nothing.
         """
+        if slot == 0 and not chunk_stage.graph_outputs(
+                self.stage, self.scene,
+                chunk_graph.context_chunk(self.scene, self.chunks, self.context)):
+            self.status = "no Output in this graph"
+            return
         changed, self.status = chunk_graph.activate_view_slot(
             self.stage, self.scene, self.context, self.chunks, slot)
+        if changed and not self.status.startswith("recook failed"):
+            # Named as the key and the node show it, not by the stored slot: pressing 2
+            # and reading "view 1 active" looked like the wrong view had been picked.
+            self.status = ("Output active" if slot == 0
+                           else f"View {chunk_graph.view_number(slot)} active")
         if changed:
             self.reload()
 
@@ -1491,7 +1503,7 @@ class BlenderGraphView:
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_active_slot(slot)
-        self.status = f"view {slot}"
+        self.status = f"View {chunk_graph.view_number(slot)}"
 
     # -- layout ------------------------------------------------------------
 

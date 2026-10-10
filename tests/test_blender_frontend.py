@@ -1523,3 +1523,39 @@ def test_the_brush_operator_registers_on_b():
     finally:
         br.unregister()
     assert not br.USDCHUNKS_OT_brush.is_registered
+
+
+# ---------------------------------------------------------------------------
+# number keys: 1 the Output, 2 and 3 the views -- as in the Qt graph
+# ---------------------------------------------------------------------------
+
+def test_one_picks_the_output_and_two_three_the_views():
+    keys = {key: props["slot"] for op, key, _mods, props in addon._KEYS
+            if op is addon.USDCHUNKS_OT_set_view_slot}
+    assert keys == {"ONE": 0, "TWO": 1, "THREE": 2}
+
+
+def test_slot_buttons_are_named_like_the_qt_graph():
+    assert [addon.slot_label(s) for s in (0, 1, 2)] == ["Output [1]", "View [2]", "View [3]"]
+
+
+def test_the_status_names_the_slot_as_the_key_does(view):
+    """Pressing 2 and reading "view 1 active" looked like the wrong view was picked."""
+    view.set_selection({_node(view, "Ref").name})
+    view.create_view_node()
+    assert view.status == "View 2"
+    view.set_active_slot(0)
+    assert view.status == "Output active"
+    view.set_active_slot(1)
+    assert view.status == "View 2 active"
+
+
+def test_the_output_slot_is_refused_in_a_graph_without_one(view):
+    """Qt never switches to what the graph lacks: an Output-less slot 0 cooks nothing."""
+    outputs = [c for c in view.scene.get_chunks() if chunk_stage.is_output_chunk(c)]
+    chunk_graph.delete_chunks(outputs)
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    before = view.active_slot()
+    view.set_active_slot(0)
+    assert view.status == "no Output in this graph"
+    assert view.active_slot() == before

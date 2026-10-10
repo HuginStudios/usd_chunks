@@ -44,6 +44,7 @@ from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.blender import nodegraph as bg
+from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.blender.addon import brush
 from usd_chunks.frontends.blender.addon import camera
 from usd_chunks.frontends.blender.addon import dependencies
@@ -1013,15 +1014,14 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
         box.label(text="Active view")
         row = box.row(align=True)
         active = view.active_slot() if view else 0
-        for slot in (0, 1, 2):
+        for slot in (0,) + chunk_graph.VIEW_SLOTS:
             op = row.operator(USDCHUNKS_OT_set_view_slot.bl_idname,
-                              text="none" if slot == 0 else str(slot),
-                              depress=(slot == active))
+                              text=slot_label(slot), depress=(slot == active))
             op.slot = slot
         # The keys, so nobody has to find them in the keymap editor: they mirror the Qt
-        # and Flet graphs (V, 0-2, L, Ctrl+G) where Blender had no habit to keep, and
+        # and Flet graphs (V, 1-3, L, Ctrl+G) where Blender had no habit to keep, and
         # Blender's own (X, Shift+D, Ctrl+C/X/V, M, Tab) where it did.
-        box.label(text="V view  0-2 slot  L layout  Ctrl+G group", icon="EVENT_V")
+        box.label(text="V view  1 output  2-3 views  L layout  Ctrl+G group", icon="EVENT_V")
 
         if tree is not None and tree.chunk_network_path:
             layout.label(text=tree.chunk_network_path.rsplit("\\", 1)[-1], icon="FILE")
@@ -1054,6 +1054,18 @@ _CLASSES = (
 #: (keymap, keymap_item) pairs, so unregister removes exactly what register added.
 _keymaps: list = []
 
+_NUMBER_KEYS = {1: "ONE", 2: "TWO", 3: "THREE", 4: "FOUR"}
+
+
+def slot_number(slot: int) -> int:
+    """The number key that picks a slot: 1 for the Output (slot 0), then the views."""
+    return chunk_graph.OUTPUT_NUMBER if slot == 0 else chunk_graph.view_number(slot)
+
+
+def slot_label(slot: int) -> str:
+    """How a slot reads on its button, the way the Qt graph names it."""
+    return f"Output [{slot_number(slot)}]" if slot == 0 else f"View [{slot_number(slot)}]"
+
 
 #: (operator, key, modifiers, operator properties). Blender's own node keys keep their
 #: meaning -- Tab/Ctrl+Tab for groups, X and Delete, Shift+D, Ctrl+C/X/V, M, H -- routed to
@@ -1073,9 +1085,11 @@ _KEYS = (
     (USDCHUNKS_OT_group, "G", {"ctrl": True}, {}),
     (USDCHUNKS_OT_create_view, "V", {}, {}),
     (USDCHUNKS_OT_auto_layout, "L", {}, {}),
-    (USDCHUNKS_OT_set_view_slot, "ZERO", {}, {"slot": 0}),
-    (USDCHUNKS_OT_set_view_slot, "ONE", {}, {"slot": 1}),
-    (USDCHUNKS_OT_set_view_slot, "TWO", {}, {"slot": 2}),
+) + tuple(
+    # 1 is the Output and 2, 3 the views, as in Qt. From the engine's numbering, so the
+    # two graphs cannot drift apart again.
+    (USDCHUNKS_OT_set_view_slot, _NUMBER_KEYS[slot_number(slot)], {}, {"slot": slot})
+    for slot in (0,) + chunk_graph.VIEW_SLOTS
 )
 
 
