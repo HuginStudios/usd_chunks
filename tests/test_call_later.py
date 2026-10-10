@@ -62,7 +62,7 @@ def test_rbd_auto_run_cancels_the_wait_the_last_change_started(monkeypatch):
             return lambda: entry.update(cancelled=True)
 
     chunk = SimpleNamespace(get_scene=_Scene)
-    monkeypatch.setattr(rbd_solver, "_is_headless", lambda: False)
+    monkeypatch.setattr(rbd_solver.sim_bake, "is_unattended", lambda: False)
     for _ in range(3):
         rbd_solver._schedule_auto_run(chunk)
     assert [e["cancelled"] for e in pending] == [True, True, False]

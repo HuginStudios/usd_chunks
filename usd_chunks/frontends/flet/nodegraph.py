@@ -348,6 +348,7 @@ class GraphView:
             self.status = (f"cannot connect {self.selected.name} "
                            f"({self.selected.port_type}) to {port.name} ({port.port_type})")
         else:
+            self._recook()
             self.stage.GetRootLayer().Save()
             self.status = (f"connected {self.selected.name} -> {port.name}"
                            + (f" (expression refused: {change.expression_error})"
@@ -364,6 +365,7 @@ class GraphView:
             return self.open_create_menu(x, y)
         change = chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
         if change.edges_dirty:
+            self._recook()
             self.stage.GetRootLayer().Save()
             self.status = f"disconnected {port.name}"
             self.reload()
@@ -471,6 +473,7 @@ class GraphView:
             to_usd=lambda rel_x, rel_y: self._layout_to_usd(x + rel_x, y + rel_y),
             nest=self._nest_target(), chunks=self.chunks)
 
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
@@ -493,6 +496,7 @@ class GraphView:
             self.status = "nothing to group"
             return self.refresh()
 
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
@@ -608,6 +612,7 @@ class GraphView:
         # The second replaces B's old input from A, which is what makes it a splice rather
         # than a second wire into B.
         chunk_graph.connect(self.stage, my_out, b_in, self.chunks)
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.status = "spliced into the wire"
         self.reload()
@@ -664,6 +669,7 @@ class GraphView:
             for edge in list(self.edges):
                 if edge.is_exec and edge.src_node_path == path:
                     chunk_stage.connect_exec(self.stage, self.scene, source, edge.dst_node_path)
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.status = f"disconnected {path.rsplit('/', 1)[-1]}"
         self.reload()
@@ -755,6 +761,16 @@ class GraphView:
             if slot:
                 found[slot] = path
         return found
+
+    def _recook(self) -> None:
+        """After a wire, delete, create or paste: recook to what drives this context.
+
+        Only what the active view or Output reaches cooks; chunk_graph.recook_active
+        unblocks and cooks what an edit brought into reach and blocks what it took out.
+        Before a save, so what the recook authors is saved with the edit.
+        """
+        if failed := chunk_graph.recook_active(self.stage, self.scene, self.context, self.chunks):
+            self.status = failed
 
     def set_active_slot(self, slot: int):
         """Switch which view drives execution, and recook for it.
@@ -871,6 +887,7 @@ class GraphView:
             self.status = "nothing selected"
             return self.refresh()
         chunk_graph.delete_chunks(chunks)
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.selected_nodes = set()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
@@ -945,6 +962,7 @@ class GraphView:
         if error:
             self.status = error
         if created:
+            self._recook()
             self.stage.GetRootLayer().Save()
             self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
             self.status = f"created {created[0].name}"
@@ -1032,6 +1050,7 @@ class GraphView:
                     self.status = (f"cannot connect {source.name} ({source.port_type}) "
                                    f"to {target.name} ({target.port_type})")
                 else:
+                    self._recook()
                     self.stage.GetRootLayer().Save()
                     self.status = (f"connected {source.name} -> {target.name}"
                                    + (f" (expression refused: {change.expression_error})"

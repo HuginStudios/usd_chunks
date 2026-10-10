@@ -424,6 +424,23 @@ def iter_drawable(chunk, include_hidden: bool = False, _depth: int = 0):
         yield param
 
 
+def declares(node, key: str) -> bool:
+    """Whether the node's own class has a field for `key`.
+
+    Not `hasattr`: every Blender node already has `width`, `height`, `name`, `label`,
+    `location` and more. A lofted param named `width` wrote into the node's own width, and
+    its field showed the node's size (100) instead of the param.
+
+    Args:
+        node: The node.
+        key: The param's property key.
+
+    Returns:
+        True when the generated node class declares `key`.
+    """
+    return key in getattr(type(node), "__annotations__", {})
+
+
 def sync_to_node(node, chunk) -> None:
     """Copy param values chunk -> node, without triggering the write-back.
 
@@ -448,7 +465,7 @@ def sync_to_node(node, chunk) -> None:
             if value is None:
                 continue
             key = prop_key(param)
-            if key == param.name and hasattr(node, key):
+            if key == param.name and declares(node, key):
                 setattr(node, key, value)
             else:
                 # This CREATES the ID property for a lofted param or a list row. It used
@@ -552,7 +569,7 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     row = layout.row(align=True) if pinnable or searchable else layout
     drawn = False
     key = prop_key(param)
-    if key == param.name and hasattr(node, key) and getattr(param, "item_images", None) is not None:
+    if key == param.name and declares(node, key) and getattr(param, "item_images", None) is not None:
         # An ImageMenu: no dropdown. The picture of the current pick is the control --
         # clicking it opens a grid of every item's picture (the one large picture Blender
         # can make clickable) -- with the pick's name and the search beside it underneath.
@@ -564,7 +581,7 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
         row = col.row(align=True)
         row.label(text=param.value or "Nothing picked")
         drawn = True
-    elif key == param.name and hasattr(node, key):
+    elif key == param.name and declares(node, key):
         # No `text=` at all when the caller has no opinion: a declared property already
         # carries the param's label as its RNA name, and passing text="" would blank it.
         if text is None:
