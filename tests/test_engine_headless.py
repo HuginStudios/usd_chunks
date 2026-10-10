@@ -419,15 +419,23 @@ def test_a_chunk_created_beside_an_active_view_waits_until_it_is_wired(graph):
 
     # Not graph.make: its rename after creating is an edit, and this is about creating.
     (b,) = chunk.create_chunks(graph.module)
-
     assert ran == [], "created unwired, it cooks nothing"
     assert chunk_cook.is_cook_stale(b)
 
+    # What a frontend does after a create (Flet, ImGui and Blender's _recook, Qt's own):
+    # the recook blocks it, so an edit before it is wired does not cook it either.
+    chunks, _, _ = graph.view_state()
+    assert chunk_graph.recook_active(graph.stage, graph.scene, graph.context, chunks) == ""
+    b.get_param("p").value = 2.0
+    assert b.is_blocked() and b.name not in ran
+
     graph.wire_exec(a, b)
     chunk_stage.connect_exec(graph.stage, graph.scene, graph.path(b), graph.path(view))
-    chunk_stage.recook_for_view(graph.stage, graph.scene, ctx, view)
+    chunks, _, _ = graph.view_state()
+    assert chunk_graph.recook_active(graph.stage, graph.scene, graph.context, chunks) == ""
 
     assert ran.count(b.name) == 1, "wired to the view, it cooks"
+    assert not b.is_blocked()
 
 
 def test_a_chunk_created_where_nothing_drives_the_graph_cooks():
