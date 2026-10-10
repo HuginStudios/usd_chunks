@@ -1010,6 +1010,12 @@ def test_the_operator_registers_and_takes_the_transform_keys():
     assert not gz.USDCHUNKS_OT_transform.is_registered
 
 
+def test_the_transform_keys_live_in_the_object_mode_keymap():
+    """Blender checks "Object Mode" before "3D View", and its own G/R/S there took every
+    press: bound in "3D View", G in the viewport never reached this operator."""
+    assert gz._KEYMAP == ("Object Mode", "EMPTY")
+
+
 def test_the_pivot_dot_follows_the_driven_anchor(driven):
     view, xf, prim = driven
     desc = gz.placement_desc(prim, view)
