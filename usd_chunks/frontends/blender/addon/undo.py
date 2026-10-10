@@ -17,6 +17,10 @@ step Blender put back, writing each prim's spec back, and the chunk system follo
 follows any layer edit (the way usdview's usd-undo works). Cooked output is not recorded:
 it lives in each chunk's own layer and cooking makes it again.
 
+Scope (docs/adr/0003): only chunk prims are undone. An edit to a prim that is not a chunk
+-- scene data authored directly, another add-on or a script writing to the stage -- is
+not recorded; a host that needs that undone uses the C++ usd-undo plugin or its own.
+
 What a change costs is the prims it touched, not the layer: a scene authored into the root
 layer beside the chunks is never copied. The recorder has the shape of usd-undo's (record,
 move to a step) so that one could stand in for it where a native build ships.
