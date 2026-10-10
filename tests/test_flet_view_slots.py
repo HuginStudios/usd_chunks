@@ -18,6 +18,7 @@ pytest.importorskip("flet", reason="flet is an optional extra")
 import flet as ft  # noqa: E402
 
 from graph_fixtures import content_nodes, make_network  # noqa: E402
+from usd_chunks import chunk_cook  # noqa: E402
 from usd_chunks.frontends.flet import nodegraph as fg  # noqa: E402
 
 
@@ -149,3 +150,20 @@ class TestHeaderColour:
     def test_an_ordinary_node_keeps_the_plain_header(self, view):
         path = content_nodes(view)[0]
         assert view._header_colour(path, view.prims[path]) == fg.COL_NODE_HEADER
+
+
+class TestOnlyTheViewCooks:
+    def test_a_node_created_beside_the_view_is_held_until_wired(self, view):
+        """Only what the active view or Output reaches cooks. Flet recooks after a create
+        (chunk_graph.recook_active), as Qt does after every structural edit: a new node,
+        wired to nothing, comes out switched off -- not cooked, and not cooked by an edit
+        before it is wired either."""
+        entry = next(e for e in view.menu_entries()
+                     if e.module.module_name == "transform" and not getattr(e, "variant", None))
+        before = set(view.chunks)
+
+        view.create_chunk(entry, 900.0, 300.0)
+
+        (made,) = [view.chunks[p] for p in set(view.chunks) - before]
+        assert made.is_blocked()
+        assert chunk_cook.is_cook_stale(made), "never cooked"

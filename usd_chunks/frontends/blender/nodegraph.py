@@ -429,7 +429,7 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
 
     bl_idname = "usd_chunks.param_button"
     bl_label = "Chunk Action"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -457,7 +457,7 @@ class USDCHUNKS_OT_pin_prim(bpy.types.Operator):
 
     bl_idname = "usd_chunks.pin_prim"
     bl_label = "Pin Picked Prim"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -509,7 +509,7 @@ class USDCHUNKS_OT_pick_menu_item(bpy.types.Operator):
 
     bl_idname = "usd_chunks.pick_menu_item"
     bl_label = "Pick"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     tree_name: bpy.props.StringProperty(options={"HIDDEN"})
     node_path: bpy.props.StringProperty(options={"HIDDEN"})
@@ -534,7 +534,7 @@ class USDCHUNKS_OT_search_menu(bpy.types.Operator):
 
     bl_idname = "usd_chunks.search_menu"
     bl_label = "Search"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
     # invoke_search_popup searches the property bl_property names.
     bl_property = "item"
 
@@ -600,7 +600,7 @@ class USDCHUNKS_OT_revert_override(bpy.types.Operator):
 
     bl_idname = "usd_chunks.revert_override"
     bl_label = "Revert Override"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     param_name: bpy.props.StringProperty()
@@ -627,7 +627,7 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
 
     bl_idname = "usd_chunks.list_resize"
     bl_label = "Resize List"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     node_path: bpy.props.StringProperty()
     list_name: bpy.props.StringProperty()
@@ -847,6 +847,7 @@ def _reload_after_connect(view) -> None:
     has fully returned and it is safe.
     """
     if active_view() is view:
+        view._recook()
         view.reload()
     return None
 
@@ -1260,7 +1261,17 @@ class BlenderGraphView:
         removed = chunk_graph.delete_chunks(chosen)
         self.selected_nodes = set()
         self.status = f"deleted {removed}"
+        self._recook()
         self.reload()
+
+    def _recook(self) -> None:
+        """After a wire, delete, create or paste: recook to what drives this context.
+
+        Only what the active view or Output reaches cooks; chunk_graph.recook_active
+        unblocks and cooks what an edit brought into reach and blocks what it took out.
+        """
+        if failed := chunk_graph.recook_active(self.stage, self.scene, self.context, self.chunks):
+            self.status = failed
 
     def toggle_disable_selected(self) -> None:
         """Flip DISABLED. A disabled chunk stays visible -- muted, in Blender's terms."""
@@ -1339,6 +1350,7 @@ class BlenderGraphView:
             chunks=self.chunks)
 
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self._recook()
         self.reload()
         self.set_selection({chunk_stage.get_chunk_prim_path(c) for c in made.values()})
         self.status = f"pasted {len(made)}"
@@ -1372,6 +1384,7 @@ class BlenderGraphView:
             self.status = "nothing to group"
             return
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self._recook()
         self.reload()
         self.set_selection([group_path] if group_path in self.prims else ())
         self.status = f"grouped {count}"
@@ -1403,6 +1416,7 @@ class BlenderGraphView:
         landed = made[0].rsplit("/", 1)[0]
         if landed != self.context:
             self.context = landed
+        self._recook()
         self.reload()
 
         self.set_selection(set(made))
@@ -1423,6 +1437,7 @@ class BlenderGraphView:
         self.selected_nodes = set()
         self.status = f"in {path.rsplit('/', 1)[-1]}"
         self.reload()
+        self._cook_shown_graph()
 
     def dive_out(self) -> None:
         """Back up to the enclosing graph.
@@ -1439,8 +1454,26 @@ class BlenderGraphView:
         inner, self.context = self.context, parent
         self.selected_nodes = set()
         self.reload()
+        self._cook_shown_graph()
         if inner in self.prims:
             self.set_selection([inner])
+
+    def _cook_shown_graph(self) -> None:
+        """Cook for the graph now on screen, with Qt's recook_focus.
+
+        Inside a group that keeps the group's upstream, cooks the group's own chain and
+        mutes what is downstream of it; back out, the outer graph cooks again. Without it a
+        dive changed only the tree, and the viewport kept showing the outer graph's cook.
+        """
+        context_chunk = chunk_graph.context_chunk(self.scene, self.chunks, self.context)
+        slot = self.active_slot()
+        view_chunk = (chunk_stage.find_view_chunk_for_slot(
+            slot, self.stage, self.scene, context_chunk) if slot else None)
+        try:
+            chunk_stage.recook_focus(self.stage, self.scene, context_chunk, view_chunk)
+        except Exception as exc:  # noqa: BLE001 - a chunk's own code can raise anything
+            logger.exception("recook failed after changing graph")
+            self.status = f"recook failed: {type(exc).__name__}"
 
     # -- views -------------------------------------------------------------
 
@@ -1452,9 +1485,21 @@ class BlenderGraphView:
 
         Resolve BEFORE writing: writing first persisted a slot with no view behind it, so
         the attribute said 3, nothing cooked, and the file carried that to the next open.
+        Slot 0 is the Output, and is refused in a graph with none, as Qt refuses it: it
+        would cook nothing.
         """
+        if slot == 0 and not chunk_stage.graph_outputs(
+                self.stage, self.scene,
+                chunk_graph.context_chunk(self.scene, self.chunks, self.context)):
+            self.status = "no Output in this graph"
+            return
         changed, self.status = chunk_graph.activate_view_slot(
             self.stage, self.scene, self.context, self.chunks, slot)
+        if changed and not self.status.startswith("recook failed"):
+            # Named as the key and the node show it, not by the stored slot: pressing 2
+            # and reading "view 1 active" looked like the wrong view had been picked.
+            self.status = ("Output active" if slot == 0
+                           else f"View {chunk_graph.view_number(slot)} active")
         if changed:
             self.reload()
 
@@ -1479,7 +1524,7 @@ class BlenderGraphView:
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_active_slot(slot)
-        self.status = f"view {slot}"
+        self.status = f"View {chunk_graph.view_number(slot)}"
 
     # -- layout ------------------------------------------------------------
 
@@ -1620,7 +1665,7 @@ class USDCHUNKS_OT_add_node(bpy.types.Operator):
 
     bl_idname = "usd_chunks.add_node"
     bl_label = "Add Chunk"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     entry_index: bpy.props.IntProperty(default=-1)
 

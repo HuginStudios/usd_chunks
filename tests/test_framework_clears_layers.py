@@ -17,7 +17,7 @@ These run through the real dispatch and the scripting Scene, the way a session d
 from __future__ import annotations
 
 import pytest
-from pxr import Sdf
+from pxr import Sdf, Tf, Usd
 
 from usd_chunks import Scene, chunk_cook, chunk_registry, chunk_stage
 from usd_chunks.chunk_core import ChunkConfig
@@ -147,6 +147,86 @@ def test_recook_for_view_cooks_a_stale_chunk_and_everything_below_it(monkeypatch
 
         assert counts == {a.name: 1, b.name: 1}
         assert not chunk_cook.is_cook_stale(a) and not chunk_cook.is_cook_stale(b)
+
+
+def _record_mutes(stage):
+    """The layer identifiers really muted on stage from here on, and the listener to keep."""
+    muted: list = []
+
+    def heard(notice, sender):
+        muted.extend(notice.GetMutedLayers())
+
+    def heard_here(notice, sender):
+        # A cook stage mutes the layers it hides too; only the scene's own stage counts.
+        if not chunk_cook.is_cook_stage(sender):
+            heard(notice, sender)
+
+    # Tf holds the callback weakly: it is returned with the listener to keep it alive.
+    listener = Tf.Notice.RegisterGlobally(Usd.Notice.LayerMutingChanged, heard_here)
+    return muted, (listener, heard_here)
+
+
+def test_appending_to_a_chain_cooks_the_new_node_without_hiding_the_chain(monkeypatch):
+    """Every chunk above the new tail is clean. Muting each one and revealing it again
+    recomposed the stage, and had the viewport rebuild all of it, once per chunk on every
+    drop at the end of a long chain."""
+    with Scene() as scene:
+        a = scene.create.prim(primpath_location="/a")
+        b = scene.create.prim(a, primpath_location="/b")
+        stage = a.get_stage()
+        chunk_stage.recook_for_view(stage, scene, None, scene.create.view(b))
+
+        tail = scene.create.prim(b, primpath_location="/tail")
+        view = scene.create.view(tail)
+        # A dropped node has not cooked yet; the scripting create already ran it.
+        chunk_cook.mark_cook_stale(tail)
+        lm = chunk_registry.ChunkLayerManager()
+        counts = _count_cooks(monkeypatch, tail)
+        muted, _listener = _record_mutes(stage)
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        assert counts == {tail.name: 1}
+        assert lm.get_layer(a).identifier not in muted
+        assert lm.get_layer(b).identifier not in muted
+        assert all(stage.GetPrimAtPath(p).IsValid() for p in ("/a", "/b", "/tail"))
+
+
+def test_a_stale_chunk_hides_only_itself_and_what_is_below_it(monkeypatch):
+    """What is above the first stale chunk holds its result and stays visible; from the
+    stale one down, layers are hidden and revealed at their turn, so a cook never reads a
+    downstream chunk's old result."""
+    with Scene() as scene:
+        a = scene.create.prim(primpath_location="/a")
+        b = scene.create.prim(a, primpath_location="/b")
+        c = scene.create.prim(b, primpath_location="/c")
+        view = scene.create.view(c)
+        stage = a.get_stage()
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        chunk_cook.mark_cook_stale(b)
+        lm = chunk_registry.ChunkLayerManager()
+        counts = _count_cooks(monkeypatch, b, c)
+        muted, _listener = _record_mutes(stage)
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        assert counts == {b.name: 1, c.name: 1}
+        assert lm.get_layer(a).identifier not in muted
+        assert {lm.get_layer(b).identifier, lm.get_layer(c).identifier} <= set(muted)
+        assert all(stage.GetPrimAtPath(p).IsValid() for p in ("/a", "/b", "/c"))
+
+
+def test_a_recook_with_nothing_stale_mutes_nothing():
+    with Scene() as scene:
+        a = scene.create.prim(primpath_location="/a")
+        b = scene.create.prim(a, primpath_location="/b")
+        view = scene.create.view(b)
+        stage = a.get_stage()
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        muted, _listener = _record_mutes(stage)
+        chunk_stage.recook_for_view(stage, scene, None, view)
+
+        assert muted == []
 
 
 def test_recook_for_view_does_not_execute_a_chunk_with_nothing_to_cook(monkeypatch):

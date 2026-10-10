@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk, chunk_registry, chunk_stage
+from usd_chunks import chunk, chunk_cook, chunk_registry, chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.graph import engine as chunk_graph
@@ -396,6 +396,57 @@ def test_a_locked_node_does_not_move(graph):
 
 def _context_chunk(graph):
     return graph.scene.get_context_for_prim_path(graph.context)
+
+
+def _count_executes(graph) -> list:
+    """The chunks graph's stub module runs execute() on, from here on, in order."""
+    ran = []
+    module = chunk_registry.ChunkRegistry().get_chunk_module(graph.module).module
+    module.execute = lambda node: ran.append(node.name)
+    return ran
+
+
+def test_a_chunk_created_beside_an_active_view_waits_until_it_is_wired(graph):
+    """Only what the active view or Output reaches cooks. A new node is wired to nothing,
+    so creating it cooks nothing -- not only when a frontend blocked it first."""
+    a = graph.make("a")
+    ctx = _context_chunk(graph)
+    slot = chunk_graph.ensure_default_view(graph.stage, graph.scene, ctx)
+    graph.stage.GetPrimAtPath(graph.context).CreateAttribute(
+        "chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(slot)
+    view = chunk_stage.find_view_chunk_for_slot(slot, graph.stage, graph.scene, ctx)
+    ran = _count_executes(graph)
+
+    # Not graph.make: its rename after creating is an edit, and this is about creating.
+    (b,) = chunk.create_chunks(graph.module)
+    assert ran == [], "created unwired, it cooks nothing"
+    assert chunk_cook.is_cook_stale(b)
+
+    # What a frontend does after a create (Flet, ImGui and Blender's _recook, Qt's own):
+    # the recook blocks it, so an edit before it is wired does not cook it either.
+    chunks, _, _ = graph.view_state()
+    assert chunk_graph.recook_active(graph.stage, graph.scene, graph.context, chunks) == ""
+    b.get_param("p").value = 2.0
+    assert b.is_blocked() and b.name not in ran
+
+    graph.wire_exec(a, b)
+    chunk_stage.connect_exec(graph.stage, graph.scene, graph.path(b), graph.path(view))
+    chunks, _, _ = graph.view_state()
+    assert chunk_graph.recook_active(graph.stage, graph.scene, graph.context, chunks) == ""
+
+    assert ran.count(b.name) == 1, "wired to the view, it cooks"
+    assert not b.is_blocked()
+
+
+def test_a_chunk_created_where_nothing_drives_the_graph_cooks():
+    """A graph with no view and no Output is not view-driven -- a script building one --
+    and a chunk created in it cooks straight away, as it always has."""
+    graph = _Graph()
+    ran = _count_executes(graph)
+
+    (a,) = chunk.create_chunks(graph.module)
+
+    assert ran == [a.name]
 
 
 def test_a_fresh_context_gets_a_view_on_the_tail_of_its_chain(graph):

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from pxr import Tf, Usd, Gf, Sdf, UsdGeom
+from pxr import Plug, Tf, Usd, Gf, Sdf, UsdGeom
 from pxr.Usdviewq.plugin import PluginContainer
 from pxr.Usdviewq import usdviewApi as UsdviewModule
 from pxr.Usdviewq.qt import QtCore, QtGui
@@ -15,10 +15,14 @@ from usd_chunks import chunk_notice, chunk_registry, chunk_scene, configure_logg
 from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks.frontends.qt import window_state as chunk_window_state
 from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
+from usd_chunks.frontends.qt import undo as chunk_qt_undo
 from usd_chunks import chunk_stage
 
 
 logger = logging.getLogger(__name__)
+
+#: The C++ usd-undo plugin's usdview plug-in. When it is loaded it owns Ctrl+Z.
+_USD_UNDO_PLUGIN = "undo.plugins.usdview"
 
 
 def _prim_clipping(prim):
@@ -581,8 +585,32 @@ class ChunksPluginContainer(PluginContainer):
         )
 
         launch_chunks(plugCtx)
+        self._register_undo(plugRegistry, plugCtx)
+
+    def _register_undo(self, plugRegistry, usdviewApi) -> None:
+        """Edit > Undo / Redo for chunk edits (docs/undo.md) -- unless usd-undo is loaded.
+
+        Both would claim Ctrl+Z in the Edit menu, and Qt fires neither of two actions that
+        share a shortcut. usd-undo undoes every edit, chunks' included, so it wins.
+        """
+        self._undo = None
+        if Plug.Registry().GetPluginWithName(_USD_UNDO_PLUGIN) is not None:
+            logger.info("usd-undo is loaded: it owns Ctrl+Z, usd_chunks adds no undo")
+            return
+        self._undo, self._undo_watcher = chunk_qt_undo.install(usdviewApi.stage)
+        usdviewApi.dataModel.signalStageReplaced.connect(  # type: ignore
+            lambda: self._undo.retrack(usdviewApi.stage))
+        self._undoCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.undo", "Undo", lambda _api: self._undo.undo())
+        self._redoCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.redo", "Redo", lambda _api: self._undo.redo())
 
     def configureView(self, plugRegistry, plugUIBuilder) -> None:
+        if getattr(self, "_undo", None) is not None:  # unset if registerPlugins failed early
+            edit = plugUIBuilder.findOrCreateMenu("Edit")
+            edit.addItem(self._undoCommand, "Ctrl+Z")
+            edit.addItem(self._redoCommand, "Ctrl+Shift+Z")
+            edit.addSeparator()
         menu = plugUIBuilder.findOrCreateMenu("Chunks")
         menu.addItem(self._openModuleSettingsCommand)
         menu.addItem(self._importChunkCommand)
