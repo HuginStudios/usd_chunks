@@ -1505,7 +1505,8 @@ def _create_chunk_at_tail(module_name: str):
     # (child-count * step) counts a view as a child, so an auto-created node is placed by how
     # many prims happen to exist rather than by where it sits in the chain -- which is how it
     # ends up stacked behind the view instead of after the chunk it was wired onto.
-    chunk_stage._create_node_pos = _position_after_tail(scene)
+    tail = _tail_for_new_chunk(scene)
+    chunk_stage._create_node_pos = _position_after(tail)
     try:
         scene.add_chunk(chunk)
     finally:
@@ -1513,8 +1514,25 @@ def _create_chunk_at_tail(module_name: str):
         chunk_stage._pin_new_chunks = prev_pin
         chunk_stage._create_node_pos = prev_pos
 
+    # The Params-tab create leaves an Output where the user wired it. Nobody wired this
+    # chunk, though: left there, the Output still took the old tail and the drag's chunk
+    # dangled after it, delivering nothing. It goes between the tail and the Output.
+    if tail is not None and _chained_onto(chunk, tail):
+        chunk_stage.ChunkStageSync()._rewire_views_from_source(tail, chunk, outputs=True)
+
     _nudge_downstream_views(chunk)
     return chunk
+
+
+def _chained_onto(chunk: core.ChunkBase, upstream: core.ChunkBase) -> bool:
+    """True if `chunk`'s exec input is wired to `upstream`."""
+    stage = getattr(chunk_stage.ChunkStageSync(), "_stage", None)
+    prim = _chunk_prim(stage, chunk) if stage is not None else None
+    up_prim = _chunk_prim(stage, upstream) if stage is not None else None
+    if prim is None or up_prim is None:
+        return False
+    return any(c.GetPrimPath() == up_prim.GetPath()
+               for c in chunk_stage.exec_input_connections(prim))
 
 
 def _node_pos(prim: Usd.Prim) -> tuple[float, float] | None:
@@ -1528,11 +1546,8 @@ def _node_pos(prim: Usd.Prim) -> tuple[float, float] | None:
     return (float(value[0]), float(value[1]))
 
 
-def _position_after_tail(scene) -> tuple[float, float] | None:
-    """One step right of the chunk the new node is about to be chained onto.
-
-    None means "no opinion" -- the caller's default placement then applies, which is right
-    when there is no tail to sit after.
+def _tail_for_new_chunk(scene) -> core.ChunkBase | None:
+    """The chunk a new node is about to be chained onto, or None.
 
     Takes the context off the *scene*, not off the chunk. The chunk has not been added yet,
     so `chunk.get_context()` is still None and the tail lookup silently finds nothing --
@@ -1552,15 +1567,24 @@ def _position_after_tail(scene) -> tuple[float, float] | None:
         # the chunk it was being chained onto.
         peek = getattr(scene, "peek_root_context", None)
         context = peek() if peek else None
-    tail = sync._find_dag_tail(context)
-    if tail is None:
+    return sync._find_dag_tail(context)
+
+
+def _position_after(tail: core.ChunkBase | None) -> tuple[float, float] | None:
+    """One step right of `tail`, where the node chained onto it goes.
+
+    None means "no opinion" -- the caller's default placement then applies, which is right
+    when there is no tail to sit after.
+    """
+    stage = getattr(chunk_stage.ChunkStageSync(), "_stage", None)
+    if tail is None or stage is None:
         return None
     pos = _node_pos(_chunk_prim(stage, tail))
     return None if pos is None else (pos[0] + chunk_stage._NODE_STEP, pos[1])
 
 
 def _nudge_downstream_views(chunk: core.ChunkBase) -> None:
-    """Move any view that just got repointed onto `chunk` out from under it.
+    """Move any view or Output that just got repointed onto `chunk` out from under it.
 
     View-follows-tail rewires the view to consume the new chunk but leaves it where it was
     -- which is the slot the new node has just been placed in, so the two overlap.
@@ -1579,7 +1603,7 @@ def _nudge_downstream_views(chunk: core.ChunkBase) -> None:
         return
     target_x = pos[0] + chunk_stage._NODE_STEP
     for candidate in scene.get_chunks():
-        if not chunk_stage.is_view_chunk(candidate):
+        if not (chunk_stage.is_view_chunk(candidate) or chunk_stage.is_output_chunk(candidate)):
             continue
         view_prim = _chunk_prim(stage, candidate)
         if view_prim is None:
