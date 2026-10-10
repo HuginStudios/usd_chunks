@@ -5145,6 +5145,10 @@ def recook_for_view(
         # the pattern the disable path already uses.
         if layer is None:
             return
+        # Already so: a stage mute sends its notices and recomposes even when it changes
+        # nothing, and every listener -- the host's viewport among them -- hears it.
+        if stage.IsLayerMuted(layer.identifier) == muted:
+            return
         if muted:
             stage.MuteLayer(layer.identifier)
         else:
@@ -5174,6 +5178,26 @@ def recook_for_view(
         if _synthetic_tail:
             cook_list.append(view_chunk)
         cook_set = set(cook_list)
+
+    def will_cook(c: core.ChunkBase) -> bool:
+        # The execute loop's own test, below, read ahead of it.
+        if is_group_chunk(c):
+            return _force or chunk_cook.is_cook_stale(c)
+        return (not c.has_state(disabled) and c.can_cook()
+                and ((_force and in_context(c)) or chunk_cook.is_cook_stale(c)))
+
+    # The chunks ahead of the first one that cooks: nothing above them changes in this pass,
+    # so the result their layers hold is the one they would show at their turn anyway. They
+    # stay visible instead of being muted and revealed again, which recomposed the stage --
+    # and had the viewport rebuild everything they author -- once per chunk on every wire,
+    # view switch and drop, however little changed. Appending a node to the end of a long
+    # chain cooks that node alone.
+    fresh: set = set()
+    for c in cook_list:
+        if will_cook(c):
+            break
+        if not is_group_chunk(c) and not c.has_state(disabled):
+            fresh.add(id(c))
 
     # Block/mute leaf nodes by cook membership (blocking non-cook chunks first means the
     # ObjectsChanged from muting can't re-execute them). Groups are NEVER blocked as a node -- a
@@ -5246,12 +5270,17 @@ def recook_for_view(
         layer = lm.get_layer(c)
         if layer is not None and layer.identifier not in seen_idents:
             seen_idents.add(layer.identifier)
-            mute_idents.append(layer.identifier)
+            # Visited in cook_list order, so a layer a fresh chunk shares with one further
+            # down stays visible -- as it would have from the fresh chunk's turn anyway.
+            if id(c) not in fresh:
+                mute_idents.append(layer.identifier)
 
     # One recomposition for the whole "hide every non-view leaf" pass -- each stage.MuteLayer
     # recomposes the stage, so muting N leaves one at a time was N recompositions on every view
     # switch. All set_blocked() calls above run first, so the block-before-mute ordering the
     # comment relies on holds even more strictly (every block precedes the single mute).
+    # Only the ones not muted already: a call that changes nothing still recomposes.
+    mute_idents = [ident for ident in mute_idents if not stage.IsLayerMuted(ident)]
     if mute_idents:
         stage.MuteAndUnmuteLayers(mute_idents, [])
 
