@@ -375,16 +375,15 @@ def test_import_as_sublayer_creates_prefilled_node(graph, tmp_path) -> None:
     assert list(edit_layer.subLayerPaths) == [str(scene_path)]
 
 
-def test_import_as_sublayer_writes_sublayer_paths_even_with_an_active_view(graph, tmp_path) -> None:
-    """Regression: reported live -- dropping a scene file onto a graph tab that ALREADY had
-    an active view produced a Sublayer node with the path visibly in its field but
-    subLayerPaths never actually written (an "empty sublayer"). Root cause: _import_as_sublayer
-    used to block the new chunk whenever view_exists (mirroring _materialize_at's Create-Layer
-    guard), but chunk_notice.py's data_changed/send_self return early while ANY ancestor in the
-    owner chain is_blocked() -- so the ATTRIBUTE_CHANGED notice that drives Sublayer's own
-    add_callback handler (the thing that actually authors subLayerPaths) never fired at all.
-    My other, otherwise-passing sublayer test didn't catch this because it ran before any
-    view existed yet, when the (now-removed) blocking condition was never true."""
+def test_import_as_sublayer_writes_sublayer_paths_once_wired_with_an_active_view(graph, tmp_path) -> None:
+    """A Sublayer dropped next to an active view is wired to nothing, so it neither cooks
+    nor runs its path callback: writing the file in only for the recook to hide it again had
+    the viewport load the whole file to throw it away.
+
+    Regression this still guards: reported live -- a dropped Sublayer showed the path in its
+    field but never brought the file in (an "empty sublayer"). Blocked, its callback does not
+    run; what brings the file in is execute(), which the chunk -- still stale -- runs once it
+    is wired to the view."""
     qapp, reg, scene, docker = graph
     _, gv, _, nodes = _make_nodes(graph)  # forces a tab (and its graph view) to exist
     (existing,) = nodes
@@ -406,19 +405,27 @@ def test_import_as_sublayer_writes_sublayer_paths_even_with_an_active_view(graph
     row = sub.get_param("imports").get_indexed_param("sublayer_path", 0)
     assert row.value == str(scene_path)
 
-    edit_layer = sub.get_edit_context()
+    stage = gv.scene()._stage
+    edit_layer = chunk_registry.ChunkLayerManager().get_layer(sub)
     assert edit_layer is not None
-    assert list(edit_layer.subLayerPaths) == [str(scene_path)]
+    assert list(edit_layer.subLayerPaths) == [], "an unwired drop must not bring the file in"
+    assert chunk_cook.is_cook_stale(sub)
 
     # Regression: reported live separately -- a dropped, deliberately-unconnected Sublayer's
-    # content still rendered in the viewport. Its subLayerPaths write persists once authored
-    # (unlike a reserved-execute()-driven chunk's content, which just never gets authored at
-    # all while blocked), so hiding it needs an actual mute -- which only happens as a side
-    # effect of a real recook_for_view pass. _import_as_sublayer must force one when a view
-    # already exists, since this new node is never going to trigger one on its own (no wire
-    # event ever touches it).
+    # content still rendered in the viewport.
     assert sub.is_blocked()
-    assert gv.scene()._stage.IsLayerMuted(edit_layer.identifier)
+    assert stage.IsLayerMuted(edit_layer.identifier)
+
+    # Wired between the existing node and its view, it cooks and brings the file in.
+    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(existing.chunk), get_chunk_prim_path(sub))
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(sub), get_chunk_prim_path(view))
+    gv._recook_active_view()
+    _pump(qapp, 0.3)
+
+    assert not stage.IsLayerMuted(edit_layer.identifier)
+    assert list(edit_layer.subLayerPaths) == [str(scene_path)]
+    assert stage.GetPrimAtPath("/geo").IsValid()
 
 
 def test_handle_dropped_file_prompts_for_plain_scene_without_a_chunks_option(graph, tmp_path, monkeypatch) -> None:

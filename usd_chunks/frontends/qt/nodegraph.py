@@ -5378,28 +5378,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         the chunk's edit layer -- once the chunk has a live prim/edit_context, exactly matching
         how a hand-created Sublayer chunk picks up a path typed into its UI after creation.
 
-        Deliberately left UNBLOCKED while applying values, unlike _materialize_at/
-        _build_clip_node_from_prim's chunks: blocking suppresses ChunkNoticePropagator.
-        data_changed/send_self entirely (chunk_notice.py checks is_blocked() up the whole
-        owner chain), so a blocked chunk's ATTRIBUTE_CHANGED notice never fires at all --
-        meaning Sublayer's own add_callback handler (which is what actually authors
-        subLayerPaths) would simply never run, and the dropped path would sit in the field
-        with no effect. That blocking is right for a chunk
-        with real, parent-resolution-dependent side effects (e.g. Layer -- see
-        _materialize_at), but Sublayer's callback only ever writes into its OWN
-        already-established edit layer, so there's no equivalent hazard here to guard
-        against.
+        Blocked before the path is set, and not cooked until wired (_uncooked_until_wired).
+        Blocking suppresses ChunkNoticePropagator.data_changed/send_self (chunk_notice.py
+        checks is_blocked() up the whole owner chain), so Sublayer's own add_callback
+        handler does not author subLayerPaths now. That once left the dropped path sitting in
+        the field with no effect (an "empty sublayer"), when nothing cooked a blocked chunk
+        later. It does now: the chunk stays stale, and once wired the recook runs its
+        execute(), which applies the same paths. Writing them now instead brought the whole
+        file into the viewport only for the recook to hide it again.
 
-        BUT unlike a chunk whose content comes from the reserved execute() hook (which
-        genuinely never runs at all while blocked, so a blocked chunk's layer stays empty
-        regardless of mute state), Sublayer's content-bringing mechanism is this direct
-        subLayerPaths write -- once authored it composes and stays composed; a later
-        set_blocked(True) alone doesn't undo it. Hiding it while unwired (matching every
-        other kind of freshly created chunk's "stays inert until wired" behavior) needs an
-        actual mute, which only happens as a side effect of a real recook_for_view pass --
-        so if a view already exists here, explicitly force one after the write (live-
-        confirmed without this: a dropped, deliberately-unconnected Sublayer's content
-        still rendered in the viewport).
+        The recook below still runs when a view exists: it is what mutes the unwired node's
+        layer, so nothing it holds renders (live-confirmed without it: a dropped,
+        deliberately-unconnected Sublayer's content still rendered in the viewport).
         """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
@@ -5412,16 +5402,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
-                scene.creating_in(self._nest_target(context)):
-            for c in chunks:
-                scene.add_chunk(c)
-
-        list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
-        if list_group is not None:
-            list_group.size = 1
-            if row := list_group.get_indexed_param("sublayer_path", 0):
-                row.value = path
+        with self._uncooked_until_wired(chunks):
+            with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                    scene.creating_in(self._nest_target(context)):
+                for c in chunks:
+                    scene.add_chunk(c)
+            # Blocked before the path is set, so its callback does not sublayer the file in
+            # only for the recook below to hide it -- the viewport loading the whole file to
+            # throw it away. Nothing is lost: execute() applies the same paths, and the chunk
+            # stays stale until it is wired in and cooks.
+            primary.set_blocked(True)
+            list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
+            if list_group is not None:
+                list_group.size = 1
+                if row := list_group.get_indexed_param("sublayer_path", 0):
+                    row.value = path
 
         if view_exists:
             # recook_for_view (via _recook_active_view) sets c.set_blocked(c not in cook_set)
