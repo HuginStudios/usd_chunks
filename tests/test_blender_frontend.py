@@ -1075,6 +1075,57 @@ def test_an_undriven_pick_still_gets_a_dot(view):
         bg.set_picked_prim_paths([])
 
 
+@pytest.fixture
+def cup(view):
+    """Kitchen_set's shape: the prim has its own transform beneath the chunk's op, and the
+    geometry sits well away from the prim's origin."""
+    cup = UsdGeom.Xform.Define(view.stage, "/Cup")
+    cup.AddTranslateOp().Set(Gf.Vec3d(10, 0, 0))
+    body = UsdGeom.Cube.Define(view.stage, "/Cup/Body")
+    body.AddTranslateOp().Set(Gf.Vec3d(0, 4, 0))
+    desc = chunk_gizmo.ensure_transform_chunk(cup.GetPrim())
+    return view, desc, cup.GetPrim()
+
+
+def _world(prim):
+    return UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
+
+
+def test_the_pivot_sits_on_the_geometry_not_the_origin(cup):
+    view, desc, prim = cup
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0))
+
+
+def test_a_grab_keeps_what_is_beneath_the_chunk(cup):
+    """The chunk divides its upstream out of what it is given, so a grab that handed it
+    only its own TRS threw the cup by the inverse of the asset's transform."""
+    view, desc, prim = cup
+    local, parent = gz._anchor_matrices(view.stage, desc)
+    moved = gz.gesture_local(local, parent, Gf.Matrix4d().SetTranslate(Gf.Vec3d(1, 0, 0)))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, moved)
+    t = _world(prim).ExtractTranslation()
+    assert (t[0], t[1], t[2]) == pytest.approx((11.0, 0.0, 0.0))
+
+
+def test_a_turn_holds_the_middle_of_the_geometry_still(cup):
+    view, desc, prim = cup
+    centre = gz.anchor_world(view.stage, desc)
+    local, parent = gz._anchor_matrices(view.stage, desc)
+    spun = gz.about(centre, gz.turn((0.0, 0.0, 1.0), 1.5707963))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, gz.gesture_local(local, parent, spun))
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0), abs=1e-5)
+
+
+def test_a_scale_holds_the_middle_of_the_geometry_still(cup):
+    view, desc, prim = cup
+    centre = gz.anchor_world(view.stage, desc)
+    local, parent = gz._anchor_matrices(view.stage, desc)
+    grown = gz.about(centre, gz.stretch(2.0, (1.0, 0.0, 0.0)))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, gz.gesture_local(local, parent, grown))
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0), abs=1e-5)
+    assert _world(prim).Transform(Gf.Vec3d(1, 0, 0))[0] == pytest.approx(12.0)
+
+
 def test_bounds_picking_finds_the_prim_under_the_ray(view):
     """The GL-free fallback: Hydra's own pick raises on some builds (pending GL errors from
     whoever drew last), and this is what keeps clicking working there."""

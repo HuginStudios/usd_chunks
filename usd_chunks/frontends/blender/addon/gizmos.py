@@ -30,7 +30,7 @@ import gpu
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
-from pxr import Gf, UsdGeom
+from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks.frontends.blender import addon
@@ -45,6 +45,7 @@ _TRANSLATE, _ROTATE, _SCALE = "translate", "rotate", "scale"
 
 #: What the pivot dot looks like: Blender's own selected-origin orange, a few pixels wide.
 _DOT_COLOR = (1.0, 0.65, 0.15, 1.0)
+_DOT_OUTLINE = (0.0, 0.0, 0.0, 0.8)
 _DOT_SIZE = 9.0
 
 _draw_state = {"handle": None}
@@ -145,9 +146,26 @@ def _chunk_for(view, desc):
     return found or chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
 
 
+def _centre_world(prim, matrix: Gf.Matrix4d) -> Gf.Vec3d:
+    """The middle of what the prim draws, in world space, or its origin if it draws nothing.
+
+    Not the transform origin: Kitchen_set's props carry a transform on the group and its
+    exact inverse on the mesh, so a cup on a table has its origin at the world origin. A
+    pivot out there put the dot nowhere near the cup, and a grab -- which reads the mouse at
+    the pivot's depth -- threw it across the room. usdview's handle sits on the bbox centroid
+    for the same reason (usd_gizmos handler.updateGizmoPosition).
+    """
+    cache = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_, UsdGeom.Tokens.proxy,
+                                  UsdGeom.Tokens.render], useExtentsHint=True)
+    bound = cache.ComputeWorldBound(prim)
+    if bound.GetRange().IsEmpty():
+        return matrix.Transform(Gf.Vec3d(0, 0, 0))
+    return bound.ComputeCentroid()
+
+
 def anchor_world(stage, desc):
-    """Where the pivot is, in world space: the anchor's local-to-world with the chunk's
-    pivot applied when it has an opinion about one.
+    """Where the pivot is, in world space: the chunk's pivot when it has an opinion about
+    one, else the middle of the anchor's geometry.
 
     `offset` is a point in the anchor's OWN object space (contract §2), so it maps through
     the anchor's local-to-world rather than being added in world space.
@@ -162,9 +180,33 @@ def anchor_world(stage, desc):
     if not xf:
         return None
     matrix = xf.ComputeLocalToWorldTransform(0)
-    point = Gf.Vec3d(*desc.offset) if desc.offset is not None else Gf.Vec3d(0, 0, 0)
-    world = matrix.Transform(point)
+    if desc.offset is not None:
+        world = matrix.Transform(Gf.Vec3d(*desc.offset))
+    else:
+        world = _centre_world(anchors[0], matrix)
     return Vector((world[0], world[1], world[2]))
+
+
+def _anchor_matrices(stage, desc):
+    """The anchor's composed local transform and its parent's local-to-world, or None.
+
+    A `transform` handle hands the chunk the prim's whole LOCAL matrix -- the chunk divides
+    its upstream back out itself (transform.gizmo_changed) -- so a gesture is built on these
+    two rather than on the chunk's params.
+    """
+    if stage is None or desc is None or not desc.anchor:
+        return None
+    prim = stage.GetPrimAtPath(desc.anchor[0])
+    xf = UsdGeom.Xformable(prim) if prim and prim.IsValid() else None
+    if not xf:
+        return None
+    local = xf.GetLocalTransformation(Usd.TimeCode.Default())
+    if isinstance(local, tuple):
+        local = local[0]
+    parent = prim.GetParent()
+    parent_xf = UsdGeom.Xformable(parent) if parent and not parent.IsPseudoRoot() else None
+    parent_world = parent_xf.ComputeLocalToWorldTransform(0) if parent_xf else Gf.Matrix4d(1.0)
+    return Gf.Matrix4d(local), Gf.Matrix4d(parent_world)
 
 
 def parent_rotation(stage, desc) -> Matrix:
@@ -278,6 +320,40 @@ def scaled(values, axis, factor: float) -> list:
     return out
 
 
+def about(centre, linear: Gf.Matrix4d) -> Gf.Matrix4d:
+    """A world-space turn or scale that holds `centre` still."""
+    c = Gf.Vec3d(centre[0], centre[1], centre[2])
+    return Gf.Matrix4d().SetTranslate(-c) * linear * Gf.Matrix4d().SetTranslate(c)
+
+
+def turn(axis, radians: float) -> Gf.Matrix4d:
+    """A rotation about a world direction."""
+    return Gf.Matrix4d().SetRotate(
+        Gf.Rotation(Gf.Vec3d(axis[0], axis[1], axis[2]), radians * _DEG))
+
+
+def stretch(factor: float, axis=None) -> Gf.Matrix4d:
+    """Scale by `factor` along one world direction, or uniformly when there is none."""
+    if axis is None:
+        return Gf.Matrix4d().SetScale(Gf.Vec3d(factor, factor, factor))
+    a = Gf.Vec3d(axis[0], axis[1], axis[2]).GetNormalized()
+    # I + (f-1) a^T a: the part along `a` scaled, the rest untouched. Row-vector, like Gf.
+    rows = [[(1.0 if r == c else 0.0) + (factor - 1.0) * a[r] * a[c] for c in range(3)] + [0.0]
+            for r in range(3)]
+    return Gf.Matrix4d(*[v for row in rows for v in row], 0.0, 0.0, 0.0, 1.0)
+
+
+def gesture_local(start_local: Gf.Matrix4d, parent_world: Gf.Matrix4d,
+                  world_delta: Gf.Matrix4d) -> Gf.Matrix4d:
+    """The anchor's new local matrix after `world_delta` moves it in world space.
+
+    The prim keeps its place relative to the pivot, the way usdview's handle carries a
+    selection with an offset -- so a turn about the middle of a cup turns the cup there
+    rather than swinging it round its transform origin, wherever that happens to be.
+    """
+    return start_local * parent_world * world_delta * parent_world.GetInverse()
+
+
 # ---------------------------------------------------------------------------
 # reading and writing the chunk
 # ---------------------------------------------------------------------------
@@ -337,7 +413,7 @@ def write_components(desc, chunk, components) -> None:
 
 def pivot_point(stage, view):
     """Where to draw the dot, or None: the driven anchor if a chunk owns this prim, else
-    the prim's own origin -- a picked-but-undriven prim still gets a dot, since a gesture
+    the middle of the prim -- a picked-but-undriven prim still gets a dot, since a gesture
     on it creates the chunk that drives it and the dot is the only sign the click landed.
     """
     prim = _picked_prim(stage)
@@ -351,8 +427,16 @@ def pivot_point(stage, view):
     xf = UsdGeom.Xformable(prim)
     if not xf:
         return None
-    world = xf.ComputeLocalToWorldTransform(0).Transform(Gf.Vec3d(0, 0, 0))
+    world = _centre_world(prim, xf.ComputeLocalToWorldTransform(0))
     return Vector((world[0], world[1], world[2]))
+
+
+def _disc(centre, radius: float, segments: int = 24) -> list:
+    """A filled circle's TRI_FAN vertices in region pixels: the centre, then the rim."""
+    rim = [(centre[0] + radius * math.cos(2.0 * math.pi * i / segments),
+            centre[1] + radius * math.sin(2.0 * math.pi * i / segments))
+           for i in range(segments + 1)]
+    return [(centre[0], centre[1])] + rim
 
 
 def _draw_pivot():
@@ -362,13 +446,20 @@ def _draw_pivot():
     if point is None:
         return
     try:
+        # A triangle-fan disc in screen space, not a GL point: point shaders draw square
+        # on some backends whatever their name says, and a disc is round everywhere.
+        centre = view3d_utils.location_3d_to_region_2d(
+            bpy.context.region, bpy.context.region_data, point)
+        if centre is None:  # behind the view
+            return
         shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-        batch = batch_for_shader(shader, "POINTS", {"pos": [tuple(point)]})
         gpu.state.blend_set("ALPHA")
-        gpu.state.point_size_set(_DOT_SIZE)
         shader.bind()
-        shader.uniform_float("color", _DOT_COLOR)
-        batch.draw(shader)
+        # A dark rim under the orange, as Blender outlines a selected object's origin.
+        for size, color in ((_DOT_SIZE + 2.0, _DOT_OUTLINE), (_DOT_SIZE, _DOT_COLOR)):
+            batch = batch_for_shader(shader, "TRI_FAN", {"pos": _disc(centre, size / 2.0)})
+            shader.uniform_float("color", color)
+            batch.draw(shader)
         gpu.state.blend_set("NONE")
     except Exception:
         logger.debug("pivot dot draw failed", exc_info=True)
@@ -443,6 +534,10 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         # anchor's own for a local one (contract section 3 -- absent space means local).
         self._basis = (Matrix() if getattr(desc, "space", "local") == "world"
                        else self._to_local.inverted_safe())
+        # A transform handle moves the whole local matrix about the pivot; None for a
+        # component handle, which still writes its own vector.
+        self._matrices = (_anchor_matrices(stage, desc) if desc.type == "transform"
+                          else None)
         self._chunk.start_gizmo()
         context.window_manager.modal_handler_add(self)
         self.report({"INFO"},
@@ -468,7 +563,11 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
             _redraw()
             return {"FINISHED"}
         if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
-            write_components(self._desc, self._chunk, self._start)
+            if self._matrices is not None:
+                chunk_gizmo.apply_bindings(self._desc.chunk_prim, self._desc.name,
+                                           self._matrices[0])
+            else:
+                write_components(self._desc, self._chunk, self._start)
             self._chunk.stop_gizmo()
             _redraw()
             return {"CANCELLED"}
@@ -476,7 +575,11 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
 
     def _apply(self, event):
         mouse = Vector((event.mouse_region_x, event.mouse_region_y))
-        components = {kind: list(values) for kind, values in self._start.items()}
+        if self._matrices is not None:
+            self._apply_matrix(mouse)
+            _redraw()
+            return
+        components ={kind: list(values) for kind, values in self._start.items()}
         if self.mode == _TRANSLATE:
             delta = constrain(self._world_at(mouse) - self._start_world,
                               self._axis, self._basis)
@@ -491,6 +594,36 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
             components[_SCALE] = scaled(self._start[_SCALE], self._axis, factor)
         write_components(self._desc, self._chunk, components)
         _redraw()
+
+    def _apply_matrix(self, mouse):
+        """A transform handle's tick: the gesture as a world-space change about the pivot,
+        folded into the anchor's local matrix and handed to the chunk whole.
+
+        The chunk's own TRS alone would be wrong for any prim with a transform beneath the
+        chunk's op -- the chunk divides that upstream back out of what it is given, so it
+        has to be in there.
+        """
+        view_axis = -Vector(self._rv3d.view_matrix.col[2][:3])
+        axis = (Vector(self._basis.col[{"X": 0, "Y": 1, "Z": 2}[self._axis]][:3])
+                if self._axis is not None else None)
+        if self.mode == _TRANSLATE:
+            delta = constrain(self._world_at(mouse) - self._start_world,
+                              self._axis, self._basis)
+            world_delta = Gf.Matrix4d().SetTranslate(Gf.Vec3d(*delta))
+        elif self.mode == _ROTATE:
+            angle = screen_angle(self._pivot_2d, self._start_mouse, mouse)
+            if axis is None:
+                axis = view_axis
+            elif axis.dot(view_axis) < 0.0:
+                # Turn the way the mouse sweeps on screen, whichever way the axis faces.
+                axis = -axis
+            world_delta = about(self._pivot, turn(axis, angle))
+        else:
+            factor = screen_scale(self._pivot_2d, self._start_mouse, mouse)
+            world_delta = about(self._pivot, stretch(factor, axis))
+        local, parent_world = self._matrices
+        chunk_gizmo.apply_bindings(self._desc.chunk_prim, self._desc.name,
+                                   gesture_local(local, parent_world, world_delta))
 
 
 _CLASSES = (USDCHUNKS_OT_transform,)
@@ -540,7 +673,7 @@ def register() -> None:
             bpy.utils.register_class(cls)
     if _draw_state["handle"] is None:
         _draw_state["handle"] = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_pivot, (), "WINDOW", "POST_VIEW")
+            _draw_pivot, (), "WINDOW", "POST_PIXEL")
     _register_keymap()
 
 
