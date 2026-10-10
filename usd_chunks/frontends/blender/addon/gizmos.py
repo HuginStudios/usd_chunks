@@ -485,7 +485,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
 
     bl_idname = "usd_chunks.transform"
     bl_label = "Transform Chunk Prim"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     mode: bpy.props.EnumProperty(
         items=[(_TRANSLATE, "Translate", ""), (_ROTATE, "Rotate", ""), (_SCALE, "Scale", "")],

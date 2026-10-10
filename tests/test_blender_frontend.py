@@ -751,14 +751,6 @@ def test_every_bound_key_is_a_registered_chunk_operator():
         assert "usd_chunks." + verb in idnames, verb
 
 
-def test_no_chunk_operator_pushes_an_undo_step():
-    """Blender's undo restores the .blend and knows nothing about the stage, so an
-    operator that pushed a step only ever half-undid. None of them do; undo_post
-    rebuilds from USD instead."""
-    for cls in addon._CLASSES + bg._CLASSES:
-        assert "UNDO" not in getattr(cls, "bl_options", set()), cls.__name__
-
-
 def test_undo_re_derives_the_tree_from_usd(view):
     """What Blender's undo does to the tree -- here, a node it takes away -- is not what
     the model says, and the model wins."""
@@ -1639,6 +1631,117 @@ def test_the_brush_operator_registers_on_b():
     finally:
         br.unregister()
     assert not br.USDCHUNKS_OT_brush.is_registered
+
+
+# ---------------------------------------------------------------------------
+# undo: the network's chunk prims ride along with Blender's undo steps
+# ---------------------------------------------------------------------------
+
+from usd_chunks.frontends.blender.addon import undo as bundo  # noqa: E402
+
+
+@pytest.fixture
+def tracked(view):
+    bundo.track(view.tree, view.stage)
+    yield view
+    bundo.untrack()
+
+
+def _blender_undoes_to(view, step):
+    """What Ctrl+Z does: Blender puts an older step id back on the tree, then calls
+    undo_post."""
+    view.tree[bundo.STEP_KEY] = step
+    addon._on_undo(None)
+
+
+def test_a_change_records_only_the_chunk_prims_it_touched(tracked):
+    """A step holds the prims that changed, not the layer -- the cost of an edit is the
+    edit, however much else the root layer holds."""
+    view = tracked
+    move_path = _node(view, "Move").name
+    history = bundo.current_history()
+    view.chunks[move_path].get_param("tz").value = 7.0
+    assert view.tree[bundo.STEP_KEY] == history.key()
+    touched = {path for _layer, path, _old, _new in history.changes[history.current]}
+    assert touched == {Sdf.Path(move_path)}
+
+
+def test_undo_puts_a_param_edit_back(tracked):
+    view = tracked
+    move_path = _node(view, "Move").name
+    before = view.tree[bundo.STEP_KEY]
+    view.chunks[move_path].get_param("tz").value = 9.0
+    _blender_undoes_to(view, before)
+    assert view.chunks[move_path].get_param("tz").value == pytest.approx(3.0)
+
+
+def test_redo_puts_the_edit_back_again(tracked):
+    view = tracked
+    move_path = _node(view, "Move").name
+    before = view.tree[bundo.STEP_KEY]
+    view.chunks[move_path].get_param("tz").value = 9.0
+    after = view.tree[bundo.STEP_KEY]
+    _blender_undoes_to(view, before)
+    _blender_undoes_to(view, after)
+    assert view.chunks[move_path].get_param("tz").value == pytest.approx(9.0)
+
+
+def test_an_edit_after_an_undo_leaves_the_old_redo_reachable(tracked):
+    """Steps form a tree: Blender may hand back a step on a branch the network left (its
+    own redo, or a cook that recorded after the undo), and the walk goes through where the
+    two branches meet."""
+    view = tracked
+    move = view.chunks[_node(view, "Move").name]
+    start = view.tree[bundo.STEP_KEY]
+    move.get_param("tz").value = 5.0
+    five = view.tree[bundo.STEP_KEY]
+    _blender_undoes_to(view, start)
+    move.get_param("tz").value = 8.0
+    _blender_undoes_to(view, five)
+    assert move.get_param("tz").value == pytest.approx(5.0)
+
+
+def test_an_undo_step_from_before_recording_is_the_network_as_opened(tracked):
+    """Opening a .blend pushes its first undo step before the network is tracked, so that
+    step holds no id, or one an earlier session saved. Undoing to it undoes every edit."""
+    view = tracked
+    move = view.chunks[_node(view, "Move").name]
+    move.get_param("tz").value = 9.0
+    _blender_undoes_to(view, "deadbeef:1")
+    assert move.get_param("tz").value == pytest.approx(3.0)
+    move.get_param("tz").value = 9.0
+    del view.tree[bundo.STEP_KEY]
+    addon._on_undo(None)
+    assert move.get_param("tz").value == pytest.approx(3.0)
+
+
+def test_undo_brings_a_deleted_chunk_back(tracked):
+    view = tracked
+    move_path = _node(view, "Move").name
+    before = view.tree[bundo.STEP_KEY]
+    view.set_selection({move_path})
+    view.delete_selected()
+    assert move_path not in [n.name for n in view.tree.nodes]
+    _blender_undoes_to(view, before)
+    assert move_path in [n.name for n in view.tree.nodes]
+    assert move_path in {chunk_stage.get_chunk_prim_path(c) for c in view.scene.get_chunks()}
+
+
+def test_an_undo_step_with_the_same_network_changes_nothing(tracked):
+    """Most of Blender's undo steps are not ours (a camera move, a selection)."""
+    view = tracked
+    assert not bundo.restore(view.tree, view.stage)
+
+
+def test_the_operators_that_change_the_network_make_undo_steps():
+    """They used to push none: Blender's undo knew nothing about the stage, so a step only
+    ever half-undid. Now each step carries where the network was (undo.py)."""
+    undoable = [addon.USDCHUNKS_OT_open_network, addon.USDCHUNKS_OT_new_network,
+                bg.USDCHUNKS_OT_add_node, addon.USDCHUNKS_OT_delete, addon.USDCHUNKS_OT_paste,
+                addon.USDCHUNKS_OT_group, addon.USDCHUNKS_OT_set_view_slot,
+                gz.USDCHUNKS_OT_transform, br.USDCHUNKS_OT_brush]
+    assert all("UNDO" in op.bl_options for op in undoable)
+    assert "UNDO" not in addon.USDCHUNKS_OT_copy.bl_options
 
 
 # ---------------------------------------------------------------------------

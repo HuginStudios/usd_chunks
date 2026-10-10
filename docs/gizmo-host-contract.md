@@ -278,8 +278,11 @@ fix the cook.
 `GIZMO_START` → `GIZMO_CHANGED` (one per tick, after the write) → `GIZMO_STOP`.
 
 If your host has its own undo stack, open a block on START and close it on STOP. usdview
-and Kraken need none of this: `usd-undo` intercepts at `Sdf` level and coalesces a drag on
-its own, without caring whether a write came from a handle, a slider or a cook.
+needs none of this: `chunk_undo.UndoStack` (fed by `frontends/qt/undo.py`) makes one step
+of everything from a mouse press to the next input, so a drag is one undo whether its
+writes came from a handle, a slider or a cook. It undoes chunk prims only
+(docs/undo.md); with the C++ `usd-undo` plugin loaded, that one owns Ctrl+Z instead and
+coalesces at `Sdf` level, as it does in Kraken.
 
 ### Errors
 
