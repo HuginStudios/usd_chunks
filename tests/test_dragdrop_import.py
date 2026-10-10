@@ -9,7 +9,7 @@ from PySide6 import QtCore
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_stage
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_cook, chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
@@ -492,14 +492,12 @@ def test_import_as_reference_creates_prefilled_node(graph, tmp_path) -> None:
     assert prim.HasAuthoredReferences()
 
 
-def test_import_as_reference_authors_even_with_an_active_view(graph, tmp_path) -> None:
-    """Mirrors test_import_as_sublayer_writes_sublayer_paths_even_with_an_active_view:
-    Reference's real work runs on the reserved execute() hook, which a blocked chunk skips
-    entirely -- so if _import_as_reference blocked the chunk before setting file_path (the
-    way _materialize_at does for Layer), the reference would just never get
-    authored at all. It must stay unblocked while setting the value, then only get
-    blocked+muted afterward, as a side effect of the view recook that hides it for being
-    unconnected."""
+def test_import_as_reference_cooks_once_wired_with_an_active_view(graph, tmp_path) -> None:
+    """A Reference dropped next to an active view is wired to nothing, so it is held --
+    its layer muted before its file is set -- rather than cooked: cooking it composed the
+    whole asset in, for the viewport to load, only for the recook to hide it again. Its
+    file_path callback still suggests the location, it stays stale, and once it is wired
+    to the view it cooks and authors the reference."""
     qapp, reg, scene, docker = graph
     _, gv, _, nodes = _make_nodes(graph)  # forces a tab (and its graph view) to exist
     (existing,) = nodes
@@ -521,14 +519,28 @@ def test_import_as_reference_authors_even_with_an_active_view(graph, tmp_path) -
     prim_path = ref.get_param("primpath_location").value
     assert prim_path
 
-    edit_layer = ref.get_edit_context()
+    stage = gv.scene()._stage
+    edit_layer = chunk_registry.ChunkLayerManager().get_layer(ref)
     assert edit_layer is not None
-    assert edit_layer.GetPrimAtPath(prim_path) is not None, "execute() must have run before the mute"
+    assert edit_layer.GetPrimAtPath(prim_path) is None, "an unwired drop must not cook"
+    assert chunk_cook.is_cook_stale(ref)
 
-    # Regression-shaped guard: a dropped, deliberately-unconnected Reference must not render
-    # in the viewport either, same as the equivalent Sublayer case.
+    # A dropped, deliberately-unconnected Reference must not render in the viewport either,
+    # same as the equivalent Sublayer case.
     assert ref.is_blocked()
-    assert gv.scene()._stage.IsLayerMuted(edit_layer.identifier)
+    assert stage.IsLayerMuted(edit_layer.identifier)
+
+    # Wired between the existing node and its view, it cooks.
+    view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(existing.chunk), get_chunk_prim_path(ref))
+    chunk_stage.connect_exec(stage, scene, get_chunk_prim_path(ref), get_chunk_prim_path(view))
+    gv._recook_active_view()
+    _pump(qapp, 0.3)
+
+    assert not ref.is_blocked()
+    assert not stage.IsLayerMuted(edit_layer.identifier)
+    assert edit_layer.GetPrimAtPath(prim_path) is not None, "wired in, it must cook"
+    assert stage.GetPrimAtPath(prim_path).HasAuthoredReferences()
 
 
 def test_import_view_targets_imported_tail_not_unrelated_existing_node(graph) -> None:

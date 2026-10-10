@@ -11,6 +11,7 @@ import logging
 import os
 import time
 import weakref
+from contextlib import contextmanager
 from collections.abc import Iterable
 
 import shiboken6
@@ -18,6 +19,7 @@ from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
+from usd_chunks import chunk_cook
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
@@ -5458,16 +5460,36 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
-                scene.creating_in(self._nest_target(context)):
-            for c in chunks:
-                scene.add_chunk(c)
-
-        if file_param := primary.get_param("file_path"):
-            file_param.value = path
+        with self._uncooked_until_wired(chunks):
+            with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                    scene.creating_in(self._nest_target(context)):
+                for c in chunks:
+                    scene.add_chunk(c)
+            if file_param := primary.get_param("file_path"):
+                file_param.value = path
 
         if view_exists:
             self._recook_active_view()
+
+    @staticmethod
+    @contextmanager
+    def _uncooked_until_wired(chunks: list[core.ChunkBase]):
+        """Run the block's solves, but cook none of chunks: they are wired to nothing yet.
+
+        Only what the view or Output reaches cooks, and a dropped node is not reached until it
+        is wired. Cooked anyway, a Reference composed its whole asset in, for the viewport to
+        load, only for the recook that follows to hide it again -- on every drop.
+
+        Not blocked from the start: a blocked chunk hears nothing, and its param callbacks are
+        what fill it in (a Reference's location, from its file). Inside one solve the callbacks
+        run at once and the cooks wait for its end (chunk_cook.solving), so blocking the
+        chunks just before the end lets the callbacks run and has the cooks refused. Refused,
+        they stay stale, and cook when the node is wired in.
+        """
+        with chunk_cook.solving():
+            yield
+            for c in chunks:
+                c.set_blocked(True)
 
     def _import_as_script(self, path: str, scene_pos: QtCore.QPointF) -> None:
         """Drop-a-.py-file: a script_runner node at the drop point, running that file.
@@ -5487,13 +5509,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
-                scene.creating_in(self._nest_target(context)):
-            for c in chunks:
-                scene.add_chunk(c)
-
-        if file_param := primary.get_param("script_file"):
-            file_param.value = path
+        with self._uncooked_until_wired(chunks):
+            with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                    scene.creating_in(self._nest_target(context)):
+                for c in chunks:
+                    scene.add_chunk(c)
+            if file_param := primary.get_param("script_file"):
+                file_param.value = path
 
         if view_exists:
             self._recook_active_view()
