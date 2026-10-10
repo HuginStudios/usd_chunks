@@ -2243,6 +2243,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # it cooks only once wired in and unblocked by recook.
         if chunk.is_blocked():
             return
+        # Not blocked, but nothing drives it either: only what the view or Output reaches
+        # cooks, and a new node is wired to nothing yet. Not every frontend blocks a chunk it
+        # creates (paste and menu create in the engine do not), and cooked anyway, a pasted
+        # Reference composed its whole asset in for a recook to hide again. Left stale -- a
+        # chunk that never cooked is -- so it cooks once it is wired in.
+        if not reached_by_graph_driver(chunk, self._stage, self._scene):
+            return
 
         chunk.execute()
 
@@ -2791,6 +2798,40 @@ def graph_outputs(
         return strength.get(layer.identifier, len(strength)) if layer is not None else len(strength)
 
     return sorted(outputs, key=rank, reverse=True)
+
+
+def reached_by_graph_driver(
+    chunk: core.ChunkBase, stage: Usd.Stage, scene: chunk_scene.SceneSender
+) -> bool:
+    """Whether what drives chunk's graph reaches it, so that it is one the graph cooks.
+
+    The driver is the graph's active view, or with none active its Outputs -- what
+    recook_for_view cooks. A graph with neither a view nor an Output is not view-driven at
+    all (a script building one, a headless run), and everything in it cooks.
+
+    Args:
+        chunk: The chunk.
+        stage: The stage.
+        scene: The scene.
+
+    Returns:
+        True if chunk is in its graph's cook set, or its graph is not view-driven.
+    """
+    context = chunk.get_owner()
+    while context is not None and not (
+            isinstance(context, core.ChunkBase) and context.has_flag(ChunkFlags.GroupFlags.CONTEXT)):
+        context = context.get_owner()
+    views = [c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, context)]
+    outputs = graph_outputs(stage, scene, context)
+    if not views and not outputs:
+        return True
+    slot = None
+    if context is not None and (prim := stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))):
+        attr = prim.GetAttribute("chunk:activeView")
+        slot = attr.Get() if attr and attr.IsValid() else None
+    view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
+    drivers = [view] if view is not None else outputs
+    return any(chunk in view_cook_list(driver, stage, scene) for driver in drivers)
 
 
 def strongest_output(
