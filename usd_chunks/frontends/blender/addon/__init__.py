@@ -1105,9 +1105,10 @@ def _on_undo(scene, *_args) -> None:
     """Bring the network back to the undo step Blender just restored.
 
     Blender's undo restores the .blend -- the node tree, every RNA value on every node --
-    and knows nothing about the stage. undo.py keeps a copy of the network's root layer on
-    the tree, so the step Blender restored carries the network as it was at that step: put
-    the layer back from it, then rebuild the tree and cook the graph on screen. Without
+    and knows nothing about the stage. undo.py records each change to the network's chunk
+    prims and keeps the id of the step the network is at on the tree, so the step Blender
+    restored says where the network was: walk the chunk prims back (or forward) to it, then
+    rebuild the tree and cook the graph on screen. Without
     this, Ctrl+Z only rebuilt the tree from USD, so a param edit, a new node or a delete
     was never undone.
 
