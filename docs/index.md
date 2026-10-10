@@ -26,6 +26,8 @@ screen.
    interpreter before making it a module.
 9. [Making a chunk fast](fast-chunks.md): author specs in one change block, do the maths
    in numpy, and what doesn't help (threads).
+10. [Undo and redo](undo.md): what Ctrl+Z covers (chunk edits only, by design), on which
+    hosts, and what to use for the rest.
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does
 > the work, and `config()` holds details like its `description` and `category`.

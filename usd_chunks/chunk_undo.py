@@ -14,7 +14,7 @@ A host with its own undo stack stores only `History.key()` with each of its step
 there after an undo or redo (Blender: frontends/blender/addon/undo.py). A host without one
 uses `UndoStack`, which groups by user input (usdview and any Qt app: frontends/qt/undo.py).
 
-Scope (docs/adr/0003): only chunk prims are undone. An edit to a prim that is not a chunk
+Scope (docs/undo.md): only chunk prims are undone. An edit to a prim that is not a chunk
 -- scene data authored directly, another plugin or a script writing to the stage -- is not
 recorded; a host that needs that undone uses the C++ usd-undo plugin or its own.
 

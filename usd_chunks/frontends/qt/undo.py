@@ -5,7 +5,7 @@ watches the whole application for that input -- a mouse press, a key, the wheel 
 widget, the node graph and the viewport's gizmos are covered without a hook in each. The
 host binds the keys (usdview: its Edit menu, hosts/usdview).
 
-Only chunk prims are undone (docs/adr/0003); the C++ usd-undo plugin covers everything
+Only chunk prims are undone (docs/undo.md); the C++ usd-undo plugin covers everything
 else, and a host loads one or the other, never both.
 """
 from __future__ import annotations

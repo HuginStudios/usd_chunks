@@ -588,7 +588,7 @@ class ChunksPluginContainer(PluginContainer):
         self._register_undo(plugRegistry, plugCtx)
 
     def _register_undo(self, plugRegistry, usdviewApi) -> None:
-        """Edit > Undo / Redo for chunk edits (docs/adr/0003) -- unless usd-undo is loaded.
+        """Edit > Undo / Redo for chunk edits (docs/undo.md) -- unless usd-undo is loaded.
 
         Both would claim Ctrl+Z in the Edit menu, and Qt fires neither of two actions that
         share a shortcut. usd-undo undoes every edit, chunks' included, so it wins.

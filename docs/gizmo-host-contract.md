@@ -281,7 +281,7 @@ If your host has its own undo stack, open a block on START and close it on STOP.
 needs none of this: `chunk_undo.UndoStack` (fed by `frontends/qt/undo.py`) makes one step
 of everything from a mouse press to the next input, so a drag is one undo whether its
 writes came from a handle, a slider or a cook. It undoes chunk prims only
-(docs/adr/0003); with the C++ `usd-undo` plugin loaded, that one owns Ctrl+Z instead and
+(docs/undo.md); with the C++ `usd-undo` plugin loaded, that one owns Ctrl+Z instead and
 coalesces at `Sdf` level, as it does in Kraken.
 
 ### Errors

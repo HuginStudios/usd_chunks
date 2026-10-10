@@ -10,7 +10,7 @@ network is at (`STEP_KEY`), and Blender stores that id with each undo step like 
 data on the tree. After an undo or redo, `restore` moves the history to the step Blender
 put back, and the chunk system follows as it follows any layer edit.
 
-Scope (docs/adr/0003): only chunk prims are undone. An edit to a prim that is not a chunk
+Scope (docs/undo.md): only chunk prims are undone. An edit to a prim that is not a chunk
 -- scene data authored directly, another add-on or a script writing to the stage -- is
 not recorded; a host that needs that undone uses the C++ usd-undo plugin or its own.
 

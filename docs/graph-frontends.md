@@ -180,7 +180,7 @@ wire disconnects in USD, listens for chunk notices (value, state, param add/remo
 delete, prim resync) and re-mirrors the touched nodes one tick later, and after every
 undo/redo puts the chunk prims back to the step Blender restored (`addon/undo.py`) and
 rebuilds from USD -- because Blender's undo restores the `.blend`, never the stage. Undo
-covers chunk prims only; see `docs/adr/0003-undo-records-chunk-prims-only.md`. A canvas frontend gets all of this for free by being the only writer of its scene.
+covers chunk prims only; see `docs/undo.md`. A canvas frontend gets all of this for free by being the only writer of its scene.
 
 **Node locking.** Qt marks nodes whose prim comes from an external or referenced layer and
 refuses to move them during auto-layout. Blender does the same, dropping the drag on write-back since it cannot refuse one. Flet
