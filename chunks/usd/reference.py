@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pxr import Sdf
-from usd_chunks import chunk, chunk_stage, chunk_utils
+from usd_chunks import chunk, chunk_stage, chunk_utils, sdf_authoring
 
 
 def file_changed(owner, notice, sender):
@@ -25,6 +25,9 @@ def execute(node):
     network = chunk_stage.network_target(reference_path, import_path)
     if network is not None:
         chunk_stage.host_network(node, reference_path, network, namespace=raw_path or "")
+        if raw_path:  # the namespace root, else only an untyped parent of the network's prims
+            for target_path in chunk_utils.author_in_variant_contexts(stage, node.get_param("primpath_location")):
+                _define(stage, target_path, node.get_param("prim_type").value or "Xform")
         return
     chunk_stage.unhost_network(node)
 
@@ -41,10 +44,17 @@ def execute(node):
     prim_type = node.get_param("prim_type").value or "Xform"
     primpath_param = node.get_param("primpath_location")
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
-        prim = stage.GetPrimAtPath(target_path)
-        if not prim or not prim.IsDefined():
-            prim = stage.DefinePrim(target_path, prim_type)
-        prim.GetReferences().AddReference(ref)
+        _define(stage, target_path, prim_type).GetReferences().AddReference(ref)
+
+
+def _define(stage, path, prim_type):
+    """The prim at path, defined as prim_type in this chunk's own layer."""
+    prim = stage.DefinePrim(path, prim_type)  # defines any missing parents too
+    # Into this chunk's own layer even when something weaker (an upstream chunk, the file
+    # itself) already defines the prim: DefinePrim writes nothing then, and the chosen type
+    # was lost to an `over`.
+    sdf_authoring.Writer(stage).define(path, prim_type)
+    return prim
 
 
 def main():
@@ -55,7 +65,9 @@ def main():
     reference_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path")
     primpath = chunk.LineEdit("primpath_location", "Insert to location")
-    prim_type = chunk.LineEdit("prim_type", "Prim Type", default_value="Xform")
+    # dynamic_items: a saved or scripted type outside the list (Cube, say) is kept.
+    prim_type = chunk.Menu("prim_type", "Prim Type", menu_items=["Xform", "Scope", "Material"], default_value="Xform",
+                           dynamic_items=True)
 
     referenceChunk.add_param(reference_fb)
     referenceChunk.add_param(import_primpath)
@@ -74,8 +86,9 @@ def config():
 
         When a file is selected, the asset name is extracted and used to suggest a
         unique prim path (e.g. /MyAsset) under which the reference will live.
-        On import, the chunk creates an Xform prim at that location (if it doesn't
-        already exist) and calls AddReference on it.
+        On import, the chunk defines a prim of the chosen Prim Type at that location
+        in its own layer (overriding the type of any weaker definition) and calls
+        AddReference on it.
 
         The target prim inside the referenced file is resolved in order:
           1. The explicit "Import Prim Path" field, if filled in.

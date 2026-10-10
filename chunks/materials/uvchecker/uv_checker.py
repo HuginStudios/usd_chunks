@@ -1,7 +1,14 @@
 from __future__ import annotations
+import logging
 import os
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils
-from PySide6 import QtWidgets
+
+try:
+    from PySide6 import QtWidgets
+except ImportError:  # Blender has no Qt: the chunk still works, the error goes to the log
+    QtWidgets = None
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_material(owner: chunk.Chunk, prims) -> None:
@@ -39,6 +46,9 @@ def apply(owner: chunk.Chunk, notice, sender):
         msg = "Prim not selected."
         if prims:
             msg = "Cannot apply material on the top PseudoRoot!"
+        if QtWidgets is None:
+            logger.warning("UV Checker: %s", msg)
+            return
         error_dlg = QtWidgets.QMessageBox()
         error_dlg.setWindowTitle("Error")
         error_dlg.setText(msg)

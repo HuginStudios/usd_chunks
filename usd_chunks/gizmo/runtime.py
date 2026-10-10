@@ -572,7 +572,35 @@ def _gizmo_names(prim: Usd.Prim) -> list:
     return names
 
 
-def _read_gizmos(prim: Usd.Prim) -> list:
+def _read_anchor(prim: Usd.Prim, rel: Usd.Relationship, name: str, chunk=None) -> tuple:
+    """The anchor rel's targets, without composing one a hosted network's file wrote.
+
+    A network file anchors its gizmos at scene prims (/Headboard). Referenced in by a
+    Reference or Payload node, those lie outside the reference: USD drops them with a
+    warning on every read, and the handle never attaches. Such an anchor is recomputed
+    from the chunk's own anchor param instead, which resolves under the host's namespace.
+    """
+    if not rel:
+        return ()
+    stack = rel.GetPropertyStack()
+    if not stack or stack[0].layer in prim.GetStage().GetLayerStack():
+        return tuple(rel.GetTargets())
+    if chunk is None:
+        scene = getattr(ChunkRegistry(), "scene", None)
+        chunk = next((c for c in (scene.get_chunks() if scene else [])
+                      if (p := _chunk_prim(prim.GetStage(), c)) is not None and p.GetPath() == prim.GetPath()),
+                     None)
+    gizmo = next((g for g in get_gizmos(chunk) if g.name == name), None) if chunk is not None else None
+    if gizmo is None:
+        return ()
+    try:
+        return tuple(_anchor_targets(chunk, gizmo, prim.GetStage()))
+    except Exception:
+        logger.debug("Could not resolve anchor for gizmo %r on %s", name, prim.GetPath(), exc_info=True)
+        return ()
+
+
+def _read_gizmos(prim: Usd.Prim, chunk=None) -> list:
     descs = []
     for name in _gizmo_names(prim):
         hidden_attr = prim.GetAttribute(_attr_name(name, "hidden"))
@@ -607,7 +635,7 @@ def _read_gizmos(prim: Usd.Prim) -> list:
             type=gizmo_type,
             chunk_prim=prim.GetPath(),
             label=(label_attr.Get() if label_attr else "") or "",
-            anchor=tuple(anchor_rel.GetTargets()) if anchor_rel else (),
+            anchor=_read_anchor(prim, anchor_rel, name, chunk),
             anchor_source=(source_attr.Get() if source_attr else "") or "",
             driver=driver,
             axis=(axis_attr.Get() if axis_attr else None) or None,
@@ -724,7 +752,7 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     for chunk in chunks_for_prim(prim):
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is not None:
-            descs.extend(_read_gizmos(chunk_prim))
+            descs.extend(_read_gizmos(chunk_prim, chunk))
     # Then add anything anchored here that has not authored yet. The layer-stack route only
     # sees chunks that have already written something, and plenty have not: rbd_solver is
     # button-driven, so its offset handles -- the very things you want before running a
@@ -805,7 +833,7 @@ def _gizmos_anchored_at(prim: Usd.Prim) -> list:
         chunk_prim = _chunk_prim(stage, chunk)
         if chunk_prim is None or chunk_prim.GetPath() == prim_path:
             continue
-        for desc in _read_gizmos(chunk_prim):
+        for desc in _read_gizmos(chunk_prim, chunk):
             if any(Sdf.Path(str(a)) == prim_path for a in desc.anchor):
                 found.append(desc)
     return found
@@ -1444,7 +1472,7 @@ def _own_transform_desc(chunk: core.ChunkBase):
     chunk_prim = _chunk_prim(stage, chunk) if stage is not None else None
     if chunk_prim is None:
         return None
-    for desc in _read_gizmos(chunk_prim):
+    for desc in _read_gizmos(chunk_prim, chunk):
         if desc.type == core.GIZMO_TRANSFORM_TYPE:
             return desc
     return None
@@ -1477,7 +1505,8 @@ def _create_chunk_at_tail(module_name: str):
     # (child-count * step) counts a view as a child, so an auto-created node is placed by how
     # many prims happen to exist rather than by where it sits in the chain -- which is how it
     # ends up stacked behind the view instead of after the chunk it was wired onto.
-    chunk_stage._create_node_pos = _position_after_tail(scene)
+    tail = _tail_for_new_chunk(scene)
+    chunk_stage._create_node_pos = _position_after(tail)
     try:
         scene.add_chunk(chunk)
     finally:
@@ -1485,8 +1514,25 @@ def _create_chunk_at_tail(module_name: str):
         chunk_stage._pin_new_chunks = prev_pin
         chunk_stage._create_node_pos = prev_pos
 
+    # The Params-tab create leaves an Output where the user wired it. Nobody wired this
+    # chunk, though: left there, the Output still took the old tail and the drag's chunk
+    # dangled after it, delivering nothing. It goes between the tail and the Output.
+    if tail is not None and _chained_onto(chunk, tail):
+        chunk_stage.ChunkStageSync()._rewire_views_from_source(tail, chunk, outputs=True)
+
     _nudge_downstream_views(chunk)
     return chunk
+
+
+def _chained_onto(chunk: core.ChunkBase, upstream: core.ChunkBase) -> bool:
+    """True if `chunk`'s exec input is wired to `upstream`."""
+    stage = getattr(chunk_stage.ChunkStageSync(), "_stage", None)
+    prim = _chunk_prim(stage, chunk) if stage is not None else None
+    up_prim = _chunk_prim(stage, upstream) if stage is not None else None
+    if prim is None or up_prim is None:
+        return False
+    return any(c.GetPrimPath() == up_prim.GetPath()
+               for c in chunk_stage.exec_input_connections(prim))
 
 
 def _node_pos(prim: Usd.Prim) -> tuple[float, float] | None:
@@ -1500,11 +1546,8 @@ def _node_pos(prim: Usd.Prim) -> tuple[float, float] | None:
     return (float(value[0]), float(value[1]))
 
 
-def _position_after_tail(scene) -> tuple[float, float] | None:
-    """One step right of the chunk the new node is about to be chained onto.
-
-    None means "no opinion" -- the caller's default placement then applies, which is right
-    when there is no tail to sit after.
+def _tail_for_new_chunk(scene) -> core.ChunkBase | None:
+    """The chunk a new node is about to be chained onto, or None.
 
     Takes the context off the *scene*, not off the chunk. The chunk has not been added yet,
     so `chunk.get_context()` is still None and the tail lookup silently finds nothing --
@@ -1524,15 +1567,24 @@ def _position_after_tail(scene) -> tuple[float, float] | None:
         # the chunk it was being chained onto.
         peek = getattr(scene, "peek_root_context", None)
         context = peek() if peek else None
-    tail = sync._find_dag_tail(context)
-    if tail is None:
+    return sync._find_dag_tail(context)
+
+
+def _position_after(tail: core.ChunkBase | None) -> tuple[float, float] | None:
+    """One step right of `tail`, where the node chained onto it goes.
+
+    None means "no opinion" -- the caller's default placement then applies, which is right
+    when there is no tail to sit after.
+    """
+    stage = getattr(chunk_stage.ChunkStageSync(), "_stage", None)
+    if tail is None or stage is None:
         return None
     pos = _node_pos(_chunk_prim(stage, tail))
     return None if pos is None else (pos[0] + chunk_stage._NODE_STEP, pos[1])
 
 
 def _nudge_downstream_views(chunk: core.ChunkBase) -> None:
-    """Move any view that just got repointed onto `chunk` out from under it.
+    """Move any view or Output that just got repointed onto `chunk` out from under it.
 
     View-follows-tail rewires the view to consume the new chunk but leaves it where it was
     -- which is the slot the new node has just been placed in, so the two overlap.
@@ -1551,7 +1603,7 @@ def _nudge_downstream_views(chunk: core.ChunkBase) -> None:
         return
     target_x = pos[0] + chunk_stage._NODE_STEP
     for candidate in scene.get_chunks():
-        if not chunk_stage.is_view_chunk(candidate):
+        if not (chunk_stage.is_view_chunk(candidate) or chunk_stage.is_output_chunk(candidate)):
             continue
         view_prim = _chunk_prim(stage, candidate)
         if view_prim is None:
