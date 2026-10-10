@@ -1579,11 +1579,18 @@ def test_an_edit_after_an_undo_leaves_the_old_redo_reachable(tracked):
     assert move.get_param("tz").value == pytest.approx(5.0)
 
 
-def test_an_undo_step_from_another_session_changes_nothing(tracked):
-    """A step id saved in the .blend belongs to the session that wrote it."""
+def test_an_undo_step_from_before_recording_is_the_network_as_opened(tracked):
+    """Opening a .blend pushes its first undo step before the network is tracked, so that
+    step holds no id, or one an earlier session saved. Undoing to it undoes every edit."""
     view = tracked
-    view.tree[bundo.STEP_KEY] = "deadbeef:1"
-    assert not bundo.restore(view.tree, view.stage)
+    move = view.chunks[_node(view, "Move").name]
+    move.get_param("tz").value = 9.0
+    _blender_undoes_to(view, "deadbeef:1")
+    assert move.get_param("tz").value == pytest.approx(3.0)
+    move.get_param("tz").value = 9.0
+    del view.tree[bundo.STEP_KEY]
+    addon._on_undo(None)
+    assert move.get_param("tz").value == pytest.approx(3.0)
 
 
 def test_undo_brings_a_deleted_chunk_back(tracked):
@@ -1607,7 +1614,8 @@ def test_an_undo_step_with_the_same_network_changes_nothing(tracked):
 def test_the_operators_that_change_the_network_make_undo_steps():
     """They used to push none: Blender's undo knew nothing about the stage, so a step only
     ever half-undid. Now each step carries where the network was (undo.py)."""
-    undoable = [bg.USDCHUNKS_OT_add_node, addon.USDCHUNKS_OT_delete, addon.USDCHUNKS_OT_paste,
+    undoable = [addon.USDCHUNKS_OT_open_network, addon.USDCHUNKS_OT_new_network,
+                bg.USDCHUNKS_OT_add_node, addon.USDCHUNKS_OT_delete, addon.USDCHUNKS_OT_paste,
                 addon.USDCHUNKS_OT_group, addon.USDCHUNKS_OT_set_view_slot,
                 gz.USDCHUNKS_OT_transform, br.USDCHUNKS_OT_brush]
     assert all("UNDO" in op.bl_options for op in undoable)

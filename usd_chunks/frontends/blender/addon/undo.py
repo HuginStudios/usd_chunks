@@ -84,8 +84,16 @@ class History:
         return f"{self.token}:{self.current if step is None else step}"
 
     def _step_of(self, key) -> int | None:
-        token, _, step = str(key).partition(":")
-        if token != self.token or not step.isdigit() or int(step) not in self.parents:
+        """The step `key` names; None for one of ours that was pruned.
+
+        A step with no id of this session -- none, or one saved in the .blend by an earlier
+        one -- was pushed before recording began: opening a .blend pushes its first undo
+        step before the network is tracked. The network was then as it opened: step 0.
+        """
+        token, _, step = str(key or "").partition(":")
+        if token != self.token:
+            return 0 if 0 in self.parents else None
+        if not step.isdigit() or int(step) not in self.parents:
             return None
         return int(step)
 
@@ -304,5 +312,4 @@ def restore(tree, stage) -> bool:
     if tree is None or stage is None or history is None \
             or history.layer != stage.GetRootLayer():
         return False
-    key = tree.get(STEP_KEY)
-    return bool(key) and history.move_to(key)
+    return history.move_to(tree.get(STEP_KEY))

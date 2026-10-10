@@ -574,7 +574,9 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
 
     bl_idname = "usd_chunks.open_network"
     bl_label = "Open Chunk Network"
-    bl_options = {"REGISTER"}
+    # An undo step of its own: without one, Ctrl+Z after the first edit lands before the
+    # open, where this tree did not exist yet, and the whole network goes.
+    bl_options = {"REGISTER", "UNDO"}
 
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
     filter_glob: bpy.props.StringProperty(default="*.usda;*.usd;*.usdc", options={"HIDDEN"})
@@ -604,7 +606,7 @@ class USDCHUNKS_OT_new_network(bpy.types.Operator):
 
     bl_idname = "usd_chunks.new_network"
     bl_label = "New Chunk Network"
-    bl_options = {"REGISTER"}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         tree = bpy.data.node_groups.new("ChunkNetwork", bg.TREE_ID)
