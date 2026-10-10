@@ -827,6 +827,11 @@ IMPORT_TO_PACKAGE = {
 #: cannot bring its own.
 _ASSUMED_IMPORTS = {"pxr", "usd_chunks", "PySide6"}
 
+#: Import roots a host's own Python ships, assumed only for a chunk gated to that host
+#: (config hosts=[...]): like pxr, they come with the application and there is no
+#: distribution to declare. Not in _ASSUMED_IMPORTS, where any chunk could import bpy.
+_HOST_IMPORTS = {"blender": {"bpy", "bmesh", "mathutils"}, "houdini": {"hou"}}
+
 
 def _normalise_package(name: str) -> str:
     """PEP 503 name, with any version specifier or extra dropped."""
@@ -938,9 +943,14 @@ def undeclared_imports(module: ChunkModule, sibling_modules=()) -> list:
     }
     declared.update(_normalise_package(m) for m in (module.config.required_modules or []))
 
+    host_imports = set()
+    for entry in module.config.hosts or []:
+        if match := _HOST_ENTRY.match(entry or ""):
+            host_imports |= _HOST_IMPORTS.get(match.group(1).lower(), set())
+
     undeclared = []
     for root in sorted(top_level_imports(module.module_file)):
-        if root in _ASSUMED_IMPORTS or root in sys.stdlib_module_names:
+        if root in _ASSUMED_IMPORTS or root in host_imports or root in sys.stdlib_module_names:
             continue
         if root in sibling_modules:
             continue

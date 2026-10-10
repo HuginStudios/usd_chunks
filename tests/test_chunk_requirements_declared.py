@@ -187,3 +187,22 @@ def test_a_declared_requirement_reaches_the_installer(monkeypatch):
     # package_info, because the latter only understands "==".
     names = {chunk_registry.split_requirement(r)[0] for r in asked_for}
     assert "mujoco" in names, asked_for
+
+
+@pytest.mark.parametrize("hosts, flagged", [('["blender>=5.1"]', []), ("[]", ["bpy"])])
+def test_a_hosts_own_module_is_assumed_only_when_gated_to_it(tmp_path, hosts, flagged):
+    """bpy ships with Blender, so a chunk gated to Blender has nothing to declare for it.
+    Any other chunk importing it would break outside Blender, and stays flagged."""
+    path = tmp_path / "uses_bpy.py"
+    path.write_text(
+        "import bpy\n"
+        "from usd_chunks import chunk\n"
+        "def main():\n"
+        "    return chunk.Chunk('UsesBpy')\n"
+        "def config():\n"
+        f"    return chunk.DefaultConfig(hosts={hosts})\n",
+        encoding="utf-8",
+    )
+    module = chunk_registry.ChunkModule(module_name=path.stem, module_file=path)
+    chunk_registry._pre_load_module(path.read_text(encoding="utf-8"), {}, module)
+    assert chunk_registry.undeclared_imports(module) == flagged

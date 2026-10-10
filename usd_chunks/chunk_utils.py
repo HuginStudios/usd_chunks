@@ -1388,10 +1388,16 @@ def wire_shader_input(
                         shader_attr.SetConnections([shader_conns[0]])
                     return True
 
-    # No upstream connection found. Clear any redirect so the anonymous-layer
-    # connect_usd_attr opinion (or cleared state) can take effect.
-    with Usd.EditContext(stage, edit_layer):
-        shader_attr.ClearConnections()
+    # No upstream connection found. Clear the redirect this layer holds, so the
+    # anonymous-layer connect_usd_attr opinion (or cleared state) can take effect. Only
+    # when there is one: ClearConnections on an attribute this layer has no spec for
+    # creates one. Every cook left an empty `over` with a bare attribute in the session
+    # layer (or the user's Edit Target), for every shader input and every material path
+    # a chunk had ever used. Those kept a renamed material's old shader prim alive, the
+    # param kept writing its value there, and both ended up in exported files.
+    if edit_layer is not None and edit_layer.GetAttributeAtPath(shader_attr.GetPath()):
+        with Usd.EditContext(stage, edit_layer):
+            shader_attr.ClearConnections()
     if clear_on_miss:
         shader_attr.ClearConnections()
     return False

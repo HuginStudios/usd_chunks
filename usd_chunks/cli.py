@@ -29,6 +29,7 @@ from usd_chunks.chunk_stage import (
     commit_order_from_stage,
     find_group_active_view,
     find_output_chunk,
+    get_chunk_prim_path,
     is_view_chunk,
     recook_focus,
 )
@@ -381,7 +382,11 @@ def _active_view(stage, scene):
     """
     if (output := find_output_chunk(stage, scene, None)) is not None:
         return output
-    everything = list(_all_chunks(scene.get_chunks()))
+    # Outermost first: a Reference or Payload hosting a saved network is a context holding
+    # that network's own view, and walked first it drove the whole file -- muting every
+    # layer outside the network, the host's own downstream chunks included.
+    everything = sorted(_all_chunks(scene.get_chunks()),
+                        key=lambda c: get_chunk_prim_path(c).count("/"))
     views = [c for c in everything if is_view_chunk(c)]
     if not views:
         return None
@@ -391,6 +396,8 @@ def _active_view(stage, scene):
             continue
         if not c.has_flag(chunk.ChunkFlags.GroupFlags.CONTEXT):
             continue
+        if get_chunk_prim_path(views[0]).count("/") <= get_chunk_prim_path(c).count("/"):
+            break  # a view sits further out than this context's: that one drives the file
         if (named := find_group_active_view(c, stage, scene)) is not None:
             return named
     return views[0]

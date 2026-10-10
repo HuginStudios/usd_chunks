@@ -39,7 +39,7 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 import bpy  # noqa: E402
 
 from mathutils import Matrix, Vector  # noqa: E402
-from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Kind, Sdf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk, chunk_registry  # noqa: E402
@@ -117,9 +117,24 @@ def _node(view, label):
 
 
 def _chunk_nodes(view):
-    """The nodes that are chunks the fixture made -- not the view that reload() wires to
-    the end of the chain so the context cooks (see BlenderGraphView.ensure_view)."""
-    return [n for n in view.tree.nodes if n.bl_idname != bg.node_class_id("view")]
+    """The nodes that are chunks the fixture made -- not the Output that reload() wires to
+    the end of the chain so the context cooks (see BlenderGraphView.ensure_view), nor a
+    view a test made."""
+    skip = {bg.node_class_id("view"), bg.node_class_id("output")}
+    return [n for n in view.tree.nodes if n.bl_idname not in skip]
+
+
+def _viewed(view, label="Move"):
+    """Press V on `label`: a View wired to it, made the active one. Returns its path.
+
+    A new network gets an Output rather than a view, so a test about views makes one.
+    """
+    view.set_selection({_node(view, label).name})
+    view.create_view_node()
+    return next(n.name for n in view.tree.nodes
+                if n.bl_idname == bg.node_class_id("view")
+                and [str(c.GetPrimPath()) for c in view.prims[n.name].GetAttribute(
+                    "inputs:chunk").GetConnections()] == [_node(view, label).name])
 
 
 def _flush(view):
@@ -136,11 +151,14 @@ def test_the_tree_is_rebuilt_from_usd(view):
     assert labels == ["Move", "Ref"]
 
 
-def test_opening_gives_the_context_a_view(view):
-    """A context with no view cooks nothing, so reload wires one to the chain's tail and
-    makes it the active slot -- as every other frontend does on open."""
-    assert [n.label for n in view.tree.nodes if n not in _chunk_nodes(view)] == ["View2"]
-    assert view.active_slot() == 1
+def test_opening_gives_the_context_an_output(view):
+    """A context with neither an Output nor a view cooks nothing, so reload wires an Output
+    to the chain's tail and cooks to it (slot 0) -- as every other frontend does on open."""
+    outputs = [n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("output")]
+    assert len(outputs) == 1
+    src = view.prims[outputs[0].name].GetAttribute("inputs:chunk").GetConnections()
+    assert [str(c.GetPrimPath()) for c in src] == [_node(view, "Move").name]
+    assert view.active_slot() == 0
 
 
 def test_each_node_gets_its_chunk_type(view):
@@ -260,10 +278,15 @@ def test_a_node_class_is_generated_per_chunk_type():
 
 
 def test_qt_only_chunks_are_skipped_not_fatal():
-    """A chunk that imports PySide6 at module level cannot load in Blender (uv_checker and
-    the custom_widget example still do). The registry skips a module whose import fails,
+    """A chunk that imports PySide6 at module level cannot load in Blender (the
+    custom_widget example still does). The registry skips a module whose import fails,
     so the add-on degrades rather than refusing to start."""
-    assert "uv_checker" not in bg._generated
+    assert "custom_widget" not in bg._generated
+
+
+def test_uv_checker_loads_without_qt():
+    """uv_checker imported Qt for one error popup; Qt is optional there now."""
+    assert "uv_checker" in bg._generated
 
 
 def test_a_chunk_that_only_waited_with_qt_now_loads():
@@ -398,11 +421,11 @@ def test_a_cut_wire_disconnects_in_usd(view):
 def test_a_cut_wire_does_not_heal_the_chain(view):
     """A wire the user cut is one wire. Healing would rewire the view past Move to Ref,
     which is what detaching a NODE means, not cutting a wire."""
-    view_node = _node(view, "View2")
-    before = list(view.prims[view_node.name].GetAttribute("inputs:chunk").GetConnections())
+    view_path = _viewed(view)
+    before = list(view.prims[view_path].GetAttribute("inputs:chunk").GetConnections())
     view.tree.links.remove(_wire(view, "Ref", "Move"))
     view.tree.update()
-    after = list(view.prims[view_node.name].GetAttribute("inputs:chunk").GetConnections())
+    after = list(view.prims[view_path].GetAttribute("inputs:chunk").GetConnections())
     assert after == before
 
 
@@ -482,13 +505,14 @@ def test_collapse_is_the_state_bit_shown_as_blenders_hide(view):
     collapse survives a reload and one made in Qt shows here."""
     # A view is created collapsed (it has no body), so Blender draws it hidden from the
     # start; what matters is that a sweep leaves it exactly as it was.
-    view_hidden = _node(view, "View2").hide
+    view_path = _viewed(view)
+    view_hidden = view.tree.nodes[view_path].hide
     view.set_selection(set())
     view.collapse_selected_or_all()
     for label in ("Ref", "Move"):
         assert view.chunks[_node(view, label).name].has_state(ChunkFlags.State.COLLAPSED)
         assert _node(view, label).hide
-    assert _node(view, "View2").hide == view_hidden
+    assert view.tree.nodes[view_path].hide == view_hidden
     view.reload()
     assert _node(view, "Move").hide
     view.collapse_selected_or_all()
@@ -521,20 +545,22 @@ def test_a_replaced_view_ignores_notices(view):
 # ---------------------------------------------------------------------------
 
 def test_the_active_view_is_orange_and_an_inactive_one_dim(view):
-    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
+    view_path = _viewed(view)
+    assert tuple(view.tree.nodes[view_path].color) == pytest.approx(bg._VIEW_ACTIVE_COLOR)
     view.set_active_slot(0)
-    assert tuple(_node(view, "View2").color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
+    assert tuple(view.tree.nodes[view_path].color) == pytest.approx(bg._VIEW_INACTIVE_COLOR)
 
 
 def test_create_view_node_wires_the_selection_and_activates_it(view):
     # The path, not the node: create_view_node rebuilds the tree, and a bpy node held
     # across a rebuild is a wrapper over memory Blender reuses for a different node.
+    first = _viewed(view)
     ref_path = _node(view, "Ref").name
     view.set_selection({ref_path})
     view.create_view_node()
     views = [n for n in view.tree.nodes if n.bl_idname == bg.node_class_id("view")]
     assert len(views) == 2
-    made = next(n for n in views if n.label != "View2")
+    made = next(n for n in views if n.name != first)
     src = view.prims[made.name].GetAttribute("inputs:chunk").GetConnections()
     assert [str(c.GetPrimPath()) for c in src] == [ref_path]
     assert view.active_slot() == 2
@@ -993,6 +1019,18 @@ def test_an_undriven_prim_gets_a_chunk_rather_than_a_direct_write(view):
     assert (moved[0], moved[1], moved[2]) == (1.0, 2.0, 3.0)
 
 
+def test_a_chunk_made_for_an_undriven_prim_is_found_at_once(view):
+    """G on a prim nothing drives makes a Transform chunk, then moves it. The view's table
+    only learns about the new chunk on its next reload, so looking there alone found
+    nothing and the gesture cancelled."""
+    loose = view.stage.DefinePrim("/Loose", "Cube")
+    desc = chunk_gizmo.ensure_transform_chunk(loose)
+    assert str(desc.chunk_prim) not in view.chunks
+    found = gz._chunk_for(view, desc)
+    assert found is not None
+    assert chunk_stage.get_chunk_prim_path(found) == str(desc.chunk_prim)
+
+
 def test_the_operator_registers_and_takes_the_transform_keys():
     assert gz.USDCHUNKS_OT_transform in gz._CLASSES
     assert {key for _op, key, _props in gz._KEYS} == {"G", "R", "S"}
@@ -1008,6 +1046,12 @@ def test_the_operator_registers_and_takes_the_transform_keys():
     finally:
         gz.unregister()
     assert not gz.USDCHUNKS_OT_transform.is_registered
+
+
+def test_the_transform_keys_live_in_the_object_mode_keymap():
+    """Blender checks "Object Mode" before "3D View", and its own G/R/S there took every
+    press: bound in "3D View", G in the viewport never reached this operator."""
+    assert gz._KEYMAP == ("Object Mode", "EMPTY")
 
 
 def test_the_pivot_dot_follows_the_driven_anchor(driven):
@@ -1029,6 +1073,84 @@ def test_an_undriven_pick_still_gets_a_dot(view):
         assert gz.pivot_point(view.stage, view) is not None
     finally:
         bg.set_picked_prim_paths([])
+
+
+@pytest.fixture
+def cup(view):
+    """Kitchen_set's shape: the prim has its own transform beneath the chunk's op, and the
+    geometry sits well away from the prim's origin."""
+    cup = UsdGeom.Xform.Define(view.stage, "/Cup")
+    cup.AddTranslateOp().Set(Gf.Vec3d(10, 0, 0))
+    body = UsdGeom.Cube.Define(view.stage, "/Cup/Body")
+    body.AddTranslateOp().Set(Gf.Vec3d(0, 4, 0))
+    desc = chunk_gizmo.ensure_transform_chunk(cup.GetPrim())
+    return view, desc, cup.GetPrim()
+
+
+def _world(prim):
+    return UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
+
+
+def test_the_pivot_sits_on_the_geometry_not_the_origin(cup):
+    view, desc, prim = cup
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0))
+
+
+def test_a_grab_keeps_what_is_beneath_the_chunk(cup):
+    """The chunk divides its upstream out of what it is given, so a grab that handed it
+    only its own TRS threw the cup by the inverse of the asset's transform."""
+    view, desc, prim = cup
+    local, parent = gz._anchor_matrices(view.stage, desc)
+    moved = gz.gesture_local(local, parent, Gf.Matrix4d().SetTranslate(Gf.Vec3d(1, 0, 0)))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, moved)
+    t = _world(prim).ExtractTranslation()
+    assert (t[0], t[1], t[2]) == pytest.approx((11.0, 0.0, 0.0))
+
+
+def test_a_turn_holds_the_middle_of_the_geometry_still(cup):
+    view, desc, prim = cup
+    centre = gz.anchor_world(view.stage, desc)
+    local, parent = gz._anchor_matrices(view.stage, desc)
+    spun = gz.about(centre, gz.turn((0.0, 0.0, 1.0), 1.5707963))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, gz.gesture_local(local, parent, spun))
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0), abs=1e-5)
+
+
+def test_a_scale_holds_the_middle_of_the_geometry_still(cup):
+    view, desc, prim = cup
+    centre = gz.anchor_world(view.stage, desc)
+    local, parent = gz._anchor_matrices(view.stage, desc)
+    grown = gz.about(centre, gz.stretch(2.0, (1.0, 0.0, 0.0)))
+    chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, gz.gesture_local(local, parent, grown))
+    assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0), abs=1e-5)
+    assert _world(prim).Transform(Gf.Vec3d(1, 0, 0))[0] == pytest.approx(12.0)
+
+
+def test_a_click_picks_the_component_it_lands_in(view):
+    """Clicking one wheel moves the car: the pick walks up to the component."""
+    stage = view.stage
+    UsdGeom.Xform.Define(stage, "/Set")
+    car = UsdGeom.Xform.Define(stage, "/Set/Car").GetPrim()
+    Usd.ModelAPI(car).SetKind(Kind.Tokens.component)
+    UsdGeom.Xform.Define(stage, "/Set/Car/Wheels")
+    UsdGeom.Cube.Define(stage, "/Set/Car/Wheels/FrontLeft")
+    UsdGeom.Cube.Define(stage, "/Loose")
+    assert vp.component_of(stage, "/Set/Car/Wheels/FrontLeft") == "/Set/Car"
+    assert vp.component_of(stage, "/Set/Car") == "/Set/Car"
+    assert vp.component_of(stage, "/Loose") == "/Loose", "no component: what was clicked"
+
+
+def test_without_kinds_a_click_picks_the_referenced_asset(view, tmp_path):
+    """A DCC export has no kinds; the prim the reference landed on is the asset."""
+    asset = Usd.Stage.CreateNew(str(tmp_path / "car.usda"))
+    root = UsdGeom.Xform.Define(asset, "/root").GetPrim()
+    UsdGeom.Xform.Define(asset, "/root/Body")
+    UsdGeom.Cube.Define(asset, "/root/Body/Wheel_FL")
+    asset.SetDefaultPrim(root)
+    asset.GetRootLayer().Save()
+    car = view.stage.DefinePrim("/Car", "Xform")
+    car.GetReferences().AddReference(str(tmp_path / "car.usda"))
+    assert vp.component_of(view.stage, "/Car/Body/Wheel_FL") == "/Car"
 
 
 def test_bounds_picking_finds_the_prim_under_the_ray(view):
@@ -1517,6 +1639,42 @@ def test_the_brush_operator_registers_on_b():
     finally:
         br.unregister()
     assert not br.USDCHUNKS_OT_brush.is_registered
+
+
+# ---------------------------------------------------------------------------
+# number keys: 1 the Output, 2 and 3 the views -- as in the Qt graph
+# ---------------------------------------------------------------------------
+
+def test_one_picks_the_output_and_two_three_the_views():
+    keys = {key: props["slot"] for op, key, _mods, props in addon._KEYS
+            if op is addon.USDCHUNKS_OT_set_view_slot}
+    assert keys == {"ONE": 0, "TWO": 1, "THREE": 2}
+
+
+def test_slot_buttons_are_named_like_the_qt_graph():
+    assert [addon.slot_label(s) for s in (0, 1, 2)] == ["Output [1]", "View [2]", "View [3]"]
+
+
+def test_the_status_names_the_slot_as_the_key_does(view):
+    """Pressing 2 and reading "view 1 active" looked like the wrong view was picked."""
+    view.set_selection({_node(view, "Ref").name})
+    view.create_view_node()
+    assert view.status == "View 2"
+    view.set_active_slot(0)
+    assert view.status == "Output active"
+    view.set_active_slot(1)
+    assert view.status == "View 2 active"
+
+
+def test_the_output_slot_is_refused_in_a_graph_without_one(view):
+    """Qt never switches to what the graph lacks: an Output-less slot 0 cooks nothing."""
+    outputs = [c for c in view.scene.get_chunks() if chunk_stage.is_output_chunk(c)]
+    chunk_graph.delete_chunks(outputs)
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    before = view.active_slot()
+    view.set_active_slot(0)
+    assert view.status == "no Output in this graph"
+    assert view.active_slot() == before
 
 
 # ---------------------------------------------------------------------------

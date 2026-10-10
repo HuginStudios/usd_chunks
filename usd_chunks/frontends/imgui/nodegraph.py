@@ -364,6 +364,7 @@ class ImGuiGraphView:
                 if chunk_graph.can_connect(source, target) and ed.accept_new_item():
                     change = chunk_graph.connect(self.stage, source, target, self.chunks)
                     if change is not None:
+                        self._recook()
                         self.stage.GetRootLayer().Save()
                         self.status = f"connected {source.name} -> {target.name}"
                         self.reload()
@@ -382,6 +383,7 @@ class ImGuiGraphView:
                              if p.attr_path == dst_attr), None)
                 if port is not None:
                     chunk_graph.disconnect(self.stage, port, self.prims, self.chunks)
+                    self._recook()
                     self.stage.GetRootLayer().Save()
                     self.reload()
         node_id = ed.NodeId()
@@ -434,6 +436,7 @@ class ImGuiGraphView:
             self.status = "nothing selected"
             return
         chunk_graph.delete_chunks(chunks)
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.selected_nodes = set()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
@@ -490,6 +493,7 @@ class ImGuiGraphView:
             self.scene, self.stage, nodes, edges,
             to_usd=lambda rel_x, rel_y: (x + rel_x, -(y + rel_y)),
             nest=self._nest_target(), chunks=self.chunks)
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
@@ -513,6 +517,7 @@ class ImGuiGraphView:
         if not group_path:
             self.status = "nothing to group"
             return
+        self._recook()
         self.stage.GetRootLayer().Save()
         self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
@@ -527,6 +532,7 @@ class ImGuiGraphView:
         if error:
             self.status = error
         if created:
+            self._recook()
             self.stage.GetRootLayer().Save()
             self.chunks = {get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
             self.status = f"created {created[0].name}"
@@ -584,6 +590,16 @@ class ImGuiGraphView:
 
     def active_slot(self) -> int:
         return chunk_graph.read_active_slot(self.stage, self.context)
+
+    def _recook(self) -> None:
+        """After a wire, delete, create or paste: recook to what drives this context.
+
+        Only what the active view or Output reaches cooks; chunk_graph.recook_active
+        unblocks and cooks what an edit brought into reach and blocks what it took out.
+        Before a save, so what the recook authors is saved with the edit.
+        """
+        if failed := chunk_graph.recook_active(self.stage, self.scene, self.context, self.chunks):
+            self.status = failed
 
     def set_active_slot(self, slot: int) -> None:
         changed, self.status = chunk_graph.activate_view_slot(

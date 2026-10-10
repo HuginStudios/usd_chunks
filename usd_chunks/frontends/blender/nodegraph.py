@@ -845,6 +845,7 @@ def _reload_after_connect(view) -> None:
     has fully returned and it is safe.
     """
     if active_view() is view:
+        view._recook()
         view.reload()
     return None
 
@@ -1258,7 +1259,17 @@ class BlenderGraphView:
         removed = chunk_graph.delete_chunks(chosen)
         self.selected_nodes = set()
         self.status = f"deleted {removed}"
+        self._recook()
         self.reload()
+
+    def _recook(self) -> None:
+        """After a wire, delete, create or paste: recook to what drives this context.
+
+        Only what the active view or Output reaches cooks; chunk_graph.recook_active
+        unblocks and cooks what an edit brought into reach and blocks what it took out.
+        """
+        if failed := chunk_graph.recook_active(self.stage, self.scene, self.context, self.chunks):
+            self.status = failed
 
     def toggle_disable_selected(self) -> None:
         """Flip DISABLED. A disabled chunk stays visible -- muted, in Blender's terms."""
@@ -1337,6 +1348,7 @@ class BlenderGraphView:
             chunks=self.chunks)
 
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self._recook()
         self.reload()
         self.set_selection({chunk_stage.get_chunk_prim_path(c) for c in made.values()})
         self.status = f"pasted {len(made)}"
@@ -1370,6 +1382,7 @@ class BlenderGraphView:
             self.status = "nothing to group"
             return
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self._recook()
         self.reload()
         self.set_selection([group_path] if group_path in self.prims else ())
         self.status = f"grouped {count}"
@@ -1401,6 +1414,7 @@ class BlenderGraphView:
         landed = made[0].rsplit("/", 1)[0]
         if landed != self.context:
             self.context = landed
+        self._recook()
         self.reload()
 
         self.set_selection(set(made))
@@ -1469,9 +1483,21 @@ class BlenderGraphView:
 
         Resolve BEFORE writing: writing first persisted a slot with no view behind it, so
         the attribute said 3, nothing cooked, and the file carried that to the next open.
+        Slot 0 is the Output, and is refused in a graph with none, as Qt refuses it: it
+        would cook nothing.
         """
+        if slot == 0 and not chunk_stage.graph_outputs(
+                self.stage, self.scene,
+                chunk_graph.context_chunk(self.scene, self.chunks, self.context)):
+            self.status = "no Output in this graph"
+            return
         changed, self.status = chunk_graph.activate_view_slot(
             self.stage, self.scene, self.context, self.chunks, slot)
+        if changed and not self.status.startswith("recook failed"):
+            # Named as the key and the node show it, not by the stored slot: pressing 2
+            # and reading "view 1 active" looked like the wrong view had been picked.
+            self.status = ("Output active" if slot == 0
+                           else f"View {chunk_graph.view_number(slot)} active")
         if changed:
             self.reload()
 
@@ -1496,7 +1522,7 @@ class BlenderGraphView:
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
         self.reload()
         self.set_active_slot(slot)
-        self.status = f"view {slot}"
+        self.status = f"View {chunk_graph.view_number(slot)}"
 
     # -- layout ------------------------------------------------------------
 
