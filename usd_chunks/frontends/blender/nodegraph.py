@@ -1435,6 +1435,7 @@ class BlenderGraphView:
         self.selected_nodes = set()
         self.status = f"in {path.rsplit('/', 1)[-1]}"
         self.reload()
+        self._cook_shown_graph()
 
     def dive_out(self) -> None:
         """Back up to the enclosing graph.
@@ -1451,8 +1452,26 @@ class BlenderGraphView:
         inner, self.context = self.context, parent
         self.selected_nodes = set()
         self.reload()
+        self._cook_shown_graph()
         if inner in self.prims:
             self.set_selection([inner])
+
+    def _cook_shown_graph(self) -> None:
+        """Cook for the graph now on screen, with Qt's recook_focus.
+
+        Inside a group that keeps the group's upstream, cooks the group's own chain and
+        mutes what is downstream of it; back out, the outer graph cooks again. Without it a
+        dive changed only the tree, and the viewport kept showing the outer graph's cook.
+        """
+        context_chunk = chunk_graph.context_chunk(self.scene, self.chunks, self.context)
+        slot = self.active_slot()
+        view_chunk = (chunk_stage.find_view_chunk_for_slot(
+            slot, self.stage, self.scene, context_chunk) if slot else None)
+        try:
+            chunk_stage.recook_focus(self.stage, self.scene, context_chunk, view_chunk)
+        except Exception as exc:  # noqa: BLE001 - a chunk's own code can raise anything
+            logger.exception("recook failed after changing graph")
+            self.status = f"recook failed: {type(exc).__name__}"
 
     # -- views -------------------------------------------------------------
 
