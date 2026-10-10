@@ -32,7 +32,7 @@ import logging
 import math
 import random
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
@@ -54,6 +54,7 @@ _RAND_AXES = ["Off", "X", "Y", "Z", "All"]
 _SCATTER_MODES = ["Surface", "Volume", "Stack"]
 _PACK_PATTERNS = ["Hex", "Grid"]
 _STACK_ORIENTS = ["Stand Up", "Lay Along Rows", "Keep Original"]
+_PROXY_MODES = ["Off", "Bounds", "Full"]
 
 # /asset/crayon{color=red} -- the variant value may be "*" (every variant in the set), which
 # chunk_utils.split_variant_path's \w+ deliberately doesn't accept, hence the local regex.
@@ -1382,6 +1383,46 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage):
     return resolved
 
 
+def _author_proxy(stage, proxy_path, mode, protos, specs, scratch_stage, keep, arrays):
+    """A purpose=proxy sibling instancer: a subset of the instances, optionally as boxes.
+
+    A sibling and not a child, because purpose inherits: under the render instancer it would
+    be render too. It has its own prototypes for the same reason -- the render instancer's
+    inherit its purpose -- and so that Bounds can swap each one for a box.
+
+    Bounds boxes are built from the prototype's measured local bounds, at the prototype
+    root, so the instance transforms (which already carry proto.scale) place them exactly
+    where the real prototype would sit.
+    """
+    proxy = UsdGeom.PointInstancer.Define(stage, proxy_path)
+    proxy.CreatePurposeAttr().Set(UsdGeom.Tokens.proxy)
+
+    if mode == "Bounds":
+        stage.DefinePrim(f"{proxy_path}/Prototypes", "Scope")
+        targets = []
+        for i, proto in enumerate(protos):
+            path = f"{proxy_path}/Prototypes/proto_{i}"
+            box = UsdGeom.Cube.Define(stage, path)
+            box.GetSizeAttr().Set(1.0)
+            centre = (proto.bmin + proto.bmax) * 0.5
+            size = proto.bmax - proto.bmin
+            box.AddTranslateOp().Set(Gf.Vec3d(centre[0], centre[1], centre[2]))
+            box.AddScaleOp().Set(Gf.Vec3f(max(size[0], 1e-6), max(size[1], 1e-6), max(size[2], 1e-6)))
+            targets.append(Sdf.Path(path))
+    else:
+        # Copies: _author_prototypes writes the path it authored back onto each spec, and
+        # the render instancer's protos must keep theirs.
+        proxies = _author_prototypes(stage, proxy_path, [replace(s) for s in specs], scratch_stage)
+        targets = [Sdf.Path(p.path) for p in proxies]
+    proxy.GetPrototypesRel().SetTargets(targets)
+
+    positions, indices, scales, orients = arrays
+    proxy.GetPositionsAttr().Set(Vt.Vec3fArray([positions[i] for i in keep]))
+    proxy.GetProtoIndicesAttr().Set(Vt.IntArray([indices[i] for i in keep]))
+    proxy.GetScalesAttr().Set(Vt.Vec3fArray([scales[i] for i in keep]))
+    proxy.GetOrientationsAttr().Set(Vt.QuathArray([orients[i] for i in keep]))
+
+
 def _measure_proto(proto, proto_prim, src_prim):
     """Fill in proto.bmin/bmax (local, variant-aware) and proto.scale (source world scale)."""
     bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
@@ -1577,6 +1618,15 @@ def _on_stack_orient_changed(owner, notice, sender):
     _set_hidden(grp.get_param("stack_row_axis") if grp else None, owner.value != "Lay Along Rows")
 
 
+def _on_proxy_mode_changed(owner, notice, sender):
+    """The share only means something while there is a proxy."""
+    chunk_obj = owner.get_chunk()
+    if not chunk_obj:
+        return
+    grp = chunk_obj.get_param("Viewport Proxy")
+    _set_hidden(grp.get_param("proxy_share") if grp else None, owner.value == "Off")
+
+
 # ---------------------------------------------------------------------------
 # execute
 # ---------------------------------------------------------------------------
@@ -1659,6 +1709,8 @@ def execute(node):
     pack_conform = node.get_param("pack_conform", is_b).value
     pack_jitter = node.get_param("pack_jitter", is_f).value
     pack_tilt = node.get_param("pack_tilt", is_f).value
+    proxy_mode = node.get_param("proxy_mode", is_s).value
+    proxy_share = min(1.0, max(0.0, node.get_param("proxy_share", is_f).value))
 
     layer = node.get_edit_context()
     if not layer:
@@ -1902,6 +1954,15 @@ def execute(node):
         instancer.GetProtoIndicesAttr().Set(out_indices)
         instancer.GetScalesAttr().Set(out_scales)
         instancer.GetOrientationsAttr().Set(out_orients)
+
+        if proxy_mode != "Off":
+            # The viewport draws proxy, a final render draws render: usdview shows the
+            # purpose=proxy instancer by default, V-Ray and friends render this one. The
+            # subset is seeded and kept in order, so it is stable while other params change.
+            instancer.CreatePurposeAttr().Set(UsdGeom.Tokens.render)
+            keep = sorted(random.Random(seed + 43).sample(range(count), round(count * proxy_share)))
+            _author_proxy(stage, f"{inst_path}_proxy", proxy_mode, protos, specs, scratch_stage,
+                          keep, (out_positions, out_indices, out_scales, out_orients))
 
     _report(node, protos, quota, count, scatter_mode, pack_levels)
 
@@ -2364,6 +2425,36 @@ def main():
         )
     )
     chunk_api.add_param(_collapsed(var_grp))
+
+    # --- Viewport proxy ---
+    proxy_grp = chunk.Group("Viewport Proxy", flags=_GF)
+    proxy_mode = chunk.Menu(
+        "proxy_mode",
+        "Proxy",
+        menu_items=_PROXY_MODES,
+        default_value="Off",
+        tooltip="A lighter stand-in for the viewport, beside the full scatter.\n"
+        "Off: one instancer, drawn everywhere.\n"
+        "Bounds: the proxy draws each instance as its prototype's bounding box.\n"
+        "Full: the proxy draws the real prototypes, just fewer of them.\n"
+        "When on, the full instancer gets purpose=render and a sibling <Instancer Path>_proxy "
+        "gets purpose=proxy -- a viewport showing proxy (usdview's default) draws that one, a "
+        "final render draws the full one.",
+    )
+    proxy_mode.add_callback(_on_proxy_mode_changed)
+    proxy_grp.add_param(proxy_mode)
+    proxy_share = chunk.Slider(
+        "proxy_share",
+        "Proxy Share",
+        default_value=0.1,
+        min_value=0.0,
+        max_value=1.0,
+        tooltip="Fraction of the instances the proxy keeps -- a seeded, stable subset. 1 keeps "
+        "them all (useful with Bounds).",
+    )
+    proxy_share.set_state(chunk.ChunkFlags.State.HIDDEN)  # Off is the default
+    proxy_grp.add_param(proxy_share)
+    chunk_api.add_param(_collapsed(proxy_grp))
 
     # --- Outputs: readouts of the last cook, not settings ---
     #

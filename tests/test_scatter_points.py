@@ -691,3 +691,43 @@ def test_align_to_normal_keeps_an_upright_prototype_upright_on_either_up_axis(up
     quat = mod._compute_orientation("Align to Normal", slope, random.Random(0), None, up)
     rotated = Gf.Rotation(Gf.Quatd(quat.GetReal(), Gf.Vec3d(quat.GetImaginary()))).TransformDir(Gf.Vec3d(up))
     assert Gf.IsClose(rotated, Gf.Vec3d(slope), 1e-5)
+
+
+@pytest.mark.parametrize("mode", ["Bounds", "Full"])
+def test_viewport_proxy_is_a_purpose_split_subset(mode) -> None:
+    """Proxy on: the full scatter is purpose=render, a sibling `_proxy` instancer is
+    purpose=proxy and keeps a seeded share of the same instances."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    _crayon(stage)
+    _set_proto(scatter, "/crayon")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("auto_spacing").value = False
+    scatter.get_param("spacing").value = 0.0
+    scatter.get_param("max_count").value = 100
+
+    mod.module.execute(scatter)
+    assert not _instancer(stage).GetPurposeAttr().HasAuthoredValue()
+    assert not stage.GetPrimAtPath("/ScatterInstancer_proxy")
+
+    scatter.get_param("proxy_mode").value = mode
+    scatter.get_param("proxy_share").value = 0.25
+    mod.module.execute(scatter)
+
+    full = _instancer(stage)
+    proxy = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer_proxy"))
+    assert full.GetPurposeAttr().Get() == UsdGeom.Tokens.render
+    assert proxy.GetPurposeAttr().Get() == UsdGeom.Tokens.proxy
+    assert len(full.GetPositionsAttr().Get()) == 100
+    kept = list(proxy.GetPositionsAttr().Get())
+    assert len(kept) == 25
+    assert set(map(tuple, kept)) <= set(map(tuple, full.GetPositionsAttr().Get()))
+    assert len(proxy.GetProtoIndicesAttr().Get()) == 25
+
+    targets = proxy.GetPrototypesRel().GetTargets()
+    assert len(targets) == 1
+    assert targets[0].HasPrefix("/ScatterInstancer_proxy")
+    # The render instancer keeps its own prototypes.
+    assert full.GetPrototypesRel().GetTargets()[0].HasPrefix("/ScatterInstancer")
+    if mode == "Bounds":
+        assert stage.GetPrimAtPath(targets[0]).IsA(UsdGeom.Cube)
