@@ -1825,3 +1825,37 @@ def test_a_lofted_width_is_the_params_not_the_nodes(view):
     node = view.tree.nodes[group]
     assert node["width"] == pytest.approx(8.0)
     assert node.width != pytest.approx(8.0)
+
+
+# ---------------------------------------------------------------------------
+# every chunk gets a node class
+# ---------------------------------------------------------------------------
+
+def test_a_chunk_with_private_params_still_gets_a_node(view):
+    """Blender refuses an RNA property whose name starts with "_", and one refused property
+    failed the whole class: Layer (with its _new_layer_id bookkeeping) had no node at all,
+    so it never showed in the Add menu or in a graph."""
+    assert "layer" in bg._generated
+    layer = _make(chunk_registry.ChunkRegistry().get_chunk_module("layer"))
+    layer.name = "Lookdev"
+    view.scene.add_chunk(layer)
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    assert "Lookdev" in [n.label for n in view.tree.nodes]
+
+
+def test_every_chunk_that_builds_gets_a_node_class(view):
+    """A class that failed to register only logged at debug level, so a chunk could
+    vanish from Blender with nothing to say why."""
+    missing = []
+    for module in chunk_registry.ChunkRegistry().get_chunk_modules():
+        name = getattr(module, "module_name", None)
+        if not name or name in bg._generated:
+            continue
+        try:
+            built = module.create() if module.loaded else module.load()
+        except Exception:
+            continue  # needs a package Blender does not have (PySide6, ...)
+        if built:
+            missing.append(name)
+    assert missing == []

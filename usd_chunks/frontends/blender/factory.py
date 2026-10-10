@@ -379,6 +379,12 @@ def annotations_for(chunk) -> tuple[dict, list, list]:
             # A row param is per instance and per row: an ID property, made by
             # sync_to_node, never a class-level RNA one (see the module docstring).
             continue
+        if param.name.startswith("_"):
+            # Blender refuses an RNA property whose name starts with "_", and one refused
+            # property fails the whole node class: Layer's private bookkeeping params left
+            # it with no node at all. Such a param is an ID property instead, made by
+            # sync_to_node, as a lofted param is.
+            continue
         prop = property_for(param)
         if prop is not None:
             props[param.name] = prop
