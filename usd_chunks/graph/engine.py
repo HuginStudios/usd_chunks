@@ -1633,7 +1633,7 @@ def menu_entries() -> list:
         return []
 
 
-def materialize(scene, nodes, to_usd) -> dict:
+def materialize(scene, nodes, to_usd, nest=None) -> dict:
     """Create clipboard nodes through `scene`.
 
     Qt does NOT use this. Its paste defers wiring through a QTimer because its ports
@@ -1647,6 +1647,8 @@ def materialize(scene, nodes, to_usd) -> dict:
         to_usd: to_usd(rel_x, rel_y) converts a clipboard entry's relative position into
             the coordinates USD stores -- the one part that genuinely differs, because each
             frontend has its own canvas origin and Y convention.
+        nest: The context the nodes go into, or None for the whole graph: where
+            hold_until_wired looks for a view or Output.
 
     Returns:
         {clipboard index: chunk} for each node that was created.
@@ -1662,6 +1664,7 @@ def materialize(scene, nodes, to_usd) -> dict:
             continue
         primary = chunks[0]
         apply_clipboard_node(primary, item)
+        hold_until_wired(scene, nest, chunks)
         with chunk_stage.creating_at(to_usd(item.rel_pos[0], item.rel_pos[1])):
             for chunk in chunks:
                 scene.add_chunk(chunk)
@@ -1918,9 +1921,33 @@ def paste_nodes(scene, stage: Usd.Stage, nodes, edges, to_usd, nest=None,
     if not nodes or scene is None:
         return {}
     with scene.creating_in(nest):
-        made = materialize(scene, nodes, to_usd=to_usd)
+        made = materialize(scene, nodes, to_usd=to_usd, nest=nest)
     rewire_pasted(stage, made, edges, chunks)
     return made
+
+
+def hold_until_wired(scene, context, chunks) -> None:
+    """Block new chunks before they are added, when a view or Output drives their graph.
+
+    Only what the active view or Output reaches cooks, and a new node is wired to nothing.
+    Blocked after adding is too late: add_chunk renames it to a unique name, and a change on
+    an unblocked chunk cooks it -- a pasted Reference composed its asset in, to be hidden
+    by the recook that follows. Qt's create blocks the same way (create_chunk_from_entry).
+    The frontend's recook once it is wired in (recook_active) unblocks and cooks it.
+
+    Views and groups are left alone, as in Qt: a view is a marker, and a group is its own
+    cook domain. A graph nothing drives (no view, no Output) cooks everything.
+
+    Args:
+        scene: The scene.
+        context: The context the chunks go into, or None for the whole graph.
+        chunks: The chunks about to be added.
+    """
+    if not (context_has_view(scene, context) or context_has_output(scene, context)):
+        return
+    for chunk in chunks:
+        if not chunk_stage.is_view_chunk(chunk) and not chunk_stage.is_group_chunk(chunk):
+            chunk.set_blocked(True)
 
 
 def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
@@ -1949,6 +1976,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     try:
         with chunk_stage.creating_at(usd_pos, pin=False), scene.creating_in(nest):
             created = entry.create()
+            hold_until_wired(scene, nest, created)
             for chunk in created:
                 scene.add_chunk(chunk)
     except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:
@@ -2012,7 +2040,7 @@ def group_into_chunkgroup(stage: Usd.Stage, scene, chunks: dict, prims: dict,
     with scene.creating_in(group):
         pasted = materialize(
             scene, nodes,
-            to_usd=lambda rel_x, rel_y: to_usd(centre_x + rel_x, centre_y + rel_y))
+            to_usd=lambda rel_x, rel_y: to_usd(centre_x + rel_x, centre_y + rel_y), nest=group)
 
     for edge in edges:
         src, dst = pasted.get(edge.src_index), pasted.get(edge.dst_index)
@@ -2497,6 +2525,39 @@ def activate_view_slot(stage: Usd.Stage, scene, context: str, chunks: dict,
         logger.exception("recook failed while switching view slot")
         return True, f"recook failed: {type(exc).__name__}"
     return True, f"view {slot} active" if slot else "no active view"
+
+
+def recook_active(stage: Usd.Stage, scene, context: str, chunks: dict) -> str:
+    """Recook a context to what drives it now, after a structural change.
+
+    What drives a context is its active view, or with none its Output. A wire, a deleted
+    node or a new one changes what that reaches, and recook_for_view is what follows it:
+    it unblocks and cooks what is newly reached, and blocks and mutes what is not, so only
+    the view's tree cooks. Qt runs it after every structural edit (_recook_active_view);
+    this is the same step for the frontends that share the engine. Without it, a node
+    wired in after a view switch stayed blocked, and an unwired one cooked on every edit.
+
+    Args:
+        stage: The stage.
+        scene: The scene the context lives in.
+        context: Prim path of the context.
+        chunks: Prim path -> chunk, as a frontend keeps them.
+
+    Returns:
+        A status message if the recook failed, else "".
+    """
+    if scene is None or context_prim(stage, context) is None:
+        return ""
+    owner = context_chunk(scene, chunks, context)
+    slot = read_active_slot(stage, context)
+    view = chunk_stage.find_view_chunk_for_slot(slot, stage, scene, owner) if slot else None
+    try:
+        chunk_stage.recook_for_view(stage, scene, owner, view)
+    except Exception as exc:  # noqa: BLE001
+        # Wide for the reason activate_view_slot's is: a recook runs user modules.
+        logger.exception("recook failed after a graph change")
+        return f"recook failed: {type(exc).__name__}"
+    return ""
 
 
 def new_view_slot(stage: Usd.Stage, scene, context_chunk,

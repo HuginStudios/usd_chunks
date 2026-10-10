@@ -11,7 +11,6 @@ import logging
 import os
 import time
 import weakref
-from contextlib import contextmanager
 from collections.abc import Iterable
 
 import shiboken6
@@ -19,7 +18,6 @@ from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
-from usd_chunks import chunk_cook
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
@@ -5378,7 +5376,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         the chunk's edit layer -- once the chunk has a live prim/edit_context, exactly matching
         how a hand-created Sublayer chunk picks up a path typed into its UI after creation.
 
-        Blocked before the path is set, and not cooked until wired (_uncooked_until_wired).
+        Blocked before the path is set (_block_if_unreached), and not cooked until wired.
         Blocking suppresses ChunkNoticePropagator.data_changed/send_self (chunk_notice.py
         checks is_blocked() up the whole owner chain), so Sublayer's own add_callback
         handler does not author subLayerPaths now. That once left the dropped path sitting in
@@ -5402,21 +5400,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with self._uncooked_until_wired(chunks):
-            with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
-                    scene.creating_in(self._nest_target(context)):
-                for c in chunks:
-                    scene.add_chunk(c)
-            # Blocked before the path is set, so its callback does not sublayer the file in
-            # only for the recook below to hide it -- the viewport loading the whole file to
-            # throw it away. Nothing is lost: execute() applies the same paths, and the chunk
-            # stays stale until it is wired in and cooks.
-            primary.set_blocked(True)
-            list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
-            if list_group is not None:
-                list_group.size = 1
-                if row := list_group.get_indexed_param("sublayer_path", 0):
-                    row.value = path
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
+            for c in chunks:
+                scene.add_chunk(c)
+        # Wired to nothing, so blocked before the path is set: its callback does not sublayer
+        # the file in only for the recook below to hide it -- the viewport loading the whole
+        # file to throw it away. Nothing is lost: execute() applies the same paths, and the
+        # chunk stays stale until it is wired in and cooks.
+        self._block_if_unreached(primary)
+        list_group = primary.get_param("imports", _chunk.is_inst(_chunk.ListGroup))
+        if list_group is not None:
+            list_group.size = 1
+            if row := list_group.get_indexed_param("sublayer_path", 0):
+                row.value = path
 
         if view_exists:
             # recook_for_view (via _recook_active_view) sets c.set_blocked(c not in cook_set)
@@ -5455,36 +5452,32 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with self._uncooked_until_wired(chunks):
-            with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
-                    scene.creating_in(self._nest_target(context)):
-                for c in chunks:
-                    scene.add_chunk(c)
-            if file_param := primary.get_param("file_path"):
-                file_param.value = path
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
+            for c in chunks:
+                scene.add_chunk(c)
+        # Wired to nothing, so blocked: only what the view or Output reaches cooks, and cooked
+        # now a Reference composed its whole asset in for the viewport to load, only to be
+        # hidden again. set_param_visibly still runs its callbacks -- the location is suggested
+        # from the file -- without cooking it; it stays stale and cooks once wired in.
+        self._block_if_unreached(primary)
+        if file_param := primary.get_param("file_path"):
+            chunk_graph.set_param_visibly(primary, file_param, path)
 
         if view_exists:
             self._recook_active_view()
 
-    @staticmethod
-    @contextmanager
-    def _uncooked_until_wired(chunks: list[core.ChunkBase]):
-        """Run the block's solves, but cook none of chunks: they are wired to nothing yet.
+    def _block_if_unreached(self, c: core.ChunkBase) -> None:
+        """Block a dropped chunk its graph's view or Output does not reach -- one wired to nothing.
 
-        Only what the view or Output reaches cooks, and a dropped node is not reached until it
-        is wired. Cooked anyway, a Reference composed its whole asset in, for the viewport to
-        load, only for the recook that follows to hide it again -- on every drop.
-
-        Not blocked from the start: a blocked chunk hears nothing, and its param callbacks are
-        what fill it in (a Reference's location, from its file). Inside one solve the callbacks
-        run at once and the cooks wait for its end (chunk_cook.solving), so blocking the
-        chunks just before the end lets the callbacks run and has the cooks refused. Refused,
-        they stay stale, and cook when the node is wired in.
+        Explicitly, before its file is set: a frontend's recook blocks it too, but only after,
+        and the set would have cooked it by then. A graph that nothing drives cooks
+        everything, so it is left alone there (chunk_stage.reached_by_graph_driver).
         """
-        with chunk_cook.solving():
-            yield
-            for c in chunks:
-                c.set_blocked(True)
+        scene = _chunk.get_scene()
+        stage = scene.get_stage() if scene else None
+        if stage is not None and not chunk_stage.reached_by_graph_driver(c, stage, scene):
+            c.set_blocked(True)
 
     def _import_as_script(self, path: str, scene_pos: QtCore.QPointF) -> None:
         """Drop-a-.py-file: a script_runner node at the drop point, running that file.
@@ -5504,13 +5497,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with self._uncooked_until_wired(chunks):
-            with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
-                    scene.creating_in(self._nest_target(context)):
-                for c in chunks:
-                    scene.add_chunk(c)
-            if file_param := primary.get_param("script_file"):
-                file_param.value = path
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+                scene.creating_in(self._nest_target(context)):
+            for c in chunks:
+                scene.add_chunk(c)
+        # As in _import_as_reference: blocked until wired, its callbacks still run.
+        self._block_if_unreached(primary)
+        if file_param := primary.get_param("script_file"):
+            chunk_graph.set_param_visibly(primary, file_param, path)
 
         if view_exists:
             self._recook_active_view()

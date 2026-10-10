@@ -845,6 +845,7 @@ def _reload_after_connect(view) -> None:
     has fully returned and it is safe.
     """
     if active_view() is view:
+        view._recook()
         view.reload()
     return None
 
@@ -1258,7 +1259,17 @@ class BlenderGraphView:
         removed = chunk_graph.delete_chunks(chosen)
         self.selected_nodes = set()
         self.status = f"deleted {removed}"
+        self._recook()
         self.reload()
+
+    def _recook(self) -> None:
+        """After a wire, delete, create or paste: recook to what drives this context.
+
+        Only what the active view or Output reaches cooks; chunk_graph.recook_active
+        unblocks and cooks what an edit brought into reach and blocks what it took out.
+        """
+        if failed := chunk_graph.recook_active(self.stage, self.scene, self.context, self.chunks):
+            self.status = failed
 
     def toggle_disable_selected(self) -> None:
         """Flip DISABLED. A disabled chunk stays visible -- muted, in Blender's terms."""
@@ -1337,6 +1348,7 @@ class BlenderGraphView:
             chunks=self.chunks)
 
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self._recook()
         self.reload()
         self.set_selection({chunk_stage.get_chunk_prim_path(c) for c in made.values()})
         self.status = f"pasted {len(made)}"
@@ -1370,6 +1382,7 @@ class BlenderGraphView:
             self.status = "nothing to group"
             return
         self.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.scene.get_chunks()}
+        self._recook()
         self.reload()
         self.set_selection([group_path] if group_path in self.prims else ())
         self.status = f"grouped {count}"
@@ -1401,6 +1414,7 @@ class BlenderGraphView:
         landed = made[0].rsplit("/", 1)[0]
         if landed != self.context:
             self.context = landed
+        self._recook()
         self.reload()
 
         self.set_selection(set(made))

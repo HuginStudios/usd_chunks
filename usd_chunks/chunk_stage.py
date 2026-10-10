@@ -2248,6 +2248,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # creates (paste and menu create in the engine do not), and cooked anyway, a pasted
         # Reference composed its whole asset in for a recook to hide again. Left stale -- a
         # chunk that never cooked is -- so it cooks once it is wired in.
+        #
+        # Not blocked here, though recook_for_view will block it: a blocked chunk sends no
+        # value notices, so the values its creator sets next -- a script's, a paste's --
+        # would never reach its prim or its widgets. The frontend's recook after a create
+        # (chunk_graph.recook_active, Qt's _recook_active_view) blocks it once they are in.
         if not reached_by_graph_driver(chunk, self._stage, self._scene):
             return
 
