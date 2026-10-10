@@ -39,7 +39,7 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 import bpy  # noqa: E402
 
 from mathutils import Matrix, Vector  # noqa: E402
-from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Kind, Sdf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk, chunk_registry  # noqa: E402
@@ -1124,6 +1124,33 @@ def test_a_scale_holds_the_middle_of_the_geometry_still(cup):
     chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, gz.gesture_local(local, parent, grown))
     assert tuple(gz.anchor_world(view.stage, desc)) == pytest.approx((10.0, 4.0, 0.0), abs=1e-5)
     assert _world(prim).Transform(Gf.Vec3d(1, 0, 0))[0] == pytest.approx(12.0)
+
+
+def test_a_click_picks_the_component_it_lands_in(view):
+    """Clicking one wheel moves the car: the pick walks up to the component."""
+    stage = view.stage
+    UsdGeom.Xform.Define(stage, "/Set")
+    car = UsdGeom.Xform.Define(stage, "/Set/Car").GetPrim()
+    Usd.ModelAPI(car).SetKind(Kind.Tokens.component)
+    UsdGeom.Xform.Define(stage, "/Set/Car/Wheels")
+    UsdGeom.Cube.Define(stage, "/Set/Car/Wheels/FrontLeft")
+    UsdGeom.Cube.Define(stage, "/Loose")
+    assert vp.component_of(stage, "/Set/Car/Wheels/FrontLeft") == "/Set/Car"
+    assert vp.component_of(stage, "/Set/Car") == "/Set/Car"
+    assert vp.component_of(stage, "/Loose") == "/Loose", "no component: what was clicked"
+
+
+def test_without_kinds_a_click_picks_the_referenced_asset(view, tmp_path):
+    """A DCC export has no kinds; the prim the reference landed on is the asset."""
+    asset = Usd.Stage.CreateNew(str(tmp_path / "car.usda"))
+    root = UsdGeom.Xform.Define(asset, "/root").GetPrim()
+    UsdGeom.Xform.Define(asset, "/root/Body")
+    UsdGeom.Cube.Define(asset, "/root/Body/Wheel_FL")
+    asset.SetDefaultPrim(root)
+    asset.GetRootLayer().Save()
+    car = view.stage.DefinePrim("/Car", "Xform")
+    car.GetReferences().AddReference(str(tmp_path / "car.usda"))
+    assert vp.component_of(view.stage, "/Car/Body/Wheel_FL") == "/Car"
 
 
 def test_bounds_picking_finds_the_prim_under_the_ray(view):

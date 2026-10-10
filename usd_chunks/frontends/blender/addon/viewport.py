@@ -26,7 +26,7 @@ import traceback
 
 import bpy
 from bpy_extras import view3d_utils
-from pxr import Gf, Glf, Sdf, Tf, Usd, UsdGeom, UsdImagingGL
+from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL
 
 from usd_chunks.frontends.blender import nodegraph as bg
 
@@ -144,6 +144,32 @@ def ray_from_region(region, rv3d, mouse_x, mouse_y):
     origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
     direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
     return tuple(origin), tuple(direction)
+
+
+def _ancestors(stage, path: str):
+    prim = stage.GetPrimAtPath(path)
+    while prim and prim.IsValid() and not prim.IsPseudoRoot():
+        yield prim
+        prim = prim.GetParent()
+
+
+def component_of(stage, path: str) -> str:
+    """The asset a picked prim belongs to, or the prim itself.
+
+    A click lands on a gprim -- one wheel of a car -- but the thing a user means to move is
+    the asset it belongs to, which is what usdview's Models pick mode answers too. The
+    nearest `component` model first; failing that, the nearest prim that brings in a
+    reference or payload, since DCC exports (a Porsche out of Blender) usually carry no
+    kinds at all and the arc a Reference chunk authored is then the only asset boundary
+    there is. A prim inside neither stays what was clicked.
+    """
+    for prim in _ancestors(stage, path):
+        if Usd.ModelAPI(prim).IsKind(Kind.Tokens.component):
+            return str(prim.GetPath())
+    for prim in _ancestors(stage, path):
+        if prim.HasAuthoredReferences() or prim.HasAuthoredPayloads():
+            return str(prim.GetPath())
+    return path
 
 
 def pick_by_bounds(stage, origin, direction, time=None) -> str | None:
@@ -405,7 +431,13 @@ class USDCHUNKS_OT_pick_prim(bpy.types.Operator):
         except Exception:
             traceback.print_exc()
             return {"PASS_THROUGH"}
+        if path:
+            path = component_of(stage, path)
         bg.set_picked_prim_paths([path] if path else [])
+        # The pivot dot is drawn from the pick, and nothing else redraws the view on one:
+        # without this the dot only appeared once the user next orbited.
+        if context.area is not None:
+            context.area.tag_redraw()
         self.report({"INFO"}, f"picked {path}" if path else "nothing under cursor")
         return {"PASS_THROUGH"}
 
