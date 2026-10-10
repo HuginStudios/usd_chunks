@@ -172,3 +172,93 @@ def test_close_stops_recording(stage, history):
     history.close()
     stage.GetRootLayer().GetAttributeAtPath("/chunks/G.inputs:size").default = 5.0
     assert history.current == 0
+
+
+# ---------------------------------------------------------------------------
+# UndoStack: a host with no undo of its own; a step runs from one input to the next
+# ---------------------------------------------------------------------------
+
+def _set(stage, path, value):
+    stage.GetRootLayer().GetAttributeAtPath(f"{path}.inputs:size").default = value
+
+
+@pytest.fixture
+def undo_stack(stage):
+    stack = chunk_undo.UndoStack(stage)
+    yield stack
+    stack.close()
+
+
+def test_a_drag_is_one_undo(stage, undo_stack):
+    undo_stack.note_input()  # the press
+    for value in (2.0, 3.0, 4.0):  # its ticks
+        _set(stage, "/chunks/G", value)
+    assert undo_stack.undo()
+    assert _size(stage.GetRootLayer(), "/chunks/G") == 1.0
+    assert not undo_stack.can_undo()
+
+
+def test_a_cook_after_an_edit_is_not_an_undo_of_its_own(stage, undo_stack):
+    """A deferred cook writes the chunk prim a tick later, with no input in between."""
+    undo_stack.note_input()
+    _set(stage, "/chunks/G", 5.0)
+    _set(stage, "/chunks/G/C", 9.0)  # the cook
+    undo_stack.undo()
+    root = stage.GetRootLayer()
+    assert (_size(root, "/chunks/G"), _size(root, "/chunks/G/C")) == (1.0, 2.0)
+
+
+def test_each_input_is_its_own_step_and_redo_walks_back(stage, undo_stack):
+    root = stage.GetRootLayer()
+    for value in (5.0, 6.0):
+        undo_stack.note_input()
+        _set(stage, "/chunks/G", value)
+    undo_stack.undo()
+    assert _size(root, "/chunks/G") == 5.0
+    undo_stack.undo()
+    assert _size(root, "/chunks/G") == 1.0
+    undo_stack.redo()
+    undo_stack.redo()
+    assert _size(root, "/chunks/G") == 6.0
+    assert not undo_stack.can_redo()
+
+
+def test_an_edit_after_an_undo_drops_the_redo(stage, undo_stack):
+    undo_stack.note_input()
+    _set(stage, "/chunks/G", 5.0)
+    undo_stack.undo()
+    undo_stack.note_input()
+    _set(stage, "/chunks/G", 7.0)
+    assert not undo_stack.can_redo()
+    assert not undo_stack.redo()
+
+
+def test_a_cook_after_an_undo_keeps_the_redo(stage, undo_stack):
+    """Ctrl+Z is not input: what the recook writes belongs to the step it went back to."""
+    undo_stack.note_input()
+    _set(stage, "/chunks/G", 5.0)
+    undo_stack.undo()
+    _set(stage, "/chunks/G/C", 9.0)  # the recook
+    assert undo_stack.can_redo()
+    undo_stack.redo()
+    assert _size(stage.GetRootLayer(), "/chunks/G") == 5.0
+
+
+def test_changes_before_any_input_are_where_undo_stops(stage, undo_stack):
+    """Load-time cooks are the network as it opened."""
+    _set(stage, "/chunks/G", 3.0)
+    assert not undo_stack.can_undo()
+
+
+def test_retrack_starts_an_empty_history_on_the_new_stage(stage, undo_stack):
+    undo_stack.note_input()
+    _set(stage, "/chunks/G", 5.0)
+    other = Usd.Stage.CreateInMemory()
+    _def_chunk(other.GetRootLayer(), "/chunks/X", size=1.0)
+    undo_stack.retrack(other)
+    assert not undo_stack.can_undo()
+    undo_stack.note_input()
+    _set(other, "/chunks/X", 2.0)
+    undo_stack.undo()
+    assert _size(other.GetRootLayer(), "/chunks/X") == 1.0
+    assert _size(stage.GetRootLayer(), "/chunks/G") == 5.0

@@ -11,7 +11,8 @@ follows any layer edit. Cooked output is not recorded: it lives in each chunk's 
 and cooking makes it again.
 
 A host with its own undo stack stores only `History.key()` with each of its steps and moves
-there after an undo or redo (Blender: frontends/blender/addon/undo.py).
+there after an undo or redo (Blender: frontends/blender/addon/undo.py). A host without one
+uses `UndoStack`, which groups by user input (usdview and any Qt app: frontends/qt/undo.py).
 
 Scope (docs/adr/0003): only chunk prims are undone. An edit to a prim that is not a chunk
 -- scene data authored directly, another plugin or a script writing to the stage -- is not
@@ -69,6 +70,11 @@ class History:
         self.current = 0
         self.restoring = False
         self._next = 1
+        #: Group by user input: a step starts at the first change after `note_input()`, and
+        #: what arrives without one folds into the step before. Off where the host's own
+        #: undo steps are the boundaries (Blender).
+        self.grouping = False
+        self._input = False
         self._listener = None
         self._scratch = Sdf.Layer.CreateAnonymous("usd_chunks_undo.usda")
         #: chunk prim path -> {layer identifier -> text of its own spec in that layer}
@@ -224,6 +230,12 @@ class History:
         # belongs to the step being restored, not to a new one.
         if not changes or self.restoring:
             return False
+        if self.grouping and not self._input:
+            # Nothing the user did since the last step: a drag's next tick, or a deferred
+            # cook writing its outputs. It is part of the step before, not one of its own.
+            self._merge(self.current, changes)
+            return False
+        self._input = False
         step = self._next
         self._next += 1
         self.parents[step] = self.current
@@ -231,6 +243,20 @@ class History:
         self.current = step
         self._prune()
         return True
+
+    def note_input(self) -> None:
+        """The user pressed something: the next change starts a step (with `grouping`)."""
+        self._input = True
+
+    def _merge(self, step: int, changes: list) -> None:
+        """Fold `changes` into `step`: each spec keeps its oldest before, takes the newest
+        after."""
+        merged = {(lid, path): (old, new) for lid, path, old, new in self.changes[step]}
+        for lid, path, old, new in changes:
+            first = merged[lid, path][0] if (lid, path) in merged else old
+            merged[lid, path] = (first, new)
+        self.changes[step] = tuple((lid, path, old, new)
+                                   for (lid, path), (old, new) in merged.items())
 
     def _prune(self) -> None:
         oldest = self._next - MAX_STEPS
@@ -287,3 +313,78 @@ class History:
             self.restoring = False
         self.current = target
         return True
+
+
+class UndoStack:
+    """Linear undo and redo, for a host with no undo stack of its own (usdview, the Qt app).
+
+    A step is everything from one user input to the next: the host calls `note_input()` on
+    each press (frontends/qt/undo.py does it for any Qt app), and a change that arrives
+    without one -- a drag's next tick, a deferred cook writing its outputs -- folds into the
+    step before. So a drag is one undo, and a cook is never an undo of its own.
+
+    Args:
+        stage: The stage to record; `retrack` follows a replaced one.
+    """
+
+    def __init__(self, stage: Usd.Stage | None):
+        self.history: History | None = None
+        self._redo: list[int] = []
+        self.retrack(stage)
+
+    def retrack(self, stage: Usd.Stage | None) -> None:
+        """Record `stage` from now on, with an empty history."""
+        self.close()
+        if stage is not None:
+            self.history = History(stage, on_record=self._on_record)
+            self.history.grouping = True
+            self.history.listen()
+
+    def close(self) -> None:
+        """Stop recording and forget the history."""
+        if self.history is not None:
+            self.history.close()
+            self.history = None
+        self._redo.clear()
+
+    def note_input(self) -> None:
+        """The user pressed something: the next change is a new undo step."""
+        if self.history is not None:
+            self.history.note_input()
+
+    def _on_record(self, _history: History) -> None:
+        self._redo.clear()  # a new edit after an undo: the old redo is gone, as anywhere
+
+    def can_undo(self) -> bool:
+        history = self.history
+        return history is not None and history.parents.get(history.current) is not None
+
+    def can_redo(self) -> bool:
+        return bool(self._redo)
+
+    def undo(self) -> bool:
+        """Go back one step.
+
+        Returns:
+            True if anything was undone.
+        """
+        if not self.can_undo():
+            return False
+        history = self.history
+        step = history.current
+        if not history.move_to(history.key(history.parents[step])):
+            return False
+        self._redo.append(step)
+        return True
+
+    def redo(self) -> bool:
+        """Go forward one step.
+
+        Returns:
+            True if anything was redone.
+        """
+        history = self.history
+        while history is not None and self._redo:
+            if history.move_to(history.key(self._redo.pop())):
+                return True
+        return False
