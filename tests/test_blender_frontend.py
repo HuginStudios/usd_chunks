@@ -1544,6 +1544,27 @@ def test_a_change_records_only_the_chunk_prims_it_touched(tracked):
     assert touched == {Sdf.Path(move_path)}
 
 
+def test_a_chunk_prim_outside_the_chunks_root_is_undone_too(view):
+    """A network can live under an asset's own prim; any Chunk prim in the layer counts,
+    and a prim that is not a chunk is never recorded."""
+    layer = view.stage.GetRootLayer()
+    hosted = Sdf.CreatePrimInLayer(layer, "/asset/net/Hosted")
+    hosted.specifier, hosted.typeName = Sdf.SpecifierDef, "Chunk"
+    attr = Sdf.AttributeSpec(hosted, "inputs:size", Sdf.ValueTypeNames.Double)
+    attr.default = 1.0
+    bundo.track(view.tree, view.stage)
+    try:
+        before = view.tree[bundo.STEP_KEY]
+        attr.default = 4.0
+        Sdf.CreatePrimInLayer(layer, "/asset/geo").typeName = "Mesh"
+        history = bundo.current_history()
+        assert {p for p, _o, _n in history.changes[history.current]} == {hosted.path}
+        _blender_undoes_to(view, before)
+        assert layer.GetAttributeAtPath("/asset/net/Hosted.inputs:size").default == 1.0
+    finally:
+        bundo.untrack()
+
+
 def test_undo_puts_a_param_edit_back(tracked):
     view = tracked
     move_path = _node(view, "Move").name

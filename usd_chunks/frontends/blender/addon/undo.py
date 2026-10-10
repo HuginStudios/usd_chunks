@@ -6,7 +6,8 @@ network did: a param edit, a new node, a delete.
 
 So the network rides along with Blender's undo. Every chunk prim -- its params, its wires,
 which view is active -- lives in the stage's root layer. Each time the stage reports a
-change, the chunk prims it touched are recorded as a step: each prim's own spec (no child
+change, the chunk prims it touched -- any Chunk prim in the layer, under CHUNKS_ROOT or an
+asset's own prim -- are recorded as a step: each prim's own spec (no child
 prims) before and after. Steps form a tree, so an edit made after an undo starts a branch
 rather than throwing redo away. The node tree holds only the id of the step the network is
 at (`STEP_KEY`), and Blender stores that id with each undo step like any other data on the
@@ -42,8 +43,6 @@ STEP_KEY = "_usd_undo_step"
 #: per tick, so this is many drags deep; older steps are dropped and undo stops there.
 MAX_STEPS = 5000
 
-_CHUNKS_ROOT = Sdf.Path(chunk_naming.CHUNKS_ROOT)
-
 _state = {"history": None, "listener": None, "tree_name": None}
 
 
@@ -74,7 +73,7 @@ class History:
         self._next = 1
         self._scratch = Sdf.Layer.CreateAnonymous("usd_chunks_undo.usda")
         self.specs: dict[Sdf.Path, str] = {}
-        for path in self._chunk_paths_under(_CHUNKS_ROOT):
+        for path in self._chunk_paths_under(Sdf.Path.absoluteRootPath):
             self.specs[path] = self._snapshot(path)
 
     # -- ids --------------------------------------------------------------------------
@@ -137,15 +136,11 @@ class History:
             stack.extend(spec.nameChildren)
 
     def touched(self, notice: Usd.Notice.ObjectsChanged) -> set[Sdf.Path]:
-        """The chunk prims a stage change may have touched."""
-        paths = {p.GetPrimPath() for p in notice.GetChangedInfoOnlyPaths()
-                 if p.HasPrefix(_CHUNKS_ROOT)}
+        """The chunk prims a stage change may have touched -- anywhere in the layer, not
+        only under CHUNKS_ROOT: a network can live under an asset's own prim."""
+        paths = {p.GetPrimPath() for p in notice.GetChangedInfoOnlyPaths()}
         for resynced in notice.GetResyncedPaths():
             prim = resynced.GetPrimPath()
-            if _CHUNKS_ROOT.HasPrefix(prim):  # an ancestor of every chunk, or the root
-                prim = _CHUNKS_ROOT
-            elif not prim.HasPrefix(_CHUNKS_ROOT):
-                continue
             paths.update(p for p in self.specs if p.HasPrefix(prim))
             paths.update(self._chunk_paths_under(prim))
         return paths
