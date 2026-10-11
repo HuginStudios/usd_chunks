@@ -2152,7 +2152,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 # and stops tracking the variable at all.
                 if text := chunk_utils.read_expression_text(attr):
                     self.value = text
-                elif val is not None:
+                elif val is not None and not chunk_utils.values_match(self.__dict__.get("value"), val):
+                    # Skipped when the attribute only holds this param's own value back at
+                    # float32 precision: assigning it would count as an edit and cook the
+                    # chunk again, once per float param it was made with.
                     self.value = val
             elif text := chunk_utils.read_expression_text(attr):
                 self.value = text

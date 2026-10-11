@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import random
 
+import numpy as np
 import pytest
 from pxr import Gf, Usd, UsdGeom, Vt, Sdf
 
@@ -1192,3 +1193,109 @@ def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
     brush_mod.execute(c)
 
     assert _weights(stage) == pytest.approx(before)
+
+
+# ---------------------------------------------------------------------------
+# Spray: points sprinkled under the brush
+# ---------------------------------------------------------------------------
+
+def _spray_brush(stage, **params):
+    c = _brush(stage, **params)
+    c._exec_prim_path = "/chunks/ScatterBrush"
+    c.get_param("output").value = brush_mod._OUTPUT_SPRAY
+    return c
+
+
+def _quad(stage, path="/World/Field", half=50.0):
+    """One quad: no vertex anywhere near a dab in its middle."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.GetPointsAttr().Set([(-half, -half, 0), (half, -half, 0), (half, half, 0), (-half, half, 0)])
+    mesh.GetFaceVertexCountsAttr().Set([4])
+    mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+    return mesh
+
+
+def _xyz(stage, c):
+    return np.array([tuple(p) for p in _points(stage, c)]).reshape(-1, 3)
+
+
+def test_spray_sprinkles_points_inside_the_brush_spacing_apart() -> None:
+    stage = _stage_with_floor()
+    c = _spray_brush(stage, radius=3.0, strength=1.0, spray_spacing=0.5)
+
+    assert _stroke(c, (10.0, 10.0, 0.0)) is True
+
+    p = _xyz(stage, c)
+    assert len(p) > 30
+    assert (np.linalg.norm(p - [10.0, 10.0, 0.0], axis=1) <= 3.0 + 1e-6).all()
+    assert np.allclose(p[:, 2], 0.0)                       # on the surface
+    d = np.linalg.norm(p[:, None] - p[None], axis=2) + np.eye(len(p)) * 1e9
+    assert d.min() >= 0.5 - 1e-6
+
+
+def test_holding_the_spray_fills_up_to_spacing_and_no_further() -> None:
+    """Strength is how much of the brush one dab fills; dabbing again tops it up, but the
+    spacing caps it, so holding still never piles points up."""
+    stage = _stage_with_floor()
+    c = _spray_brush(stage, radius=3.0, strength=0.2, spray_spacing=0.5)
+    _stroke(c, (10.0, 10.0, 0.0))
+    first = len(_points(stage, c))
+    for _ in range(40):
+        _stroke(c, (10.0, 10.0, 0.0))
+    full = _xyz(stage, c)
+    assert len(full) > first * 2
+    d = np.linalg.norm(full[:, None] - full[None], axis=2) + np.eye(len(full)) * 1e9
+    assert d.min() >= 0.5 - 1e-6
+    assert len(full) < np.pi * 9.0 / (0.866 * 0.25)        # never past hex packing
+
+
+def test_spray_works_on_a_single_quad() -> None:
+    """The point of spraying rather than painting a field: one big quad has a vertex per
+    corner, and a stroke in its middle still lands exactly where it was made."""
+    stage = _stage_with_floor()
+    _quad(stage)
+    c = _spray_brush(stage, target="/World/Field", radius=1.0, strength=1.0, spray_spacing=0.2)
+
+    _stroke(c, (3.0, -2.0, 0.0))
+
+    p = _xyz(stage, c)
+    assert len(p) > 10
+    assert (np.linalg.norm(p - [3.0, -2.0, 0.0], axis=1) <= 1.0 + 1e-6).all()
+
+
+def test_subtract_rubs_sprayed_points_out() -> None:
+    stage = _stage_with_floor()
+    c = _spray_brush(stage, radius=3.0, strength=1.0, spray_spacing=0.5)
+    _stroke(c, (6.0, 10.0, 0.0), (12.0, 10.0, 0.0))
+    c.get_param("mode").value = "Subtract"
+    c.get_param("radius").value = 2.0
+
+    _stroke(c, (6.0, 10.0, 0.0))
+
+    p = _xyz(stage, c)
+    assert len(p)
+    assert (np.linalg.norm(p - [6.0, 10.0, 0.0], axis=1) > 2.0).all()
+
+
+def test_fill_sprays_the_whole_surface() -> None:
+    stage = _stage_with_floor()
+    c = _spray_brush(stage, spray_spacing=1.0)
+
+    brush_mod._fill_paint(c.get_param("fill_paint"), None, None)
+
+    p = _xyz(stage, c)
+    assert len(p) > 0.5 * 400 / 0.866 * 0.7
+    assert p[:, 0].min() < 2.0 and p[:, 0].max() > 18.0
+    d = np.linalg.norm(p[:, None] - p[None], axis=2) + np.eye(len(p)) * 1e9
+    assert d.min() >= 1.0 - 1e-6
+
+
+def test_sprayed_points_reach_scatter_as_painted_points() -> None:
+    stage = _stage_with_floor()
+    c = _spray_brush(stage, radius=2.0, strength=1.0, spray_spacing=0.5)
+    _stroke(c, (10.0, 10.0, 0.0))
+
+    placed, normals = scatter_mod._painted_points(stage, c.get_param("points_path").value)
+
+    assert len(placed) == len(_points(stage, c)) > 5
+    assert len(normals) == len(placed)

@@ -306,3 +306,54 @@ def test_trails_swell_and_sink_into_the_surface():
     pts, _, w = trails._curves_at(paths, keep, 10, np.array([0.4]), 1.0, variation=0.5, frequency=0.4,
                                   sink=0.6, **kw)
     assert np.allclose(pts[:, 1], 0.5 * w * 0.6)  # into the wall, which faces -Y
+
+
+def test_keeping_off_a_wide_curve_needs_no_spacing(scene):
+    """Spacing 0 and Keep Away Distance 0 sampled the curve every half micrometre -- 370
+    million points along a road, out of memory. The curve's own width sets the step."""
+    qapp, stage, mk = scene
+    _cylinder(stage)
+    UsdGeom.Sphere.Define(stage, "/Drop").GetRadiusAttr().Set(0.5)
+    run = UsdGeom.BasisCurves.Define(stage, "/Run")
+    run.GetPointsAttr().Set([Gf.Vec3f(0.05, 0, 0.2), Gf.Vec3f(0.05, 0, 0.0)])
+    run.GetCurveVertexCountsAttr().Set([2])
+    run.GetWidthsAttr().Set([0.02])
+    _scatter(mk, spacing=0.0, max_count=600, max_slope=180.0, inst_path="/Drops", size_spacing=True,
+             avoid_prims="/Run", avoid_distance=0.0)
+    qapp.processEvents()
+    p = np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Drops")).GetPositionsAttr().Get())
+    assert len(p) > 200
+    assert np.hypot(p[:, 0] - 0.05, p[:, 1]).min() >= 0.01 * 0.97
+
+
+@pytest.mark.parametrize("axis,amount", [("Z", 360.0), ("X", 30.0), ("All", 25.0), ("Off", 0.0)])
+def test_the_batched_spin_is_the_loops_spin_exactly(axis, amount) -> None:
+    """Scatter's upright-and-spun fast path must give the per-instance loop's quaternions to
+    the bit (as halves) and leave the generator where the loop would."""
+    import random
+    from pxr import Gf, Vt
+    sp = importlib.import_module("chunks.modelling.scatter_points")
+    a, b = random.Random(7), random.Random(7)
+    want = Vt.QuathArray([sp._to_quath(sp._apply_random_rotation(Gf.Quatf(1, 0, 0, 0), axis, amount, a))
+                          for _ in range(3000)])
+    got = Vt.QuathArray.FromNumpy(sp._spun_quats(3000, axis, amount, b).astype(np.float16))
+    assert np.array_equal(np.asarray(want), np.asarray(got))
+    assert a.random() == b.random()
+
+
+@pytest.mark.parametrize("pocket", [False, True])
+def test_the_batched_density_lookup_is_the_single_point_lookup(pocket) -> None:
+    """sample_many takes a padded fast path when the mesh's neighbourhoods are all about one
+    size (a ground) and a per-cell path when they are not (a dense pocket). Both must give
+    exactly what sample() gives one point at a time."""
+    sp = importlib.import_module("chunks.modelling.scatter_points")
+    rng = np.random.default_rng(2)
+    xs = np.linspace(-50, 50, 60)
+    gx, gy = np.meshgrid(xs, xs, indexing="ij")
+    verts = np.stack([gx.ravel(), gy.ravel(), rng.uniform(-2, 2, gx.size)], 1)
+    if pocket:
+        verts = np.vstack([verts, rng.normal(0, 0.3, (4000, 3))])
+    w = sp._NearestWeight(verts, rng.random(len(verts)))
+    pts = np.stack([rng.uniform(-60, 60, 3000), rng.uniform(-60, 60, 3000), rng.uniform(-3, 3, 3000)], 1)
+    want = np.array([w.sample(p) for p in pts])
+    assert np.array_equal(w.sample_many(pts), want)

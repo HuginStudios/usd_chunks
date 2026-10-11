@@ -1,4 +1,5 @@
-"""Curves to Mesh chunk -- sweeps a tube along a BasisCurves and gives it UVs.
+"""Curves to Mesh chunk -- sweeps a tube (or lays a flat ribbon) along a BasisCurves and
+gives it UVs.
 
 Why this exists: **a curve cannot carry a texture in most renderers.** Measured across the
 three delegates in this bundle, rendering the same `BasisCurves` with and without a
@@ -22,6 +23,13 @@ where the curve is drawn.
 **The frame is rotation-minimising** (Wang et al.'s double reflection). The naive alternative --
 re-deriving a frame per sample from a fixed up-vector -- spins the cross-section as a strand
 turns, which a texture shows up immediately as a barber-pole twist.
+
+**A ribbon lies flat across the stage's up axis** -- a road, a river, a path -- the curve's
+width wide. Its sideways direction is up x tangent rather than the rotation-minimising frame:
+a ribbon that is meant to lie on the ground has to stay level however the curve winds, which
+is exactly the twist the frame exists to keep out of a tube. u runs across it and v along, as
+on a tube, so a texture laid out the other way (a road's lines running across the image) wants
+a UV Transform rotation.
 
 Requires: pxr (OpenUSD), usd_chunks, numpy (a sweep is array work over every sample).
 """
@@ -53,6 +61,10 @@ _UV_PROPORTIONAL = "Proportional"
 _UV_PER_STRAND = "Per Strand"
 _UV_BY_LENGTH = "By Length"
 _UV_MODES = [_UV_PROPORTIONAL, _UV_PER_STRAND, _UV_BY_LENGTH]
+
+_PROFILE_TUBE = "Tube"
+_PROFILE_RIBBON = "Ribbon"
+_PROFILES = [_PROFILE_TUBE, _PROFILE_RIBBON]
 
 #: Below this a segment is a duplicated point, not a direction -- vine pins its ends by
 #: tripling them, so every strand it writes has a few of these.
@@ -323,9 +335,53 @@ def _sweep(points, radii, sides: int, uv_mode: str, tiles_along: float,
     return (ring.reshape(-1, 3), radial.reshape(-1, 3), st.reshape(-1, 2), faces)
 
 
+def _along(points, radii, uv_mode, tiles_along, proportional_unit):
+    """v along a strand: per strand, per scene unit, or in `proportional_unit`s."""
+    step = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    arc = np.concatenate(([0.0], np.cumsum(step)))
+    total = float(arc[-1])
+    if uv_mode == _UV_PER_STRAND and total > _EPSILON:
+        return (arc / total) * tiles_along
+    if uv_mode == _UV_BY_LENGTH:
+        return arc * tiles_along
+    return (arc / max(proportional_unit, _EPSILON)) * tiles_along
+
+
+def _ribbon(points, radii, uv_mode: str, tiles_along: float, tiles_around: float, up):
+    """One strand as a flat strip lying across `up`, the curve's width wide.
+
+    Faces wind counter-clockwise seen from `up`, so the strip faces the sky. Where the curve
+    runs straight up, up x tangent has no direction; the rotation-minimising normal stands in.
+    """
+    points, radii = _drop_duplicates(points, radii)
+    if len(points) < 2:
+        return None
+    tangents, normals, _ = _frames(points)
+    up = np.asarray(up, dtype=np.float64)
+    side = np.cross(up, tangents)
+    length = np.linalg.norm(side, axis=1)
+    flat = length < 1e-6
+    side[flat] = normals[flat]
+    side /= np.maximum(np.linalg.norm(side, axis=1), _EPSILON)[:, None]
+
+    # Proportional: v counts widths, so one tile is square on the strip.
+    v = _along(points, radii, uv_mode, tiles_along, 2.0 * float(np.mean(radii)))
+    left = points + side * radii[:, None]
+    right = points - side * radii[:, None]
+    ring = np.stack([left, right], axis=1)                  # (samples, 2, 3)
+    st = np.stack([
+        np.broadcast_to(np.array([0.0, tiles_around])[None, :], (len(points), 2)),
+        np.broadcast_to(v[:, None], (len(points), 2)),
+    ], axis=-1)
+    a = np.arange(len(points) - 1) * 2
+    faces = np.stack([a, a + 1, a + 3, a + 2], axis=-1)
+    facing = np.broadcast_to(up, ring.shape)
+    return (ring.reshape(-1, 3), facing.reshape(-1, 3), st.reshape(-1, 2), faces)
+
+
 def build_mesh(strands, kind, basis, sides: int, per_segment: int,
                uv_mode: str, tiles_along: float, width_scale: float,
-               tiles_around: float = 1.0):
+               tiles_around: float = 1.0, profile: str = _PROFILE_TUBE, up=(0.0, 0.0, 1.0)):
     """Sweep every strand and concatenate them into one mesh.
 
     Returns (points, normals, st, face_counts, face_indices), or None when nothing swept.
@@ -336,7 +392,10 @@ def build_mesh(strands, kind, basis, sides: int, per_segment: int,
         if len(raw_points) < 2:
             continue
         line, radii = _centreline(raw_points, raw_radii * width_scale, kind, basis, per_segment)
-        swept = _sweep(line, radii, sides, uv_mode, tiles_along, tiles_around)
+        if profile == _PROFILE_RIBBON:
+            swept = _ribbon(line, radii, uv_mode, tiles_along, tiles_around, up)
+        else:
+            swept = _sweep(line, radii, sides, uv_mode, tiles_along, tiles_around)
         if swept is None:
             continue
         ring, radial, st, faces = swept
@@ -441,6 +500,8 @@ def execute(node) -> None:
     tiles_along = float(node.get_param("tiles_along", is_f).value) or 1.0
     tiles_around = float(node.get_param("tiles_around", is_f).value) or 1.0
     width_scale = float(node.get_param("width_scale", is_f).value)
+    profile = node.get_param("profile", is_s).value
+    up = (0.0, 1.0, 0.0) if UsdGeom.GetStageUpAxis(upstream).upper() == "Y" else (0.0, 0.0, 1.0)
 
     all_strands, kind, basis, first = [], UsdGeom.Tokens.linear, UsdGeom.Tokens.bspline, None
     for source in sources:
@@ -450,7 +511,7 @@ def execute(node) -> None:
             first = first or source
 
     built = build_mesh(all_strands, kind, basis, sides, per_segment,
-                       uv_mode, tiles_along, width_scale, tiles_around)
+                       uv_mode, tiles_along, width_scale, tiles_around, profile, up)
     if built is None:
         node.get_param("readout").value = "those curves have no sweepable strands"
         return
@@ -488,7 +549,14 @@ def main():
                     tooltip="What the last cook produced.")
     )
 
-    shape = chunk.Group("shape_grp", "Tube", flags=_GF)
+    shape = chunk.Group("shape_grp", "Shape", flags=_GF)
+    shape.add_param(chunk.Menu(
+        "profile", "Profile", menu_items=_PROFILES, default_value=_PROFILE_TUBE,
+        flags=_PF.LABELED,
+        tooltip="Tube: round, around the curve -- a vine, a cable.\n"
+        "Ribbon: a flat strip lying on the ground, the curve's width wide -- a road, a\n"
+        "river, a path. u runs across it, v along.",
+    ))
     shape.add_param(chunk.Spinbox(
         "sides", "Sides", is_int=True, min_value=3, max_value=64, default_value=6,
         flags=_PF.LABELED,

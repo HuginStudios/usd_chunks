@@ -9,6 +9,7 @@ import ast
 import bisect
 import hashlib
 import logging
+import math
 import os
 import re
 import uuid
@@ -2226,3 +2227,25 @@ def relative_asset_paths(path: str) -> int:
     if changed:
         layer.Save()
     return changed
+
+
+def values_match(a, b) -> bool:
+    """Whether two param values are the same value, allowing for USD's 32-bit floats.
+
+    A value round-trips through a float attribute as its nearest float32 -- 0.16 comes back
+    0.1599999964 -- and compared exactly that reads as a change: a chunk was cooked again for
+    every float param it was created with. Numbers match within float32 precision, sequences
+    (tuples, lists, Gf vectors) element by element, anything else by ==.
+    """
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-7)
+    if isinstance(a, str) or isinstance(b, str):
+        return a == b
+    try:
+        if len(a) != len(b):
+            return False
+        return all(values_match(x, y) for x, y in zip(a, b))
+    except TypeError:
+        return a == b

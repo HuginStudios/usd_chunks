@@ -37,7 +37,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_utils, mesh_math
+from usd_chunks import chunk, chunk_utils, mesh_math, proximity
 from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
@@ -397,7 +397,12 @@ def _avoid_points(stage, paths, step):
                     dense_r.append(seg_r[:1])
                     for j in range(len(seg) - 1):
                         a, b = seg[j], seg[j + 1]
-                        n = max(1, int(math.ceil(float(np.linalg.norm(b - a)) / max(step, 1e-9))))
+                        # A quarter of the curve's half-width apart is close enough that the
+                        # discs' union is the curve's edge within ~3%. Without that floor a
+                        # scatter with no Spacing and no distance sampled every half
+                        # micrometre -- 370 million points along one road.
+                        seg_step = max(step, 0.25 * float(min(seg_r[j], seg_r[j + 1])), 1e-9)
+                        n = max(1, min(int(math.ceil(float(np.linalg.norm(b - a)) / seg_step)), 10_000))
                         t = np.arange(1, n + 1) / n
                         dense.append(a + (b - a) * t[:, None])
                         dense_r.append(seg_r[j] + (seg_r[j + 1] - seg_r[j]) * t)
@@ -910,11 +915,39 @@ class _NearestWeight:
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         out = np.zeros(len(points))
         keys = self._keys(points)
-        for key in np.unique(keys):
-            nearby = self._nearby(int(key))
+        # Grouped by cell once. Finding each cell's points with `keys == key` scanned the
+        # whole batch per cell -- candidates x cells -- which was most of this lookup's time.
+        uniq, inverse = np.unique(keys, return_inverse=True)
+        lists = [self._nearby(key) for key in uniq.tolist()]
+        sizes = np.fromiter(map(len, lists), dtype=np.int64, count=len(lists))
+        widest = int(sizes.max()) if len(sizes) else 0
+        if not widest:
+            return out
+        if widest <= 4 * max(1.0, float(np.median(sizes[sizes > 0]))):
+            # Neighbourhoods all about one size -- a ground, a wall: every point against its
+            # cell's vertices in one padded array, in blocks. The padding vertex sits too far
+            # away to ever be nearest and weighs 0, which is also the answer for a point with
+            # no vertex near it at all.
+            table = np.full((len(uniq), widest), len(self._points), dtype=np.int64)
+            for u, near in enumerate(lists):
+                table[u, :len(near)] = near
+            index = table[inverse]
+            far = np.vstack([self._points, np.full((1, 3), 1e150)])
+            weights = np.append(self._weights, 0.0)
+            block = max(1, 4_000_000 // widest)
+            for lo in range(0, len(points), block):
+                idx = index[lo:lo + block]
+                diff = points[lo:lo + block, None, :] - far[idx]
+                nearest = np.einsum("ijk,ijk->ij", diff, diff).argmin(axis=1)
+                out[lo:lo + block] = weights[idx[np.arange(len(idx)), nearest]]
+            return out
+        # Uneven (a scan, dense in places): per cell, so no point pays for the densest one.
+        order = np.argsort(inverse, kind="stable")
+        bounds = np.searchsorted(inverse[order], np.arange(len(uniq) + 1))
+        for u, nearby in enumerate(lists):
             if not len(nearby):
                 continue
-            rows = np.flatnonzero(keys == key)
+            rows = order[bounds[u]:bounds[u + 1]]
             diff = points[rows, None, :] - self._points[nearby][None, :, :]
             out[rows] = self._weights[nearby[np.einsum("ijk,ijk->ij", diff, diff).argmin(axis=1)]]
         return out
@@ -931,6 +964,42 @@ class _NearestWeight:
             return 0.0
         offset = self._points[nearby] - np.asarray([point[0], point[1], point[2]])
         return float(self._weights[nearby[np.einsum("ij,ij->i", offset, offset).argmin()]])
+
+
+class _MaskProduct:
+    """Two mask hooks multiplied: the painted Density Field and Grow Near, say. Keeps the
+    batched `sample_many` the sampler looks for, when both halves have one."""
+
+    __slots__ = ("_a", "_b")
+
+    def __init__(self, a, b):
+        self._a, self._b = a, b
+
+    @staticmethod
+    def _many(hook, points):
+        many = getattr(getattr(hook, "__self__", None), "sample_many", None)
+        if many is not None:
+            return np.asarray(many(points), dtype=np.float64)
+        return np.fromiter((hook(Gf.Vec3f(*p), None) for p in points), dtype=np.float64, count=len(points))
+
+    def sample_many(self, points):
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        return self._many(self._a, points) * self._many(self._b, points)
+
+    def sample(self, point, normal=None):
+        return self._a(point, normal) * self._b(point, normal)
+
+
+def _combine_masks(*hooks):
+    """One mask hook from several (None ones skipped), or None when there are none -- so a
+    scatter with neither a Density Field nor Grow Near never pays for the lookup."""
+    live = [h for h in hooks if h is not None]
+    if not live:
+        return None
+    mask = live[0]
+    for h in live[1:]:
+        mask = _MaskProduct(mask, h).sample
+    return mask
 
 
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
@@ -1156,6 +1225,59 @@ def _compute_orientation(mode, normal, rng, proto=None, world_up=None):
         return _align_quat(proto.long_axis_dir(), normal)
     # "Keep Original" / "Up" -- prototype's own orientation.
     return Gf.Quatf(1, 0, 0, 0)
+
+
+def _gf_div(v32, length32):
+    """Gf's Vec3f / float: the float32 components times 1/length in double, back to float32."""
+    return (v32.astype(np.float64) * (1.0 / length32.astype(np.float64))[:, None]).astype(np.float32)
+
+
+def _gf_length(v32):
+    """Gf.GetLength of Vec3f rows: float32 x*x + y*y + z*z, in that order, then sqrt."""
+    x, y, z = v32[:, 0], v32[:, 1], v32[:, 2]
+    return np.sqrt((x * x + y * y) + z * z).astype(np.float32)
+
+
+def _spun_quats(count, axis, amount_deg, rng):
+    """_apply_random_rotation(identity, ...) for *count* instances at once, as (count, 4)
+    float32 (i, j, k, real) -- the layout Vt.QuathArray takes from numpy.
+
+    The draws are made one instance at a time, in the loop's order, so the generator ends where
+    the loop would have left it; only the arithmetic is batched, rounded to float32 wherever
+    Gf.Vec3f / Gf.Quatf would round it.
+    """
+    out = np.zeros((count, 4), dtype=np.float32)
+    out[:, 3] = 1.0
+    if axis == "Off":
+        return out
+    amount_rad = math.radians(amount_deg)
+    angle = np.zeros(count)
+    spun = np.ones(count, dtype=bool)
+    if axis == "All":
+        g = np.zeros((count, 3))
+        for i in range(count):
+            g[i] = (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1))
+            if math.sqrt(g[i] @ g[i]) < 1e-8:
+                spun[i] = False         # the loop returns the base quat and draws no angle
+                continue
+            angle[i] = rng.uniform(-amount_rad, amount_rad)
+        ax = g.astype(np.float32)
+        ax = _gf_div(ax, _gf_length(ax))
+    else:
+        for i in range(count):
+            angle[i] = rng.uniform(-amount_rad, amount_rad)
+        ax = np.zeros((count, 3), dtype=np.float32)
+        ax[:, "XYZ".index(axis)] = 1.0
+    # _axis_quat: normalise again (as Gf does), then (cos h, a sin h) in double -> float32.
+    a = _gf_div(ax, _gf_length(ax))
+    half = angle * 0.5
+    s = np.sin(half)
+    quat = np.empty((count, 4), dtype=np.float32)
+    quat[:, :3] = (a.astype(np.float64) * s[:, None]).astype(np.float32)
+    quat[:, 3] = np.cos(half).astype(np.float32)
+    out[spun] = quat[spun]
+    # Times the identity base: every component carries over exactly.
+    return out
 
 
 def _apply_random_rotation(base_quat, axis, amount_deg, rng):
@@ -1746,6 +1868,25 @@ def execute(node):
     lat_a, lat_b = [i for i in range(3) if i != up_idx]
     axis_vec = [Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0), Gf.Vec3f(0, 0, 1)]
 
+    # Grow Near: weight each candidate by how near it is to what an earlier layer placed --
+    # under its canopy, around its base, out of its shade. Measured across the ground, since
+    # an instancer's points sit at the base of a trunk. Multiplied into the Density Field.
+    near_paths = [p.strip() for p in node.get_param("near_prims", is_s).value.split(",") if p.strip()]
+    near = None
+    near_outside = node.get_param("near_outside", is_f).value
+    if near_paths:
+        near_pts, near_scales = proximity.source_points(scratch_stage, near_paths)
+        near = proximity.Proximity(
+            near_pts, near_scales if node.get_param("near_scaled", is_b).value else None,
+            radius=max(0.0, node.get_param("near_radius", is_f).value),
+            clear=max(0.0, node.get_param("near_clear", is_f).value),
+            softness=node.get_param("near_softness", is_f).value,
+            inside=node.get_param("near_inside", is_f).value,
+            outside=near_outside,
+            up=tuple(world_up),
+        )
+    mask = _combine_masks(density, near.sample if near is not None else None)
+
     # Read here, used at the dispatch below. Nothing about a painted cloud depends on the
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
@@ -1832,7 +1973,7 @@ def execute(node):
             normals = [s[1] for s in sites]
             levels = [s[2] for s in sites]
         elif scatter_mode == "Volume":
-            positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=density)
+            positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=mask)
             normals = [world_up] * len(positions)
             levels = [0] * len(positions)
         else:
@@ -1840,6 +1981,15 @@ def execute(node):
             # no wasted samples). The paint mask, being per-point, will instead be
             # passed as the `mask=` hook above.
             surf_tris = triangles.select(triangles.slope_mask(world_up, max_slope))
+            if near is not None and near_outside <= 0.0 and len(surf_tris):
+                # Grow Near with nothing beyond reach: a triangle no source reaches can never
+                # take an instance, so it is left out of the draw rather than sampled and
+                # rejected. Trees grown near a shot's centre on a 500 m terrain drew six
+                # candidates for every one that could land.
+                v0, v1, v2 = (np.asarray(v, dtype=np.float64) for v in (surf_tris.v0, surf_tris.v1, surf_tris.v2))
+                centre = (v0 + v1 + v2) / 3.0
+                size = np.max([np.linalg.norm(v - centre, axis=1) for v in (v0, v1, v2)], axis=0)
+                surf_tris = surf_tris.select(near.within_reach(centre, size))
             avoid = None
             if avoid_paths:
                 pts_, radii_ = _avoid_points(scratch_stage, avoid_paths, max(avoid_distance, spacing, 1e-6) * 0.5)
@@ -1851,10 +2001,10 @@ def execute(node):
                 # so the spacing and the clearance can both take the instance's size.
                 positions, normals, drawn = _scatter_sized(
                     surf_tris, max_count, rng, spacing, random.Random(seed + 13),
-                    scale_min, scale_max, scale_bias, mask=density, avoid=avoid, vary=size_spacing)
+                    scale_min, scale_max, scale_bias, mask=mask, avoid=avoid, vary=size_spacing)
                 sizes = drawn
             elif len(surf_tris):
-                positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
+                positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=mask)
             else:
                 # No mesh / no qualifying faces -- fall back to a jittered grid.
                 sp = max(spacing, 2.0)
@@ -1891,7 +2041,24 @@ def execute(node):
 
         level_step = height + pack_level_gap
 
-        for i in range(count):
+        fast = (count and scatter_mode != "Stack" and not placed and not sit_on_surface
+                and orient_mode in ("Up", "Keep Original") and abs(normal_offset) <= 1e-9)
+        if fast:
+            # The common case -- every instance upright, spun at random -- as arrays. Same
+            # draws, same order, same float32 rounding as the loop below, so the same result;
+            # the loop's per-instance Gf quaternions were a tenth of a 45k-grass cook.
+            s_all = sizes if sizes else [_draw_scale(scale_rng, scale_min, scale_max, scale_bias)
+                                         for _ in range(count)]
+            out_positions = Vt.Vec3fArray.FromNumpy(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+            out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
+            out_orients = Vt.QuathArray.FromNumpy(
+                _spun_quats(count, rand_axis, rand_amount, orient_rng).astype(np.float16))
+            mult = np.asarray([p.scale_mult for p in protos], dtype=np.float64)[assignment]
+            per = np.asarray([tuple(p.scale) for p in protos], dtype=np.float64)[assignment]
+            sm = np.asarray(s_all, dtype=np.float64) * mult
+            out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
+
+        for i in range(0 if fast else count):
             pidx = assignment[i]
             proto = protos[pidx]
             if placed:
@@ -2201,6 +2368,31 @@ def main():
         )
     )
     chunk_api.add_param(_collapsed(dist_grp))
+
+    # --- Grow Near (ecosystem affinity / repulsion) ---
+    near_grp = chunk.Group("Grow Near", flags=_GF)
+    near_grp.add_param(
+        chunk.LineEdit(
+            "near_prims",
+            "Near",
+            flags=_PF.LABELED | _PF.PRIM_SELECTION,
+            tooltip="Surface/Volume: what this layer grows in relation to -- usually an earlier "
+            "Scatter Points' instancer. Comma-separate several. Empty: off.",
+        )
+    )
+    near_grp.add_param(chunk.Slider("near_radius", "Radius", min_value=0.0, max_value=20.0, default_value=3.0,
+                                    tooltip="How far each of them reaches, scene units -- a canopy's radius."))
+    near_grp.add_param(chunk.Slider("near_clear", "Clear Radius", min_value=0.0, max_value=5.0, default_value=0.0,
+                                    tooltip="Nothing within this of them -- the trunk. 0 = no clearing."))
+    near_grp.add_param(chunk.Slider("near_inside", "Inside", min_value=0.0, max_value=1.0, default_value=1.0,
+                                    tooltip="Density near them. 1 draws this layer in (understory)."))
+    near_grp.add_param(chunk.Slider("near_outside", "Outside", min_value=0.0, max_value=1.0, default_value=0.1,
+                                    tooltip="Density beyond Radius. Above Inside pushes this layer away (shade)."))
+    near_grp.add_param(chunk.Slider("near_softness", "Softness", min_value=0.0, max_value=1.0, default_value=0.5,
+                                    tooltip="How much of the Radius fades out, from the edge in. 0 = a hard edge."))
+    near_grp.add_param(chunk.Checkbox("near_scaled", "Scale With Source", default_value=True,
+                                      tooltip="Radius and Clear Radius grow with each instance's scale."))
+    chunk_api.add_param(_collapsed(near_grp))
 
     # --- Stacking (Stack mode only) ---
     stack_grp = chunk.Group("Stacking", flags=_GF)

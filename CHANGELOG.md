@@ -96,6 +96,22 @@ This file starts with the first release; development before that is in the commi
   the hook is unaffected. Export USD now implements it, and its Export button calls the
   same function, so the interactive and headless paths cannot drift.
 
+- Scatter Points: Grow Near. A layer weights where it lands by how near it is to what an
+  earlier layer placed -- understory under the trees, ferns around the bushes, grass out of
+  the shade -- read straight from that layer's instancer (or any points). Inside, Outside,
+  Radius, Clear Radius (keep off the trunk) and Scale With Source; multiplied into the
+  Density Field. Distances are exact and across the ground, so a one-quad ground works.
+- Proximity Field: the same weight painted as a primvar on a mesh, for when the field should
+  be seen, painted over or multiplied with a Noise Field (Multiply With).
+- Scatter Brush: Spray. A third Output mode that sprinkles points over the surface under the
+  brush, Spacing apart, at any mesh resolution; Strength is how much one dab fills, Fill
+  sprays the whole surface. Wire it into Painted Points for an instance each, or into Grow
+  Near to paint a region.
+- Curves to Mesh: a Ribbon profile -- a flat strip the curve's width wide, lying on the
+  ground (a road, a river, a path).
+- `scene.create` takes a list row's param as `list.row.param`
+  (`**{"prototypes.0.proto_path": "/assets/rock"}`), set before the chunk's first cook.
+
 ### Changed
 
 - Chunks talk to each other only through wires: an exec input or an `@Node.param@`
@@ -183,8 +199,18 @@ This file starts with the first release; development before that is in the commi
   methods alike; previously a plain function declaring `(notice, sender)` never ran.
 - Minimum Python is 3.10, which is what the code has actually required.
 
+- Scatter Points cooks faster: Grow Near with Outside 0 samples only the triangles a source
+  can reach; Grow Near and the Density Field look up points per grid cell instead of
+  rescanning; upright, spun instances are placed as arrays (identical results). A 30-chunk
+  forest network builds in 37 s, down from 196 s.
+
 ### Fixed
 
+- A chunk made by `scene.create` with float params cooked once more per float: USD stores
+  them as 32-bit, the read-back (0.16 -> 0.1599999964) counted as an edit. Compared within
+  float precision now; a 45k-instance Scatter Points cooks once, not ten times.
+- Scatter Points' Keep Away From with Spacing 0 and distance 0 sampled a curve every half
+  micrometre -- out of memory on a road. The curve's width sets the step.
 - A chunk that sets its own params while it cooks (Light, Wedge) cooked everything below it
   twice -- once in the middle of its own cook, against a half-written layer -- and was left
   dirty, so the next edit of any chunk below it cooked it again. Now what is below it cooks

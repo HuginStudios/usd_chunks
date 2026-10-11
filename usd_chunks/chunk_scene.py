@@ -1018,7 +1018,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
         # A param the chunk only builds once it is in the scene (Light's) waits until then.
-        early = {k: v for k, v in values.items() if new.get_param(k) is not None}
+        early = {k: v for k, v in values.items() if _scripted_param(new, k) is not None}
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
@@ -1033,9 +1033,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._add_scripted(new)
         # A menu that gets its choices only once the chunk is in the scene (Edit Target's
         # layer list) drops a value set before that, so set any value that did not stick.
+        #
+        # Compared within float precision: joining the scene round-trips values through
+        # USD's 32-bit floats, so 0.16 comes back 0.1599999964. Compared exactly, every float
+        # param "did not stick", was set again, and cooked the chunk once more each -- five
+        # extra cooks of a 45k-instance Scatter Points, a minute of a 70-second create.
         late = {
             k: v for k, v in values.items()
-            if k not in early or new.get_param(k).value != v
+            if k not in early or not chunk_utils.values_match(_scripted_param(new, k).value, v)
         }
         self.set(new, **late)
         inputs = list(inputs)
@@ -1052,10 +1057,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         A plain value is assigned. A param (`other.get_param("prim_path")`) connects this
         one to it, so it follows that value from then on and the wire is saved with the
-        network.
+        network. A list row's param is named `list.row.param` --
+        `**{"prototypes.0.proto_path": "/assets/rock"}` -- so it too is set before the
+        chunk's first cook rather than after it.
         """
         for name, value in params.items():
-            param = target.get_param(name)
+            param = _scripted_param(target, name)
             if param is None:
                 raise KeyError(f"{target.name} has no param {name!r}")
             if isinstance(value, ChunkParamBase):
@@ -1228,6 +1235,23 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # it still work; usdview overrides it (used by the RBD solver after baking).
     def refresh_timeline(self, start: float, end: float) -> None:
         """Update the host timeline range."""
+
+
+def _scripted_param(target: ChunkBase, name: str):
+    """The param a script names: a plain name, or `list.row.param` for one row of a list --
+    the form a frontend already keys rows by. None when there is no such param or row."""
+    param = target.get_param(name)
+    if param is not None:
+        return param
+    parts = name.split(".")
+    if len(parts) == 3 and parts[1].isdigit():
+        rows = target.get_param(parts[0])
+        if rows is not None and hasattr(rows, "get_indexed_param"):
+            try:
+                return rows.get_indexed_param(parts[2], int(parts[1]))
+            except (IndexError, KeyError, ValueError):
+                return None
+    return None
 
 
 def current_scene() -> SceneSender | None:
