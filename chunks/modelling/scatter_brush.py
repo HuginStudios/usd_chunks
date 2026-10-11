@@ -30,7 +30,7 @@ import logging
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_core, chunk_utils
+from usd_chunks import chunk, chunk_core, chunk_utils, mesh_math
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +44,17 @@ _MODES = ["Add", "Subtract", "Smooth"]
 #:
 #: *Density* paints a weight and lets Scatter Points decide where instances actually land --
 #: "roughly this many, scattered". *Points* drops one instance per dab, exactly where the
-#: cursor was, and Scatter Points places those instead of sampling. Two different tools that
-#: happen to share a cursor, which is why this is a mode rather than two chunks.
+#: cursor was, and Scatter Points places those instead of sampling. *Spray* sprinkles points
+#: over the surface under the brush, Spacing apart -- Geo-Scatter's spray brush: a painted
+#: region with no mesh-resolution limit, wired into Scatter Points' Painted Points (one
+#: instance each) or its Grow Near (the cloud as a region). Tools that happen to share a
+#: cursor, which is why this is a mode rather than separate chunks.
 _OUTPUT_DENSITY = "Density"
 _OUTPUT_POINTS = "Points"
-_OUTPUTS = [_OUTPUT_DENSITY, _OUTPUT_POINTS]
+_OUTPUT_SPRAY = "Spray"
+_OUTPUTS = [_OUTPUT_DENSITY, _OUTPUT_POINTS, _OUTPUT_SPRAY]
+#: The modes whose output is the point cloud rather than the field.
+_POINT_OUTPUTS = (_OUTPUT_POINTS, _OUTPUT_SPRAY)
 
 #: Where placed points are kept: a plain point cloud on the chunk's own prim, so it is
 #: inspectable USD like the density field is, and travels the same wire.
@@ -97,6 +103,10 @@ _STROKE_TOUCHED = "_stroke_touched"
 #: stroke as far as it has got.
 _FIELD = "_painted_field"
 _POINTS = "_painted_points"
+
+#: The surface as world-space triangles, for Spray, held for the duration of a stroke like
+#: the vertex targets are.
+_SPRAY_CACHE = "_spray_triangles"
 
 
 def _cached_targets(node, prim):
@@ -159,6 +169,8 @@ def _drop_stroke_cache(node):
     """
     if hasattr(node, _STROKE_CACHE):
         delattr(node, _STROKE_CACHE)
+    if hasattr(node, _SPRAY_CACHE):
+        delattr(node, _SPRAY_CACHE)
 
 
 def _stroke_started(owner, notice, sender):
@@ -475,8 +487,11 @@ def gizmo_stroke(node, gizmo, samples):
     if prim is None:
         return False
 
-    if node.get_param("output").value == _OUTPUT_POINTS:
+    output = node.get_param("output").value
+    if output == _OUTPUT_POINTS:
         return _place_points(node, stage, samples)
+    if output == _OUTPUT_SPRAY:
+        return _spray_points(node, stage, prim, samples)
 
     targets = _cached_targets(node, prim)
     if not targets:
@@ -615,6 +630,210 @@ def _erase_points(node, stage, samples, existing, normals, widths, radius):
     return True
 
 
+def _spray_triangles(node, prim):
+    """Every triangle under `prim` in world space -- (v0, v1, v2, normals) -- held for the
+    stroke. Spray samples the surface itself, so a coarse mesh (one quad for a field) is as
+    sprayable as a dense one."""
+    cache = getattr(node, _SPRAY_CACHE, None)
+    key = str(prim.GetPath())
+    if cache is not None and cache[0] == key:
+        return cache[1]
+    v0s, v1s, v2s = [], [], []
+    for p in Usd.PrimRange(prim):
+        mesh = UsdGeom.Mesh(p)
+        points = mesh.GetPointsAttr().Get()
+        if not points:
+            continue
+        tris, _corners, _faces = mesh_math.fan_triangulate(
+            mesh.GetFaceVertexCountsAttr().Get() or [], mesh.GetFaceVertexIndicesAttr().Get() or [])
+        if not len(tris):
+            continue
+        world = mesh_math.world_points(p, points)
+        v0s.append(world[tris[:, 0]])
+        v1s.append(world[tris[:, 1]])
+        v2s.append(world[tris[:, 2]])
+    triangles = None
+    if v0s:
+        v0, v1, v2 = np.concatenate(v0s), np.concatenate(v1s), np.concatenate(v2s)
+        n = np.cross(v1 - v0, v2 - v0)
+        length = np.linalg.norm(n, axis=1)
+        keep = length > 1e-12
+        triangles = (v0[keep], v1[keep], v2[keep], n[keep] / length[keep, None])
+    setattr(node, _SPRAY_CACHE, (key, triangles))
+    return triangles
+
+
+def _spray_spacing(node):
+    return max(float(node.get_param("spray_spacing").value or 0.0), 0.0)
+
+
+def _spray_width(spacing, radius):
+    """How big a sprayed point is drawn: half its spacing, so the cloud reads as coverage."""
+    return max((spacing if spacing > 0.0 else radius * 0.1) * 0.5, 1e-4)
+
+
+def _cast_down(triangles, origins, direction):
+    """Where rays from `origins` along `direction` first hit the triangles: (points, the
+    normal of the triangle hit, which rays hit). Every ray against every triangle -- a dab's
+    handful of rays against the triangles near it -- by Moller-Trumbore."""
+    v0, v1, v2, n = triangles
+    e1, e2 = v1 - v0, v2 - v0
+    p = np.cross(direction, e2)
+    det = np.einsum("ij,ij->i", e1, p)
+    ok = np.abs(det) > 1e-12
+    inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    s = origins[:, None, :] - v0[None, :, :]
+    u = np.einsum("rtk,tk->rt", s, p) * inv
+    q = np.cross(s, e1[None, :, :])
+    v = np.einsum("k,rtk->rt", direction, q) * inv
+    t = np.einsum("rtk,tk->rt", q, e2) * inv
+    hit = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1.0 + 1e-9) & (t >= 0.0)
+    t = np.where(hit, t, np.inf)
+    first = t.argmin(axis=1)
+    best = t[np.arange(len(origins)), first]
+    any_hit = np.isfinite(best)
+    points = origins + np.outer(np.where(any_hit, best, 0.0), direction)
+    return points, n[first], any_hit
+
+
+def _spray_points(node, stage, prim, samples):
+    """Sprinkle points over the surface under each dab, Spacing apart.
+
+    A dab tries a share of the disc's capacity -- Strength of it, times pressure -- so a pass
+    lays down a scattering, and holding the brush over a spot fills it up to Spacing, never
+    past it. Candidates are dropped onto the surface along the dab's normal rather than
+    sampled from the triangles near it, which is what lets one big quad take a stroke as
+    finely as a dense grid would. Subtract rubs points out, as in Points mode.
+    """
+    radius = float(node.get_param("radius").value or 0.0)
+    existing, normals, widths = _current_points(node, stage)
+    if node.get_param("mode").value == "Subtract":
+        return _erase_points(node, stage, samples, existing, normals, widths, radius)
+    if radius <= 0.0:
+        return False
+    triangles = _spray_triangles(node, prim)
+    if triangles is None:
+        return False
+    v0, v1, v2, tri_n = triangles
+    lo = np.minimum(np.minimum(v0, v1), v2)
+    hi = np.maximum(np.maximum(v0, v1), v2)
+    spacing = _spray_spacing(node)
+    strength = float(node.get_param("strength").value or 0.0)
+    width = _spray_width(spacing, radius)
+    placed = np.asarray(existing, dtype=np.float64).reshape(-1, 3)
+    added = False
+
+    for sample in samples:
+        centre, pressure, normal = _unpack(sample)
+        if centre is None:
+            continue
+        c = np.array([centre[0], centre[1], centre[2]], dtype=np.float64)
+        near = np.flatnonzero(((lo - radius) <= c).all(axis=1) & ((hi + radius) >= c).all(axis=1))
+        if not len(near):
+            continue
+        local = (v0[near], v1[near], v2[near], tri_n[near])
+        if normal is not None:
+            up = np.array([normal[0], normal[1], normal[2]], dtype=np.float64)
+        else:
+            # The facing of the surface nearest the dab, when the host did not send one.
+            mid = (local[0] + local[1] + local[2]) / 3.0
+            up = local[3][np.linalg.norm(mid - c, axis=1).argmin()]
+        up = up / max(float(np.linalg.norm(up)), 1e-12)
+        side = np.cross(up, [1.0, 0.0, 0.0] if abs(up[0]) < 0.9 else [0.0, 1.0, 0.0])
+        side /= np.linalg.norm(side)
+        other = np.cross(up, side)
+
+        cell = spacing if spacing > 0.0 else radius * 0.1
+        capacity = np.pi * radius * radius / (0.866 * cell * cell)
+        goal = int(np.ceil(capacity * max(strength, 0.0) * max(pressure, 0.0)))
+        if goal <= 0:
+            continue
+        # Seeded from where the dab landed, so the same gesture sprays the same points.
+        rng = np.random.default_rng(abs(hash((round(c[0], 6), round(c[1], 6), round(c[2], 6), len(placed)))))
+        tries = goal * 4
+        r = radius * np.sqrt(rng.random(tries))
+        a = rng.random(tries) * 2.0 * np.pi
+        origins = c + np.outer(r * np.cos(a), side) + np.outer(r * np.sin(a), other) + up * radius
+        hits, hit_n, ok = _cast_down(local, origins, -up)
+        hits, hit_n = hits[ok], hit_n[ok]
+        inside = np.linalg.norm(hits - c, axis=1) <= radius
+        hits, hit_n = hits[inside], hit_n[inside]
+        # Only points already near the dab can be too close to a new one.
+        if len(placed) and spacing > 0.0:
+            close = placed[np.linalg.norm(placed - c, axis=1) <= radius + spacing]
+        else:
+            close = np.zeros((0, 3))
+        count = 0
+        for h, hn in zip(hits, hit_n):
+            if count >= goal:
+                break
+            if spacing > 0.0 and len(close) and (np.linalg.norm(close - h, axis=1) < spacing).any():
+                continue
+            close = np.vstack([close, h])
+            placed = np.vstack([placed, h])
+            existing.append(Gf.Vec3f(*h))
+            normals.append(Gf.Vec3f(*hn))
+            widths.append(width)
+            count += 1
+            added = True
+
+    if not added:
+        return False
+    setattr(node, _STROKE_TOUCHED, True)
+    _write_points(node, stage, existing, normals, widths)
+    return True
+
+
+def _spray_fill(node, stage, prim):
+    """Spray the whole surface at Spacing -- Fill, for starting full and rubbing out."""
+    triangles = _spray_triangles(node, prim)
+    spacing = _spray_spacing(node)
+    if triangles is None or spacing <= 0.0:
+        return
+    v0, v1, v2, tri_n = triangles
+    areas = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+    total = float(areas.sum())
+    # Random sequential packing stops at ~70% of hex packing; the cap keeps a typo from hanging.
+    goal = int(min(total / (0.866 * spacing * spacing) * 0.7, 500_000))
+    if goal <= 0:
+        return
+    rng = np.random.default_rng(len(areas))
+    tries = goal * 3
+    tri = np.minimum(np.searchsorted(np.cumsum(areas) / total, rng.random(tries)), len(areas) - 1)
+    uv = rng.random((tries, 2))
+    flip = uv.sum(axis=1) > 1.0
+    uv[flip] = 1.0 - uv[flip]
+    pts = v0[tri] * (1.0 - uv[:, :1] - uv[:, 1:]) + v1[tri] * uv[:, :1] + v2[tri] * uv[:, 1:]
+    keys = np.floor(pts / spacing).astype(np.int64)
+    grid, keep = {}, []
+    spacing_sq = spacing * spacing
+    for i in range(tries):
+        kx, ky, kz = keys[i]
+        pt = pts[i]
+        clash = False
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for j in grid.get((kx + dx, ky + dy, kz + dz), ()):
+                        d = pts[j] - pt
+                        if d @ d < spacing_sq:
+                            clash = True
+                            break
+                    if clash:
+                        break
+                if clash:
+                    break
+        if clash:
+            continue
+        grid.setdefault((kx, ky, kz), []).append(i)
+        keep.append(i)
+        if len(keep) >= goal:
+            break
+    width = _spray_width(spacing, 0.0)
+    _write_points(node, stage, [Gf.Vec3f(*pts[i]) for i in keep],
+                  [Gf.Vec3f(*tri_n[tri[i]]) for i in keep], [width] * len(keep))
+
+
 def _points_path(node):
     own = getattr(node, "_exec_prim_path", None) or getattr(node, "prim_path", None)
     return Sdf.Path(str(own)).AppendChild(POINTS_PRIM) if own else None
@@ -751,12 +970,14 @@ def _set_everywhere(node, value):
     """Author one weight across every mesh under the surface."""
     _drop_stroke_cache(node)
     prim, stage = _surface_prim(node)
-    if stage is not None and node.get_param("output").value == _OUTPUT_POINTS:
-        # Points are the output in this mode, so Fill/Clear act on them instead. Filling a
-        # point cloud has no meaning -- there is no "everywhere" to place one at -- so only
-        # clearing does anything.
+    if stage is not None and node.get_param("output").value in _POINT_OUTPUTS:
+        # Points are the output in these modes, so Fill/Clear act on them instead. Filling a
+        # cloud of single dabs has no meaning -- there is no "everywhere" to place one at --
+        # but Spray has a spacing, so filling sprays the whole surface.
         if value == 0.0:
             _write_points(node, stage, [], [], [])
+        elif node.get_param("output").value == _OUTPUT_SPRAY and prim is not None:
+            _spray_fill(node, stage, prim)
         # After the change, not before. Bumping first would recook the chain while the points
         # are still there, so Clear would empty the cloud and leave every instance standing.
         _bump_strokes(node, reset=(value == 0.0))
@@ -975,7 +1196,9 @@ def main():
     output = chunk.Menu(
         "output", "Output", menu_items=_OUTPUTS, default_value=_OUTPUT_DENSITY,
         tooltip="Density paints a weight and lets Scatter Points decide where instances land. "
-                "Points drops one exactly where you click.",
+                "Points drops one exactly where you click. Spray sprinkles points over the "
+                "surface, Spacing apart -- wire them into Painted Points for an instance each, "
+                "or into Scatter Points' Grow Near to paint a region at any mesh resolution.",
     )
     chunk_api.add_param(output)
 
@@ -1021,17 +1244,25 @@ def main():
     strength = chunk.Slider(
         "strength", "Strength", min_value=0.0, max_value=1.0, default_value=0.5,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
-        tooltip="How much one stroke adds or removes. Density mode only.",
+        tooltip="How much one stroke adds or removes. In Spray, how much of the brush one "
+                "dab fills -- hold it over a spot to fill it up to Spacing.",
+    )
+    spray_spacing = chunk.Slider(
+        "spray_spacing", "Spacing", min_value=0.0, max_value=20.0, default_value=1.0,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Spray: the closest two sprayed points may be. Fill sprays the whole surface "
+                "at this spacing.",
     )
     mode = chunk.Menu(
         "mode", "Mode", menu_items=_MODES, default_value="Add",
         tooltip="Add paints instances in, Subtract paints them out, Smooth evens the field. "
-                "Density mode only.",
+                "Points and Spray: Add and Subtract.",
     )
     # First in the group: it decides what Radius and Strength mean.
     grp.add_param(mode)
     grp.add_param(radius)
     grp.add_param(strength)
+    grp.add_param(spray_spacing)
     chunk_api.add_param(grp)
 
     display = chunk.Group("display_grp", "Display", flags=_GF)
@@ -1108,6 +1339,10 @@ def config():
             evens the field toward the middle.
           - Fill / Clear: paint everything or nothing, for starting from
             either end.
+          - Output: Density (the field), Points (one per click) or Spray
+            (points sprinkled under the brush, Spacing apart -- a painted
+            region at any mesh resolution, wired into Painted Points or into
+            Scatter Points' Grow Near).
 
         The painted field lives in this chunk's own layer and saves with the
         scene. Density resolution is mesh resolution — the weight is per
