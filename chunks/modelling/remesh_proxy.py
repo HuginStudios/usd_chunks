@@ -22,11 +22,11 @@ from a volume instead:
    the blob growing. **Fill interior** then fills every cavity not connected to the
    outside, which is what deletes a CAD assembly's hidden internals and stops a closed
    shell from coming out double-walled.
-4. **Marching cubes** turns the field into a triangle mesh. It is dense and even -- feed it
-   to Poly Reduce for the triangle budget, which spends it on the silhouette.
+4. **Marching cubes** turns the field into a triangle mesh, dense and even, which is then
+   **reduced** (`mesh_reduce`) to the fewest triangles that stay within Max Error of it, up
+   to the Triangle Budget: a cabinet ends near a hundred, a plant uses the whole budget.
 5. **Bake** each vertex's colour as the distance-weighted average of its nearest samples,
-   into `primvars:displayColor`. Poly Reduce carries vertex primvars through, so the colour
-   survives the reduction.
+   into `primvars:displayColor`.
 
 Sizes are in voxels, not scene units, so the same settings behave the same on a tree in
 centimetres and a building in metres; Resolution is the one knob that sets the scale.
@@ -46,6 +46,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks import chunk_stage
+from usd_chunks import mesh_reduce
 from usd_chunks import surface_samples
 
 try:
@@ -158,6 +159,8 @@ class _Settings(NamedTuple):
     fill: bool
     smooth: float
     bake: bool
+    budget: int = 0  # most triangles the proxy may have; 0 = keep marching cubes' output
+    max_error: float = 0.0  # percent of the asset's size the reduction may stray
 
 
 class Proxy(NamedTuple):
@@ -189,6 +192,8 @@ def build_proxy(sources, settings: _Settings) -> Proxy | None:
     if surface is None:
         return None
     points, triangles = surface
+    if settings.budget > 0 and mesh_reduce.HAS_DEPS:
+        points, triangles = mesh_reduce.reduce_within(points, triangles, settings.budget, settings.max_error / 100.0)
     colours = bake_colours(points, samples.points, samples.colours) if settings.bake else None
     source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
     return Proxy(points, triangles, colours, source_triangles, voxel)
@@ -245,6 +250,8 @@ def _settings(node) -> _Settings:
         fill=bool(node.get_param("fill_interior", is_b).value),
         smooth=float(node.get_param("smooth", is_f).value),
         bake=bool(node.get_param("bake_colour", is_b).value),
+        budget=int(node.get_param("budget", chunk.is_param_t(int)).value),
+        max_error=float(node.get_param("max_error", is_f).value),
     )
 
 
@@ -442,10 +449,24 @@ def main():
             min_value=0,
             max_value=1_000_000,
             default_value=3000,
-            tooltip="The triangle count the proxy is reduced to downstream -- set Poly Reduce\n"
-            "to the same. An asset with no more triangles than this is not remeshed: the\n"
-            "proxy is a reference to the asset itself, with its own UVs and materials,\n"
-            "and Poly Reduce, UV Unwrap and Bake Textures leave it alone. 0 always remeshes.",
+            tooltip="The most triangles the proxy may have -- fewer where Max Error allows.\n"
+            "An asset with no more triangles than this is not remeshed at all: the proxy\n"
+            "is a reference to the asset itself, with its own UVs and materials, and\n"
+            "Poly Reduce, UV Unwrap and Bake Textures leave it alone.\n"
+            "0: never keep the source, and leave marching cubes' dense output unreduced.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.Slider(
+            "max_error",
+            "Max Error %",
+            min_value=0.0,
+            max_value=5.0,
+            default_value=0.5,
+            tooltip="Reduce to the fewest triangles whose surface stays within this much of the\n"
+            "remeshed volume, as a percent of the asset's size: a flat cabinet stops near\n"
+            "a hundred triangles, a plant uses the whole budget. 0 reduces to exactly the\n"
+            "budget. Below about 0.3% the volume's own voxel steps are what is measured.",
         )
     )
 
@@ -521,7 +542,7 @@ def main():
             "out_mesh",
             "Proxy",
             flags=_PF.OUTPUT | _PF.LABELED,
-            tooltip="The proxy mesh. Feed it to Poly Reduce for the triangle budget.",
+            tooltip="The proxy mesh, within the Triangle Budget. Feed it to UV Unwrap, then Bake Textures.",
         )
     )
     out_triangles = chunk.Slider(
@@ -544,6 +565,7 @@ def config():
         requirements=[
             "numpy>=2,<3",
             "scipy>=1.11,<2",
+            "fast-simplification>=0.2,<1",
             "scikit-image>=0.22,<1",
             "lazy_loader>=0.4",
             "pillow>=10",
@@ -556,6 +578,6 @@ def config():
             "For the assets decimation can't reduce: a tree's leaf cards, a CAD assembly's\n"
             "thousands of parts and hidden internals. The asset's colour — material diffuse,\n"
             "textures, displayColor — is baked onto the proxy's vertices. Follow it with\n"
-            "Poly Reduce to hit a triangle budget."
+            "UV Unwrap and Bake Textures for maps."
         ),
     )

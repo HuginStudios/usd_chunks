@@ -422,3 +422,19 @@ def test_the_proxy_is_double_sided_so_folded_sheets_do_not_read_as_holes(wired) 
     node.get_param("resolution").value = 32
     node.get_param("prim_path").value = "/Asset"
     assert UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetDoubleSidedAttr().Get() is True
+
+
+def test_the_budget_caps_the_proxy_and_a_box_needs_far_less(wired) -> None:
+    stage, make = wired
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 64
+    node.get_param("max_error").value = 0.0  # exactly the budget
+    node.get_param("budget").value = 11  # a 12-triangle box is above it: remesh it
+    node.get_param("prim_path").value = "/Asset"
+    capped = len(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetFaceVertexCountsAttr().Get())
+    assert capped <= 11
+
+    node.get_param("budget").value = 0
+    dense = len(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetFaceVertexCountsAttr().Get())
+    assert dense > 1000  # 0: marching cubes' output as it is
