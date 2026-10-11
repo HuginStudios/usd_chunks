@@ -16,6 +16,7 @@ from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_cook
+from usd_chunks import chunk_glob
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_core as core
 from usd_chunks.gizmo import runtime as chunk_gizmo
@@ -3058,6 +3059,11 @@ def is_subnet(chunk: core.ChunkBase) -> bool:
     return is_chunkgroup(chunk) or is_network_host(chunk)
 
 
+#: The location suggest_location_from_file last put on each chunk -- so it knows whether the
+#: location still follows the file, or has been chosen since.
+_suggested_locations: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
 def suggest_location_from_file(param) -> None:
     """Fill a Reference or Payload chunk's primpath_location from its file_path.
 
@@ -3066,6 +3072,12 @@ def suggest_location_from_file(param) -> None:
     network file is hosted, not placed: its location field is the namespace the
     network's prim paths resolve under, and the default is none -- the paths as the
     sequence wrote them. Suggesting /<file> there would namespace every hosted network.
+
+    Only a location that still follows the file is replaced: an empty one, or the one this
+    last suggested. One typed in, set by a script or loaded from a saved network is a
+    choice, and a new file does not move it -- `usdchunks run net.usda
+    Reference.file_path=other.usd` (and every run of a batch) swaps the asset, not where
+    the network put it. A glob names no one file, so it suggests nothing either.
 
     Args:
         param: The param that changed (file_path, or another param of the chunk).
@@ -3089,8 +3101,11 @@ def suggest_location_from_file(param) -> None:
             location.value = ""
         return
 
+    current = location.raw_value or ""
+    if chunk_glob.is_pattern(path) or (current and current != _suggested_locations.get(chunk)):
+        return
     name = Tf.MakeValidIdentifier(Path(path).stem)
-    location.value = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
+    location.value = _suggested_locations[chunk] = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
 
 
 def network_target(asset_path: str, import_path: str = "") -> str | None:

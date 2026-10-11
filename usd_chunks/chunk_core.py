@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_utils, skip_cook
+from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_glob, chunk_naming, chunk_notice, chunk_registry, chunk_utils, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -1583,6 +1583,12 @@ class ChunkCommon(AttributesBase):
         # the browse dialog opens in Open, not Save, mode (chunk_widget_api.file_dialog_spec
         # reads the same flag), and a real value still gets checked below.
         if "#" in value:
+            return True
+
+        # A glob ("./assets/*.usdc") is the same kind of value: a pattern naming many files,
+        # each of which `usdchunks batch` hands one run of the network in turn
+        # (chunk_batch). Nothing is named exactly that either.
+        if chunk_glob.is_pattern(value):
             return True
 
         if not os.path.exists(value):

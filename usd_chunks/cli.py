@@ -2,6 +2,7 @@
 
 Usage:
     usdchunks run my_setup.usda [ChunkName.param=value ...]
+    usdchunks batch my_setup.usda [-o 'out/*.usda']
     usdchunks info my_setup.usda
 """
 from __future__ import annotations
@@ -17,8 +18,8 @@ from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
 
-from pxr import Usd
-from usd_chunks import chunk_naming, configure_logging
+from pxr import Sdf, Usd
+from usd_chunks import chunk_batch, chunk_naming, configure_logging
 from usd_chunks.chunk_process import python_executable
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler
 from usd_chunks import sweep as sweepmod
@@ -403,11 +404,96 @@ def _active_view(stage, scene):
     return views[0]
 
 
+_TRUE_WORDS = ("1", "true", "yes", "on")
+_FALSE_WORDS = ("0", "false", "no", "off")
+
+
+def _value_for(attr, raw):
+    """A command-line string as a value of attr's own type, or None if it does not read as one.
+
+    Covers what a param stores -- bool, numbers, strings, and float/int vectors written as
+    comma-separated components. Anything else (arrays, matrices) is left to the loaded param.
+    """
+    type_name = attr.GetTypeName()
+    scalar = str(type_name.scalarType)
+    if type_name.isArray:
+        return None
+    text = raw.strip()
+    try:
+        if scalar == "bool":
+            lowered = text.lower()
+            return True if lowered in _TRUE_WORDS else False if lowered in _FALSE_WORDS else None
+        if scalar in ("int", "int64", "uint", "uint64", "uchar"):
+            return int(text)
+        if scalar in ("float", "double", "half"):
+            return float(text)
+        if scalar in ("string", "token", "asset"):
+            return raw
+        python_class = getattr(type_name.type, "pythonClass", None)
+        if python_class is not None and hasattr(python_class, "dimension"):
+            parts = [float(p) for p in text.strip("()[]").split(",") if p.strip()]
+            return python_class(*parts) if len(parts) == python_class.dimension else None
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _overrides_into_session(stage, overrides):
+    """Author every override that names one saved param into the session layer, before load.
+
+    So the network loads holding the new value and cooks once. Applied after load instead,
+    as _parse_param_overrides does, it lands on a network load has already cooked with the
+    saved values, and everything it reaches cooks a second time.
+
+    Only an override this can be sure of goes in: ``CHUNK.param`` naming one chunk, whose
+    param is saved in the file (a param at its default has no attribute) and not wired to
+    another param (the wire would set it back at load), with a value that reads as the
+    attribute's type. The rest are returned for _parse_param_overrides to apply after load:
+    a bare name, which prefers a group's lofted interface over the param it drives, and
+    params built only on demand -- in a collapsed group, during a chunk's own execute.
+
+    Args:
+        stage (Usd.Stage): The network, opened but not yet loaded
+        overrides (list[str]): ``CHUNK.param=value`` and ``param=value`` strings
+
+    Returns:
+        list[str]: The overrides still to apply after load
+    """
+    chunks = [p for p in stage.Traverse() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME]
+    names = [p.GetName() for p in chunks]
+    remaining = []
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for override in overrides:
+            label, sep, raw = override.partition("=")
+            chunk_name, _, param = label.partition(".")
+            candidates = [p for p in chunks if p.GetName() == chunk_name] if param and names.count(chunk_name) == 1 else []
+            attrs = [
+                a for p in candidates for a in p.GetAttributes()
+                if a.GetName().startswith(chunk_naming.INPUTS_PREFIX)
+                and not chunk_naming.is_exec_input_name(a.GetName())
+                and a.HasAuthoredValue() and not a.HasAuthoredConnections()
+                and chunk_batch.names_param(a.GetName(), param)
+            ]
+            value = _value_for(attrs[0], raw) if sep and len(attrs) == 1 else None
+            if value is None:
+                remaining.append(override)
+                continue
+            attrs[0].Set(value)
+    return remaining
+
+
 def cmd_run(args):
-    stage = Usd.Stage.Open(args.usda)
+    # Overrides go into the session layer before load wherever they can (see
+    # _overrides_into_session), and a batch run's values come as one (cmd_batch): read at
+    # load, the network cooks once with them.
+    session = getattr(args, "session", None)
+    root = Sdf.Layer.FindOrOpen(args.usda)
+    stage = Usd.Stage.Open(root, Sdf.Layer.FindOrOpen(session)) if root and session else Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
+    if args.params:
+        args.params = _overrides_into_session(stage, args.params)
 
     # The scene's stage sync replaces a bare load_chunks: initialize loads the network
     # itself and, unlike a bare call, leaves the sync listening while it does.
@@ -579,6 +665,114 @@ def cmd_sweep(args):
         print(f"\n{RED}{len(failed)} of {len(indices)} failed{RESET}: {failed[:10]}")
         sys.exit(1)
     print(f"\n{GREEN}{len(indices)} variant(s){RESET} -> {args.out}")
+
+
+def _absolute_chunk_dirs():
+    """os.environ with relative USD_CHUNK_DIRS entries made absolute.
+
+    A batch's runs work in the network's own directory (see cmd_batch), and a relative entry
+    means "relative to where the command was typed", so it is pinned down before the
+    directory changes under it.
+    """
+    env = dict(os.environ)
+    raw = env.get("USD_CHUNK_DIRS")
+    if raw:
+        env["USD_CHUNK_DIRS"] = os.pathsep.join(
+            str(Path(entry).resolve()) for entry in raw.split(os.pathsep) if entry
+        )
+    return env
+
+
+def _run_batch_item(cmd, anchor, env):
+    """One batch run, in its own process: (return code, combined output)."""
+    proc = subprocess.run(cmd, cwd=anchor, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return proc.returncode, proc.stdout.decode(errors="replace")
+
+
+def cmd_batch(args):
+    """Cook a network once per file a glob in it matches: plan here, cook in children.
+
+    Planning reads the patterns off the stage and loads nothing (chunk_batch). Each run is a
+    `run` of the same file in its own process, opened with a session layer holding the
+    driver's file and every sink's value -- so it cooks what `run` would for that one file,
+    Output, commit hooks and all, and cooks it once.
+    """
+    usda = Path(args.usda).resolve()
+    anchor = usda.parent
+    root_layer = Sdf.Layer.FindOrOpen(str(usda))
+    if not root_layer:
+        print(f"Failed to open: {args.usda}")
+        sys.exit(1)
+
+    # A glob from the command line can be the driver, so it goes onto the stage before
+    # planning; every other override is handed to each run as typed.
+    pattern_params, plain_params = chunk_batch.split_overrides(args.params)
+    stage = Usd.Stage.Open(root_layer, Sdf.Layer.CreateAnonymous("batch-plan.usda"))
+    try:
+        applied = chunk_batch.apply_overrides(stage, pattern_params)
+        plan = chunk_batch.build_plan(stage, anchor, output_pattern=args.export, driver=args.driver)
+        committing = []
+        if not args.export:
+            # The network writes its own output, so something in it has to, somewhere
+            # different every run -- checked before the first file is written.
+            registry = Scene(stage, "cli", sync=False).registry
+            committing = chunk_batch.committing_chunk_names(stage, registry)
+            chunk_batch.check_commit_targets(committing, plan)
+    except chunk_batch.BatchError as exc:
+        print(f"{RED}batch: {exc}{RESET}")
+        sys.exit(1)
+
+    for line in applied:
+        print(f"Set:    {line}")
+    print(chunk_batch.format_plan(plan, args.usda))
+    print()
+
+    env = _absolute_chunk_dirs()
+    total = len(plan.runs)
+    sessions = tempfile.TemporaryDirectory(prefix="usdchunks-batch-")
+
+    def command(i, run):
+        # This run's values, read at load (see cmd_run): one cook, with them.
+        session = os.path.join(sessions.name, f"run_{i:05d}.usda")
+        chunk_batch.write_session(stage, run.values(plan.driver, anchor), session)
+        cmd = [python_executable(), "-m", "usd_chunks.cli", "run", str(usda), *plain_params, "--session", session]
+        if run.output:
+            out = anchor / run.output
+            # USD does not make folders on the way out, and a pattern names one that need
+            # not exist yet. Likewise for the sinks of the chunks that write.
+            out.parent.mkdir(parents=True, exist_ok=True)
+            cmd += ["--export", str(out)]
+        for site, value in run.sink_values:
+            if site.chunk_name in committing:
+                (anchor / value).parent.mkdir(parents=True, exist_ok=True)
+        if args.procedural:
+            cmd.append("--procedural")
+        if args.all:
+            cmd.append("--all")
+        return cmd
+
+    # Written up front, on this thread: the planning stage is not for sharing between threads.
+    commands = [(i, run, command(i, run)) for i, run in enumerate(plan.runs, 1)]
+
+    def one(item):
+        i, run, cmd = item
+        return i, run, *_run_batch_item(cmd, anchor, env)
+
+    failed = []
+    with sessions, ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        for i, run, code, output in pool.map(one, commands):
+            target = f" -> {run.output}" if run.output else ""
+            if code == 0:
+                print(f"  [{i}/{total}] {run.source}{target}")
+            else:
+                failed.append(run.source)
+                print(f"{RED}  [{i}/{total}] {run.source} FAILED{RESET}")
+                print("\n".join(output.strip().splitlines()[-8:]))
+
+    if failed:
+        print(f"\n{RED}{len(failed)} of {total} failed{RESET}: {failed[:10]}")
+        sys.exit(1)
+    print(f"\n{GREEN}Batch complete: {total} run{'s' if total != 1 else ''}.{RESET}")
 
 
 def _open_for_sweep(args):
@@ -787,6 +981,7 @@ def main():
             "  usdchunks run setup.usda -o result.usda\n"
             "  usdchunks run setup.usda -p\n"
             "  usdchunks run setup.usda MyChunk.primpath_location=/geo\n"
+            "  usdchunks batch setup.usda -o 'out/*.usda'\n"
             "  usdchunks info setup.usda\n"
             "  usdchunks validate setup.usda -v\n"
             "  usdchunks plugin-path\n"
@@ -843,6 +1038,9 @@ def main():
         help="Cook every network in the file, not just the one the active view reaches, "
              "for a file whose side branches are meant to run",
     )
+    # A layer of param values to open the network with, as its session layer: how a batch
+    # hands each run its file (cmd_batch).
+    run_parser.add_argument("--session", metavar="LAYER", help=SUPPRESS)
 
     info_parser = sub.add_parser(
         "info",
@@ -958,6 +1156,49 @@ def main():
         help="Regenerate the variants in fresh processes and diff them against --out",
     )
 
+    batch_parser = sub.add_parser(
+        "batch",
+        help="Run a chunk network once per file matched by a glob",
+        description=(
+            "Cook one network once per file a glob in it matches, one `run` per file.\n\n"
+            "Every string param holding a glob (*, ?, [...]) is a pattern. The one that\n"
+            "matches existing files drives the batch; every other pattern (and -o) is filled\n"
+            "from the driver's wildcards, left to right, so subfolders carry over:\n"
+            "  Reference.file_path = assets/**/*.usdc    ExportUSD.output_file = out/**/*.usda\n"
+            "  assets/props/chair.usdc  ->  out/props/chair.usda\n\n"
+            "Patterns are relative to the network's own folder, not the shell's. A glob given\n"
+            "as an override counts as one, so a network can be pointed at another folder\n"
+            "without editing it. Without -o something in the network has to write (Export\n"
+            "USD, Render) to a path with a wildcard in it, or every run would overwrite the\n"
+            "same file -- that is checked before the first run."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks batch convert.usda\n"
+            "  usdchunks batch convert.usda -o 'out/*.usda'\n"
+            "  usdchunks batch convert.usda Reference.file_path='assets/**/*.usdc' -o 'out/**/*.usda'\n"
+            "  usdchunks batch convert.usda --driver Reference.file_path --jobs 4\n"
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    batch_parser.add_argument("usda", help="Path to the .usda chunk network file")
+    batch_parser.add_argument(
+        "params", nargs="*", help="Param overrides for every run, as for run: ChunkName.param=value"
+    )
+    batch_parser.add_argument(
+        "--export", "-o", metavar="PATTERN",
+        help="Export each run's result here (a pattern filled from the driver's wildcards), "
+             "flattened without Chunk prims as `run -o` does",
+    )
+    batch_parser.add_argument(
+        "--driver", metavar="CHUNK.param", help="Which pattern drives the batch, when more than one matches files"
+    )
+    batch_parser.add_argument("--jobs", type=int, default=1, help="Runs to cook concurrently")
+    batch_parser.add_argument("--procedural", action="store_true", help="Keep Chunk prims in each -o export")
+    batch_parser.add_argument(
+        "--all", action="store_true", help="Cook every network per run, not just what the Output reaches"
+    )
+
     deps_parser = sub.add_parser(
         "deps",
         help="Report chunks with undeclared or unpinned dependencies",
@@ -1024,6 +1265,8 @@ def main():
         cmd_pin(args)
     elif args.command == "sweep":
         cmd_sweep(args)
+    elif args.command == "batch":
+        cmd_batch(args)
     elif args.command == "deps":
         cmd_deps(args)
     elif args.command == "plugin-path":
