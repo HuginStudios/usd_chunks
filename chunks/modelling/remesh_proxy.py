@@ -303,6 +303,11 @@ def _author(stage, path: str, proxy: Proxy, purpose: str) -> None:
     )
     # Polygons, not a subdivision cage: subdividing would shrink the proxy off its source.
     mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+    # Double-sided, because reduction folds thin sheets: a woven seat reduced to 3,000
+    # triangles had a fifth of them inside out, and culled they read as holes. Thickening
+    # the sheets instead fattened every throw, leaf and rail with them; drawing both sides
+    # changes no shape, and on a closed proxy the far sides are depth-tested away anyway.
+    mesh.CreateDoubleSidedAttr().Set(True)
     mesh.CreatePurposeAttr().Set(purpose)
     if proxy.colours is not None:
         colour = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
@@ -331,7 +336,7 @@ def execute(node: chunk.Chunk) -> None:
     upstream, sources = _sources(node, paths)
     out_path = _output_path(node, str(paths[0]))
     source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
-    keep_under = int(node.get_param("keep_under", chunk.is_param_t(int)).value)
+    keep_under = int(node.get_param("budget", chunk.is_param_t(int)).value)
     if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
         del upstream
         _keep_source(node, stage, layer, str(paths[0]), out_path, source_triangles, keep_under)
@@ -431,16 +436,16 @@ def main():
 
     chunk_api.add_param(
         chunk.Slider(
-            "keep_under",
-            "Keep Source Under",
+            "budget",
+            "Triangle Budget",
             is_int=True,
             min_value=0,
             max_value=1_000_000,
             default_value=3000,
-            tooltip="An asset with no more triangles than this is not remeshed: the proxy is a\n"
-            "reference to the asset itself, with its own UVs and materials, and Poly\n"
-            "Reduce, UV Unwrap and Bake Textures leave it alone. Set it to the triangle\n"
-            "budget the proxy is reduced to. 0 always remeshes.",
+            tooltip="The triangle count the proxy is reduced to downstream -- set Poly Reduce\n"
+            "to the same. An asset with no more triangles than this is not remeshed: the\n"
+            "proxy is a reference to the asset itself, with its own UVs and materials,\n"
+            "and Poly Reduce, UV Unwrap and Bake Textures leave it alone. 0 always remeshes.",
         )
     )
 

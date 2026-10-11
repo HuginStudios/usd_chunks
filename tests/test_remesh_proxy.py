@@ -118,14 +118,14 @@ def wired(tmp_path, monkeypatch):
     chunk_registry.ChunkLayerManager().initialize(stage)
     _chunk_usd_init(stage, scene)
 
-    def make(keep_under=0):
+    def make(budget=0):
         module = reg.get_chunk_module("remesh_proxy")
         chunks = module.create() if module.loaded else module.load()
         for c in chunks:
             scene.add_chunk(c)
         # The test assets are a few dozen triangles: remesh them anyway, unless a test is
         # about keeping a small source as it is.
-        chunks[0].get_param("keep_under").value = keep_under
+        chunks[0].get_param("budget").value = budget
         return chunks[0]
 
     return stage, make
@@ -389,7 +389,7 @@ def test_a_source_under_the_budget_is_kept_as_is_not_remeshed(wired) -> None:
     UsdGeom.Xform.Define(stage, "/World")
     _box(stage, "/World/Asset/Body", colour=(0.2, 0.4, 0.6))
 
-    node = make(keep_under=3000)
+    node = make(budget=3000)
     node.get_param("prim_path").value = "/World/Asset"
 
     proxy = stage.GetPrimAtPath("/World/Asset_proxy")
@@ -405,7 +405,7 @@ def test_downstream_chunks_leave_a_kept_source_alone(wired) -> None:
     stage, make = wired
     UsdGeom.Xform.Define(stage, "/World")
     _box(stage, "/World/Asset/Body")
-    node = make(keep_under=3000)
+    node = make(budget=3000)
     node.get_param("prim_path").value = "/World/Asset"
 
     uv = importlib.import_module("chunks.modelling.uv_unwrap")
@@ -413,3 +413,12 @@ def test_downstream_chunks_leave_a_kept_source_alone(wired) -> None:
     proxy = stage.GetPrimAtPath("/World/Asset_proxy")
     assert uv._mesh_prims(proxy, True) == []
     assert pr._mesh_prims(proxy, True) == []
+
+
+def test_the_proxy_is_double_sided_so_folded_sheets_do_not_read_as_holes(wired) -> None:
+    stage, make = wired
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("prim_path").value = "/Asset"
+    assert UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetDoubleSidedAttr().Get() is True
