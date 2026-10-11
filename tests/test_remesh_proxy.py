@@ -13,10 +13,13 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk_registry, cook_cache
+from usd_chunks import chunk_registry, cook_cache, surface_samples
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
+Image = pytest.importorskip("PIL.Image")
+sparse = pytest.importorskip("scipy.sparse")
+csgraph = pytest.importorskip("scipy.sparse.csgraph")
 rp = importlib.import_module("chunks.modelling.remesh_proxy")
 
 pytestmark = pytest.mark.skipif(not rp._HAS_DEPS, reason="needs scipy and scikit-image")
@@ -70,13 +73,10 @@ def _canopy_centres(n=400, seed=1, centre=(0.0, 0.0, 2.0)):
 
 
 def _components(points, triangles) -> int:
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-
     edges = np.concatenate([triangles[:, [0, 1]], triangles[:, [1, 2]]])
     n = len(points)
-    graph = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
-    return connected_components(graph)[0]
+    graph = sparse.coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
+    return csgraph.connected_components(graph)[0]
 
 
 def _signed_volume(points, triangles) -> float:
@@ -91,7 +91,7 @@ def _settings(**overrides):
 
 
 def _proxy(stage, path="/Asset", **overrides):
-    return rp.build_proxy(rp.gather_sources(stage.GetPrimAtPath(path)), _settings(**overrides))
+    return rp.build_proxy(surface_samples.gather_sources(stage.GetPrimAtPath(path)), _settings(**overrides))
 
 
 class _DummyScene(SceneSender):
@@ -118,11 +118,14 @@ def wired(tmp_path, monkeypatch):
     chunk_registry.ChunkLayerManager().initialize(stage)
     _chunk_usd_init(stage, scene)
 
-    def make():
+    def make(budget=0):
         module = reg.get_chunk_module("remesh_proxy")
         chunks = module.create() if module.loaded else module.load()
         for c in chunks:
             scene.add_chunk(c)
+        # The test assets are a few dozen triangles: remesh them anyway, unless a test is
+        # about keeping a small source as it is.
+        chunks[0].get_param("budget").value = budget
         return chunks[0]
 
     return stage, make
@@ -200,7 +203,7 @@ def test_every_point_instancer_copy_is_covered() -> None:
     instancer.CreatePositionsAttr([Gf.Vec3f(-3, 0, 0), Gf.Vec3f(0, 0, 0), Gf.Vec3f(3, 0, 0)])
     instancer.CreateProtoIndicesAttr([0, 0, 0])
 
-    sources = rp.gather_sources(stage.GetPrimAtPath("/Asset"))
+    sources = surface_samples.gather_sources(stage.GetPrimAtPath("/Asset"))
     assert len(sources) == 1 and len(sources[0].placements) == 3  # prototype read once, placed 3x
     proxy = rp.build_proxy(sources, _settings(resolution=96))
     assert _components(proxy.points, proxy.triangles) == 3
@@ -215,7 +218,7 @@ def test_hidden_and_guide_geometry_is_left_out() -> None:
     guide = _box(stage, "/Asset/Guide", lo=(-6, -6, -6), hi=(-5, -5, -5))
     guide.CreatePurposeAttr(UsdGeom.Tokens.guide)
 
-    assert [s.path for s in rp.gather_sources(stage.GetPrimAtPath("/Asset"))] == ["/Asset/Body"]
+    assert [s.path for s in surface_samples.gather_sources(stage.GetPrimAtPath("/Asset"))] == ["/Asset/Body"]
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +272,6 @@ def test_a_bound_material_wins_over_display_colour() -> None:
 def test_a_cut_out_card_only_becomes_volume_where_it_is_opaque(tmp_path) -> None:
     """A leaf card's texture is mostly transparent. Sampling the whole card would give the
     proxy a slab where the renderer shows a leaf; the cut-away half must contribute nothing."""
-    from PIL import Image
-
     rgba = np.zeros((16, 16, 4), dtype=np.uint8)
     rgba[..., 1] = 200  # green
     rgba[:, :8, 3] = 255  # left half (u < 0.5) opaque, right half transparent
@@ -330,8 +331,9 @@ def test_a_proxy_inside_the_asset_is_not_sampled_on_the_next_cook(wired) -> None
     node.get_param("prim_path").value = "/Asset"
     first = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset/Proxy")).GetPointsAttr().Get())
 
-    node.get_param("smooth").value = 0.25
-    node.get_param("smooth").value = 0.5
+    smooth = node.get_param("smooth").value
+    node.get_param("smooth").value = smooth / 2
+    node.get_param("smooth").value = smooth
     again = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset/Proxy")).GetPointsAttr().Get())
     assert first.shape == again.shape and np.allclose(first, again)
 
@@ -378,3 +380,61 @@ def test_an_unchanged_recook_does_not_rebuild(wired, monkeypatch) -> None:
     assert calls == []
     node.get_param("thickness").value = 2.0
     assert calls == [1]
+
+
+def test_a_source_under_the_budget_is_kept_as_is_not_remeshed(wired) -> None:
+    """A 12-triangle box remeshed is thousands of triangles of worse box. Below the budget
+    the proxy is the source itself, and the chain downstream is told to leave it alone."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    _box(stage, "/World/Asset/Body", colour=(0.2, 0.4, 0.6))
+
+    node = make(budget=3000)
+    node.get_param("prim_path").value = "/World/Asset"
+
+    proxy = stage.GetPrimAtPath("/World/Asset_proxy")
+    assert proxy.GetCustomDataByKey(surface_samples.PASSTHROUGH_KEY)
+    body = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Asset_proxy/Body"))
+    assert len(body.GetFaceVertexCountsAttr().Get()) == 6  # the source's own quads
+    assert surface_samples.is_passthrough(body.GetPrim())
+    assert "kept as is" in node.get_param("readout").value
+    assert node.get_param("out_triangles").value == 12
+
+
+def test_downstream_chunks_leave_a_kept_source_alone(wired) -> None:
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    _box(stage, "/World/Asset/Body")
+    node = make(budget=3000)
+    node.get_param("prim_path").value = "/World/Asset"
+
+    uv = importlib.import_module("chunks.modelling.uv_unwrap")
+    pr = importlib.import_module("chunks.modelling.poly_reduce")
+    proxy = stage.GetPrimAtPath("/World/Asset_proxy")
+    assert uv._mesh_prims(proxy, True) == []
+    assert pr._mesh_prims(proxy, True) == []
+
+
+def test_the_proxy_is_double_sided_so_folded_sheets_do_not_read_as_holes(wired) -> None:
+    stage, make = wired
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("prim_path").value = "/Asset"
+    assert UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetDoubleSidedAttr().Get() is True
+
+
+def test_the_budget_caps_the_proxy_and_a_box_needs_far_less(wired) -> None:
+    stage, make = wired
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 64
+    node.get_param("max_error").value = 0.0  # exactly the budget
+    node.get_param("budget").value = 11  # a 12-triangle box is above it: remesh it
+    node.get_param("prim_path").value = "/Asset"
+    capped = len(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetFaceVertexCountsAttr().Get())
+    assert capped <= 11
+
+    node.get_param("budget").value = 0
+    dense = len(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetFaceVertexCountsAttr().Get())
+    assert dense > 1000  # 0: marching cubes' output as it is

@@ -50,6 +50,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks import chunk_stage
+from usd_chunks import surface_samples
 from usd_chunks.mesh_math import fan_triangulate
 
 try:
@@ -395,8 +396,8 @@ def _mesh_prims(prim, recurse):
     skipped: an override authored on one is not legal, and silently writing nothing is
     worse than saying so.
     """
-    if not prim or not prim.IsValid():
-        return []
+    if not prim or not prim.IsValid() or surface_samples.is_passthrough(prim):
+        return []  # a proxy kept as its source by Remesh Proxy: already under budget
     found = []
     for candidate in Usd.PrimRange(prim) if recurse else [prim]:
         if not UsdGeom.Mesh(candidate):
@@ -1019,10 +1020,12 @@ def main():
                 "Aggressiveness",
                 min_value=0,
                 max_value=10,
-                default_value=7,
-                tooltip="How fast the error threshold is allowed to grow. 7 is the usual\n"
-                "balance. Lower is slower and holds the shape more closely; it may\n"
-                "also stop short of the target. Higher is faster and looser.",
+                default_value=5,
+                tooltip="How fast the error threshold is allowed to grow. Lower is slower and\n"
+                "holds the shape more closely; below about 5 it may stop short of the\n"
+                "target. Higher is faster and looser: at 7, a 660k-triangle remeshed\n"
+                "armchair taken to 3k lost 13% of its volume to slab-like cuts, where 5\n"
+                "lost 1% and still hit the count.",
             ),
             chunk.Checkbox(
                 "lock_boundary",
