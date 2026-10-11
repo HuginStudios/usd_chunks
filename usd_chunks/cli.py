@@ -410,7 +410,8 @@ def cmd_run(args):
     # cooked it with the saved values -- the saved asset baked, written and thrown away,
     # once per run.
     session = getattr(args, "session", None)
-    stage = Usd.Stage.Open(args.usda, Sdf.Layer.FindOrOpen(session)) if session else Usd.Stage.Open(args.usda)
+    root = Sdf.Layer.FindOrOpen(args.usda) if session else None
+    stage = Usd.Stage.Open(root, Sdf.Layer.FindOrOpen(session)) if root else Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
