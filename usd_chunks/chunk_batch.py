@@ -140,7 +140,7 @@ def _param_path(attr_name: str) -> str:
     return attr_name[len(_INPUTS_PREFIX):].replace(":", ".")
 
 
-def _names_param(attr_name: str, wanted: str) -> bool:
+def names_param(attr_name: str, wanted: str) -> bool:
     """Whether an override's param (bare, or a dotted group path) names this attribute:
     ``output_dir`` and ``Output.output_dir`` both name ``inputs:Output:output_dir``,
     as both reach that param in ``run``."""
@@ -251,7 +251,7 @@ def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
             for prim in chunks:
                 if want_chunk is not None and prim.GetName() != want_chunk:
                     continue
-                named = [a.GetName() for a in _input_attrs(prim) if _names_param(a.GetName(), want_param)]
+                named = [a.GetName() for a in _input_attrs(prim) if names_param(a.GetName(), want_param)]
                 hits += [(prim, name) for name in named]
             if not hits:
                 if want_chunk is None:

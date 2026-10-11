@@ -28,6 +28,7 @@ from usd_chunks.chunk_batch import (
     format_plan,
     select_driver,
     split_overrides,
+    write_session,
 )
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import export_chunks, initialize as init_chunk_usd
@@ -198,11 +199,15 @@ def test_plan_fills_sinks_from_driver_captures(network, asset_tree):
     ]
 
 
-def test_each_run_is_handed_its_values_as_run_overrides(network, asset_tree):
+def _labelled(values):
+    return [(site.label, value) for site, value in values]
+
+
+def test_each_run_is_handed_its_driver_file_and_sink_values(network, asset_tree):
     plan = build_plan(network, asset_tree)
-    assert plan.runs[1].overrides(plan.driver) == [
-        "Reference.file_path=./assets/hero.usda",
-        "Export.output_file=out/hero.usda",
+    assert _labelled(plan.runs[1].values(plan.driver)) == [
+        ("Reference.file_path", "./assets/hero.usda"),
+        ("Export.output_file", "out/hero.usda"),
     ]
 
 
@@ -210,10 +215,20 @@ def test_a_run_is_handed_absolute_paths_given_the_anchor(network, asset_tree):
     """A chunk's anonymous layer has no folder for a relative path to resolve against."""
     plan = build_plan(network, asset_tree)
     root = asset_tree.resolve().as_posix()
-    assert plan.runs[1].overrides(plan.driver, asset_tree) == [
-        f"Reference.file_path={root}/assets/hero.usda",
-        f"Export.output_file={root}/out/hero.usda",
+    assert _labelled(plan.runs[1].values(plan.driver, asset_tree)) == [
+        ("Reference.file_path", f"{root}/assets/hero.usda"),
+        ("Export.output_file", f"{root}/out/hero.usda"),
     ]
+
+
+def test_a_runs_session_layer_holds_its_values_on_the_chunk_prims(network, asset_tree, tmp_path):
+    """Opened as the session layer, the network composes with this run's values."""
+    plan = build_plan(network, asset_tree)
+    path = str(tmp_path / "run.usda")
+    write_session(network, plan.runs[0].values(plan.driver), path)
+    composed = Usd.Stage.Open(network.GetRootLayer(), Sdf.Layer.FindOrOpen(path))
+    assert composed.GetAttributeAtPath("/chunks/Reference.inputs:file_path").Get() == "./assets/crate.usda"
+    assert composed.GetAttributeAtPath("/chunks/Export.inputs:output_file").Get() == "out/crate.usda"
 
 
 def test_plan_fills_the_output_pattern(network, asset_tree):
@@ -272,7 +287,7 @@ def test_a_grouped_param_is_found_by_its_name_and_labelled_as_run_reads_it(stage
     assert apply_overrides(stage, ["Bake.output_dir=out/*_tex"]) == ["Bake.Output.output_dir = 'out/*_tex'"]
     plan = build_plan(stage, asset_tree)
     assert [s.label for s in plan.sinks] == ["Bake.Output.output_dir"]
-    assert plan.runs[0].overrides(plan.driver)[1] == "Bake.Output.output_dir=out/crate_tex"
+    assert _labelled(plan.runs[0].values(plan.driver))[1] == ("Bake.Output.output_dir", "out/crate_tex")
     assert not bake.HasAttribute("inputs:output_dir"), "no stray ungrouped attribute"
 
 
@@ -411,6 +426,53 @@ def test_a_glob_override_points_the_network_at_another_folder(ref_network, tmp_p
     result = _batch(ref_network, "Reference.file_path=./other/*.usda", "-o", "out/*.usda")
     assert result.returncode == 0, result.stdout + result.stderr
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["moved.usda"]
+
+
+_COUNT_COOKS = (
+    "import sys, collections;"
+    "from usd_chunks import chunk_cook, cli;"
+    "cooks = collections.Counter();"
+    "chunk_cook.after_cook(lambda c: cooks.update([c.name]));"
+    "sys.argv = ['usdchunks'] + sys.argv[1:];"
+    "cli.main();"
+    "print('COOKS', dict(cooks))"
+)
+
+
+def _run_counting(*args):
+    """`usdchunks run ...` in a fresh process, with how many times each chunk cooked."""
+    out = subprocess.run([sys.executable, "-c", _COUNT_COOKS, "run", *args],
+                         capture_output=True, text=True, cwd=str(REPO))
+    assert out.returncode == 0, out.stdout + out.stderr
+    line = next(line for line in out.stdout.splitlines() if line.startswith("COOKS"))
+    return eval(line[len("COOKS"):])  # noqa: S307 -- our own dict literal
+
+
+def _saved_with_file(network, path):
+    """The network with its Reference saved pointing at path, so file_path is authored."""
+    saved = Usd.Stage.Open(str(network))
+    prim = next(p for p in saved.Traverse() if p.GetName() == "Reference")
+    prim.GetAttribute("inputs:file_path").Set(str(path))
+    saved.GetRootLayer().Save()
+
+
+def test_run_cooks_once_with_an_override(ref_network, tmp_path):
+    """Applied after load, an override re-cooked a network load had already cooked with the
+    saved value. Read at load from the session layer, the network cooks once."""
+    _saved_with_file(ref_network, tmp_path / "assets" / "small.usda")
+    out = tmp_path / "result.usda"
+    cooks = _run_counting(str(ref_network), f"Reference.file_path={tmp_path / 'assets' / 'large.usda'}", "-o", str(out))
+    assert cooks.get("Reference") == 1, cooks
+    assert _size(out) == 3.0, "and with the override's file, not the saved one"
+
+
+def test_an_override_load_cannot_take_still_applies_after_load(ref_network, tmp_path):
+    """A param at its default has no attribute to author onto -- it is set after load, as before."""
+    _saved_with_file(ref_network, tmp_path / "assets" / "small.usda")
+    out = tmp_path / "result.usda"
+    _run_counting(str(ref_network), "Reference.prim_type=Scope", "-o", str(out))
+    stage = Usd.Stage.Open(str(out))
+    assert stage.GetPrimAtPath("/Asset").GetTypeName() == "Scope"
 
 
 def test_without_o_a_network_that_writes_nothing_is_refused_before_running(ref_network, tmp_path):

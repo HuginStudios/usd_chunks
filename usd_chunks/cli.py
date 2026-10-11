@@ -404,17 +404,96 @@ def _active_view(stage, scene):
     return views[0]
 
 
+_TRUE_WORDS = ("1", "true", "yes", "on")
+_FALSE_WORDS = ("0", "false", "no", "off")
+
+
+def _value_for(attr, raw):
+    """A command-line string as a value of attr's own type, or None if it does not read as one.
+
+    Covers what a param stores -- bool, numbers, strings, and float/int vectors written as
+    comma-separated components. Anything else (arrays, matrices) is left to the loaded param.
+    """
+    type_name = attr.GetTypeName()
+    scalar = str(type_name.scalarType)
+    if type_name.isArray:
+        return None
+    text = raw.strip()
+    try:
+        if scalar == "bool":
+            lowered = text.lower()
+            return True if lowered in _TRUE_WORDS else False if lowered in _FALSE_WORDS else None
+        if scalar in ("int", "int64", "uint", "uint64", "uchar"):
+            return int(text)
+        if scalar in ("float", "double", "half"):
+            return float(text)
+        if scalar in ("string", "token", "asset"):
+            return raw
+        python_class = getattr(type_name.type, "pythonClass", None)
+        if python_class is not None and hasattr(python_class, "dimension"):
+            parts = [float(p) for p in text.strip("()[]").split(",") if p.strip()]
+            return python_class(*parts) if len(parts) == python_class.dimension else None
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _overrides_into_session(stage, overrides):
+    """Author every override that names one saved param into the session layer, before load.
+
+    So the network loads holding the new value and cooks once. Applied after load instead,
+    as _parse_param_overrides does, it lands on a network load has already cooked with the
+    saved values, and everything it reaches cooks a second time.
+
+    Only an override this can be sure of goes in: ``CHUNK.param`` naming one chunk, whose
+    param is saved in the file (a param at its default has no attribute) and not wired to
+    another param (the wire would set it back at load), with a value that reads as the
+    attribute's type. The rest are returned for _parse_param_overrides to apply after load:
+    a bare name, which prefers a group's lofted interface over the param it drives, and
+    params built only on demand -- in a collapsed group, during a chunk's own execute.
+
+    Args:
+        stage (Usd.Stage): The network, opened but not yet loaded
+        overrides (list[str]): ``CHUNK.param=value`` and ``param=value`` strings
+
+    Returns:
+        list[str]: The overrides still to apply after load
+    """
+    chunks = [p for p in stage.Traverse() if p.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME]
+    names = [p.GetName() for p in chunks]
+    remaining = []
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for override in overrides:
+            label, sep, raw = override.partition("=")
+            chunk_name, _, param = label.partition(".")
+            candidates = [p for p in chunks if p.GetName() == chunk_name] if param and names.count(chunk_name) == 1 else []
+            attrs = [
+                a for p in candidates for a in p.GetAttributes()
+                if a.GetName().startswith(chunk_naming.INPUTS_PREFIX)
+                and not chunk_naming.is_exec_input_name(a.GetName())
+                and a.HasAuthoredValue() and not a.HasAuthoredConnections()
+                and chunk_batch.names_param(a.GetName(), param)
+            ]
+            value = _value_for(attrs[0], raw) if sep and len(attrs) == 1 else None
+            if value is None:
+                remaining.append(override)
+                continue
+            attrs[0].Set(value)
+    return remaining
+
+
 def cmd_run(args):
-    # A batch run's values come as a session layer (cmd_batch): read at load, the network
-    # cooks once with them. Given as overrides they would land after load had already
-    # cooked it with the saved values -- the saved asset baked, written and thrown away,
-    # once per run.
+    # Overrides go into the session layer before load wherever they can (see
+    # _overrides_into_session), and a batch run's values come as one (cmd_batch): read at
+    # load, the network cooks once with them.
     session = getattr(args, "session", None)
-    root = Sdf.Layer.FindOrOpen(args.usda) if session else None
-    stage = Usd.Stage.Open(root, Sdf.Layer.FindOrOpen(session)) if root else Usd.Stage.Open(args.usda)
+    root = Sdf.Layer.FindOrOpen(args.usda)
+    stage = Usd.Stage.Open(root, Sdf.Layer.FindOrOpen(session)) if root and session else Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
+    if args.params:
+        args.params = _overrides_into_session(stage, args.params)
 
     # The scene's stage sync replaces a bare load_chunks: initialize loads the network
     # itself and, unlike a bare call, leaves the sync listening while it does.
