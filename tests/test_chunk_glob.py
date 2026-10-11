@@ -9,6 +9,7 @@ from usd_chunks.chunk_glob import (
     GLOBSTAR_DIR,
     GlobError,
     LITERAL,
+    REF,
     STAR,
     capture_count,
     expand,
@@ -306,3 +307,39 @@ def test_expand_absolute_globstar(asset_tree) -> None:
 def test_expand_absolute_pattern_matching_nothing(asset_tree) -> None:
     root = str(asset_tree).replace(chr(92), "/")
     assert expand(f"{root}/missing/*.fbx", str(asset_tree)) == []
+
+
+# ---------------------------------------------------------------------------
+# numbered placeholders
+# ---------------------------------------------------------------------------
+
+
+def test_a_placeholder_is_a_pattern_and_a_token() -> None:
+    assert is_pattern("proxies/{1}/textures")
+    assert not is_pattern("/World{variant=a}")  # a variant selection is not a placeholder
+    assert tokenize("out/{2}.usda") == [(LITERAL, "out/"), (REF, "2"), (LITERAL, ".usda")]
+    assert capture_count("out/{1}/*.usda") == 1, "a placeholder consumes no capture"
+
+
+@pytest.mark.parametrize(
+    "pattern, captures, expected",
+    [
+        ("proxies/{1}/{1}.usda", ("fern",), "proxies/fern/fern.usda"),
+        ("proxies/{1}/textures", ("fern",), "proxies/fern/textures"),
+        ("out/{2}/{1}_*_*.usda", ("a", "b"), "out/b/a_a_b.usda"),
+        ("out/{1}/*/*.usda", ("x", "y"), "out/x/x/y.usda"),
+    ],
+)
+def test_placeholders_name_captures_by_number(pattern: str, captures: tuple, expected: str) -> None:
+    assert substitute(pattern, captures) == expected
+
+
+def test_a_placeholder_past_the_captures_is_an_error() -> None:
+    with pytest.raises(GlobError, match=r"names capture \{2\} but there are 1"):
+        substitute("out/{2}.usda", ("only",))
+
+
+def test_a_placeholder_never_matches_a_file(tmp_path) -> None:
+    """Only a sink fills one -- as a driver it names no file."""
+    (tmp_path / "a.usda").write_text("#usda 1.0\n")
+    assert expand("{1}.usda", str(tmp_path)) == []

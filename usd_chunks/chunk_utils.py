@@ -14,7 +14,7 @@ import re
 import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
-from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade
+from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
@@ -2191,3 +2191,38 @@ def focus_point_of(
     if not points:
         return None
     return sum(points, Gf.Vec3d(0, 0, 0)) / len(points)
+
+
+def relative_asset_paths(path: str) -> int:
+    """Rewrite the absolute asset paths in the layer file at path relative to its folder.
+
+    A network's chunks author absolute paths -- a batch hands them over absolute, and a
+    chunk's anonymous layer has no folder a relative one could resolve against -- so a
+    delivered file names its sources and textures by where they sat on the machine that
+    built it. Relative, the file and what it uses move together, as a library is moved or
+    shared. A path on another drive has no relative form and stays as it is.
+
+    Args:
+        path: The layer file, already written
+
+    Returns:
+        How many asset paths were rewritten
+    """
+    layer = Sdf.Layer.FindOrOpen(path)
+    folder = os.path.dirname(os.path.abspath(path))
+    changed = 0
+
+    def relative(asset: str) -> str:
+        nonlocal changed
+        if not asset or not os.path.isabs(asset):
+            return asset
+        if os.path.splitdrive(asset)[0].lower() != os.path.splitdrive(folder)[0].lower():
+            return asset
+        rel = os.path.relpath(asset, folder).replace("\\", "/")
+        changed += 1
+        return rel if rel.startswith(".") else f"./{rel}"
+
+    UsdUtils.ModifyAssetPaths(layer, relative)
+    if changed:
+        layer.Save()
+    return changed

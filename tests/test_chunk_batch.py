@@ -9,6 +9,7 @@ since each run is its own process anyway.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -480,3 +481,27 @@ def test_without_o_a_network_that_writes_nothing_is_refused_before_running(ref_n
     assert result.returncode == 1
     assert "nothing in this network writes" in result.stdout
     assert not (tmp_path / "out").exists()
+
+
+def test_a_sink_can_use_the_driver_capture_twice(network, asset_tree):
+    """proxies/<name>/<name>.usda: one capture, used twice."""
+    network.GetPrimAtPath("/chunks/Export").GetAttribute("inputs:output_file").Set("proxies/{1}/{1}.usda")
+    plan = build_plan(network, asset_tree, output_pattern="proxies/{1}/textures")
+    assert plan.runs[0].sink_values[0][1] == "proxies/crate/crate.usda"
+    assert plan.runs[0].output == "proxies/crate/textures"
+
+
+def test_batch_relative_writes_a_library_that_moves(ref_network, tmp_path):
+    """Default prim set, and every asset path relative: the folder can move or be shared."""
+    result = _batch(ref_network, "-o", "lib/{1}/{1}.usda", "--relative")
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = tmp_path / "lib" / "small" / "small.usda"
+    layer = Sdf.Layer.FindOrOpen(str(out))
+    assert layer.defaultPrim == "Asset"
+    assert layer.GetPrimAtPath("/Asset").referenceList.GetAddedOrExplicitItems()[0].assetPath == "../../assets/small.usda"
+    assert _size(out) == 1.0
+
+    elsewhere = tmp_path / "elsewhere"
+    shutil.copytree(tmp_path / "lib", elsewhere / "lib")
+    shutil.copytree(tmp_path / "assets", elsewhere / "assets")
+    assert _size(elsewhere / "lib" / "small" / "small.usda") == 1.0, "moved together, it still composes"

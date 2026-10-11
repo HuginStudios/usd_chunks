@@ -65,6 +65,25 @@ steps, not a baked result. Chunks that write files to disk do it in a separate `
 function. `usdchunks run` calls it once, after every chunk has cooked. See
 [`commit()`](writing-a-chunk.md#commit).
 
+### One network, many files
+
+`usdchunks batch` cooks a network once for each file that a glob in it matches:
+
+```
+usdchunks batch proxy.usda Reference.file_path='assets/*.usdc' -o 'lib/{1}/{1}.usda' --relative
+```
+
+The glob that matches files decides how many runs there are. The other patterns are filled
+from what its wildcards matched. Wildcards are used left to right, and `{1}` names the first
+match, so it can be used twice. Above, `assets/fern.usdc` becomes `lib/fern/fern.usda`.
+Patterns are read relative to the network's folder.
+
+`--relative` writes each file's asset paths relative to it, so the library moves as one
+folder. A file whose result is a single root prim names it as its default prim, so a
+scene can reference it without a prim path.
+
+Each run is its own `usdchunks run` and cooks once. `--jobs` sets how many run at a time.
+
 ## Background
 
 usd_chunks started as a way to add tools to usdview without writing a `plugInfo.json` and
