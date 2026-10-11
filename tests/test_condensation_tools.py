@@ -339,3 +339,21 @@ def test_the_batched_spin_is_the_loops_spin_exactly(axis, amount) -> None:
     got = Vt.QuathArray.FromNumpy(sp._spun_quats(3000, axis, amount, b).astype(np.float16))
     assert np.array_equal(np.asarray(want), np.asarray(got))
     assert a.random() == b.random()
+
+
+@pytest.mark.parametrize("pocket", [False, True])
+def test_the_batched_density_lookup_is_the_single_point_lookup(pocket) -> None:
+    """sample_many takes a padded fast path when the mesh's neighbourhoods are all about one
+    size (a ground) and a per-cell path when they are not (a dense pocket). Both must give
+    exactly what sample() gives one point at a time."""
+    sp = importlib.import_module("chunks.modelling.scatter_points")
+    rng = np.random.default_rng(2)
+    xs = np.linspace(-50, 50, 60)
+    gx, gy = np.meshgrid(xs, xs, indexing="ij")
+    verts = np.stack([gx.ravel(), gy.ravel(), rng.uniform(-2, 2, gx.size)], 1)
+    if pocket:
+        verts = np.vstack([verts, rng.normal(0, 0.3, (4000, 3))])
+    w = sp._NearestWeight(verts, rng.random(len(verts)))
+    pts = np.stack([rng.uniform(-60, 60, 3000), rng.uniform(-60, 60, 3000), rng.uniform(-3, 3, 3000)], 1)
+    want = np.array([w.sample(p) for p in pts])
+    assert np.array_equal(w.sample_many(pts), want)

@@ -915,11 +915,39 @@ class _NearestWeight:
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         out = np.zeros(len(points))
         keys = self._keys(points)
-        for key in np.unique(keys):
-            nearby = self._nearby(int(key))
+        # Grouped by cell once. Finding each cell's points with `keys == key` scanned the
+        # whole batch per cell -- candidates x cells -- which was most of this lookup's time.
+        uniq, inverse = np.unique(keys, return_inverse=True)
+        lists = [self._nearby(key) for key in uniq.tolist()]
+        sizes = np.fromiter(map(len, lists), dtype=np.int64, count=len(lists))
+        widest = int(sizes.max()) if len(sizes) else 0
+        if not widest:
+            return out
+        if widest <= 4 * max(1.0, float(np.median(sizes[sizes > 0]))):
+            # Neighbourhoods all about one size -- a ground, a wall: every point against its
+            # cell's vertices in one padded array, in blocks. The padding vertex sits too far
+            # away to ever be nearest and weighs 0, which is also the answer for a point with
+            # no vertex near it at all.
+            table = np.full((len(uniq), widest), len(self._points), dtype=np.int64)
+            for u, near in enumerate(lists):
+                table[u, :len(near)] = near
+            index = table[inverse]
+            far = np.vstack([self._points, np.full((1, 3), 1e150)])
+            weights = np.append(self._weights, 0.0)
+            block = max(1, 4_000_000 // widest)
+            for lo in range(0, len(points), block):
+                idx = index[lo:lo + block]
+                diff = points[lo:lo + block, None, :] - far[idx]
+                nearest = np.einsum("ijk,ijk->ij", diff, diff).argmin(axis=1)
+                out[lo:lo + block] = weights[idx[np.arange(len(idx)), nearest]]
+            return out
+        # Uneven (a scan, dense in places): per cell, so no point pays for the densest one.
+        order = np.argsort(inverse, kind="stable")
+        bounds = np.searchsorted(inverse[order], np.arange(len(uniq) + 1))
+        for u, nearby in enumerate(lists):
             if not len(nearby):
                 continue
-            rows = np.flatnonzero(keys == key)
+            rows = order[bounds[u]:bounds[u + 1]]
             diff = points[rows, None, :] - self._points[nearby][None, :, :]
             out[rows] = self._weights[nearby[np.einsum("ijk,ijk->ij", diff, diff).argmin(axis=1)]]
         return out
