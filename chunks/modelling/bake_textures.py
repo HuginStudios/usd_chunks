@@ -1,8 +1,8 @@
 """Bake Textures chunk -- transfer an asset's look onto a proxy's UVs as texture maps.
 
-The last step of the proxy chain: Remesh Proxy → Poly Reduce → UV Unwrap → **Bake
-Textures**. Source is the full asset (any number of meshes, materials, textures, instances);
-Target is the unwrapped low-poly mesh. The bake writes
+The last step of the proxy chain: Remesh Proxy → UV Unwrap → **Bake Textures** (Remesh
+Proxy reduces its own mesh). Source is the full asset (any number of meshes, materials,
+textures, instances); Target is the unwrapped low-poly mesh. The bake writes
 
 * a **base colour** map -- every material and texture of the source re-sampled into one
   texture on the target's atlas, so two hundred CAD part colours or a tree's bark and
@@ -556,6 +556,6 @@ def config():
             "roughness and metallic re-sampled from all of its materials and textures, a\n"
             "tangent-space normal map that restores the detail the low-poly surface lost,\n"
             "and optionally opacity. Binds a UsdPreviewSurface reading them.\n\n"
-            "The end of the proxy chain: Remesh Proxy → Poly Reduce → UV Unwrap → Bake."
+            "The end of the proxy chain: Remesh Proxy → UV Unwrap → Bake."
         ),
     )
