@@ -328,8 +328,9 @@ def test_a_proxy_inside_the_asset_is_not_sampled_on_the_next_cook(wired) -> None
     node.get_param("prim_path").value = "/Asset"
     first = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset/Proxy")).GetPointsAttr().Get())
 
-    node.get_param("smooth").value = 0.25
-    node.get_param("smooth").value = 0.5
+    smooth = node.get_param("smooth").value
+    node.get_param("smooth").value = smooth / 2
+    node.get_param("smooth").value = smooth
     again = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset/Proxy")).GetPointsAttr().Get())
     assert first.shape == again.shape and np.allclose(first, again)
 

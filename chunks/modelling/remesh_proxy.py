@@ -420,9 +420,11 @@ def main():
                 "Close Gaps",
                 min_value=0.0,
                 max_value=32.0,
-                default_value=3.0,
+                default_value=1.0,
                 tooltip="Bridges gaps up to about twice this many voxels wide without growing\n"
-                "the outline. Raise it until a canopy reads as one mass; 0 keeps every gap.",
+                "the outline. 1 was best across 15 trees, plants and furniture: higher fuses\n"
+                "chair legs and hanger rails, 0 breaks thin parts up. Raise it when a sparse\n"
+                "canopy should read as one mass.",
             ),
             chunk.Checkbox(
                 "fill_interior",
@@ -436,9 +438,10 @@ def main():
                 "Smooth",
                 min_value=0.0,
                 max_value=3.0,
-                default_value=0.5,
+                default_value=1.0,
                 tooltip="Blur the volume before extracting the surface, in voxels. Takes out the\n"
-                "voxel staircase; high values round off corners and thin parts.",
+                "voxel staircase; high values round off corners and thin parts. 1 matched\n"
+                "the source's silhouette best across the same 15 assets.",
             ),
         ]
     )

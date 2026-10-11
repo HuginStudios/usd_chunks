@@ -48,6 +48,8 @@ _FALLBACK_COLOUR = (0.18, 0.18, 0.18)
 _COLOUR_INPUTS = ("diffuseColor", "base_color")
 _OPACITY_INPUTS = ("opacity", "geometry_opacity")
 _TRANSMISSION_INPUTS = ("transmission_weight", "transmission")
+# Transmission rougher than this is frosted glass: seen as a surface, not through.
+_FROSTED_ROUGHNESS = 0.2
 # Roughness and metalness, UsdPreviewSurface name first, then OpenPBR / standard_surface.
 _ROUGHNESS_INPUTS = ("roughness", "specular_roughness")
 _METALLIC_INPUTS = ("metallic", "base_metalness", "metalness")
@@ -251,12 +253,17 @@ def _look(material) -> _Look | None:
 
     roughness, roughness_texture = _scalar(shader, _ROUGHNESS_INPUTS, _DEFAULT_ROUGHNESS)
     metallic, metallic_texture = _scalar(shader, _METALLIC_INPUTS, _DEFAULT_METALLIC)
+    if colour is None and _transmission(shader) >= 0.5:
+        # Frosted glass with no base colour of its own looks the colour it lets through.
+        tint = shader.GetInput("transmission_color")
+        value = tint.Get() if tint and not tint.HasConnectedSource() else None
+        colour = tuple(value)[:3] if value is not None else (1.0, 1.0, 1.0)
     return _Look(
         colour or _FALLBACK_COLOUR,
         colour_texture,
         cutout,
         threshold or 0.5,
-        _see_through(shader),
+        _see_through(shader, roughness),
         roughness,
         roughness_texture,
         metallic,
@@ -281,14 +288,25 @@ def _scalar(shader, names, default):
     return default, None
 
 
-def _see_through(shader) -> bool:
-    """Whether a surface is mostly looked through: transmissive (OpenPBR, standard_surface)
-    or a constant opacity below one half (UsdPreviewSurface). A *textured* opacity is a
-    cut-out, handled per sample instead."""
+def _transmission(shader) -> float:
     for name in _TRANSMISSION_INPUTS:
         shader_input = shader.GetInput(name)
-        if shader_input and not shader_input.HasConnectedSource() and (shader_input.Get() or 0.0) >= 0.5:
-            return True
+        if shader_input and not shader_input.HasConnectedSource():
+            return float(shader_input.Get() or 0.0)
+    return 0.0
+
+
+def _see_through(shader, roughness: float) -> bool:
+    """Whether a surface is mostly looked through: *clear* transmission (OpenPBR,
+    standard_surface) or a constant opacity below one half (UsdPreviewSurface). A *textured*
+    opacity is a cut-out, handled per sample instead.
+
+    Rough transmission is frosted or milky glass -- a lamp shade, a bulb -- which reads as
+    a solid, pale surface from any distance a proxy is seen at; dropping it left a pendant
+    lamp as a bare cord. Clear glass (a dust cover, a window) is what disappears.
+    """
+    if _transmission(shader) >= 0.5 and roughness < _FROSTED_ROUGHNESS:
+        return True
     for name in _OPACITY_INPUTS:
         shader_input = shader.GetInput(name)
         value = shader_input.Get() if shader_input and not shader_input.HasConnectedSource() else None

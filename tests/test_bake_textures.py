@@ -273,12 +273,13 @@ def test_a_rebake_with_new_content_replaces_its_files(wired) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _glass(stage, path, weight=1.0):
+def _glass(stage, path, weight=1.0, roughness=0.0):
     """An OpenPBR-only glass, as Blender's exporter writes it: no UsdPreviewSurface."""
     material = UsdShade.Material.Define(stage, path)
     shader = UsdShade.Shader.Define(stage, f"{path}/Glass")
     shader.CreateIdAttr("ND_open_pbr_surface_surfaceshader")
     shader.CreateInput("transmission_weight", Sdf.ValueTypeNames.Float).Set(weight)
+    shader.CreateInput("specular_roughness", Sdf.ValueTypeNames.Float).Set(roughness)
     material.CreateSurfaceOutput("mtlx").ConnectToSource(shader.ConnectableAPI(), "surface")
     return material
 
@@ -293,6 +294,17 @@ def test_glass_is_seen_through_not_baked_as_a_surface() -> None:
 
     image = _bake(stage, target=_plane_target(z=0.06), maps=[texture_bake.MAP_BASE_COLOUR])
     assert np.allclose(image[texture_bake.MAP_BASE_COLOUR].reshape(-1, 3).mean(axis=0), (1, 0, 0), atol=0.02)
+
+
+def test_frosted_glass_is_baked_as_the_pale_surface_it_looks_like() -> None:
+    """A pendant lamp's milky shade: dropped like clear glass, the proxy is a bare cord."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Source")
+    shade = _quad(stage, "/Source/Shade", -1, 1, z=0.05)
+    UsdShade.MaterialBindingAPI.Apply(shade.GetPrim()).Bind(_glass(stage, "/Looks/Milky", roughness=1.0))
+
+    image = _bake(stage, maps=[texture_bake.MAP_BASE_COLOUR])
+    assert np.allclose(image[texture_bake.MAP_BASE_COLOUR].reshape(-1, 3).mean(axis=0), (1, 1, 1), atol=0.02)
 
 
 def test_a_uv_transform_between_primvar_and_texture_is_applied(tmp_path) -> None:
