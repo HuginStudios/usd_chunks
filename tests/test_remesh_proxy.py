@@ -13,10 +13,13 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk_registry, cook_cache
+from usd_chunks import chunk_registry, cook_cache, surface_samples
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
+Image = pytest.importorskip("PIL.Image")
+sparse = pytest.importorskip("scipy.sparse")
+csgraph = pytest.importorskip("scipy.sparse.csgraph")
 rp = importlib.import_module("chunks.modelling.remesh_proxy")
 
 pytestmark = pytest.mark.skipif(not rp._HAS_DEPS, reason="needs scipy and scikit-image")
@@ -70,13 +73,10 @@ def _canopy_centres(n=400, seed=1, centre=(0.0, 0.0, 2.0)):
 
 
 def _components(points, triangles) -> int:
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-
     edges = np.concatenate([triangles[:, [0, 1]], triangles[:, [1, 2]]])
     n = len(points)
-    graph = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
-    return connected_components(graph)[0]
+    graph = sparse.coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
+    return csgraph.connected_components(graph)[0]
 
 
 def _signed_volume(points, triangles) -> float:
@@ -91,7 +91,7 @@ def _settings(**overrides):
 
 
 def _proxy(stage, path="/Asset", **overrides):
-    return rp.build_proxy(rp.gather_sources(stage.GetPrimAtPath(path)), _settings(**overrides))
+    return rp.build_proxy(surface_samples.gather_sources(stage.GetPrimAtPath(path)), _settings(**overrides))
 
 
 class _DummyScene(SceneSender):
@@ -200,7 +200,7 @@ def test_every_point_instancer_copy_is_covered() -> None:
     instancer.CreatePositionsAttr([Gf.Vec3f(-3, 0, 0), Gf.Vec3f(0, 0, 0), Gf.Vec3f(3, 0, 0)])
     instancer.CreateProtoIndicesAttr([0, 0, 0])
 
-    sources = rp.gather_sources(stage.GetPrimAtPath("/Asset"))
+    sources = surface_samples.gather_sources(stage.GetPrimAtPath("/Asset"))
     assert len(sources) == 1 and len(sources[0].placements) == 3  # prototype read once, placed 3x
     proxy = rp.build_proxy(sources, _settings(resolution=96))
     assert _components(proxy.points, proxy.triangles) == 3
@@ -215,7 +215,7 @@ def test_hidden_and_guide_geometry_is_left_out() -> None:
     guide = _box(stage, "/Asset/Guide", lo=(-6, -6, -6), hi=(-5, -5, -5))
     guide.CreatePurposeAttr(UsdGeom.Tokens.guide)
 
-    assert [s.path for s in rp.gather_sources(stage.GetPrimAtPath("/Asset"))] == ["/Asset/Body"]
+    assert [s.path for s in surface_samples.gather_sources(stage.GetPrimAtPath("/Asset"))] == ["/Asset/Body"]
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +269,6 @@ def test_a_bound_material_wins_over_display_colour() -> None:
 def test_a_cut_out_card_only_becomes_volume_where_it_is_opaque(tmp_path) -> None:
     """A leaf card's texture is mostly transparent. Sampling the whole card would give the
     proxy a slab where the renderer shows a leaf; the cut-away half must contribute nothing."""
-    from PIL import Image
-
     rgba = np.zeros((16, 16, 4), dtype=np.uint8)
     rgba[..., 1] = 200  # green
     rgba[:, :8, 3] = 255  # left half (u < 0.5) opaque, right half transparent
