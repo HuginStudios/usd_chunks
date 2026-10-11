@@ -408,3 +408,47 @@ def test_a_cook_with_no_curves_picked_says_so_instead_of_raising() -> None:
 
     # No stage: execute has to bail on its own guard rather than reach for a param.
     ctm.execute(chunk_obj)
+
+
+# ---------------------------------------------------------------------------
+# Ribbon: a flat strip on the ground
+# ---------------------------------------------------------------------------
+
+def _ribbon(points, radius=2.0, up=(0.0, 0.0, 1.0)):
+    radii = np.full(len(points), radius)
+    return ctm.build_mesh([(points, radii)], UsdGeom.Tokens.linear, UsdGeom.Tokens.bspline,
+                          6, 4, ctm._UV_PROPORTIONAL, 1.0, 1.0, 1.0, ctm._PROFILE_RIBBON, up)
+
+
+def _ground_arc(n=40, radius=20.0):
+    a = np.linspace(0.0, 1.5 * math.pi, n)
+    return np.stack([radius * np.cos(a), radius * np.sin(a), np.zeros(n)], axis=1)
+
+
+def test_a_ribbon_lies_flat_the_curves_width_wide() -> None:
+    points, _normals, _st, counts, indices = _ribbon(_ground_arc())
+    assert np.allclose(points[:, 2], 0.0)                     # level all the way round
+    r = np.hypot(points[:, 0], points[:, 1])
+    # 4 wide, either side of the curve (a polyline arc, so within a chord's sag)
+    assert np.allclose(r[0::2], 18.0, atol=0.01) and np.allclose(r[1::2], 22.0, atol=0.01)
+    assert (counts == 4).all() and indices.max() < len(points)
+
+
+def test_a_ribbon_faces_the_sky() -> None:
+    points, _normals, _st, counts, indices = _ribbon(_ground_arc())
+    quads = points[indices.reshape(-1, 4)]
+    n = np.cross(quads[:, 1] - quads[:, 0], quads[:, 2] - quads[:, 0])
+    assert (n[:, 2] > 0).all()
+
+
+def test_a_ribbon_runs_u_across_and_v_along_with_square_tiles() -> None:
+    points, _normals, st, _counts, _indices = _ribbon(_line(n=11, length=40.0), radius=2.0)
+    assert set(np.round(st[:, 0], 6)) == {0.0, 1.0}
+    assert st[:, 1].max() == pytest.approx(40.0 / 4.0)         # one tile per width
+
+
+def test_a_ribbon_follows_a_y_up_stage() -> None:
+    line = _line(n=5, length=10.0)
+    flat = np.stack([line[:, 0], np.zeros(len(line)), line[:, 1]], axis=1)  # along x/z
+    points, *_ = _ribbon(flat, radius=1.0, up=(0.0, 1.0, 0.0))
+    assert np.allclose(points[:, 1], 0.0)
