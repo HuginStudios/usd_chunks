@@ -324,3 +324,18 @@ def test_keeping_off_a_wide_curve_needs_no_spacing(scene):
     p = np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Drops")).GetPositionsAttr().Get())
     assert len(p) > 200
     assert np.hypot(p[:, 0] - 0.05, p[:, 1]).min() >= 0.01 * 0.97
+
+
+@pytest.mark.parametrize("axis,amount", [("Z", 360.0), ("X", 30.0), ("All", 25.0), ("Off", 0.0)])
+def test_the_batched_spin_is_the_loops_spin_exactly(axis, amount) -> None:
+    """Scatter's upright-and-spun fast path must give the per-instance loop's quaternions to
+    the bit (as halves) and leave the generator where the loop would."""
+    import random
+    from pxr import Gf, Vt
+    sp = importlib.import_module("chunks.modelling.scatter_points")
+    a, b = random.Random(7), random.Random(7)
+    want = Vt.QuathArray([sp._to_quath(sp._apply_random_rotation(Gf.Quatf(1, 0, 0, 0), axis, amount, a))
+                          for _ in range(3000)])
+    got = Vt.QuathArray.FromNumpy(sp._spun_quats(3000, axis, amount, b).astype(np.float16))
+    assert np.array_equal(np.asarray(want), np.asarray(got))
+    assert a.random() == b.random()

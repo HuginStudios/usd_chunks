@@ -1199,6 +1199,59 @@ def _compute_orientation(mode, normal, rng, proto=None, world_up=None):
     return Gf.Quatf(1, 0, 0, 0)
 
 
+def _gf_div(v32, length32):
+    """Gf's Vec3f / float: the float32 components times 1/length in double, back to float32."""
+    return (v32.astype(np.float64) * (1.0 / length32.astype(np.float64))[:, None]).astype(np.float32)
+
+
+def _gf_length(v32):
+    """Gf.GetLength of Vec3f rows: float32 x*x + y*y + z*z, in that order, then sqrt."""
+    x, y, z = v32[:, 0], v32[:, 1], v32[:, 2]
+    return np.sqrt((x * x + y * y) + z * z).astype(np.float32)
+
+
+def _spun_quats(count, axis, amount_deg, rng):
+    """_apply_random_rotation(identity, ...) for *count* instances at once, as (count, 4)
+    float32 (i, j, k, real) -- the layout Vt.QuathArray takes from numpy.
+
+    The draws are made one instance at a time, in the loop's order, so the generator ends where
+    the loop would have left it; only the arithmetic is batched, rounded to float32 wherever
+    Gf.Vec3f / Gf.Quatf would round it.
+    """
+    out = np.zeros((count, 4), dtype=np.float32)
+    out[:, 3] = 1.0
+    if axis == "Off":
+        return out
+    amount_rad = math.radians(amount_deg)
+    angle = np.zeros(count)
+    spun = np.ones(count, dtype=bool)
+    if axis == "All":
+        g = np.zeros((count, 3))
+        for i in range(count):
+            g[i] = (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1))
+            if math.sqrt(g[i] @ g[i]) < 1e-8:
+                spun[i] = False         # the loop returns the base quat and draws no angle
+                continue
+            angle[i] = rng.uniform(-amount_rad, amount_rad)
+        ax = g.astype(np.float32)
+        ax = _gf_div(ax, _gf_length(ax))
+    else:
+        for i in range(count):
+            angle[i] = rng.uniform(-amount_rad, amount_rad)
+        ax = np.zeros((count, 3), dtype=np.float32)
+        ax[:, "XYZ".index(axis)] = 1.0
+    # _axis_quat: normalise again (as Gf does), then (cos h, a sin h) in double -> float32.
+    a = _gf_div(ax, _gf_length(ax))
+    half = angle * 0.5
+    s = np.sin(half)
+    quat = np.empty((count, 4), dtype=np.float32)
+    quat[:, :3] = (a.astype(np.float64) * s[:, None]).astype(np.float32)
+    quat[:, 3] = np.cos(half).astype(np.float32)
+    out[spun] = quat[spun]
+    # Times the identity base: every component carries over exactly.
+    return out
+
+
 def _apply_random_rotation(base_quat, axis, amount_deg, rng):
     if axis == "Off":
         return base_quat
@@ -1960,7 +2013,24 @@ def execute(node):
 
         level_step = height + pack_level_gap
 
-        for i in range(count):
+        fast = (count and scatter_mode != "Stack" and not placed and not sit_on_surface
+                and orient_mode in ("Up", "Keep Original") and abs(normal_offset) <= 1e-9)
+        if fast:
+            # The common case -- every instance upright, spun at random -- as arrays. Same
+            # draws, same order, same float32 rounding as the loop below, so the same result;
+            # the loop's per-instance Gf quaternions were a tenth of a 45k-grass cook.
+            s_all = sizes if sizes else [_draw_scale(scale_rng, scale_min, scale_max, scale_bias)
+                                         for _ in range(count)]
+            out_positions = Vt.Vec3fArray.FromNumpy(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+            out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
+            out_orients = Vt.QuathArray.FromNumpy(
+                _spun_quats(count, rand_axis, rand_amount, orient_rng).astype(np.float16))
+            mult = np.asarray([p.scale_mult for p in protos], dtype=np.float64)[assignment]
+            per = np.asarray([tuple(p.scale) for p in protos], dtype=np.float64)[assignment]
+            sm = np.asarray(s_all, dtype=np.float64) * mult
+            out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
+
+        for i in range(0 if fast else count):
             pidx = assignment[i]
             proto = protos[pidx]
             if placed:
