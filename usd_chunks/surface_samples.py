@@ -48,6 +48,12 @@ _FALLBACK_COLOUR = (0.18, 0.18, 0.18)
 _COLOUR_INPUTS = ("diffuseColor", "base_color")
 _OPACITY_INPUTS = ("opacity", "geometry_opacity")
 _TRANSMISSION_INPUTS = ("transmission_weight", "transmission")
+# Roughness and metalness, UsdPreviewSurface name first, then OpenPBR / standard_surface.
+_ROUGHNESS_INPUTS = ("roughness", "specular_roughness")
+_METALLIC_INPUTS = ("metallic", "base_metalness", "metalness")
+# UsdPreviewSurface's own defaults, for a material that authors neither.
+_DEFAULT_ROUGHNESS = 0.5
+_DEFAULT_METALLIC = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +117,10 @@ class _Look(NamedTuple):
     # Glass and other surfaces mostly seen *through*: left out of the samples altogether,
     # or a turntable's dust cover becomes an opaque slab hiding the platter.
     see_through: bool = False
+    roughness: float = _DEFAULT_ROUGHNESS
+    roughness_texture: Texture | None = None
+    metallic: float = _DEFAULT_METALLIC
+    metallic_texture: Texture | None = None
 
 
 class Textured(NamedTuple):
@@ -121,6 +131,8 @@ class Textured(NamedTuple):
     colour: Texture | None
     cutout: Texture | None
     threshold: float
+    roughness: Texture | None = None
+    metallic: Texture | None = None
 
 
 class Source(NamedTuple):
@@ -132,6 +144,8 @@ class Source(NamedTuple):
     tris: np.ndarray  # (m, 3) int64
     corner_colours: np.ndarray  # (m, 3, 3) float32
     corner_normals: np.ndarray  # (m, 3, 3) float32, local, unit length
+    tri_roughness: np.ndarray  # (m,) float32, the material's constant; textures override
+    tri_metallic: np.ndarray  # (m,) float32
     textured: list  # [Textured]
     placements: np.ndarray  # (i, 4, 4) float64 local-to-world, row-vector convention
 
@@ -235,7 +249,36 @@ def _look(material) -> _Look | None:
     threshold_input = shader.GetInput("opacityThreshold")
     threshold = float(threshold_input.Get() or 0.0) if threshold_input else 0.0
 
-    return _Look(colour or _FALLBACK_COLOUR, colour_texture, cutout, threshold or 0.5, _see_through(shader))
+    roughness, roughness_texture = _scalar(shader, _ROUGHNESS_INPUTS, _DEFAULT_ROUGHNESS)
+    metallic, metallic_texture = _scalar(shader, _METALLIC_INPUTS, _DEFAULT_METALLIC)
+    return _Look(
+        colour or _FALLBACK_COLOUR,
+        colour_texture,
+        cutout,
+        threshold or 0.5,
+        _see_through(shader),
+        roughness,
+        roughness_texture,
+        metallic,
+        metallic_texture,
+    )
+
+
+def _scalar(shader, names, default):
+    """`(constant, texture)` for the first of `names` the shader has. A texture's own
+    `fallback` stands in as the constant, for whatever can't read the texture."""
+    for name in names:
+        if not (shader_input := shader.GetInput(name)):
+            continue
+        source, output = _connected_shader(shader_input)
+        if source:
+            fallback = source.GetInput("fallback")
+            value = fallback.Get() if fallback else None
+            constant = float(np.asarray(value).reshape(-1)[0]) if value is not None else default
+            return constant, _texture_of(source, output, scalar=True)
+        value = shader_input.Get()
+        return (float(value) if value is not None else default), None
+    return default, None
 
 
 def _see_through(shader) -> bool:
@@ -330,6 +373,8 @@ def _read_mesh(prim, placements, looks: dict) -> Source | None:
     if display is None:
         display = np.broadcast_to(np.asarray(_FALLBACK_COLOUR), (len(tris), 3, 3))
     corner_colours = np.array(display, dtype=np.float32)
+    tri_roughness = np.full(len(tris), _DEFAULT_ROUGHNESS, dtype=np.float32)
+    tri_metallic = np.full(len(tris), _DEFAULT_METALLIC, dtype=np.float32)
 
     textured = []
     for code, look in enumerate(face_looks):
@@ -339,7 +384,9 @@ def _read_mesh(prim, placements, looks: dict) -> Source | None:
         if not mask.any():
             continue
         corner_colours[mask] = look.colour
-        lookups = [t for t in (look.colour_texture, look.cutout) if t]
+        tri_roughness[mask] = look.roughness
+        tri_metallic[mask] = look.metallic
+        lookups = [t for t in (look.colour_texture, look.cutout, look.roughness_texture, look.metallic_texture) if t]
         if not lookups:
             continue
         st = _primvar_corners(prim, lookups[0].st, tris, corners, face_of_tri)
@@ -347,11 +394,21 @@ def _read_mesh(prim, placements, looks: dict) -> Source | None:
             continue
         which = np.flatnonzero(mask)
         textured.append(
-            Textured(which, np.asarray(st, dtype=np.float64)[which], look.colour_texture, look.cutout, look.threshold)
+            Textured(
+                which,
+                np.asarray(st, dtype=np.float64)[which],
+                look.colour_texture,
+                look.cutout,
+                look.threshold,
+                look.roughness_texture,
+                look.metallic_texture,
+            )
         )
 
     normals = read_corner_normals(prim, points, tris, corners, face_of_tri)
-    return Source(str(prim.GetPath()), points, tris, corner_colours, normals, textured, placements)
+    return Source(
+        str(prim.GetPath()), points, tris, corner_colours, normals, tri_roughness, tri_metallic, textured, placements
+    )
 
 
 def face_normals(points, tris) -> np.ndarray:
@@ -527,17 +584,25 @@ class Samples(NamedTuple):
     points: np.ndarray  # (s, 3) float64
     colours: np.ndarray  # (s, 3) float32, linear
     normals: np.ndarray  # (s, 3) float32, unit length
+    roughness: np.ndarray  # (s,) float32
+    metallic: np.ndarray  # (s,) float32
+    # On a cut-out material's transparent part. Only present when asked for (`keep_cut`):
+    # an opacity bake needs to know where the surface is *not*, everything else must not
+    # see these at all -- a leaf texture's transparent texels hold junk colour.
+    cut: np.ndarray  # (s,) bool
 
 
-def _sample_source(source: Source, spacing, rng, images: Images) -> Samples:
-    """World-space samples of one source, with their colours and normals."""
+def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool) -> Samples:
+    """World-space samples of one source, with what its material shows at each."""
     local_spacing = spacing / placement_scale(source.placements)
     tri_index, bary = sample_triangles(source.points, source.tris, local_spacing, rng)
     corners = source.points[source.tris[tri_index]]  # (s, 3, 3)
     local = np.einsum("sk,skc->sc", bary, corners)
     colours = np.einsum("sk,skc->sc", bary, source.corner_colours[tri_index])
     normals = np.einsum("sk,skc->sc", bary, source.corner_normals[tri_index])
-    keep = np.ones(len(tri_index), dtype=bool)
+    roughness = source.tri_roughness[tri_index].copy()
+    metallic = source.tri_metallic[tri_index].copy()
+    cut = np.zeros(len(tri_index), dtype=bool)
 
     for part in source.textured:
         # Which samples landed on this part's triangles, and where in its st they are.
@@ -550,10 +615,16 @@ def _sample_source(source: Source, spacing, rng, images: Images) -> Samples:
         st = np.einsum("sk,skc->sc", bary[hits], part.corner_st[row[hits]])
         if part.colour and (rgb := images.sample(part.colour, st)) is not None:
             colours[hits] = rgb
+        if part.roughness and (value := images.sample(part.roughness, st)) is not None:
+            roughness[hits] = value
+        if part.metallic and (value := images.sample(part.metallic, st)) is not None:
+            metallic[hits] = value
         if part.cutout and (alpha := images.sample(part.cutout, st)) is not None:
-            keep[hits[alpha < part.threshold]] = False
+            cut[hits[alpha < part.threshold]] = True
 
+    keep = slice(None) if keep_cut else ~cut
     local, colours, normals = local[keep], colours[keep], normals[keep]
+    roughness, metallic, cut = roughness[keep], metallic[keep], cut[keep]
     placements = source.placements
     count = len(placements)
     world = np.einsum("sc,icd->isd", local, placements[:, :3, :3]) + placements[:, None, 3, :3]
@@ -563,25 +634,38 @@ def _sample_source(source: Source, spacing, rng, images: Images) -> Samples:
     world_normals = np.einsum("sc,icd->isd", normals, to_normal).reshape(-1, 3)
     length = np.linalg.norm(world_normals, axis=1, keepdims=True)
     world_normals = np.divide(world_normals, length, out=np.zeros_like(world_normals), where=length > 0.0)
+
+    def tiled(values):
+        return np.broadcast_to(values, (count,) + values.shape).reshape((-1,) + values.shape[1:])
+
     return Samples(
         world.reshape(-1, 3),
-        np.broadcast_to(colours, (count,) + colours.shape).reshape(-1, 3),
+        tiled(colours),
         world_normals.astype(np.float32),
+        tiled(roughness),
+        tiled(metallic),
+        tiled(cut),
     )
 
 
-def sample_sources(sources, spacing) -> Samples:
+def sample_sources(sources, spacing, keep_cut: bool = False) -> Samples:
     """Every source's world-space samples, concatenated; `spacing` is the world distance
-    between neighbouring samples on a large triangle."""
+    between neighbouring samples on a large triangle. Cut-out samples are dropped unless
+    `keep_cut`, and then flagged in `Samples.cut`."""
     images = Images()
     rng = np.random.default_rng(0)  # the same samples every cook, not a shimmering result
-    parts = [_sample_source(source, spacing, rng, images) for source in sources]
+    parts = [_sample_source(source, spacing, rng, images, keep_cut) for source in sources]
     if not parts:
-        return Samples(np.zeros((0, 3)), np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.float32))
+        empty3 = np.zeros((0, 3), dtype=np.float32)
+        empty = np.zeros(0, dtype=np.float32)
+        return Samples(np.zeros((0, 3)), empty3, empty3, empty, empty, np.zeros(0, dtype=bool))
     return Samples(
         np.concatenate([p.points for p in parts]),
         np.concatenate([p.colours for p in parts]).astype(np.float32),
         np.concatenate([p.normals for p in parts]).astype(np.float32),
+        np.concatenate([p.roughness for p in parts]).astype(np.float32),
+        np.concatenate([p.metallic for p in parts]).astype(np.float32),
+        np.concatenate([p.cut for p in parts]),
     )
 
 
@@ -607,13 +691,21 @@ def _texture_stamp(texture: Texture | None):
 
 
 def fingerprint(sources) -> tuple:
-    """Everything sampling `sources` depends on -- geometry, colours, normals, placements,
+    """Everything sampling `sources` depends on -- geometry, material values, placements,
     texture files (by modification time). Reading the sources is cheap next to what a chunk
     builds from them, so a recook that changed nothing upstream costs only the read."""
     parts = []
     for s in sources:
         textures = tuple(
-            (crc(t.tris), crc(t.corner_st), _texture_stamp(t.colour), _texture_stamp(t.cutout), t.threshold)
+            (
+                crc(t.tris),
+                crc(t.corner_st),
+                _texture_stamp(t.colour),
+                _texture_stamp(t.cutout),
+                t.threshold,
+                _texture_stamp(t.roughness),
+                _texture_stamp(t.metallic),
+            )
             for t in s.textured
         )
         parts.append(
@@ -623,6 +715,8 @@ def fingerprint(sources) -> tuple:
                 crc(s.tris),
                 crc(s.corner_colours),
                 crc(s.corner_normals),
+                crc(s.tri_roughness),
+                crc(s.tri_metallic),
                 crc(s.placements),
                 textures,
             )

@@ -9,6 +9,10 @@ Target is the unwrapped low-poly mesh. The bake writes
   needle sheets become one material;
 * a **normal** map -- the source's surface direction in the target's tangent frame, which
   brings back the detail and the hard edges the proxy smoothed away;
+* **roughness** and **metallic** maps -- each material's value, or its texture, so a proxy
+  of a chrome-and-leather chair still reads as chrome and leather;
+* an **opacity** map (off by default) -- where the source is cut away, for proxies that are
+  themselves cards: a leaf cluster, a fence panel. The material then cuts at 0.5;
 
 and binds a UsdPreviewSurface material reading them to the target.
 
@@ -143,7 +147,6 @@ def _author_material(stage, path, files: dict, uv_name: str):
     material = UsdShade.Material.Define(stage, path)
     surface = UsdShade.Shader.Define(stage, f"{path}/Surface")
     surface.CreateIdAttr("UsdPreviewSurface")
-    surface.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
     material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
 
     reader = UsdShade.Shader.Define(stage, f"{path}/UV")
@@ -166,6 +169,18 @@ def _author_material(stage, path, files: dict, uv_name: str):
         surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
             colour.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
         )
+    for map_name, input_name in (
+        (texture_bake.MAP_ROUGHNESS, "roughness"),
+        (texture_bake.MAP_METALLIC, "metallic"),
+        (texture_bake.MAP_OPACITY, "opacity"),
+    ):
+        if file := files.get(map_name):
+            scalar = texture(map_name.capitalize(), file, "raw")
+            surface.CreateInput(input_name, Sdf.ValueTypeNames.Float).ConnectToSource(
+                scalar.CreateOutput("r", Sdf.ValueTypeNames.Float)
+            )
+    if files.get(texture_bake.MAP_OPACITY):
+        surface.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(0.5)
     if file := files.get(texture_bake.MAP_NORMAL):
         normal = texture("Normal", file, "raw")
         # Stored 0-1, read back as -1..1: the UsdPreviewSurface convention for normal maps.
@@ -193,7 +208,13 @@ def _settings(node) -> _Settings:
     is_b = chunk.is_param_t(bool)
     maps = tuple(
         name
-        for name, param in ((texture_bake.MAP_BASE_COLOUR, "bake_colour"), (texture_bake.MAP_NORMAL, "bake_normal"))
+        for name, param in (
+            (texture_bake.MAP_BASE_COLOUR, "bake_colour"),
+            (texture_bake.MAP_NORMAL, "bake_normal"),
+            (texture_bake.MAP_ROUGHNESS, "bake_roughness"),
+            (texture_bake.MAP_METALLIC, "bake_metallic"),
+            (texture_bake.MAP_OPACITY, "bake_opacity"),
+        )
         if node.get_param(param, is_b).value
     )
     return _Settings(
@@ -235,6 +256,9 @@ def _set_outputs(node, material="", files=None) -> None:
     node.get_param("out_material").value = material
     node.get_param("out_basecolor").value = files.get(texture_bake.MAP_BASE_COLOUR, "")
     node.get_param("out_normal").value = files.get(texture_bake.MAP_NORMAL, "")
+    node.get_param("out_roughness").value = files.get(texture_bake.MAP_ROUGHNESS, "")
+    node.get_param("out_metallic").value = files.get(texture_bake.MAP_METALLIC, "")
+    node.get_param("out_opacity").value = files.get(texture_bake.MAP_OPACITY, "")
 
 
 def _read(node, source_paths, target_path, uv_name):
@@ -390,6 +414,27 @@ def main():
                 tooltip="The source's surface direction in the target's tangent space (OpenGL\n"
                 "convention) — restores detail and hard edges the proxy smoothed away.",
             ),
+            chunk.Checkbox(
+                "bake_roughness",
+                "Roughness",
+                default_value=True,
+                tooltip="Each material's roughness (UsdPreviewSurface roughness, OpenPBR /\n"
+                "standard_surface specular_roughness), from its texture where it has one.",
+            ),
+            chunk.Checkbox(
+                "bake_metallic",
+                "Metallic",
+                default_value=True,
+                tooltip="Each material's metalness (metallic, base_metalness, metalness).",
+            ),
+            chunk.Checkbox(
+                "bake_opacity",
+                "Opacity",
+                default_value=False,
+                tooltip="Where the source is cut away by an alpha-tested material, so a card-like\n"
+                "proxy can cut the same holes. Off for a closed proxy, which has nothing\n"
+                "to cut.",
+            ),
         ]
     )
     chunk_api.add_param(maps)
@@ -439,6 +484,9 @@ def main():
         ("out_material", "Material", "The baked material."),
         ("out_basecolor", "Base Colour Map", "The base colour PNG."),
         ("out_normal", "Normal Map", "The normal map PNG."),
+        ("out_roughness", "Roughness Map", "The roughness PNG (greyscale)."),
+        ("out_metallic", "Metallic Map", "The metallic PNG (greyscale)."),
+        ("out_opacity", "Opacity Map", "The opacity PNG (greyscale)."),
     ):
         chunk_api.add_param(chunk.LineEdit(name, label, flags=_PF.OUTPUT | _PF.LABELED, tooltip=tip))
 
@@ -450,10 +498,10 @@ def config():
         category=chunk.StandardCategory.MODELLING,
         requirements=["numpy>=2,<3", "scipy>=1.11,<2", "pillow>=10"],
         description=(
-            "Bakes a full-detail asset's look onto a low-poly mesh's UVs: one base colour\n"
-            "map re-sampled from all of its materials and textures, and a tangent-space\n"
-            "normal map that restores the detail the low-poly surface lost. Binds a\n"
-            "UsdPreviewSurface reading them.\n\n"
+            "Bakes a full-detail asset's look onto a low-poly mesh's UVs: base colour,\n"
+            "roughness and metallic re-sampled from all of its materials and textures, a\n"
+            "tangent-space normal map that restores the detail the low-poly surface lost,\n"
+            "and optionally opacity. Binds a UsdPreviewSurface reading them.\n\n"
             "The end of the proxy chain: Remesh Proxy → Poly Reduce → UV Unwrap → Bake."
         ),
     )

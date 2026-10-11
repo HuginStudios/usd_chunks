@@ -333,3 +333,64 @@ def test_a_uv_transform_between_primvar_and_texture_is_applied(tmp_path) -> None
     row = image[32, :, 0] > 0.5  # red along one row, left to right
     changes = np.count_nonzero(row[1:] != row[:-1])
     assert changes == 3  # red, blue, red, blue: the stripe pair twice
+
+
+def _preview(stage, path, **inputs):
+    material = UsdShade.Material.Define(stage, path)
+    surface = UsdShade.Shader.Define(stage, f"{path}/Surface")
+    surface.CreateIdAttr("UsdPreviewSurface")
+    for name, value in inputs.items():
+        surface.CreateInput(name, Sdf.ValueTypeNames.Float).Set(value)
+    material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+    return material
+
+
+def test_roughness_and_metallic_land_where_each_material_is() -> None:
+    """Chrome on the left, leather on the right: the proxy has to keep both."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Source")
+    chrome = _quad(stage, "/Source/Chrome", -1, 0)
+    leather = _quad(stage, "/Source/Leather", 0, 1)
+    UsdShade.MaterialBindingAPI.Apply(chrome.GetPrim()).Bind(_preview(stage, "/Looks/Chrome", roughness=0.1, metallic=1.0))
+    UsdShade.MaterialBindingAPI.Apply(leather.GetPrim()).Bind(_preview(stage, "/Looks/Leather", roughness=0.8, metallic=0.0))
+
+    images = _bake(stage, maps=[texture_bake.MAP_ROUGHNESS, texture_bake.MAP_METALLIC])
+    rough, metal = images[texture_bake.MAP_ROUGHNESS], images[texture_bake.MAP_METALLIC]
+    assert rough.shape == (32, 32)
+    assert np.allclose(rough[:, :12], 0.1, atol=0.01) and np.allclose(rough[:, 20:], 0.8, atol=0.01)
+    assert np.allclose(metal[:, :12], 1.0, atol=0.01) and np.allclose(metal[:, 20:], 0.0, atol=0.01)
+
+
+def test_the_opacity_map_cuts_where_the_source_is_cut_and_colour_ignores_the_cut(tmp_path) -> None:
+    """A card whose left half is cut away. Opacity: 0 left, 1 right. Colour: the opaque
+    half's green everywhere -- not the junk the transparent texels hold."""
+    rgba = np.zeros((8, 8, 4), dtype=np.uint8)
+    rgba[..., 1] = 255  # green
+    rgba[:, :4, 0] = 255  # ...but red-tinted junk where it is cut away
+    rgba[:, 4:, 3] = 255  # right half opaque
+    png = tmp_path / "card.png"
+    Image.fromarray(rgba, "RGBA").save(png)
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Source")
+    card = _quad(stage, "/Source/Card", -1, 1, z=0.02)
+    UsdGeom.PrimvarsAPI(card).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex).Set(
+        Vt.Vec2fArray([(0, 0), (1, 0), (1, 1), (0, 1)])
+    )
+    material = UsdShade.Material.Define(stage, "/Looks/Card")
+    surface = UsdShade.Shader.Define(stage, "/Looks/Card/Surface")
+    surface.CreateIdAttr("UsdPreviewSurface")
+    material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+    texture = UsdShade.Shader.Define(stage, "/Looks/Card/Texture")
+    texture.CreateIdAttr("UsdUVTexture")
+    texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(str(png))
+    texture.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+    surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
+    surface.CreateInput("opacity", Sdf.ValueTypeNames.Float).ConnectToSource(texture.ConnectableAPI(), "a")
+    surface.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(0.5)
+    UsdShade.MaterialBindingAPI.Apply(card.GetPrim()).Bind(material)
+
+    images = _bake(stage, maps=[texture_bake.MAP_OPACITY, texture_bake.MAP_BASE_COLOUR])
+    opacity, colour = images[texture_bake.MAP_OPACITY], images[texture_bake.MAP_BASE_COLOUR]
+    assert opacity[:, :12].mean() < 0.05 and opacity[:, 20:].mean() > 0.95
+    assert colour.reshape(-1, 3)[:, 0].max() < 0.05  # no red junk anywhere

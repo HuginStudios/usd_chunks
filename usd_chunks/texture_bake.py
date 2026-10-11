@@ -49,7 +49,12 @@ logger = logging.getLogger(__name__)
 
 MAP_BASE_COLOUR = "basecolor"
 MAP_NORMAL = "normal"
-MAPS = (MAP_BASE_COLOUR, MAP_NORMAL)
+MAP_ROUGHNESS = "roughness"
+MAP_METALLIC = "metallic"
+MAP_OPACITY = "opacity"
+MAPS = (MAP_BASE_COLOUR, MAP_NORMAL, MAP_ROUGHNESS, MAP_METALLIC, MAP_OPACITY)
+#: Maps with one value per texel: (res, res) images, written as greyscale.
+SCALAR_MAPS = (MAP_ROUGHNESS, MAP_METALLIC, MAP_OPACITY)
 
 # Candidate texels tested per rasterization batch: bounds memory at large resolutions.
 _RASTER_BATCH = 4_000_000
@@ -87,11 +92,12 @@ class BakeRequest(NamedTuple):
 
 @runtime_checkable
 class BakeBackend(Protocol):
-    """Answers a BakeRequest with one float32 (res, res, 3) image per requested map.
+    """Answers a BakeRequest with one float32 image per requested map.
 
-    Images are row 0 = top (v = 1), values in 0-1: base colour linear, normal map
-    tangent-space encoded (n * 0.5 + 0.5, OpenGL convention: +Y along +v). Texels outside
-    every chart may hold anything; `bake` fills them afterwards.
+    Images are row 0 = top (v = 1), values in 0-1: base colour linear (res, res, 3), normal
+    map tangent-space encoded (n * 0.5 + 0.5, OpenGL convention: +Y along +v), roughness,
+    metallic and opacity (res, res). Texels outside every chart may hold anything; `bake`
+    fills them afterwards.
     """
 
     name: str
@@ -235,6 +241,17 @@ def _texel_size(target: Target, n_texels: int) -> float:
     return float(np.sqrt(area / max(1, n_texels)))
 
 
+def _nearest(points, where):
+    """Inverse-distance weights and indices of each of `where`'s nearest `points`."""
+    k = min(_NEIGHBOURS, len(points))
+    distance, nearest = cKDTree(points).query(where, k=k)
+    if k == 1:
+        distance, nearest = distance[:, None], nearest[:, None]
+    weights = 1.0 / np.maximum(distance, 1e-12)
+    weights /= weights.sum(axis=1, keepdims=True)
+    return weights, nearest
+
+
 class NearestSampleBackend:
     """Each texel from the nearest few samples of the source surface. numpy + scipy only."""
 
@@ -247,7 +264,9 @@ class NearestSampleBackend:
         res = int(request.resolution)
         target = request.target
         texels = rasterize(target.corner_st, res)
-        images = {m: np.zeros((res, res, 3), dtype=np.float32) for m in request.maps}
+        images = {
+            m: np.zeros((res, res) if m in SCALAR_MAPS else (res, res, 3), dtype=np.float32) for m in request.maps
+        }
         if not len(texels.rows) or not request.sources:
             return images
 
@@ -257,24 +276,33 @@ class NearestSampleBackend:
         expected = surface_samples.surface_area(request.sources) / (spacing * spacing)
         if expected > _MAX_SAMPLES:
             spacing *= float(np.sqrt(expected / _MAX_SAMPLES))
-        samples = surface_samples.sample_sources(request.sources, spacing)
-        if not len(samples.points):
-            return images
-
+        samples = surface_samples.sample_sources(request.sources, spacing, keep_cut=MAP_OPACITY in images)
         where = np.einsum("tk,tkc->tc", texels.bary, target.points[target.tris[texels.tri]])
-        k = min(_NEIGHBOURS, len(samples.points))
-        distance, nearest = cKDTree(samples.points).query(where, k=k)
-        if k == 1:
-            distance, nearest = distance[:, None], nearest[:, None]
-        weights = 1.0 / np.maximum(distance, 1e-12)
-        weights /= weights.sum(axis=1, keepdims=True)
+
+        if MAP_OPACITY in images and len(samples.points):
+            # Coverage: the share of the nearest source samples that are not cut away. Every
+            # other map reads only the surface that is there.
+            weights, nearest = _nearest(samples.points, where)
+            opacity = np.einsum("tk,tk->t", weights, (~samples.cut[nearest]).astype(np.float32))
+            images[MAP_OPACITY][texels.rows, texels.cols] = opacity
+        solid = ~samples.cut
+        if not solid.any():
+            return images
+        points = samples.points[solid]
+        weights, nearest = _nearest(points, where)
+
+        def blend(values):
+            return np.einsum("tk,tk...->t...", weights, values[solid][nearest])
 
         if MAP_BASE_COLOUR in images:
-            colour = np.einsum("tk,tkc->tc", weights, samples.colours[nearest])
-            images[MAP_BASE_COLOUR][texels.rows, texels.cols] = colour
+            images[MAP_BASE_COLOUR][texels.rows, texels.cols] = blend(samples.colours)
+        if MAP_ROUGHNESS in images:
+            images[MAP_ROUGHNESS][texels.rows, texels.cols] = blend(samples.roughness)
+        if MAP_METALLIC in images:
+            images[MAP_METALLIC][texels.rows, texels.cols] = blend(samples.metallic)
         if MAP_NORMAL in images:
             tangent, bitangent, normal = tangent_frames(target, texels)
-            near = samples.normals[nearest].astype(np.float64)  # (t, k, 3)
+            near = samples.normals[solid][nearest].astype(np.float64)  # (t, k, 3)
             # Leaf cards and sheets are two-sided: point every sample's normal out of the
             # side the target sees it from before blending, or the two sides cancel out.
             facing = np.sign(np.einsum("tkc,tc->tk", near, normal))
@@ -318,6 +346,8 @@ def linear_to_srgb(values):
 
 
 def write_map(path, image, srgb: bool) -> None:
-    """Save one map as an 8-bit PNG; base colour sRGB-encoded, data maps (normals) raw."""
+    """Save one map as an 8-bit PNG; base colour sRGB-encoded, data maps (normals,
+    roughness, ...) raw; a (res, res) map as greyscale."""
     data = linear_to_srgb(image) if srgb else np.clip(image, 0.0, 1.0)
-    Image.fromarray(np.round(data * 255.0).astype(np.uint8), "RGB").save(path)
+    mode = "L" if data.ndim == 2 else "RGB"
+    Image.fromarray(np.round(data * 255.0).astype(np.uint8), mode).save(path)
