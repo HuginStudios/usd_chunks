@@ -505,3 +505,11 @@ def test_batch_relative_writes_a_library_that_moves(ref_network, tmp_path):
     shutil.copytree(tmp_path / "lib", elsewhere / "lib")
     shutil.copytree(tmp_path / "assets", elsewhere / "assets")
     assert _size(elsewhere / "lib" / "small" / "small.usda") == 1.0, "moved together, it still composes"
+
+
+def test_a_dry_run_prints_the_plan_and_writes_nothing(ref_network, tmp_path):
+    result = _batch(ref_network, "-o", "out/*.usda", "--dry-run")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"Anchor: {tmp_path}" in result.stdout and "./assets/small.usda -> out/small.usda" in result.stdout
+    assert "Dry run" in result.stdout
+    assert not (tmp_path / "out").exists()

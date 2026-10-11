@@ -728,6 +728,10 @@ def cmd_batch(args):
         print(f"Set:    {line}")
     print(chunk_batch.format_plan(plan, args.usda))
     print()
+    if args.dry_run:
+        # The plan has been through every check a real batch makes; nothing is written.
+        print("Dry run: nothing cooked or written.")
+        return
 
     env = _absolute_chunk_dirs()
     total = len(plan.runs)
@@ -1203,6 +1207,11 @@ def main():
         "--driver", metavar="CHUNK.param", help="Which pattern drives the batch, when more than one matches files"
     )
     batch_parser.add_argument("--jobs", type=int, default=1, help="Runs to cook concurrently")
+    batch_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the plan -- the folder patterns resolve against, every file matched and "
+             "where each result goes -- and stop, cooking and writing nothing",
+    )
     batch_parser.add_argument("--procedural", action="store_true", help="Keep Chunk prims in each -o export")
     batch_parser.add_argument(
         "--relative", action="store_true",

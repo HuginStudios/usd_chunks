@@ -83,6 +83,8 @@ folder. A file whose result is a single root prim names it as its default prim, 
 scene can reference it without a prim path.
 
 Each run is its own `usdchunks run` and cooks once. `--jobs` sets how many run at a time.
+`--dry-run` prints the plan, including the folder the patterns were read against and every
+file matched, and stops there.
 
 ## Background
 
