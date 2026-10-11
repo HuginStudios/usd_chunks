@@ -329,6 +329,13 @@ def execute(node: chunk.Chunk) -> None:
 
     settings = _settings(node)
     upstream, sources = _sources(node, paths)
+    out_path = _output_path(node, str(paths[0]))
+    source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
+    keep_under = int(node.get_param("keep_under", chunk.is_param_t(int)).value)
+    if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
+        del upstream
+        _keep_source(node, stage, layer, str(paths[0]), out_path, source_triangles, keep_under)
+        return
     stamp = fingerprint(sources, settings)
     previous = _LAST_COOK.get(layer.identifier)
     if previous is not None and previous[0] == stamp:
@@ -337,7 +344,6 @@ def execute(node: chunk.Chunk) -> None:
         proxy = build_proxy(sources, settings)
     del upstream  # the sources are numpy now; the scratch stage can go
 
-    out_path = _output_path(node, str(paths[0]))
     if proxy is not None:
         with Usd.EditContext(stage, layer):
             _author(stage, out_path, proxy, node.get_param("purpose", chunk.is_param_t(str)).value)
@@ -347,6 +353,27 @@ def execute(node: chunk.Chunk) -> None:
     _LAST_COOK[layer.identifier] = (stamp, proxy)
     node.get_param("out_mesh").value = out_path if proxy is not None else ""
     _report(node, proxy, "" if sources else "no meshes under that prim")
+
+
+def _keep_source(node, stage, layer, source_path, out_path, triangles, keep_under) -> None:
+    """The proxy is the source itself: a reference to it, marked so the chain leaves it be.
+
+    A 1,500-triangle painting remeshed to a 3,000-triangle proxy is bigger and worse than
+    the painting. Below the budget the source already *is* the proxy, with its own UVs,
+    materials and textures, which no bake would improve on.
+    """
+    with Usd.EditContext(stage, layer):
+        prim = stage.DefinePrim(out_path)
+        prim.GetReferences().AddInternalReference(source_path)
+        prim.SetCustomDataByKey(surface_samples.PASSTHROUGH_KEY, True)
+        purpose = node.get_param("purpose", chunk.is_param_t(str)).value
+        UsdGeom.Imageable(prim).CreatePurposeAttr().Set(purpose)
+    _LAST_COOK.pop(layer.identifier, None)
+    node.get_param("out_mesh").value = out_path
+    if readout := node.get_param("readout"):
+        readout.value = f"kept as is: {_compact(triangles)} ≤ {_compact(keep_under)} tris"
+    if out_tris := node.get_param("out_triangles"):
+        out_tris.value = triangles
 
 
 _PF = chunk.ChunkFlags.ParamFlags
@@ -399,6 +426,21 @@ def main():
             "than a few voxels comes out fat: 256 keeps a 30 m pine's 40 cm trunk reading\n"
             "as a trunk, 128 does not. Memory and time grow with its cube: a 256 tree\n"
             "takes ~1.5 s, a 384 cube-shaped asset several GB.",
+        )
+    )
+
+    chunk_api.add_param(
+        chunk.Slider(
+            "keep_under",
+            "Keep Source Under",
+            is_int=True,
+            min_value=0,
+            max_value=1_000_000,
+            default_value=3000,
+            tooltip="An asset with no more triangles than this is not remeshed: the proxy is a\n"
+            "reference to the asset itself, with its own UVs and materials, and Poly\n"
+            "Reduce, UV Unwrap and Bake Textures leave it alone. Set it to the triangle\n"
+            "budget the proxy is reduced to. 0 always remeshes.",
         )
     )
 

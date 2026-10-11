@@ -342,6 +342,10 @@ def execute(node: chunk.Chunk) -> None:
         return
 
     target_path = str(target_paths[0])
+    if surface_samples.is_passthrough(node.get_stage().GetPrimAtPath(target_path)):
+        _report(node, "target is its own source (kept as is) — nothing to bake")
+        _set_outputs(node)
+        return
     upstream, sources, target, problems = _read(node, source_paths, target_path, settings.uv_name)
     del upstream
     if target is None:

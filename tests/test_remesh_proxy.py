@@ -118,11 +118,14 @@ def wired(tmp_path, monkeypatch):
     chunk_registry.ChunkLayerManager().initialize(stage)
     _chunk_usd_init(stage, scene)
 
-    def make():
+    def make(keep_under=0):
         module = reg.get_chunk_module("remesh_proxy")
         chunks = module.create() if module.loaded else module.load()
         for c in chunks:
             scene.add_chunk(c)
+        # The test assets are a few dozen triangles: remesh them anyway, unless a test is
+        # about keeping a small source as it is.
+        chunks[0].get_param("keep_under").value = keep_under
         return chunks[0]
 
     return stage, make
@@ -377,3 +380,36 @@ def test_an_unchanged_recook_does_not_rebuild(wired, monkeypatch) -> None:
     assert calls == []
     node.get_param("thickness").value = 2.0
     assert calls == [1]
+
+
+def test_a_source_under_the_budget_is_kept_as_is_not_remeshed(wired) -> None:
+    """A 12-triangle box remeshed is thousands of triangles of worse box. Below the budget
+    the proxy is the source itself, and the chain downstream is told to leave it alone."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    _box(stage, "/World/Asset/Body", colour=(0.2, 0.4, 0.6))
+
+    node = make(keep_under=3000)
+    node.get_param("prim_path").value = "/World/Asset"
+
+    proxy = stage.GetPrimAtPath("/World/Asset_proxy")
+    assert proxy.GetCustomDataByKey(surface_samples.PASSTHROUGH_KEY)
+    body = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Asset_proxy/Body"))
+    assert len(body.GetFaceVertexCountsAttr().Get()) == 6  # the source's own quads
+    assert surface_samples.is_passthrough(body.GetPrim())
+    assert "kept as is" in node.get_param("readout").value
+    assert node.get_param("out_triangles").value == 12
+
+
+def test_downstream_chunks_leave_a_kept_source_alone(wired) -> None:
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    _box(stage, "/World/Asset/Body")
+    node = make(keep_under=3000)
+    node.get_param("prim_path").value = "/World/Asset"
+
+    uv = importlib.import_module("chunks.modelling.uv_unwrap")
+    pr = importlib.import_module("chunks.modelling.poly_reduce")
+    proxy = stage.GetPrimAtPath("/World/Asset_proxy")
+    assert uv._mesh_prims(proxy, True) == []
+    assert pr._mesh_prims(proxy, True) == []

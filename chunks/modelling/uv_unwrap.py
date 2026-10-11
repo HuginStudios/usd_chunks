@@ -32,6 +32,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks import chunk_stage
+from usd_chunks import surface_samples
 from usd_chunks.mesh_math import fan_triangulate, world_points
 
 try:
@@ -94,8 +95,8 @@ def unwrap(meshes, resolution, padding):
 
 
 def _mesh_prims(prim, recurse):
-    if not prim or not prim.IsValid():
-        return []
+    if not prim or not prim.IsValid() or surface_samples.is_passthrough(prim):
+        return []  # a proxy kept as its source: its own UVs are the ones to keep
     found = []
     for candidate in Usd.PrimRange(prim) if recurse else [prim]:
         if not candidate.IsA(UsdGeom.Mesh):

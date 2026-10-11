@@ -62,6 +62,22 @@ _DEFAULT_ROUGHNESS = 0.5
 _DEFAULT_METALLIC = 0.0
 
 
+#: customData on a proxy prim that *is* its source -- a reference to it, kept as is because
+#: the source already had fewer triangles than the proxy was meant to. Poly Reduce, UV
+#: Unwrap and Bake Textures leave such a prim alone: re-UVing a painting that already has
+#: good UVs and bakes would only make it worse.
+PASSTHROUGH_KEY = "usdChunks:proxyIsSource"
+
+
+def is_passthrough(prim) -> bool:
+    """Whether `prim`, or a prim above it, is a proxy kept as its own source."""
+    while prim and prim.IsValid() and not prim.IsPseudoRoot():
+        if prim.GetCustomDataByKey(PASSTHROUGH_KEY):
+            return True
+        prim = prim.GetParent()
+    return False
+
+
 # ---------------------------------------------------------------------------
 # array maths -- no USD
 # ---------------------------------------------------------------------------
