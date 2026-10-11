@@ -37,7 +37,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_utils, mesh_math
+from usd_chunks import chunk, chunk_utils, mesh_math, proximity
 from usd_chunks import chunk_stage
 
 logger = logging.getLogger(__name__)
@@ -933,6 +933,42 @@ class _NearestWeight:
         return float(self._weights[nearby[np.einsum("ij,ij->i", offset, offset).argmin()]])
 
 
+class _MaskProduct:
+    """Two mask hooks multiplied: the painted Density Field and Grow Near, say. Keeps the
+    batched `sample_many` the sampler looks for, when both halves have one."""
+
+    __slots__ = ("_a", "_b")
+
+    def __init__(self, a, b):
+        self._a, self._b = a, b
+
+    @staticmethod
+    def _many(hook, points):
+        many = getattr(getattr(hook, "__self__", None), "sample_many", None)
+        if many is not None:
+            return np.asarray(many(points), dtype=np.float64)
+        return np.fromiter((hook(Gf.Vec3f(*p), None) for p in points), dtype=np.float64, count=len(points))
+
+    def sample_many(self, points):
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        return self._many(self._a, points) * self._many(self._b, points)
+
+    def sample(self, point, normal=None):
+        return self._a(point, normal) * self._b(point, normal)
+
+
+def _combine_masks(*hooks):
+    """One mask hook from several (None ones skipped), or None when there are none -- so a
+    scatter with neither a Density Field nor Grow Near never pays for the lookup."""
+    live = [h for h in hooks if h is not None]
+    if not live:
+        return None
+    mask = live[0]
+    for h in live[1:]:
+        mask = _MaskProduct(mask, h).sample
+    return mask
+
+
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     """Area-weighted point sampling with min-distance rejection.
 
@@ -1746,6 +1782,24 @@ def execute(node):
     lat_a, lat_b = [i for i in range(3) if i != up_idx]
     axis_vec = [Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0), Gf.Vec3f(0, 0, 1)]
 
+    # Grow Near: weight each candidate by how near it is to what an earlier layer placed --
+    # under its canopy, around its base, out of its shade. Measured across the ground, since
+    # an instancer's points sit at the base of a trunk. Multiplied into the Density Field.
+    near_paths = [p.strip() for p in node.get_param("near_prims", is_s).value.split(",") if p.strip()]
+    near = None
+    if near_paths:
+        near_pts, near_scales = proximity.source_points(scratch_stage, near_paths)
+        near = proximity.Proximity(
+            near_pts, near_scales if node.get_param("near_scaled", is_b).value else None,
+            radius=max(0.0, node.get_param("near_radius", is_f).value),
+            clear=max(0.0, node.get_param("near_clear", is_f).value),
+            softness=node.get_param("near_softness", is_f).value,
+            inside=node.get_param("near_inside", is_f).value,
+            outside=node.get_param("near_outside", is_f).value,
+            up=tuple(world_up),
+        )
+    mask = _combine_masks(density, near.sample if near is not None else None)
+
     # Read here, used at the dispatch below. Nothing about a painted cloud depends on the
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
@@ -1832,7 +1886,7 @@ def execute(node):
             normals = [s[1] for s in sites]
             levels = [s[2] for s in sites]
         elif scatter_mode == "Volume":
-            positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=density)
+            positions, normals = _fill_in_volume(triangles, max_count, rng, spacing, mask=mask)
             normals = [world_up] * len(positions)
             levels = [0] * len(positions)
         else:
@@ -1851,10 +1905,10 @@ def execute(node):
                 # so the spacing and the clearance can both take the instance's size.
                 positions, normals, drawn = _scatter_sized(
                     surf_tris, max_count, rng, spacing, random.Random(seed + 13),
-                    scale_min, scale_max, scale_bias, mask=density, avoid=avoid, vary=size_spacing)
+                    scale_min, scale_max, scale_bias, mask=mask, avoid=avoid, vary=size_spacing)
                 sizes = drawn
             elif len(surf_tris):
-                positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=density)
+                positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=mask)
             else:
                 # No mesh / no qualifying faces -- fall back to a jittered grid.
                 sp = max(spacing, 2.0)
@@ -2201,6 +2255,31 @@ def main():
         )
     )
     chunk_api.add_param(_collapsed(dist_grp))
+
+    # --- Grow Near (Geo-Scatter's ecosystem affinity / repulsion) ---
+    near_grp = chunk.Group("Grow Near", flags=_GF)
+    near_grp.add_param(
+        chunk.LineEdit(
+            "near_prims",
+            "Near",
+            flags=_PF.LABELED | _PF.PRIM_SELECTION,
+            tooltip="Surface/Volume: what this layer grows in relation to -- usually an earlier "
+            "Scatter Points' instancer. Comma-separate several. Empty: off.",
+        )
+    )
+    near_grp.add_param(chunk.Slider("near_radius", "Radius", min_value=0.0, max_value=20.0, default_value=3.0,
+                                    tooltip="How far each of them reaches, scene units -- a canopy's radius."))
+    near_grp.add_param(chunk.Slider("near_clear", "Clear Radius", min_value=0.0, max_value=5.0, default_value=0.0,
+                                    tooltip="Nothing within this of them -- the trunk. 0 = no clearing."))
+    near_grp.add_param(chunk.Slider("near_inside", "Inside", min_value=0.0, max_value=1.0, default_value=1.0,
+                                    tooltip="Density near them. 1 draws this layer in (understory)."))
+    near_grp.add_param(chunk.Slider("near_outside", "Outside", min_value=0.0, max_value=1.0, default_value=0.1,
+                                    tooltip="Density beyond Radius. Above Inside pushes this layer away (shade)."))
+    near_grp.add_param(chunk.Slider("near_softness", "Softness", min_value=0.0, max_value=1.0, default_value=0.5,
+                                    tooltip="How much of the Radius fades out, from the edge in. 0 = a hard edge."))
+    near_grp.add_param(chunk.Checkbox("near_scaled", "Scale With Source", default_value=True,
+                                      tooltip="Radius and Clear Radius grow with each instance's scale."))
+    chunk_api.add_param(_collapsed(near_grp))
 
     # --- Stacking (Stack mode only) ---
     stack_grp = chunk.Group("Stacking", flags=_GF)
