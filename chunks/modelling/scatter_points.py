@@ -397,7 +397,12 @@ def _avoid_points(stage, paths, step):
                     dense_r.append(seg_r[:1])
                     for j in range(len(seg) - 1):
                         a, b = seg[j], seg[j + 1]
-                        n = max(1, int(math.ceil(float(np.linalg.norm(b - a)) / max(step, 1e-9))))
+                        # A quarter of the curve's half-width apart is close enough that the
+                        # discs' union is the curve's edge within ~3%. Without that floor a
+                        # scatter with no Spacing and no distance sampled every half
+                        # micrometre -- 370 million points along one road.
+                        seg_step = max(step, 0.25 * float(min(seg_r[j], seg_r[j + 1])), 1e-9)
+                        n = max(1, min(int(math.ceil(float(np.linalg.norm(b - a)) / seg_step)), 10_000))
                         t = np.arange(1, n + 1) / n
                         dense.append(a + (b - a) * t[:, None])
                         dense_r.append(seg_r[j] + (seg_r[j + 1] - seg_r[j]) * t)

@@ -306,3 +306,21 @@ def test_trails_swell_and_sink_into_the_surface():
     pts, _, w = trails._curves_at(paths, keep, 10, np.array([0.4]), 1.0, variation=0.5, frequency=0.4,
                                   sink=0.6, **kw)
     assert np.allclose(pts[:, 1], 0.5 * w * 0.6)  # into the wall, which faces -Y
+
+
+def test_keeping_off_a_wide_curve_needs_no_spacing(scene):
+    """Spacing 0 and Keep Away Distance 0 sampled the curve every half micrometre -- 370
+    million points along a road, out of memory. The curve's own width sets the step."""
+    qapp, stage, mk = scene
+    _cylinder(stage)
+    UsdGeom.Sphere.Define(stage, "/Drop").GetRadiusAttr().Set(0.5)
+    run = UsdGeom.BasisCurves.Define(stage, "/Run")
+    run.GetPointsAttr().Set([Gf.Vec3f(0.05, 0, 0.2), Gf.Vec3f(0.05, 0, 0.0)])
+    run.GetCurveVertexCountsAttr().Set([2])
+    run.GetWidthsAttr().Set([0.02])
+    _scatter(mk, spacing=0.0, max_count=600, max_slope=180.0, inst_path="/Drops", size_spacing=True,
+             avoid_prims="/Run", avoid_distance=0.0)
+    qapp.processEvents()
+    p = np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Drops")).GetPositionsAttr().Get())
+    assert len(p) > 200
+    assert np.hypot(p[:, 0] - 0.05, p[:, 1]).min() >= 0.01 * 0.97
