@@ -21,7 +21,7 @@ from pathlib import Path
 from pxr import Sdf, Usd
 from usd_chunks import chunk_batch, chunk_naming, configure_logging
 from usd_chunks.chunk_process import python_executable
-from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler
+from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler, chunk_utils
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene
@@ -552,6 +552,8 @@ def cmd_run(args):
             stage.Export(args.export)
         else:
             flatten_without_chunks(stage).Export(args.export)
+        if getattr(args, "relative", False):
+            chunk_utils.relative_asset_paths(args.export)
         print(f"Exported: {args.export}")
 
     if args.printout:
@@ -726,6 +728,10 @@ def cmd_batch(args):
         print(f"Set:    {line}")
     print(chunk_batch.format_plan(plan, args.usda))
     print()
+    if args.dry_run:
+        # The plan has been through every check a real batch makes; nothing is written.
+        print("Dry run: nothing cooked or written.")
+        return
 
     env = _absolute_chunk_dirs()
     total = len(plan.runs)
@@ -747,6 +753,8 @@ def cmd_batch(args):
                 (anchor / value).parent.mkdir(parents=True, exist_ok=True)
         if args.procedural:
             cmd.append("--procedural")
+        if args.relative:
+            cmd.append("--relative")
         if args.all:
             cmd.append("--all")
         return cmd
@@ -1041,6 +1049,11 @@ def main():
     # A layer of param values to open the network with, as its session layer: how a batch
     # hands each run its file (cmd_batch).
     run_parser.add_argument("--session", metavar="LAYER", help=SUPPRESS)
+    run_parser.add_argument(
+        "--relative", action="store_true",
+        help="Write --export's asset paths relative to the exported file, so it moves with what "
+             "it references (paths on another drive stay absolute)",
+    )
 
     info_parser = sub.add_parser(
         "info",
@@ -1194,7 +1207,16 @@ def main():
         "--driver", metavar="CHUNK.param", help="Which pattern drives the batch, when more than one matches files"
     )
     batch_parser.add_argument("--jobs", type=int, default=1, help="Runs to cook concurrently")
+    batch_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the plan -- the folder patterns resolve against, every file matched and "
+             "where each result goes -- and stop, cooking and writing nothing",
+    )
     batch_parser.add_argument("--procedural", action="store_true", help="Keep Chunk prims in each -o export")
+    batch_parser.add_argument(
+        "--relative", action="store_true",
+        help="Write each -o export's asset paths relative to it, as run --relative does",
+    )
     batch_parser.add_argument(
         "--all", action="store_true", help="Cook every network per run, not just what the Output reaches"
     )

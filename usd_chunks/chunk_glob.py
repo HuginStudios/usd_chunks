@@ -14,6 +14,15 @@ conversion::
 
 ``**`` followed by a separator is one token that matches zero or more path segments, which is
 why the last row above collapses cleanly instead of leaving an empty ``out//tree.usda``.
+
+A sink can also name a capture by number, ``{1}`` for the first, as often as it likes -- the
+way to use one twice, which consuming left to right cannot::
+
+    driver  assets/*.usdc          sink  proxies/{1}/{1}.usda
+    assets/fern.usdc         ->    proxies/fern/fern.usda
+
+A placeholder consumes nothing, so a sink may mix them with wildcards, and one holding only
+placeholders is a pattern too.
 Matching is case-sensitive and always over ``/``-separated relative paths, so a plan reads the
 same on every platform.
 """
@@ -32,6 +41,10 @@ GLOBSTAR = "globstar"
 STAR = "star"
 ANY = "any"
 CLASS = "class"
+REF = "ref"
+
+# A sink's numbered placeholder: {1} is the first capture.
+_REF_RE = re.compile(r"\{(\d+)\}")
 
 Token = Tuple[str, str]
 Captures = Tuple[str, ...]
@@ -43,7 +56,7 @@ class GlobError(Exception):
 
 def is_pattern(value: str) -> bool:
     """Whether a param value should be treated as a glob rather than a plain path."""
-    return isinstance(value, str) and any(ch in value for ch in WILDCARD_CHARS)
+    return isinstance(value, str) and (any(ch in value for ch in WILDCARD_CHARS) or bool(_REF_RE.search(value)))
 
 
 def normalize(path: str) -> str:
@@ -81,6 +94,10 @@ def tokenize(pattern: str) -> List[Token]:
             flush()
             tokens.append((ANY, "?"))
             i += 1
+        elif ch == "{" and (ref := _REF_RE.match(pattern, i)):
+            flush()
+            tokens.append((REF, ref.group(1)))
+            i = ref.end()
         elif ch == "[":
             end = pattern.find("]", i + 2 if pattern[i + 1:i + 2] in ("!", "^") else i + 1)
             if end == -1:
@@ -97,8 +114,8 @@ def tokenize(pattern: str) -> List[Token]:
 
 
 def capture_count(pattern: str) -> int:
-    """How many captures the pattern produces (== how many it consumes as a sink)."""
-    return sum(1 for kind, _ in tokenize(pattern) if kind != LITERAL)
+    """How many captures the pattern produces (== how many its wildcards consume as a sink)."""
+    return sum(1 for kind, _ in tokenize(pattern) if kind not in (LITERAL, REF))
 
 
 def to_regex(pattern: str) -> str:
@@ -107,6 +124,8 @@ def to_regex(pattern: str) -> str:
     for kind, text in tokenize(pattern):
         if kind == LITERAL:
             parts.append(re.escape(text))
+        elif kind == REF:
+            parts.append(re.escape(f"{{{text}}}"))  # names no file: only a sink fills one
         elif kind == GLOBSTAR_DIR:
             parts.append("(?:(.*)/)?")
         elif kind == GLOBSTAR:
@@ -133,24 +152,34 @@ def match(pattern: str, path: str) -> Captures | None:
 
 
 def substitute(pattern: str, captures: Captures) -> str:
-    """Fill a sink pattern's wildcards from captures, left to right.
+    """Fill a sink pattern's wildcards from captures, left to right, and its ``{N}``s by number.
 
     An empty ``**/`` capture drops the separator with it, so a driver match that lived at the
     top of the tree writes its output at the top of the tree instead of under a blank folder.
     """
     tokens = tokenize(pattern)
-    wanted = sum(1 for kind, _ in tokens if kind != LITERAL)
-    if wanted != len(captures):
+    wanted = sum(1 for kind, _ in tokens if kind not in (LITERAL, REF))
+    refs = any(kind == REF for kind, _ in tokens)
+    if (wanted or not refs) and wanted != len(captures):
         raise GlobError(
             f"pattern {pattern!r} has {wanted} wildcard(s) but {len(captures)} capture(s) "
-            f"to fill them with — give both patterns the same number of wildcards"
+            f"to fill them with — give both patterns the same number of wildcards, or name "
+            f"captures by number: {{1}}"
         )
+    for kind, text in tokens:
+        if kind == REF and not 1 <= int(text) <= len(captures):
+            raise GlobError(
+                f"pattern {pattern!r} names capture {{{text}}} but there are {len(captures)}"
+            )
 
     out: List[str] = []
     it = iter(captures)
     for kind, text in tokens:
         if kind == LITERAL:
             out.append(text)
+            continue
+        if kind == REF:
+            out.append(captures[int(text) - 1])
             continue
         value = next(it)
         if kind == GLOBSTAR_DIR:

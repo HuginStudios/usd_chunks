@@ -7106,6 +7106,26 @@ def strip_chunks(layer, only_paths=None) -> None:
     layer.Traverse(Sdf.Path.absoluteRootPath, drop_links_to_chunks)
     if is_scope and not root.nameChildren and (root.typeName or root.specifier == Sdf.SpecifierOver):
         del layer.pseudoRoot.nameChildren[root.name]
+    if only_paths is None:
+        _default_to_the_only_root(layer)
+
+
+def _default_to_the_only_root(layer) -> None:
+    """Make a layer's one root prim its defaultPrim, when it names none that is left.
+
+    With the recipe gone, an asset built by a network is typically one root prim -- and a
+    file referenced without a prim path composes nothing unless it names a defaultPrim, so
+    every delivered asset had to be patched by hand before a scene could reference it. A
+    layer with several roots is left to say which it means; one naming a prim it still has
+    keeps it.
+    """
+    roots = [spec for spec in layer.rootPrims if spec.specifier == Sdf.SpecifierDef]
+    if layer.defaultPrim and layer.GetPrimAtPath(Sdf.Path.absoluteRootPath.AppendChild(layer.defaultPrim)):
+        return
+    if len(roots) == 1:
+        layer.defaultPrim = roots[0].name
+    elif layer.defaultPrim:
+        layer.ClearDefaultPrim()  # it named a Chunk prim, now stripped
 
 
 def _prune_over_only(spec) -> bool:
