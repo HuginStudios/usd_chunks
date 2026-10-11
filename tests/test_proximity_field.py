@@ -210,3 +210,36 @@ def test_grow_near_with_nothing_outside_samples_only_within_reach(scene) -> None
     p = np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Under")).GetPositionsAttr().Get())
     assert len(p) == 300
     assert (np.hypot(p[:, 0] + 90, p[:, 1] + 90) <= 5.0 + 1e-4).all()
+
+
+def _brute(points, sources, scales, radius, clear, softness, inside, outside, up):
+    """The weight straight from its definition, every point against every source."""
+    p, s = np.asarray(points, float), np.asarray(sources, float)
+    if up is not None:
+        up = np.asarray(up, float)
+        p, s = p - np.outer(p @ up, up), s - np.outer(s @ up, up)
+    d = np.linalg.norm(p[:, None] - s[None], axis=2)
+    r, c = radius * np.asarray(scales), clear * np.asarray(scales)
+
+    def ss(t):
+        t = np.clip(t, 0, 1)
+        return t * t * (3 - 2 * t)
+    g = ss((r - d) / (r * max(softness, 1e-6)))
+    h = ss((d - 0.75 * c) / (0.25 * c)) if clear > 0 else np.ones_like(d)
+    return np.clip((outside + (inside - outside) * g.max(axis=1)) * h.min(axis=1), 0, 1)
+
+
+@pytest.mark.parametrize("clear,inside,outside,up", [
+    (0.0, 1.0, 0.0, (0, 0, 1)), (0.8, 1.0, 0.2, (0, 0, 1)), (0.5, 0.1, 1.0, None),
+])
+def test_the_batched_lookup_matches_the_definition(clear, inside, outside, up) -> None:
+    rng = np.random.default_rng(3)
+    sources = rng.uniform(-30, 30, (400, 3)) * [1, 1, 0.1]
+    scales = rng.uniform(0.6, 1.6, 400)
+    points = rng.uniform(-35, 35, (5000, 3)) * [1, 1, 0.1]
+    w = prox.Proximity(sources, scales, radius=4.0, clear=clear, softness=0.5, inside=inside,
+                       outside=outside, up=up)
+    want = _brute(points, sources, scales, 4.0, clear, 0.5, inside, outside, up)
+    np.testing.assert_allclose(w.sample_many(points), want, atol=1e-12)
+    # The cached neighbourhoods give the same answer the second time round.
+    np.testing.assert_allclose(w.sample_many(points), want, atol=1e-12)

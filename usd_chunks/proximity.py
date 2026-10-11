@@ -46,12 +46,30 @@ class Proximity:
         if self._cell > 1e-9:
             for i, k in enumerate(map(tuple, np.floor(self._sources / self._cell).astype(np.int64))):
                 self._grid.setdefault(k, []).append(i)
+        # A cell's 27-neighbourhood of sources, merged on first use and kept: a scatter asks
+        # about the same cells batch after batch, and rebuilding the lists each time was a
+        # million small list builds on one road shot.
+        self._neighbourhoods: dict = {}
 
     def _flatten(self, p):
         return p if self._up is None else p - np.outer(p @ self._up, self._up)
 
+    def _neighbourhood(self, key):
+        found = self._neighbourhoods.get(key)
+        if found is None:
+            kx, ky, kz = key
+            found = np.asarray([i for dx, dy, dz in _OFFSETS for i in self._grid.get((kx + dx, ky + dy, kz + dz), ())],
+                               dtype=np.int64)
+            self._neighbourhoods[key] = found
+        return found
+
     def sample_many(self, points):
-        """The weight at (N, 3) *points*, in 0..1."""
+        """The weight at (N, 3) *points*, in 0..1.
+
+        Per cell of points, against that cell's (cached) neighbourhood of sources. Not one
+        padded (N, widest) array: road vertices pack ~1500 into some neighbourhoods, and
+        padding every candidate on a 500 m terrain to that width was 22x slower than this.
+        """
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         out = np.full(len(points), self._outside)
         if not len(points) or not self._grid:
@@ -62,12 +80,12 @@ class Proximity:
         inverse = inverse.reshape(-1)
         order = np.argsort(inverse, kind="stable")
         bounds = np.searchsorted(inverse[order], np.arange(len(uniq) + 1))
-        for u, (kx, ky, kz) in enumerate(uniq.tolist()):
-            near = [i for dx, dy, dz in _OFFSETS for i in self._grid.get((kx + dx, ky + dy, kz + dz), ())]
-            if not near:
+        span = self._inside - self._outside
+        for u, key in enumerate(map(tuple, uniq.tolist())):
+            near = self._neighbourhood(key)
+            if not len(near):
                 continue
             rows = order[bounds[u]:bounds[u + 1]]
-            near = np.asarray(near)
             d = np.linalg.norm(points[rows, None, :] - self._sources[None, near, :], axis=2)
             r, c = self._r[near], self._c[near]
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -75,7 +93,7 @@ class Proximity:
                 g = np.where(r > 0, _smoothstep((r - d) / (r * self._soft)), 0.0)
                 # 0 on the trunk, back to 1 over the outer quarter of the clear radius.
                 h = np.where(c > 0, _smoothstep((d - 0.75 * c) / (0.25 * c)), 1.0)
-            out[rows] = (self._outside + (self._inside - self._outside) * g.max(axis=1)) * h.min(axis=1)
+            out[rows] = (self._outside + span * g.max(axis=1)) * h.min(axis=1)
         return np.clip(out, 0.0, 1.0)
 
     def within_reach(self, points, pad=None):
