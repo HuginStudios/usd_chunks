@@ -388,13 +388,37 @@ def _primvar_corners(prim, name, tris, corners, face_of_tri):
     return per_corner(values, primvar.GetInterpolation(), tris, corners, face_of_tri)
 
 
+def _bound_material(prim):
+    """The material bound to `prim` (or a subset), looked up through the stage by path.
+
+    ComputeBoundMaterial resolves the binding in C++, out of sight of the stage lookups
+    skip-cooking watches to learn what a cook reads. On a cook stage masked to the asset, a
+    material in a shared /Looks scope is simply absent and the binding comes back empty --
+    the bake goes grey and nothing says why. Asking for the binding's target by path is a
+    lookup it does see: the mask widens to the material and the cook runs again with it.
+    """
+    material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+    stage = prim.GetStage()
+    if material:
+        stage.GetPrimAtPath(material.GetPath())
+        return material
+    walk = prim
+    while walk and not walk.IsPseudoRoot():
+        target = UsdShade.MaterialBindingAPI(walk).GetDirectBinding().GetMaterialPath()
+        if not target.isEmpty:
+            stage.GetPrimAtPath(target)  # absent here: let the cook see it asked
+            break
+        walk = walk.GetParent()
+    return material
+
+
 def _face_looks(prim, n_faces, looks: dict):
     """`(look per face code, code per face)` from the prim's binding and its subsets'."""
-    whole = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+    whole = _bound_material(prim)
     codes = np.zeros(n_faces, dtype=np.int64)
     materials = [whole]
     for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets():
-        material = UsdShade.MaterialBindingAPI(subset.GetPrim()).ComputeBoundMaterial()[0]
+        material = _bound_material(subset.GetPrim())
         indices = subset.GetIndicesAttr().Get()
         if not material or not indices:
             continue

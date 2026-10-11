@@ -202,7 +202,9 @@ def _target_with_uvs(stage, path, z=0.0):
 def test_the_chunk_writes_maps_and_binds_a_material_reading_them(wired) -> None:
     stage, make = wired
     UsdGeom.Xform.Define(stage, "/Asset")
-    _quad(stage, "/Asset/Body", -1, 1, z=0.05, colour=(0.8, 0.2, 0.1))
+    # Two colours and a sloped half: both maps vary, so both are written as files.
+    _quad(stage, "/Asset/Left", -1, 0, z=0.05, colour=(0.8, 0.2, 0.1))
+    _quad(stage, "/Asset/Right", 0, 1, z=0.05, colour=(0.1, 0.2, 0.8), tilt=(-0.3, 0.0))
     _target_with_uvs(stage, "/Proxy")
 
     node = make()
@@ -246,14 +248,17 @@ def test_a_target_inside_the_source_is_not_baked_from_itself(wired) -> None:
     node.get_param("source_path").value = "/Asset"
     node.get_param("target_path").value = "/Asset/Proxy"
 
-    pixels = np.asarray(Image.open(node.get_param("out_basecolor").value)).reshape(-1, 3)
-    assert pixels.mean(axis=0)[1] > 250 and pixels.mean(axis=0)[0] < 5
+    # Uniform green everywhere, so it is a constant rather than a file -- and green, not
+    # the target's own grey.
+    surface = UsdShade.Material(stage.GetPrimAtPath("/Asset/Proxy_baked")).ComputeSurfaceSource("")[0]
+    assert np.allclose(surface.GetInput("diffuseColor").Get(), (0.0, 1.0, 0.0), atol=0.01)
 
 
 def test_a_rebake_with_new_content_replaces_its_files(wired) -> None:
     stage, make = wired
     UsdGeom.Xform.Define(stage, "/Asset")
-    body = _quad(stage, "/Asset/Body", -1, 1, z=0.05, colour=(1.0, 0.0, 0.0))
+    body = _quad(stage, "/Asset/Body", -1, 0, z=0.05, colour=(1.0, 0.0, 0.0))
+    _quad(stage, "/Asset/Other", 0, 1, z=0.05, colour=(1.0, 1.0, 1.0))
     _target_with_uvs(stage, "/Proxy")
 
     node = make()
@@ -406,3 +411,57 @@ def test_the_opacity_map_cuts_where_the_source_is_cut_and_colour_ignores_the_cut
     opacity, colour = images[texture_bake.MAP_OPACITY], images[texture_bake.MAP_BASE_COLOUR]
     assert opacity[:, :12].mean() < 0.05 and opacity[:, 20:].mean() > 0.95
     assert colour.reshape(-1, 3)[:, 0].max() < 0.05  # no red junk anywhere
+
+
+# ---------------------------------------------------------------------------
+# keeping the maps small
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("triangles", "size"), [(1_000, 512), (3_000, 1024), (20_000, 2048), (10, 256), (10**7, 4096)])
+def test_auto_resolution_follows_the_triangle_budget(triangles, size) -> None:
+    assert texture_bake.auto_resolution(triangles) == size
+
+
+def test_a_map_that_bakes_to_one_value_becomes_a_material_constant(wired) -> None:
+    """Metallic is nearly always uniform; a 1024px texture of zeros is a file, an upload
+    and a lookup per pixel for a value the material can just hold.
+
+    The material sits in a shared /Looks scope, outside the asset: on a skip-cook stage
+    masked to the asset it is absent unless the bake's lookup of it is seen -- it used to
+    come back as the 0.5 default."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/Asset")
+    body = _quad(stage, "/Asset/Body", -1, 1, z=0.05, colour=(0.8, 0.2, 0.1))
+    UsdShade.MaterialBindingAPI.Apply(body.GetPrim()).Bind(_preview(stage, "/Looks/Paint", roughness=0.4, metallic=0.0))
+    _target_with_uvs(stage, "/Proxy")
+
+    node = make()
+    node.get_param("source_path").value = "/Asset"
+    node.get_param("target_path").value = "/Proxy"
+
+    assert node.get_param("out_metallic").value == ""
+    assert node.get_param("out_roughness").value == ""  # one material: uniform too
+    assert node.get_param("out_normal").value == ""  # parallel sheet: flat
+    surface = UsdShade.Material(stage.GetPrimAtPath("/Proxy_baked")).ComputeSurfaceSource("")[0]
+    assert surface.GetInput("metallic").Get() == pytest.approx(0.0, abs=0.005)
+    assert surface.GetInput("roughness").Get() == pytest.approx(0.4, abs=0.005)
+    assert not surface.GetInput("normal")  # flat is no normal map at all
+    assert "constant" in node.get_param("readout").value
+
+
+def test_auto_resolution_sizes_the_maps_from_the_target(wired) -> None:
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _quad(stage, "/Asset/Left", -1, 0, z=0.05, colour=(1, 0, 0))
+    _quad(stage, "/Asset/Right", 0, 1, z=0.05, colour=(0, 0, 1))
+    _target_with_uvs(stage, "/Proxy")
+
+    node = make()
+    node.get_param("auto_resolution").value = True
+    node.get_param("source_path").value = "/Asset"
+    node.get_param("target_path").value = "/Proxy"
+
+    with Image.open(node.get_param("out_basecolor").value) as image:
+        assert image.size == (256, 256)  # two triangles: the floor
+    assert node.get_param("readout").value.startswith("256px")

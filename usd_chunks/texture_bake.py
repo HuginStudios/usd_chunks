@@ -340,6 +340,40 @@ def bake(request: BakeRequest, backend_name: str = NearestSampleBackend.name) ->
     return {name: fill_gutters(image, covered) for name, image in images.items()}
 
 
+def auto_resolution(n_triangles, texels_per_triangle=256, utilisation=0.7, lowest=256, highest=4096) -> int:
+    """A map size that gives each target triangle about `texels_per_triangle` texels.
+
+    A proxy's triangle budget is already a statement of how large it is on screen -- a far
+    LOD gets few triangles -- so texture detail follows it instead of being one fixed size
+    for every level: 1k triangles bakes at 512, 3k at 1024, 20k at 2048. `utilisation` is
+    the share of the atlas charts actually cover (xatlas packs to about 0.7). Rounded to the
+    nearest power of two, in log space, and clamped.
+    """
+    texels = max(1, int(n_triangles)) * texels_per_triangle / utilisation
+    size = 2 ** round(np.log2(np.sqrt(texels)))
+    return int(min(highest, max(lowest, size)))
+
+
+def uniform_value(name, image):
+    """The single value a baked map holds everywhere, or None if it varies.
+
+    Uniform means every texel lands within one 8-bit step of every other once written --
+    nothing a texture would show. Metallic almost always is, and a flat normal map is
+    "no normal map". The value comes back in the map's own terms: linear colour, a
+    tangent-space normal in -1..1, or a scalar.
+    """
+    data = linear_to_srgb(image) if name == MAP_BASE_COLOUR else np.clip(image, 0.0, 1.0)
+    flat = np.round(np.asarray(data, dtype=np.float64) * 255.0).reshape(len(data) * len(data[0]), -1)
+    if (flat.max(axis=0) - flat.min(axis=0)).max() > 1:
+        return None
+    mean = np.asarray(image, dtype=np.float64).reshape(flat.shape).mean(axis=0)
+    if name == MAP_NORMAL:
+        return tuple(float(v) for v in mean * 2.0 - 1.0)
+    if mean.size == 1:
+        return float(mean[0])
+    return tuple(float(v) for v in mean)
+
+
 def linear_to_srgb(values):
     values = np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
     return np.where(values <= 0.0031308, values * 12.92, 1.055 * values ** (1.0 / 2.4) - 0.055)

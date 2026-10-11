@@ -11,6 +11,8 @@ Target is the unwrapped low-poly mesh. The bake writes
   brings back the detail and the hard edges the proxy smoothed away;
 * **roughness** and **metallic** maps -- each material's value, or its texture, so a proxy
   of a chrome-and-leather chair still reads as chrome and leather;
+* (a map that comes out the same everywhere -- metallic usually, a flat normal map -- is
+  not written: its value goes into the material instead;)
 * an **opacity** map (off by default) -- where the source is cut away, for proxies that are
   themselves cards: a leaf cluster, a fence panel. The material then cuts at 0.5;
 
@@ -142,8 +144,10 @@ def _material_path(node, target_path: str) -> str:
     return str(target.GetParentPath().AppendChild(f"{target.name}_baked"))
 
 
-def _author_material(stage, path, files: dict, uv_name: str):
-    """A UsdPreviewSurface reading the baked maps through `uv_name`."""
+def _author_material(stage, path, files: dict, uv_name: str, constants: dict | None = None):
+    """A UsdPreviewSurface reading the baked maps through `uv_name`; a map that baked to one
+    value everywhere (`constants`) is set as that value instead of a texture."""
+    constants = constants or {}
     material = UsdShade.Material.Define(stage, path)
     surface = UsdShade.Shader.Define(stage, f"{path}/Surface")
     surface.CreateIdAttr("UsdPreviewSurface")
@@ -181,6 +185,17 @@ def _author_material(stage, path, files: dict, uv_name: str):
             )
     if files.get(texture_bake.MAP_OPACITY):
         surface.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(0.5)
+    for map_name, value in constants.items():
+        if map_name == texture_bake.MAP_BASE_COLOUR:
+            surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*value[:3]))
+        elif map_name == texture_bake.MAP_NORMAL:
+            if np.dot(np.asarray(value), (0.0, 0.0, 1.0)) < 0.999:  # flat is the default
+                surface.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).Set(Gf.Vec3f(*value))
+        else:
+            input_name = {texture_bake.MAP_ROUGHNESS: "roughness", texture_bake.MAP_METALLIC: "metallic"}.get(
+                map_name, map_name
+            )
+            surface.CreateInput(input_name, Sdf.ValueTypeNames.Float).Set(float(value))
     if file := files.get(texture_bake.MAP_NORMAL):
         normal = texture("Normal", file, "raw")
         # Stored 0-1, read back as -1..1: the UsdPreviewSurface convention for normal maps.
@@ -198,7 +213,7 @@ def _author_material(stage, path, files: dict, uv_name: str):
 
 
 class _Settings(NamedTuple):
-    resolution: int
+    resolution: int  # 0 = automatic, from the target's triangle count
     maps: tuple
     backend: str
     uv_name: str
@@ -217,8 +232,9 @@ def _settings(node) -> _Settings:
         )
         if node.get_param(param, is_b).value
     )
+    auto = node.get_param("auto_resolution", is_b).value
     return _Settings(
-        resolution=int(node.get_param("resolution", chunk.is_param_t(int)).value),
+        resolution=0 if auto else int(node.get_param("resolution", chunk.is_param_t(int)).value),
         maps=maps,
         backend=node.get_param("backend", chunk.is_param_t(str)).value,
         uv_name=node.get_param("uv_name", chunk.is_param_t(str)).value or "st",
@@ -239,6 +255,8 @@ def _stamp(sources, target: texture_bake.Target, settings: _Settings) -> tuple:
 class _Bake(NamedTuple):
     stamp: tuple
     files: dict  # map -> path
+    constants: dict  # map -> the value a uniform map was replaced by
+    resolution: int
 
 
 # Keyed by the chunk's own layer identifier.
@@ -272,16 +290,21 @@ def _read(node, source_paths, target_path, uv_name):
     return upstream, sources, target, problems
 
 
-def _write(node, stage, target_path, images, stamp) -> dict:
+def _write(node, stage, target_path, images, stamp) -> tuple[dict, dict]:
+    """Write every map that varies; return `(files, constants)` -- the uniform ones become
+    material values instead, which saves a file, a texture upload and a lookup per pixel."""
     folder = _output_dir(node, stage)
     os.makedirs(folder, exist_ok=True)
     digest = hashlib.sha1(repr(stamp).encode()).hexdigest()[:8]
-    files = {}
+    files, constants = {}, {}
     for name, image in images.items():
+        if (value := texture_bake.uniform_value(name, image)) is not None:
+            constants[name] = value
+            continue
         path = os.path.join(folder, f"{Sdf.Path(target_path).name}_{name}_{digest}.png")
         texture_bake.write_map(path, image, srgb=name == texture_bake.MAP_BASE_COLOUR)
         files[name] = path
-    return files
+    return files, constants
 
 
 def _forget(previous: _Bake | None, keep: dict) -> None:
@@ -330,29 +353,46 @@ def execute(node: chunk.Chunk) -> None:
         _set_outputs(node)
         return
 
-    stamp = _stamp(sources, target, settings)
+    resolution = settings.resolution or texture_bake.auto_resolution(len(target.tris))
+    stamp = _stamp(sources, target, settings._replace(resolution=resolution))
     previous = _LAST_COOK.get(layer.identifier)
     if previous is not None and previous.stamp == stamp and all(os.path.isfile(f) for f in previous.files.values()):
-        files = previous.files
+        files, constants = previous.files, previous.constants
     else:
-        request = texture_bake.BakeRequest(sources, target, settings.resolution, frozenset(settings.maps))
+        request = texture_bake.BakeRequest(sources, target, resolution, frozenset(settings.maps))
         images = texture_bake.bake(request, settings.backend)
-        files = _write(node, stage, target_path, images, stamp)
+        files, constants = _write(node, stage, target_path, images, stamp)
         _forget(previous, files)
 
     material_path = _material_path(node, target_path)
     with Usd.EditContext(stage, layer):
-        material = _author_material(stage, material_path, files, settings.uv_name)
+        material = _author_material(stage, material_path, files, settings.uv_name, constants)
         if node.get_param("bind", chunk.is_param_t(bool)).value:
             target_prim = stage.GetPrimAtPath(target_path)
             UsdShade.MaterialBindingAPI.Apply(target_prim).Bind(material)
 
     if len(_LAST_COOK) > 64:
         _LAST_COOK.clear()
-    _LAST_COOK[layer.identifier] = _Bake(stamp, files)
+    _LAST_COOK[layer.identifier] = _Bake(stamp, files, constants, resolution)
     _set_outputs(node, material_path, files)
     note = f" · skipped {len(problems)} mesh(es)" if problems else ""
-    _report(node, f"{settings.resolution}px · {', '.join(settings.maps)}{note}")
+    flat = f" · constant: {', '.join(constants)}" if constants else ""
+    _report(node, f"{resolution}px · {', '.join(files) or 'no maps'}{flat}{note}")
+
+
+def _sync_resolution_param(node) -> None:
+    """Show the resolution slider only while it is the one deciding."""
+    param = node.get_param("resolution")
+    if param is None:
+        return
+    if node.get_param("auto_resolution", chunk.is_param_t(bool)).value:
+        param.set_state(chunk.ChunkFlags.State.HIDDEN)
+    else:
+        param.unset_state(chunk.ChunkFlags.State.HIDDEN)
+
+
+def resolution_mode_changed(owner, notice, sender) -> None:
+    _sync_resolution_param(owner.get_chunk() or owner)
 
 
 _PF = chunk.ChunkFlags.ParamFlags
@@ -391,15 +431,23 @@ def main():
     maps = chunk.Group("Maps", flags=_GF)
     maps.add_params(
         [
+            chunk.Checkbox(
+                "auto_resolution",
+                "Auto Resolution",
+                default_value=False,
+                tooltip="Size the maps from the target's triangle count -- about 16x16 texels a\n"
+                "triangle, a power of two from 256 to 4096: 1k triangles bakes at 512, 3k at\n"
+                "1024, 20k at 2048. A far LOD gets small maps without anyone setting them.",
+            ),
             chunk.Slider(
                 "resolution",
                 "Resolution",
                 is_int=True,
                 min_value=64,
                 max_value=8192,
-                default_value=1024,
-                tooltip="Width and height of each map in pixels. Match UV Unwrap's resolution: its\n"
-                "padding between charts is measured in these texels.",
+                default_value=512,
+                tooltip="Width and height of each map in pixels, when Auto Resolution is off. Match\n"
+                "UV Unwrap's resolution: its padding between charts is measured in these texels.",
             ),
             chunk.Checkbox(
                 "bake_colour",
@@ -438,6 +486,8 @@ def main():
         ]
     )
     chunk_api.add_param(maps)
+    chunk_api.add_callback(resolution_mode_changed, sender=chunk_api.get_param("auto_resolution"))
+    _sync_resolution_param(chunk_api)
 
     output = chunk.Group("Output", flags=_GF)
     output.add_params(

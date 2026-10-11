@@ -351,7 +351,7 @@ def main():
                 is_int=True,
                 min_value=64,
                 max_value=8192,
-                default_value=1024,
+                default_value=512,
                 tooltip="The texture size the charts are packed for, in pixels. Bake at this size:\n"
                 "padding is measured in its texels.",
             ),
