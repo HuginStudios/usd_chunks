@@ -840,10 +840,12 @@ def main():
             is_int=True,
             min_value=16,
             max_value=384,
-            default_value=128,
+            default_value=256,
             tooltip="Voxels along the asset's longest side. Sets the finest detail the proxy can\n"
-            "hold, and the scale every size below is measured in. Memory and time grow with\n"
-            "its cube: 384 is several GB.",
+            "hold, and the scale every size below is measured in. A trunk or rail thinner\n"
+            "than a few voxels comes out fat: 256 keeps a 30 m pine's 40 cm trunk reading\n"
+            "as a trunk, 128 does not. Memory and time grow with its cube: a 256 tree\n"
+            "takes ~1.5 s, a 384 cube-shaped asset several GB.",
         )
     )
 
@@ -855,9 +857,9 @@ def main():
                 "Thickness",
                 min_value=0.5,
                 max_value=8.0,
-                default_value=1.0,
+                default_value=0.75,
                 tooltip="How far the proxy stands off the surface, in voxels. Open surfaces —\n"
-                "leaf cards, sheet metal — become shells this thick. Below about 1 a thin\n"
+                "leaf cards, sheet metal — become shells this thick. Much below 0.75 a thin\n"
                 "card can break up.",
             ),
             chunk.Slider(
@@ -865,7 +867,7 @@ def main():
                 "Close Gaps",
                 min_value=0.0,
                 max_value=32.0,
-                default_value=4.0,
+                default_value=3.0,
                 tooltip="Bridges gaps up to about twice this many voxels wide without growing\n"
                 "the outline. Raise it until a canopy reads as one mass; 0 keeps every gap.",
             ),
