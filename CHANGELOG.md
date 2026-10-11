@@ -109,6 +109,8 @@ This file starts with the first release; development before that is in the commi
   Near to paint a region.
 - Curves to Mesh: a Ribbon profile -- a flat strip the curve's width wide, lying on the
   ground (a road, a river, a path).
+- `examples/scripts/biome.py`: a nested forest biome in four Scatter Points layers, each
+  growing near (or away from) the ones before it, on stand-in shapes.
 - `scene.create` takes a list row's param as `list.row.param`
   (`**{"prototypes.0.proto_path": "/assets/rock"}`), set before the chunk's first cook.
 
@@ -206,6 +208,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Inline USD warns when its text does not parse; it imported nothing and said nothing, and
+  whatever relied on its prims quietly fell back (a Scatter Points to its default cube).
 - A chunk made by `scene.create` with float params cooked once more per float: USD stores
   them as 32-bit, the read-back (0.16 -> 0.1599999964) counted as an edit. Compared within
   float precision now; a 45k-instance Scatter Points cooks once, not ten times.
