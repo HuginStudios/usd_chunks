@@ -78,6 +78,35 @@ class Proximity:
             out[rows] = (self._outside + (self._inside - self._outside) * g.max(axis=1)) * h.min(axis=1)
         return np.clip(out, 0.0, 1.0)
 
+    def within_reach(self, points, pad=None):
+        """Whether each of (N, 3) *points* is within some source's radius, plus its own *pad*
+        (N,) -- a triangle's centroid padded by its size answers "can anything on this
+        triangle be reached". Only meaningful while *outside* is 0: beyond reach the weight is
+        then 0, so a sampler can leave those triangles out entirely."""
+        points = self._flatten(np.asarray(points, dtype=np.float64).reshape(-1, 3))
+        pad = np.zeros(len(points)) if pad is None else np.asarray(pad, dtype=np.float64)
+        out = np.zeros(len(points), dtype=bool)
+        if not len(points) or not self._grid:
+            return out
+        # Pads can exceed a cell, so look as many cells out as the largest one needs.
+        ring = int(np.ceil((self._cell + float(pad.max())) / self._cell))
+        offsets = [(dx, dy, dz) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1)
+                   for dz in range(-ring, ring + 1)]
+        keys = np.floor(points / self._cell).astype(np.int64)
+        uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
+        inverse = inverse.reshape(-1)
+        order = np.argsort(inverse, kind="stable")
+        bounds = np.searchsorted(inverse[order], np.arange(len(uniq) + 1))
+        for u, (kx, ky, kz) in enumerate(uniq.tolist()):
+            near = [i for dx, dy, dz in offsets for i in self._grid.get((kx + dx, ky + dy, kz + dz), ())]
+            if not near:
+                continue
+            rows = order[bounds[u]:bounds[u + 1]]
+            near = np.asarray(near)
+            d = np.linalg.norm(points[rows, None, :] - self._sources[None, near, :], axis=2)
+            out[rows] = (d <= self._r[near][None, :] + pad[rows, None]).any(axis=1)
+        return out
+
     def sample(self, point, normal=None):
         """The weight at one point -- the Scatter mask hook's signature; *normal* is unused."""
         return float(self.sample_many([[point[0], point[1], point[2]]])[0])

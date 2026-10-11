@@ -1792,6 +1792,7 @@ def execute(node):
     # an instancer's points sit at the base of a trunk. Multiplied into the Density Field.
     near_paths = [p.strip() for p in node.get_param("near_prims", is_s).value.split(",") if p.strip()]
     near = None
+    near_outside = node.get_param("near_outside", is_f).value
     if near_paths:
         near_pts, near_scales = proximity.source_points(scratch_stage, near_paths)
         near = proximity.Proximity(
@@ -1800,7 +1801,7 @@ def execute(node):
             clear=max(0.0, node.get_param("near_clear", is_f).value),
             softness=node.get_param("near_softness", is_f).value,
             inside=node.get_param("near_inside", is_f).value,
-            outside=node.get_param("near_outside", is_f).value,
+            outside=near_outside,
             up=tuple(world_up),
         )
     mask = _combine_masks(density, near.sample if near is not None else None)
@@ -1899,6 +1900,15 @@ def execute(node):
             # no wasted samples). The paint mask, being per-point, will instead be
             # passed as the `mask=` hook above.
             surf_tris = triangles.select(triangles.slope_mask(world_up, max_slope))
+            if near is not None and near_outside <= 0.0 and len(surf_tris):
+                # Grow Near with nothing beyond reach: a triangle no source reaches can never
+                # take an instance, so it is left out of the draw rather than sampled and
+                # rejected. Trees grown near a shot's centre on a 500 m terrain drew six
+                # candidates for every one that could land.
+                v0, v1, v2 = (np.asarray(v, dtype=np.float64) for v in (surf_tris.v0, surf_tris.v1, surf_tris.v2))
+                centre = (v0 + v1 + v2) / 3.0
+                size = np.max([np.linalg.norm(v - centre, axis=1) for v in (v0, v1, v2)], axis=0)
+                surf_tris = surf_tris.select(near.within_reach(centre, size))
             avoid = None
             if avoid_paths:
                 pts_, radii_ = _avoid_points(scratch_stage, avoid_paths, max(avoid_distance, spacing, 1e-6) * 0.5)

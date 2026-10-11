@@ -183,3 +183,30 @@ def test_scatter_grows_near_the_previous_layer(scene):
     assert (np.minimum(d_small - 2.0, d_big - 4.0) <= 1e-4).all()       # within reach (scale 2: twice)
     assert ((d_small > 0.5 * 0.75) & (d_big > 1.0 * 0.75)).all()       # clear of the trunks
     assert (d_big < 4.0).sum() > (d_small < 2.0).sum()                  # the big tree holds more
+
+
+def test_within_reach_pads_by_the_points_own_size() -> None:
+    w = prox.Proximity([(0, 0, 0)], [2.0], radius=3.0, up=(0, 0, 1))      # reach 6
+    pts = [(5.0, 0, 0), (7.0, 0, 0), (7.0, 0, 50.0), (9.0, 0, 0)]
+    assert w.within_reach(pts).tolist() == [True, False, False, False]
+    assert w.within_reach(pts, [0.0, 1.5, 1.5, 1.5]).tolist() == [True, True, True, False]
+
+
+def test_grow_near_with_nothing_outside_samples_only_within_reach(scene) -> None:
+    """Outside 0 leaves out the triangles no source reaches -- same result, far fewer draws.
+    A fine grid with a single source in one corner: every instance still lands, all in reach."""
+    qapp, stage, mk = scene
+    _ground(stage, size=200.0, n=201)
+    trees = UsdGeom.PointInstancer.Define(stage, "/Trees")
+    trees.GetPositionsAttr().Set([Gf.Vec3f(-90, -90, 0)])
+    UsdGeom.Sphere.Define(stage, "/Plant").GetRadiusAttr().Set(0.1)
+    s = mk("scatter_points")
+    for k, v in dict(surface_prim="/Ground", auto_spacing=False, spacing=0.3, max_count=300,
+                     inst_path="/Under", near_prims="/Trees", near_radius=5.0, near_softness=0.0,
+                     near_outside=0.0).items():
+        s.get_param(k).value = v
+    s.execute()
+    qapp.processEvents()
+    p = np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/Under")).GetPositionsAttr().Get())
+    assert len(p) == 300
+    assert (np.hypot(p[:, 0] + 90, p[:, 1] + 90) <= 5.0 + 1e-4).all()
