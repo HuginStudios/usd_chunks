@@ -7,9 +7,12 @@ What is read:
 * **Geometry**: every visible, non-guide, non-proxy mesh under a prim, instance proxies
   included, and every PointInstancer copy -- a prototype is read once and kept with all of
   its placements, so a scattered canopy costs one read.
-* **Colour**: the bound material's diffuse / base colour (UsdPreviewSurface, MaterialX
-  standard_surface and open_pbr_surface), from its texture when it has one, per
-  GeomSubset; else `displayColor`.
+* **Colour**: the bound material's diffuse / base colour, per GeomSubset; else
+  `displayColor`. A MaterialX network (standard_surface, open_pbr_surface) is evaluated
+  node by node (`mtlx_eval`) -- the hue/saturation, tint and mix nodes an exporter puts
+  after the texture are the look -- and the UsdPreviewSurface beside it, a simplified
+  approximation, is only the fallback for a network using nodes `mtlx_eval` can't run.
+  Roughness, metalness and opacity are read the same way.
 * **Cut-outs**: an alpha-tested material drops the samples that land on transparent
   texels, or a leaf card's cut-away part would count as surface.
 * **Normals**: the mesh's authored normals when it has them, else its face normals.
@@ -29,6 +32,7 @@ from typing import NamedTuple
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 
+from usd_chunks import mtlx_eval
 from usd_chunks.mesh_math import fan_triangulate
 
 try:
@@ -123,6 +127,9 @@ class _Look(NamedTuple):
     roughness_texture: Texture | None = None
     metallic: float = _DEFAULT_METALLIC
     metallic_texture: Texture | None = None
+    # Compiled MaterialX inputs, by channel ("colour", "roughness", "metallic", "opacity"):
+    # where present they decide that channel, over any constant or texture above.
+    programs: dict = {}
 
 
 class Textured(NamedTuple):
@@ -135,6 +142,8 @@ class Textured(NamedTuple):
     threshold: float
     roughness: Texture | None = None
     metallic: Texture | None = None
+    programs: dict = {}  # channel -> mtlx_eval.Program
+    corner_primvars: dict = {}  # primvar name -> (k, 3, 2) values the programs read
 
 
 class Source(NamedTuple):
@@ -216,16 +225,52 @@ def apply_uv_transform(st, transform):
     return rotated + np.array([tu, tv])
 
 
+# The MaterialX inputs each channel is read from, in order of preference.
+_PROGRAM_INPUTS = {
+    "colour": ("base_color",),
+    "roughness": ("specular_roughness",),
+    "metallic": ("base_metalness", "metalness"),
+    "opacity": ("geometry_opacity", "opacity"),
+}
+
+
 def _look(material) -> _Look | None:
     """What a bound material shows, or None if its surface isn't one this chunk reads."""
     if not material:
         return None
-    shader = None
-    for context in ("", "mtlx"):
-        if shader := material.ComputeSurfaceSource(context)[0]:
-            break
-    if not shader:
+    preview = material.ComputeSurfaceSource("")[0]
+    mtlx = material.ComputeSurfaceSource("mtlx")[0]
+    if mtlx and not str(mtlx.GetIdAttr().Get() or "").startswith("ND_"):
+        mtlx = None
+    if not (preview or mtlx):
         return None
+    look = _surface_look(preview or mtlx)
+    if mtlx is None:
+        return look
+
+    programs, cache = {}, {}
+    for channel, names in _PROGRAM_INPUTS.items():
+        shader_input = next((i for n in names if (i := mtlx.GetInput(n))), None)
+        if shader_input is None or not shader_input.HasConnectedSource():
+            continue
+        try:
+            programs[channel] = mtlx_eval.compile_input(shader_input, cache)
+        except mtlx_eval.Unsupported as exc:
+            logger.debug("%s %s: %s -- using the preview surface", material.GetPath(), channel, exc)
+    constants = {}
+    if preview is not None:
+        # Unconnected MaterialX values outrank the preview's, which only approximate them.
+        for channel, field in (("colour", "colour"), ("roughness", "roughness"), ("metallic", "metallic")):
+            shader_input = next((i for n in _PROGRAM_INPUTS[channel] if (i := mtlx.GetInput(n))), None)
+            if shader_input is not None and not shader_input.HasConnectedSource() and shader_input.Get() is not None:
+                value = shader_input.Get()
+                constants[field] = tuple(value)[:3] if field == "colour" else float(value)
+    see_through = look.see_through or _see_through(mtlx, constants.get("roughness", look.roughness))
+    return look._replace(programs=programs, see_through=see_through, **constants)
+
+
+def _surface_look(shader) -> _Look:
+    """The look of one surface shader from its own inputs: constants and direct textures."""
 
     colour, colour_texture = None, None
     for name in _COLOUR_INPUTS:
@@ -405,12 +450,19 @@ def _read_mesh(prim, placements, looks: dict) -> Source | None:
         tri_roughness[mask] = look.roughness
         tri_metallic[mask] = look.metallic
         lookups = [t for t in (look.colour_texture, look.cutout, look.roughness_texture, look.metallic_texture) if t]
-        if not lookups:
-            continue
-        st = _primvar_corners(prim, lookups[0].st, tris, corners, face_of_tri)
-        if st is None or np.asarray(st).shape[-1:] != (2,):
+        if not lookups and not look.programs:
             continue
         which = np.flatnonzero(mask)
+        corner_primvars = {}
+        for name in set().union(*(p.primvars for p in look.programs.values())) if look.programs else ():
+            values = _primvar_corners(prim, name, tris, corners, face_of_tri)
+            if values is not None and np.asarray(values).shape[-1:] == (2,):
+                corner_primvars[name] = np.asarray(values, dtype=np.float64)[which]
+        st = _primvar_corners(prim, lookups[0].st, tris, corners, face_of_tri) if lookups else None
+        if st is None or np.asarray(st).shape[-1:] != (2,):
+            if not look.programs:
+                continue
+            st = np.zeros((len(tris), 3, 2))
         textured.append(
             Textured(
                 which,
@@ -420,6 +472,8 @@ def _read_mesh(prim, placements, looks: dict) -> Source | None:
                 look.threshold,
                 look.roughness_texture,
                 look.metallic_texture,
+                look.programs,
+                corner_primvars,
             )
         )
 
@@ -578,6 +632,18 @@ class Images:
             logger.warning("can't read texture %s: %s", path, exc)
             return None
 
+    def texels(self, path, st, wrap_u="periodic", wrap_v="periodic"):
+        """Raw RGBA (n, 4) in 0-1 at each st, nearest texel, or None if unreadable."""
+        image = self.get(path)
+        if image is None:
+            return None
+        height, width = image.shape[:2]
+        u = np.mod(st[:, 0], 1.0) if wrap_u == "periodic" else np.clip(st[:, 0], 0.0, 1.0)
+        v = np.mod(st[:, 1], 1.0) if wrap_v == "periodic" else np.clip(st[:, 1], 0.0, 1.0)
+        rows = np.clip(((1.0 - v) * height).astype(np.int64), 0, height - 1)
+        cols = np.clip((u * width).astype(np.int64), 0, width - 1)
+        return image[rows, cols].astype(np.float32) / 255.0
+
     def sample(self, texture: Texture, st):
         """`texture` at each st, nearest texel, repeat-wrapped: (n, 3) or (n,), or None."""
         image = self.get(texture.path)
@@ -639,6 +705,12 @@ def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool)
             metallic[hits] = value
         if part.cutout and (alpha := images.sample(part.cutout, st)) is not None:
             cut[hits[alpha < part.threshold]] = True
+        if part.programs:
+            primvars = {
+                name: np.einsum("sk,skc->sc", bary[hits], values[row[hits]])
+                for name, values in part.corner_primvars.items()
+            }
+            _run_programs(part.programs, primvars, images, hits, colours, roughness, metallic, cut)
 
     keep = slice(None) if keep_cut else ~cut
     local, colours, normals = local[keep], colours[keep], normals[keep]
@@ -664,6 +736,23 @@ def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool)
         tiled(metallic),
         tiled(cut),
     )
+
+
+def _run_programs(programs, primvars, images, hits, colours, roughness, metallic, cut) -> None:
+    """Evaluate a material's MaterialX channels at `hits`, writing over what textures gave."""
+    n = len(hits)
+    try:
+        if program := programs.get("colour"):
+            colours[hits] = np.clip(program.run(primvars, images, n)[:, :3], 0.0, None)
+        if program := programs.get("roughness"):
+            roughness[hits] = np.clip(program.run(primvars, images, n)[:, 0], 0.0, 1.0)
+        if program := programs.get("metallic"):
+            metallic[hits] = np.clip(program.run(primvars, images, n)[:, 0], 0.0, 1.0)
+        if program := programs.get("opacity"):
+            # MaterialX opacity is blended, not tested; half coverage is where it reads as gone.
+            cut[hits[program.run(primvars, images, n)[:, 0] < 0.5]] = True
+    except Exception as exc:  # a network that compiles but can't run costs its detail, not the cook
+        logger.warning("MaterialX evaluation failed: %s", exc)
 
 
 def sample_sources(sources, spacing, keep_cut: bool = False) -> Samples:
@@ -723,6 +812,7 @@ def fingerprint(sources) -> tuple:
                 t.threshold,
                 _texture_stamp(t.roughness),
                 _texture_stamp(t.metallic),
+                tuple(sorted((name, crc(values)) for name, values in t.corner_primvars.items())),
             )
             for t in s.textured
         )
