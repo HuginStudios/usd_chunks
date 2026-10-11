@@ -81,8 +81,8 @@ class BatchRun:
     sink_values: Tuple[Tuple[PatternSite, str], ...] = ()
     output: str | None = None
 
-    def overrides(self, driver: PatternSite, anchor: Path | None = None) -> List[str]:
-        """This run's values as ``run`` overrides: the driver's file, then every sink.
+    def values(self, driver: PatternSite, anchor: Path | None = None) -> List[Tuple[PatternSite, str]]:
+        """This run's concrete values: the driver's file, then every sink.
 
         Given the anchor, a relative value is handed over absolute. A chunk authors a path
         into its own anonymous layer, which has no folder for a relative path to resolve
@@ -95,9 +95,31 @@ class BatchRun:
                 return value
             return (Path(anchor) / value).resolve().as_posix()
 
-        return [f"{driver.label}={value_of(self.source)}"] + [
-            f"{site.label}={value_of(value)}" for site, value in self.sink_values
-        ]
+        return [(driver, value_of(self.source))] + [(site, value_of(value)) for site, value in self.sink_values]
+
+
+def write_session(stage: Usd.Stage, values: List[Tuple[PatternSite, str]], path: str) -> None:
+    """Write a run's values as a layer of opinions on the network's chunk prims.
+
+    ``run --session`` opens the network with it as the session layer, the strongest opinion
+    there is, so the chunks load holding this run's values and the network cooks once, with
+    them. Handed over as ``CHUNK.param=value`` instead they would arrive after load had
+    already cooked it with the saved values -- for a proxy network, the saved asset baked
+    and its textures written, once per run, before the run's own asset was even read.
+
+    Args:
+        stage (Usd.Stage): The planning stage, for each attribute's type
+        values: (pattern site, value) pairs, from BatchRun.values
+        path (str): Where to write the layer
+    """
+    layer = Sdf.Layer.CreateNew(path)
+    for site, value in values:
+        attr = stage.GetPrimAtPath(site.prim_path).GetAttribute(site.attr_name)
+        type_name = attr.GetTypeName() if attr else Sdf.ValueTypeNames.String
+        prim_spec = Sdf.CreatePrimInLayer(layer, site.prim_path)
+        spec = prim_spec.attributes.get(site.attr_name) or Sdf.AttributeSpec(prim_spec, site.attr_name, type_name)
+        spec.default = value
+    layer.Save()
 
 
 @dataclass

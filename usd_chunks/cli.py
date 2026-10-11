@@ -405,7 +405,12 @@ def _active_view(stage, scene):
 
 
 def cmd_run(args):
-    stage = Usd.Stage.Open(args.usda)
+    # A batch run's values come as a session layer (cmd_batch): read at load, the network
+    # cooks once with them. Given as overrides they would land after load had already
+    # cooked it with the saved values -- the saved asset baked, written and thrown away,
+    # once per run.
+    session = getattr(args, "session", None)
+    stage = Usd.Stage.Open(args.usda, Sdf.Layer.FindOrOpen(session)) if session else Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
@@ -608,9 +613,9 @@ def cmd_batch(args):
     """Cook a network once per file a glob in it matches: plan here, cook in children.
 
     Planning reads the patterns off the stage and loads nothing (chunk_batch). Each run is a
-    `run` of the same file in its own process, handed the driver's file and every sink's
-    value as overrides -- so it cooks what `run` would for that one file, Output, commit
-    hooks and all.
+    `run` of the same file in its own process, opened with a session layer holding the
+    driver's file and every sink's value -- so it cooks what `run` would for that one file,
+    Output, commit hooks and all, and cooks it once.
     """
     usda = Path(args.usda).resolve()
     anchor = usda.parent
@@ -644,9 +649,13 @@ def cmd_batch(args):
 
     env = _absolute_chunk_dirs()
     total = len(plan.runs)
+    sessions = tempfile.TemporaryDirectory(prefix="usdchunks-batch-")
 
-    def command(run):
-        cmd = [python_executable(), "-m", "usd_chunks.cli", "run", str(usda), *plain_params, *run.overrides(plan.driver, anchor)]
+    def command(i, run):
+        # This run's values, read at load (see cmd_run): one cook, with them.
+        session = os.path.join(sessions.name, f"run_{i:05d}.usda")
+        chunk_batch.write_session(stage, run.values(plan.driver, anchor), session)
+        cmd = [python_executable(), "-m", "usd_chunks.cli", "run", str(usda), *plain_params, "--session", session]
         if run.output:
             out = anchor / run.output
             # USD does not make folders on the way out, and a pattern names one that need
@@ -662,13 +671,16 @@ def cmd_batch(args):
             cmd.append("--all")
         return cmd
 
+    # Written up front, on this thread: the planning stage is not for sharing between threads.
+    commands = [(i, run, command(i, run)) for i, run in enumerate(plan.runs, 1)]
+
     def one(item):
-        i, run = item
-        return i, run, *_run_batch_item(command(run), anchor, env)
+        i, run, cmd = item
+        return i, run, *_run_batch_item(cmd, anchor, env)
 
     failed = []
-    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        for i, run, code, output in pool.map(one, enumerate(plan.runs, 1)):
+    with sessions, ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        for i, run, code, output in pool.map(one, commands):
             target = f" -> {run.output}" if run.output else ""
             if code == 0:
                 print(f"  [{i}/{total}] {run.source}{target}")
@@ -946,6 +958,9 @@ def main():
         help="Cook every network in the file, not just the one the active view reaches, "
              "for a file whose side branches are meant to run",
     )
+    # A layer of param values to open the network with, as its session layer: how a batch
+    # hands each run its file (cmd_batch).
+    run_parser.add_argument("--session", metavar="LAYER", help=SUPPRESS)
 
     info_parser = sub.add_parser(
         "info",
