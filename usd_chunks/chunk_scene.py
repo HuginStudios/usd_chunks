@@ -1033,9 +1033,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._add_scripted(new)
         # A menu that gets its choices only once the chunk is in the scene (Edit Target's
         # layer list) drops a value set before that, so set any value that did not stick.
+        #
+        # Compared within float precision: joining the scene round-trips values through
+        # USD's 32-bit floats, so 0.16 comes back 0.1599999964. Compared exactly, every float
+        # param "did not stick", was set again, and cooked the chunk once more each -- five
+        # extra cooks of a 45k-instance Scatter Points, a minute of a 70-second create.
         late = {
             k: v for k, v in values.items()
-            if k not in early or new.get_param(k).value != v
+            if k not in early or not chunk_utils.values_match(new.get_param(k).value, v)
         }
         self.set(new, **late)
         inputs = list(inputs)
