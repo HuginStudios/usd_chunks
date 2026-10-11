@@ -1,6 +1,6 @@
 """Proximity weights: 0..1 by how near a point is to a set of source points.
 
-Geo-Scatter's ecosystem affinity / repulsion. Shared by Scatter Points' Grow Near (a weight
+Ecosystem affinity / repulsion. Shared by Scatter Points' Grow Near (a weight
 per candidate point) and the Proximity Field chunk (a weight per mesh vertex, as a primvar):
 **inside** near a source, **outside** beyond its radius, a smooth fade between, and nothing
 within a **clear** radius of it -- the trunk.

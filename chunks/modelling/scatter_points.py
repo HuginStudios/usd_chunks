@@ -2369,7 +2369,7 @@ def main():
     )
     chunk_api.add_param(_collapsed(dist_grp))
 
-    # --- Grow Near (Geo-Scatter's ecosystem affinity / repulsion) ---
+    # --- Grow Near (ecosystem affinity / repulsion) ---
     near_grp = chunk.Group("Grow Near", flags=_GF)
     near_grp.add_param(
         chunk.LineEdit(

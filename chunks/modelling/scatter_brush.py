@@ -45,7 +45,7 @@ _MODES = ["Add", "Subtract", "Smooth"]
 #: *Density* paints a weight and lets Scatter Points decide where instances actually land --
 #: "roughly this many, scattered". *Points* drops one instance per dab, exactly where the
 #: cursor was, and Scatter Points places those instead of sampling. *Spray* sprinkles points
-#: over the surface under the brush, Spacing apart -- Geo-Scatter's spray brush: a painted
+#: over the surface under the brush, Spacing apart -- a spray brush: a painted
 #: region with no mesh-resolution limit, wired into Scatter Points' Painted Points (one
 #: instance each) or its Grow Near (the cloud as a region). Tools that happen to share a
 #: cursor, which is why this is a mode rather than separate chunks.

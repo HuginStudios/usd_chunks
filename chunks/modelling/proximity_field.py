@@ -1,6 +1,6 @@
 """Proximity Field chunk -- a 0..1 primvar on meshes from how near they are to other points.
 
-Geo-Scatter's ecosystem affinity / repulsion, as a field. It reads the points of something
+Ecosystem affinity / repulsion, as a field. It reads the points of something
 already placed -- usually another Scatter Points' instancer -- and writes a per-vertex float
 primvar onto the meshes: **Inside** near a point, **Outside** beyond **Radius**, a smooth
 fade between. Wired into a later Scatter Points' **Density Field**, it is how a biome nests:
