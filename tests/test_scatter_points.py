@@ -718,6 +718,38 @@ def test_align_to_normal_keeps_an_upright_prototype_upright_on_either_up_axis(up
     assert Gf.IsClose(rotated, Gf.Vec3d(slope), 1e-5)
 
 
+def test_viewport_proxy_keeps_each_half_of_an_asset_with_its_own_purposes() -> None:
+    """An asset with its own render/proxy meshes: Hydra resolves purpose inside a prototype,
+    so the render instancer keeps only the render half and the proxy instancer the proxy
+    half -- otherwise the viewport draws the render instancer's proxy meshes for every
+    instance."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    asset = UsdGeom.Xform.Define(stage, "/asset")
+    full_mesh = UsdGeom.Cube.Define(stage, "/asset/render")
+    full_mesh.CreatePurposeAttr().Set(UsdGeom.Tokens.render)
+    light = UsdGeom.Cube.Define(stage, "/asset/proxy")
+    light.CreatePurposeAttr().Set(UsdGeom.Tokens.proxy)
+    _set_proto(scatter, str(asset.GetPath()))
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 20
+    scatter.get_param("proxy_mode").value = "Full"
+    mod.module.execute(scatter)
+
+    full = _instancer(stage).GetPrototypesRel().GetTargets()[0]
+    proxy = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer_proxy")).GetPrototypesRel().GetTargets()[0]
+    assert stage.GetPrimAtPath(full.AppendChild("render")).IsActive()
+    assert not stage.GetPrimAtPath(full.AppendChild("proxy")).IsActive()
+    assert stage.GetPrimAtPath(proxy.AppendChild("proxy")).IsActive()
+    assert not stage.GetPrimAtPath(proxy.AppendChild("render")).IsActive()
+
+    # Off: one instancer drawn everywhere keeps the asset whole.
+    scatter.get_param("proxy_mode").value = "Off"
+    mod.module.execute(scatter)
+    full = _instancer(stage).GetPrototypesRel().GetTargets()[0]
+    assert stage.GetPrimAtPath(full.AppendChild("proxy")).IsActive()
+
+
 @pytest.mark.parametrize("mode", ["Bounds", "Full"])
 def test_viewport_proxy_is_a_purpose_split_subset(mode) -> None:
     """Proxy on: the full scatter is purpose=render, a sibling `_proxy` instancer is
