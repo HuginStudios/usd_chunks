@@ -66,6 +66,7 @@ can't blank the graph by accident.
 | Key | Does |
 | --- | --- |
 | `F` | Frame the selection (or everything, if nothing is selected). |
+| `Ctrl+F` | Find a node by name or chunk type (untick Name or Type to search only the other). `Enter` frames the best match; `Ctrl+Enter` frames the next one each press. |
 | `1` | Cook to the Output. |
 | `2` / `3` | Switch to that view, if it exists. |
 | `L` | Auto-layout the selection, or the whole graph if nothing is selected. |
