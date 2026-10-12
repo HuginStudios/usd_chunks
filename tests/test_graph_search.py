@@ -60,6 +60,20 @@ def test_nothing_typed_finds_nothing(prims) -> None:
     assert chunk_graph.search_nodes(prims, "  ") == []
 
 
+def test_names_only_skips_the_type(prims) -> None:
+    assert chunk_graph.search_nodes(prims, "tree", types=False) == ["/chunks/Trees", "/chunks/OakTree"]
+    assert chunk_graph.search_nodes(prims, "scatter", types=False) == []
+
+
+def test_types_only_skips_the_name(prims) -> None:
+    assert chunk_graph.search_nodes(prims, "scatter", names=False) == ["/chunks/Trees", "/chunks/Grass", "/chunks/Rocks"]
+    assert chunk_graph.search_nodes(prims, "tree", names=False) == []
+
+
+def test_neither_finds_nothing(prims) -> None:
+    assert chunk_graph.search_nodes(prims, "tree", names=False, types=False) == []
+
+
 # --- the popup -----------------------------------------------------------------------------
 
 
@@ -190,6 +204,32 @@ def test_no_match_says_so_and_leaves_the_selection(graph) -> None:
 
     assert popup.status.text() == "No match"
     assert _selected(chunks) == ["Rocks"]
+
+
+def test_the_boxes_narrow_the_search_and_are_kept_for_the_next_one(graph) -> None:
+    qapp, view, chunks = graph
+    popup = view._open_search()
+    popup.field.setText("transform")
+    assert len(popup.matches) == 3, "every node is a Transform"
+
+    popup.by_type.setChecked(False)
+    assert popup.matches == []
+    assert popup.status.text() == "No match"
+
+    popup.by_name.setChecked(False)
+    assert popup.status.text() == "Tick Name or Type to search"
+    popup.close()
+    qapp.processEvents()
+
+    again = view._open_search()
+    assert (again.by_name.isChecked(), again.by_type.isChecked()) == (False, False)
+
+
+def test_clicking_a_box_leaves_the_typing_in_the_field(graph) -> None:
+    qapp, view, chunks = graph
+    popup = view._open_search()
+    assert popup.by_name.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
+    assert popup.by_type.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
 
 
 def test_escape_closes_it(graph) -> None:

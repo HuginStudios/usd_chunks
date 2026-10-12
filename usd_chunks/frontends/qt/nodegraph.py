@@ -2994,8 +2994,9 @@ class GraphSearchPopup(QtWidgets.QFrame):
     """Ctrl+F: find a node by name or chunk type and frame it.
 
     Enter frames the best match and closes. Ctrl+Enter frames the next match and stays
-    open, so pressing it again steps through them all. A popup, like the Tab menu, so it
-    gets the keyboard even while usdview holds focus.
+    open, so pressing it again steps through them all. The Name and Type boxes narrow what
+    is matched; the view remembers them for the next search. A popup, like the Tab menu, so
+    it gets the keyboard even while usdview holds focus.
     """
 
     WIDTH = 360
@@ -3008,23 +3009,42 @@ class GraphSearchPopup(QtWidgets.QFrame):
         self.field = QtWidgets.QLineEdit(placeholderText="Find node by name or type")
         self.field.installEventFilter(self)
         self.field.textChanged.connect(self._search)
+        self.by_name = QtWidgets.QCheckBox("Name")
+        self.by_type = QtWidgets.QCheckBox("Type")
+        names, types = view._search_scope
+        self.by_name.setChecked(names)
+        self.by_type.setChecked(types)
+        options = QtWidgets.QHBoxLayout()
+        for box in (self.by_name, self.by_type):
+            # Clicking one must leave the typing in the search box.
+            box.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+            box.toggled.connect(self._scope_changed)
+            options.addWidget(box)
+        options.addStretch()
         self.status = QtWidgets.QLabel()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.addWidget(self.field)
+        layout.addLayout(options)
         layout.addWidget(self.status)
         #: Prim paths of the matches, best first, and which one is framed (-1: none yet).
         self.matches: list[str] = []
         self.index = -1
 
+    def _scope_changed(self) -> None:
+        self._view._search_scope = (self.by_name.isChecked(), self.by_type.isChecked())
+        self._search(self.field.text())
+
     def _search(self, text: str) -> None:
-        self.matches = self._view._search_nodes(text)
+        self.matches = self._view._search_nodes(text, *self._view._search_scope)
         self.index = -1
         self._show_status()
 
     def _show_status(self) -> None:
         if not self.field.text().strip():
             text = "Enter: frame the best match.  Ctrl+Enter: step through them."
+        elif not any(self._view._search_scope):
+            text = "Tick Name or Type to search"
         elif not self.matches:
             text = "No match"
         elif self.index < 0:
@@ -5270,12 +5290,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._search_popup.popup()
         return self._search_popup
 
-    def _search_nodes(self, query: str) -> list[str]:
+    #: What the search matches, (names, types): the popup's boxes, kept between searches.
+    _search_scope = (True, True)
+
+    def _search_nodes(self, query: str, names: bool = True, types: bool = True) -> list[str]:
         """The nodes in this graph matching query, best first (chunk_graph.search_nodes)."""
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return []
-        return chunk_graph.search_nodes({path: node.prim for path, node in graph_scene._nodes.items()}, query)
+        prims = {path: node.prim for path, node in graph_scene._nodes.items()}
+        return chunk_graph.search_nodes(prims, query, names, types)
 
     def _focus_node(self, path: str) -> None:
         """Select that node alone and frame it."""

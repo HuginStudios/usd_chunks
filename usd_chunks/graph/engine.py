@@ -403,7 +403,7 @@ def node_kind(prim: Usd.Prim) -> str:
     return str(attr.Get()) if attr and attr.Get() else ""
 
 
-def search_nodes(prims: dict[str, Usd.Prim], query: str) -> list[str]:
+def search_nodes(prims: dict[str, Usd.Prim], query: str, names: bool = True, types: bool = True) -> list[str]:
     """The nodes matching query, best first -- what the graph's search steps through.
 
     A node answers to its name and, more weakly, to its chunk type: "scatter" finds every
@@ -414,13 +414,17 @@ def search_nodes(prims: dict[str, Usd.Prim], query: str) -> list[str]:
     Args:
         prims: Maps prim path to chunk prim, for the nodes in view.
         query: What was typed.
+        names: Match node names.
+        types: Match chunk types.
 
     Returns:
-        The matching prim paths, best first; empty for an empty query.
+        The matching prim paths, best first; empty for an empty query, or with both off.
     """
     scored = []
     for path, prim in prims.items():
-        if score := chunk_registry.match_score(query, node_label(prim), (node_kind(prim),)):
+        label = node_label(prim) if names else ""
+        kinds = (node_kind(prim),) if types else ()
+        if score := chunk_registry.match_score(query, label, kinds):
             x, y = graph_position(prim)
             scored.append((-score, y, x, path))
     scored.sort()
