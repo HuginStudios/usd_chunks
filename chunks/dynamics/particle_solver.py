@@ -1328,9 +1328,21 @@ def _run(owner, notice, sender):
     # breaks into -- while the big pieces stay rigid bodies.
     chosen = None
     max_size = node.get_param("max_piece_size", is_f).value
-    if source.IsA(UsdGeom.PointInstancer) and max_size > 0.0:
+    if source.IsA(UsdGeom.PointInstancer):
         probe_inst = _Instances(source, start_time)
-        chosen = probe_inst.visible & (probe_inst.radii * 2.0 <= max_size)
+        # Said plainly, not as "is it a closed mesh?": an RBD bake shows nothing but the
+        # whole rock until it breaks, so an early Start Frame often has nothing to use.
+        if not probe_inst.visible.any():
+            report(f"no instance of {source_paths[0]} is visible at frame {start_frame} -- "
+                   "use a later Start Frame")
+            return
+        if max_size > 0.0:
+            chosen = probe_inst.visible & (probe_inst.radii * 2.0 <= max_size)
+            if not chosen.any():
+                smallest = float((probe_inst.radii * 2.0)[probe_inst.visible].min())
+                report(f"no piece is {max_size:g} or smaller at frame {start_frame} (the smallest "
+                       f"is {smallest:.2f}) -- raise Max Piece Size or use a later Start Frame")
+                return
     particles_w, blob_ids, source_instances = _emit(
         source, spacing, blob_radius, rng, start_time,
         shape=node.get_param("instance_fill", is_s).value == _FILL_SHAPE, only=chosen)

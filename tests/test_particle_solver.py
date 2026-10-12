@@ -568,3 +568,17 @@ def test_material_outside_the_container_is_left_out_not_a_crash(graph):
     points = UsdGeom.Points(stage.GetPrimAtPath("/Slab/Particles")).GetPointsAttr().Get(4)
     assert points and len(points) > 0
     assert np.abs(np.asarray(points)[:, :2]).max() < 6.0  # the Container, made cubic and walled
+
+
+@needs_taichi
+def test_too_small_a_max_piece_size_says_so(graph):
+    """Nothing under Max Piece Size at Start Frame was reported as 'is it a closed mesh?'."""
+    stage, make = graph
+    _floor(stage, "/floor", 20.0, 0.0)
+    _big_and_small(stage)
+    solver, module = _solver(make, source_prim="/rock", collision_path="/floor", sim_path="/S",
+                             max_piece_size=0.05, start_frame=10)
+    _press_run(solver, module)
+    readout = solver.get_param("readout").value
+    assert "no piece is 0.05 or smaller at frame 10" in readout, readout
+    assert "smallest is 0.20" in readout, readout
