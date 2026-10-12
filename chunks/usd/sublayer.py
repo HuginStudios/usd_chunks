@@ -72,6 +72,11 @@ def _on_attribute_changed(owner: chunk.Chunk, notice, sender):
     """
     if notice.data.name not in ["size", "value"]:
         return
+    # Set while the chunk must not cook: a value shown on a dropped, still-unwired node
+    # (graph.engine.set_param_visibly), or values restored before a cook. execute() applies
+    # the paths once it does cook.
+    if getattr(owner, "_executing", False):
+        return
     _apply_sublayers(owner)
 
 

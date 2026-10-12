@@ -5,11 +5,11 @@ import time
 
 import pytest
 from pxr import Sdf, Usd, UsdUtils
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_stage
-from usd_chunks import chunk_cook, chunk_registry
+from usd_chunks import chunk_cook, chunk_registry, chunk_widget_api
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
@@ -426,6 +426,47 @@ def test_import_as_sublayer_writes_sublayer_paths_once_wired_with_an_active_view
     assert not stage.IsLayerMuted(edit_layer.identifier)
     assert list(edit_layer.subLayerPaths) == [str(scene_path)]
     assert stage.GetPrimAtPath("/geo").IsValid()
+
+
+def _field_text(qapp, gv, chunk_obj, param_name):
+    """The text the node on the canvas shows in param_name's line edit, or None."""
+    path = get_chunk_prim_path(chunk_obj)
+    end = time.monotonic() + 10.0
+    node = None
+    while time.monotonic() < end:
+        node = gv.scene()._nodes.get(path)
+        if node is not None and getattr(node, "_chunk_widget", None) is not None:
+            break
+        qapp.processEvents()
+    assert node is not None and node._chunk_widget is not None
+    _pump(qapp, 0.3)
+    for w in node._chunk_widget.findChildren(QtWidgets.QWidget):
+        if isinstance(w, chunk_widget_api.ChunkParamWidgetBase) and getattr(w.param, "name", None) == param_name:
+            line_edit = w.findChild(QtWidgets.QLineEdit)
+            if line_edit is not None:
+                return line_edit.text()
+    return None
+
+
+def test_a_dropped_sublayer_shows_its_path_while_it_waits_to_be_wired(graph, tmp_path) -> None:
+    """Reported live: dropped next to an active view, a Sublayer is blocked until it is wired,
+    and a blocked chunk's param notices do not reach its widgets -- so the node showed an
+    empty path field. A dropped Reference shows its path; so must this."""
+    qapp, reg, scene, docker = graph
+    _, gv, _, nodes = _make_nodes(graph)
+    (existing,) = nodes
+    gv._create_view_node_for_prim(get_chunk_prim_path(existing.chunk))
+    _pump(qapp, 0.3)
+
+    scene_path = tmp_path / "set.usda"
+    dropped = Usd.Stage.CreateNew(str(scene_path))
+    dropped.GetRootLayer().Save()
+
+    gv._import_as_sublayer(str(scene_path), QtCore.QPointF(11000, 11000))
+    sub = next(c for c in scene.get_chunks() if c.get_config() and c.get_config().module == "sublayer")
+    assert sub.is_blocked(), "setup: the drop must be held until wired"
+
+    assert _field_text(qapp, gv, sub, "sublayer_path") == str(scene_path)
 
 
 def test_handle_dropped_file_prompts_for_plain_scene_without_a_chunks_option(graph, tmp_path, monkeypatch) -> None:
