@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_registry
 from usd_chunks.gizmo import runtime as chunk_gizmo
@@ -252,6 +252,41 @@ def test_two_gizmos_of_the_same_type_coexist() -> None:
 
     assert prim.GetAttribute("ui:gizmo:a:type").Get() == "cube"
     assert prim.GetAttribute("ui:gizmo:b:type").Get() == "cube"
+
+
+def test_gizmos_author_as_one_change_notice() -> None:
+    """Every ObjectsChanged can make a host refresh -- usdview resets its GUI and repaints on
+    each -- and one transform gizmo used to send 17. Batched, the whole set is one notice, and
+    what lands in the layer is exactly what unbatched authoring wrote."""
+    c = _transform_chunk()
+    c._config = ChunkConfig(module=register_stub_module().module_name, gizmos=[
+        _body_gizmo(),
+        chunk.Gizmo("b", type="cube", anchor="primpath_location", driver="translate_grp.ty"),
+    ])
+    stage = _stage_with_cube()
+    batched = stage.DefinePrim("/Batched", "Chunk")
+    unbatched = stage.DefinePrim("/Unbatched", "Chunk")
+
+    notices = []
+    listener = Tf.Notice.Register(  # noqa: F841 -- revoked when it goes out of scope
+        Usd.Notice.ObjectsChanged, lambda notice, sender: notices.append(notice), stage)
+    chunk_gizmo.author_gizmos(stage, batched, c)
+    assert len(notices) == 1
+
+    for gizmo in chunk_gizmo.get_gizmos(c):
+        chunk_gizmo._author_one(stage, unbatched, c, gizmo)
+
+    def specs(prim):
+        """Every property spec, with the prim's own path factored out of its paths."""
+        layer = stage.GetRootLayer()
+        exported = layer.ExportToString()
+        start = exported.index(f'def Chunk "{prim.GetName()}"')
+        body = exported[start:exported.index("\n}", start)]
+        return sorted(line.strip().replace(f"</{prim.GetName()}.", "</PRIM.")
+                      for line in body.splitlines()[2:])
+
+    assert specs(batched) == specs(unbatched)
+    assert len(specs(batched)) > 2 * 4  # both gizmos really authored, not an empty match
 
 
 def test_one_bad_gizmo_does_not_take_the_chunk_prim_down() -> None:
