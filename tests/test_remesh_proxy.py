@@ -424,6 +424,43 @@ def test_the_proxy_is_double_sided_so_folded_sheets_do_not_read_as_holes(wired) 
     assert UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetDoubleSidedAttr().Get() is True
 
 
+def test_corner_normals_smooth_a_gentle_bend_and_keep_a_sharp_fold() -> None:
+    # Two triangles hinged on the edge 0-1, folded by `angle` degrees.
+    def hinge(angle):
+        t = np.radians(angle)
+        points = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0], [0.5, -np.cos(t), np.sin(t)]], dtype=np.float32)
+        return points, np.array([[0, 1, 2], [1, 0, 3]])
+
+    points, tris = hinge(20.0)
+    normals = rp._corner_normals(points, tris).reshape(2, 3, 3)
+    # The shared corners of a gentle bend agree across the edge...
+    assert np.allclose(normals[0, 0], normals[1, 1], atol=1e-6)
+    assert np.allclose(normals[0, 1], normals[1, 0], atol=1e-6)
+    # ...and the unshared ones stay their own face's.
+    assert np.allclose(normals[0, 2], (0, 0, 1), atol=1e-6)
+
+    points, tris = hinge(100.0)
+    normals = rp._corner_normals(points, tris).reshape(2, 3, 3)
+    face = np.cross(points[0] - points[1], points[3] - points[1])
+    face /= np.linalg.norm(face)
+    # Past the crease angle each face keeps its own normal: no averaged, backward seam.
+    assert np.allclose(normals[0], (0, 0, 1), atol=1e-6)
+    assert np.allclose(normals[1], face, atol=1e-6)
+
+
+def test_the_proxy_carries_smooth_normals_not_flat_facets(wired) -> None:
+    stage, make = wired
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("prim_path").value = "/Asset"
+    proxy = UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy"))
+    normals = np.asarray(proxy.GetNormalsAttr().Get())
+    assert proxy.GetNormalsInterpolation() == UsdGeom.Tokens.faceVarying
+    assert len(normals) == len(proxy.GetFaceVertexIndicesAttr().Get())
+    assert np.allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-5)
+
+
 def test_the_budget_caps_the_proxy_and_a_box_needs_far_less(wired) -> None:
     stage, make = wired
     _box(stage, "/Asset")
