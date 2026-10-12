@@ -1555,6 +1555,28 @@ def _token_score(token: str, label: str, path: tuple[str, ...]) -> int:
 _BASE_ENTRY_BONUS = 60
 
 
+def match_score(query: str, label: str, path: tuple[str, ...] = ()) -> int:
+    """How well query matches label, or the category path it sits in; 0 if it does not.
+
+    Every word of query must match. The scoring is search_menu_entries', so the chunk menu
+    and the node graph's search rank the same way.
+
+    Args:
+        query: What was typed; case and surrounding whitespace are ignored.
+        label: The name being searched for.
+        path: Weaker names the label also answers to, such as its category.
+
+    Returns:
+        The score, higher for a closer match; 0 for an empty query or any word that misses.
+    """
+    total = 0
+    for token in query.lower().split():
+        if not (score := _token_score(token, label, path)):
+            return 0
+        total += score
+    return total
+
+
 def search_menu_entries(entries: list[MenuEntry], query: str) -> list[MenuEntry]:
     """The entries matching query, closest first -- the chunk menu's search.
 
@@ -1573,19 +1595,12 @@ def search_menu_entries(entries: list[MenuEntry], query: str) -> list[MenuEntry]
         List[MenuEntry]: Matching entries, best first; all of entries, unchanged, for an
         empty query.
     """
-    tokens = query.lower().split()
-    if not tokens:
+    if not query.split():
         return list(entries)
     scored = []
     for index, entry in enumerate(entries):
         label = entry.label
-        path = tuple(entry.namespace[:-1])
-        total = 0
-        for token in tokens:
-            if not (score := _token_score(token, label, path)):
-                break
-            total += score
-        else:
+        if total := match_score(query, label, tuple(entry.namespace[:-1])):
             if entry.presets is None:
                 # A chunk ahead of a variant that matches about as well: one module can
                 # declare hundreds (every MaterialX node), and "ref" should reach Reference

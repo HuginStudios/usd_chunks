@@ -403,6 +403,30 @@ def node_kind(prim: Usd.Prim) -> str:
     return str(attr.Get()) if attr and attr.Get() else ""
 
 
+def search_nodes(prims: dict[str, Usd.Prim], query: str) -> list[str]:
+    """The nodes matching query, best first -- what the graph's search steps through.
+
+    A node answers to its name and, more weakly, to its chunk type: "scatter" finds every
+    Scatter Points node, and a node named "Scatter" first. Ranked as the chunk menu ranks
+    (chunk_registry.match_score); nodes that match equally well go top to bottom, then
+    left to right, as they sit on the canvas.
+
+    Args:
+        prims: Maps prim path to chunk prim, for the nodes in view.
+        query: What was typed.
+
+    Returns:
+        The matching prim paths, best first; empty for an empty query.
+    """
+    scored = []
+    for path, prim in prims.items():
+        if score := chunk_registry.match_score(query, node_label(prim), (node_kind(prim),)):
+            x, y = graph_position(prim)
+            scored.append((-score, y, x, path))
+    scored.sort()
+    return [s[-1] for s in scored]
+
+
 def is_disabled(prim: Usd.Prim) -> bool:
     """A disabled chunk is an inactive prim; it stays on the graph, drawn greyed."""
     return not prim.IsActive()

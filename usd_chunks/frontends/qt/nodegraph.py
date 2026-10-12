@@ -2772,6 +2772,20 @@ class _ProxyKeyRouter(QtCore.QObject):
         active_focus = self._active.focusWidget() if self._active is not None else None
         typing_in_proxy = isinstance(active_focus, self._INPUT_TYPES)
 
+        # Ctrl+F-to-search: ahead of bare F, which would otherwise frame. Like Ctrl+C, not
+        # gated on a proxy being active, only on not typing in one.
+        if (not typing_in_proxy and event.key() == QtCore.Qt.Key.Key_F
+                and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._open_search()
+                    event.accept()
+                    return True
+
         # F-to-frame: intercept only when cursor is over the graph view and no proxy active.
         if self._active is None and event.key() == QtCore.Qt.Key.Key_F:
             view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
@@ -2970,6 +2984,91 @@ class _ProxyKeyRouter(QtCore.QObject):
         finally:
             self._busy = False
         return True
+
+
+# ---------------------------------------------------------------------------
+# Search
+
+
+class GraphSearchPopup(QtWidgets.QFrame):
+    """Ctrl+F: find a node by name or chunk type and frame it.
+
+    Enter frames the best match and closes. Ctrl+Enter frames the next match and stays
+    open, so pressing it again steps through them all. A popup, like the Tab menu, so it
+    gets the keyboard even while usdview holds focus.
+    """
+
+    WIDTH = 360
+
+    def __init__(self, view: ChunkGraphView):
+        super().__init__(view, QtCore.Qt.WindowType.Popup)
+        self._view = view
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.field = QtWidgets.QLineEdit(placeholderText="Find node by name or type")
+        self.field.installEventFilter(self)
+        self.field.textChanged.connect(self._search)
+        self.status = QtWidgets.QLabel()
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.addWidget(self.field)
+        layout.addWidget(self.status)
+        #: Prim paths of the matches, best first, and which one is framed (-1: none yet).
+        self.matches: list[str] = []
+        self.index = -1
+
+    def _search(self, text: str) -> None:
+        self.matches = self._view._search_nodes(text)
+        self.index = -1
+        self._show_status()
+
+    def _show_status(self) -> None:
+        if not self.field.text().strip():
+            text = "Enter: frame the best match.  Ctrl+Enter: step through them."
+        elif not self.matches:
+            text = "No match"
+        elif self.index < 0:
+            text = f"{len(self.matches)} found"
+        else:
+            text = f"{self.index + 1} of {len(self.matches)}: {Sdf.Path(self.matches[self.index]).name}"
+        self.status.setText(text)
+
+    def step(self) -> None:
+        """Frame the next match, back to the first after the last."""
+        if not self.matches:
+            return
+        self.index = (self.index + 1) % len(self.matches)
+        self._view._focus_node(self.matches[self.index])
+        self._show_status()
+
+    def accept(self) -> None:
+        """Frame the best match, or the one stepped to, and close."""
+        if self.matches:
+            self._view._focus_node(self.matches[max(self.index, 0)])
+        self.close()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.field and event.type() == QtCore.QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+                if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+                    self.step()
+                else:
+                    self.accept()
+                return True
+            if key == QtCore.Qt.Key.Key_Escape:
+                self.close()
+                return True
+        return super().eventFilter(obj, event)
+
+    def popup(self) -> None:
+        """Show it along the top of the view, ready to type into."""
+        width = min(self.WIDTH, max(self._view.width() - 20, 120))
+        self.setFixedWidth(width)
+        self.move(self._view.mapToGlobal(QtCore.QPoint((self._view.width() - width) // 2, 8)))
+        self._show_status()
+        self.show()
+        self.field.setFocus()
 
 
 # ---------------------------------------------------------------------------
@@ -4112,7 +4211,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_F:
-            self.frontend().frame(self.frontend().selected_nodes or self.scene()._nodes)
+            if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+                self._open_search()
+            else:
+                self.frontend().frame(self.frontend().selected_nodes or self.scene()._nodes)
             event.accept()
             return
         if event.key() == QtCore.Qt.Key.Key_Escape:
@@ -5158,6 +5260,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.fitInView(rect, QtCore.Qt.KeepAspectRatio)
         # Framing the whole graph is exactly the case that zooms far enough out to matter.
         self._apply_lod()
+
+    # ------------------------------------------------------------------
+    # Search
+
+    def _open_search(self) -> GraphSearchPopup:
+        """Ctrl+F: the node search popup, along the top of the view."""
+        self._search_popup = GraphSearchPopup(self)
+        self._search_popup.popup()
+        return self._search_popup
+
+    def _search_nodes(self, query: str) -> list[str]:
+        """The nodes in this graph matching query, best first (chunk_graph.search_nodes)."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return []
+        return chunk_graph.search_nodes({path: node.prim for path, node in graph_scene._nodes.items()}, query)
+
+    def _focus_node(self, path: str) -> None:
+        """Select that node alone and frame it."""
+        frontend = self.frontend()
+        frontend.set_selection([path])
+        frontend.frame([path])
 
     # ------------------------------------------------------------------
     # Auto-layout
