@@ -1530,7 +1530,13 @@ def _resolve_prototypes(node, scratch_stage):
             base, selections = _parse_proto_spec(token)
             if not base:
                 continue
-            matched = chunk_utils.resolve_prim_paths(scratch_stage, base) if scratch_stage else [base]
+            # Inactive prims match too: a library entry is deactivated so it is never drawn,
+            # and the prototype that references it switches it back on.
+            matched = (
+                chunk_utils.resolve_prim_paths(scratch_stage, base, include_inactive=True)
+                if scratch_stage
+                else [base]
+            )
             for path in matched:
                 for expanded in _expand_variants(scratch_stage, path, selections):
                     protos.append(
@@ -1582,12 +1588,16 @@ def _proto_label(path, selections):
     return name
 
 
-def _author_prototypes(stage, inst_path, protos, scratch_stage):
+def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=False):
     """Author one prototype prim per _Proto under <inst_path>/Prototypes.
 
     Each is an internal reference to the source prim with its xformOpOrder cleared (the
     instancer supplies the transform) plus any variant selection for that entry -- the same
-    asset can therefore appear several times, each row selecting a different variant.
+    asset can therefore appear several times, each row selecting a different variant. The
+    reference takes the source as authored, active = false included, so the prototype is
+    always switched on: a library of deactivated entries is never drawn itself, only
+    through the prototypes that use it. hide_sources deactivates each source that resolved
+    (in the edit target), short of one that holds the instancer.
 
     Returns the prototypes that actually resolved; an empty result means the caller should
     fall back to the default cube.
@@ -1604,6 +1614,7 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage):
         ref_prim = stage.DefinePrim(path)
         ref_prim.GetReferences().AddInternalReference(Sdf.Path(proto.src_path))
         ref_prim.SetInstanceable(False)
+        ref_prim.SetActive(True)
         # src can be valid on the upstream composition yet its real source (a sublayer, a
         # reference chunk) may have vanished from the live stage between the lookup and now
         # -- the internal reference then resolves to nothing and ref_prim has no composed
@@ -1623,6 +1634,13 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage):
         proto.path = path
         _measure_proto(proto, ref_prim, src)
         resolved.append(proto)
+
+    if hide_sources:
+        inst = Sdf.Path(inst_path)
+        for proto in resolved:
+            src_path = Sdf.Path(proto.src_path)
+            if not inst.HasPrefix(src_path):
+                stage.OverridePrim(src_path).SetActive(False)
 
     if not resolved:
         path = f"{proto_scope}/proto_0"
@@ -2023,7 +2041,9 @@ def execute(node):
 
     with Usd.EditContext(stage, layer):
         instancer = UsdGeom.PointInstancer.Define(stage, inst_path)
-        protos = _author_prototypes(stage, inst_path, specs, scratch_stage)
+        protos = _author_prototypes(
+            stage, inst_path, specs, scratch_stage, hide_sources=bool(node.get_param("hide_sources").value)
+        )
         instancer.GetPrototypesRel().SetTargets([Sdf.Path(p.path) for p in protos])
 
         spins = rand_axis != "Off" and abs(rand_amount) > 1e-6
@@ -2392,6 +2412,17 @@ def main():
     )
     protos.size = 1
     chunk_api.add_param(protos)
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "hide_sources",
+            "Hide Sources",
+            default_value=True,
+            tooltip="Deactivate the prims the prototypes come from, so only the scattered "
+            "instances are drawn -- a library of assets to pick from stays out of the render "
+            "(and its materials out of the renderer). Turn off to keep the originals visible "
+            "when scattering copies of objects placed in the scene.",
+        )
+    )
 
     # Legacy single-prototype field: hidden, kept so scenes saved before the list still
     # resolve their prototype. execute() migrates the value into row 0 on the first cook.
