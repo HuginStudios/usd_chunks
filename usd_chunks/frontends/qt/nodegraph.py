@@ -5413,7 +5413,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if list_group is not None:
             list_group.size = 1
             if row := list_group.get_indexed_param("sublayer_path", 0):
-                row.value = path
+                # Visibly: blocked, a plain set stores the path but the node's field stays
+                # empty -- the same reason the Reference drop sets its file_path this way.
+                chunk_graph.set_param_visibly(primary, row, path)
 
         if view_exists:
             # recook_for_view (via _recook_active_view) sets c.set_blocked(c not in cook_set)
