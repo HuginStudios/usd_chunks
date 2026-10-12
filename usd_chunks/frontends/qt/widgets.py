@@ -2321,6 +2321,8 @@ class ViewSlotState(QtCore.QObject):
                 chunk_type = prim.GetAttribute("info:chunkType").Get()
             if chunk_type not in ("view", "output"):
                 for p in stage.Traverse():
+                    if p.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
+                        continue
                     p_type = p.GetAttribute("info:chunkType").Get()
                     if p_type not in ("view", "output"):
                         continue

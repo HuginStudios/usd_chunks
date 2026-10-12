@@ -2188,11 +2188,7 @@ def free_view_slot(stage: Usd.Stage, parent_path: str) -> int | None:
     do nothing and numbered the View{slot} names across contexts.
     """
     used = set()
-    for prim in stage.Traverse():
-        if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
-            continue
-        if str(prim.GetPath().GetParentPath()) != parent_path:
-            continue
+    for prim in _views_in(stage, parent_path):
         slot = prim.GetAttribute(VIEW_SLOT_ATTR).Get()
         if slot is not None:
             used.add(slot)
@@ -2202,7 +2198,7 @@ def free_view_slot(stage: Usd.Stage, parent_path: str) -> int | None:
 def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> int | None:
     """The slot of a view already wired to this prim, if there is one."""
     for prim in stage.Traverse():
-        if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
+        if prim.GetTypeName() != CHUNK_TYPENAME or prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
             continue
         exec_in = prim.GetAttribute(EXEC_INPUT)
         if not (exec_in and exec_in.IsValid()):
@@ -2215,14 +2211,23 @@ def existing_view_slot_for(stage: Usd.Stage, target_prim_path: str) -> int | Non
 
 def _view_in_slot(stage: Usd.Stage, parent_path: str, slot: int) -> Usd.Prim | None:
     """The view holding `slot` in this container, or None."""
-    for prim in stage.Traverse():
-        if prim.GetAttribute(CHUNK_TYPE_ATTR).Get() != VIEW_MODULE:
-            continue
-        if str(prim.GetPath().GetParentPath()) != parent_path:
-            continue
+    for prim in _views_in(stage, parent_path):
         if prim.GetAttribute(VIEW_SLOT_ATTR).Get() == slot:
             return prim
     return None
+
+
+def _views_in(stage: Usd.Stage, parent_path: str):
+    """The view prims directly in one container.
+
+    Slots are per container, so only its children can hold one -- reading those, rather than
+    walking the whole stage for the few that match, keeps the cost to the graph's own size.
+    Children by the default predicate, the same prims Traverse would have reached there.
+    """
+    parent = stage.GetPrimAtPath(parent_path) if parent_path else None
+    for prim in parent.GetChildren() if parent else ():
+        if prim.GetTypeName() == CHUNK_TYPENAME and prim.GetAttribute(CHUNK_TYPE_ATTR).Get() == VIEW_MODULE:
+            yield prim
 
 
 def _rewire_view(stage: Usd.Stage, view_prim: Usd.Prim, target_prim_path: str) -> None:

@@ -188,7 +188,8 @@ def test_a_wire_survives_renaming_its_destination(graph):
 # -- view slots are per container ----------------------------------------------------------
 
 def _view_prim(stage, path, slot):
-    prim = stage.DefinePrim(path)
+    # Typed as the framework writes a view: the slot lookups only read Chunk prims.
+    prim = stage.DefinePrim(path, chunk_graph.CHUNK_TYPENAME)
     prim.CreateAttribute(chunk_graph.CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.String).Set(
         chunk_graph.VIEW_MODULE)
     prim.CreateAttribute(chunk_graph.VIEW_SLOT_ATTR, Sdf.ValueTypeNames.Int).Set(slot)

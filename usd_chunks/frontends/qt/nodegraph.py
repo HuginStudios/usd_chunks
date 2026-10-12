@@ -5508,6 +5508,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 return
             consumed: set = set()
             for prim in stage.Traverse():
+                if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+                    continue
                 exec_in = prim.GetAttribute(_EXEC_INPUT)
                 if exec_in.IsValid():
                     for conn in exec_in.GetConnections():
