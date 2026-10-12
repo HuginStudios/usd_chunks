@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 import pytest
-from pxr import Gf, Usd, UsdGeom, UsdShade, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
 from usd_chunks import chunk_registry, cook_cache, sim_bake
 from usd_chunks.chunk_scene import SceneSender
@@ -582,3 +582,123 @@ def test_too_small_a_max_piece_size_says_so(graph):
     readout = solver.get_param("readout").value
     assert "no piece is 0.05 or smaller at frame 10" in readout, readout
     assert "smallest is 0.20" in readout, readout
+
+
+def test_collider_spheres_fit_inside_flat_pieces():
+    """A slab 2 wide and 0.2 thick: a sphere as wide as the slab reached a metre past its
+    faces, into the sand lying on it, and threw that sand out of the sim."""
+    stage = Usd.Stage.CreateInMemory()
+    _box(stage, "/slab/Prototypes/piece", (-1.0, -1.0, -0.1), (1.0, 1.0, 0.1))
+    inst = UsdGeom.PointInstancer.Define(stage, "/slab")
+    inst.CreatePrototypesRel().SetTargets(["/slab/Prototypes/piece"])
+    inst.CreateProtoIndicesAttr().Set([0])
+    inst.CreatePositionsAttr().Set(Vt.Vec3fArray([(0, 0, 0)]))
+    radii = ps._sphere_track(stage.GetPrimAtPath("/slab"), 1, 1)[0][1]
+    assert radii[0] == pytest.approx(0.1)
+
+
+# ---------------------------------------------------------------------------
+# grains: small rocks instead of spheres
+# ---------------------------------------------------------------------------
+
+def _pebbles(stage):
+    """Two pebble meshes away from the origin, one 4 long, with a look of their own."""
+    UsdGeom.Xform.Define(stage, "/Pebbles")
+    long_one = _box(stage, "/Pebbles/long", (-1.0, 0.0, 0.0), (3.0, 1.0, 1.0))
+    _box(stage, "/Pebbles/small", (5.0, 5.0, 5.0), (5.5, 5.25, 5.25))
+    rock = UsdShade.Material.Define(stage, "/Looks/Rock")
+    UsdShade.MaterialBindingAPI.Apply(long_one.GetPrim()).Bind(rock)
+    return UsdShade.Material.Define(stage, "/Looks/Sand")
+
+
+def _grain_instancer(stage, count=200, seed=1):
+    positions = np.zeros((2, count, 3))
+    ps._author_sphere_instancer(stage, Sdf.Path("/Sand/Spheres"), positions, 0.05, Gf.Vec3f(1, 1, 1),
+                                "/Looks/Sand", 1, grains=ps._grain_sources(stage, "/Pebbles"), seed=seed)
+    return UsdGeom.PointInstancer(stage.GetPrimAtPath("/Sand/Spheres"))
+
+
+def test_grains_are_the_given_shapes_centred_and_one_unit_across():
+    stage = Usd.Stage.CreateInMemory()
+    sand = _pebbles(stage)
+    inst = _grain_instancer(stage)
+    protos = inst.GetPrototypesRel().GetTargets()
+    assert [p.name for p in protos] == ["Grain0", "Grain1"]
+    bbox = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    for path in protos:
+        box = bbox.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange()
+        assert np.asarray(box.GetMidpoint()) == pytest.approx(np.zeros(3), abs=1e-6)
+        assert max(box.GetSize()) == pytest.approx(1.0)
+        # The pebble's own look gives way to the material's.
+        shape = stage.GetPrimAtPath(path.AppendChild("Shape"))
+        assert shape.IsA(UsdGeom.Mesh)
+        bound, _ = UsdShade.MaterialBindingAPI(shape).ComputeBoundMaterial()
+        assert bound.GetPrim() == sand.GetPrim()
+
+
+def test_each_particle_is_a_random_grain_turned_and_sized_around_its_width():
+    stage = Usd.Stage.CreateInMemory()
+    _pebbles(stage)
+    inst = _grain_instancer(stage)
+    indices = np.asarray(inst.GetProtoIndicesAttr().Get())
+    assert set(np.unique(indices)) == {0, 1}
+    scales = np.asarray(inst.GetScalesAttr().Get())
+    assert scales.shape == (200, 3)
+    assert 0.06 <= scales.min() and scales.max() <= 0.15  # 0.6 to 1.5 times the 0.1 width
+    turns = inst.GetOrientationsAttr().Get()
+    assert len(turns) == 200 and len({str(q) for q in turns}) > 150
+    other = Usd.Stage.CreateInMemory()
+    _pebbles(other)
+    assert list(_grain_instancer(other).GetProtoIndicesAttr().Get()) == list(indices)  # each run
+
+
+def test_grains_survive_pruning_their_shapes():
+    """A Prune after the sand hides the pebbles from a renderer; the grains still draw."""
+    stage = Usd.Stage.CreateInMemory()
+    _pebbles(stage)
+    inst = _grain_instancer(stage)
+    stage.GetPrimAtPath("/Pebbles").SetActive(False)
+    for path in inst.GetPrototypesRel().GetTargets():
+        assert stage.GetPrimAtPath(path.AppendChild("Shape")).IsA(UsdGeom.Mesh)
+
+
+def test_grain_shapes_can_be_an_instancers_prototypes():
+    """A Fracture's pieces come as an instancer."""
+    stage = Usd.Stage.CreateInMemory()
+    _big_and_small(stage)
+    shapes = ps._grain_sources(stage, "/rock")
+    assert [str(p) for p, _box in shapes] == ["/rock/Prototypes/big", "/rock/Prototypes/small"]
+    assert [max(b.GetSize()) for _p, b in shapes] == pytest.approx([2.0, 0.2])
+
+
+def test_no_grain_shapes_is_spheres():
+    stage = Usd.Stage.CreateInMemory()
+    UsdShade.Material.Define(stage, "/Looks/Sand")
+    ps._author_sphere_instancer(stage, Sdf.Path("/Sand/Spheres"), np.zeros((2, 5, 3)), 0.05,
+                                Gf.Vec3f(1, 1, 1), "/Looks/Sand", 1, grains=ps._grain_sources(stage, "/Nope"))
+    assert stage.GetPrimAtPath("/Sand/Spheres/Prototypes/Particle").IsA(UsdGeom.Sphere)
+
+
+@needs_taichi
+def test_amount_turns_only_a_share_of_the_source_into_material(graph):
+    stage, make = graph
+    _floor(stage, "/floor", 100.0, 0.0)
+    _box(stage, "/tank", (-10, -10, 20), (10, 10, 30))
+    counts = {}
+    for amount in (1.0, 0.25):
+        sim = f"/Sim{int(amount * 100)}"
+        solver, module = _solver(make, source_prim="/tank", collision_path="/floor", sim_path=sim,
+                                 amount=amount, frame_count=2)
+        _press_run(solver, module)
+        counts[amount] = len(UsdGeom.Points(stage.GetPrimAtPath(f"{sim}/Particles")).GetPointsAttr().Get(1))
+    assert counts[0.25] == pytest.approx(counts[1.0] * 0.25, rel=0.15)
+
+
+def test_pieces_up_to_max_piece_size_are_never_colliders():
+    """The third piece appears at frame 10, after the handoff at 1: it is small, so like the
+    pieces that turned into material it gets no sphere, not one that pops up in the sand."""
+    stage = Usd.Stage.CreateInMemory()
+    rock = _big_and_small(stage)
+    track = ps._sphere_track(rock, 1, 10, exclude=np.asarray([False, True, False]), max_size=0.5)
+    assert track[9][1][2] == 0.0
+    assert track[9][1][0] > 0.9  # the big piece still is one

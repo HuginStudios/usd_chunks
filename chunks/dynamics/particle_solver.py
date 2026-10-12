@@ -923,6 +923,8 @@ class _Instances:
         origins = local_pos @ self.matrix[:3, :3] + self.matrix[3, :3]
         self.centres = origins + _qrot(self.world_q, self.centre_offset)
         self.radii = (extents[proto_idx] * scale).max(axis=1) * 0.5 * world_scale
+        #: Half the shortest side: a sphere that fits inside the piece, for colliding with it.
+        self.inner_radii = (extents[proto_idx] * scale).min(axis=1) * 0.5 * world_scale
 
     def arrays_for(self, centres, delta_q):
         """Instancer-local positions and orientations for instances whose geometry centres
@@ -945,7 +947,7 @@ def _time_varying(prim):
     return False
 
 
-def _sphere_track(prim, start_frame, frame_count, exclude=None):
+def _sphere_track(prim, start_frame, frame_count, exclude=None, max_size=0.0):
     """World-space (centres, radii) of a moving collider at every frame.
 
     An instancer -- the RBD Solver's usual bake -- is one sphere per instance. Anything else
@@ -955,6 +957,10 @@ def _sphere_track(prim, start_frame, frame_count, exclude=None):
     A hidden instance is not there -- an RBD bake parks every piece a break has not made yet
     -- and neither is one in `exclude`, an instance that turned into the material itself:
     both get no sphere, or the material would pile up against pieces nobody can see.
+
+    With `max_size`, no piece that small is a collider, at any frame: the bits that turned
+    into material keep breaking in the bake, and each new piece's sphere popped up inside
+    the material and threw it.
     """
     track = []
     # Measured once: the instances move, their prototypes do not. Per frame, 1,464 Fracture
@@ -964,9 +970,14 @@ def _sphere_track(prim, start_frame, frame_count, exclude=None):
         tc = Usd.TimeCode(start_frame + f)
         if bounds is not None:
             inst = _Instances(prim, tc, bounds)
-            radii = np.where(inst.visible, inst.radii, 0.0)
+            # A sphere inside each piece, not around it: one as wide as a piece's longest side
+            # reached into its neighbours in a pile, and shoved the material that started there
+            # out at speed.
+            radii = np.where(inst.visible, inst.inner_radii, 0.0)
             if exclude is not None and len(exclude) == len(radii):
                 radii = np.where(exclude, 0.0, radii)
+            if max_size > 0.0:
+                radii = np.where(inst.radii * 2.0 <= max_size, 0.0, radii)
             track.append((inst.centres, radii))
             continue
         rng = UsdGeom.BBoxCache(tc, [UsdGeom.Tokens.default_]).ComputeWorldBound(prim).ComputeAlignedRange()
@@ -1112,25 +1123,97 @@ def _bind_material(stage, prim, material_path):
         UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
 
 
-def _author_sphere_instancer(stage, path, positions, radius, colour, material_path, start_frame):
-    """The particles again, as instanced spheres.
+def _grain_sources(stage, path):
+    """The shapes to draw grains with, and their bounds, read on `stage`.
+
+    An instancer's prototypes, or every mesh under a prim. Read upstream: a Prune after
+    this chunk deactivates the shapes, and an inactive prim has no children to find.
+
+    Returns:
+        (path, Gf.Range3d) per shape, bounds in its parent's space; shapes with none left out.
+    """
+    prim = stage.GetPrimAtPath(path) if path else None
+    if not prim or not prim.IsValid():
+        return []
+    if prim.IsA(UsdGeom.PointInstancer):
+        prims = [stage.GetPrimAtPath(t) for t in UsdGeom.PointInstancer(prim).GetPrototypesRel().GetTargets()]
+    else:
+        prims = [p for p in Usd.PrimRange(prim) if p.IsA(UsdGeom.Mesh)]
+    bbox = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+    shapes = []
+    for shape in prims:
+        box = bbox.ComputeLocalBound(shape).ComputeAlignedRange() if shape else Gf.Range3d()
+        if not box.IsEmpty() and max(box.GetMax() - box.GetMin()) > 0.0:
+            shapes.append((shape.GetPath(), box))
+    return shapes
+
+
+def _grain_prototypes(stage, protos_path, shapes, material_path):
+    """One prototype per grain shape, centred and one unit across.
+
+    Each is a reference to the shape, under an Xform that moves its middle to the origin and
+    scales its longest side to 1, so a grain's own scale is its size. A reference keeps no
+    copy, and still composes when the shape is pruned. The material is bound stronger than
+    whatever the shape brought, so the grains look like the rest of the material.
+
+    Args:
+        shapes: (path, bounds) pairs, from _grain_sources.
+
+    Returns:
+        The prototype paths.
+    """
+    material = UsdShade.Material(stage.GetPrimAtPath(material_path)) if material_path else None
+    paths = []
+    for k, (source, box) in enumerate(shapes):
+        root = UsdGeom.Xform.Define(stage, protos_path.AppendChild(f"Grain{k}"))
+        root.AddScaleOp().Set(Gf.Vec3f(1.0 / max(box.GetMax() - box.GetMin())))
+        root.AddTranslateOp().Set(-(box.GetMax() + box.GetMin()) * 0.5)
+        # Untyped: a type here would override the Mesh the reference brings.
+        stage.DefinePrim(root.GetPath().AppendChild("Shape")).GetReferences().AddInternalReference(source)
+        if material:
+            UsdShade.MaterialBindingAPI.Apply(root.GetPrim()).Bind(
+                material, UsdShade.Tokens.strongerThanDescendants)
+        paths.append(root.GetPath())
+    return paths
+
+
+def _author_sphere_instancer(stage, path, positions, radius, colour, material_path, start_frame,
+                             grains=(), seed=0):
+    """The particles again, as instanced spheres -- or as small rocks, given grain shapes.
 
     V-Ray draws a UsdGeom.Points cloud as a single point however wide the points are, and a
     material cannot fix that -- so anything meant to be rendered rather than looked at in
     Storm needs real geometry. One sphere prototype, instanced per particle, which is what
     every delegate here draws and shades properly.
+
+    With `grains` (from _grain_sources) each particle is one of those instead: picked, turned
+    and sized at random around a sphere's width, so sand reads as grit and pebbles, not balls.
+    Fixed per particle by `seed`, so a rerun looks the same.
     """
     instancer = UsdGeom.PointInstancer.Define(stage, path)
-    proto_path = path.AppendChild("Prototypes").AppendChild("Particle")
-    sphere = UsdGeom.Sphere.Define(stage, proto_path)
-    sphere.GetRadiusAttr().Set(float(radius))
-    sphere.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(-radius, -radius, -radius),
-                                                 Gf.Vec3f(radius, radius, radius)]))
-    UsdGeom.Primvar(sphere.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
-    sphere.GetDisplayColorAttr().Set(Vt.Vec3fArray([colour]))
-    _bind_material(stage, sphere.GetPrim(), material_path)
-    instancer.CreatePrototypesRel().SetTargets([proto_path])
-    instancer.CreateProtoIndicesAttr().Set(Vt.IntArray([0] * positions.shape[1]))
+    count = positions.shape[1]
+    protos = _grain_prototypes(stage, path.AppendChild("Prototypes"), grains, material_path) if grains else []
+    if protos:
+        rng = np.random.default_rng(seed)
+        instancer.CreatePrototypesRel().SetTargets(protos)
+        instancer.CreateProtoIndicesAttr().Set(Vt.IntArray(rng.integers(0, len(protos), count).tolist()))
+        q = rng.normal(size=(count, 4))
+        q /= np.linalg.norm(q, axis=1, keepdims=True)
+        instancer.CreateOrientationsAttr().Set(
+            Vt.QuathArray([Gf.Quath(float(w), float(x), float(y), float(z)) for w, x, y, z in q]))
+        sizes = np.repeat((2.0 * radius * rng.uniform(0.6, 1.5, count))[:, None], 3, axis=1)
+        instancer.CreateScalesAttr().Set(Vt.Vec3fArray.FromNumpy(sizes.astype(np.float32)))
+    else:
+        proto_path = path.AppendChild("Prototypes").AppendChild("Particle")
+        sphere = UsdGeom.Sphere.Define(stage, proto_path)
+        sphere.GetRadiusAttr().Set(float(radius))
+        sphere.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(-radius, -radius, -radius),
+                                                     Gf.Vec3f(radius, radius, radius)]))
+        UsdGeom.Primvar(sphere.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        sphere.GetDisplayColorAttr().Set(Vt.Vec3fArray([colour]))
+        _bind_material(stage, sphere.GetPrim(), material_path)
+        instancer.CreatePrototypesRel().SetTargets([proto_path])
+        instancer.CreateProtoIndicesAttr().Set(Vt.IntArray([0] * count))
     frames = np.ascontiguousarray(positions, dtype=np.float32)
     sim_bake.write_samples(instancer.CreatePositionsAttr(),
                            ((start_frame + f, Vt.Vec3fArray.FromNumpy(frames[f])) for f in range(len(frames))),
@@ -1347,6 +1430,12 @@ def _run(owner, notice, sender):
         source, spacing, blob_radius, rng, start_time,
         shape=node.get_param("instance_fill", is_s).value == _FILL_SHAPE, only=chosen)
     subsampled = ""
+    # A share of the source's volume. With Hide Source off, a little reads as grit and dust
+    # coming off pieces that stay, rather than a piece-sized blob beside each one.
+    amount = node.get_param("amount", is_f).value
+    if 0.0 < amount < 1.0 and len(particles_w):
+        keep = rng.random(len(particles_w)) < amount
+        particles_w, blob_ids = particles_w[keep], blob_ids[keep]
     if len(particles_w) > max_particles:
         keep = np.sort(rng.choice(len(particles_w), max_particles, replace=False))
         subsampled = f" (thinned from {len(particles_w)})"
@@ -1386,7 +1475,8 @@ def _run(owner, notice, sender):
     sphere_frames = None
     if moving_prims:
         tracks = [_sphere_track(p, start_frame, frame_count,
-                                exclude=chosen if p.GetPath() == source.GetPath() else None)
+                                exclude=chosen if p.GetPath() == source.GetPath() else None,
+                                max_size=max_size if p.GetPath() == source.GetPath() else 0.0)
                   for p in moving_prims]
         sphere_frames = []
         for f in range(frame_count):
@@ -1477,8 +1567,10 @@ def _run(owner, notice, sender):
             _bind_material(stage, cloud.GetPrim(), material_path)
 
             if node.get_param("render_as", is_s).value == _AS_SPHERES:
+                grains = _grain_sources(upstream, node.get_param("grain_prim", is_s).value.strip())
                 _author_sphere_instancer(stage, sim_path.AppendChild("ParticleSpheres"), positions,
-                                         width * 0.5, colour, material_path, start_frame)
+                                         width * 0.5, colour, material_path, start_frame,
+                                         grains=grains, seed=seed)
 
             if node.get_param("hide_source", chunk.is_param_t(bool)).value:
                 if chosen is not None:
@@ -1696,6 +1788,11 @@ def main():
         "scene units) turn into material; the bigger ones stay as they are -- the big pieces "
         "of a breaking rock stay rigid and the small bits crumble to sand. 0 = every instance.",
     ))
+    chunk_api.add_param(chunk.Spinbox(
+        "amount", "Amount", default_value=1.0, min_value=0.0, max_value=1.0,
+        tooltip="The share of the source's volume that becomes material, 0 to 1. With Hide "
+        "Source off, a little (0.2) reads as grit and dust coming off the pieces.",
+    ))
     chunk_api.add_param(chunk.Checkbox(
         "inherit_motion", "Inherit Motion", default_value=False,
         tooltip="An animated instancer (an RBD bake): each ball of material starts with the "
@@ -1816,6 +1913,12 @@ def main():
         "displayColor is a viewport fallback, not a shader.",
     )
     out.add_param(material)
+    out.add_param(chunk.LineEdit(
+        "grain_prim", "Grain Shapes", flags=_PF.LABELED | _PF.PRIM_SELECTION,
+        tooltip="Optional, with Instanced Spheres. Small rocks to draw instead of spheres: a "
+        "PointInstancer (its prototypes) or a prim (every mesh under it). Each particle gets "
+        "one at random, turned and sized at random, with the Material above.",
+    ))
     out.add_param(chunk.Spinbox(
         "surface_spacing", "Surface Spacing", default_value=0.0,
         tooltip="Distance between Surface Points, in scene units. 0 = four particle spacings. "
