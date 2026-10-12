@@ -716,7 +716,7 @@ def _glob_root(pattern: str) -> str:
     return "/" + "/".join(fixed)
 
 
-def resolve_prim_paths(stage, location_str):
+def resolve_prim_paths(stage, location_str, include_inactive=False):
     """Split location_str on whitespace/commas and expand glob patterns and collection refs.
 
     Globs follow glob_to_regex. For example:
@@ -736,9 +736,15 @@ def resolve_prim_paths(stage, location_str):
     a prim that only exists in "red" is not on the stage until "red" is; the selection
     is put back afterwards. A glob cannot precede a selection: /a*{x=1}/b has no anchor.
 
+    A glob matches active prims only, unless include_inactive: then a deactivated prim
+    matches too (its children are not on the stage, so nothing under it does). That is
+    for a pick list like a scatter's prototype library, whose entries are deactivated so
+    they are not drawn and come alive only where they are referenced.
+
     Args:
         stage: The stage to resolve against.
         location_str: The paths, patterns and collection refs.
+        include_inactive: Let a glob match deactivated prims as well.
 
     Returns:
         The resolved prim paths.
@@ -763,7 +769,10 @@ def resolve_prim_paths(stage, location_str):
             # the rest of the stage is neither read nor paid for -- and a chunk whose target
             # is /World/objects/cube_* reads /World/objects, not the whole scene (skip_cook).
             root = stage.GetPrimAtPath(_glob_root(pattern))
-            for prim in Usd.PrimRange(root) if root else ():
+            predicate = Usd.PrimIsDefined & Usd.PrimIsLoaded & ~Usd.PrimIsAbstract
+            if not include_inactive:
+                predicate = predicate & Usd.PrimIsActive
+            for prim in Usd.PrimRange(root, predicate) if root else ():
                 if rx.match(prim.GetPath().pathString):
                     matched.append(prim.GetPath().pathString)
         paths.extend(_with_variant_selections(path, selections) for path in matched)
