@@ -116,6 +116,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- The Particle Solver imports Taichi when it first simulates, not when it loads. Blender
+  loads every chunk to make its node types, so New Chunk Network is about a second faster.
 - Chunks talk to each other only through wires: an exec input or an `@Node.param@`
   expression. A change no longer sends notices to the chunks wired below it; they are
   marked dirty and cooked. A callback can't listen to another chunk's param, and
