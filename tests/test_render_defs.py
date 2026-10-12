@@ -142,6 +142,18 @@ class TestGrouping:
         assert isinstance(groups["Bake"], list)
         assert len(groups["Bake"]) == 14
 
+    def test_a_level_everything_shares_gives_way_to_the_next(self):
+        """V-Ray's IPR overrides are all vray:settings:viewport:*. A "settings" group
+        holding only "viewport" sat flat beside the real Settings; the deeper name is the
+        specific one, so it takes the group's place and its contents nest as usual."""
+        props = [self._prop(f"vray:settings:viewport:SettingsGI_{i}") for i in range(5)]
+        props += [self._prop(f"vray:settings:viewport:SettingsRTEngine_{i}") for i in range(5)]
+        groups = render_defs.group_props(props)
+
+        assert "settings" not in groups
+        assert set(groups["viewport"]) == {"SettingsGI", "SettingsRTEngine"}
+        assert [p.label for p in groups["viewport"]["SettingsGI"]][0] == "0"
+
     def test_nesting_stops_at_max_depth(self):
         deep = [self._prop("vray:" + "_".join(f"s{d}" for d in range(8)) + f"_{i}") for i in range(20)]
         groups = render_defs.group_props(deep)
