@@ -2481,8 +2481,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if raw is None:
                     continue
                 is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-                type_source = getattr(param, 'default_value', None) if is_expr else raw
-                sdf_type = _SDF_TYPE_MAP.get(type(type_source))
+                sdf_type = param_sdf_type(param)
                 if sdf_type is None:
                     continue
                 backing_path = getattr(param, '_param_attr_path', None)
@@ -2507,6 +2506,17 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             for vec_path, vector in _iter_chunk_vectors(chunk):
                 real_path = getattr(vector, '_param_attr_path', None)
                 if not real_path:
+                    # Not bound yet, so the vector alone holds a value set before the chunk
+                    # joined the scene (a script's create(), a menu preset) -- the same as an
+                    # unbound scalar above.
+                    if vector.has_flag(ChunkFlags.ParamFlags.OUTPUT) or vector.value == vector.default_value:
+                        continue
+                    sdf_type = param_sdf_type(vector)
+                    if sdf_type is None:
+                        continue
+                    attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}", sdf_type, custom=False)
+                    if not attr.Get():
+                        attr.Set(chunk_utils.as_attr_value(attr, vector.value))
                     continue
                 real_attr = self._stage.GetAttributeAtPath(Sdf.Path(real_path))
                 if not (real_attr and real_attr.IsValid()):
