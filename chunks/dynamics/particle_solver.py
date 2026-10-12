@@ -25,6 +25,7 @@ Requires: pxr (OpenUSD), usd_chunks, taichi, numpy.
 # No `from __future__ import annotations`: it turns the kernels' `ti.f32` hints into strings,
 # which Taichi refuses to compile.
 
+import importlib.util
 import logging
 import math
 import sys
@@ -38,8 +39,16 @@ from usd_chunks import chunk, chunk_registry, chunk_stage, sim_bake
 logger = logging.getLogger(__name__)
 
 
+#: taichi, once `_import_taichi` has run. Not imported when the chunk loads: that takes 2-4 s,
+#: and Blender loads every chunk to make its node types, so each New Chunk Network paid it
+#: with no sim in sight. A bake solves in its own process and imports it there.
+ti = None
+#: Whether taichi is installed. Looking up its spec imports nothing.
+_HAS_TAICHI = importlib.util.find_spec("taichi") is not None
+
+
 def _import_taichi():
-    """Import taichi, once, retrying from clean if it comes back half-built.
+    """Import taichi into `ti`, once, retrying from clean if it comes back half-built.
 
     Importing it runs taichi's own logger, which asks `inspect` which module it was called
     from -- and `inspect` walks sys.modules, touching every chunk module the registry
@@ -47,24 +56,27 @@ def _import_taichi():
     import, say) aborts taichi's import part-way, and what is left in sys.modules is a
     `taichi` with no `lang` attribute that every later import happily returns. Dropping the
     partial modules and importing again gets a whole one.
+
+    Returns:
+        The taichi module, or None if it cannot be imported.
     """
+    global ti
+    if ti is not None:
+        return ti
     try:
         import taichi
-        return taichi
+        ti = taichi
     except Exception:  # noqa: BLE001 - a half-built taichi raises AttributeError, not ImportError
         for name in [n for n in sys.modules if n == "taichi" or n.startswith("taichi.")]:
             del sys.modules[name]
         try:
             import taichi
-            return taichi
+            ti = taichi
         except Exception:  # noqa: BLE001
             logger.warning("taichi could not be imported; the Particle Solver cannot simulate",
                            exc_info=True)
-            return None
+    return ti
 
-
-ti = _import_taichi()
-_HAS_TAICHI = ti is not None
 
 #: Cached by `_mpm_class`, which compiles nothing -- it only defines the kernels.
 _MPM_CLASS = None
@@ -107,7 +119,7 @@ def _mpm_class():
     """The solver class, built the first time it is needed.
 
     A module-level `@ti.data_oriented class` would need taichi imported at module scope --
-    see `_HAS_TAICHI`.
+    see `ti`.
     """
     global _MPM_CLASS
     if _MPM_CLASS is not None:
@@ -438,7 +450,7 @@ def simulate(particles, velocity, material, *, n_grid=64, stiffness=0.0, frictio
     (frames, T, 3), `tracer_rotations` (frames, T, 4) as w-x-y-z world-space deltas, and the
     `substeps` actually used. Frame 0 is the starting state.
     """
-    if not _HAS_TAICHI:
+    if _import_taichi() is None:
         raise RuntimeError("taichi is not installed. Run: pip install taichi")
 
     particles = np.ascontiguousarray(particles, dtype=np.float32).reshape(-1, 3)
