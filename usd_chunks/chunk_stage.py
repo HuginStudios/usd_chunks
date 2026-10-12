@@ -5660,9 +5660,15 @@ def _exec_consumers(stage: Usd.Stage) -> dict[str, set[str]]:
     Every slot: a chunk feeding a merge's slot 2 is as consumed as one feeding slot 0, and
     calling it a tail would wire a view to the middle of a live branch. One traversal,
     shared by exec_downstream and exec_tails.
+
+    Only Chunk prims carry exec inputs, so everything else is skipped on its type name:
+    reading the attributes of every scene prim (a landscape's thousands) on each call was
+    seconds of a scatter-heavy cook, as every Scatter asks for its upstream stage.
     """
     consumers: dict[str, set[str]] = {}
     for prim in stage.Traverse():
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            continue
         path = str(prim.GetPath())
         for conn in exec_input_connections(prim):
             consumers.setdefault(str(conn.GetPrimPath()), set()).add(path)
