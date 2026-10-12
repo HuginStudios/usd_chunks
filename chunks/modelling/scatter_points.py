@@ -1588,7 +1588,7 @@ def _proto_label(path, selections):
     return name
 
 
-def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=False):
+def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=False, drop_purpose=None):
     """Author one prototype prim per _Proto under <inst_path>/Prototypes.
 
     Each is an internal reference to the source prim with its xformOpOrder cleared (the
@@ -1597,7 +1597,8 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
     reference takes the source as authored, active = false included, so the prototype is
     always switched on: a library of deactivated entries is never drawn itself, only
     through the prototypes that use it. hide_sources deactivates each source that resolved
-    (in the edit target), short of one that holds the instancer.
+    (in the edit target), short of one that holds the instancer. drop_purpose deactivates
+    whatever inside a prototype is authored with that purpose (see _drop_purpose).
 
     Returns the prototypes that actually resolved; an empty result means the caller should
     fall back to the default cube.
@@ -1633,6 +1634,8 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
 
         proto.path = path
         _measure_proto(proto, ref_prim, src)
+        if drop_purpose:
+            _drop_purpose(ref_prim, drop_purpose)
         resolved.append(proto)
 
     if hide_sources:
@@ -1649,6 +1652,27 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
         fallback = _Proto(label="cube (default)", path=path)
         resolved.append(fallback)
     return resolved
+
+
+def _drop_purpose(prim, purpose):
+    """Deactivate the prims under prim authored with this purpose.
+
+    With a viewport proxy the render instancer is purpose=render and its sibling
+    purpose=proxy, but an asset that carries its own render/proxy split keeps both meshes
+    in every prototype. USD says the instancer's purpose wins over theirs; Hydra resolves
+    purpose inside the prototype, where the asset's own wins -- so Storm drew the render
+    instancer's proxy meshes (every instance, the whole cost the proxy was meant to cut), and
+    a Hydra renderer would draw the proxy instancer's render meshes too. Each instancer
+    therefore keeps only the half of the asset its purpose is for.
+    """
+    doomed = [
+        p for p in Usd.PrimRange(prim)
+        if p != prim and p.IsA(UsdGeom.Imageable)
+        and (attr := UsdGeom.Imageable(p).GetPurposeAttr()).HasAuthoredValue()
+        and attr.Get() == purpose
+    ]
+    for p in doomed:
+        p.SetActive(False)
 
 
 def _author_proxy(stage, proxy_path, mode, protos, specs, scratch_stage, keep, arrays):
@@ -1672,6 +1696,9 @@ def _author_proxy(stage, proxy_path, mode, protos, specs, scratch_stage, keep, a
             path = f"{proxy_path}/Prototypes/proto_{i}"
             box = UsdGeom.Cube.Define(stage, path)
             box.GetSizeAttr().Set(1.0)
+            # A box authored on an earlier cook into a layer nobody cleared keeps its ops;
+            # cleared first, so adding them again reuses the attributes rather than raising.
+            box.ClearXformOpOrder()
             centre = (proto.bmin + proto.bmax) * 0.5
             size = proto.bmax - proto.bmin
             box.AddTranslateOp().Set(Gf.Vec3d(centre[0], centre[1], centre[2]))
@@ -1680,7 +1707,8 @@ def _author_proxy(stage, proxy_path, mode, protos, specs, scratch_stage, keep, a
     else:
         # Copies: _author_prototypes writes the path it authored back onto each spec, and
         # the render instancer's protos must keep theirs.
-        proxies = _author_prototypes(stage, proxy_path, [replace(s) for s in specs], scratch_stage)
+        proxies = _author_prototypes(stage, proxy_path, [replace(s) for s in specs], scratch_stage,
+                                     drop_purpose=UsdGeom.Tokens.render)
         targets = [Sdf.Path(p.path) for p in proxies]
     proxy.GetPrototypesRel().SetTargets(targets)
 
@@ -2042,7 +2070,8 @@ def execute(node):
     with Usd.EditContext(stage, layer):
         instancer = UsdGeom.PointInstancer.Define(stage, inst_path)
         protos = _author_prototypes(
-            stage, inst_path, specs, scratch_stage, hide_sources=bool(node.get_param("hide_sources").value)
+            stage, inst_path, specs, scratch_stage, hide_sources=bool(node.get_param("hide_sources").value),
+            drop_purpose=UsdGeom.Tokens.proxy if proxy_mode != "Off" else None,
         )
         instancer.GetPrototypesRel().SetTargets([Sdf.Path(p.path) for p in protos])
 
