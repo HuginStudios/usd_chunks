@@ -13,7 +13,26 @@ from __future__ import annotations
 import numpy as np
 from pxr import Usd, UsdGeom
 
-_OFFSETS = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)]
+from usd_chunks.cell_runs import CellRuns, segment_starts
+
+# A cell (x, y, z) as one integer, so cells sort and look up as a flat array. Signed digits,
+# so a neighbour's id is the cell's id plus the offset's -- and two cells only collide past a
+# million cells out, which can only add a far source to a neighbourhood, never drop one.
+_STRIDE = 1 << 21
+
+
+def _cell_ids(cells):
+    return (cells[..., 0] * _STRIDE + cells[..., 1]) * _STRIDE + cells[..., 2]
+
+
+def _ring(ring):
+    """The ids of the cell offsets within *ring* cells, the cell itself included."""
+    span = np.arange(-ring, ring + 1, dtype=np.int64)
+    return _cell_ids(np.stack(np.meshgrid(span, span, span, indexing="ij"), axis=-1).reshape(-1, 3))
+
+
+_OFFSETS = _ring(1)
+
 
 
 def _smoothstep(t):
@@ -42,58 +61,84 @@ class Proximity:
         self._inside, self._outside = float(inside), float(outside)
         # A source reaches at most one cell, so a point only looks at its 27 neighbours.
         self._cell = float(max(self._r.max(initial=0.0), self._c.max(initial=0.0)))
-        self._grid: dict = {}
-        if self._cell > 1e-9:
-            for i, k in enumerate(map(tuple, np.floor(self._sources / self._cell).astype(np.int64))):
-                self._grid.setdefault(k, []).append(i)
-        # A cell's 27-neighbourhood of sources, merged on first use and kept: a scatter asks
-        # about the same cells batch after batch, and rebuilding the lists each time was a
-        # million small list builds on one road shot.
-        self._neighbourhoods: dict = {}
+        # The sources by cell: a neighbourhood is then a handful of runs of one sorted order.
+        self._runs = None
+        if self._cell > 1e-9 and len(self._sources):
+            self._runs = CellRuns(_cell_ids(np.floor(self._sources / self._cell).astype(np.int64)))
+        # One radius and one clear radius for every source: the weight then only falls with
+        # distance, so the nearest source alone decides it (_nearest).
+        self._uniform = bool(len(self._r)) and np.ptp(self._r) == 0.0 and np.ptp(self._c) == 0.0
+        self._tree = None  # _nearest's KD-tree, built on first use; False without scipy
 
     def _flatten(self, p):
         return p if self._up is None else p - np.outer(p @ self._up, self._up)
 
-    def _neighbourhood(self, key):
-        found = self._neighbourhoods.get(key)
-        if found is None:
-            kx, ky, kz = key
-            found = np.asarray([i for dx, dy, dz in _OFFSETS for i in self._grid.get((kx + dx, ky + dy, kz + dz), ())],
-                               dtype=np.int64)
-            self._neighbourhoods[key] = found
-        return found
+    def _nearest(self, points, bound):
+        """(distance, source) of each of (N, 3) flattened *points*' nearest source within
+        *bound*, the source len(sources) where there is none -- or None when the sources'
+        radii differ, or scipy is not there, and every source in reach has to be weighed.
+
+        A road's vertices put hundreds of sources in reach of every candidate; weighing them
+        all was most of a Grow Near edit on a verge, where one KD query answers the same.
+        """
+        if not self._uniform:
+            return None
+        if self._tree is None:
+            try:
+                from scipy.spatial import cKDTree
+            except ImportError:  # scipy is optional: every source in reach is weighed instead
+                self._tree = False
+            else:
+                self._tree = cKDTree(self._sources)
+        if self._tree is False:
+            return None
+        return self._tree.query(points, k=1, distance_upper_bound=bound)
+
+    def _neighbourhoods(self, points, offsets):
+        """The sources around each of (N, 3) *points*, as CellRuns.lookup gives them."""
+        return self._runs.lookup(_cell_ids(np.floor(points / self._cell).astype(np.int64)), offsets)
+
+    def _weights(self, d, near):
+        """(g, h) at distances *d* from the sources *near* (same shape): g, how far inside
+        each source's radius; h, how clear of its trunk."""
+        r, c = self._r[near], self._c[near]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # 1 inside radius x (1 - softness), 0 past radius, smooth between.
+            g = np.where(r > 0, _smoothstep((r - d) / (r * self._soft)), 0.0)
+            # 0 on the trunk, back to 1 over the outer quarter of the clear radius.
+            h = np.where(c > 0, _smoothstep((d - 0.75 * c) / (0.25 * c)), 1.0)
+        return g, h
 
     def sample_many(self, points):
         """The weight at (N, 3) *points*, in 0..1.
 
-        Per cell of points, against that cell's (cached) neighbourhood of sources. Not one
-        padded (N, widest) array: road vertices pack ~1500 into some neighbourhoods, and
-        padding every candidate on a 500 m terrain to that width was 22x slower than this.
+        Each point against the sources in its cell's 27 neighbours, as flat (point, source)
+        pairs -- a Python loop per cell of points was most of a Grow Near scatter's cook,
+        thousands of cells a batch on a 500 m terrain -- except dense cells, taken whole.
         """
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         out = np.full(len(points), self._outside)
-        if not len(points) or not self._grid:
+        if not len(points) or self._runs is None:
             return np.clip(out, 0.0, 1.0)
         points = self._flatten(points)
-        keys = np.floor(points / self._cell).astype(np.int64)
-        uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
-        inverse = inverse.reshape(-1)
-        order = np.argsort(inverse, kind="stable")
-        bounds = np.searchsorted(inverse[order], np.arange(len(uniq) + 1))
         span = self._inside - self._outside
-        for u, key in enumerate(map(tuple, uniq.tolist())):
-            near = self._neighbourhood(key)
-            if not len(near):
-                continue
-            rows = order[bounds[u]:bounds[u + 1]]
-            d = np.linalg.norm(points[rows, None, :] - self._sources[None, near, :], axis=2)
-            r, c = self._r[near], self._c[near]
-            with np.errstate(divide="ignore", invalid="ignore"):
-                # 1 inside radius x (1 - softness), 0 past radius, smooth between.
-                g = np.where(r > 0, _smoothstep((r - d) / (r * self._soft)), 0.0)
-                # 0 on the trunk, back to 1 over the outer quarter of the clear radius.
-                h = np.where(c > 0, _smoothstep((d - 0.75 * c) / (0.25 * c)), 1.0)
+        if (nearest := self._nearest(points, self._cell)) is not None:
+            d, near = nearest
+            found = near < len(self._sources)
+            g, h = self._weights(d[found], near[found])
+            out[found] = (self._outside + span * g) * h
+            return np.clip(out, 0.0, 1.0)
+        inverse, lo, runs = self._neighbourhoods(points, _OFFSETS)
+        sparse, whole = CellRuns.split(inverse, runs)
+        for rows, u in whole:
+            near = self._runs.members(lo[u], runs[u])
+            g, h = self._weights(np.linalg.norm(points[rows, None, :] - self._sources[None, near, :], axis=2), near)
             out[rows] = (self._outside + span * g.max(axis=1)) * h.min(axis=1)
+        for rows, near in self._runs.pairs(sparse, inverse, lo, runs):
+            g, h = self._weights(np.linalg.norm(points[rows] - self._sources[near], axis=1), near)
+            # Pairs come point by point, so each point's are one run.
+            first = segment_starts(rows)
+            out[rows[first]] = (self._outside + span * np.maximum.reduceat(g, first)) * np.minimum.reduceat(h, first)
         return np.clip(out, 0.0, 1.0)
 
     def within_reach(self, points, pad=None):
@@ -104,25 +149,24 @@ class Proximity:
         points = self._flatten(np.asarray(points, dtype=np.float64).reshape(-1, 3))
         pad = np.zeros(len(points)) if pad is None else np.asarray(pad, dtype=np.float64)
         out = np.zeros(len(points), dtype=bool)
-        if not len(points) or not self._grid:
+        if not len(points) or self._runs is None:
+            return out
+        if (nearest := self._nearest(points, float(self._r[0] + pad.max()) * (1.0 + 1e-9))) is not None:
+            d, near = nearest
+            found = near < len(self._sources)
+            out[found] = d[found] <= self._r[0] + pad[found]
             return out
         # Pads can exceed a cell, so look as many cells out as the largest one needs.
         ring = int(np.ceil((self._cell + float(pad.max())) / self._cell))
-        offsets = [(dx, dy, dz) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1)
-                   for dz in range(-ring, ring + 1)]
-        keys = np.floor(points / self._cell).astype(np.int64)
-        uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
-        inverse = inverse.reshape(-1)
-        order = np.argsort(inverse, kind="stable")
-        bounds = np.searchsorted(inverse[order], np.arange(len(uniq) + 1))
-        for u, (kx, ky, kz) in enumerate(uniq.tolist()):
-            near = [i for dx, dy, dz in offsets for i in self._grid.get((kx + dx, ky + dy, kz + dz), ())]
-            if not near:
-                continue
-            rows = order[bounds[u]:bounds[u + 1]]
-            near = np.asarray(near)
+        inverse, lo, runs = self._neighbourhoods(points, _ring(ring))
+        sparse, whole = CellRuns.split(inverse, runs)
+        for rows, u in whole:
+            near = self._runs.members(lo[u], runs[u])
             d = np.linalg.norm(points[rows, None, :] - self._sources[None, near, :], axis=2)
             out[rows] = (d <= self._r[near][None, :] + pad[rows, None]).any(axis=1)
+        for rows, near in self._runs.pairs(sparse, inverse, lo, runs):
+            d = np.linalg.norm(points[rows] - self._sources[near], axis=1)
+            out[rows[d <= self._r[near] + pad[rows]]] = True
         return out
 
     def sample(self, point, normal=None):

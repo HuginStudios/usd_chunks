@@ -331,17 +331,47 @@ class _AvoidSet:
         self._base = distance
         # One cell spans the furthest a point can reach, so a query only ever looks one cell out.
         self._cell = max(self._dist + extra_max, 1e-6)
-        self._grid: dict = {}
-        for p, r in zip(points, radii):
-            self._grid.setdefault(self._key(p), []).append((p, r))
+        self._points, self._radii = points, radii
+        # Each built on first use: the grid by near(), the tree by near_many().
+        self._grid: dict | None = None
+        self._tree = None
 
     def _key(self, pt):
         c = self._cell
         return (math.floor(pt[0] / c), math.floor(pt[1] / c), math.floor(pt[2] / c))
 
+    def near_many(self, pts, extra, kdtree):
+        """near() for (N, 3) *pts*, each with its own *extra*, through a *kdtree* (scipy's
+        cKDTree) of the points: the same test, as one query rather than a call per point."""
+        out = np.zeros(len(pts), dtype=bool)
+        if self._dist <= 0.0 or not len(self._points) or not len(pts):
+            return out
+        if self._tree is None:
+            self._tree = kdtree(self._points)
+        ext = np.maximum(extra, 0.0)
+        reach = self._dist + ext
+        # A hair wider than reach, so the query's own rounding can't drop a point the exact
+        # test below would keep.
+        hits = self._tree.query_ball_point(pts, reach * (1.0 + 1e-9))
+        counts = np.fromiter(map(len, hits), dtype=np.int64, count=len(hits))
+        if not counts.sum():
+            return out
+        flat = np.fromiter(itertools.chain.from_iterable(hits), dtype=np.int64, count=int(counts.sum()))
+        owner = np.repeat(np.arange(len(pts)), counts)
+        q, e = pts[owner], self._points[flat]
+        d2 = (q[:, 0] - e[:, 0]) ** 2 + (q[:, 1] - e[:, 1]) ** 2 + (q[:, 2] - e[:, 2]) ** 2
+        lim = reach[owner] * reach[owner]
+        bad = (d2 < lim) & (d2 < (self._base + self._radii[flat] + ext[owner]) ** 2)
+        out[owner[bad]] = True
+        return out
+
     def near(self, pt, extra=0.0):
         if self._dist <= 0.0:
             return False
+        if self._grid is None:
+            self._grid = {}
+            for p, r in zip(self._points, self._radii):
+                self._grid.setdefault(self._key(p), []).append((p, r))
         reach = self._dist + max(extra, 0.0)
         r = int(math.ceil(reach / self._cell))
         kx, ky, kz = self._key(pt)
@@ -456,13 +486,13 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
     # reaches: searching every neighbour out to the biggest radius found hundreds of tiny
     # drops around every candidate once the surface filled up.
     bounds = [r_max, r_max / 4.0, r_max / 16.0, 0.0]
-    placed_p = [np.zeros((0, 3)) for _ in bounds[:-1]]
-    placed_r = [np.zeros(0) for _ in bounds[:-1]]
-    positions, normals, scales = [], [], []
+    placed_sets = [_PlacedSet() for _ in bounds[:-1]]
+    # Kept points per batch, as arrays; *n_kept* counts them.
+    positions, normals, scales, n_kept = [], [], [], 0
     attempts, max_attempts = 0, count * 100
     cell = max(2.0 * r_max, 1e-9)
-    while len(positions) < count and attempts < max_attempts:
-        batch = int(min(8192, max(512, 3 * (count - len(positions)))))
+    while n_kept < count and attempts < max_attempts:
+        batch = int(min(8192, max(512, 3 * (count - n_kept))))
         attempts += batch
         tri = np.minimum(np.searchsorted(cdf, gen.random(batch)), len(cdf) - 1)
         uv = gen.random((batch, 2))
@@ -477,24 +507,31 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
         # Against everything already placed -- first, as once the surface fills up it rejects
         # nearly everything, and the density lookup below is per candidate.
         if r_max > 0:
-            for cls, (cp, cr) in enumerate(zip(placed_p, placed_r)):
-                cand = np.flatnonzero(ok)
-                if not len(cp) or not len(cand):
-                    continue
-                if cKDTree is not None:
-                    hits = cKDTree(cp).query_ball_point(pts[cand], rad[cand] + bounds[cls])
-                    counts_ = np.fromiter((len(h) for h in hits), dtype=np.int64, count=len(hits))
-                    if not counts_.sum():
-                        continue
-                    flat = np.fromiter(itertools.chain.from_iterable(hits), dtype=np.int64, count=int(counts_.sum()))
-                    owner = np.repeat(np.arange(len(cand)), counts_)
-                    d = np.linalg.norm(cp[flat] - pts[cand][owner], axis=1)
-                    bad = d < rad[cand][owner] + cr[flat]
-                    ok[cand[np.bincount(owner[bad], minlength=len(cand)) > 0]] = False
-                else:
-                    for i in cand:
-                        if (np.linalg.norm(cp - pts[i], axis=1) < rad[i] + cr).any():
-                            ok[i] = False
+            for cls, placed_set in enumerate(placed_sets):
+                cand_tree = None
+                for cp, cr, tree in placed_set.parts(cKDTree):
+                    if cand_tree is None:
+                        cand = np.flatnonzero(ok)
+                        if not len(cand):
+                            break
+                        if tree is not None:
+                            cand_tree = cKDTree(pts[cand])
+                    if tree is not None:
+                        # Every candidate-placed pair as far apart as any clash can be, as one
+                        # array: a ball query per part built a Python list per candidate, and
+                        # that, not the search, was most of its cost.
+                        near = cand_tree.sparse_distance_matrix(
+                            tree, (r_max + bounds[cls]) * (1.0 + 1e-9), output_type="ndarray")
+                        if not len(near):
+                            continue
+                        owner, flat = cand[near["i"]], near["j"]
+                        d = np.linalg.norm(cp[flat] - pts[owner], axis=1)
+                        ok[owner[d < rad[owner] + cr[flat]]] = False
+                    else:
+                        cand = np.flatnonzero(ok)
+                        for i in cand:
+                            if (np.linalg.norm(cp - pts[i], axis=1) < rad[i] + cr).any():
+                                ok[i] = False
         if mask is not None:
             live = np.flatnonzero(ok)
             many = getattr(getattr(mask, "__self__", None), "sample_many", None)
@@ -504,49 +541,124 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
                 for i in live:
                     ok[i] = roll[i] <= mask(Gf.Vec3f(*pts[i]), Gf.Vec3f(*normals_all[tri[i]]))
         # Against each other, in draw order, and the keep-away set.
-        new_p, new_r, grid = [], [], {}
-        before = len(positions)
-        for i in np.flatnonzero(ok):
-            pt, r = pts[i], rad[i]
-            if avoid is not None and avoid.near(pt, r):
-                continue
-            key = (math.floor(pt[0] / cell), math.floor(pt[1] / cell), math.floor(pt[2] / cell))
-            if r_max > 0:
-                clash = False
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        for dz in (-1, 0, 1):
-                            for j in grid.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
-                                q = new_p[j]
-                                if (pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 + (pt[2] - q[2]) ** 2 < (r + new_r[j]) ** 2:
-                                    clash = True
+        need = count - n_kept
+        if cKDTree is not None:
+            keep = _settle_batch(cKDTree, pts, rad, np.flatnonzero(ok), avoid, r_max, need)
+        else:
+            keep, new_p, new_r, grid = [], [], [], {}
+            for i in np.flatnonzero(ok):
+                pt, r = pts[i], rad[i]
+                if avoid is not None and avoid.near(pt, r):
+                    continue
+                key = (math.floor(pt[0] / cell), math.floor(pt[1] / cell), math.floor(pt[2] / cell))
+                if r_max > 0:
+                    clash = False
+                    for dx in (-1, 0, 1):
+                        for dy in (-1, 0, 1):
+                            for dz in (-1, 0, 1):
+                                for j in grid.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
+                                    q = new_p[j]
+                                    if (pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 + (pt[2] - q[2]) ** 2 < (r + new_r[j]) ** 2:
+                                        clash = True
+                                        break
+                                if clash:
                                     break
                             if clash:
                                 break
-                        if clash:
-                            break
-                if clash:
-                    continue
-                grid.setdefault(key, []).append(len(new_p))
-            new_p.append(pt)
-            new_r.append(r)
-            positions.append(Gf.Vec3f(*pt))
-            normals.append(Gf.Vec3f(*normals_all[tri[i]]))
-            scales.append(float(sc[i]))
-            if len(positions) >= count:
-                break
-        if new_p:
-            new_p, new_r = np.asarray(new_p), np.asarray(new_r)
-            for cls in range(len(placed_p)):
+                    if clash:
+                        continue
+                    grid.setdefault(key, []).append(len(new_p))
+                new_p.append(pt)
+                new_r.append(r)
+                keep.append(i)
+                if len(keep) >= need:
+                    break
+            keep = np.asarray(keep, dtype=np.int64)
+        before = n_kept
+        if len(keep):
+            n_kept += len(keep)
+            positions.append(pts[keep])
+            normals.append(normals_all[tri[keep]])
+            scales.append(sc[keep])
+            new_p, new_r = pts[keep], rad[keep]
+            for cls, placed_set in enumerate(placed_sets):
                 sel = (new_r <= bounds[cls]) & (new_r > bounds[cls + 1])
                 if sel.any():
-                    placed_p[cls] = np.concatenate([placed_p[cls], new_p[sel]])
-                    placed_r[cls] = np.concatenate([placed_r[cls], new_r[sel]])
+                    placed_set.add(new_p[sel], new_r[sel])
         # Full is full: when fewer than 1 candidate in 500 still finds room, the surface has
         # taken what it can -- the last gap-fillers are not worth minutes of max_attempts.
-        if len(positions) - before < batch / 500.0:
+        if n_kept - before < batch / 500.0:
             break
-    return positions, normals, scales
+    if not n_kept:
+        return [], [], []
+    # As arrays, converted to float32 once: a Gf.Vec3f built per instance was a second of a
+    # 130k-instance verge, and the caller turns them back into an array anyway.
+    return (Vt.Vec3fArray.FromNumpy(np.concatenate(positions).astype(np.float32)),
+            Vt.Vec3fArray.FromNumpy(np.concatenate(normals).astype(np.float32)),
+            np.concatenate(scales).tolist())
+
+
+class _PlacedSet:
+    """One size class of the instances placed so far, as a few parts that double in size, each
+    with its KD-tree built once.
+
+    One tree of the whole class, rebuilt every batch, rebuilt everything placed so far each
+    time -- 130k points about forty times over for a verge. Here a batch's points are a part
+    of their own, merged into the one before only once the two are near in size, so a point
+    is rebuilt into a tree a handful of times and a query looks at a handful of trees.
+    """
+
+    __slots__ = ("_parts",)
+
+    def __init__(self):
+        self._parts: list = []  # [points, radii, tree or None]
+
+    def add(self, points, radii):
+        self._parts.append([points, radii, None])
+        while len(self._parts) > 1 and len(self._parts[-2][0]) < 2 * len(self._parts[-1][0]):
+            (p0, r0, _), (p1, r1, _) = self._parts[-2:]
+            self._parts[-2:] = [[np.concatenate([p0, p1]), np.concatenate([r0, r1]), None]]
+
+    def parts(self, kdtree):
+        """(points, radii, tree) per part; the tree None when there is no *kdtree*."""
+        for part in self._parts:
+            if kdtree is not None and part[2] is None:
+                part[2] = kdtree(part[0])
+            yield part[0], part[1], part[2]
+
+
+def _settle_batch(kdtree, pts, rad, cand, avoid, r_max, need):
+    """The candidates (indices into *pts*, in draw order) the one-at-a-time pass keeps: clear
+    of the keep-away set, and clear of every earlier candidate it kept. At most *need*.
+
+    The same answer as walking them in order, without the walk. Keep Away From doesn't depend
+    on the order, so it is one query for the batch. Of the rest, a candidate that clashes with
+    no earlier one is kept outright, so only those that do clash are walked -- and each looks
+    at its own clashes alone. On a 130k-plant verge the walk was a hash-grid lookup per
+    candidate, 27 cells each, and a third of the cook.
+    """
+    if avoid is not None and len(cand):
+        cand = cand[~avoid.near_many(pts[cand], rad[cand], kdtree)]
+    if r_max > 0 and len(cand) > 1:
+        p, r = pts[cand], rad[cand]
+        # Two radii apart at most: nothing further can clash. query_pairs gives i < j.
+        pairs = kdtree(p).query_pairs(2.0 * r_max * (1.0 + 1e-9), output_type="ndarray")
+        if len(pairs):
+            i, j = pairs[:, 0], pairs[:, 1]
+            # Later minus earlier, later radius plus earlier, as the walk computes it.
+            d2 = (p[j, 0] - p[i, 0]) ** 2 + (p[j, 1] - p[i, 1]) ** 2 + (p[j, 2] - p[i, 2]) ** 2
+            hit = d2 < (r[j] + r[i]) ** 2
+            i, j = i[hit], j[hit]
+            kept = np.ones(len(cand), dtype=bool)
+            if len(j):
+                order = np.argsort(j, kind="stable")
+                i, j = i[order], j[order]
+                later, starts = np.unique(j, return_index=True)
+                # Ascending, so every earlier candidate is settled before a later one asks.
+                for k, earlier in zip(later.tolist(), np.split(i, starts[1:])):
+                    kept[k] = not kept[earlier].any()
+            cand = cand[kept]
+    return cand[:need]
 
 
 class _TriangleBuckets:
@@ -869,7 +981,7 @@ class _NearestWeight:
     happens on every cook, so a Scatter Brush upstream paid it on every stroke.
     """
 
-    __slots__ = ("_points", "_weights", "_origin", "_cell", "_cells", "_neighbourhood")
+    __slots__ = ("_points", "_weights", "_origin", "_cell", "_cells", "_neighbourhood", "_tree")
 
     def __init__(self, points, weights):
         self._points = np.asarray(points, dtype=np.float64)
@@ -889,6 +1001,7 @@ class _NearestWeight:
         # makes many of them in the same region -- so the merge is paid once per cell rather
         # than once per query, which is where the concatenation cost would otherwise land.
         self._neighbourhood: dict = {}
+        self._tree = None  # sample_many's KD-tree, built on first use; False without scipy
 
     def _keys(self, points):
         """Flat cell ids for an (N, 3) array of points.
@@ -911,9 +1024,28 @@ class _NearestWeight:
     def sample_many(self, points):
         """sample() for an (N, 3) array at once: the same nearest-vertex weight, 0 where no
         vertex is in the neighbourhood. A per-point Python call was most of a condensation
-        scatter's cook -- a quarter of a million candidates."""
+        scatter's cook -- a quarter of a million candidates.
+
+        With scipy, a KD-tree's nearest vertex within two cells -- six times the grid's speed
+        on a terrain, where a few candidates per cell made the per-cell loop below mostly
+        Python. Where two vertices are equally near it may pick the other one.
+        """
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         out = np.zeros(len(points))
+        if not len(points):
+            return out
+        if self._tree is None:
+            try:
+                from scipy.spatial import cKDTree
+            except ImportError:  # scipy is optional: the grid below, near enough the same
+                self._tree = False
+            else:
+                self._tree = cKDTree(self._points)
+        if self._tree is not False:
+            _, nearest = self._tree.query(points, k=1, distance_upper_bound=2.0 * self._cell)
+            found = nearest < len(self._points)
+            out[found] = self._weights[nearest[found]]
+            return out
         keys = self._keys(points)
         # Grouped by cell once. Finding each cell's points with `keys == key` scanned the
         # whole batch per cell -- candidates x cells -- which was most of this lookup's time.
@@ -955,15 +1087,11 @@ class _NearestWeight:
     def sample(self, point, normal=None):
         """The painted weight nearest `point`, in 0..1. `normal` is unused but is part of the
         hook's signature -- a future falloff-by-facing would want it.
+
+        Through sample_many, so one point and a batch take the same path -- the KD-tree's,
+        or the grid's without scipy -- and agree at the edge of the painted region.
         """
-        # The point can land nearer a vertex in an adjacent cell than one in its own, and an
-        # empty cell is ordinary on a coarse mesh, so the neighbours are always searched.
-        nearby = self._nearby(int(self._keys(np.asarray([point[0], point[1], point[2]]))))
-        if not len(nearby):
-            # Nothing painted anywhere near: outside the painted region entirely.
-            return 0.0
-        offset = self._points[nearby] - np.asarray([point[0], point[1], point[2]])
-        return float(self._weights[nearby[np.einsum("ij,ij->i", offset, offset).argmin()]])
+        return float(self.sample_many(np.asarray([[point[0], point[1], point[2]]], dtype=np.float64))[0])
 
 
 class _MaskProduct:

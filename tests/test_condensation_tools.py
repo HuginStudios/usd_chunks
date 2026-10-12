@@ -345,7 +345,9 @@ def test_the_batched_spin_is_the_loops_spin_exactly(axis, amount) -> None:
 def test_the_batched_density_lookup_is_the_single_point_lookup(pocket) -> None:
     """sample_many takes a padded fast path when the mesh's neighbourhoods are all about one
     size (a ground) and a per-cell path when they are not (a dense pocket). Both must give
-    exactly what sample() gives one point at a time."""
+    exactly what sample() gives one point at a time.
+
+    The grid's paths, as without scipy: with it, both take the KD-tree's instead."""
     sp = importlib.import_module("chunks.modelling.scatter_points")
     rng = np.random.default_rng(2)
     xs = np.linspace(-50, 50, 60)
@@ -354,6 +356,7 @@ def test_the_batched_density_lookup_is_the_single_point_lookup(pocket) -> None:
     if pocket:
         verts = np.vstack([verts, rng.normal(0, 0.3, (4000, 3))])
     w = sp._NearestWeight(verts, rng.random(len(verts)))
+    w._tree = False  # no KD-tree: the grid
     pts = np.stack([rng.uniform(-60, 60, 3000), rng.uniform(-60, 60, 3000), rng.uniform(-3, 3, 3000)], 1)
     want = np.array([w.sample(p) for p in pts])
     assert np.array_equal(w.sample_many(pts), want)
