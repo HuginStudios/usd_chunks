@@ -18,6 +18,7 @@ import pytest
 from pxr import Usd
 from PySide6 import QtWidgets
 
+from usd_chunks import chunk as chunk_mod
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
@@ -26,6 +27,7 @@ from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.frontends.qt.widgets import ContainerWidget
 from usd_chunks.frontends.qt import nodegraph
 
+from chunk_stubs import register_stub_module
 from qt_wait import pump_until
 
 
@@ -347,3 +349,82 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
 
     assert node.get_port(f"{node_path}.inputs:insert_index") is None, "Index must disappear once re-hidden"
     assert node.get_port(f"{node_path}.outputs:insert_index") is None
+
+
+_GF = (
+    ChunkFlags.GroupFlags.COLLAPSABLE
+    | ChunkFlags.GroupFlags.LABELED
+    | ChunkFlags.GroupFlags.FRAMED
+)
+
+
+def _nested_group_module():
+    """A chunk whose folded Outer group holds a collapsable Inner group with two params.
+
+    Outer starts collapsed, so its contents -- Inner's ContainerWidget included -- are
+    only built on first expand (ContainerWidget.ensure_children_built), after the node's
+    proxy already exists.
+    """
+    module = register_stub_module()
+
+    def main():
+        c = chunk_mod.Chunk(module.module_name)
+        outer = chunk_mod.Group("Outer", flags=_GF)
+        inner = chunk_mod.Group("Inner", flags=_GF)
+        inner.add_param(chunk_mod.Slider("wired", "Wired", default_value=1.0))
+        inner.add_param(chunk_mod.Slider("unwired", "Unwired", default_value=1.0))
+        outer.add_param(inner)
+        outer.set_state(ChunkFlags.State.COLLAPSED)
+        c.add_param(outer)
+        return c
+
+    module.module.main = main
+    return module
+
+
+def test_collapsing_a_group_built_after_the_proxy_moves_its_ports(graph) -> None:
+    """Regression: reported live on V-Ray settings -- opening a folded group and then
+    collapsing a group nested in it left every port where its params used to be.
+
+    The node hooked each group's toggle_anim.finished only for the groups that existed
+    when its proxy was built, and a nested group in a folded one is built later, on the
+    parent's first expand. Its collapse never asked for a port rebuild, so the unwired
+    param kept a port and the wired one stayed below the group's header.
+    """
+    qapp, reg, scene, docker = graph
+    src = _mk(reg.get_chunk_module("transform"), scene)
+    chunk = _mk(_nested_group_module(), scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    node_src = gv.scene()._nodes[get_chunk_prim_path(src)]
+    node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
+    _pump(qapp, 0.3)
+
+    inner = chunk.get_param("Inner")
+    assert inner is not None
+    assert _container_for(node, inner) is None, "Inner must not be built while Outer is folded"
+    _expanded_container(qapp, node, chunk.get_param("Outer"))
+    inner_container = _expanded_container(qapp, node, inner)
+
+    node_path = str(node.prim.GetPath())
+    src_out = node_src.get_port(f"{node_src.prim.GetPath()}.outputs:tx")
+    wired_in = node.get_port(f"{node_path}.inputs:wired")
+    assert src_out is not None and wired_in is not None
+    gv._author_connection(src_out, wired_in)
+    gv.scene()._build_edges()
+    assert node.get_port(f"{node_path}.inputs:unwired") is not None
+
+    height_before = node._height
+    inner_container.minimize_button.setChecked(False)
+    pump_until(qapp, lambda: node._height < height_before)
+
+    assert node._height < height_before, "the node must shrink once Inner collapses"
+    assert node.get_port(f"{node_path}.inputs:unwired") is None, "an unwired param drops its port"
+    wired_in = node.get_port(f"{node_path}.inputs:wired")
+    assert wired_in is not None, "a wired param keeps its port"
+    header_y = nodegraph._NODE_HEADER_H + inner_container.mapTo(
+        node._proxy.widget(), inner_container.rect().center()
+    ).y()
+    assert abs(wired_in.pos().y() - header_y) <= inner_container.height(), (
+        "the wired port must sit at Inner's header"
+    )
