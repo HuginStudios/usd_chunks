@@ -890,6 +890,16 @@ def _tree(items, depth: int):
         )
         if split_further:
             sub = _tree(members, depth + 1)
+            # Everything shared the next segment too, so this level says nothing the
+            # next one does not: V-Ray's IPR overrides are all vray:settings:viewport:*,
+            # and a "settings" group holding only "viewport" sat flat beside the real
+            # Settings with every label starting "viewport Settings...". The deeper name
+            # is the specific one, so it takes this group's place -- unless a sibling
+            # already has it.
+            only = next(iter(sub)) if len(sub) == 1 else None
+            if only not in (None, _GENERAL_GROUP) and only not in grouped and only != name:
+                grouped[only] = sub[only]
+                continue
             if _divides_well(sub, len(members)):
                 grouped[name] = sub
                 continue

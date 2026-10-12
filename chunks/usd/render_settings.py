@@ -218,8 +218,8 @@ def _chunk_loaded(owner, notice, sender):
     _populate_groups_holding(_chunk, {leaf for _path, leaf, _value in entries})
 
     # By leaf name, not by the stored path. A group's name is uniquified when the chunk
-    # already has one by that name -- V-Ray has both a top-level Settings and an
-    # ipr/Settings, so one of them is stored as "Settings1" -- while get_param resolves
+    # already has one by that name -- V-Ray has both a top-level Settings and a
+    # viewport/Settings, so one of them is stored as "Settings1" -- while get_param resolves
     # paths by the original name, so the stored path can never be looked up. Leaf names
     # carry their renderer's namespace (vray_..., ri_...) and are unique on the chunk,
     # which is what makes them safe to resolve on their own.
