@@ -287,6 +287,43 @@ def cache_key(node):
     return fingerprint(sources, _settings(node))
 
 
+_CREASE_COS = np.cos(np.radians(60.0))
+
+
+def _corner_normals(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """Smooth normals per triangle corner (faceVarying), creased past 60 degrees.
+
+    Each corner averages, by area, the faces around its vertex that turn less than the
+    crease angle from its own face. Plain vertex normals averaged across the sharp folds a
+    heavily reduced proxy has: on a 700-triangle sofa a tenth of the corners pointed more
+    than 60 degrees off their face, some backwards, and shaded as black seams.
+    """
+    tris = np.asarray(triangles, dtype=np.int64)
+    a, b, c = (points[tris[:, k]].astype(np.float64) for k in range(3))
+    weighted = np.cross(b - a, c - a)  # length = twice the area: the weight
+    length = np.linalg.norm(weighted, axis=1, keepdims=True)
+    unit = np.divide(weighted, length, out=np.zeros_like(weighted), where=length > 0.0)
+
+    # Every (corner, corner) pair sharing a vertex, from the corners sorted by vertex.
+    corner_tri = np.repeat(np.arange(len(tris)), 3)
+    order = np.argsort(tris.reshape(-1), kind="stable")
+    vertex, tri = tris.reshape(-1)[order], corner_tri[order]
+    per_vertex = np.bincount(vertex, minlength=len(points))
+    degree = per_vertex[vertex]
+    first = np.repeat(np.arange(len(vertex)), degree)
+    within = np.arange(int(degree.sum())) - np.repeat(np.cumsum(degree) - degree, degree)
+    second = (np.cumsum(per_vertex) - per_vertex)[vertex[first]] + within
+    keep = np.einsum("ij,ij->i", unit[tri[first]], unit[tri[second]]) >= _CREASE_COS
+
+    summed = np.zeros((len(vertex), 3), dtype=np.float64)
+    np.add.at(summed, first[keep], weighted[tri[second[keep]]])
+    length = np.linalg.norm(summed, axis=1, keepdims=True)
+    sorted_normals = np.where(length > 0.0, summed / np.maximum(length, 1e-30), unit[tri])
+    normals = np.empty_like(sorted_normals)
+    normals[order] = sorted_normals
+    return np.ascontiguousarray(normals, dtype=np.float32)
+
+
 def _author(stage, path: str, proxy: Proxy, purpose: str) -> None:
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(path))
     points = proxy.points
@@ -310,6 +347,13 @@ def _author(stage, path: str, proxy: Proxy, purpose: str) -> None:
     )
     # Polygons, not a subdivision cage: subdividing would shrink the proxy off its source.
     mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+    # Smooth normals, because without them Storm shades every triangle flat and the baked
+    # normal map has to cancel a crease at each edge exactly -- which a 512 map, mip-mapped
+    # or capped at 256 in the viewer, can't: a 700-triangle sofa showed every edge. The
+    # remeshed surface is smooth anyway; against these the map only carries gentle detail.
+    # Bake Textures reads them back as the frame to bake the normal map in.
+    mesh.CreateNormalsAttr().Set(Vt.Vec3fArray.FromNumpy(_corner_normals(points32, proxy.triangles)))
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
     # Double-sided, because reduction folds thin sheets: a woven seat reduced to 3,000
     # triangles had a fifth of them inside out, and culled they read as holes. Thickening
     # the sheets instead fattened every throw, leaf and rail with them; drawing both sides
