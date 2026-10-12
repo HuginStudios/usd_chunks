@@ -23,8 +23,11 @@ handed to it since its last cook is at, above or below anything in its mask, and
 itself -- which layers are muted, the root and session layers' metadata -- is as it was
 when it last cooked. Its layer still holds the result of those inputs.
 
-Anything this cannot account for falls back to cooking: a chunk's first cook (it has no
-mask yet), a chunk that reads outside its inputs, a rewire, a chunk disabled or enabled
+A chunk's first cook runs on the whole stage, with nothing written yet to mask it by, and
+records its inputs and what it wrote as its mask; its next cook is masked by the same.
+
+Anything this cannot account for falls back to cooking: a chunk that never cooked (it has
+no mask yet), a chunk that reads outside its inputs, a rewire, a chunk disabled or enabled
 above it, one with no cook of its own (a chunkgroup), one with an Edit Target file layer,
 a cook read back from the cook cache. Each hands "everything changed" down.
 
@@ -75,7 +78,8 @@ class CookRecord:
 
     #: What its last cook could read: its inputs, its outputs and the reads beyond them.
     #: None when that is not known -- never cooked, rewired, read back from the cook cache,
-    #: cooked into a shared layer -- or when it cooked on the whole stage.
+    #: cooked into a shared layer -- or when it cannot cook on its inputs alone. A first
+    #: cook, on the whole stage, records its inputs and outputs.
     mask: frozenset[Sdf.Path] | None = None
     #: The prims its last cook wrote; None before its first.
     outputs: frozenset[Sdf.Path] | None = None
@@ -780,7 +784,8 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     (hidden_layers). One that reads what a sibling it is not wired to authors is run again
     with every chunk's layer, and cooked that way until it is rewired.
 
-    A first cook, with nothing written yet to say where it writes, runs on the whole stage.
+    A first cook, with nothing written yet to say where it writes, runs on the whole stage,
+    and records its inputs and outputs as its mask.
     """
     rec = record(chunk)
     outputs = rec.outputs
@@ -841,7 +846,15 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         mask = None
 
     rec.outputs = frozenset(output_paths(layer))
-    rec.mask = frozenset(mask) if mask is not None else None
+    if mask is not None:
+        rec.mask = frozenset(mask)
+    elif not rec.unmaskable:
+        # A first cook, on the whole stage, with nothing written yet to mask it by: its
+        # inputs and what it wrote. Its next cook is masked by the same and checks it; left
+        # unknown, the first edit after opening cooked every chunk below the one edited.
+        rec.mask = frozenset(input_paths(chunk) | rec.outputs)
+    else:
+        rec.mask = None
     # What it looked up beyond its inputs and outputs, from this cook alone: a read it no
     # longer makes -- its material param pointed elsewhere -- leaves the mask with it.
     rec.reads = frozenset()
@@ -853,6 +866,31 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     rec.layer = layer.identifier
     # What changed is handed down by finish(), once the cook is wholly done.
     rec.everything = rec.scene != state
+    if rec.everything:
+        _scene_changed_by(chunk, state, rec.scene)
+
+
+def _scene_changed_by(chunk, before: tuple, after: tuple) -> None:
+    """chunk's cook changed the root or session layer's metadata: no input of the chunks
+    not below it.
+
+    A chunk cooks on what solved above it, and the chunks below this one are handed
+    "everything" (finish). The rest -- above it, or beside it -- recorded the scene as it
+    was before, and would take this cook's change for one of their own: a Render Settings
+    chunk at the end of a chain setting the root layer's renderSettingsPrimPath left every
+    chunk above it to cook on the first edit after opening.
+
+    Metadata alone. A cook that mutes layers -- a gate -- changes what the chunks beside it
+    show without cooking them, and they must see that as a change.
+    """
+    if before[:2] != after[:2]:
+        return
+    # Held while their ids are compared, so no id is a dead propagator's, reused.
+    below = [node.propagator for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())]
+    below_ids = {id(prop) for prop in below}
+    for other, rec in list(_records.items()):
+        if other is not chunk and id(other) not in below_ids and rec.scene == before:
+            rec.scene = after
 
 
 def baseline(chunk, layer: Sdf.Layer) -> Sdf.Layer:
