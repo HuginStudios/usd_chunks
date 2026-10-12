@@ -353,6 +353,31 @@ def test_prototype_mix_is_an_exact_quota() -> None:
     assert scatter.get_param("out_prototypes").value == 2
 
 
+def test_a_deactivated_library_resolves_and_hides_its_sources() -> None:
+    """Prototypes picked from deactivated entries resolve and are switched on; Hide Sources
+    (on by default) deactivates sources that were visible, and off leaves them alone."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/Library/a").GetPrim().SetActive(False)
+    UsdGeom.Cube.Define(stage, "/Library/b")
+
+    _set_proto(scatter, "/Library/*")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 20
+    assert scatter.get_param("hide_sources").value is True
+    mod.module.execute(scatter)
+
+    targets = _instancer(stage).GetPrototypesRel().GetTargets()
+    assert len(targets) == 2
+    assert all(stage.GetPrimAtPath(t).IsActive() for t in targets)
+    assert all(stage.GetPrimAtPath(t).GetTypeName() == "Cube" for t in targets)
+    assert not stage.GetPrimAtPath("/Library/b").IsActive()
+
+    scatter.get_param("hide_sources").value = False
+    mod.module.execute(scatter)
+    assert stage.GetPrimAtPath("/Library/b").IsActive()
+
+
 def test_prototype_variant_selection_in_the_path() -> None:
     """/prim{set=variant} selects per prototype; {set=*} expands to one per variant."""
     stage, mod, scatter = _bootstrap()

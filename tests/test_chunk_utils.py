@@ -95,6 +95,15 @@ def test_resolve_glob_single_component():
     assert sorted(CU.resolve_prim_paths(stage, "/World/*")) == ["/World/a", "/World/b", "/World/c"]
 
 
+def test_resolve_glob_skips_inactive_unless_asked():
+    """A deactivated pick list (a scatter's prototype library) matches only with
+    include_inactive -- an inactive prim reports itself unloaded, which once hid it there too."""
+    stage = _stage("/Library/a", "/Library/b")
+    stage.GetPrimAtPath("/Library/a").SetActive(False)
+    assert CU.resolve_prim_paths(stage, "/Library/*") == ["/Library/b"]
+    assert CU.resolve_prim_paths(stage, "/Library/*", include_inactive=True) == ["/Library/a", "/Library/b"]
+
+
 def test_resolve_collection_ref():
     stage = _stage("/World/a", "/World/b", "/World/c")
     _author_collection(stage, "/collections", "grp", ["/World/a", "/World/b"], rule=Usd.Tokens.explicitOnly)
