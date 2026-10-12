@@ -1915,12 +1915,35 @@ def _on_stack_orient_changed(owner, notice, sender):
 
 
 def _on_proxy_mode_changed(owner, notice, sender):
-    """The share only means something while there is a proxy."""
+    """The share and its falloff only mean something while there is a proxy."""
     chunk_obj = owner.get_chunk()
     if not chunk_obj:
         return
     grp = chunk_obj.get_param("Viewport Proxy")
-    _set_hidden(grp.get_param("proxy_share") if grp else None, owner.value == "Off")
+    for name in ("proxy_share", "proxy_near", "proxy_radius"):
+        _set_hidden(grp.get_param(name) if grp else None, owner.value == "Off")
+
+
+def _proxy_keep(scratch_stage, positions, seed, share, near_paths, radius, world_up):
+    """Which instances the viewport proxy keeps: indices into *positions*, in order.
+
+    Without Dense Near, a seeded *share* of them anywhere. With it, every instance near those
+    prims and fewer with distance -- the share falls smoothly from 1 at the prims to *share*
+    at *radius* -- so the viewport stays full where you look and thins out into the distance,
+    where layers of far foliage behind each pixel cost the most. Each instance draws one
+    seeded number and is kept while it is under its weight, so the subset only grows or
+    shrinks at its edge as the settings change instead of being drawn afresh.
+    """
+    count = len(positions)
+    rng = np.random.default_rng(seed + 43)
+    if near_paths and radius > 0.0 and count:
+        sources, _ = proximity.source_points(scratch_stage, near_paths)
+        if len(sources):
+            weight = proximity.Proximity(
+                sources, radius=radius, softness=1.0, inside=1.0, outside=share, up=tuple(world_up)
+            ).sample_many(np.asarray(positions, dtype=np.float64).reshape(-1, 3))
+            return np.flatnonzero(rng.random(count) < weight).tolist()
+    return sorted(random.Random(seed + 43).sample(range(count), round(count * share)))
 
 
 # ---------------------------------------------------------------------------
@@ -2007,6 +2030,10 @@ def execute(node):
     pack_tilt = node.get_param("pack_tilt", is_f).value
     proxy_mode = node.get_param("proxy_mode", is_s).value
     proxy_share = min(1.0, max(0.0, node.get_param("proxy_share", is_f).value))
+    proxy_near = [p.strip() for p in node.get_param("proxy_near", is_s).value.split(",") if p.strip()]
+    # Metres, not scene units: a falloff is a viewing distance, so 50 means 50 m in a
+    # centimetre scene as much as in a metre one.
+    proxy_radius = max(0.0, node.get_param("proxy_radius", is_f).value) / UsdGeom.GetStageMetersPerUnit(stage)
 
     layer = node.get_edit_context()
     if not layer:
@@ -2304,7 +2331,8 @@ def execute(node):
             # purpose=proxy instancer by default, V-Ray and friends render this one. The
             # subset is seeded and kept in order, so it is stable while other params change.
             instancer.CreatePurposeAttr().Set(UsdGeom.Tokens.render)
-            keep = sorted(random.Random(seed + 43).sample(range(count), round(count * proxy_share)))
+            keep = _proxy_keep(scratch_stage, out_positions, seed, proxy_share, proxy_near,
+                               proxy_radius, world_up)
             _author_proxy(stage, f"{inst_path}_proxy", proxy_mode, protos, specs, scratch_stage,
                           keep, (out_positions, out_indices, out_scales, out_orients))
 
@@ -2834,6 +2862,27 @@ def main():
     )
     proxy_share.set_state(chunk.ChunkFlags.State.HIDDEN)  # Off is the default
     proxy_grp.add_param(proxy_share)
+    proxy_near = chunk.LineEdit(
+        "proxy_near",
+        "Dense Near",
+        flags=_PF.LABELED | _PF.PRIM_SELECTION,
+        tooltip="Prims the proxy stays dense around -- points or an instancer, as Grow Near "
+        "takes. It keeps every instance near them and thins to Proxy Share by Falloff "
+        "Radius. Empty: Proxy Share everywhere.",
+    )
+    proxy_near.set_state(chunk.ChunkFlags.State.HIDDEN)
+    proxy_grp.add_param(proxy_near)
+    proxy_radius = chunk.Slider(
+        "proxy_radius",
+        "Falloff Radius (m)",
+        default_value=50.0,
+        min_value=0.0,
+        max_value=500.0,
+        tooltip="How far from Dense Near the proxy thins out to Proxy Share, in metres -- "
+        "converted by the stage's metersPerUnit, so it reads the same in any scene's units.",
+    )
+    proxy_radius.set_state(chunk.ChunkFlags.State.HIDDEN)
+    proxy_grp.add_param(proxy_radius)
     chunk_api.add_param(_collapsed(proxy_grp))
 
     # --- Outputs: readouts of the last cook, not settings ---

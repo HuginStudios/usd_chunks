@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import random
 import sys
 import time
@@ -748,6 +749,43 @@ def test_viewport_proxy_keeps_each_half_of_an_asset_with_its_own_purposes() -> N
     mod.module.execute(scatter)
     full = _instancer(stage).GetPrototypesRel().GetTargets()[0]
     assert stage.GetPrimAtPath(full.AppendChild("proxy")).IsActive()
+
+
+def test_viewport_proxy_stays_dense_near_its_focus() -> None:
+    """Dense Near: the proxy keeps every instance close to the focus and thins to Proxy Share
+    by Falloff Radius -- full where you look, sparse into the distance. The radius is metres."""
+    stage, mod, scatter = _bootstrap()
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    _plate(stage)
+    _crayon(stage)
+    UsdGeom.Points.Define(stage, "/focus").GetPointsAttr().Set([(-20.0, 0.0, 0.0)])
+    _set_proto(scatter, "/crayon")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("auto_spacing").value = False
+    scatter.get_param("spacing").value = 0.0
+    scatter.get_param("max_count").value = 4000
+    scatter.get_param("proxy_mode").value = "Full"
+    scatter.get_param("proxy_share").value = 0.1
+    scatter.get_param("proxy_near").value = "/focus"
+    scatter.get_param("proxy_radius").value = 10.0
+    mod.module.execute(scatter)
+
+    def within(instancer, lo, hi):
+        """How many instances lie lo..hi from the focus."""
+        return sum(lo <= math.hypot(p[0] + 20.0, p[1]) < hi for p in instancer.GetPositionsAttr().Get())
+
+    full = _instancer(stage)
+    proxy = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer_proxy"))
+    near = within(proxy, 0, 2) / within(full, 0, 2)
+    far = within(proxy, 12, 100) / within(full, 12, 100)
+    assert near > 0.9
+    assert 0.05 < far < 0.15
+
+    # In a centimetre stage the same 10 m reaches across the whole 40-unit plate.
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    mod.module.execute(scatter)
+    proxy = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer_proxy"))
+    assert within(proxy, 12, 100) / within(_instancer(stage), 12, 100) > 0.9
 
 
 @pytest.mark.parametrize("mode", ["Bounds", "Full"])
