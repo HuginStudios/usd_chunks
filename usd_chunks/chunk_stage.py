@@ -4319,6 +4319,11 @@ def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: 
             layer_ids.append(ident)
     scratch_root = Sdf.Layer.CreateAnonymous()
     scratch_root.subLayerPaths = layer_ids + [stage.GetRootLayer().identifier]
+    # A stage reads its up axis and units off its own root and session layers only, never a
+    # sublayer, so the scratch root carries the live stage's values itself.
+    for key in (UsdGeom.Tokens.upAxis, UsdGeom.Tokens.metersPerUnit):
+        if stage.HasAuthoredMetadata(key):
+            scratch_root.pseudoRoot.SetInfo(key, stage.GetMetadata(key))
     return skip_cook.open_for_reading(scratch_root)
 
 
