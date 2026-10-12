@@ -966,15 +966,30 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # (e.g. deselecting, which _set_collapsed's own branch happens to also kick a
         # rebuild for) forced a fresh layout pass. Connecting directly to each group's own
         # animation-finished signal sidesteps depending on that propagation working.
-        for nested in chunk_widget.findChildren(ContainerWidget):
-            if nested.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
-                nested.toggle_anim.finished.connect(self._port_rebuild_timer.start)
+        self._hooked_groups: weakref.WeakSet = weakref.WeakSet()
+        self._hook_group_animations(chunk_widget)
         # No context object here, unlike every other deferred call in this file:
         # QGraphicsItem is not a QObject, so QTimer.singleShot has nothing to bind the
         # cancellation to. _rebuild_typed_ports carries the guard instead -- it checks the
         # prim, the proxy, and catches the RuntimeError from an already-destroyed C++
         # proxy -- which is why this one is safe to schedule bare.
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
+
+    def _hook_group_animations(self, chunk_widget: QtWidgets.QWidget) -> None:
+        """Rebuild ports when any collapsable group in the body finishes folding.
+
+        Re-run on every port rebuild, not only at proxy creation: a folded group builds its
+        contents on first expand (ContainerWidget.ensure_children_built), so groups nested
+        in it don't exist yet when the proxy is made. Unhooked, collapsing one of those left
+        its ports where its params used to be. The parent's own expand rebuilds ports,
+        which hooks the new groups before they can be folded.
+        """
+        for nested in chunk_widget.findChildren(ContainerWidget):
+            if nested in self._hooked_groups:
+                continue
+            if nested.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
+                nested.toggle_anim.finished.connect(self._port_rebuild_timer.start)
+                self._hooked_groups.add(nested)
 
     def _rebuild_typed_ports(self):
         # This is deferred (singleShot), so by the time it runs the chunk may already be
@@ -1005,6 +1020,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # Proxy is hidden -- place ports at header centre using param list alone.
             self._place_param_ports_collapsed()
         else:
+            self._hook_group_animations(self._proxy.widget())
             self._place_param_ports(self._proxy.widget())
         if scene:
             # Deferred: this fires once per node whose ports change, and a chunk being
