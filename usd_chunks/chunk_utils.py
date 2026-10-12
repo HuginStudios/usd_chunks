@@ -769,10 +769,15 @@ def resolve_prim_paths(stage, location_str, include_inactive=False):
             # the rest of the stage is neither read nor paid for -- and a chunk whose target
             # is /World/objects/cube_* reads /World/objects, not the whole scene (skip_cook).
             root = stage.GetPrimAtPath(_glob_root(pattern))
-            predicate = Usd.PrimIsDefined & Usd.PrimIsLoaded & ~Usd.PrimIsAbstract
-            if not include_inactive:
-                predicate = predicate & Usd.PrimIsActive
+            # An inactive prim reports itself unloaded, so with include_inactive "loaded" is
+            # checked by hand, on the active ones -- an unloaded payload is still skipped.
+            if include_inactive:
+                predicate = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
+            else:
+                predicate = Usd.PrimDefaultPredicate
             for prim in Usd.PrimRange(root, predicate) if root else ():
+                if include_inactive and prim.IsActive() and not prim.IsLoaded():
+                    continue
                 if rx.match(prim.GetPath().pathString):
                     matched.append(prim.GetPath().pathString)
         paths.extend(_with_variant_selections(path, selections) for path in matched)
