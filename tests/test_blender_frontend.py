@@ -1396,6 +1396,78 @@ def test_saving_the_blend_flags_an_edited_network_but_leaves_its_file(tmp_path, 
 
 
 # ---------------------------------------------------------------------------
+# several networks: the one on screen is the live one
+# ---------------------------------------------------------------------------
+
+def _transform_entry():
+    return next(e for e in chunk_registry.ChunkRegistry().get_menu_entries()
+                if e.module.module_name == "transform" and e.presets is None)
+
+
+def test_a_renamed_network_keeps_its_own_tree(addon_on):
+    """The view found its tree by name, else took the first chunk tree: rename one of two
+    networks and the live one drew into, and cooked for, the other."""
+    first = bpy.data.node_groups.new("first", bg.TREE_ID)
+    second = bpy.data.node_groups.new("second", bg.TREE_ID)
+    addon._open_stage(addon.new_network_stage(), tree=first)
+    addon._open_stage(addon.new_network_stage(), tree=second)
+    second.name = "renamed"
+    assert addon.get_view().tree == second
+
+
+def test_showing_another_network_makes_it_live(tmp_path, addon_on, monkeypatch):
+    """Picking an older network in the editor left the newest one live behind it."""
+    path, context = make_network(tmp_path / "older.usda")
+    older = bpy.data.node_groups.new("older", bg.TREE_ID)
+    older.chunk_network_path = str(path)
+    addon._open_stage(Usd.Stage.Open(str(path)), context_path=context, tree=older)
+    newer = bpy.data.node_groups.new("newer", bg.TREE_ID)
+    addon._open_stage(addon.new_network_stage(), tree=newer)
+    monkeypatch.setattr(addon, "_shown_chunk_trees", lambda: [older])
+
+    addon._follow_shown_tree()
+
+    view = addon.get_view()
+    assert view.tree == older
+    assert view.context == context
+    assert set(chunk_prims(view.stage)) >= set(chunk_prims(Usd.Stage.Open(str(path))))
+
+
+def test_a_network_with_no_file_keeps_its_edits_while_another_is_live(tmp_path, addon_on):
+    """New on a second network dropped the first one's edits when it had no file to go back to."""
+    path, context = make_network(tmp_path / "untitled.usda")
+    untitled = bpy.data.node_groups.new("untitled", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(str(path)), context_path=context, tree=untitled)
+    addon.get_view().create_chunk(_transform_entry(), 900.0, 0.0)
+    edited = chunk_prims(addon.get_view().stage)
+
+    other = bpy.data.node_groups.new("other", bg.TREE_ID)
+    addon._open_stage(addon.new_network_stage(), tree=other)
+    addon._open_stage(addon._stage_for_tree(untitled), context_path=context, tree=untitled)
+
+    assert chunk_prims(addon.get_view().stage) == edited
+
+
+def test_a_network_with_a_file_keeps_unsaved_edits_but_leaves_the_file(tmp_path, addon_on):
+    """Switching away reopened the file and lost the edits; writing them would not be ours to do."""
+    path, context = make_network(tmp_path / "filed.usda")
+    before = open(path, encoding="utf-8").read()
+    filed = bpy.data.node_groups.new("filed", bg.TREE_ID)
+    filed.chunk_network_path = str(path)
+    addon._open_stage(Usd.Stage.Open(str(path)), context_path=context, tree=filed)
+    addon.get_view().create_chunk(_transform_entry(), 900.0, 0.0)
+    edited = chunk_prims(addon.get_view().stage)
+
+    other = bpy.data.node_groups.new("other", bg.TREE_ID)
+    addon._open_stage(addon.new_network_stage(), tree=other)
+    addon._open_stage(addon._stage_for_tree(filed), context_path=context, tree=filed)
+
+    assert chunk_prims(addon.get_view().stage) == edited
+    assert addon.network_unsaved(addon.get_view())
+    assert open(path, encoding="utf-8").read() == before
+
+
+# ---------------------------------------------------------------------------
 # Blender Import: Blender objects into the chunk's layer
 # ---------------------------------------------------------------------------
 

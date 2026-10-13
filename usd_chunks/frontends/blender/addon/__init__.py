@@ -224,6 +224,9 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     `_active_tree()` (or `bpy.context.space_data` generally) to point at the same one.
     """
     global _scene
+    current = get_view()
+    if current is not None and tree is not None and current.tree is not None and current.tree != tree:
+        _park(current)
     _scene = BlenderScene(stage)
     camera.attach(_scene)
     chunk_registry.ChunkRegistry().initialize(_scene, "blender")
@@ -302,19 +305,90 @@ def _uninitialized_chunk_trees() -> list:
 
 
 def _poll_new_trees() -> float:
-    for tree in _uninitialized_chunk_trees():
-        # A tree saved by a session before chunk_network_initialized existed defaults to
-        # False too -- but if it already names a file, it is not blank, it just has not
-        # been touched THIS session. Reopen the file rather than blanking a real network.
-        _open_stage(_stage_for_tree(tree), tree=tree)
+    try:
+        for tree in _uninitialized_chunk_trees():
+            # A tree saved by a session before chunk_network_initialized existed defaults to
+            # False too -- but if it already names a file, it is not blank, it just has not
+            # been touched THIS session. Reopen the file rather than blanking a real network.
+            _open_stage(_stage_for_tree(tree), tree=tree)
+        _follow_shown_tree()
+    except Exception:  # a timer that raises is unregistered for good
+        logger.exception("usd_chunks: could not switch to the chunk network on screen")
     return 0.1  # reschedule in 0.1s -- this is the latency between "+ New" and Shift+A working
 
 
+#: Edits to a network with a file, kept while another network is live: the file is the
+#: user's, so switching away never writes it. Keyed by nodegraph.tree_uid.
+_parked_edits: dict = {}
+
+#: The graph each parked network was showing (a chunkgroup it was dived into).
+_parked_context: dict = {}
+
+
+def _park(view) -> None:
+    """Keep the live network's state with its tree before the session moves to another.
+
+    One network is live at a time (one stage, one scene, one view), so the outgoing one is
+    stored the way a .blend save stores it: in the tree when it has no file, and here when
+    its file is behind what is on screen. Without this, New dropped an unsaved network's
+    edits, and coming back to a network reopened what it was before.
+    """
+    tree = view.tree
+    if tree is None:
+        return
+    uid = bg.tree_uid(tree)
+    try:
+        _parked_context[uid] = view.context
+        if not tree.chunk_network_path:
+            tree.chunk_network_embedded = network_text(view)
+        elif network_unsaved(view):
+            _parked_edits[uid] = network_text(view)
+        else:
+            _parked_edits.pop(uid, None)
+    except Exception:
+        logger.exception("usd_chunks: could not keep the edits of %s", tree.name)
+
+
+def _shown_chunk_trees() -> list:
+    """The USD-backed chunk trees node editors are showing, in screen order."""
+    found = []
+    for window in getattr(bpy.context.window_manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type != "NODE_EDITOR":
+                continue
+            tree = getattr(area.spaces.active, "node_tree", None)
+            if (tree is not None and tree.bl_idname == bg.TREE_ID
+                    and tree.chunk_network_initialized and tree not in found):
+                found.append(tree)
+    return found
+
+
+def _follow_shown_tree() -> None:
+    """Make the network on screen the live one, when the editor has been switched to it.
+
+    Picking another chunk tree in the editor's browse menu changed only what Blender drew:
+    the session stayed on the newest network, so the older one showed nodes that nothing
+    cooked, and a chunk added there went into the other network's stage.
+    """
+    shown = _shown_chunk_trees()
+    view = get_view()
+    if not shown or (view is not None and view.tree in shown):
+        return
+    tree = shown[0]
+    _open_stage(_stage_for_tree(tree), context_path=_parked_context.get(bg.tree_uid(tree)), tree=tree)
+
+
 def _stage_for_tree(tree):
-    """The stage a tree names: its file, else the network embedded in the .blend, else new."""
+    """The stage a tree names: its file (with any parked edits on top), else the network
+    embedded in the .blend, else new."""
     if tree.chunk_network_path:
         stage = Usd.Stage.Open(bpy.path.abspath(tree.chunk_network_path))
         if stage is not None:
+            edits = _parked_edits.pop(bg.tree_uid(tree), None)
+            if edits is not None:
+                # Into the file's own layer, so its relative paths still resolve; the layer
+                # is left dirty, so a .blend save still warns about it.
+                stage.GetRootLayer().ImportFromString(edits)
             return stage
         logger.warning("usd_chunks: could not open %s", tree.chunk_network_path)
     if tree.chunk_network_embedded:
@@ -416,6 +490,11 @@ def _on_save_pre(*_args) -> None:
     (started with New, never saved) has nothing to overwrite: it is stored in the tree
     itself, and _stage_for_tree reopens it from there.
     """
+    for parked in [t for t in bpy.data.node_groups
+                   if t.bl_idname == bg.TREE_ID and t.get(bg.TREE_UID) in _parked_edits]:
+        name = bpy.path.basename(parked.chunk_network_path)
+        logger.warning("usd_chunks: %s has unsaved edits; the .blend does not save them", name)
+        bpy.app.timers.register(lambda name=name: _warn_unsaved(name), first_interval=0.0)
     view = get_view()
     tree = view.tree if view is not None else None
     if tree is None:
@@ -534,8 +613,11 @@ def _on_load_post(*_args) -> None:
     for tree in trees:
         tree.chunk_network_initialized = False
     camera.release_viewport_camera()
+    # The previous file's view would otherwise be parked into this file's trees.
+    bg.clear_active_view()
+    _parked_edits.clear()
+    _parked_context.clear()
     if not trees:
-        bg.clear_active_view()
         return
     try:
         _open_stage(_stage_for_tree(trees[0]), tree=trees[0])
