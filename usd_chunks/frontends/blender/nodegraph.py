@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 
 import bpy
 from usd_chunks import chunk_core as core
@@ -743,10 +744,31 @@ def active_view():
     """The view a node should ask for its chunk.
 
     Module-level because a Blender node is constructed by Blender, not by us, so there is
-    no constructor to hand a view to. One graph editor at a time is the working assumption;
-    a second tree would need this keyed by tree name.
+    no constructor to hand a view to. One network is live at a time: the add-on switches
+    it to whichever chunk tree the node editor shows.
     """
     return _active_view
+
+
+#: The ID property naming a chunk tree for good: a tree is found by name first, and by
+#: this when the name has changed.
+TREE_UID = "usd_chunks_uid"
+
+
+def tree_uid(tree) -> str:
+    """The tree's lasting id, given one the first time it is asked for.
+
+    Args:
+        tree: A chunk node tree.
+
+    Returns:
+        The id, kept in the tree's ID properties so it saves with the .blend.
+    """
+    uid = tree.get(TREE_UID)
+    if not uid:
+        uid = uuid.uuid4().hex
+        tree[TREE_UID] = uid
+    return uid
 
 
 def clear_active_view() -> None:
@@ -863,6 +885,7 @@ class BlenderGraphView:
         self.stage = stage
         self.scene = scene
         self.tree_name = ""
+        self.tree_uid = ""
         self.tree = tree
         self.context = context
         self.chunks: dict = {}
@@ -922,23 +945,27 @@ class BlenderGraphView:
         "StructRNA of type NodeTree has been removed", which surfaces as a chunk that gets
         created in USD and never appears in the editor.
 
-        Falls back to any chunk tree, so a renamed tree self-heals rather than leaving the
-        view permanently blind to a tree that is plainly there.
+        A renamed tree is found again by its lasting id (`tree_uid`). Taking any chunk tree
+        instead, as this once did, picked the wrong one when there were two: rename a
+        network and the view drew into, and cooked for, the other.
         """
         if not self.tree_name:
             # Never given a tree -- a headless view, driving USD with nothing to draw into.
             # Adopting a stray tree here would make such a view start rebuilding one.
             return None
         tree = bpy.data.node_groups.get(self.tree_name)
-        if tree is None or tree.bl_idname != TREE_ID:
-            tree = next((t for t in bpy.data.node_groups if t.bl_idname == TREE_ID), None)
-            if tree is not None:
-                self.tree_name = tree.name
+        if tree is not None and tree.bl_idname == TREE_ID and tree.get(TREE_UID, self.tree_uid) == self.tree_uid:
+            return tree
+        tree = next((t for t in bpy.data.node_groups
+                     if t.bl_idname == TREE_ID and self.tree_uid and t.get(TREE_UID) == self.tree_uid), None)
+        if tree is not None:
+            self.tree_name = tree.name
         return tree
 
     @tree.setter
     def tree(self, tree) -> None:
         self.tree_name = tree.name if tree is not None else ""
+        self.tree_uid = tree_uid(tree) if tree is not None else ""
 
     # -- reading -----------------------------------------------------------
 
