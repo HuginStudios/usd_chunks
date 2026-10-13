@@ -2613,6 +2613,11 @@ def _patch_expressions(stage: Usd.Stage, old: str, new: str) -> None:
     gets silently overridden by the original in composition.
     """
     for prim in stage.TraverseAll():
+        # Expressions live on chunk prims only. Reading every attribute of every scene prim
+        # to find that out made a rename cost a pass over the whole scene's data, and could
+        # rewrite a scene string that merely contained "@Name." by coincidence.
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            continue
         for attr in prim.GetAttributes():
             val = attr.Get()
             # A non-String attr keeps its expression text in customData rather than as its
@@ -4365,7 +4370,7 @@ def heal_exec_chain_on_delete(stage: Usd.Stage, deleted_path: str) -> None:
     chunk_notice._usd_write_active = True
     try:
         for prim in stage.Traverse():
-            if prim.GetPath() == deleted:
+            if prim.GetPath() == deleted or prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
                 continue
             # SUCCESSORS, by contrast, must be found across every slot. A merge fed through
             # slot 2 is just as much a successor as one fed through slot 0, and skipping it
@@ -4407,7 +4412,7 @@ def _exec_successor_paths(stage: Usd.Stage, node_path: str) -> set[str]:
     out_path = f"{node_path}.{_EXEC_OUTPUT}"
     found: set[str] = set()
     for prim in stage.Traverse():
-        if str(prim.GetPath()) == node_path:
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME or str(prim.GetPath()) == node_path:
             continue
         for attr in iter_exec_inputs(prim):
             if any(str(c) == out_path for c in attr.GetConnections()):
@@ -4932,6 +4937,8 @@ def snapshot_edit_target_selections(stage: Usd.Stage) -> dict[str, str]:
     if not stage:
         return saved
     for prim in stage.Traverse():
+        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME:
+            continue
         type_attr = prim.GetAttribute(_CHUNK_TYPE_ATTR)
         if not (type_attr and type_attr.IsValid()) or type_attr.Get() != "edit_target":
             continue
