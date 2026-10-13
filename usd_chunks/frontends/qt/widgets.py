@@ -1501,10 +1501,15 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.widget: ChunkParamWidgetBase = widget
-        self.label = QtWidgets.QLabel()
-        self.label.setHidden(True)
+        # Made by update_label when the row first gets text (see _ensure_label). Most rows
+        # never do, and an eager label was a hidden widget per row, constructed, styled and
+        # laid out for nothing. Filters others ask for wait in _label_filters; this row's own
+        # is installed by _ensure_label and never listed -- a row holding itself would be a
+        # reference cycle, keeping its widget's Python side, and so that widget's notice
+        # callbacks, alive after Qt has deleted it.
+        self.label: QtWidgets.QLabel | None = None
+        self._label_filters: list[QtCore.QObject] = []
 
-        self.vlayout.addWidget(self.label)
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
@@ -1538,7 +1543,6 @@ class LabeledWidget(QtWidgets.QWidget):
 
         self._name_hint = ""
         self._label_hovered = False
-        self.label.installEventFilter(self)
         # A param built holding an expression is marked from the start, not only once it
         # next changes.
         self._sync_expression_mark()
@@ -1630,9 +1634,27 @@ class LabeledWidget(QtWidgets.QWidget):
             if self.should_show_tooltip():
                 self.show_tooltip()
 
+    def add_label_filter(self, obj: QtCore.QObject) -> None:
+        """Install obj as an event filter on the label, now or once there is one."""
+        self._label_filters.append(obj)
+        if self.label is not None:
+            self.label.installEventFilter(obj)
+
+    def _ensure_label(self) -> QtWidgets.QLabel:
+        """The row's label, made on first need above the widget, where it always sat."""
+        if self.label is None:
+            self.label = QtWidgets.QLabel()
+            self.vlayout.insertWidget(0, self.label)
+            self.label.installEventFilter(self)
+            for obj in self._label_filters:
+                self.label.installEventFilter(obj)
+        return self.label
+
     def update_label(self, text):
-        self.label.setHidden(not bool(text))
-        self.label.setText(text)
+        if text or self.label is not None:
+            label = self._ensure_label()
+            label.setHidden(not bool(text))
+            label.setText(text)
         self._sync_expression_mark()
         self._sync_override_mark()
 
@@ -1642,7 +1664,9 @@ class LabeledWidget(QtWidgets.QWidget):
         question every shot artist asks of a referenced network is "what did we change
         here", and the field itself cannot say -- the value it shows is just a value.
         """
-        if not isinstance(self.widget, ChunkParamWidgetBase):
+        # Marks only the label. A row without one shows nothing to mark, and update_label
+        # runs this again when it gets one.
+        if not isinstance(self.widget, ChunkParamWidgetBase) or self.label is None:
             return
         try:
             source = chunk_stage.param_override_source(self.widget.param)
@@ -1697,12 +1721,15 @@ class LabeledWidget(QtWidgets.QWidget):
         # Either kind of driven value: a @Node.param@ wire, or a ${VAR} in an asset path
         # that USD substitutes during composition. Both show a value nobody typed here.
         expr = chunk_utils.is_expression_text(raw) or chunk_utils.has_stage_expression(raw)
-        if self.label.property("chunkExpression") != expr:
-            self.label.setProperty("chunkExpression", expr)
-            # A property the stylesheet selects on only takes effect after a re-polish.
-            self.label.style().unpolish(self.label)
-            self.label.style().polish(self.label)
-        self.label.setToolTip(str(raw) if expr else "")
+        # The mark is on the label; a row without one has nothing to mark until update_label
+        # makes it and runs this again. The wire lock below applies either way.
+        if self.label is not None:
+            if self.label.property("chunkExpression") != expr:
+                self.label.setProperty("chunkExpression", expr)
+                # A property the stylesheet selects on only takes effect after a re-polish.
+                self.label.style().unpolish(self.label)
+                self.label.style().polish(self.label)
+            self.label.setToolTip(str(raw) if expr else "")
         # A wire locks the field (chunk_utils.is_wire_locked); set_enabled folds that in, so
         # re-applying the state locks it when a wire lands and frees it when one is pulled.
         locked = chunk_utils.is_wire_locked(self.widget.param)
@@ -2138,7 +2165,7 @@ class ContainerWidget(
         # suppression create_widget put on it.
         widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
         widget.installEventFilter(self)
-        labeled.label.installEventFilter(self)
+        labeled.add_label_filter(self)
 
         if label is not None:
             labeled.update_label(label)
