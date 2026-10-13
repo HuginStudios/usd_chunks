@@ -36,6 +36,11 @@ Reads its input through `get_upstream_stage()`. That is not optional here: this 
 authors `points`/`faceVertexIndices` overrides on the *same* prim it reads, so a plain
 composed-stage read would find its own previous output and reduce the reduction, and
 again, and again on every cook.
+
+In a UI, a big reduction runs in a separate process (sim_bake.in_subprocess), so the host
+stays usable. A thread would not do: fast_simplification holds the GIL while it works. The
+cook that starts it writes nothing, and the cook that follows when it is done writes the
+result, like any cook whose inputs have not changed.
 """
 
 from __future__ import annotations
@@ -50,6 +55,8 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk
 from usd_chunks import chunk_stage
+from usd_chunks import cook_cache
+from usd_chunks import sim_bake
 from usd_chunks import surface_samples
 from usd_chunks.mesh_math import fan_triangulate
 
@@ -70,6 +77,17 @@ _MODES = [MODE_PERCENT, MODE_COUNT, MODE_PLANAR]
 
 # The fewest triangles a closed surface can have. Asking for less is asking for nothing.
 _MIN_TRIANGLES = 4
+
+# Meshes with at least this many triangles in all are reduced in a separate process, so the
+# host stays usable meanwhile: 4.5M triangles stopped it for 4.6s, and in a process it never
+# stops for more than 0.05s. Below this a plain mesh takes well under a second here, and
+# starting the process (about 1.5s, mostly importing USD) would only make the result later.
+_BACKGROUND_TRIANGLES = 500_000
+
+# Set on a chunk while its reduction runs in the background: the fingerprint it was started
+# for, and whether a newer cook has asked it to stop.
+_JOB = "_poly_reduce_job"
+_SUPERSEDED = "_poly_reduce_superseded"
 
 # Topology-derived attributes with no meaning once the topology changes. `normals` is here
 # rather than remapped on purpose: a remapped normal describes the *old* surface, and every
@@ -498,8 +516,27 @@ class _Plan:
     drop_subdivision: bool
 
 
-def _plan_mesh(prim, settings: _Settings):
-    """Work out what `prim` reduces to, without touching the stage."""
+@dataclass
+class _MeshRead:
+    """One mesh as read off the stage: the reduction's input, and what goes back on its result.
+
+    `job` is everything the reduction itself needs (reduce_mesh's arguments), as plain
+    arrays a separate process can take. The rest stays here, for _finish_plan.
+    """
+
+    path: Sdf.Path
+    job: dict
+    corner_subset: np.ndarray | None  # subset label of each face-corner
+    subsets: list
+    membership_rows: np.ndarray | None
+    face_varying: list  # (name, type name, Vt values)
+    vertex_varying: list  # (name, type name, Vt values)
+    blocked: list  # names
+    drop_subdivision: bool
+
+
+def _read_mesh(prim, settings: _Settings) -> _MeshRead | None:
+    """Read what reducing `prim` needs, without reducing it. Main thread: this reads USD."""
     mesh = UsdGeom.Mesh(prim)
     points = mesh.GetPointsAttr().Get()
     counts = mesh.GetFaceVertexCountsAttr().Get()
@@ -509,12 +546,7 @@ def _plan_mesh(prim, settings: _Settings):
 
     points = np.asarray(points, dtype=np.float64)
     counts = np.asarray(counts, dtype=np.int64)
-    triangles, corners, _ = fan_triangulate(counts, indices)
-    if len(triangles) <= _MIN_TRIANGLES:
-        return None
-
     n_faces = len(counts)
-    corner_face = np.repeat(np.arange(n_faces, dtype=np.int64), counts)
     n_corners = int(counts.sum())
 
     subsets, subset_code_per_face, membership_rows = _face_subsets(prim, n_faces)
@@ -522,8 +554,10 @@ def _plan_mesh(prim, settings: _Settings):
     # Everything that has to stay unmixed after a collapse goes into the weld key: UV (and
     # other faceVarying) discontinuities, and material boundaries.
     split_columns = []
+    corner_subset = None
     if subset_code_per_face is not None:
-        split_columns.append(subset_code_per_face[corner_face])
+        corner_subset = np.repeat(subset_code_per_face, counts)
+        split_columns.append(corner_subset)
 
     face_varying = []
     vertex_varying = []
@@ -541,7 +575,6 @@ def _plan_mesh(prim, settings: _Settings):
         elif interpolation == UsdGeom.Tokens.faceVarying:
             if settings.keep_uvs and len(values) == n_corners:
                 face_varying.append((name, primvar.GetTypeName(), values))
-                split_columns.extend(component_codes(values))
             else:
                 blocked.append(name)
         elif len(values) == len(points):
@@ -549,26 +582,98 @@ def _plan_mesh(prim, settings: _Settings):
         else:
             blocked.append(name)
 
-    split_codes = combine_codes(*split_columns) if split_columns else None
-
-    reduced = reduce_triangles(
-        points,
-        triangles,
-        corners,
-        split_codes,
-        target_count=target_triangle_count(
-            settings.mode, len(triangles), settings.keep_percent, settings.target_tris
-        ),
-        planar_only=settings.mode == MODE_PLANAR,
+    job = dict(
+        points=points,
+        counts=counts,
+        indices=np.asarray(indices, dtype=np.int64),
+        split_columns=split_columns,
+        face_varying=[np.asarray(values) for _, _, values in face_varying],
+        mode=settings.mode,
+        keep_percent=settings.keep_percent,
+        target_tris=settings.target_tris,
         aggressiveness=settings.aggressiveness,
         lock_boundary=settings.lock_boundary,
         carry_attributes=bool(face_varying or vertex_varying or subsets),
     )
+    scheme = mesh.GetSubdivisionSchemeAttr().Get()
+    return _MeshRead(
+        path=prim.GetPath(),
+        job=job,
+        corner_subset=corner_subset,
+        subsets=subsets,
+        membership_rows=membership_rows,
+        face_varying=face_varying,
+        vertex_varying=vertex_varying,
+        blocked=blocked,
+        drop_subdivision=bool(scheme) and scheme != UsdGeom.Tokens.none,
+    )
+
+
+def reduce_mesh(
+    points,
+    counts,
+    indices,
+    split_columns,
+    face_varying,
+    mode,
+    keep_percent,
+    target_tris,
+    aggressiveness,
+    lock_boundary,
+    carry_attributes,
+) -> dict | None:
+    """Triangulate and decimate one mesh read by _read_mesh. No USD, so it runs in any process.
+
+    Returns:
+        The ReducedMesh's fields plus `before`, the triangle count it started from, as a
+        dict of plain arrays so it can come back from another process. None if there is
+        nothing to reduce.
+    """
+    triangles, corners, _ = fan_triangulate(counts, indices)
+    if len(triangles) <= _MIN_TRIANGLES:
+        return None
+    columns = list(split_columns)
+    for values in face_varying:
+        columns.extend(component_codes(values))
+    reduced = reduce_triangles(
+        points,
+        triangles,
+        corners,
+        combine_codes(*columns) if columns else None,
+        target_count=target_triangle_count(mode, len(triangles), keep_percent, target_tris),
+        planar_only=mode == MODE_PLANAR,
+        aggressiveness=aggressiveness,
+        lock_boundary=lock_boundary,
+        carry_attributes=carry_attributes,
+    )
     if reduced is None:
         return None
+    return dict(vars(reduced), before=len(triangles))
+
+
+def reduce_meshes(progress, jobs) -> list:
+    """reduce_mesh for each job. This is what the separate process runs (sim_bake.in_subprocess).
+
+    Args:
+        progress: Not used. in_subprocess passes it, but words its reports for a simulation.
+        jobs: reduce_mesh's arguments, one dict per mesh.
+
+    Returns:
+        reduce_mesh's result for each job.
+    """
+    return [reduce_mesh(**job) for job in jobs]
+
+
+def _finish_plan(read: _MeshRead, result: dict | None) -> _Plan | None:
+    """Turn one mesh's reduction into a plan, with its primvars and subsets moved onto it."""
+    if result is None:
+        return None
+    result = dict(result)
+    before = result.pop("before")
+    reduced = ReducedMesh(**result)
 
     if reduced.source_corner is None:
-        if subsets:
+        if read.subsets:
             # Without a mapping the subsets cannot be rewritten, and a subset left pointing
             # at the old face list is not stale but *out of range* -- Hydra drops it and says
             # so once per index. Leaving the mesh at full resolution is the lesser failure:
@@ -576,44 +681,50 @@ def _plan_mesh(prim, settings: _Settings):
             logger.warning(
                 "%s: could not resolve the collapse history, so its %d face subsets cannot "
                 "be rewritten — leaving this mesh unreduced",
-                prim.GetPath(),
-                len(subsets),
+                read.path,
+                len(read.subsets),
             )
             return None
         # No usable mapping, so nothing per-vertex can be carried honestly. Block what the
         # old topology described rather than leaving arrays of the wrong length behind.
         carried = []
-        blocked += [name for name, _, _ in face_varying + vertex_varying]
+        blocked = read.blocked + [name for name, _, _ in read.face_varying + read.vertex_varying]
     else:
         carried = [
             (name, type_name, _remap(values, reduced.source_corner))
-            for name, type_name, values in face_varying
+            for name, type_name, values in read.face_varying
         ]
         carried += [
             (name, type_name, _remap(values, reduced.source_point))
-            for name, type_name, values in vertex_varying
+            for name, type_name, values in read.vertex_varying
         ]
+        blocked = read.blocked
 
     subset_indices = []
-    if subsets:
+    if read.subsets:
         # A surviving triangle inherits the material region of any of its corners: no
         # collapse can cross a region boundary, because the weld above gave the two sides
         # separate vertices in the first place.
-        face_code = subset_code_per_face[corner_face][reduced.source_corner[reduced.triangles[:, 0]]]
-        for column, subset in enumerate(subsets):
-            kept = np.flatnonzero(membership_rows[face_code, column]).astype(np.int32)
+        face_code = read.corner_subset[reduced.source_corner[reduced.triangles[:, 0]]]
+        for column, subset in enumerate(read.subsets):
+            kept = np.flatnonzero(read.membership_rows[face_code, column]).astype(np.int32)
             subset_indices.append((subset.GetPrim().GetPath(), Vt.IntArray.FromNumpy(kept)))
 
-    scheme = mesh.GetSubdivisionSchemeAttr().Get()
     return _Plan(
-        path=prim.GetPath(),
+        path=read.path,
         reduced=reduced,
-        before=len(triangles),
+        before=before,
         vertex_primvars=carried,
         blocked_primvars=blocked,
         subset_indices=subset_indices,
-        drop_subdivision=bool(scheme) and scheme != UsdGeom.Tokens.none,
+        drop_subdivision=read.drop_subdivision,
     )
+
+
+def _plan_mesh(prim, settings: _Settings) -> _Plan | None:
+    """Work out what `prim` reduces to, here and now, without touching the stage."""
+    read = _read_mesh(prim, settings)
+    return None if read is None else _finish_plan(read, reduce_mesh(**read.job))
 
 
 def _author(stage, plan: _Plan) -> None:
@@ -925,21 +1036,113 @@ def execute(node: chunk.Chunk) -> None:
         # Same inputs, same settings: last cook's decimation still holds. The layer was
         # cleared for this cook like any other, so the plans are authored again below.
         plans = previous.plans
+    elif sim_bake.in_background() and _triangle_total(targets) >= _BACKGROUND_TRIANGLES:
+        _reduce_in_background(node, layer.identifier, settings, targets, fingerprint, signed)
+        return
     else:
         plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
-    # The refreshed record drops the previous generation's array references.
-    record = _CookRecord(fingerprint, signed, plans)
 
     with Usd.EditContext(stage, layer):
         for plan in plans:
             _author(stage, plan)
 
+    # The refreshed record drops the previous generation's array references.
+    _remember(layer.identifier, _CookRecord(fingerprint, signed, plans))
+    if node.has_state(chunk.ChunkFlags.State.STALE):
+        node.unset_state(chunk.ChunkFlags.State.STALE)
+    _report(node, plans)
+
+
+def _remember(layer_id: str, record: _CookRecord) -> None:
+    """Keep record as the last cook of the chunk whose layer is layer_id."""
     if len(_LAST_COOK) > 256:
         # A deleted chunk leaves its entry behind, and each one holds references to the
         # arrays it signed. Rather than track chunk lifetimes, drop the lot occasionally.
         _LAST_COOK.clear()
-    _LAST_COOK[layer.identifier] = record
-    _report(node, plans)
+    _LAST_COOK[layer_id] = record
+
+
+def _triangle_total(prims) -> int:
+    """About how many triangles prims have between them, from their face counts alone."""
+    total = 0
+    for prim in prims:
+        counts = UsdGeom.Mesh(prim).GetFaceVertexCountsAttr().Get()
+        if counts:
+            total += int(np.maximum(np.asarray(counts, dtype=np.int64) - 2, 0).sum())
+    return total
+
+
+def _reduce_in_background(node, layer_id, settings, targets, fingerprint, signed) -> None:
+    """Reduce targets in a separate process, and cook again when the result is ready.
+
+    This cook writes nothing, so the mesh shows at full resolution until then. The result
+    is kept as the last cook for this fingerprint. The next cook finds it there and writes
+    it, like any unchanged recook. That cook is a normal one, so the chunks below cook
+    again and the cook cache stores it.
+
+    A cook for other inputs while one runs stops it. When it stops, the chunk cooks again
+    and starts the newer one.
+    """
+    stale = chunk.ChunkFlags.State.STALE
+    if not node.has_state(stale):
+        node.set_state(stale)
+    # Nothing to store yet: the layer is empty until the result is ready.
+    cook_cache.incomplete(node)
+    _report(node, [], f"reducing {_compact(_triangle_total(targets))} tris…")
+    if sim_bake.is_running(node):
+        if getattr(node, _JOB, None) != fingerprint:
+            setattr(node, _SUPERSEDED, True)
+            sim_bake.cancel(node)
+        return
+
+    reads = [read for prim in targets if (read := _read_mesh(prim, settings)) is not None]
+    jobs = [read.job for read in reads]
+    setattr(node, _JOB, fingerprint)
+    setattr(node, _SUPERSEDED, False)
+
+    def bake(ctx):
+        yield sim_bake.WORKER
+        try:
+            # A process, not a thread: fast_simplification holds the GIL while it works.
+            return sim_bake.in_subprocess(ctx, reduce_meshes, jobs=jobs)
+        except sim_bake.Cancelled:
+            return None
+        except Exception as e:  # noqa: BLE001 - reported in finish
+            logger.exception("Poly Reduce failed")
+            return e
+
+    def ended() -> bool:
+        """Clear the job. True if the chunk should cook again (the job was stopped)."""
+        setattr(node, _JOB, None)
+        superseded = getattr(node, _SUPERSEDED, False)
+        setattr(node, _SUPERSEDED, False)
+        return superseded
+
+    def finish(results):
+        superseded = ended()
+        if node.get_edit_context() is None:
+            return  # the chunk was deleted while it ran
+        if isinstance(results, Exception) and not superseded:
+            _report(node, [], f"reduce failed: {results}")
+            return
+        if isinstance(results, list) and not superseded:
+            plans = [
+                plan
+                for read, result in zip(reads, results)
+                if (plan := _finish_plan(read, result)) is not None
+            ]
+            _remember(layer_id, _CookRecord(fingerprint, signed, plans))
+        node.execute()
+
+    def report(text):
+        # Reached only when the job ends without finish(): stopped before it started, or
+        # finish() itself failed.
+        if ended():
+            node.execute()
+        else:
+            _report(node, [], text)
+
+    sim_bake.run(node, bake, report=report, finish=finish, name="PolyReduce")
 
 
 _PF = chunk.ChunkFlags.ParamFlags

@@ -85,6 +85,9 @@ _OUTPUT_TYPES = (ChunkFlags.ParamType.LABEL,)
 #: What a cook may do to a param's or group's presentation, and a read-back must repeat.
 _STATES = (ChunkFlags.State.HIDDEN, ChunkFlags.State.DISABLED)
 
+#: Set on a chunk by incomplete() for the cook running now.
+_INCOMPLETE = "_cook_cache_incomplete"
+
 
 def mode() -> str:
     """"off", "refresh" or "on", from USD_CHUNKS_COOK_CACHE."""
@@ -94,6 +97,18 @@ def mode() -> str:
     if value == "refresh":
         return "refresh"
     return "on"
+
+
+def incomplete(chunk) -> None:
+    """Keep the cook running now out of the cache: its result is still being made.
+
+    For a module that hands its slow part to another process and cooks again when that
+    is done. The layer this cook leaves is not the result its key describes.
+
+    Args:
+        chunk: The chunk cooking.
+    """
+    setattr(chunk, _INCOMPLETE, True)
 
 
 def _always(config) -> bool:
@@ -198,10 +213,11 @@ class CookEntry:
         """Note the params as they are, so after_cook can tell what the cook changed."""
         self._before = _snapshot(chunk)
         self._started = time.perf_counter()
+        setattr(chunk, _INCOMPLETE, False)
 
     def after_cook(self, chunk, layer: Sdf.Layer) -> None:
         """Store what the cook just made, if it is something the key accounts for."""
-        if self._restored or self._before is None:
+        if self._restored or self._before is None or getattr(chunk, _INCOMPLETE, False):
             return
         elapsed = time.perf_counter() - self._started
         if elapsed < _MIN_COOK_S and not _always(chunk.get_config()):
