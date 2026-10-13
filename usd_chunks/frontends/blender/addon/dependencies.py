@@ -9,8 +9,13 @@ checkbox per chunk for several.
 
 The install itself runs on a worker thread under a modal operator, which shows pip's
 progress in the status bar and the USDChunks sidebar, then registers the node types of the
-chunks that can load now. Nothing is installed without the user's yes, and nothing is asked
-while Blender's "Allow Online Access" is off.
+chunks that can load now and recooks the ones that were waiting. Nothing is installed without
+the user's yes, nor while Blender's "Allow Online Access" is off -- the dialog says so and
+carries the toggle.
+
+A dialog is easy to lose (moving the mouse off one closes it), so what is still missing also
+stays in the USDChunks sidebar with its own Install button, and every step is logged to the
+console.
 
 Packages go to the dependency dir (USD_CHUNK_DEPENDENCY_DIR, one folder per Python
 version), not into Blender's own Python -- which is shared by every add-on and replaced on
@@ -24,7 +29,7 @@ import time
 
 import bpy
 
-from usd_chunks import chunk_registry
+from usd_chunks import chunk_cook, chunk_registry
 from usd_chunks.frontends.blender import nodegraph as bg
 
 logger = logging.getLogger(__name__)
@@ -32,20 +37,25 @@ logger = logging.getLogger(__name__)
 #: chunk name -> requirement strings waiting to be offered, in the order chunks asked.
 _pending: dict[str, list[str]] = {}
 
+#: chunk name -> requirement strings not installed yet: _pending outlives its dialog here,
+#: so the sidebar can offer them again after the dialog is dismissed.
+_missing: dict[str, list[str]] = {}
+
 #: The install running now; the modal operator writes it, the panel reads it.
 _status: dict = {"running": False, "line": "", "label": "", "started": 0.0}
 
 
 def queue(packages, chunk_name: str) -> None:
-    """Remember that `chunk_name` needs `packages`, and offer them once Blender is idle."""
-    if not getattr(bpy.app, "online_access", True):
-        logger.warning(
-            "usd_chunks: chunk %s needs %s. Turn on Preferences > System > Allow Online "
-            "Access to be offered an install.", chunk_name, ", ".join(packages),
-        )
-        return
-    wanted = _pending.setdefault(chunk_name, [])
-    wanted.extend(p for p in packages if p not in wanted)
+    """Remember that `chunk_name` needs `packages`, and offer them once Blender is idle.
+
+    Offered with Allow Online Access off too: the dialog says so and carries the toggle.
+    Only a console warning, as this was, left a network that silently placed nothing.
+    """
+    logger.warning("usd_chunks: chunk %s needs %s, which is not installed -- asking to "
+                   "install it", chunk_name, ", ".join(packages))
+    for pending in (_pending, _missing):
+        wanted = pending.setdefault(chunk_name, [])
+        wanted.extend(p for p in packages if p not in wanted)
     if not bpy.app.timers.is_registered(_offer_pending):
         bpy.app.timers.register(_offer_pending, first_interval=0.2)
 
@@ -53,13 +63,15 @@ def queue(packages, chunk_name: str) -> None:
 def report_line(line: str) -> None:
     """on_line for pip: called from the worker thread, so it only stores the text."""
     _status["line"] = line
+    if line.strip():
+        logger.info("usd_chunks: pip: %s", line.rstrip())
 
 
-def _still_missing() -> dict[str, list[str]]:
-    """The queue minus whatever an install since has already satisfied."""
+def _still_missing(wanted=None) -> dict[str, list[str]]:
+    """`wanted` (the queue) minus whatever an install since has already satisfied."""
     mgr = chunk_registry.ChunkDependencyManager()
     out = {}
-    for chunk_name, packages in _pending.items():
+    for chunk_name, packages in (_pending if wanted is None else wanted).items():
         if left := [p for p in packages if not mgr.package_in_cache(p)]:
             out[chunk_name] = left
     return out
@@ -122,10 +134,17 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
 
     def invoke(self, context, event):
         self.items.clear()
-        for chunk_name, packages in _pending.items():
+        if not _pending:  # the sidebar's Install button: offer everything still missing
+            _pending.update(_still_missing(_missing))
+        # Only what the open network uses starts ticked, and first: every module's
+        # requirements land in the queue when node types are generated, and ticking them all
+        # installed the whole library (taichi, mujoco and theirs) to get one scipy.
+        used = _used_modules()
+        for chunk_name in sorted(_pending, key=lambda name: name not in used):
             item = self.items.add()
             item.chunk = chunk_name
-            item.packages = "\n".join(packages)
+            item.packages = "\n".join(_pending[chunk_name])
+            item.install = chunk_name in used
         _pending.clear()
         if not self.items:
             return {"CANCELLED"}
@@ -133,8 +152,18 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             self, width=460, title="Missing chunk dependencies", confirm_text="Install"
         )
 
+    def cancel(self, context):
+        logger.warning("usd_chunks: install declined -- the USDChunks sidebar's Missing "
+                       "dependencies box offers it again")
+        _redraw()
+
     def draw(self, context):
         col = self.layout.column()
+        if not _online():
+            box = col.box()
+            box.label(text="Installing needs Blender's online access, which is off.", icon="ERROR")
+            box.prop(context.preferences.system, "use_online_access")
+            col.separator()
         if len(self.items) == 1:
             item = self.items[0]
             col.label(text=f"OK to install {_names(item)} for chunk {item.chunk}?")
@@ -150,10 +179,16 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
         chosen = [i for i in self.items if i.install or len(self.items) == 1]
         if not chosen:
             return {"CANCELLED"}
+        if not _online():
+            self.report({"ERROR"}, "Turn on Allow Online Access to install chunk dependencies")
+            return {"CANCELLED"}
+        logger.info("usd_chunks: installing %s", ", ".join(
+            f"{_names(i)} for {i.chunk}" for i in chosen))
         packages: list[str] = []
         for item in chosen:
             packages.extend(p for p in item.packages.split("\n") if p and p not in packages)
         chunks = ", ".join(i.chunk for i in chosen)
+        self._chunks = {i.chunk for i in chosen}
 
         _status.update(running=True, line="", started=time.monotonic(),
                        label=f"Installing {', '.join(packages)} for {chunks}")
@@ -185,11 +220,71 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
         _status["running"] = False
         _redraw()
         if self._result and self._result[0]:
+            left = _still_missing(_missing)
+            _missing.clear()
+            _missing.update(left)
             made = bg.register_chunk_types()
-            self.report({"INFO"}, f"Installed; {len(made)} chunk node type(s) now available")
+            redone = _recook_waiting(self._chunks)
+            message = (f"Installed; {len(made)} chunk node type(s) now available"
+                       + (f", {redone} chunk(s) recooked" if redone else ""))
+            logger.info("usd_chunks: %s", message)
+            self.report({"INFO"}, message)
         else:
             self.report({"ERROR"}, "Installing chunk dependencies failed -- see the console")
+        _redraw()
         return {"FINISHED"}
+
+
+def _recook_waiting(modules: set) -> int:
+    """Re-execute the open network's chunks of these modules; how many.
+
+    They loaded and cooked while the install was still a question -- a chunk that needs
+    the package places nothing without it (Scatter Points) -- so nothing else would cook
+    them again once it is there.
+    """
+    scene = chunk_registry.ChunkRegistry().scene
+    if scene is None:
+        return 0
+    waiting = [c for c in scene.get_chunks()
+               if (module := c.get_chunk_module()) and module.module_name in modules]
+    # Batched: they are often chained (Grow Near reads an earlier scatter), and one
+    # execute() at a time recooked everything below each of them again.
+    with chunk_cook.batched_solve():
+        for c in waiting:
+            c.execute()
+    return len(waiting)
+
+
+def draw_missing(layout, context) -> None:
+    """The sidebar's Missing dependencies box: what the open network still waits for.
+
+    Chunks used in the open network come first and by name; the rest of the library only
+    as a count, so one missing package for one Scatter is not buried under a dozen chunks
+    nobody placed.
+    """
+    if _status["running"] or not (missing := _still_missing(_missing)):
+        return
+    used = _used_modules()
+    box = layout.box()
+    box.label(text="Missing dependencies", icon="ERROR")
+    for chunk_name in sorted(set(missing) & used):
+        box.label(text=f"{chunk_name}: {', '.join(missing[chunk_name])}")
+    if others := len(set(missing) - used):
+        box.label(text=f"+ {others} chunk(s) not in this network")
+    if not _online():
+        box.prop(context.preferences.system, "use_online_access")
+    box.operator(USDCHUNKS_OT_install_dependencies.bl_idname, text="Install...", icon="IMPORT")
+
+
+def _used_modules() -> set:
+    """The module names of the chunks in the open network."""
+    scene = chunk_registry.ChunkRegistry().scene
+    return {m.module_name for c in (scene.get_chunks() if scene else ())
+            if (m := c.get_chunk_module())}
+
+
+def _online() -> bool:
+    return getattr(bpy.app, "online_access", True)
 
 
 def _names(item) -> str:
@@ -203,3 +298,4 @@ def unregister() -> None:
     if bpy.app.timers.is_registered(_offer_pending):
         bpy.app.timers.unregister(_offer_pending)
     _pending.clear()
+    _missing.clear()

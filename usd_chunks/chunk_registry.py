@@ -489,7 +489,13 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
 
         for package in requirements:
             if self.package_in_cache(package):
-                continue
+                if self._still_installed(package):
+                    continue
+                # The cache file outlived the package: removed by hand, or recorded by a
+                # session that had another folder on sys.path. Trusted, it skipped the
+                # install prompt and the chunk fell back or failed on import -- Blender's
+                # Scatter Points ran its pure-Python path for minutes that way.
+                self._forget(package)
 
             # One `pip list` per process, not one per chunk that misses. A package that is
             # genuinely absent stays absent for every chunk that wants it, and each of those
@@ -629,6 +635,21 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         for p in pip_packages:
             pname, pversion = self.package_info(p)
             self._cache[pname].add(pversion)
+
+    @staticmethod
+    def _still_installed(package) -> bool:
+        """Whether this Python can still see `package`'s distribution on sys.path."""
+        try:
+            distribution_version(split_requirement(package)[0])
+        except PackageNotFoundError:
+            return False
+        return True
+
+    def _forget(self, package) -> None:
+        """Drop every cached version of `package`, so the next lookup asks pip again."""
+        wanted = _normalise_package(split_requirement(package)[0])
+        for cached in [c for c in self._cache if _normalise_package(c) == wanted]:
+            del self._cache[cached]
 
     def package_in_cache(self, package):
         """Whether `package` -- a requirement, range and all -- is satisfied by the cache.

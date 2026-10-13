@@ -788,3 +788,22 @@ def test_viewport_proxy_is_a_purpose_split_subset(mode) -> None:
     assert full.GetPrototypesRel().GetTargets()[0].HasPrefix("/ScatterInstancer")
     if mode == "Bounds":
         assert stage.GetPrimAtPath(targets[0]).IsA(UsdGeom.Cube)
+
+
+def test_without_scipy_it_places_nothing_and_says_why(monkeypatch) -> None:
+    """scipy is a requirement: without it the spacing tests ran in Python, and a full
+    scene cooked for minutes -- in Blender, long enough that the install prompt waiting for
+    an idle moment never came. So a cook with no scipy places nothing and names it."""
+    stage, mod, scatter = _bootstrap()
+    # First: setting the params below cooks the chunk too.
+    monkeypatch.setattr(mod.module, "find_spec", lambda name: None)
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/proto_a")
+    _set_proto(scatter, "/proto_a")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 100
+
+    mod.module.execute(scatter)
+
+    assert not stage.GetPrimAtPath("/ScatterInstancer")
+    assert "needs scipy" in scatter.get_param("readout").value

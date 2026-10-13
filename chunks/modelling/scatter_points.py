@@ -33,6 +33,7 @@ import math
 import random
 import re
 from dataclasses import dataclass, field, replace
+from importlib.util import find_spec
 
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
@@ -1961,6 +1962,16 @@ def execute(node):
     Transform wired after Scatter, re-offsetting the same mesh) can't leak into this read
     regardless of what triggered this execute().
     """
+    # scipy is a requirement, not an extra: without its KD-tree the spacing tests run in
+    # Python, and a full scene cooks for minutes -- while Blender's install prompt, which
+    # waits for an idle moment, cannot appear. Place nothing until it is installed; the
+    # prompt recooks this chunk after a yes.
+    if find_spec("scipy") is None:
+        if readout := node.get_param("readout"):
+            readout.value = "needs scipy -- install it when asked, or pip install scipy"
+        logger.warning("Scatter Points %s placed nothing: scipy is not installed", node.name)
+        return
+
     stage = node.get_stage()
 
     is_f = chunk.is_param_t(float)
@@ -2876,7 +2887,10 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         # The mesh maths runs on arrays -- see `_TriangleSoup` for what it replaced and why.
-        requirements=["numpy>=2,<3"],
+        # scipy's KD-tree is what keeps spacing and Grow Near fast: without it the fallbacks
+        # test each candidate against every placed point in Python, which on a full road
+        # scene ran for minutes in Blender (whose Python had no scipy) instead of seconds.
+        requirements=["numpy>=2,<3", "scipy>=1.11,<2"],
         description=(
             "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
             "\n"
