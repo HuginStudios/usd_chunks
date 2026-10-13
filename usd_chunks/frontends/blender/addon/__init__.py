@@ -981,6 +981,7 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         dependencies.draw_progress(layout)
+        dependencies.draw_missing(layout, context)
         tree = _active_tree()
         view = get_view()
         layout.operator(USDCHUNKS_OT_new_network.bl_idname, icon="ADD")
