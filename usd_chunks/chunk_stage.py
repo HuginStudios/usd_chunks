@@ -8304,6 +8304,78 @@ def _forward_button_click(inner_param: core.ChunkParamBase, context_param: core.
     )
 
 
+def _wire_loft_sync(param: core.ChunkParamBase, context_param: core.ChunkParamBase) -> None:
+    """Keep a lofted param and the inner param it fronts in step, both ways.
+
+    Shared by loft_param_to_context and _restore_lofted_params, so a reopened group syncs
+    exactly like a freshly lofted one. The restore once wired only the downward half: after
+    a reopen, an edit to the inner param (its own widget, a gizmo, a script) cooked but
+    never reached the group's interface attribute -- the one the file saves and the next
+    load reads back -- so the edit was silently undone on the following save and open.
+    """
+    # Forward value changes from the context interface param back through the inner param
+    # so that the inner chunk's callbacks fire. _on_objects_changed is suppressed during
+    # the USD write, so we bridge the gap with a direct Python callback.
+    #
+    # The closure must be kept alive for as long as context_param lives -- NoticeConnection
+    # stores plain functions as weakrefs, so without a strong reference the callback is
+    # garbage-collected immediately after this function returns. Pinning it onto
+    # context_param ensures the lifetime is tied to the param itself.
+    # Shared by both directions below. Two params that write to each other are a loop, and
+    # the value check alone does not close it: a float round-trips through the USD attr as
+    # float32, so the value coming back is not always equal to the one sent, and a drag
+    # could ping-pong instead of settling. The flag makes each user-facing write produce
+    # exactly one write on the other side, whichever end it started from.
+    syncing: list = []
+
+    def _forward_to_inner(_owner, _notice, _sender=None):
+        if syncing:
+            return
+        syncing.append(True)
+        try:
+            val = context_param.value
+            if val is not None and param.value != val:
+                param.value = val
+        finally:
+            syncing.clear()
+
+    def _forward_to_context(_owner, _notice, _sender=None):
+        """The mirror: what anything else writes to the inner param shows on the interface.
+
+        Without it the loft only ever pushed downward, so a group published a param that
+        showed a stale value the moment the inner chunk was driven by anything else -- a
+        gizmo drag being the way it was noticed (chunk_gizmo writes `param.value`, exactly
+        like a user would), but a script or another chunk writing that param left the
+        group's interface just as wrong, and a saved file recorded the stale number.
+        """
+        if syncing or getattr(context_param, "_deleting", False):
+            return
+        syncing.append(True)
+        try:
+            val = param.value
+            if val is not None and context_param.value != val:
+                context_param.value = val
+        finally:
+            syncing.clear()
+
+    context_param._loft_fwd = _forward_to_inner  # strong-ref pin
+    context_param.add_callback(
+        _forward_to_inner,
+        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+    # Pinned on the INNER param, whose lifetime this direction follows -- same reason the
+    # forward closure is pinned on the context param.
+    param._loft_back = _forward_to_context
+    param.add_callback(
+        _forward_to_context,
+        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+
+
 def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -8394,67 +8466,7 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
     context_param._chunk_parent = None
     context_param._connect_param_attr(context_attr)
 
-    # Forward value changes from the context interface param back through the inner param
-    # so that the inner chunk's callbacks fire. _on_objects_changed is suppressed during
-    # the USD write, so we bridge the gap with a direct Python callback.
-    #
-    # The closure must be kept alive for as long as context_param lives -- NoticeConnection
-    # stores plain functions as weakrefs, so without a strong reference the callback is
-    # garbage-collected immediately after this function returns. Pinning it onto
-    # context_param ensures the lifetime is tied to the param itself.
-    # Shared by both directions below. Two params that write to each other are a loop, and
-    # the value check alone does not close it: a float round-trips through the USD attr as
-    # float32, so the value coming back is not always equal to the one sent, and a drag
-    # could ping-pong instead of settling. The flag makes each user-facing write produce
-    # exactly one write on the other side, whichever end it started from.
-    syncing: list = []
-
-    def _forward_to_inner(_owner, _notice, _sender=None):
-        if syncing:
-            return
-        syncing.append(True)
-        try:
-            val = context_param.value
-            if val is not None and param.value != val:
-                param.value = val
-        finally:
-            syncing.clear()
-
-    def _forward_to_context(_owner, _notice, _sender=None):
-        """The mirror: what anything else writes to the inner param shows on the interface.
-
-        Without it the loft only ever pushed downward, so a group published a param that
-        showed a stale value the moment the inner chunk was driven by anything else -- a
-        gizmo drag being the way it was noticed (chunk_gizmo writes `param.value`, exactly
-        like a user would), but a script or another chunk writing that param left the
-        group's interface just as wrong, and a saved file recorded the stale number.
-        """
-        if syncing or getattr(context_param, "_deleting", False):
-            return
-        syncing.append(True)
-        try:
-            val = param.value
-            if val is not None and context_param.value != val:
-                context_param.value = val
-        finally:
-            syncing.clear()
-
-    context_param._loft_fwd = _forward_to_inner  # strong-ref pin
-    context_param.add_callback(
-        _forward_to_inner,
-        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-        send_on_create=False,
-        private=True,
-    )
-    # Pinned on the INNER param, whose lifetime this direction follows -- same reason the
-    # forward closure is pinned on the context param.
-    param._loft_back = _forward_to_context
-    param.add_callback(
-        _forward_to_context,
-        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-        send_on_create=False,
-        private=True,
-    )
+    _wire_loft_sync(param, context_param)
     _mirror_menu_items(param, context_param)
     _forward_button_click(param, context_param)
 
@@ -8879,18 +8891,10 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
                 private=True,
             )
 
-            def _forward_to_inner(_owner, _notice, _sender=None, _ip=inner_param, _cp=context_param):
-                val = _cp.value
-                if val is not None and _ip.value != val:
-                    _ip.value = val
-
-            context_param._loft_fwd = _forward_to_inner
-            context_param.add_callback(
-                _forward_to_inner,
-                notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-                send_on_create=False,
-                private=True,
-            )
+            # As in loft_param_to_context: clone() carries the inner chunk over as the cached
+            # parent, and the param now lives on the group.
+            context_param._chunk_parent = None
+            _wire_loft_sync(inner_param, context_param)
 
             # Deliver the restored value down to the inner param once, by hand. The inner
             # param's own _connect_param_attr deliberately leaves its value alone when it
@@ -8902,6 +8906,6 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # Reference chunk, which cooks to no reference and renders an empty stage --
             # while USD and the lofted UI both showed the saved value. Seeding here is
             # before the execute pass, so the first cook already sees the real value.
-            _forward_to_inner(None, None)
+            context_param._loft_fwd(None, None)
             _mirror_menu_items(inner_param, context_param)
             _forward_button_click(inner_param, context_param)
