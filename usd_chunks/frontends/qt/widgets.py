@@ -808,7 +808,12 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return self.text.setText(str(value))
 
     def set_hidden(self, val: bool):
-        self.setHidden(val)
+        # __init__ applies state before add_widget has parented this, and a show then is a
+        # top-level window's full show -- WA_DontShowOnScreen only keeps it off screen. That
+        # was ~1.4 ms per LineEdit for nothing: the row's layout shows it once it is
+        # parented. A hide is still applied, so a HIDDEN param stays hidden when added.
+        if val or self.parentWidget() is not None:
+            self.setHidden(val)
 
     def set_enabled(self, val: bool):
         self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
