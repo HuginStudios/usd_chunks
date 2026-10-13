@@ -153,6 +153,10 @@ def flush(force: bool = False) -> None:
     was_flushing, _flushing = _flushing, True
     # The scene's state as skip_cook last read it here; only a cook changes it in between.
     states: list = []
+    # The outermost flush's masked cooks share one cook stage, dropped as it ends.
+    share = None if was_flushing else skip_cook.sharing()
+    if share is not None:
+        share.__enter__()
     try:
         rounds = 0
         while True:
@@ -191,6 +195,8 @@ def flush(force: bool = False) -> None:
                     chunk._cook()
     finally:
         _flushing = was_flushing
+        if share is not None:
+            share.__exit__(None, None, None)
     # The outermost flush, outside a batch (which runs its own): what was deferred until
     # the cooks were done. Each may solve again, which flushes and runs its own.
     if not was_flushing and _batch_deferred is None:

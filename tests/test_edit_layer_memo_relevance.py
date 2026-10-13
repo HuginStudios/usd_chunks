@@ -161,12 +161,11 @@ def test_layer_stack_changes_invalidate_even_without_paths():
     stage.UnmuteLayer(sub.identifier)
     assert cap.any_affected(), "unmute"
 
-    # Until the memo is rebuilt, every round keeps reading as relevant: the stack differs
-    # from the one the memo was built against. Rebuild it, and an irrelevant round is a
-    # no-op again.
-    cap.clear()
-    stage.GetPrimAtPath("/geo").CreateAttribute("inputs:tz", Sdf.ValueTypeNames.Float).Set(1.0)
-    assert cap.any_affected(), "stale memo: stack changed since it was built"
+    # Each of those rounds is what drops the memo (_on_objects_changed acts on the answer
+    # straight away), so nothing waits on a later round to notice the stack moved: rebuilt,
+    # an irrelevant round is a no-op again. Only the muted set is compared against the one
+    # the memo was built with -- comparing the whole stack cost a layer per chunk on every
+    # notice, for the one change ("/") that already announces itself.
     chunk_stage.invalidate_edit_layer_memo()
     nearest_upstream_edit_layer(stage, b)
     cap.clear()

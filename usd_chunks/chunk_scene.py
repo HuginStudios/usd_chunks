@@ -503,6 +503,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Returns:
             Every container chunk.
         """
+        # Reused until something is added or removed anywhere, as get_chunks is.
+        key = (NameSyncedContainer.generation, id(self.chunks))
+        cached = getattr(self, "_contexts_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
         seen: set = set()
         res: list = []
         stack: list = list(self.chunks.get_my_params())
@@ -514,7 +519,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             if i.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 res.append(i)
             stack.extend(i.get_my_params())
-        return tuple(res)
+        res = tuple(res)
+        object.__setattr__(self, "_contexts_cache", (key, res))
+        return res
 
     def get_chunks(self) -> tuple[ChunkBase, ...]:
         """Every chunk that is a node in some graph, nested chunkgroups included.
@@ -529,6 +536,13 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             The chunks.
         """
         root = self.peek_root_context()
+        # Reused until a chunk is added or removed anywhere: the stage sync asks on every USD
+        # notice, often several times, and a fresh walk each time made building or opening a
+        # network cost the square of its size.
+        key = (NameSyncedContainer.generation, id(self.chunks), id(root))
+        cached = getattr(self, "_chunks_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
         seen: set = set()
         res: list = []
         stack: list = list(self.chunks.get_my_params())
@@ -550,7 +564,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                     # A nested ChunkGroup is a node in this graph AND a container: include
                     # it and recurse so its sub-chunks stay reachable.
                     stack.extend(i.get_my_params())
-        return tuple(res)
+        res = tuple(res)
+        # Past the attribute hooks: a cache is not scene state, and must not send notices.
+        object.__setattr__(self, "_chunks_cache", (key, res))
+        return res
 
     def clear_chunk_selection(self):
         """Clear the chunk selection."""
@@ -1172,8 +1189,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         stage = self.get_stage()
         context_path = str(Sdf.Path(chunk_stage.get_chunk_prim_path(target)).GetParentPath())
-        by_path = {chunk_stage.get_chunk_prim_path(c): c for c in (*self.get_contexts(), *self.get_chunks())}
-        context = by_path.get(context_path)
+        # The graph a chunk is in is a context, so only contexts are looked through: a map of
+        # every chunk, built once per chunk placed, made building a network quadratic.
+        context = next(
+            (c for c in self.get_contexts() if chunk_stage.get_chunk_prim_path(c) == context_path),
+            None,
+        )
         slot = engine.read_active_slot(stage, context_path)
         view = chunk_stage.find_view_chunk_for_slot(slot, stage, self, context) if slot else None
         return context_path, context, slot, view
@@ -1191,8 +1212,12 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         elif (layers := chunk_registry.ChunkLayerManager()).initialized:
             # No View to put the layers in chain order, so each new chunk's layer would keep
             # the place it got when made -- before it was wired -- and an upstream chunk's
-            # opinions would win over it.
-            chunk_stage.sort_chunk_layers(layers, self.get_chunks())
+            # opinions would win over it. Once per batch: sorting ranks every chunk, and a
+            # script building in a change_block placed hundreds before anything reads the order.
+            def sort():
+                chunk_stage.sort_chunk_layers(layers, self.get_chunks())
+            if not chunk_cook.defer_to_batch_end(("sort_chunk_layers", id(self)), sort):
+                sort()
 
     def enter_chunk(self, target: ChunkBase) -> None:
         """`with target:` -- a chunkgroup takes what is created inside as its children;

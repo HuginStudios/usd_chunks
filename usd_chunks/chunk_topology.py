@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import weakref
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from pxr import Sdf, Usd
@@ -126,11 +126,13 @@ def invalidate_edit_layer_memo() -> None:
     _edit_layer_memo.clear()
 
 
-_edit_layer_memo_layer_stack: list[str] = []
+_edit_layer_memo_muted: frozenset[str] = frozenset()
 
 
 def edit_layer_memo_affected(
-    notice: Usd.Notice.ObjectsChanged, chunk_prim_paths: Iterable[str]
+    notice: Usd.Notice.ObjectsChanged,
+    chunk_prim_paths: Iterable[str] = (),
+    has_chunk_under: Callable[[str], bool] | None = None,
 ) -> bool:
     """Whether this change round can move any nearest_upstream_edit_layer answer.
 
@@ -139,9 +141,8 @@ def edit_layer_memo_affected(
     answer moves only when one of those moves: an exec connection or a marker (a property
     by one of two names), a chunk prim appearing or going, or the layer stack itself
     (a sublayer edit, which USD reports as an info change on "/", or a mute, which it
-    reports with no paths, or with only the driven prims the layer held -- so the stack is
-    compared to what it was when the memo was built, a muted layer having dropped out of
-    GetLayerStack).
+    reports with no paths, or with only the driven prims the layer held -- so the muted
+    layers are compared to what they were when the memo was built).
 
     Everything else is what a scene load mostly consists of: a chunk writing the prims it
     drives. On a four-node scene, 755 change rounds during a load touch no chunk prim at
@@ -157,6 +158,9 @@ def edit_layer_memo_affected(
         notice: The stage's ObjectsChanged notice.
         chunk_prim_paths: What the sync knows to be chunk prims, so a resync of an ancestor
             of one counts (the prim under it may be gone).
+        has_chunk_under: The same question asked as a lookup -- whether a known chunk prim
+            lies below a path -- in place of scanning chunk_prim_paths for it, which cost
+            the size of the scene on every notice.
 
     Returns:
         True if the memo must be dropped.
@@ -170,10 +174,18 @@ def edit_layer_memo_affected(
     info = notice.GetChangedInfoOnlyPaths()
     if not resynced and not info:
         return True
-    stack = [layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)]
-    if stack != _edit_layer_memo_layer_stack:
+    # A sublayer edit reports "/", caught below; what reaches here unannounced is a mute, so
+    # the muted set is compared rather than the whole stack -- which costs a layer per chunk
+    # on every notice, and which a chunk's own layer coming and going (internal, exempt from
+    # dropping the memo) used to change, dropping it on the next notice anyway.
+    if frozenset(stage.GetMutedLayers()) != _edit_layer_memo_muted:
         return True
-    known = list(chunk_prim_paths)
+    if has_chunk_under is None:
+        known = list(chunk_prim_paths)
+
+        def has_chunk_under(path_str: str) -> bool:
+            prefix = path_str + "/"
+            return any(known_path.startswith(prefix) for known_path in known)
     for path in (*resynced, *info):
         if path.IsPropertyPath():
             if path.name in (_EXEC_INPUT, _EDIT_TARGET_MARKER):
@@ -187,8 +199,7 @@ def edit_layer_memo_affected(
         path_str = str(path)
         if prim.GetTypeName() == _CHUNK_PRIM_TYPENAME or path_str == _CHUNKS_ROOT:
             return True
-        prefix = path_str + "/"
-        if any(known_path.startswith(prefix) for known_path in known):
+        if has_chunk_under(path_str):
             return True
     return False
 
@@ -271,7 +282,7 @@ def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | 
     # Authoring against that layer loses the write; migrating a chunk into it strips the
     # chunk's prim from the stage it is actually on. The memo serves one stage at a time, so
     # a different stage starts a new one.
-    global _edit_layer_memo_stage, _edit_layer_memo_layer_stack
+    global _edit_layer_memo_stage, _edit_layer_memo_muted
     memo = _edit_layer_memo
     current = _edit_layer_memo_stage() if _edit_layer_memo_stage is not None else None
     if current is not stage:
@@ -284,14 +295,12 @@ def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | 
         else:
             _edit_layer_memo.clear()
             _edit_layer_memo_stage = weakref.ref(stage)
-    # The layer stack every answer about to be memoised is computed against. Taken as the
-    # memo starts filling (not on each notice), so a stack change that happened while the
-    # memo was empty -- or under a frozen block -- is still seen by edit_layer_memo_affected
-    # as a difference from this, whichever notice comes next.
+    # The muted layers every answer about to be memoised is computed against. Taken as the
+    # memo starts filling (not on each notice), so a mute that happened while the memo was
+    # empty is still seen by edit_layer_memo_affected as a difference from this, whichever
+    # notice comes next. A sublayer edit needs no snapshot: USD reports it as a change on "/".
     if memo is _edit_layer_memo and not memo:
-        _edit_layer_memo_layer_stack = [
-            layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)
-        ]
+        _edit_layer_memo_muted = frozenset(stage.GetMutedLayers())
 
     key = str(prim.GetPath())
     if (memoised := memo.get(key)) is not None:

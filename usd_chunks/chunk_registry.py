@@ -43,7 +43,7 @@ try:
 except ImportError:  # pragma: no cover - packaging ships with pip
     SpecifierSet = Version = InvalidSpecifier = InvalidVersion = sys_tags = None
 
-from usd_chunks import chunk_cache, chunk_cook, chunk_layers, chunk_scheduler, cook_cache
+from usd_chunks import chunk_cache, chunk_cook, chunk_layers, chunk_scheduler, cook_cache, skip_cook
 from usd_chunks.chunk_process import python_executable
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -2111,8 +2111,8 @@ def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
     return layer.identifier in ChunkLayerManager().internal_layer_ids
 
 
-def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
-    """Parent's subLayerPaths with identifier dropped, order preserved, duplicates collapsed.
+def _without_sublayers(parent: Sdf.Layer, identifiers: set) -> list:
+    """Parent's subLayerPaths with identifiers dropped, order preserved, duplicates collapsed.
 
     Both the "drop every occurrence" and the de-dup matter, because an anonymous layer's
     identifier embeds its address (anon:<address>:<tag>) and addresses get recycled: once a
@@ -2125,7 +2125,7 @@ def _without_sublayer(parent: Sdf.Layer, identifier: str) -> list:
     seen: set = set()
     return [
         p for p in parent.subLayerPaths
-        if p != identifier and not (p in seen or seen.add(p))
+        if p not in identifiers and not (p in seen or seen.add(p))
     ]
 
 
@@ -2187,6 +2187,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # Hashes of chunks whose layer has been torn down. Never served a layer again, so a
         # notice fired by the teardown itself can't resurrect one -- see _chunk_deleted.
         self._retired_chunks: set = set()
+        # Chunk hash -> identifier of the graph layer get_or_create_layer last saw its layer in.
+        self._confirmed_in: dict[core.ChunkHash, str] = {}
+        # Layers of chunks deleted inside holding_deletes, taken off the stage at its end.
+        self._held_deletes: list[Sdf.Layer] | None = None
         # Chunks whose layer exists but waits to be placed, while defer_placement is on; None
         # when it is off.
         self._deferred_placement: dict[core.ChunkHash, weakref.ReferenceType] | None = None
@@ -2214,6 +2218,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.internal_layer_ids: set = set()
 
         # When initialized, the stage may be None as the chunks are loaded prior to loading the stage
+        if getattr(self, "stage", None) is not stage:
+            skip_cook.release_cook_stage()  # kept for the stage this manager had before
         self.stage: Usd.Stage = stage
 
         self.initialized = True
@@ -2225,6 +2231,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         leak into the new one. Keeps this class the single owner of its private field list --
         callers must not clear fields directly.
         """
+        # The cook stage kept between cooks holds the old stage's layers, and hears them.
+        skip_cook.release_cook_stage()
         self.initialized = False
         self.stage = None
         self.chunk_layers = {}
@@ -2233,6 +2241,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._chunk_target = {}
         self._chunk_graph_key = {}
         self._retired_chunks = set()
+        self._confirmed_in = {}
+        self._held_deletes = None
         self._deferred_placement = None
         self._loading_layer = None
         self._drop_deactivations()
@@ -2510,23 +2520,31 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 if parent.identifier not in target.subLayerPaths:
                     target.subLayerPaths.insert(0, parent.identifier)
 
-            # The sort_key is used to determine the order of the chunk sublayers
-            index = chunk_scheduler.layer_sort_key(c.get_dag_node())
-            if index > len(parent.subLayerPaths) - 1:
-                index = len(parent.subLayerPaths)
-
-            # Reverse the order
-            index = len(parent.subLayerPaths) - index
+            def insert_index() -> int:
+                # The sort_key is used to determine the order of the chunk sublayers
+                count = len(parent.subLayerPaths)
+                index = chunk_scheduler.layer_sort_key(c.get_dag_node())
+                if index > count - 1:
+                    index = count
+                # Reverse the order
+                return count - index
 
             layer = self.get_layer(c)
+            chunk_hash = c.get_hash()
 
             if not layer:
                 if self.is_muted(c):
                     return
-                layer = self.add_layer(parent, c, index)
-
-            if layer.identifier not in parent.subLayerPaths:
-                parent.subLayerPaths.insert(index, layer.identifier)
+                layer = self.add_layer(parent, c, insert_index())
+            elif self._confirmed_in.get(chunk_hash) != parent.identifier:
+                # Only when this manager has not already seen the layer in this parent: every
+                # read of subLayerPaths copies the whole list out of C++, a graph layer holds a
+                # layer per chunk, and this runs on every get_edit_context -- so checking each
+                # time made every call cost the size of the graph. Only this manager moves a
+                # chunk layer between graph layers, and each move goes through here.
+                if layer.identifier not in list(parent.subLayerPaths):
+                    parent.subLayerPaths.insert(insert_index(), layer.identifier)
+            self._confirmed_in[chunk_hash] = parent.identifier
 
             # If a chunk connection changed after the chunk layer was created, the layer may have been
             # added to a new graph. This can be cleaned up as to not sublayer the chunk layer twice.
@@ -2562,6 +2580,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                                 gtarget.subLayerPaths.remove(pl.identifier)
                             self.graph_layers.pop(gkey, None)
                             self.internal_layer_ids.discard(pl.identifier)
+                            # Its address can be handed to a new layer, identifier and all.
+                            self._confirmed_in = {
+                                h: ident for h, ident in self._confirmed_in.items()
+                                if ident != pl.identifier
+                            }
                             break
         finally:
             chunk_notice._usd_write_active = prev_w
@@ -3012,18 +3035,50 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._retired_chunks.add(chunk_hash)
         self._chunk_target.pop(chunk_hash, None)
         self._chunk_graph_key.pop(chunk_hash, None)
+        self._confirmed_in.pop(chunk_hash, None)
         if not (layer := self.get_layer(chunk_hash)):
             return
+        self.chunk_layers.pop(chunk_hash, None)
+        if self._held_deletes is not None:
+            # Held, not dropped: the list keeps the layer alive, so its address -- and with it
+            # its identifier -- cannot be recycled before holding_deletes takes it off.
+            self._held_deletes.append(layer)
+        else:
+            self._remove_layers([layer])
 
-        layer_hierarchy: dict[Sdf.Layer, Sdf.Layer] = {}
+    @contextlib.contextmanager
+    def holding_deletes(self):
+        """Take the layers of chunks deleted inside this block off the stage together, at its end.
+
+        Each layer taken off on its own recomposes the whole stage, twice with the mute, so
+        deleting every chunk of a big network one by one cost the square of its size -- most
+        of the time closing a 900-chunk scene took. Nested blocks join the outermost.
+        """
+        if self._held_deletes is not None:
+            yield
+            return
+        self._held_deletes = []
+        try:
+            yield
+        finally:
+            held, self._held_deletes = self._held_deletes, None
+            if held:
+                self._remove_layers(held)
+
+    def _remove_layers(self, layers: list) -> None:
+        """Take deleted chunks' layers off the stage: one mute, one write per parent, one unmute."""
+        ids = {layer.identifier for layer in layers}
 
         # Muted first, as a disable would, and outside the guard below: a mute reports each
         # property it takes away, so what the layer held on other chunk prims -- an Override
         # Chunk Prim's `over`s -- goes back through the stage mirror like any edit. Dropping
         # it from subLayerPaths reports only the root, which names nothing.
-        muted_here = bool(self.stage and not layer.empty and not self.stage.IsLayerMuted(layer.identifier))
+        muted_here = [
+            layer.identifier for layer in layers
+            if self.stage and not layer.empty and not self.stage.IsLayerMuted(layer.identifier)
+        ]
         if muted_here:
-            self.stage.MuteLayer(layer.identifier)
+            self.stage.MuteAndUnmuteLayers(muted_here, [])
 
         # subLayerPaths edits below are plain Sdf writes that fire StageContentsChanged
         # like any other stage edit. Without this guard, each one re-enters
@@ -3033,27 +3088,29 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         prev_w = chunk_notice._usd_write_active
         chunk_notice._usd_write_active = True
         try:
+            layer_hierarchy: dict[Sdf.Layer, Sdf.Layer] = {}
+            parents: list[Sdf.Layer] = []
             for parent, sublayer in self.iter_chunk_layers():
                 layer_hierarchy[sublayer] = parent
+                if sublayer.identifier in ids and parent not in parents:
+                    parents.append(parent)
+            for parent in parents:
+                sublayer_paths = _without_sublayers(parent, ids)
 
-                if sublayer == layer:
-                    sublayer_paths = _without_sublayer(parent, layer.identifier)
+                if len(sublayer_paths) == 0 and (p := layer_hierarchy.get(parent)):
+                    if parent.identifier in p.subLayerPaths:
+                        p.subLayerPaths.remove(parent.identifier)
 
-                    if len(sublayer_paths) == 0 and (p := layer_hierarchy.get(parent)):
-                        if parent.identifier in p.subLayerPaths:
-                            p.subLayerPaths.remove(parent.identifier)
-
-                    parent.subLayerPaths = sublayer_paths  # type: ignore
+                parent.subLayerPaths = sublayer_paths  # type: ignore
             if muted_here:
                 # Out of the stage's muted set too: the identifier embeds an address, and a
                 # recycled one would bring some later layer up muted.
-                self.stage.UnmuteLayer(layer.identifier)
+                self.stage.MuteAndUnmuteLayers([], muted_here)
         finally:
             chunk_notice._usd_write_active = prev_w
-        self.chunk_layers.pop(chunk_hash, None)
         # Dropped with the mapping: the identifier embeds an address, and addresses are
         # recycled, so a leftover entry would eventually claim an unrelated layer.
-        self.internal_layer_ids.discard(layer.identifier)
+        self.internal_layer_ids -= ids
 
     def _flags_changed(self, notice, sender):
         c = sender

@@ -308,13 +308,14 @@ def chunk_pass(prim: Usd.Prim) -> Sdf.Layer | None:
         came in through a reference, payload or inherit).
     """
     stage = prim.GetStage()
-    stack = {layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)}
     path = prim.GetPath()
     found = None
     for spec in prim.GetPrimStack():  # strongest first
         if spec.path != path or spec.specifier != Sdf.SpecifierDef:
             continue
-        if spec.layer.identifier not in stack or chunk_registry.is_chunk_internal_layer(spec.layer):
+        # Asked of the stage, not of a set built from GetLayerStack per call: the stack holds
+        # a layer per chunk, so building it made every call cost the size of the scene.
+        if not stage.HasLocalLayer(spec.layer) or chunk_registry.is_chunk_internal_layer(spec.layer):
             continue
         found = spec.layer
     return found
@@ -1927,7 +1928,7 @@ def _mint_suffix(node, prim, stage) -> str:
     """
     readable = _readable(node)
     seed = str(prim.GetPath()) if prim is not None else readable
-    taken = _recorded_suffixes(stage, prim)
+    taken = _recorded_suffixes(stage, prim, node)
     for salt in range(1000):
         digest = hashlib.sha1(f"{seed}#{salt}".encode()).hexdigest()[:8]
         candidate = f"{readable}_{digest}"
@@ -1938,10 +1939,42 @@ def _mint_suffix(node, prim, stage) -> str:
     return f"{readable}_{uuid.uuid4().hex[:8]}"
 
 
-def _recorded_suffixes(stage, prim) -> set:
-    """Every op suffix already recorded on a chunk prim in this stage, bar this chunk's."""
+def _recorded_suffixes(stage, prim, node=None) -> set:
+    """Every op suffix already recorded on a chunk prim in this stage, bar this chunk's.
+
+    Read from the scene's chunks when the stage is the scene's: walking the stage visited
+    every prim of every asset to find the few that are chunks, once per chunk minting, which
+    made placing assets cost the square of the scene. The suffix lives on the chunk prim's
+    bookkeeping, so a chunk outside the active view -- its layer muted -- still counts.
+    """
     if stage is None:
         return set()
+    scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
+    if scene is not None and scene.get_stage() == stage:
+        suffixes = set()
+        for other in scene.get_chunks():
+            if other is node:
+                continue
+            # Resolved once per chunk and kept on it (_stable_suffix); the prim is the
+            # record for one that has not needed its op yet this session.
+            if not (value := getattr(other, "_xform_op_suffix", None)):
+                # A chunk whose prim was seen to hold none keeps holding none: only the chunk
+                # itself records one, and it keeps what it records in _xform_op_suffix too.
+                # Without this, every mint read the prim of every chunk that never authors an
+                # op (a Reference, a colour), and placing assets cost the square of the scene.
+                where = getattr(other, "_exec_prim_path", None) or getattr(other, "prim_path", None)
+                if where and getattr(other, "_xform_op_unrecorded_at", None) == where:
+                    continue
+                other_prim = _chunk_prim_of(stage, other)
+                if other_prim is None or other_prim == prim:
+                    continue
+                attr = other_prim.GetAttribute(XFORM_OP_ID_ATTR)
+                value = attr.Get() if attr and attr.IsValid() else None
+                if not value and where:
+                    object.__setattr__(other, "_xform_op_unrecorded_at", where)
+            if value:
+                suffixes.add(value)
+        return suffixes
     suffixes = set()
     for other in stage.TraverseAll():
         if other == prim or other.GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:

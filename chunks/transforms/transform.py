@@ -40,8 +40,12 @@ def _rescale_translate_range(node, stage):
         param = node.get_param(name)
         if param is None:
             continue
-        param.min_value = -span
-        param.max_value = span
+        # Only on a change: this runs every cook, and each assignment sends notices whether
+        # or not the value moved -- more than half of a Transform's cook, every time.
+        if param.min_value != -span:
+            param.min_value = -span
+        if param.max_value != span:
+            param.max_value = span
 
 
 def _rotation(node):

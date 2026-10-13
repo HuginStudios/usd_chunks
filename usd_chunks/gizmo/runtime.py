@@ -1679,7 +1679,11 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     stage = prim.GetStage()
     scene = getattr(ChunkRegistry(), "scene", None)
     depths: dict = {}
-    for owner in (scene.get_chunks() if scene is not None else ()):
+    # Only an op already on the prim can join the order, so with no other chunk op there,
+    # there is no one to look for -- the usual case, and asking every chunk in a big scene
+    # made each Transform cook cost the size of the scene.
+    others = any(p.GetName() != my_op for p in prim.GetPropertiesInNamespace("xformOp:transform"))
+    for owner in (scene.get_chunks() if scene is not None and others else ()):
         if owner is node:
             continue
         # Never mint here: asking whether some other chunk owns an op must not give it one.
@@ -1694,7 +1698,9 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
         if owner_prim is None:
             continue
         depths[op_name] = _exec_depth(stage, owner_prim.GetPath())
-    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node))
+    # Depth only orders this op against others; alone, it sorts the same at any depth, and
+    # measuring it walks the whole exec chain above this chunk.
+    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node)) if depths else 0
 
     # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
     # re-added below, so an op does not appear twice when a chunk's position changes.
