@@ -743,9 +743,20 @@ def change_block() -> Iterator[None]:
     cook, when the block ends. Blocks nest: an inner one joins the outermost. For a script,
     and for a module whose execute() sets many params of its own (a Wedge writing a
     variant's ranges).
+
+    Chunks created inside the block are placed in the stage's layer stack when it ends,
+    once their wiring is known (ChunkLayerManager.defer_placement), rather than each one
+    as a graph of its own first and moved when wired.
     """
     with chunk_cook.batched_solve():
-        yield
+        lm = ChunkLayerManager()
+        placing = lm.initialized and lm.defer_placement()
+        try:
+            yield
+        finally:
+            # Before the solve the block ends with: a cook needs its layer on the stage.
+            if placing:
+                lm.place_deferred_layers()
 
 
 usd_type_map = {
