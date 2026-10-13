@@ -680,13 +680,41 @@ def scene_state(stage: Usd.Stage) -> tuple:
     return (
         frozenset(stage.GetMutedLayers()),
         # Its order, too: an Edit Target repointed moves chunk layers under another layer.
-        tuple(layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)),
+        _layer_stack_ids(stage),
         tuple(
             (tuple(layer.subLayerPaths),
              tuple(sorted((key, repr(value)) for key, value in _info(layer.pseudoRoot).items())))
             for layer in layers if layer is not None
         ),
     )
+
+
+#: (the stage, weakly; its Pcp used-layers revision; its layer stack's identifiers) as last
+#: read by _layer_stack_ids.
+_stack_memo: tuple[weakref.ref, int, tuple[str, ...]] | None = None
+
+
+def _layer_stack_ids(stage: Usd.Stage) -> tuple[str, ...]:
+    """The identifiers of stage's layer stack, session layers included, in order.
+
+    Read again only when the stage's Pcp cache says its layers may have changed: a stack
+    holds a layer per chunk, scene_state is read before and after every cook, and reading
+    the whole stack each time made opening a network cost the square of its size. The
+    revision moves on any sublayer insert, removal or reorder, nested ones included, and on
+    a mute; not on authoring. Held weakly, so the memo never keeps a stage alive -- and a
+    stage can only match while it is alive, so a freed one is never mistaken for another.
+    """
+    global _stack_memo
+    pcp = getattr(stage, "_GetPcpCache", None)
+    revision = pcp().GetUsedLayersRevision() if pcp is not None else None
+    memo = _stack_memo
+    if (revision is not None and memo is not None and memo[1] == revision
+            and (seen := memo[0]()) is not None and seen == stage):
+        return memo[2]
+    ids = tuple(layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True))
+    if revision is not None:
+        _stack_memo = (weakref.ref(stage), revision, ids)
+    return ids
 
 
 # ------------------------------------------------------------------------------------------

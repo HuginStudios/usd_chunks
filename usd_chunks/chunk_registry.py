@@ -2437,12 +2437,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         write made a network of n chunks cost n recomposes of up to n layers each.
         """
         held = self.end_deferral()
-        with self._batched_sublayers():
+        with self.batched_placement():
             for c in held:
                 self.get_or_create_layer(c)
 
     @contextlib.contextmanager
-    def _batched_sublayers(self):
+    def batched_placement(self):
         """Collect graph-layer sublayer edits made inside, and write each list once at the end.
 
         Only graph layers are batched, those there already and those made meanwhile: they are
