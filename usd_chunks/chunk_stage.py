@@ -6704,6 +6704,39 @@ def _clear_cooked_groups(chunks: list[core.ChunkBase]) -> None:
             chunk_cook.clear_cook_stale(group)
 
 
+def _settle_cooked_params(chunks: list[core.ChunkBase]) -> None:
+    """Leave each chunk the load cooked with nothing pending from the load itself.
+
+    Restoring a saved value dirties its param and records why, and the load cooks with
+    solves held back -- so nothing marked those params clean again. The first edit after
+    opening then solved them along with it, and a chunk reported its own restored params
+    as changed: one that is never skipped. Rotating a car cooked the material, the lights
+    and the camera below it, and the renderer re-synced them all, once.
+
+    Only a chunk that did cook: it read every restored value, so those changes are spent.
+    One that could not (blocked, out of view, no layer yet) stays as it was, and so does
+    whatever is nested in it as a chunk of its own, which is settled as its own entry.
+
+    Args:
+        chunks: Every chunk in the scene, as for _clear_cooked_groups.
+    """
+    for chunk in chunks:
+        if not chunk.can_cook() or chunk_cook.is_cook_stale(chunk):
+            continue
+        stack: list[core.ChunkCommon] = [chunk]
+        while stack:
+            obj = stack.pop()
+            node = obj.get_dag_node()
+            node._dirty = False
+            node._changes.clear()
+            node._index = 0
+            if isinstance(obj, core.ChunkGroupBase):
+                stack.extend(
+                    p for p in obj.get_my_params()
+                    if not isinstance(p, core.ChunkBase) and hasattr(p, "get_dag_node")
+                )
+
+
 def _restore_disabled_state(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
     """Carry a prim's authored deactivation back onto the chunk it belongs to.
 
@@ -7296,6 +7329,7 @@ def _load_chunks(
                 # Settings recooks once its renderer groups exist), and a cook solves up the
                 # ownership chain, which marks a group stale all over again.
                 _clear_cooked_groups(list(scene.get_chunks()))
+                _settle_cooked_params(list(scene.get_chunks()))
             finally:
                 chunk_notice._loading_stage = old_loading_stage
                 # A load that failed part-way still leaves its layers on the stage.

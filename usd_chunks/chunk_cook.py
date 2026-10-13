@@ -313,6 +313,12 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
         deleted, or already executing).
     """
     execute = chunk._module_hook("execute")
+    # Nothing to run (a chunkgroup), so no layer to ask for: asking makes it, and a layer
+    # made puts it on the stage. Made at the end of a load, after every chunk inside had
+    # cooked, it changed the layer stack each of them recorded (skip_cook.scene_state) --
+    # and the first edit after opening cooked all of them again.
+    if execute is None:
+        return False
     # The scene's stage, not get_stage(): a cook started inside another chunk's masked
     # cook would get that chunk's inputs as its stage.
     stage = chunk.get_scene_stage()
