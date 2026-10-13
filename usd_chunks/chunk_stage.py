@@ -416,6 +416,140 @@ def _adopt_cooked_inputs(chunk: core.ChunkBase) -> None:
     ChunkStageSync()._adopt_cooked_inputs(chunk)
 
 
+def _ancestor_paths(path: str):
+    """Every ancestor of an absolute prim path, as a string, nearest first, "/" left out."""
+    end = path.rfind("/")
+    while end > 0:
+        path = path[:end]
+        yield path
+        end = path.rfind("/")
+
+
+class _PathSet(set):
+    """A set of prim paths that also knows every ancestor of them.
+
+    The stage sync asks, of each path a USD notice names, whether a chunk prim sits under
+    it -- on every notice, of which building a network sends dozens per chunk. Scanning the
+    set for a prefix made each notice cost the size of the scene; this answers by lookup.
+    Only the mutators the sync uses are kept in step; the rest refuse rather than drift.
+    """
+
+    def __init__(self, paths: Iterable[str] = ()):
+        super().__init__()
+        self._ancestors: dict[str, int] = {}
+        for path in paths:
+            self.add(path)
+
+    def add(self, path: str) -> None:
+        if path in self:
+            return
+        super().add(path)
+        for a in _ancestor_paths(path):
+            self._ancestors[a] = self._ancestors.get(a, 0) + 1
+
+    def discard(self, path: str) -> None:
+        if path not in self:
+            return
+        super().discard(path)
+        for a in _ancestor_paths(path):
+            if (n := self._ancestors[a] - 1):
+                self._ancestors[a] = n
+            else:
+                del self._ancestors[a]
+
+    def remove(self, path: str) -> None:
+        if path not in self:
+            raise KeyError(path)
+        self.discard(path)
+
+    def update(self, *others: Iterable[str]) -> None:
+        for other in others:
+            for path in other:
+                self.add(path)
+
+    def clear(self) -> None:
+        super().clear()
+        self._ancestors.clear()
+
+    def has_under(self, path: str) -> bool:
+        """Whether a path in the set lies strictly below `path`."""
+        return path in self._ancestors
+
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("_PathSet keeps its ancestors only through add/discard/remove/update/clear")
+
+    pop = difference_update = intersection_update = symmetric_difference_update = _refuse
+    __ior__ = __iand__ = __isub__ = __ixor__ = _refuse
+
+
+class _PathIndex(dict):
+    """id(chunk) -> chunk prim path, that can also be read the other way round.
+
+    By path (which chunk is at this prim) and by prefix (is any chunk under this prim) --
+    the questions each USD notice asks, which a scan of every chunk answered at the cost of
+    the scene's size per notice.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._paths = _PathSet()
+        self._ids_at: dict[str, set[int]] = {}
+
+    def _link(self, key: int, path: str) -> None:
+        ids = self._ids_at.setdefault(path, set())
+        ids.add(key)
+        self._paths.add(path)
+
+    def _unlink(self, key: int, path: str) -> None:
+        ids = self._ids_at.get(path)
+        if ids is None:
+            return
+        ids.discard(key)
+        if not ids:
+            del self._ids_at[path]
+            self._paths.discard(path)
+
+    def __setitem__(self, key: int, path: str) -> None:
+        if key in self:
+            self._unlink(key, dict.__getitem__(self, key))
+        super().__setitem__(key, path)
+        self._link(key, path)
+
+    def __delitem__(self, key: int) -> None:
+        self._unlink(key, dict.__getitem__(self, key))
+        super().__delitem__(key)
+
+    _MISSING = object()
+
+    def pop(self, key: int, default=_MISSING):
+        if key in self:
+            path = super().pop(key)
+            self._unlink(key, path)
+            return path
+        if default is _PathIndex._MISSING:
+            raise KeyError(key)
+        return default
+
+    def clear(self) -> None:
+        super().clear()
+        self._paths.clear()
+        self._ids_at.clear()
+
+    def ids_at(self, path: str) -> set[int]:
+        """The chunks registered at exactly this prim path."""
+        return self._ids_at.get(path, set())
+
+    def has_under(self, path: str) -> bool:
+        """Whether a chunk is registered strictly below `path`."""
+        return self._paths.has_under(path)
+
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("_PathIndex keeps its reverse map only through item assignment, pop and clear")
+
+    update = setdefault = popitem = _refuse
+    __ior__ = _refuse
+
+
 class ChunkStageSync(metaclass=RegistrySingleton):
     """Singleton that keeps a Chunk prim on the stage for every chunk in the scene.
 
@@ -446,8 +580,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._scene = scene
         self._reloading = False
         self._loaded_stage = None
-        self._loaded_prim_paths: set[str] = set()
-        self._chunk_prim_paths: dict[int, str] = {}  # id(chunk) → current prim path
+        self._loaded_prim_paths: set[str] = _PathSet()
+        _output_children_known.clear()
+        self._chunk_prim_paths: dict[int, str] = _PathIndex()  # id(chunk) → current prim path
         # What USD has said changed since the last scan for new chunk prims, used to scope
         # that scan -- see _on_objects_changed and _scan_for_new_chunks. Resyncs are kept
         # apart from info-only changes because they justify different amounts of looking.
@@ -656,6 +791,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _on_chunk_deleted(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
+        # Keyed by id, which a later chunk can be handed again.
+        self._sources.pop(id(sender), None)
         if self._reloading:
             # File > Open: these chunks belong to the file being *replaced*, but self._stage
             # is already the newly opened one. Everything below addresses prims by path, and
@@ -912,10 +1049,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # which flag is set. Only when the change can actually move an answer, though: a
         # chunk cooking writes hundreds of driven-prim changes that cannot, and each used
         # to cost every chunk a fresh walk of the exec chain above it.
-        if edit_layer_memo_affected(
-            notice, (*self._loaded_prim_paths, *self._chunk_prim_paths.values())
-        ):
+        if edit_layer_memo_affected(notice, has_chunk_under=self._has_chunk_under):
             invalidate_edit_layer_memo()
+        # Before the guards too: a chunk prim made during a suppressed write is still made.
+        self._forget_output_children(notice)
         # Same reasoning, and the only place the resynced paths are visible at all: the scan
         # for new chunk prims runs off StageContentsChanged, which carries no paths. USD
         # sends this notice first for a given change (locked in by
@@ -967,10 +1104,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._adopt_changed_inputs(all_changed)
         self._adopt_resynced_inputs(notice.GetResyncedPaths())
         self._prune_vanished(stage, {str(p) for p in notice.GetResyncedPaths()})
-        for chunk in self._scene.get_chunks():
+        for chunk in self._chunks_at(all_changed):
             chunk_prim_path = self._chunk_prim_paths.get(id(chunk))
-            if not chunk_prim_path or chunk_prim_path not in all_changed:
-                continue
             prim = stage.GetPrimAtPath(Sdf.Path(chunk_prim_path))
             if not prim.IsValid():
                 continue
@@ -990,6 +1125,77 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk.set_state(ChunkFlags.State.DISABLED)
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
+
+    @staticmethod
+    def _forget_output_children(notice) -> None:
+        """Drop what _output_children remembers of any child this change round touched.
+
+        A resync is how USD reports a prim made, deleted or recomposed, and an info change
+        on "/" or none at all is a layer stack change -- after which nothing is trusted.
+        """
+        known = _output_children_known
+        # A chunk's own layer or a graph layer moving in or out of the stack: they hold
+        # cook output, never a chunk prim, so no child changes what it is.
+        if not known or chunk_notice._internal_layer_write_active:
+            return
+        resynced = notice.GetResyncedPaths()
+        info = notice.GetChangedInfoOnlyPaths()
+        if not resynced and not info:
+            known.clear()
+            return
+        for path in (*resynced, *info):
+            if path == Sdf.Path.absoluteRootPath:
+                known.clear()
+                return
+            if path.IsPropertyPath() and path.name == _CHUNK_TYPE_ATTR:
+                prim_path = path.GetPrimPath()
+                known.get(str(prim_path.GetParentPath()), {}).pop(prim_path.name, None)
+        for path in resynced:
+            if path.IsPropertyPath():
+                continue
+            known.get(str(path.GetParentPath()), {}).pop(path.name, None)
+            prefix = str(path) + "/"
+            for key in [k for k in known if k == str(path) or k.startswith(prefix)]:
+                del known[key]
+
+    def _has_chunk_under(self, path: str) -> bool:
+        """Whether a chunk prim the sync knows of lies strictly below `path`."""
+        return self._loaded_prim_paths.has_under(path) or self._chunk_prim_paths.has_under(path)
+
+    def _chunk_order(self) -> dict[int, tuple[int, core.ChunkBase]]:
+        """id(chunk) -> (its place in get_chunks(), the chunk), kept while the scene is."""
+        chunks = self._scene.get_chunks()
+        cached = getattr(self, "_chunk_order_cache", None)
+        if cached is None or cached[0] is not chunks:
+            cached = (chunks, {id(c): (i, c) for i, c in enumerate(chunks)})
+            self._chunk_order_cache = cached
+        return cached[1]
+
+    def _in_scene_order(self, ids: Iterable[int]) -> list[core.ChunkBase]:
+        """The scene's chunks among `ids`, in get_chunks() order."""
+        order = self._chunk_order()
+        found = sorted(order[i] for i in set(ids) if i in order)
+        return [c for _, c in found]
+
+    def _chunks_at(self, paths: Iterable[str]) -> list[core.ChunkBase]:
+        """The scene's chunks whose prim is one of `paths`, found by lookup, not by a scan.
+
+        Each USD notice asks this, and building a network sends dozens per chunk: walking
+        every chunk to compare its path made each notice cost the size of the scene.
+        """
+        index = self._chunk_prim_paths
+        return self._in_scene_order(i for p in paths for i in index.ids_at(p))
+
+    def _chunks_under(self, roots: Iterable[str]) -> list[core.ChunkBase]:
+        """The scene's chunks at or below any of `roots` -- the walk only when one has any."""
+        index = self._chunk_prim_paths
+        ids = set()
+        for root in roots:
+            ids.update(index.ids_at(root))
+            if index.has_under(root):
+                prefix = root.rstrip("/") + "/"
+                ids.update(i for i, p in index.items() if p.startswith(prefix))
+        return self._in_scene_order(ids)
 
     def _prune_vanished(self, stage: Usd.Stage, resynced: set[str]) -> None:
         """Tear down the chunk objects whose prims composition no longer has.
@@ -1012,10 +1218,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not resynced or not self._scene:
             return
         gone = []
-        for chunk in self._scene.get_chunks():
+        for chunk in self._chunks_under(resynced):
             path = self._chunk_prim_paths.get(id(chunk))
-            if not path or not any(path == r or path.startswith(r + "/") for r in resynced):
-                continue
             if stage.GetPrimAtPath(Sdf.Path(path)).IsValid():
                 continue
             hosted = False
@@ -1065,13 +1269,13 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         path of its own is not something this mirror knows how to read back. The scene's
         chunk set is built only once a bound param is actually hit.
         """
-        live: set[int] | None = None
+        live: dict | None = None
         for data_path in all_changed:
             for param in core.params_bound_to(data_path):
                 if not isinstance(param, (core.ChunkParamBase, core.ChunkVectorBase)):
                     continue
                 if live is None:
-                    live = {id(c) for c in self._scene.get_chunks()}
+                    live = self._chunk_order()
                 chunk = param.get_chunk()
                 if chunk is None or id(chunk) not in live or _under_list_group(param, chunk):
                     continue
@@ -1106,7 +1310,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 by_prim.setdefault(prim_path, []).append(name[len(_INPUTS_PREFIX):])
         if not by_prim or not self._scene:
             return
-        for chunk in self._scene.get_chunks():
+        for chunk in self._chunks_at(by_prim):
             names = by_prim.get(self._chunk_prim_paths.get(id(chunk), ""))
             if names and chunk is not skip:
                 _adopt_inputs(chunk, names)
@@ -1127,21 +1331,26 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         roots = [p for p in resynced if p.IsPrimPath() and p != Sdf.Path.absoluteRootPath]
         if not roots or not self._scene or not self._stage:
             return
-        for chunk in self._scene.get_chunks():
+        for chunk in self._chunks_under(str(root) for root in roots):
             path = self._chunk_prim_paths.get(id(chunk))
-            if not path or not any(Sdf.Path(path).HasPrefix(root) for root in roots):
-                continue
             sources = chunk_utils.composition_sources(self._stage.GetPrimAtPath(path))
             before = self._sources.get(id(chunk))
             self._sources[id(chunk)] = sources
             if before is not None and before != sources:
                 _adopt_inputs(chunk)
 
-    def record_sources(self, chunks: Iterable[core.ChunkBase]) -> None:
-        """Note where each chunk's prim composes from, for _adopt_resynced_inputs."""
+    def record_sources(self, chunks: Iterable[core.ChunkBase], only_new: bool = False) -> None:
+        """Note where each chunk's prim composes from, for _adopt_resynced_inputs.
+
+        Args:
+            chunks: The chunks to note.
+            only_new: Skip the chunks already noted.
+        """
         if not self._stage:
             return
         for chunk in chunks:
+            if only_new and id(chunk) in self._sources:
+                continue
             if path := self._chunk_prim_paths.get(id(chunk)):
                 self._sources[id(chunk)] = chunk_utils.composition_sources(
                     self._stage.GetPrimAtPath(path))
@@ -1237,9 +1446,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not touched_prims:
             return
 
-        chunks_by_prim = {prim_path: chunk_id for chunk_id, prim_path in self._chunk_prim_paths.items()}
-        wanted_ids = {chunks_by_prim[p] for p in touched_prims if p in chunks_by_prim}
-        if not wanted_ids:
+        wanted = self._chunks_at(touched_prims)
+        if not wanted:
             return
 
         self._reconciling_exec = True
@@ -1248,9 +1456,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # the DAG must be reconciled against the settled result, not the torn state.
             for prim_path in touched_prims:
                 normalize_merge_slots(self._stage, self._stage.GetPrimAtPath(Sdf.Path(prim_path)))
-            for chunk in self._scene.get_chunks():
-                if id(chunk) in wanted_ids:
-                    reconcile_dag_dependencies(chunk)
+            for chunk in wanted:
+                reconcile_dag_dependencies(chunk)
         finally:
             self._reconciling_exec = False
 
@@ -1367,6 +1574,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # _resolve_chunk_root -- for a group chunk get_context() returns self, so its root is the
             # group's own prim, which would nest the rename inside itself (/G -> /G/newname).
             new_path = str(Sdf.Path(old_path).GetParentPath().AppendChild(owner.name))
+            if new_path == old_path:
+                # Already registered under the new name: a change_block held the creation-time
+                # collision rename until after the chunk was added.
+                return
             self._handle_rename(
                 old_path=old_path,
                 new_path=new_path,
@@ -1522,7 +1733,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
         for cid, cpath in list(self._chunk_prim_paths.items()):
             self._chunk_prim_paths[cid] = rebase(cpath)
-        self._loaded_prim_paths = {rebase(p) for p in self._loaded_prim_paths}
+        self._loaded_prim_paths = _PathSet(rebase(p) for p in self._loaded_prim_paths)
         for c in self._scene.get_chunks():
             ep = getattr(c, "_exec_prim_path", None)
             if ep and ep.startswith(old_prefix):
@@ -2156,9 +2367,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # same-named groups under one tab collide and this would wrongly skip the second's prim.
         # Distinguish: (b) means the path already belongs to ANOTHER chunk → make the name unique.
         if prim_path in self._loaded_prim_paths:
-            taken_by_other = any(
-                p == prim_path for cid, p in self._chunk_prim_paths.items() if cid != id(chunk)
-            )
+            taken_by_other = bool(self._chunk_prim_paths.ids_at(prim_path) - {id(chunk)})
             if not taken_by_other:
                 # (a) load -- the prim exists; register and skip _define_prim.
                 self._chunk_prim_paths[id(chunk)] = prim_path
@@ -2387,11 +2596,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         with book_ctx():
             _define_chunk_parent(self._stage, chunk_root)
 
-        root_prim = self._stage.GetPrimAtPath(Sdf.Path(chunk_root))
-        index = sum(
-            1 for child in (root_prim.GetChildren() if root_prim.IsValid() else [])
-            if child.GetTypeName() == _CHUNK_PRIM_TYPENAME
-        )
+        # The siblings before this one, counted only when a default position is needed:
+        # walking every sibling made defining a prim cost the size of its graph. Asked after
+        # the prim is defined, so a prim that is new here is not one of its own siblings.
+        existed = self._stage.GetPrimAtPath(Sdf.Path(target_path)).IsValid()
+
+        def index() -> int:
+            root_prim = self._stage.GetPrimAtPath(Sdf.Path(chunk_root))
+            count = sum(
+                1 for child in (root_prim.GetChildren() if root_prim.IsValid() else [])
+                if child.GetTypeName() == _CHUNK_PRIM_TYPENAME
+            )
+            return count if existed else count - 1
 
         with book_ctx():
             prim = self._stage.DefinePrim(Sdf.Path(target_path), _CHUNK_PRIM_TYPENAME)
@@ -2405,7 +2621,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 if _create_node_pos is not None:
                     ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
                 else:
-                    ui_api.CreatePosAttr(Gf.Vec2f(index * _NODE_STEP, 0.0))
+                    ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
 
             config = chunk.get_config()
             # A chunk built in the interpreter has no module, and info:chunkType is how a
@@ -2476,62 +2692,74 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     # Edit Target pairs does exactly this.
                     prim = self._stage.GetPrimAtPath(Sdf.Path(target_path))
 
-            for path, param in _iter_chunk_params(chunk):
-                raw = param.raw_value
-                if raw is None:
-                    continue
-                is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-                sdf_type = param_sdf_type(param)
-                if sdf_type is None:
-                    continue
-                backing_path = getattr(param, '_param_attr_path', None)
-                if not is_expr:
-                    if backing_path:
-                        backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
-                        if not (backing and backing.HasAuthoredValue()):
-                            continue
-                    else:
-                        default = getattr(param, 'default_value', None)
-                        if raw == default:
-                            continue
-                prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
-                attr_name = f"{prefix}{path.replace('.', ':')}"
-                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
-                if is_expr:
-                    attr.SetConnections(self._expr_connections(prim, raw))
-                    chunk_utils.store_expression_text(attr, raw)
-                elif not attr.Get():
-                    attr.Set(raw)
-
-            for vec_path, vector in _iter_chunk_vectors(chunk):
-                real_path = getattr(vector, '_param_attr_path', None)
-                if not real_path:
-                    # Not bound yet, so the vector alone holds a value set before the chunk
-                    # joined the scene (a script's create(), a menu preset) -- the same as an
-                    # unbound scalar above.
-                    if vector.has_flag(ChunkFlags.ParamFlags.OUTPUT) or vector.value == vector.default_value:
-                        continue
-                    sdf_type = param_sdf_type(vector)
-                    if sdf_type is None:
-                        continue
-                    attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}", sdf_type, custom=False)
-                    if not attr.Get():
-                        attr.Set(chunk_utils.as_attr_value(attr, vector.value))
-                    continue
-                real_attr = self._stage.GetAttributeAtPath(Sdf.Path(real_path))
-                if not (real_attr and real_attr.IsValid()):
-                    continue
-                if not real_attr.HasAuthoredValue():
-                    continue
-                current_val = real_attr.Get()
-                if current_val is None:
-                    continue
-                attr_name = f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}"
-                attr = prim.CreateAttribute(attr_name, real_attr.GetTypeName(), custom=False)
-                if not attr.Get():
-                    attr.Set(current_val)
+            # The chunk's own values, onto its own prim: as a suppressed write, so each one is
+            # not read straight back into the params it came from, nor a scan for new chunk
+            # prims run per attribute -- most of the cost of adding a chunk to a big graph.
+            prev_write = chunk_notice._usd_write_active
+            chunk_notice._usd_write_active = True
+            try:
+                self._author_param_values(prim, chunk)
+            finally:
+                chunk_notice._usd_write_active = prev_write
 
         return prim
+
+    def _author_param_values(self, prim: Usd.Prim, chunk: core.ChunkBase) -> None:
+        """Write the values chunk's params already hold onto its new prim (_define_prim)."""
+        for path, param in _iter_chunk_params(chunk):
+            raw = param.raw_value
+            if raw is None:
+                continue
+            is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
+            sdf_type = param_sdf_type(param)
+            if sdf_type is None:
+                continue
+            backing_path = getattr(param, '_param_attr_path', None)
+            if not is_expr:
+                if backing_path:
+                    backing = self._stage.GetAttributeAtPath(Sdf.Path(backing_path))
+                    if not (backing and backing.HasAuthoredValue()):
+                        continue
+                else:
+                    default = getattr(param, 'default_value', None)
+                    if raw == default:
+                        continue
+            prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
+            attr_name = f"{prefix}{path.replace('.', ':')}"
+            attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
+            if is_expr:
+                attr.SetConnections(self._expr_connections(prim, raw))
+                chunk_utils.store_expression_text(attr, raw)
+            elif not attr.Get():
+                attr.Set(raw)
+
+        for vec_path, vector in _iter_chunk_vectors(chunk):
+            real_path = getattr(vector, '_param_attr_path', None)
+            if not real_path:
+                # Not bound yet, so the vector alone holds a value set before the chunk
+                # joined the scene (a script's create(), a menu preset) -- the same as an
+                # unbound scalar above.
+                if vector.has_flag(ChunkFlags.ParamFlags.OUTPUT) or vector.value == vector.default_value:
+                    continue
+                sdf_type = param_sdf_type(vector)
+                if sdf_type is None:
+                    continue
+                attr = prim.CreateAttribute(f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}", sdf_type, custom=False)
+                if not attr.Get():
+                    attr.Set(chunk_utils.as_attr_value(attr, vector.value))
+                continue
+            real_attr = self._stage.GetAttributeAtPath(Sdf.Path(real_path))
+            if not (real_attr and real_attr.IsValid()):
+                continue
+            if not real_attr.HasAuthoredValue():
+                continue
+            current_val = real_attr.Get()
+            if current_val is None:
+                continue
+            attr_name = f"{_INPUTS_PREFIX}{vec_path.replace('.', ':')}"
+            attr = prim.CreateAttribute(attr_name, real_attr.GetTypeName(), custom=False)
+            if not attr.Get():
+                attr.Set(current_val)
 
     def _wire_inputs(self, prim: Usd.Prim, chunk: core.ChunkBase) -> None:
         _load_wire_inputs(prim, chunk)
@@ -2901,6 +3129,38 @@ def _arc_network_outputs(stage: Usd.Stage) -> list[tuple[Usd.Prim, Sdf.Layer]]:
     return found
 
 
+# parent prim path -> {child name: whether it is an Output chunk}, for the stage sync's stage.
+# Dropped by ChunkStageSync._forget_output_children as USD reports children resynced.
+_output_children_known: dict[str, dict[str, bool]] = {}
+
+
+def _output_children(parent: Usd.Prim) -> list[Usd.Prim]:
+    """The Output chunk prims directly under parent.
+
+    implied_sources asks this of a chunk's parent every time it runs, which is several times
+    per chunk wired; reading the chunk type of every sibling made each ask cost the size of
+    the graph. Remembered per child for the stage sync's stage, so only children that
+    appeared since are read; a child resynced (made, deleted, recomposed) is forgotten by
+    the sync as USD reports it.
+    """
+    stage = parent.GetStage()
+    sync = ChunkStageSync()
+    if not (sync.initialized and getattr(sync, "_stage", None) == stage):
+        return [child for child in parent.GetChildren()
+                if child.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "output"]
+    known = _output_children_known.setdefault(str(parent.GetPath()), {})
+    found = []
+    for name in parent.GetChildrenNames():
+        is_output = known.get(name)
+        child = None
+        if is_output is None:
+            child = parent.GetChild(name)
+            is_output = known[name] = child.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "output"
+        if is_output:
+            found.append(child or parent.GetChild(name))
+    return found
+
+
 def implied_sources(prim: Usd.Prim) -> list[str]:
     """The chunks a chunk is fed by because of composition, not a wire.
 
@@ -2932,8 +3192,7 @@ def implied_sources(prim: Usd.Prim) -> list[str]:
         return []
     # Cheapest first: with fewer than two Outputs beside it and no network brought in by an
     # arc there is nothing to chain -- nearly every graph -- so no layer is resolved at all.
-    siblings = [child for child in prim.GetParent().GetChildren()
-                if child.GetAttribute(_CHUNK_TYPE_ATTR).Get() == "output"]
+    siblings = _output_children(prim.GetParent())
     stage = prim.GetStage()
     arc_outputs = _arc_network_outputs(stage)
     if len(siblings) < 2 and not arc_outputs:
@@ -6451,10 +6710,12 @@ def load_chunks(
 
     with _loading_from_file():
         _load_chunks(stage, scene, loaded_prim_paths, prims)
-    # Where each chunk now composes from, so a later resync can tell which ones changed.
+    # Where each chunk now composes from, so a later resync can tell which ones changed. A
+    # scan scoped to what just changed only made the new chunks: fingerprinting every chunk
+    # on each one made building a network cost the square of its size.
     sync = ChunkStageSync()
     if sync.initialized and getattr(sync, "_stage", None) is stage:
-        sync.record_sources(scene.get_chunks())
+        sync.record_sources(scene.get_chunks(), only_new=prims is not None)
 
 
 def _load_chunks(

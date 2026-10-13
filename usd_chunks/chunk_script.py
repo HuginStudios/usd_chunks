@@ -146,7 +146,7 @@ class Scene(chunk_scene.SceneSender):
             teardown = sync.discarding_stage()
         else:
             teardown = contextlib.nullcontext()
-        with teardown:
+        with teardown, ChunkLayerManager().holding_deletes():
             for c in inner + list(self.get_chunks()):
                 c.request_delete()
         ChunkLayerManager().reset()

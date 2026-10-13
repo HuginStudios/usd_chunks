@@ -378,6 +378,12 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
             # cooks (which edit the layer stack) dirty each other forever.
             if self.name in ("menu_items", "item_images"):  # an ImageMenu's pictures, likewise
                 return True
+            # A slider's range likewise: it is what the slider offers, and every writer of
+            # one derives it from something that dirties by itself (a Wedge's rows, the
+            # stage's units). Dirtying for it made a Transform's first cook -- which sizes
+            # its sliders to the stage -- re-dirty everything downstream of it 18 times over.
+            if self.name in ("min_value", "max_value"):
+                return True
             return False
 
         old = ChunkFlags.State(self.old_value or ChunkFlags.State.NONE)

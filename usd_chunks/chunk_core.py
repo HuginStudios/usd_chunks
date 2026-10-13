@@ -930,6 +930,11 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
     container sends no notices of its own; it only propagates its children's.
     """
 
+    #: Bumped whenever any container anywhere gains or loses a chunk, so a walk of the whole
+    #: hierarchy (SceneSender.get_chunks) can be reused until one moves. Not for params: a
+    #: chunk being built adds dozens, and none of them changes which chunks there are.
+    generation: int = 0
+
     def __init__(self):
         super().__init__()
 
@@ -980,6 +985,7 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         """
         self._names.clear()
         self._params.clear()
+        NameSyncedContainer.generation += 1
 
     def add(self, obj: ChunkT | ProxyParam, send=True):
         """Add a chunk object to this container, which becomes its owner.
@@ -999,6 +1005,8 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         # Append child the object + name to the first layer of the ChainMaps
         self._params.maps[0][obj.get_hash()] = obj  # type: ignore
         self._names.maps[0][obj.name] = obj.get_hash()
+        if isinstance(obj, ChunkBase):
+            NameSyncedContainer.generation += 1
 
         # Mark self as the owner of the added obj as we need to be notified when the object changes
         obj.set_owner(self)
@@ -1249,6 +1257,8 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
                 for nm in [n for n, k in list(names0.items()) if k == key]:
                     del names0[nm]
             self._params.maps[0].pop(key, None)
+            if isinstance(obj, ChunkBase):
+                NameSyncedContainer.generation += 1
 
             if obj.get_owner() == self:
                 obj.set_owner(None)
@@ -2258,7 +2268,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
             return
         storage_path = Sdf.Path(self._param_attr_path)
         type_name = storage_attr.GetTypeName()
-        chunk_layer = self.get_edit_context()
+        # Only a param that drives something needs the layer. Asking regardless made every
+        # param bound on a new chunk create the chunk's layer then -- before the chunk is
+        # wired, so in a graph layer of its own that the wiring then moves it out of.
+        chunk_layer = self.get_edit_context() if self._driven_attr_paths else None
         if chunk_layer and stage.IsLayerMuted(chunk_layer.identifier):
             chunk_layer = None  # can't author into it; the connection is topology only
 

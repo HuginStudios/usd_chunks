@@ -123,14 +123,75 @@ def record(chunk) -> CookRecord:
 # ------------------------------------------------------------------------------------------
 
 # The cook stages of the cooks now running, innermost last; None for a cook on the scene's
-# own stage. A cook stage lives exactly as long as its cook. Kept between cooks, it kept
-# every layer of a closed scene alive and went on hearing their changes -- in the test
-# suite, into listeners whose widgets were already gone, which crashed the process.
+# own stage. Only _kept outlives its cook, under the conditions given there.
 _active: list[Usd.Stage | None] = []
 
 # A cook stage being opened, before it has a watch: a cook stage to is_cook_stage, but what
 # is looked up on it -- by listeners hearing it muted -- is no cook's read.
 _opening: list[Usd.Stage] = []
+
+# The one cook stage kept between the cooks of one flush: (weakref to the scene stage it is
+# of, the cook stage). Opening a stage of the scene's layers and muting what is hidden costs
+# a layer per chunk in the scene -- 36 ms a cook at 900 chunks -- so a flush opens it once
+# and re-masks it per cook. Only for a cook that is not inside another's (that one opens its
+# own), and only inside sharing(): a stage alive between edits hears every change the scene
+# makes, including one a notice handler authors while USD is still delivering the change
+# that set it off -- which reaches the kept stage first and is refused as a "usd threading
+# violation". Kept past its scene, it once crashed the process by going on hearing a closed
+# scene's layers into listeners whose widgets were gone.
+_kept: tuple[weakref.ReferenceType, Usd.Stage] | None = None
+_sharing = 0
+
+
+@contextmanager
+def sharing() -> Iterator[None]:
+    """Let the masked cooks inside this block share one cook stage, dropped as it ends."""
+    global _sharing
+    _sharing += 1
+    try:
+        yield
+    finally:
+        _sharing -= 1
+        if not _sharing:
+            release_cook_stage()
+
+
+def release_cook_stage() -> None:
+    """Drop the shared cook stage, and with it its hold on the scene's layers."""
+    global _kept
+    _kept = None
+
+
+def _kept_for(main: Usd.Stage) -> Usd.Stage | None:
+    """The kept cook stage if it is of main, else None -- dropping one of another stage."""
+    global _kept
+    if _kept is None:
+        return None
+    ref, stage = _kept
+    owner = ref()
+    if owner is not None and owner == main:
+        return stage
+    _kept = None
+    return None
+
+
+def _remask(stage: Usd.Stage, main: Usd.Stage, mask: set[Sdf.Path], hidden: Iterable[str]) -> None:
+    """Make the kept cook stage what _open_cook_stage would open for this cook.
+
+    Muted first, while nothing is populated, and by difference: neighbouring chunks hide
+    nearly the same layers. The difference is taken from the stage itself, never from a
+    record of what the last cook asked for. Load rules back to everything, as a fresh stage
+    has them, in case a cook loaded or unloaded something on it.
+    """
+    want = {*main.GetMutedLayers(), *hidden}
+    have = set(stage.GetMutedLayers())
+    if want != have:
+        stage.MuteAndUnmuteLayers(sorted(want - have), sorted(have - want))
+    if stage.GetLoadRules() != Usd.StageLoadRules.LoadAll():
+        stage.SetLoadRules(Usd.StageLoadRules.LoadAll())
+    if stage.GetInterpolationType() != Usd.InterpolationTypeLinear:
+        stage.SetInterpolationType(Usd.InterpolationTypeLinear)
+    stage.SetPopulationMask(_population_mask(mask))
 
 
 def active_stage() -> Usd.Stage | None:
@@ -161,6 +222,8 @@ def is_cook_stage(stage: Usd.Stage | None) -> bool:
     if stage is None:
         return False
     if any(stage == opening for opening in _opening):
+        return True
+    if _kept is not None and stage == _kept[1]:
         return True
     return any(stage == watched for watch in _watches for watched in watch.stages)
 
@@ -302,11 +365,20 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     hidden -- the layers of chunks not upstream of this one (hidden_layers). Yields the
     watch that collects what the cook looked up.
     """
+    global _kept
     _install_watching()
-    try:
-        stage = _open_cook_stage(main, mask, hidden, _opening)
-    finally:
-        _opening.clear()
+    # A cook inside another's cannot share its stage: they want different masks at once.
+    shared = _sharing > 0 and not _watches
+    stage = _kept_for(main) if shared else None
+    if stage is not None:
+        _remask(stage, main, mask, hidden)
+    else:
+        try:
+            stage = _open_cook_stage(main, mask, hidden, _opening)
+        finally:
+            _opening.clear()
+        if shared:
+            _kept = (weakref.ref(main), stage)
     watch = _Watch(stage, mask, hidden)
     _active.append(stage)
     _watches.append(watch)
@@ -316,6 +388,10 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     finally:
         _watches.pop()
         _active.pop()
+        if shared and _kept is not None and _kept[1] is stage:
+            # Nothing populated while no cook runs on it, so it composes -- and reports --
+            # next to nothing as the scene changes in the meantime.
+            stage.SetPopulationMask(Usd.StagePopulationMask())
 
 
 # ------------------------------------------------------------------------------------------
