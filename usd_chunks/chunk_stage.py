@@ -2747,10 +2747,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         return prim
 
     def _author_param_values(self, prim: Usd.Prim, chunk: core.ChunkBase) -> None:
-        """Write the values chunk's params already hold onto its new prim (_define_prim)."""
+        """Write the values chunk's params already hold onto its new prim (_define_prim).
+
+        TRANSIENT params are left off, as every other writer leaves them: a Layer chunk's
+        anon layer id written here was saved, and a reopen in the same process found the
+        closed scene's layer by it -- leftover sublayers and all -- and exported them.
+        """
         for path, param in _iter_chunk_params(chunk):
             raw = param.raw_value
-            if raw is None:
+            if raw is None or is_transient_param(param):
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             sdf_type = param_sdf_type(param)
