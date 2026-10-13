@@ -1775,6 +1775,11 @@ class ChunkCommon(AttributesBase):
             # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
             owner.pop(self)
 
+        # Disconnected, not only dropped: a connection sits in a reference cycle, so it lives
+        # on until the cyclic GC runs -- and a global one kept hearing every stage meanwhile,
+        # the next scene's included, on behalf of a chunk deleted with its own.
+        for connection in self._callbacks.get(include_private=True):
+            connection.disconnect()
         self._callbacks.clear()
         self.set_owner(None)
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
