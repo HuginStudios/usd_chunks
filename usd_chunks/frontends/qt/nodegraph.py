@@ -651,6 +651,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
         self._stale = chunk.has_state(ChunkFlags.State.STALE)
+        # The collapsed state _set_collapsed last applied; None until something has. Kept so
+        # a state change that is not a collapse (selecting, going stale) does not rebuild
+        # ports -- see _set_collapsed.
+        self._collapsed: bool | None = None
         self._update_stale_tooltip()
         _chunk_type = prim.GetAttribute("info:chunkType").Get()
         self._is_view = _chunk_type == "view"
@@ -973,6 +977,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # cancellation to. _rebuild_typed_ports carries the guard instead -- it checks the
         # prim, the proxy, and catches the RuntimeError from an already-destroyed C++
         # proxy -- which is why this one is safe to schedule bare.
+        #
+        # Immediate, though the body has no height yet and the debounced rebuild after its
+        # layout redoes the placement: paste (_materialize_at) and menu-connect wire their
+        # edges ~80 ms on and need the typed ports to exist by then.
         QtCore.QTimer.singleShot(0, self._rebuild_typed_ports)
 
     def _hook_group_animations(self, chunk_widget: QtWidgets.QWidget) -> None:
@@ -1759,6 +1767,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             pos_attr.Set(Gf.Vec2f(p.x(), -p.y()))
 
     def _set_collapsed(self, collapsed: bool):
+        # Every state change lands here, and re-applying the body's visibility each time is
+        # load-bearing: it re-hides a collapsed body that something else showed.
+        expanding = collapsed != self._collapsed
+        self._collapsed = collapsed
         self.prepareGeometryChange()
         if self._proxy is not None:
             self._proxy.setVisible(not collapsed)
@@ -1771,7 +1783,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._rebuild_typed_ports()
         else:
             self._height = self._full_height
-            if self._port_rebuild_timer is not None:
+            # Only on an actual expand. An already-expanded node got here on every state
+            # change, so selecting one node and deselecting another rebuilt both nodes'
+            # ports for nothing.
+            if expanding and self._port_rebuild_timer is not None:
                 # Recompute port positions from widget geometry now that proxy is visible.
                 self._port_rebuild_timer.start()
         self.update()
