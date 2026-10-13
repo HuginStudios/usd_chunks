@@ -7176,26 +7176,30 @@ def _load_chunks(
                     id(c) for _, c in deferred
                     if lm.initialized and (id(c) in top_level_chunk_ids or can_execute_sub_chunks)
                 }
-                for c in held:
-                    if id(c) not in looped:
-                        lm.get_or_create_layer(c)
-
-                # Ensure every chunk eligible to execute below already has its own layer
-                # registered before the re-sort pass. Most chunks' layers get created as a
-                # side effect of restoring their values in _load_wire_inputs (via
-                # _connect_param_attr) -- but a chunk whose only restored value is a
-                # list-group row (ProxyParam's own __setattr__, e.g. Sublayer's
-                # imports:sublayer_path) never goes through that path, so without this its
-                # layer wouldn't exist until the execute loop below -- by which point the
-                # re-sort pass has already run and can never include it. The layer then
-                # never gets spliced into the stage even though get_or_create_layer() is
-                # called there too, and a saved Sublayer comes back empty on reload.
-                # get_or_create_layer() is idempotent, so this is a no-op for every
-                # chunk that already got one the normal way.
-                if lm.initialized:
-                    for _, c in deferred:
-                        if id(c) in top_level_chunk_ids or can_execute_sub_chunks:
+                # Each graph layer's sublayers are written once for all its chunks, not once
+                # per chunk: every write recomposes the layer stack. See
+                # ChunkLayerManager.batched_placement.
+                with lm.batched_placement() if lm.initialized else contextlib.nullcontext():
+                    for c in held:
+                        if id(c) not in looped:
                             lm.get_or_create_layer(c)
+
+                    # Ensure every chunk eligible to execute below already has its own layer
+                    # registered before the re-sort pass. Most chunks' layers get created as a
+                    # side effect of restoring their values in _load_wire_inputs (via
+                    # _connect_param_attr) -- but a chunk whose only restored value is a
+                    # list-group row (ProxyParam's own __setattr__, e.g. Sublayer's
+                    # imports:sublayer_path) never goes through that path, so without this its
+                    # layer wouldn't exist until the execute loop below -- by which point the
+                    # re-sort pass has already run and can never include it. The layer then
+                    # never gets spliced into the stage even though get_or_create_layer() is
+                    # called there too, and a saved Sublayer comes back empty on reload.
+                    # get_or_create_layer() is idempotent, so this is a no-op for every
+                    # chunk that already got one the normal way.
+                    if lm.initialized:
+                        for _, c in deferred:
+                            if id(c) in top_level_chunk_ids or can_execute_sub_chunks:
+                                lm.get_or_create_layer(c)
 
                 # Re-sort graph sublayers so downstream chunks (higher sort_key after
                 # wiring) end up with stronger layers than their upstream dependencies.
