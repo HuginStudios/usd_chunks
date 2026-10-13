@@ -323,6 +323,26 @@ def test_a_cook_that_sets_its_own_input_is_not_stored():
         assert _entries() == []
 
 
+def test_a_cook_marked_incomplete_is_not_stored_and_the_next_one_is():
+    """A cook that hands its slow part to another process leaves its layer unfinished. That
+    layer is not the result its key describes, so it must not come back on the next open."""
+    finished = []
+
+    def maybe_incomplete(node):
+        if not finished:
+            cook_cache.incomplete(node)
+
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _cached_module(cooks, extra=maybe_incomplete))
+        assert _entries() == []
+
+        finished.append(True)
+        c._cook()
+
+        assert len(_entries()) == 1
+
+
 def test_hidden_state_a_cook_sets_comes_back_with_it():
     def hide(node):
         node.get_param("source").set_state(chunk.ChunkFlags.State.HIDDEN)

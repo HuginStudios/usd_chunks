@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk_registry, chunk
+from usd_chunks import chunk_registry, chunk, sim_bake
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -737,3 +737,106 @@ def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
 
     # Same length, same dtype, different contents -- the signature has to move with them.
     assert pr._checksum(attr.Get(), first, third) != signature
+
+
+# ---------------------------------------------------------------------------
+# reducing in the background
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def in_a_ui(wired, qapp, monkeypatch):
+    """`wired`, as a UI host with an event loop would run it: big reductions go to a process.
+
+    Every mesh counts as big here, so a small grid takes the same path a 4M-triangle one does.
+    """
+    monkeypatch.setattr(sim_bake, "in_background", lambda: True)
+    monkeypatch.setattr(_live_module(), "_BACKGROUND_TRIANGLES", 0, raising=False)
+    return wired
+
+
+def _wait_for(qapp, node, seconds=60.0):
+    """Pump the event loop until node's background reduction has landed and been written."""
+    started = time.perf_counter()
+    while time.perf_counter() - started < seconds:
+        qapp.processEvents()
+        if not sim_bake.is_running(node) and not node.has_state(chunk.ChunkFlags.State.STALE):
+            return
+        time.sleep(0.01)
+    raise AssertionError("the background reduction never landed")
+
+
+@needs_simplify
+def test_in_a_ui_the_cook_returns_at_once_and_the_result_lands_later(in_a_ui, qapp) -> None:
+    """fast_simplification holds the GIL, so a reduction on the main thread -- or on a
+    thread -- stops the host for as long as it runs: 40s on a 4M-triangle mesh. In a UI it
+    runs in a separate process. The cook that starts it leaves the mesh as it was, and the
+    result is written by the cook that follows when it lands."""
+    stage, make = in_a_ui
+    points, counts, indices = _grid(40, lambda x, y: 0.3 * np.sin(3 * x))
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 10.0
+    node.get_param("prim_path").value = "/Mesh"
+
+    assert _triangle_count(stage) == len(counts), "the cook waited for the reduction"
+    assert node.get_param("readout").value.startswith("reducing")
+    assert node.has_state(chunk.ChunkFlags.State.STALE)
+
+    _wait_for(qapp, node)
+
+    mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh"))
+    assert set(mesh.GetFaceVertexCountsAttr().Get()) == {3}
+    assert _triangle_count(stage) == pytest.approx(len(counts) * 2 * 0.1, rel=0.1)
+    assert node.get_param("out_triangles").value == _triangle_count(stage)
+
+
+@needs_simplify
+def test_a_setting_changed_while_it_runs_wins(in_a_ui, qapp) -> None:
+    """The reduction already running is for the old setting. It is stopped, and what lands
+    is the newest setting's result, not the old one's."""
+    stage, make = in_a_ui
+    points, counts, indices = _grid(40, lambda x, y: 0.3 * np.sin(3 * x))
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 50.0
+    node.get_param("prim_path").value = "/Mesh"
+    assert sim_bake.is_running(node)
+
+    node.get_param("keep_percent").value = 10.0
+    _wait_for(qapp, node)
+
+    assert _triangle_count(stage) == pytest.approx(len(counts) * 2 * 0.1, rel=0.1)
+
+
+@needs_simplify
+def test_uvs_and_subsets_come_back_from_the_process_intact(in_a_ui, qapp) -> None:
+    """What crosses to the other process is plain arrays, and the primvars and subsets are
+    put back on the result here. Both have to land as they do when it runs inline."""
+    stage, make = in_a_ui
+    mesh, counts = _grid_with_subsets(stage)
+    points = np.asarray(mesh.GetPointsAttr().Get())
+    indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get())
+    corner_x = points[indices, 0]
+    u = np.where(corner_x < 0.0, 0.2 + corner_x * 0.2, 0.8 + corner_x * 0.2)
+    st = np.stack([u, points[indices, 1]], axis=1).astype(np.float32)
+    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+    ).Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(st)))
+
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("prim_path").value = "/Mesh"
+    _wait_for(qapp, node)
+
+    total = _triangle_count(stage)
+    assert total < len(counts)
+    values = np.asarray(UsdGeom.PrimvarsAPI(stage.GetPrimAtPath("/Mesh")).GetPrimvar("st").Get())
+    assert len(values) == len(UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh")).GetPointsAttr().Get())
+    assert ((values[:, 0] > 0.45) & (values[:, 0] < 0.55)).sum() == 0
+    out_left = np.asarray(UsdGeom.Subset(stage.GetPrimAtPath("/Mesh/left")).GetIndicesAttr().Get())
+    out_right = np.asarray(UsdGeom.Subset(stage.GetPrimAtPath("/Mesh/right")).GetIndicesAttr().Get())
+    assert len(out_left) + len(out_right) == total
+    assert not set(out_left.tolist()) & set(out_right.tolist())
