@@ -1160,6 +1160,37 @@ def test_bounds_picking_finds_the_prim_under_the_ray(view):
     assert vp.pick_by_bounds(stage, (50.0, 50.0, 10.0), (0.0, 0.0, -1.0)) is None
 
 
+def test_lights_are_found_where_they_stand(view):
+    """A light has no surface for either pick to hit, so the viewport marks and picks it by
+    where it stands. Hidden lights are not marked."""
+    from pxr import UsdLux
+    stage = view.stage
+    key = UsdLux.SphereLight.Define(stage, "/Lights/key")
+    key.AddTranslateOp().Set(Gf.Vec3d(1, 2, 3))
+    UsdLux.DistantLight.Define(stage, "/Lights/sun")
+    UsdLux.RectLight.Define(stage, "/Lights/off").MakeInvisible()
+
+    found = dict(vp.light_positions(stage))
+
+    assert set(found) == {"/Lights/key", "/Lights/sun"}
+    assert tuple(found["/Lights/key"]) == (1, 2, 3)
+
+
+def test_a_light_added_later_is_found(view):
+    """The light list is kept between redraws; a light added after is still found."""
+    from pxr import UsdLux
+    stage = view.stage
+    assert vp.light_positions(stage) == []
+    UsdLux.SphereLight.Define(stage, "/late")
+    assert [path for path, _ in vp.light_positions(stage)] == ["/late"]
+
+
+def test_a_click_picks_the_nearest_light_marker_in_reach():
+    markers = [("/a", (100.0, 100.0)), ("/b", (106.0, 100.0))]
+    assert vp.nearest_marker(markers, 105.0, 100.0) == "/b"
+    assert vp.nearest_marker(markers, 100.0, 140.0) is None
+
+
 def test_bounds_picking_skips_invisible_prims(view):
     stage = view.stage
     cube = UsdGeom.Cube.Define(stage, "/Hidden")
