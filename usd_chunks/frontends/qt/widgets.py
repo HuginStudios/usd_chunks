@@ -694,12 +694,9 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
 
-        self.button = QtWidgets.QToolButton(self)
-        self.button.setText("Pin Selection")
-        self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
-        self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
-
-        self.button.clicked.connect(self.pin_prim)
+        # The pin button only exists on a prim-selection field (see _sync_pin_button): built
+        # for every LineEdit and hidden on most, it was a widget per field for nothing.
+        self.button: QtWidgets.QToolButton | None = None
 
         self.text = QtWidgets.QLineEdit(self)
         self.text.editingFinished.connect(self.value_changed)
@@ -709,10 +706,9 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.addWidget(self.text)
-        self.main_layout.addWidget(self.button)
         self.setLayout(self.main_layout)
 
-        self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
+        self._sync_pin_button(self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
 
         self.setup_chunk_widget()
         # This widget has no parent yet, so it is a top-level window: the set_hidden(False)
@@ -729,8 +725,21 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
         if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
-            self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
+            self._sync_pin_button(ChunkFlags.ParamFlags.PRIM_SELECTION in notice.data.value)
         return super().handle_param_changed(notice, sender)
+
+    def _sync_pin_button(self, wanted: bool) -> None:
+        """Show the pin button when the field takes a prim selection, making it on first need."""
+        if self.button is None:
+            if not wanted:
+                return
+            self.button = QtWidgets.QToolButton(self)
+            self.button.setText("Pin Selection")
+            self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
+            self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+            self.button.clicked.connect(self.pin_prim)
+            self.main_layout.addWidget(self.button)
+        self.button.setHidden(not wanted)
 
     def pin_prim(self):
         scene = self.param.get_scene()
@@ -808,7 +817,12 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         return self.text.setText(str(value))
 
     def set_hidden(self, val: bool):
-        self.setHidden(val)
+        # __init__ applies state before add_widget has parented this, and a show then is a
+        # top-level window's full show -- WA_DontShowOnScreen only keeps it off screen. That
+        # was ~1.4 ms per LineEdit for nothing: the row's layout shows it once it is
+        # parented. A hide is still applied, so a HIDDEN param stays hidden when added.
+        if val or self.parentWidget() is not None:
+            self.setHidden(val)
 
     def set_enabled(self, val: bool):
         self.setEnabled(val and not chunk_utils.is_wire_locked(self.param))
@@ -1487,10 +1501,15 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.widget: ChunkParamWidgetBase = widget
-        self.label = QtWidgets.QLabel()
-        self.label.setHidden(True)
+        # Made by update_label when the row first gets text (see _ensure_label). Most rows
+        # never do, and an eager label was a hidden widget per row, constructed, styled and
+        # laid out for nothing. Filters others ask for wait in _label_filters; this row's own
+        # is installed by _ensure_label and never listed -- a row holding itself would be a
+        # reference cycle, keeping its widget's Python side, and so that widget's notice
+        # callbacks, alive after Qt has deleted it.
+        self.label: QtWidgets.QLabel | None = None
+        self._label_filters: list[QtCore.QObject] = []
 
-        self.vlayout.addWidget(self.label)
         self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
@@ -1524,7 +1543,6 @@ class LabeledWidget(QtWidgets.QWidget):
 
         self._name_hint = ""
         self._label_hovered = False
-        self.label.installEventFilter(self)
         # A param built holding an expression is marked from the start, not only once it
         # next changes.
         self._sync_expression_mark()
@@ -1616,9 +1634,27 @@ class LabeledWidget(QtWidgets.QWidget):
             if self.should_show_tooltip():
                 self.show_tooltip()
 
+    def add_label_filter(self, obj: QtCore.QObject) -> None:
+        """Install obj as an event filter on the label, now or once there is one."""
+        self._label_filters.append(obj)
+        if self.label is not None:
+            self.label.installEventFilter(obj)
+
+    def _ensure_label(self) -> QtWidgets.QLabel:
+        """The row's label, made on first need above the widget, where it always sat."""
+        if self.label is None:
+            self.label = QtWidgets.QLabel()
+            self.vlayout.insertWidget(0, self.label)
+            self.label.installEventFilter(self)
+            for obj in self._label_filters:
+                self.label.installEventFilter(obj)
+        return self.label
+
     def update_label(self, text):
-        self.label.setHidden(not bool(text))
-        self.label.setText(text)
+        if text or self.label is not None:
+            label = self._ensure_label()
+            label.setHidden(not bool(text))
+            label.setText(text)
         self._sync_expression_mark()
         self._sync_override_mark()
 
@@ -1628,7 +1664,9 @@ class LabeledWidget(QtWidgets.QWidget):
         question every shot artist asks of a referenced network is "what did we change
         here", and the field itself cannot say -- the value it shows is just a value.
         """
-        if not isinstance(self.widget, ChunkParamWidgetBase):
+        # Marks only the label. A row without one shows nothing to mark, and update_label
+        # runs this again when it gets one.
+        if not isinstance(self.widget, ChunkParamWidgetBase) or self.label is None:
             return
         try:
             source = chunk_stage.param_override_source(self.widget.param)
@@ -1683,12 +1721,15 @@ class LabeledWidget(QtWidgets.QWidget):
         # Either kind of driven value: a @Node.param@ wire, or a ${VAR} in an asset path
         # that USD substitutes during composition. Both show a value nobody typed here.
         expr = chunk_utils.is_expression_text(raw) or chunk_utils.has_stage_expression(raw)
-        if self.label.property("chunkExpression") != expr:
-            self.label.setProperty("chunkExpression", expr)
-            # A property the stylesheet selects on only takes effect after a re-polish.
-            self.label.style().unpolish(self.label)
-            self.label.style().polish(self.label)
-        self.label.setToolTip(str(raw) if expr else "")
+        # The mark is on the label; a row without one has nothing to mark until update_label
+        # makes it and runs this again. The wire lock below applies either way.
+        if self.label is not None:
+            if self.label.property("chunkExpression") != expr:
+                self.label.setProperty("chunkExpression", expr)
+                # A property the stylesheet selects on only takes effect after a re-polish.
+                self.label.style().unpolish(self.label)
+                self.label.style().polish(self.label)
+            self.label.setToolTip(str(raw) if expr else "")
         # A wire locks the field (chunk_utils.is_wire_locked); set_enabled folds that in, so
         # re-applying the state locks it when a wire lands and frees it when one is pulled.
         locked = chunk_utils.is_wire_locked(self.widget.param)
@@ -1869,13 +1910,10 @@ class ContainerWidget(
         self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
         self.minimize_button.installEventFilter(self)
 
-        self.list_expand_button = QtWidgets.QToolButton()
-        self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.list_expand_button.setIconSize(QtCore.QSize(6, 6))
-        self.list_expand_button.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
-        )
-        self.list_expand_button.setHidden(True)
+        # Only a ListGroup has one, so it is made when update_from_layout finds the flag. Built
+        # here for every group, it was a hidden button in nearly every container of a body,
+        # each still constructed, styled and laid out.
+        self.list_expand_button: QtWidgets.QToolButton | None = None
 
         # Used when collapsable
         self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
@@ -1895,7 +1933,6 @@ class ContainerWidget(
         self.__layout__.setSpacing(0)
 
         self.__layout__.addWidget(self.minimize_button)
-        self.__layout__.addWidget(self.list_expand_button)
         self.__layout__.addWidget(self.content)
 
         self.setLayout(self.__layout__)
@@ -1990,13 +2027,20 @@ class ContainerWidget(
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags:
-            self.list_expand_button.setHidden(False)
-
+        if (usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags
+                and self.list_expand_button is None):
+            self.list_expand_button = QtWidgets.QToolButton()
+            self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+            self.list_expand_button.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
+            )
             icon = QtGui.QIcon(str(chunk_resources.get_icon("add")))
             self.list_expand_button.setIcon(icon)
             self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
             self.list_expand_button.clicked.connect(self.list_expand)
+            # Where it always sat: between the header button and the content.
+            self.__layout__.insertWidget(self.__layout__.indexOf(self.minimize_button) + 1,
+                                         self.list_expand_button)
 
     def update_label(self, text: str):
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
@@ -2121,7 +2165,7 @@ class ContainerWidget(
         # suppression create_widget put on it.
         widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
         widget.installEventFilter(self)
-        labeled.label.installEventFilter(self)
+        labeled.add_label_filter(self)
 
         if label is not None:
             labeled.update_label(label)
