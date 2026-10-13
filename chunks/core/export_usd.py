@@ -318,6 +318,7 @@ def _export_flattened(_chunk, stage) -> None:
         _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
         _strip_chunk_prims(flat)
+    chunk_stage.stamp_stage_metadata(flat, stage)
     chunk_utils.export_layer(flat).Export(output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
 
@@ -425,26 +426,24 @@ def commit(node):
         out_path = os.path.join(output_dir, filenames[layer.identifier])
         baked = name in baked_names
 
-        export_layer = layer
-        needs_copy = baked or any(
-            p in filenames or p in internal_ids or p in skipped_ids for p in layer.subLayerPaths
-        )
-        if needs_copy:
-            # Rewrite on a throwaway copy -- never mutate the live session's own layers.
-            export_layer = Sdf.Layer.CreateAnonymous()
-            export_layer.TransferContent(layer)
-            if baked:
-                # Baked: bring each chunk's real content in from its own private layer
-                # (only on choosing to bake does it get copied into this edit target),
-                # then strip the now-redundant chunk-graph bookkeeping.
-                _inline_internal_sublayers(export_layer, internal_ids)
-                UsdUtils.ModifyAssetPaths(export_layer, _relocate)
-                _strip_chunk_prims(export_layer)
-            else:
-                # Procedural: the recipe only -- leave each chunk's real content where it
-                # already lives (its own private layer), dropping the reference to it
-                # here rather than inlining, via _relocate's internal_ids handling below.
-                UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+        # Always a throwaway copy -- never mutate the live session's own layers. Every file
+        # gets the stage's up-axis and units: any of them may be the one opened on its own,
+        # and without them it reads as USD's global default rather than this scene's.
+        export_layer = Sdf.Layer.CreateAnonymous()
+        export_layer.TransferContent(layer)
+        chunk_stage.stamp_stage_metadata(export_layer, stage)
+        if baked:
+            # Baked: bring each chunk's real content in from its own private layer
+            # (only on choosing to bake does it get copied into this edit target),
+            # then strip the now-redundant chunk-graph bookkeeping.
+            _inline_internal_sublayers(export_layer, internal_ids)
+            UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+            _strip_chunk_prims(export_layer)
+        elif any(p in filenames or p in internal_ids or p in skipped_ids for p in layer.subLayerPaths):
+            # Procedural: the recipe only -- leave each chunk's real content where it
+            # already lives (its own private layer), dropping the reference to it
+            # here rather than inlining, via _relocate's internal_ids handling below.
+            UsdUtils.ModifyAssetPaths(export_layer, _relocate)
 
         chunk_utils.export_layer(export_layer).Export(out_path)
         print(f"[ExportUSD] Layer '{name}' exported to {out_path}")

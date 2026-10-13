@@ -7402,9 +7402,13 @@ def flatten_without_chunks(stage):
 
     Shallowest path first, so removing a parent Chunk takes its children with it and
     the later lookup for those children simply finds nothing.
+
+    The stage's up-axis and units are stamped on as well (stamp_stage_metadata): flattening
+    carries them only when the root layer itself authors them, which a new scene never has.
     """
     flat = UsdUtils.FlattenLayerStack(stage)
     strip_chunks(flat)
+    stamp_stage_metadata(flat, stage)
     return flat
 
 
@@ -7558,7 +7562,7 @@ def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     if not stage:
         return
     dst = _export_layer(scene, Path(path))
-    _stamp_stage_metadata(dst, stage)
+    stamp_stage_metadata(dst, stage)
     dst.Export(str(path))
     _reload_cached_layer(path)
 
@@ -7620,16 +7624,20 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     return dst
 
 
-def _stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage) -> None:
+def stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage) -> None:
     """Stamp the stage's up-axis and units onto the in-memory layer before it is written.
 
-    Uses the same UsdGeom API the live stage answers with, pointed at a stage opened over
-    `dst`, so the file carries the opinion from its first byte rather than being reopened and
-    patched afterwards.
+    Read with the same UsdGeom API the live stage answers with, so the file carries the
+    opinion from its first byte rather than being reopened and patched afterwards. Written
+    straight onto the layer's pseudo-root: opening a stage over `dst` to set them composed
+    the whole layer, which for an exported scene is everything in it.
+
+    Shared by every writer -- save, export_network, scene.export and the Export USD chunk --
+    since a file without them falls back to USD's global default whatever the scene was.
     """
-    dst_stage = Usd.Stage.Open(dst)
-    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(stage))
-    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(stage))
+    root = dst.pseudoRoot
+    root.SetInfo(UsdGeom.Tokens.upAxis, UsdGeom.GetStageUpAxis(stage))
+    root.SetInfo(UsdGeom.Tokens.metersPerUnit, UsdGeom.GetStageMetersPerUnit(stage))
 
 
 def _rebase_paths_in_layer(layer: Sdf.Layer, old_root: Sdf.Path, new_root: Sdf.Path) -> None:
@@ -7697,7 +7705,7 @@ def export_network(scene: chunk_scene.SceneSender, group: core.ChunkBase, path: 
     exec_in = group_spec.properties.get(chunk_naming.EXEC_INPUT)
     if exec_in is not None:
         exec_in.connectionPathList.ClearEdits()
-    _stamp_stage_metadata(out, stage)
+    stamp_stage_metadata(out, stage)
     out.Export(str(path))
     _reload_cached_layer(path)
     return str(dst_root)
