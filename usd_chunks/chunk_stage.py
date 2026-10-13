@@ -579,6 +579,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     # _on_chunk_deleted, which must not touch USD during that window.
     _reloading: bool = False
 
+    # True while discarding_stage deletes the chunks of a stage about to be thrown away.
+    _discarding: bool = False
+
     # True while reconcile_dag_dependencies runs off an ObjectsChanged notice, i.e. while
     # the DAG is being mirrored FROM the stage. Stops the mirror writing back: adding the
     # edge fires DEPENDENCY_ADDED, whose handler would author inputs:chunk and re-home edit
@@ -595,6 +598,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._stage = stage
         self._scene = scene
         self._reloading = False
+        self._discarding = False
         self._loaded_stage = None
         self._loaded_prim_paths: set[str] = _PathSet()
         _output_children_known.clear()
@@ -745,7 +749,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # contents_changed), and _on_objects_changed decides from that one whether the
         # change can move an answer -- including a mute, which it recognises by the layer
         # stack having changed rather than by paths, since USD reports one with none.
-        if chunk_notice._usd_write_active or not self._scene:
+        # Not while the stage is being thrown away: a chunk deleted with it can still edit
+        # it on the way out (a Mute Layer gives back its mutes), and the scan that followed
+        # found the prims of the chunks just deleted and built them again.
+        if chunk_notice._usd_write_active or not self._scene or self._discarding:
             return
         stage = notice.GetStage()
         if not stage or self._is_foreign_stage(stage):
@@ -797,12 +804,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         whole. File > Open already tears down that way (_reloading); this is the same for
         any caller that owns the stage it is discarding, such as a script's Scene closing.
         """
-        was_reloading = self._reloading
-        self._reloading = True
+        was_reloading, was_discarding = self._reloading, self._discarding
+        self._reloading = self._discarding = True
         try:
             yield
         finally:
-            self._reloading = was_reloading
+            self._reloading, self._discarding = was_reloading, was_discarding
 
     def _on_chunk_deleted(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -1044,7 +1051,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """
         if stage is None or not self._scene:
             return False
-        if skip_cook.is_cook_stage(stage):
+        if skip_cook.is_cook_stage(stage) or any(stage == s for s in _flatten_stages):
             return True
         scene_stage = self._scene.get_stage()
         if not scene_stage:
@@ -7526,33 +7533,14 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     # prim: its cook makes them again, and saved they would outlive the chunk. Only a layer
     # with something under /chunks is left out, and not one that is also where some chunk
     # keeps its prim (an Edit Target's layer); with none, the live stage is flattened as before.
+    #
+    # And every other cook layer that cannot reach what is copied out below -- the chunk
+    # prims, their subtrees and their ancestors: flattening is quadratic in the layers it
+    # is given, and with a layer per chunk, saving a big network was mostly flattening cook
+    # output only to throw it away.
     lm = chunk_registry.ChunkLayerManager()
     chunks = list(scene.get_chunks())
     homes = {chunk_utils.get_bookkeeping_layer(stage, c) for c in chunks}
-    cook_layers = [
-        layer.identifier for c in chunks
-        if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes
-        and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT) is not None
-    ]
-    owned = _owned_stage(stage, cook_layers)
-    resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
-    try:
-        flat = UsdUtils.FlattenLayerStack(owned, resolve)
-    except Tf.ErrorException:
-        # One property spec with no usable type makes FlattenLayerStack refuse the whole
-        # layer stack, and flattening is how a scene is saved -- so a single stub costs the
-        # user everything they have done since the last save. Drop the stubs (they hold
-        # nothing: no value, no type, no connection) and try once more.
-        #
-        # Only on the failure path. What creates a stub is not known -- reproducing it from
-        # a reported session did not work -- so this is a rescue, not a fix, and a rescue
-        # has no business walking every layer on every ordinary save. If nothing was found,
-        # or flattening still fails, the original error is the honest answer.
-        if not chunk_layers.drop_broken_property_specs(
-            stage.GetLayerStack(includeSessionLayers=True), logger
-        ):
-            raise
-        flat = UsdUtils.FlattenLayerStack(owned, resolve)
     # The live stage, not one opened over `flat`: a chunk composed in from a foreign layer
     # is typed Chunk here and nowhere in `flat`, and it is exactly the one whose local
     # `over` (if any) must still be found and copied below.
@@ -7560,6 +7548,19 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
         (p.GetPath() for p in stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),
         key=lambda p: p.pathElementCount,
     )
+    chunk_roots = {p.GetPrefixes()[0] for p in chunk_paths}
+    cook_layers = [
+        layer.identifier for c in chunks
+        if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes
+        and (layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT) is not None
+             or not _may_reach(layer, chunk_roots))
+    ]
+    owned = _owned_stage(stage, cook_layers)
+    resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
+    try:
+        flat = _flatten_owned(stage, owned, resolve)
+    finally:
+        _flatten_stages[:] = [s for s in _flatten_stages if s != owned]
 
     dst = Sdf.Layer.CreateAnonymous()
     _carry_foreign_sublayers(stage.GetRootLayer(), dst, Path(path))
@@ -7821,6 +7822,54 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
     return next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == str(host_path)), None)
 
 
+def _may_reach(layer: Sdf.Layer, roots: set[Sdf.Path], seen: set[str] | None = None) -> bool:
+    """Whether layer, or a layer under it, may hold a spec at or under one of `roots`.
+
+    A layer holds a spec for every ancestor of each spec it has, so one with no root prim
+    among `roots` has nothing at or below them. Says True when it cannot tell: a sublayer
+    not open to look at.
+    """
+    seen = set() if seen is None else seen
+    if layer.identifier in seen:
+        return False
+    seen.add(layer.identifier)
+    if any(spec.path in roots for spec in layer.rootPrims):
+        return True
+    for sub_path in layer.subLayerPaths:
+        sub = Sdf.Layer.FindRelativeToLayer(layer, sub_path)
+        if sub is None or _may_reach(sub, roots, seen):
+            return True
+    return False
+
+
+def _flatten_owned(stage: Usd.Stage, owned: Usd.Stage, resolve) -> Sdf.Layer:
+    """UsdUtils.FlattenLayerStack of the owned stage, rescuing a stack with broken specs."""
+    try:
+        return UsdUtils.FlattenLayerStack(owned, resolve)
+    except Tf.ErrorException:
+        # One property spec with no usable type makes FlattenLayerStack refuse the whole
+        # layer stack, and flattening is how a scene is saved -- so a single stub costs the
+        # user everything they have done since the last save. Drop the stubs (they hold
+        # nothing: no value, no type, no connection) and try once more.
+        #
+        # Only on the failure path. What creates a stub is not known -- reproducing it from
+        # a reported session did not work -- so this is a rescue, not a fix, and a rescue
+        # has no business walking every layer on every ordinary save. If nothing was found,
+        # or flattening still fails, the original error is the honest answer.
+        if not chunk_layers.drop_broken_property_specs(
+            stage.GetLayerStack(includeSessionLayers=True), logger
+        ):
+            raise
+        return UsdUtils.FlattenLayerStack(owned, resolve)
+
+
+#: Stages _owned_stage opened over the scene's root layer, while they are being flattened.
+#: The stage sync knows its stage by root layer, so it has to be told these are not it:
+#: muting layers on one sends a change notice, and the sync took the masked stage for the
+#: scene's, made it its own and scanned it for chunks.
+_flatten_stages: list[Usd.Stage] = []
+
+
 def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     """The stage as seen through only the layers the chunk system owns -- for flattening.
 
@@ -7849,6 +7898,8 @@ def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     owned = Usd.Stage.OpenMasked(
         stage.GetRootLayer(), stage.GetSessionLayer(), Usd.StagePopulationMask()
     )
+    # Before muting, which is what sends the notice -- see _flatten_stages.
+    _flatten_stages.append(owned)
     owned.MuteAndUnmuteLayers(foreign, [])
     return owned
 
