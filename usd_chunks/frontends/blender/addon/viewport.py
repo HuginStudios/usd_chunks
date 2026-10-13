@@ -22,11 +22,15 @@ that, not the message, is the signal.
 from __future__ import annotations
 
 import logging
+import math
 import traceback
 
 import bpy
+import gpu
 from bpy_extras import view3d_utils
-from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL
+from gpu_extras.batch import batch_for_shader
+from mathutils import Vector
+from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL, UsdLux
 
 from usd_chunks.frontends.blender import nodegraph as bg
 
@@ -35,7 +39,7 @@ logger = logging.getLogger(__name__)
 #: Handler + engine live here rather than on an operator: Blender constructs operators per
 #: click, and the UsdImagingGL engine must outlive a frame (rebuilding it per draw throws
 #: away Hydra's whole cache and makes navigation crawl).
-_state = {"handle": None, "engine": None, "stage_id": None, "error": "",
+_state = {"handle": None, "lights_handle": None, "engine": None, "stage_id": None, "error": "",
           "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True,
           "renderParams": None, "gl_pick_failed": False}
 
@@ -212,6 +216,118 @@ def pick_by_bounds(stage, origin, direction, time=None) -> str | None:
     return best_path
 
 
+#: A click this close to a light's marker, in pixels, picks the light. A light has no
+#: surface for Hydra's pick or the bounds pick to hit, so its marker is what is clicked.
+LIGHT_PICK_RADIUS = 12.0
+_LIGHT_MARKER_SIZE = 10.0
+_LIGHT_COLOR = (1.0, 0.82, 0.25, 0.95)
+_LIGHT_OUTLINE = (0.0, 0.0, 0.0, 0.75)
+
+#: The light paths of the stage last asked about, kept until the stage resyncs: finding
+#: them walks the whole stage, too slow to do on every redraw of a big scene.
+_lights = {"stage_id": None, "paths": None, "listener": None}
+
+
+def _on_objects_changed(notice, _sender) -> None:
+    if notice.GetResyncedPaths():
+        _lights["paths"] = None
+
+
+def _light_paths(stage) -> list:
+    if _lights["stage_id"] != id(stage) or _lights["paths"] is None:
+        if _lights["stage_id"] != id(stage):
+            if _lights["listener"] is not None:
+                _lights["listener"].Revoke()
+            _lights["listener"] = Tf.Notice.Register(Usd.Notice.ObjectsChanged, _on_objects_changed, stage)
+            _lights["stage_id"] = id(stage)
+        _lights["paths"] = [prim.GetPath() for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)]
+    return _lights["paths"]
+
+
+def light_positions(stage, time=None) -> list:
+    """Where the stage's visible lights stand.
+
+    Args:
+        stage: The stage to look in.
+        time: The time code to read transforms and visibility at. Default time if None.
+
+    Returns:
+        (prim path, world position as a Gf.Vec3d) for every visible UsdLux light.
+    """
+    if stage is None:
+        return []
+    time = Usd.TimeCode.Default() if time is None else time
+    cache = UsdGeom.XformCache(time)
+    found = []
+    for path in _light_paths(stage):
+        prim = stage.GetPrimAtPath(path)
+        if not prim or UsdGeom.Imageable(prim).ComputeVisibility(time) == UsdGeom.Tokens.invisible:
+            continue
+        found.append((str(path), cache.GetLocalToWorldTransform(prim).ExtractTranslation()))
+    return found
+
+
+def nearest_marker(markers, x: float, y: float, radius: float = LIGHT_PICK_RADIUS) -> str | None:
+    """The marker nearest (x, y) within `radius` pixels.
+
+    Args:
+        markers: (prim path, (x, y) in region pixels) pairs.
+        x: Click x in region pixels.
+        y: Click y in region pixels.
+        radius: How far from a marker a click still picks it.
+
+    Returns:
+        The nearest marker's path, or None when none is that close.
+    """
+    best, best_distance = None, radius
+    for path, (mx, my) in markers:
+        distance = math.hypot(mx - x, my - y)
+        if distance <= best_distance:
+            best, best_distance = path, distance
+    return best
+
+
+def _light_markers(region, rv3d, stage) -> list:
+    """(path, region pixels) of every light in front of the view."""
+    markers = []
+    for path, position in light_positions(stage, current_time()):
+        xy = view3d_utils.location_3d_to_region_2d(region, rv3d, Vector(position))
+        if xy is not None:
+            markers.append((path, (xy[0], xy[1])))
+    return markers
+
+
+def _draw_lights():
+    """A marker on each light, as Blender draws its own: something to see and click."""
+    stage = active_stage()
+    region, rv3d = bpy.context.region, bpy.context.region_data
+    if stage is None or region is None or rv3d is None:
+        return
+    try:
+        markers = _light_markers(region, rv3d, stage)
+        if not markers:
+            return
+        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        gpu.state.blend_set("ALPHA")
+        shader.bind()
+        for _path, centre in markers:
+            for size, color in ((_LIGHT_MARKER_SIZE + 3.0, _LIGHT_OUTLINE), (_LIGHT_MARKER_SIZE, _LIGHT_COLOR)):
+                batch = batch_for_shader(shader, "TRI_FAN", {"pos": _disc(centre, size / 2.0)})
+                shader.uniform_float("color", color)
+                batch.draw(shader)
+        gpu.state.blend_set("NONE")
+    except Exception:
+        logger.debug("light markers draw failed", exc_info=True)
+
+
+def _disc(centre, radius: float, segments: int = 20) -> list:
+    """A filled circle's TRI_FAN vertices in region pixels: the centre, then the rim."""
+    rim = [(centre[0] + radius * math.cos(2.0 * math.pi * i / segments),
+            centre[1] + radius * math.sin(2.0 * math.pi * i / segments))
+           for i in range(segments + 1)]
+    return [(centre[0], centre[1])] + rim
+
+
 def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     """The prim under (mouse_x, mouse_y).
 
@@ -230,6 +346,12 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     queue. Blender 5.1 / pxrBlender_v25_08, for one, raises an `invalid value` from
     HgiGLTexture's constructor on a viewport that is drawing perfectly.
     """
+
+    # Lights first: their markers are drawn over everything, and neither pick below can
+    # hit a light.
+    light = nearest_marker(_light_markers(region, rv3d, stage), mouse_x, mouse_y)
+    if light is not None:
+        return light
 
     ndc_x = (mouse_x / region.width) * 2.0 - 1.0
     ndc_y = (mouse_y / region.height) * 2.0 - 1.0
@@ -324,13 +446,16 @@ def enable_hydra_view() -> None:
     if _state["handle"] is None:
         _state["handle"] = bpy.types.SpaceView3D.draw_handler_add(
             _draw, (), "WINDOW", "POST_VIEW")
+        _state["lights_handle"] = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_lights, (), "WINDOW", "POST_PIXEL")
         _redraw()
 
 
 def disable_hydra_view() -> None:
     if _state["handle"] is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_state["handle"], "WINDOW")
-        _state.update(handle=None, engine=None, stage_id=None)
+        bpy.types.SpaceView3D.draw_handler_remove(_state["lights_handle"], "WINDOW")
+        _state.update(handle=None, lights_handle=None, engine=None, stage_id=None)
         _redraw()
 
 
