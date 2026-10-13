@@ -423,13 +423,19 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> No
     if not gizmos or not (prim and prim.IsValid()):
         return
 
-    for gizmo in gizmos:
-        try:
-            _author_one(stage, prim, chunk, gizmo)
-        except Exception:
-            # One malformed gizmo must not take the chunk prim down with it -- the rest of
-            # the prim's bookkeeping (exec ports, params) is what makes the chunk work at all.
-            logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
+    # One change notice instead of one per create/variability/value: a single transform
+    # gizmo was 17 of the 31 notices a new Transform chunk sent, and every one of them can
+    # make a host refresh (usdview resets its GUI and repaints on any ObjectsChanged). Safe
+    # inside a block because the prim already exists -- unlike DefinePrim -- and nothing
+    # below reads back a property it created in the same pass.
+    with Sdf.ChangeBlock():
+        for gizmo in gizmos:
+            try:
+                _author_one(stage, prim, chunk, gizmo)
+            except Exception:
+                # One malformed gizmo must not take the chunk prim down with it -- the rest of
+                # the prim's bookkeeping (exec ports, params) is what makes the chunk work at all.
+                logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
 
 
 def _author_hidden(prim: Usd.Prim, chunk: core.ChunkBase, name: str) -> None:
