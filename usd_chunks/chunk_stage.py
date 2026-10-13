@@ -6165,6 +6165,81 @@ def commit_order_from_stage(
     return result
 
 
+def nested_cook_keys(chunks: Iterable[core.ChunkBase], stage: Usd.Stage) -> dict[int, tuple]:
+    """A sort key per chunk (by id) that orders a nested network upstream-first.
+
+    The key is the chunk's ancestor chain, outermost first, each level standing for how far
+    down its own siblings' wiring that ancestor sits (its longest path from a sibling with no
+    input, read from the stage's wires as in commit_order_from_stage). Siblings wired to
+    nothing tie, and a tie goes to the shorter chain, so a chunk still comes before what is
+    nested deeper beside it -- the outermost-first order load_chunks always cooked in.
+
+    What a plain depth sort missed is two groups wired one after the other: the downstream
+    group's inner chunks are shallower than the upstream group's deepest ones, so they cooked
+    first, against a stage without what the upstream group makes, and nothing cooked them
+    again.
+
+    A wire from inside another group counts against the sibling holding its source. A cycle
+    is broken rather than dropped: whatever is left takes the level after the last.
+
+    Args:
+        chunks: The chunks to key; ancestors outside this set end the chain.
+        stage: The stage holding their chunk prims.
+
+    Returns:
+        id(chunk) -> key tuple.
+    """
+    chunks = list(chunks)
+    families: dict[int, list[core.ChunkBase]] = {}
+    for c in chunks:
+        families.setdefault(id(c.get_context()), []).append(c)
+
+    level: dict[int, int] = {}
+    for family in families.values():
+        by_path = {get_chunk_prim_path(c): c for c in family}
+        inputs: dict[int, set[int]] = {}
+        outputs: dict[int, list[core.ChunkBase]] = {id(c): [] for c in family}
+        for c in family:
+            prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
+            found: set[int] = set()
+            if prim and prim.IsValid():
+                for source in _connected_source_paths(prim):
+                    path = Sdf.Path(source)
+                    while path not in (Sdf.Path.absoluteRootPath, Sdf.Path.emptyPath):
+                        if (sibling := by_path.get(str(path))) is not None:
+                            if sibling is not c and id(sibling) not in found:
+                                found.add(id(sibling))
+                                outputs[id(sibling)].append(c)
+                            break
+                        path = path.GetParentPath()
+            inputs[id(c)] = found
+        waiting = {id(c): len(inputs[id(c)]) for c in family}
+        ready = [c for c in family if not waiting[id(c)]]
+        for c in ready:
+            level[id(c)] = 0
+        while ready:
+            c = ready.pop()
+            for down in outputs[id(c)]:
+                level[id(down)] = max(level.get(id(down), 0), level[id(c)] + 1)
+                waiting[id(down)] -= 1
+                if not waiting[id(down)]:
+                    ready.append(down)
+        last = max((level[id(c)] for c in family if id(c) in level), default=-1)
+        for c in family:
+            if waiting[id(c)]:
+                level[id(c)] = last + 1
+
+    keys: dict[int, tuple] = {}
+    for c in chunks:
+        chain = []
+        node = c
+        while node is not None and id(node) in level:
+            chain.append(level[id(node)])
+            node = node.get_context()
+        keys[id(c)] = tuple(reversed(chain))
+    return keys
+
+
 def exec_upstream(chunk: core.ChunkBase, seen: set | None = None) -> set:
     """`chunk` and everything upstream of it, following exec wires only.
 
@@ -7273,10 +7348,12 @@ def _load_chunks(
                 # act on. In `deferred` order a group's inner root could therefore cook
                 # first, against a stage that did not yet hold what it needs -- an inner
                 # BindMaterial running before the Sublayer feeding the group has brought the
-                # mesh onto the stage finds no target and authors nothing. Prim-path depth is exactly
-                # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
-                # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
-                # chunks at the same depth keep their existing relative order.
+                # mesh onto the stage finds no target and authors nothing. Nesting is half of
+                # the order (/chunks/Tab1/Sublayer before
+                # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial); the wiring between the groups
+                # is the other half -- by depth alone, a group's inner chunks cooked before
+                # those of a deeper group wired upstream of it. nested_cook_keys orders by
+                # both, and sorted() is stable, so ties keep their existing relative order.
                 #
                 # A root an earlier root's solve already cooked is not run again. Everything is
                 # dirty after the build, so the first solve takes in every dirty node connected
@@ -7291,9 +7368,8 @@ def _load_chunks(
                 # out empty. Run in turn, each root still dirties its group itself.
                 unseen = _unseen_by_active_views(stage, scene)
                 stale_before = {id(c) for _, c in deferred if chunk_cook.is_cook_stale(c)}
-                for prim, added in sorted(
-                    deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
-                ):
+                cook_keys = nested_cook_keys((c for _, c in deferred), stage)
+                for prim, added in sorted(deferred, key=lambda item: cook_keys[id(item[1])]):
                     if id(added) not in chunks_with_dependencies and not unseen(added):
                         if id(added) in stale_before and not chunk_cook.is_cook_stale(added):
                             continue
