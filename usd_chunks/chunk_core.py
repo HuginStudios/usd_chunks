@@ -1775,6 +1775,11 @@ class ChunkCommon(AttributesBase):
             # the container will send PARAM_REMOVED with it's owning ChunkContainerBase as sender.
             owner.pop(self)
 
+        # Disconnected, not only dropped: a connection sits in a reference cycle, so it lives
+        # on until the cyclic GC runs -- and a global one kept hearing every stage meanwhile,
+        # the next scene's included, on behalf of a chunk deleted with its own.
+        for connection in self._callbacks.get(include_private=True):
+            connection.disconnect()
         self._callbacks.clear()
         self.set_owner(None)
         self.send_self(chunk_notice.ChunkNoticeAlias.CHUNK_DELETED)
@@ -3565,10 +3570,12 @@ class ChunkBase(ChunkGroupBase):
         """Delete this chunk; usable as a callback."""
         self.request_delete()
 
+    @chunk_notice.without_edit_context
     def trigger_on_create_callbacks(self, notice=None, sender=None):
         """Trigger every on-create callback in this chunk's hierarchy.
 
         Runs once the chunk is loaded and added to the scene, as a callback on CHUNK_LOADED.
+        Outside the chunk's edit context: each callback triggered runs in its own owner's.
 
         Args:
             notice: The notice, when called as a callback.
@@ -3693,7 +3700,9 @@ class ChunkBase(ChunkGroupBase):
             # PARAM_ADDED, which can trigger the chunk's execute() (e.g. via _wire_inputs);
             # clearing afterwards would wipe what execute just authored.
             lm = chunk_registry.ChunkLayerManager()
-            if lm.initialized:
+            if lm.initialized and lm.defer_new(param):
+                pass
+            elif lm.initialized:
                 if layer := lm.get_or_create_layer(param):
                     layer.Clear()
                     chunk_cook.mark_cook_stale(param)

@@ -494,6 +494,19 @@ class _PathIndex(dict):
         super().__init__()
         self._paths = _PathSet()
         self._ids_at: dict[str, set[int]] = {}
+        # id -> the chunk, for the entries set through track().
+        self._refs: dict[int, weakref.ref] = {}
+
+    def track(self, chunk: core.ChunkBase, path: str) -> None:
+        """Register chunk at path, as index[id(chunk)] = path does, and remember the chunk."""
+        self[id(chunk)] = path
+        self._refs[id(chunk)] = weakref.ref(chunk)
+
+    def chunk(self, key: int) -> core.ChunkBase | None:
+        """The chunk registered under key through track(), if it is still that chunk."""
+        ref = self._refs.get(key)
+        c = ref() if ref is not None else None
+        return c if c is not None and id(c) == key else None
 
     def _link(self, key: int, path: str) -> None:
         ids = self._ids_at.setdefault(path, set())
@@ -518,6 +531,7 @@ class _PathIndex(dict):
     def __delitem__(self, key: int) -> None:
         self._unlink(key, dict.__getitem__(self, key))
         super().__delitem__(key)
+        self._refs.pop(key, None)
 
     _MISSING = object()
 
@@ -525,6 +539,7 @@ class _PathIndex(dict):
         if key in self:
             path = super().pop(key)
             self._unlink(key, path)
+            self._refs.pop(key, None)
             return path
         if default is _PathIndex._MISSING:
             raise KeyError(key)
@@ -534,6 +549,7 @@ class _PathIndex(dict):
         super().clear()
         self._paths.clear()
         self._ids_at.clear()
+        self._refs.clear()
 
     def ids_at(self, path: str) -> set[int]:
         """The chunks registered at exactly this prim path."""
@@ -563,6 +579,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     # _on_chunk_deleted, which must not touch USD during that window.
     _reloading: bool = False
 
+    # True while discarding_stage deletes the chunks of a stage about to be thrown away.
+    _discarding: bool = False
+
     # True while reconcile_dag_dependencies runs off an ObjectsChanged notice, i.e. while
     # the DAG is being mirrored FROM the stage. Stops the mirror writing back: adding the
     # edge fires DEPENDENCY_ADDED, whose handler would author inputs:chunk and re-home edit
@@ -579,6 +598,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._stage = stage
         self._scene = scene
         self._reloading = False
+        self._discarding = False
         self._loaded_stage = None
         self._loaded_prim_paths: set[str] = _PathSet()
         _output_children_known.clear()
@@ -729,7 +749,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # contents_changed), and _on_objects_changed decides from that one whether the
         # change can move an answer -- including a mute, which it recognises by the layer
         # stack having changed rather than by paths, since USD reports one with none.
-        if chunk_notice._usd_write_active or not self._scene:
+        # Not while the stage is being thrown away: a chunk deleted with it can still edit
+        # it on the way out (a Mute Layer gives back its mutes), and the scan that followed
+        # found the prims of the chunks just deleted and built them again.
+        if chunk_notice._usd_write_active or not self._scene or self._discarding:
             return
         stage = notice.GetStage()
         if not stage or self._is_foreign_stage(stage):
@@ -781,12 +804,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         whole. File > Open already tears down that way (_reloading); this is the same for
         any caller that owns the stage it is discarding, such as a script's Scene closing.
         """
-        was_reloading = self._reloading
-        self._reloading = True
+        was_reloading, was_discarding = self._reloading, self._discarding
+        self._reloading = self._discarding = True
         try:
             yield
         finally:
-            self._reloading = was_reloading
+            self._reloading, self._discarding = was_reloading, was_discarding
 
     def _on_chunk_deleted(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
@@ -1028,7 +1051,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         """
         if stage is None or not self._scene:
             return False
-        if skip_cook.is_cook_stage(stage):
+        if skip_cook.is_cook_stage(stage) or any(stage == s for s in _flatten_stages):
             return True
         scene_stage = self._scene.get_stage()
         if not scene_stage:
@@ -1173,8 +1196,19 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
     def _in_scene_order(self, ids: Iterable[int]) -> list[core.ChunkBase]:
         """The scene's chunks among `ids`, in get_chunks() order."""
+        ids = set(ids)
+        if not ids:
+            return []
+        # One chunk -- what nearly every notice asks about -- has no order to put it in, and
+        # the order is the expensive part: it is rebuilt from a walk of the whole scene after
+        # every chunk added, so building a network walked the scene once per chunk.
+        if len(ids) == 1:
+            index = getattr(self, "_chunk_prim_paths", None)
+            c = index.chunk(next(iter(ids))) if isinstance(index, _PathIndex) else None
+            if c is not None and self._scene.surely_holds(c):
+                return [c]
         order = self._chunk_order()
-        found = sorted(order[i] for i in set(ids) if i in order)
+        found = sorted(order[i] for i in ids if i in order)
         return [c for _, c in found]
 
     def _chunks_at(self, paths: Iterable[str]) -> list[core.ChunkBase]:
@@ -1585,7 +1619,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 new_name=owner.name,
                 chunk=owner,
             )
-            self._chunk_prim_paths[id(owner)] = new_path
+            self._chunk_prim_paths.track(owner, new_path)
             if owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 # Renaming a group renames its whole subtree (BatchNamespaceEdit renames
                 # descendants too). Update the group's prim_path and rebase every descendant's
@@ -2370,7 +2404,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             taken_by_other = bool(self._chunk_prim_paths.ids_at(prim_path) - {id(chunk)})
             if not taken_by_other:
                 # (a) load -- the prim exists; register and skip _define_prim.
-                self._chunk_prim_paths[id(chunk)] = prim_path
+                self._chunk_prim_paths.track(chunk, prim_path)
                 return
             # (b) collision -- pick the next free sibling name.
             base, i = chunk.name, 1
@@ -2379,7 +2413,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             chunk.name = f"{base}{i}"
             prim_path = f"{root}/{chunk.name}"
         self._loaded_prim_paths.add(prim_path)
-        self._chunk_prim_paths[id(chunk)] = prim_path
+        self._chunk_prim_paths.track(chunk, prim_path)
         # Use object.__setattr__ to store the prim path without going through
         # the attrs _wrapped_setattr, which would fire value_changed / notices.
         object.__setattr__(chunk, '_exec_prim_path', prim_path)
@@ -2616,51 +2650,56 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if book_layer is not None and book_layer != self._stage.GetSessionLayer():
                 _define_containers_in(self._stage, book_layer, Sdf.Path(target_path).GetParentPath())
 
-            ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
-            if not ui_api.GetPosAttr().HasAuthoredValue():
-                if _create_node_pos is not None:
-                    ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
-                else:
-                    ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
+            # The prim's own bookkeeping attributes as one change: each write was a change
+            # round of its own, with every stage listener run for it -- most of the notices
+            # adding a chunk sends. The prim is defined above, outside the block: USD does
+            # not compose a prim made inside one until it closes.
+            with Sdf.ChangeBlock():
+                ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
+                if not ui_api.GetPosAttr().HasAuthoredValue():
+                    if _create_node_pos is not None:
+                        ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
+                    else:
+                        ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
 
-            config = chunk.get_config()
-            # A chunk built in the interpreter has no module, and info:chunkType is how a
-            # load finds what to rebuild a prim from -- so without a fallback its prim was
-            # written complete, params and values and all, and then skipped on the way back
-            # in. Saved as the generic `runtime` type instead, which rebuilds its params
-            # from those same attributes. Never overwrites a real module's own type.
-            module_name = config.module if config else ""
-            # A module-less CONTEXT is not a runtime chunk: load_chunks recognises a plain
-            # tab context by the ABSENCE of a type, and stamping one on would make it try to
-            # rebuild the tab as a chunk inside itself.
-            fallback = "" if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) else _RUNTIME_CHUNK_TYPE
-            if module_name or fallback:
-                attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
-                attr.SetVariability(Sdf.VariabilityUniform)
-                if not attr.Get():
-                    attr.Set(module_name or fallback)
+                config = chunk.get_config()
+                # A chunk built in the interpreter has no module, and info:chunkType is how a
+                # load finds what to rebuild a prim from -- so without a fallback its prim was
+                # written complete, params and values and all, and then skipped on the way back
+                # in. Saved as the generic `runtime` type instead, which rebuilds its params
+                # from those same attributes. Never overwrites a real module's own type.
+                module_name = config.module if config else ""
+                # A module-less CONTEXT is not a runtime chunk: load_chunks recognises a plain
+                # tab context by the ABSENCE of a type, and stamping one on would make it try to
+                # rebuild the tab as a chunk inside itself.
+                fallback = "" if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) else _RUNTIME_CHUNK_TYPE
+                if module_name or fallback:
+                    attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
+                    attr.SetVariability(Sdf.VariabilityUniform)
+                    if not attr.Get():
+                        attr.Set(module_name or fallback)
 
-            # Only a pinned chunk writes anything: unpinned is the default (see
-            # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
-            # in every chunk of every saved file for no information at all.
-            # Views are never auto-pinned, regardless of which surface/flow created them --
-            # see is_chunk_pinned's matching unconditional view special case.
-            if bool(_pin_new_chunks) and not is_terminal_chunk(chunk):
-                pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
-                pinned_attr.SetVariability(Sdf.VariabilityUniform)
-                if not pinned_attr.HasAuthoredValue():
-                    pinned_attr.Set(True)
+                # Only a pinned chunk writes anything: unpinned is the default (see
+                # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
+                # in every chunk of every saved file for no information at all.
+                # Views are never auto-pinned, regardless of which surface/flow created them --
+                # see is_chunk_pinned's matching unconditional view special case.
+                if bool(_pin_new_chunks) and not is_terminal_chunk(chunk):
+                    pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
+                    pinned_attr.SetVariability(Sdf.VariabilityUniform)
+                    if not pinned_attr.HasAuthoredValue():
+                        pinned_attr.Set(True)
 
-            config = chunk.get_config()
-            if not (config and config.terminal):
-                exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
-                exec_out.SetVariability(Sdf.VariabilityUniform)
+                config = chunk.get_config()
+                if not (config and config.terminal):
+                    exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
+                    exec_out.SetVariability(Sdf.VariabilityUniform)
 
-            if config and getattr(config, "outputs", None):
-                for out_name, out_type_name in config.outputs:
-                    out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
-                    if out_type is not None:
-                        prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
+                if config and getattr(config, "outputs", None):
+                    for out_name, out_type_name in config.outputs:
+                        out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
+                        if out_type is not None:
+                            prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
 
             chunk_gizmo.author_gizmos(self._stage, prim, chunk)
 
@@ -2698,7 +2737,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prev_write = chunk_notice._usd_write_active
             chunk_notice._usd_write_active = True
             try:
-                self._author_param_values(prim, chunk)
+                # One change for all of them, and closed while the write is still suppressed:
+                # the notice goes out when the block ends, and must be ignored the same way.
+                with Sdf.ChangeBlock():
+                    self._author_param_values(prim, chunk)
             finally:
                 chunk_notice._usd_write_active = prev_write
 
@@ -7244,7 +7286,7 @@ def _load_chunks(
                 sync = ChunkStageSync()
                 if getattr(sync, "_chunk_prim_paths", None) is not None:
                     for prim, added in deferred:
-                        sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
+                        sync._chunk_prim_paths.track(added, str(prim.GetPath()))
 
                 # Last, after CHUNK_LOADED and the restores above: those can cook again (Render
                 # Settings recooks once its renderer groups exist), and a cook solves up the
@@ -7491,33 +7533,14 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     # prim: its cook makes them again, and saved they would outlive the chunk. Only a layer
     # with something under /chunks is left out, and not one that is also where some chunk
     # keeps its prim (an Edit Target's layer); with none, the live stage is flattened as before.
+    #
+    # And every other cook layer that cannot reach what is copied out below -- the chunk
+    # prims, their subtrees and their ancestors: flattening is quadratic in the layers it
+    # is given, and with a layer per chunk, saving a big network was mostly flattening cook
+    # output only to throw it away.
     lm = chunk_registry.ChunkLayerManager()
     chunks = list(scene.get_chunks())
     homes = {chunk_utils.get_bookkeeping_layer(stage, c) for c in chunks}
-    cook_layers = [
-        layer.identifier for c in chunks
-        if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes
-        and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT) is not None
-    ]
-    owned = _owned_stage(stage, cook_layers)
-    resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
-    try:
-        flat = UsdUtils.FlattenLayerStack(owned, resolve)
-    except Tf.ErrorException:
-        # One property spec with no usable type makes FlattenLayerStack refuse the whole
-        # layer stack, and flattening is how a scene is saved -- so a single stub costs the
-        # user everything they have done since the last save. Drop the stubs (they hold
-        # nothing: no value, no type, no connection) and try once more.
-        #
-        # Only on the failure path. What creates a stub is not known -- reproducing it from
-        # a reported session did not work -- so this is a rescue, not a fix, and a rescue
-        # has no business walking every layer on every ordinary save. If nothing was found,
-        # or flattening still fails, the original error is the honest answer.
-        if not chunk_layers.drop_broken_property_specs(
-            stage.GetLayerStack(includeSessionLayers=True), logger
-        ):
-            raise
-        flat = UsdUtils.FlattenLayerStack(owned, resolve)
     # The live stage, not one opened over `flat`: a chunk composed in from a foreign layer
     # is typed Chunk here and nowhere in `flat`, and it is exactly the one whose local
     # `over` (if any) must still be found and copied below.
@@ -7525,6 +7548,19 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
         (p.GetPath() for p in stage.TraverseAll() if p.GetTypeName() == _CHUNK_PRIM_TYPENAME),
         key=lambda p: p.pathElementCount,
     )
+    chunk_roots = {p.GetPrefixes()[0] for p in chunk_paths}
+    cook_layers = [
+        layer.identifier for c in chunks
+        if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes
+        and (layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT) is not None
+             or not _may_reach(layer, chunk_roots))
+    ]
+    owned = _owned_stage(stage, cook_layers)
+    resolve = _asset_path_resolver(stage.GetRootLayer(), Path(path))
+    try:
+        flat = _flatten_owned(stage, owned, resolve)
+    finally:
+        _flatten_stages[:] = [s for s in _flatten_stages if s != owned]
 
     dst = Sdf.Layer.CreateAnonymous()
     _carry_foreign_sublayers(stage.GetRootLayer(), dst, Path(path))
@@ -7786,6 +7822,54 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
     return next((c for c in scene.get_chunks() if get_chunk_prim_path(c) == str(host_path)), None)
 
 
+def _may_reach(layer: Sdf.Layer, roots: set[Sdf.Path], seen: set[str] | None = None) -> bool:
+    """Whether layer, or a layer under it, may hold a spec at or under one of `roots`.
+
+    A layer holds a spec for every ancestor of each spec it has, so one with no root prim
+    among `roots` has nothing at or below them. Says True when it cannot tell: a sublayer
+    not open to look at.
+    """
+    seen = set() if seen is None else seen
+    if layer.identifier in seen:
+        return False
+    seen.add(layer.identifier)
+    if any(spec.path in roots for spec in layer.rootPrims):
+        return True
+    for sub_path in layer.subLayerPaths:
+        sub = Sdf.Layer.FindRelativeToLayer(layer, sub_path)
+        if sub is None or _may_reach(sub, roots, seen):
+            return True
+    return False
+
+
+def _flatten_owned(stage: Usd.Stage, owned: Usd.Stage, resolve) -> Sdf.Layer:
+    """UsdUtils.FlattenLayerStack of the owned stage, rescuing a stack with broken specs."""
+    try:
+        return UsdUtils.FlattenLayerStack(owned, resolve)
+    except Tf.ErrorException:
+        # One property spec with no usable type makes FlattenLayerStack refuse the whole
+        # layer stack, and flattening is how a scene is saved -- so a single stub costs the
+        # user everything they have done since the last save. Drop the stubs (they hold
+        # nothing: no value, no type, no connection) and try once more.
+        #
+        # Only on the failure path. What creates a stub is not known -- reproducing it from
+        # a reported session did not work -- so this is a rescue, not a fix, and a rescue
+        # has no business walking every layer on every ordinary save. If nothing was found,
+        # or flattening still fails, the original error is the honest answer.
+        if not chunk_layers.drop_broken_property_specs(
+            stage.GetLayerStack(includeSessionLayers=True), logger
+        ):
+            raise
+        return UsdUtils.FlattenLayerStack(owned, resolve)
+
+
+#: Stages _owned_stage opened over the scene's root layer, while they are being flattened.
+#: The stage sync knows its stage by root layer, so it has to be told these are not it:
+#: muting layers on one sends a change notice, and the sync took the masked stage for the
+#: scene's, made it its own and scanned it for chunks.
+_flatten_stages: list[Usd.Stage] = []
+
+
 def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     """The stage as seen through only the layers the chunk system owns -- for flattening.
 
@@ -7814,6 +7898,8 @@ def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     owned = Usd.Stage.OpenMasked(
         stage.GetRootLayer(), stage.GetSessionLayer(), Usd.StagePopulationMask()
     )
+    # Before muting, which is what sends the notice -- see _flatten_stages.
+    _flatten_stages.append(owned)
     owned.MuteAndUnmuteLayers(foreign, [])
     return owned
 
@@ -8038,7 +8124,7 @@ def rename_context_prim_path(context: core.ChunkBase, new_prim_path: str | None)
         sync._loaded_prim_paths.discard(old_tracked)
         sync._loaded_prim_paths.add(new_tracked)
         if sync._chunk_prim_paths.get(id(chunk_obj)) == old_tracked:
-            sync._chunk_prim_paths[id(chunk_obj)] = new_tracked
+            sync._chunk_prim_paths.track(chunk_obj, new_tracked)
 
     context.prim_path = new_prim_path
 

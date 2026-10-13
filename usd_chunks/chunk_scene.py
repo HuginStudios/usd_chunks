@@ -569,6 +569,26 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         object.__setattr__(self, "_chunks_cache", (key, res))
         return res
 
+    def surely_holds(self, c: ChunkBase) -> bool:
+        """Whether c is one of get_chunks(), told from c's owners instead of a walk.
+
+        True only when it is certain: c is a plain chunk, and every chunk between it and the
+        scene is a context, each of which get_chunks() walks into. False means "ask
+        get_chunks()", not "no": a chunkgroup, or an owner of a kind this does not follow.
+        For the stage sync, whose lookups ask about one chunk per USD notice, and which
+        otherwise walked the whole scene after every chunk added.
+        """
+        if not isinstance(c, ChunkBase) or c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+            return False
+        owner = c.get_owner()
+        while owner is not None:
+            if owner is self.chunks:
+                return True
+            if isinstance(owner, ChunkBase) and not owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                return False
+            owner = owner.get_owner()
+        return False
+
     def clear_chunk_selection(self):
         """Clear the chunk selection."""
         for i in self.get_selected_chunks():

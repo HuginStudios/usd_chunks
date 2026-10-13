@@ -142,7 +142,10 @@ class Scene(chunk_scene.SceneSender):
         # the whole scene -- was most of the time closing took. A stage the caller passed in
         # is theirs, and keeps the tidy-up.
         sync = ChunkStageSync()
-        if self._owns_stage and sync._stage is self._stage:
+        # Compared as stages, not as objects: the sync takes its stage from each notice, and
+        # a notice hands out a new Python wrapper of the same stage -- after which `is` said
+        # no, the tidy-up ran, and a rescan of the old stage rebuilt the chunks just deleted.
+        if self._owns_stage and sync._stage is not None and sync._stage == self._stage:
             teardown = sync.discarding_stage()
         else:
             teardown = contextlib.nullcontext()
