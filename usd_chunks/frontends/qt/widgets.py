@@ -694,12 +694,9 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
     def __init__(self, param: chunk.LineEdit):
         super().__init__(param)
 
-        self.button = QtWidgets.QToolButton(self)
-        self.button.setText("Pin Selection")
-        self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
-        self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
-
-        self.button.clicked.connect(self.pin_prim)
+        # The pin button only exists on a prim-selection field (see _sync_pin_button): built
+        # for every LineEdit and hidden on most, it was a widget per field for nothing.
+        self.button: QtWidgets.QToolButton | None = None
 
         self.text = QtWidgets.QLineEdit(self)
         self.text.editingFinished.connect(self.value_changed)
@@ -709,10 +706,9 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.addWidget(self.text)
-        self.main_layout.addWidget(self.button)
         self.setLayout(self.main_layout)
 
-        self.button.setHidden(not self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
+        self._sync_pin_button(self.param.has_flag(ChunkFlags.ParamFlags.PRIM_SELECTION))
 
         self.setup_chunk_widget()
         # This widget has no parent yet, so it is a top-level window: the set_hidden(False)
@@ -729,8 +725,21 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
     def handle_param_changed(self, notice: chunk_notice.AttributeChangeNotice, sender: chunk.ChunkParamBase):
         if notice.alias == chunk_notice.ChunkNoticeAlias.FLAGS_CHANGED and notice.data.value:
-            self.button.setHidden(ChunkFlags.ParamFlags.PRIM_SELECTION not in notice.data.value)
+            self._sync_pin_button(ChunkFlags.ParamFlags.PRIM_SELECTION in notice.data.value)
         return super().handle_param_changed(notice, sender)
+
+    def _sync_pin_button(self, wanted: bool) -> None:
+        """Show the pin button when the field takes a prim selection, making it on first need."""
+        if self.button is None:
+            if not wanted:
+                return
+            self.button = QtWidgets.QToolButton(self)
+            self.button.setText("Pin Selection")
+            self.button.setIcon(QtGui.QIcon(str(chunk_resources.get_icon("pin"))))
+            self.button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+            self.button.clicked.connect(self.pin_prim)
+            self.main_layout.addWidget(self.button)
+        self.button.setHidden(not wanted)
 
     def pin_prim(self):
         scene = self.param.get_scene()
@@ -1874,13 +1883,10 @@ class ContainerWidget(
         self.minimize_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
         self.minimize_button.installEventFilter(self)
 
-        self.list_expand_button = QtWidgets.QToolButton()
-        self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.list_expand_button.setIconSize(QtCore.QSize(6, 6))
-        self.list_expand_button.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
-        )
-        self.list_expand_button.setHidden(True)
+        # Only a ListGroup has one, so it is made when update_from_layout finds the flag. Built
+        # here for every group, it was a hidden button in nearly every container of a body,
+        # each still constructed, styled and laid out.
+        self.list_expand_button: QtWidgets.QToolButton | None = None
 
         # Used when collapsable
         self.toggle_anim = QtCore.QPropertyAnimation(self, b"animation_value")
@@ -1900,7 +1906,6 @@ class ContainerWidget(
         self.__layout__.setSpacing(0)
 
         self.__layout__.addWidget(self.minimize_button)
-        self.__layout__.addWidget(self.list_expand_button)
         self.__layout__.addWidget(self.content)
 
         self.setLayout(self.__layout__)
@@ -1995,13 +2000,20 @@ class ContainerWidget(
         else:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
-        if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags:
-            self.list_expand_button.setHidden(False)
-
+        if (usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LIST in self.group.flags
+                and self.list_expand_button is None):
+            self.list_expand_button = QtWidgets.QToolButton()
+            self.list_expand_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+            self.list_expand_button.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
+            )
             icon = QtGui.QIcon(str(chunk_resources.get_icon("add")))
             self.list_expand_button.setIcon(icon)
             self.list_expand_button.setIconSize(QtCore.QSize(20, 20))
             self.list_expand_button.clicked.connect(self.list_expand)
+            # Where it always sat: between the header button and the content.
+            self.__layout__.insertWidget(self.__layout__.indexOf(self.minimize_button) + 1,
+                                         self.list_expand_button)
 
     def update_label(self, text: str):
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.LABELED in self.group.flags:
