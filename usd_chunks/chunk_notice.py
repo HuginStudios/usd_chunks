@@ -1770,6 +1770,16 @@ def _register_global(alias: ChunkNoticeAlias, notice_type, connection: NoticeCon
     return _SharedGlobalListener(dispatch, connection)
 
 
+def without_edit_context(meth):
+    """Mark a callback to run outside its owner's edit context.
+
+    For a callback that authors nothing itself, only hands on to others that each run in
+    their own: resolving the context makes the owner's layer, which puts it on the stage.
+    """
+    meth._without_edit_context = True
+    return meth
+
+
 class NoticeConnection:
     """A Tf.Notice listener with a simple client-facing interface, as ChunkNoticePropagators store them.
 
@@ -1967,7 +1977,10 @@ class NoticeConnection:
         if stage and notice_stage is not None and (other := notice_stage()) is not None \
                 and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
             return
-        ctx = owner.get_edit_context()
+        # Only for a callback that runs in it: asking makes the layer, and a layer made puts
+        # it on the stage -- for nothing, when the callback runs without it.
+        context = context and not getattr(meth, "_without_edit_context", False)
+        ctx = owner.get_edit_context() if context else None
         try:
             if stage and ctx and context:
                 # A muted chunk layer (view-driven: the chunk is dormant/hidden) is removed

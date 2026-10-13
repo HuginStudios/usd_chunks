@@ -494,6 +494,19 @@ class _PathIndex(dict):
         super().__init__()
         self._paths = _PathSet()
         self._ids_at: dict[str, set[int]] = {}
+        # id -> the chunk, for the entries set through track().
+        self._refs: dict[int, weakref.ref] = {}
+
+    def track(self, chunk: core.ChunkBase, path: str) -> None:
+        """Register chunk at path, as index[id(chunk)] = path does, and remember the chunk."""
+        self[id(chunk)] = path
+        self._refs[id(chunk)] = weakref.ref(chunk)
+
+    def chunk(self, key: int) -> core.ChunkBase | None:
+        """The chunk registered under key through track(), if it is still that chunk."""
+        ref = self._refs.get(key)
+        c = ref() if ref is not None else None
+        return c if c is not None and id(c) == key else None
 
     def _link(self, key: int, path: str) -> None:
         ids = self._ids_at.setdefault(path, set())
@@ -518,6 +531,7 @@ class _PathIndex(dict):
     def __delitem__(self, key: int) -> None:
         self._unlink(key, dict.__getitem__(self, key))
         super().__delitem__(key)
+        self._refs.pop(key, None)
 
     _MISSING = object()
 
@@ -525,6 +539,7 @@ class _PathIndex(dict):
         if key in self:
             path = super().pop(key)
             self._unlink(key, path)
+            self._refs.pop(key, None)
             return path
         if default is _PathIndex._MISSING:
             raise KeyError(key)
@@ -534,6 +549,7 @@ class _PathIndex(dict):
         super().clear()
         self._paths.clear()
         self._ids_at.clear()
+        self._refs.clear()
 
     def ids_at(self, path: str) -> set[int]:
         """The chunks registered at exactly this prim path."""
@@ -1173,8 +1189,19 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
     def _in_scene_order(self, ids: Iterable[int]) -> list[core.ChunkBase]:
         """The scene's chunks among `ids`, in get_chunks() order."""
+        ids = set(ids)
+        if not ids:
+            return []
+        # One chunk -- what nearly every notice asks about -- has no order to put it in, and
+        # the order is the expensive part: it is rebuilt from a walk of the whole scene after
+        # every chunk added, so building a network walked the scene once per chunk.
+        if len(ids) == 1:
+            index = getattr(self, "_chunk_prim_paths", None)
+            c = index.chunk(next(iter(ids))) if isinstance(index, _PathIndex) else None
+            if c is not None and self._scene.surely_holds(c):
+                return [c]
         order = self._chunk_order()
-        found = sorted(order[i] for i in set(ids) if i in order)
+        found = sorted(order[i] for i in ids if i in order)
         return [c for _, c in found]
 
     def _chunks_at(self, paths: Iterable[str]) -> list[core.ChunkBase]:
@@ -1585,7 +1612,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 new_name=owner.name,
                 chunk=owner,
             )
-            self._chunk_prim_paths[id(owner)] = new_path
+            self._chunk_prim_paths.track(owner, new_path)
             if owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
                 # Renaming a group renames its whole subtree (BatchNamespaceEdit renames
                 # descendants too). Update the group's prim_path and rebase every descendant's
@@ -2370,7 +2397,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             taken_by_other = bool(self._chunk_prim_paths.ids_at(prim_path) - {id(chunk)})
             if not taken_by_other:
                 # (a) load -- the prim exists; register and skip _define_prim.
-                self._chunk_prim_paths[id(chunk)] = prim_path
+                self._chunk_prim_paths.track(chunk, prim_path)
                 return
             # (b) collision -- pick the next free sibling name.
             base, i = chunk.name, 1
@@ -2379,7 +2406,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             chunk.name = f"{base}{i}"
             prim_path = f"{root}/{chunk.name}"
         self._loaded_prim_paths.add(prim_path)
-        self._chunk_prim_paths[id(chunk)] = prim_path
+        self._chunk_prim_paths.track(chunk, prim_path)
         # Use object.__setattr__ to store the prim path without going through
         # the attrs _wrapped_setattr, which would fire value_changed / notices.
         object.__setattr__(chunk, '_exec_prim_path', prim_path)
@@ -2616,51 +2643,56 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if book_layer is not None and book_layer != self._stage.GetSessionLayer():
                 _define_containers_in(self._stage, book_layer, Sdf.Path(target_path).GetParentPath())
 
-            ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
-            if not ui_api.GetPosAttr().HasAuthoredValue():
-                if _create_node_pos is not None:
-                    ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
-                else:
-                    ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
+            # The prim's own bookkeeping attributes as one change: each write was a change
+            # round of its own, with every stage listener run for it -- most of the notices
+            # adding a chunk sends. The prim is defined above, outside the block: USD does
+            # not compose a prim made inside one until it closes.
+            with Sdf.ChangeBlock():
+                ui_api = UsdUI.NodeGraphNodeAPI.Apply(prim)
+                if not ui_api.GetPosAttr().HasAuthoredValue():
+                    if _create_node_pos is not None:
+                        ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
+                    else:
+                        ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
 
-            config = chunk.get_config()
-            # A chunk built in the interpreter has no module, and info:chunkType is how a
-            # load finds what to rebuild a prim from -- so without a fallback its prim was
-            # written complete, params and values and all, and then skipped on the way back
-            # in. Saved as the generic `runtime` type instead, which rebuilds its params
-            # from those same attributes. Never overwrites a real module's own type.
-            module_name = config.module if config else ""
-            # A module-less CONTEXT is not a runtime chunk: load_chunks recognises a plain
-            # tab context by the ABSENCE of a type, and stamping one on would make it try to
-            # rebuild the tab as a chunk inside itself.
-            fallback = "" if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) else _RUNTIME_CHUNK_TYPE
-            if module_name or fallback:
-                attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
-                attr.SetVariability(Sdf.VariabilityUniform)
-                if not attr.Get():
-                    attr.Set(module_name or fallback)
+                config = chunk.get_config()
+                # A chunk built in the interpreter has no module, and info:chunkType is how a
+                # load finds what to rebuild a prim from -- so without a fallback its prim was
+                # written complete, params and values and all, and then skipped on the way back
+                # in. Saved as the generic `runtime` type instead, which rebuilds its params
+                # from those same attributes. Never overwrites a real module's own type.
+                module_name = config.module if config else ""
+                # A module-less CONTEXT is not a runtime chunk: load_chunks recognises a plain
+                # tab context by the ABSENCE of a type, and stamping one on would make it try to
+                # rebuild the tab as a chunk inside itself.
+                fallback = "" if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT) else _RUNTIME_CHUNK_TYPE
+                if module_name or fallback:
+                    attr = prim.CreateAttribute(_CHUNK_TYPE_ATTR, Sdf.ValueTypeNames.Token, custom=False)
+                    attr.SetVariability(Sdf.VariabilityUniform)
+                    if not attr.Get():
+                        attr.Set(module_name or fallback)
 
-            # Only a pinned chunk writes anything: unpinned is the default (see
-            # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
-            # in every chunk of every saved file for no information at all.
-            # Views are never auto-pinned, regardless of which surface/flow created them --
-            # see is_chunk_pinned's matching unconditional view special case.
-            if bool(_pin_new_chunks) and not is_terminal_chunk(chunk):
-                pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
-                pinned_attr.SetVariability(Sdf.VariabilityUniform)
-                if not pinned_attr.HasAuthoredValue():
-                    pinned_attr.Set(True)
+                # Only a pinned chunk writes anything: unpinned is the default (see
+                # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
+                # in every chunk of every saved file for no information at all.
+                # Views are never auto-pinned, regardless of which surface/flow created them --
+                # see is_chunk_pinned's matching unconditional view special case.
+                if bool(_pin_new_chunks) and not is_terminal_chunk(chunk):
+                    pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
+                    pinned_attr.SetVariability(Sdf.VariabilityUniform)
+                    if not pinned_attr.HasAuthoredValue():
+                        pinned_attr.Set(True)
 
-            config = chunk.get_config()
-            if not (config and config.terminal):
-                exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
-                exec_out.SetVariability(Sdf.VariabilityUniform)
+                config = chunk.get_config()
+                if not (config and config.terminal):
+                    exec_out = prim.CreateAttribute(_EXEC_OUTPUT, Sdf.ValueTypeNames.Token, custom=False)
+                    exec_out.SetVariability(Sdf.VariabilityUniform)
 
-            if config and getattr(config, "outputs", None):
-                for out_name, out_type_name in config.outputs:
-                    out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
-                    if out_type is not None:
-                        prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
+                if config and getattr(config, "outputs", None):
+                    for out_name, out_type_name in config.outputs:
+                        out_type = getattr(Sdf.ValueTypeNames, out_type_name, None)
+                        if out_type is not None:
+                            prim.CreateAttribute(f"outputs:{out_name}", out_type, custom=False)
 
             chunk_gizmo.author_gizmos(self._stage, prim, chunk)
 
@@ -2698,7 +2730,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prev_write = chunk_notice._usd_write_active
             chunk_notice._usd_write_active = True
             try:
-                self._author_param_values(prim, chunk)
+                # One change for all of them, and closed while the write is still suppressed:
+                # the notice goes out when the block ends, and must be ignored the same way.
+                with Sdf.ChangeBlock():
+                    self._author_param_values(prim, chunk)
             finally:
                 chunk_notice._usd_write_active = prev_write
 
@@ -7244,7 +7279,7 @@ def _load_chunks(
                 sync = ChunkStageSync()
                 if getattr(sync, "_chunk_prim_paths", None) is not None:
                     for prim, added in deferred:
-                        sync._chunk_prim_paths[id(added)] = str(prim.GetPath())
+                        sync._chunk_prim_paths.track(added, str(prim.GetPath()))
 
                 # Last, after CHUNK_LOADED and the restores above: those can cook again (Render
                 # Settings recooks once its renderer groups exist), and a cook solves up the
@@ -8038,7 +8073,7 @@ def rename_context_prim_path(context: core.ChunkBase, new_prim_path: str | None)
         sync._loaded_prim_paths.discard(old_tracked)
         sync._loaded_prim_paths.add(new_tracked)
         if sync._chunk_prim_paths.get(id(chunk_obj)) == old_tracked:
-            sync._chunk_prim_paths[id(chunk_obj)] = new_tracked
+            sync._chunk_prim_paths.track(chunk_obj, new_tracked)
 
     context.prim_path = new_prim_path
 

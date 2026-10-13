@@ -2413,6 +2413,22 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 loading.subLayerPaths = []
         return [c for ref in (pending or {}).values() if (c := ref()) is not None]
 
+    def defer_new(self, c: core.ChunkCommon) -> bool:
+        """Leave a chunk with no layer yet without one until placement, while deferring.
+
+        A new chunk asks for its layer as it is added, only to clear it -- and a layer made
+        then went on the stage at once, in the loading layer: an edit that recomposes the
+        whole layer stack, per chunk. Made at placement instead, with all the others, it goes
+        straight into its graph layer, written once.
+
+        Returns:
+            bool: True if c waits for placement; False when not deferring, or c has a layer.
+        """
+        if self._deferred_placement is None or self.get_layer(c) is not None:
+            return False
+        self._deferred_placement[c.get_hash()] = weakref.ref(c)
+        return True
+
     def place_deferred_layers(self) -> None:
         """Put every layer held back by defer_placement on the stage, and stop deferring.
 
