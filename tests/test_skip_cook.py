@@ -92,6 +92,34 @@ def test_a_chunk_below_that_reads_nothing_that_changed_is_skipped():
         assert _size(scene, "/Other") == 1.0
 
 
+def test_the_first_edit_after_opening_skips_like_any_other(tmp_path):
+    """Opening must leave nothing behind that makes the first edit cook more.
+
+    The load restored Other's saved size -- a change of its own -- and cooked with solves
+    held back, so the change stayed pending; and cooking the scene's chunkgroup, which has
+    nothing to run, made its layer after Other had recorded the layer stack. Either one made
+    the first edit after opening cook every chunk below the one edited, once.
+    """
+    cooks: list = []
+    network = tmp_path / "network.usda"
+    with Scene() as scene:
+        gen = _add(scene, _generator(cooks, "Gen"))
+        other = _add(scene, _generator(cooks, "Other"))
+        other.get_param("size").value = 3.0
+        _chain(scene, gen, other)
+        scene.set_output(other)
+        scene.save(str(network))
+
+    with Scene.open(str(network)) as scene:
+        cooks.clear()
+
+        scene.get_chunk("Gen").get_param("size").value = 2.0
+
+        assert cooks == ["Gen"]
+        assert _size(scene, "/Gen") == 2.0
+        assert _size(scene, "/Other") == 3.0
+
+
 def test_a_chunk_that_reads_what_changed_cooks():
     cooks: list = []
     with Scene() as scene:

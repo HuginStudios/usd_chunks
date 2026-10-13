@@ -2605,11 +2605,12 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
     # (graph_id, target)).
     recook_for_view(stage, scene, _Root, outer_view)
 
+    # Not the group's own: a chunkgroup has nothing to cook, so it gets no layer -- its
+    # children are what it produces, and they are what must rank with it.
     lm = chunk_registry.ChunkLayerManager()
     idents = {
         "reference": lm.get_layer(reference).identifier,
         "bind_material": lm.get_layer(bind_material).identifier,
-        "grp": lm.get_layer(grp).identifier,
         "transform": lm.get_layer(transform).identifier,
         "sublayer": lm.get_layer(sublayer).identifier,
     }
@@ -2635,8 +2636,8 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
 
     order = list(g_layer.subLayerPaths)
     idx = {name: order.index(ident) for name, ident in idents.items()}
-    assert idx["bind_material"] < idx["reference"] < idx["grp"] < idx["transform"] < idx["sublayer"], (
-        f"expected bind_material < reference < grp < transform < sublayer (index 0 = strongest), got {idx}"
+    assert idx["bind_material"] < idx["reference"] < idx["transform"] < idx["sublayer"], (
+        f"expected bind_material < reference < transform < sublayer (index 0 = strongest), got {idx}"
     )
 
 
