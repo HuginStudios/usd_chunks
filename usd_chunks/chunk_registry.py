@@ -2196,6 +2196,11 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._deferred_placement: dict[core.ChunkHash, weakref.ReferenceType] | None = None
         # Where those layers sit meanwhile; see defer_placement.
         self._loading_layer: Sdf.Layer | None = None
+        # Graph layer identifier -> (layer, its sublayer list as edited so far), while
+        # place_deferred_layers writes each graph layer once; None otherwise.
+        self._sublayer_batch: dict[str, tuple[Sdf.Layer, list[str]]] | None = None
+        # The graph layers that batch may write: this manager's own, which hold no offsets.
+        self._batchable: set[str] = set()
         # The cook layer of each file layer that defines chunks, by that layer's identifier;
         # see cook_layer_for.
         self._cook_layers: dict[str, Sdf.Layer] = {}
@@ -2245,6 +2250,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._held_deletes = None
         self._deferred_placement = None
         self._loading_layer = None
+        self._sublayer_batch = None
         self._drop_deactivations()
         self._cook_layers = {}
         self._placed = {}
@@ -2408,9 +2414,63 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         return [c for ref in (pending or {}).values() if (c := ref()) is not None]
 
     def place_deferred_layers(self) -> None:
-        """Put every layer held back by defer_placement on the stage, and stop deferring."""
-        for c in self.end_deferral():
-            self.get_or_create_layer(c)
+        """Put every layer held back by defer_placement on the stage, and stop deferring.
+
+        Each graph layer's sublayer list is written once, for all its chunks: every write
+        to a list on the stage recomposes the whole layer stack, so placing a layer per
+        write made a network of n chunks cost n recomposes of up to n layers each.
+        """
+        held = self.end_deferral()
+        with self._batched_sublayers():
+            for c in held:
+                self.get_or_create_layer(c)
+
+    @contextlib.contextmanager
+    def _batched_sublayers(self):
+        """Collect graph-layer sublayer edits made inside, and write each list once at the end.
+
+        Only graph layers are batched, those there already and those made meanwhile: they are
+        this manager's own and hold no layer offsets, which a whole-list write would not
+        keep. The layers they sit under are edited as before.
+        """
+        if self._sublayer_batch is not None:
+            yield
+            return
+        self._sublayer_batch = {}
+        self._batchable = {g.identifier for g in self.graph_layers.values()}
+        try:
+            yield
+        finally:
+            batch, self._sublayer_batch = self._sublayer_batch, None
+            self._batchable = set()
+            with self._internal_sublayer_edit():
+                for layer, paths in batch.values():
+                    if list(layer.subLayerPaths) != paths:
+                        layer.subLayerPaths = paths
+
+    def _sublayers(self, layer: Sdf.Layer) -> list[str]:
+        """layer's sublayer identifiers: the batched list of a graph layer being batched, or a
+        copy read off the layer."""
+        batch = self._sublayer_batch
+        if batch is None or layer.identifier not in self._batchable:
+            return list(layer.subLayerPaths)
+        if (entry := batch.get(layer.identifier)) is None:
+            entry = batch[layer.identifier] = (layer, list(layer.subLayerPaths))
+        return entry[1]
+
+    def _insert_sublayer(self, layer: Sdf.Layer, index: int, identifier: str) -> None:
+        """Insert into layer's sublayers, through the batch when layer is being batched."""
+        if self._sublayer_batch is not None and layer.identifier in self._batchable:
+            self._sublayers(layer).insert(index, identifier)
+        else:
+            layer.subLayerPaths.insert(index, identifier)
+
+    def _remove_sublayer(self, layer: Sdf.Layer, identifier: str) -> None:
+        """Remove from layer's sublayers, through the batch when layer is being batched."""
+        if self._sublayer_batch is not None and layer.identifier in self._batchable:
+            self._sublayers(layer).remove(identifier)
+        else:
+            layer.subLayerPaths.remove(identifier)
 
     def get_or_create_layer(self, c: core.ChunkCommon) -> Sdf.Layer | None:
         """Get a chunk's layer as get_layer() does, creating it if it does not exist yet.
@@ -2446,7 +2506,13 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # place_deferred_layers puts it where the finished wiring says. See defer_placement.
         if self._deferred_placement is not None:
             self._deferred_placement[c.get_hash()] = weakref.ref(c)
-            return self.get_layer(c) or self.add_layer(self._holding_layer(), c)
+            if layer := self.get_layer(c):
+                return layer
+            # A chunk layer moving into the stack, like the placed ones below: without the
+            # guard the stage sync took each hold for a real layer stack change and dropped
+            # what it remembers of the scene, every chunk.
+            with self._internal_sublayer_edit():
+                return self.add_layer(self._holding_layer(), c)
 
         # Resolve where this chunk's content should nest: the user's chosen Edit Target,
         # or the session layer by default -- the same resolution chunk-prim redirect
@@ -2498,6 +2564,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 self.internal_layer_ids.add(parent.identifier)
                 self.graph_layers[graph_key] = parent
                 self._graph_layer_target[graph_key] = target
+                if self._sublayer_batch is not None:
+                    self._batchable.add(parent.identifier)
                 # Insert at the top so this graph's layers win over other sublayers already on
                 # the target -- e.g. an RBD bake must beat the prim's existing xformOp:transform.
                 # Checked rather than unconditional: a freshly minted anon layer's identifier
@@ -2522,7 +2590,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
 
             def insert_index() -> int:
                 # The sort_key is used to determine the order of the chunk sublayers
-                count = len(parent.subLayerPaths)
+                count = len(self._sublayers(parent))
                 index = chunk_scheduler.layer_sort_key(c.get_dag_node())
                 if index > count - 1:
                     index = count
@@ -2542,8 +2610,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
                 # layer per chunk, and this runs on every get_edit_context -- so checking each
                 # time made every call cost the size of the graph. Only this manager moves a
                 # chunk layer between graph layers, and each move goes through here.
-                if layer.identifier not in list(parent.subLayerPaths):
-                    parent.subLayerPaths.insert(insert_index(), layer.identifier)
+                if layer.identifier not in self._sublayers(parent):
+                    self._insert_sublayer(parent, insert_index(), layer.identifier)
             self._confirmed_in[chunk_hash] = parent.identifier
 
             # If a chunk connection changed after the chunk layer was created, the layer may have been
@@ -2569,9 +2637,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             moved = self._chunk_graph_key.get(chunk_hash) != graph_key
             self._chunk_graph_key[chunk_hash] = graph_key
             for pl in list(self.graph_layers.values()) if moved else ():
-                if pl.identifier != parent.identifier and layer.identifier in pl.subLayerPaths:
-                    pl.subLayerPaths.remove(layer.identifier)
-                    if len(pl.subLayerPaths) == 0:
+                if pl.identifier != parent.identifier and layer.identifier in self._sublayers(pl):
+                    self._remove_sublayer(pl, layer.identifier)
+                    if len(self._sublayers(pl)) == 0:
                         for gkey, g_layer in list(self.graph_layers.items()):
                             if g_layer.identifier != pl.identifier:
                                 continue
@@ -2937,7 +3005,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self.internal_layer_ids.add(layer.identifier)
 
         self.chunk_layers[h] = layer
-        target_layer.subLayerPaths.insert(index, layer.identifier)
+        self._insert_sublayer(target_layer, index, layer.identifier)
         # An empty layer holds no result, so the chunk must cook before recook_for_view can
         # count on its layer. Covers a load, which makes every layer afresh for chunk objects
         # that may have cooked into the old ones.
