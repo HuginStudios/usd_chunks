@@ -433,16 +433,20 @@ def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
 
 
 def menu_changed(owner: chunk.Chunk, notice, sender: chunk.ChunkParamBase):
+    """Show the picked shape's params and hide the rest. The build is execute()'s.
+
+    Groups are matched by label, not name: a param is named apart from the chunk holding
+    it, so a Mesh chunk named "cube" has its cube group renamed "cube1", and matched by
+    name the cube's params stayed hidden. The label is left alone.
+    """
     selected = sender.value
 
     for g in owner.get_my_params(chunk.is_group):
-        if g.name == selected:
+        if g.get_label().lower() == selected:
             g.unset_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
         else:
             g.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
 
-    if selected == "none":
-        clear_layer(owner)
 
 def add_texture(prim: Usd.Prim, texture_file: str | None = None):
     """Bind the UV checker material to prim, with this chunk's checker.png by default."""
@@ -450,187 +454,80 @@ def add_texture(prim: Usd.Prim, texture_file: str | None = None):
     chunk_utils.bind_uv_checker(prim.GetStage(), [prim], path)
 
 
-def clear_layer(owner: chunk.ChunkCommon):
-    ctx = owner.get_edit_context()
-    if ctx and (lreg := chunk.get_layer_manager()):
-        lreg.clear_layer(ctx.identifier)
+def _value(node: chunk.Chunk, name: str, t):
+    return node.get_param(name, chunk.is_param_t(t)).value
 
 
-def cube_changed(owner: chunk.Group, notice, sender):
-    stage = owner.get_stage()
-
-    if not stage:
-        return
-
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return
-
-    clear_layer(owner)
-
-    xseg = owner.get_param("dimx", chunk.is_param_t(int))
-    yseg = owner.get_param("dimy", chunk.is_param_t(int))
-    zseg = owner.get_param("dimz", chunk.is_param_t(int))
-
-    width = owner.get_param("width", chunk.is_param_t(float))
-    height = owner.get_param("height", chunk.is_param_t(float))
-    depth = owner.get_param("depth", chunk.is_param_t(float))
-
-    if not (c := owner.get_chunk()):
-        return
-
-    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
-    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
-        build_cube(stage, path, xseg.value, yseg.value, zseg.value, width.value, height.value, depth.value)
+def _build_cube(node, stage, path):
+    build_cube(
+        stage, path, _value(node, "dimx", int), _value(node, "dimy", int), _value(node, "dimz", int),
+        _value(node, "width", float), _value(node, "height", float), _value(node, "depth", float),
+    )
 
 
-def tube_changed(owner: chunk.Group, notice, sender):
-
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return -1
-
-    stage = owner.get_stage()
-    if not stage:
-        return
-
-    clear_layer(owner)
-
-    rows = owner.get_param("rows", chunk.is_param_t(int))
-    cols = owner.get_param("cols", chunk.is_param_t(int))
-
-    radius = owner.get_param("radius", chunk.is_param_t(float))
-    height = owner.get_param("height1", chunk.is_param_t(float))
-    caps = owner.get_param("caps", chunk.is_param_t(bool))
-
-    if not (c := owner.get_chunk()):
-        return
-
-    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
-    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
-        build_tube(stage, path, rows.value, cols.value, radius.value, height.value, caps.value)
+def _build_sphere(node, stage, path):
+    build_sphere(stage, path, _value(node, "dimx2", int), _value(node, "dimy2", int), _value(node, "radius1", float))
 
 
-def torus_changed(owner: chunk.Group, notice, sender):
-    stage = owner.get_stage()
-    if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return
-
-    clear_layer(owner)
-
-    if not (c := owner.get_chunk()):
-        return
-
-    rings = owner.get_param("torus_rings", chunk.is_param_t(int))
-    sides = owner.get_param("torus_sides", chunk.is_param_t(int))
-    radius = owner.get_param("torus_radius", chunk.is_param_t(float))
-    tube_radius = owner.get_param("torus_tube_radius", chunk.is_param_t(float))
-
-    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
-    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
-        build_torus(stage, path, rings.value, sides.value, radius.value, tube_radius.value)
+def _build_torus(node, stage, path):
+    build_torus(
+        stage, path, _value(node, "torus_rings", int), _value(node, "torus_sides", int),
+        _value(node, "torus_radius", float), _value(node, "torus_tube_radius", float),
+    )
 
 
-def cone_changed(owner: chunk.Group, notice, sender):
-    stage = owner.get_stage()
-    if not stage or owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return
-
-    clear_layer(owner)
-
-    if not (c := owner.get_chunk()):
-        return
-
-    rows = owner.get_param("cone_rows", chunk.is_param_t(int))
-    cols = owner.get_param("cone_cols", chunk.is_param_t(int))
-    radius = owner.get_param("cone_radius", chunk.is_param_t(float))
-    height = owner.get_param("cone_height", chunk.is_param_t(float))
-
-    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
-    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
-        build_cone(stage, path, rows.value, cols.value, radius.value, height.value)
+def _build_cone(node, stage, path):
+    build_cone(
+        stage, path, _value(node, "cone_rows", int), _value(node, "cone_cols", int),
+        _value(node, "cone_radius", float), _value(node, "cone_height", float),
+    )
 
 
-def grid_changed(owner: chunk.Group, notice, sender):
-    stage = owner.get_stage()
-
-    if not stage:
-        return
-
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return
-
-    clear_layer(owner)
-
-    dimx = owner.get_param("dimx1", chunk.is_param_t(int))
-    dimy = owner.get_param("dimy1", chunk.is_param_t(int))
-    width = owner.get_param("width1", chunk.is_param_t(float))
-    height = owner.get_param("height2", chunk.is_param_t(float))
-    topo = owner.get_param("topo", chunk.is_param_t(str))
-
-    topo_val = Topo.QUAD
-
-    if topo.value == "tris":
-        topo_val = Topo.TRIS
-
-    if not (c := owner.get_chunk()):
-        return
-
-    prim_path = c.get_param("prim_path", chunk.is_param_t(str))
-    for path in chunk_utils.author_in_variant_contexts(stage, prim_path):
-        grid = build_plane(stage, path, dimx.value, dimy.value, width.value, height.value, topo=topo_val)
-        if grid:
-            add_texture(grid.GetPrim())
+def _build_tube(node, stage, path):
+    build_tube(
+        stage, path, _value(node, "rows", int), _value(node, "cols", int),
+        _value(node, "radius", float), _value(node, "height1", float), _value(node, "caps", bool),
+    )
 
 
-def sphere_changed(owner: chunk.Group, notice, sender):
-    stage = owner.get_stage()
+def _build_grid(node, stage, path):
+    topo = Topo.TRIS if _value(node, "topo", str) == "tris" else Topo.QUAD
+    grid = build_plane(
+        stage, path, _value(node, "dimx1", int), _value(node, "dimy1", int),
+        _value(node, "width1", float), _value(node, "height2", float), topo=topo,
+    )
+    if grid:
+        add_texture(grid.GetPrim())
 
-    if not stage:
-        return
 
-    if owner.has_state(chunk.ChunkFlags.State.HIDDEN):
-        return
-
-    clear_layer(owner)
-
-    dimx = owner.get_param("dimx2", chunk.is_param_t(int))
-    dimy = owner.get_param("dimy2", chunk.is_param_t(int))
-    rad = owner.get_param("radius1", chunk.is_param_t(float))
-
-    raw_path = "/sphere"
-    if c := owner.get_chunk():
-        raw_path = c.get_param("prim_path", chunk.is_param_t(str)).value
-
-    with chunk_utils.author_in_variant_context(stage, raw_path) as path:
-        build_sphere(stage, path, dimx.value, dimy.value, rad.value)
+_BUILDERS = {
+    "cube": _build_cube, "sphere": _build_sphere, "torus": _build_torus,
+    "cone": _build_cone, "tube": _build_tube, "grid": _build_grid,
+}
 
 
 def execute(node: chunk.Chunk) -> None:
-    """Reserved top-level reactive hook -- load_chunks calls this once per chunk after
-    bulk-restoring its param values, so a reloaded Mesh actually rebuilds its shape
-    instead of leaving the target prim empty (the real work lives in cube_changed/
-    tube_changed/grid_changed, all add_callback handlers, which load's value-restore
-    deliberately does not trigger).
+    """Build the picked shape at Prim Path, in every variant context it is authored in.
 
-    menu_changed's hidden/disabled bookkeeping is reapplied first: live, picking a mesh
-    type only un-hides its group, it doesn't itself trigger a build (that needs a param
-    inside the group, or prim_path, to also change) -- so mesh_type's restored value alone
-    needs both steps repeated here to end up matching what was actually visible/built
-    before saving.
+    The whole build is here. It was once done by a callback on each shape's group as well,
+    with this replaying the one the group's name pointed at -- two copies of every build,
+    and the replay found nothing for a Mesh chunk named after its shape (its group renamed
+    "cube1"), so each recook cleared the shape the callback had made. Every param change
+    cooks the chunk anyway, from an empty layer, so the build lives here alone.
+
+    menu_changed's hidden/disabled bookkeeping is reapplied first: mesh_type's restored value
+    on load sends no change, and the panel should show the shape that is built.
     """
     menu = node.get_param("mesh_type", chunk.is_param_t(str))
     if menu is None:
         return
     menu_changed(node, None, menu)
-    build_fn = {
-        "cube": cube_changed, "sphere": sphere_changed, "torus": torus_changed, "cone": cone_changed,
-        "tube": tube_changed, "grid": grid_changed,
-    }.get(menu.value)
-    if build_fn is None:
+    build = _BUILDERS.get(menu.value)
+    stage = node.get_stage()
+    if build is None or stage is None:
         return
-    group = next((g for g in node.get_my_params(chunk.is_group) if g.name == menu.value), None)
-    if group is None:
-        return
-    build_fn(group, None, None)
+    for path in chunk_utils.author_in_variant_contexts(stage, node.get_param("prim_path", chunk.is_param_t(str))):
+        build(node, stage, path)
 
 
 def main():
@@ -651,8 +548,6 @@ def main():
         ]
     )
     cube_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
-    cube_group.add_callback(cube_changed)
-    cube_group.add_callback(cube_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     sphere_group = chunk.Group("sphere", "Sphere")
     sphere_group.add_params(
@@ -663,8 +558,6 @@ def main():
         ]
     )
     sphere_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
-    sphere_group.add_callback(sphere_changed)
-    sphere_group.add_callback(sphere_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     # Params named per shape: get_param by bare name returns the first match, and the
     # tube already has a "radius".
@@ -678,8 +571,6 @@ def main():
         ]
     )
     torus_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
-    torus_group.add_callback(torus_changed)
-    torus_group.add_callback(torus_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     cone_group = chunk.Group("cone", "Cone")
     cone_group.add_params(
@@ -691,8 +582,6 @@ def main():
         ]
     )
     cone_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
-    cone_group.add_callback(cone_changed)
-    cone_group.add_callback(cone_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     tube_group = chunk.Group("tube", "Tube")
     tube_group.add_params(
@@ -705,8 +594,6 @@ def main():
         ]
     )
     tube_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
-    tube_group.add_callback(tube_changed)
-    tube_group.add_callback(tube_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     grid_group = chunk.Group("grid", "Grid")
     grid_group.add_params(
@@ -719,8 +606,6 @@ def main():
         ]
     )
     grid_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
-    grid_group.add_callback(grid_changed)
-    grid_group.add_callback(grid_changed, path, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
     chunk_api = chunk.Chunk("Mesh")
     chunk_api.add_params([path, menu, cube_group, sphere_group, torus_group, cone_group, tube_group, grid_group])
