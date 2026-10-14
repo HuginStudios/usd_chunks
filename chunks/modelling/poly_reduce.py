@@ -53,7 +53,7 @@ from typing import NamedTuple
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import cook_cache
 from usd_chunks import sim_bake
@@ -1042,7 +1042,7 @@ def execute(node: chunk.Chunk) -> None:
     else:
         plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for plan in plans:
             _author(stage, plan)
 

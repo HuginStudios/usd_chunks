@@ -9,7 +9,7 @@ def file_changed(owner, notice, sender):
 
 
 def execute(node):
-    reference_path = node.get_param("file_path").value
+    reference_path = chunk_utils.arc_source_path(node)
     if not reference_path:
         return
 
@@ -22,7 +22,7 @@ def execute(node):
     # this chunk's own prim, and this node becomes the group -- dive in and the network
     # is there, its edits landing in the shot as overrides. Nothing is put at
     # primpath_location; the network's own chunks author the content when they cook.
-    network = chunk_stage.network_target(reference_path, import_path)
+    network = None if chunk_utils.arc_from_layer(node) else chunk_stage.network_target(reference_path, import_path)
     if network is not None:
         chunk_stage.host_network(node, reference_path, network, namespace=raw_path or "")
         if raw_path:  # the namespace root, else only an untyped parent of the network's prims
@@ -57,6 +57,26 @@ def _define(stage, path, prim_type):
     return prim
 
 
+def _source_params():
+    """Existing Layer, and its Layer menu: a layer a Layer chunk upstream made to bring in."""
+    from_layer = chunk.Checkbox(
+        "from_layer", "Existing Layer", default_value=False,
+        tooltip="Unchecked (default): bring in File Path. Checked: bring in a layer a Layer "
+        "chunk made with Sublayer off, picked in Layer -- an Edit Target downstream of this "
+        "then authors into it through the arc, and Export USD writes it as its own file, "
+        "with the arc pointing at that file.",
+    )
+    from_layer.add_callback(chunk_utils.arc_source_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+    menu = chunk.Menu(
+        "layer", "Layer",
+        # The layers are the network's as last seen, so a saved choice is set before the
+        # Layer chunk making it has cooked and listed it.
+        dynamic_items=True,
+        tooltip="A layer a Layer chunk made with Sublayer off, to bring in by this arc.",
+    )
+    return from_layer, menu
+
+
 def main():
     referenceChunk = chunk.Chunk("Reference")
 
@@ -69,10 +89,23 @@ def main():
     prim_type = chunk.Menu("prim_type", "Prim Type", menu_items=["Xform", "Scope", "Material"], default_value="Xform",
                            dynamic_items=True)
 
+    from_layer, layer_menu = _source_params()
+    referenceChunk.add_param(from_layer)
     referenceChunk.add_param(reference_fb)
+    referenceChunk.add_param(layer_menu)
     referenceChunk.add_param(import_primpath)
     referenceChunk.add_param(primpath)
     referenceChunk.add_param(prim_type)
+
+    referenceChunk.add_callback(
+        chunk_utils.refresh_arc_layer_menu,
+        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
+        listen_globally=True,
+        send_on_create=True,
+    )
+
+    chunk_utils.show_arc_source(referenceChunk)
+    referenceChunk.add_callback(chunk_utils.arc_source_changed, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
 
     return referenceChunk
 

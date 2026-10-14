@@ -21,10 +21,16 @@ _USD_EXTENSIONS = (".usd", ".usda", ".usdc")
 def _discover_export_layers(stage):
     """Return [(name, layer), ...] for every real layer Export All Layers would write,
     excluding Session Layer -- it's handled separately and always holds full bookkeeping.
+
+    The layers a Layer chunk made for an asset to bring in by payload or reference come
+    last: in no layer stack, so only the layer manager knows them, and each is written as
+    its own file, which the arcs to it are rewritten to point at.
     """
     internal_ids = chunk_utils.chunk_internal_layer_ids()
     session_id = stage.GetSessionLayer().identifier
-    return [(name, layer) for name, layer in chunk_utils.user_layers(stage)
+    lm = chunk_registry.ChunkLayerManager()
+    arc = lm.arc_layers() if lm.initialized else []
+    return [(name, layer) for name, layer in list(chunk_utils.user_layers(stage)) + arc
             if layer.identifier != session_id and layer.identifier not in internal_ids]
 
 
@@ -426,9 +432,12 @@ def commit(node):
         out_path = os.path.join(output_dir, filenames[layer.identifier])
         baked = name in baked_names
 
-        # Always a throwaway copy -- never mutate the live session's own layers. Every file
-        # gets the stage's up-axis and units: any of them may be the one opened on its own,
-        # and without them it reads as USD's global default rather than this scene's.
+        # Rewritten on a throwaway copy -- never mutate the live session's own layers.
+        # Always: a payload or reference to a layer the network made names it by its
+        # session-only identifier, in either mode, and must point at its file instead.
+        # Every file gets the stage's up-axis and units: any of them may be the one opened
+        # on its own, and without them it reads as USD's global default rather than this
+        # scene's.
         export_layer = Sdf.Layer.CreateAnonymous()
         export_layer.TransferContent(layer)
         chunk_stage.stamp_stage_metadata(export_layer, stage)
@@ -437,9 +446,12 @@ def commit(node):
             # (only on choosing to bake does it get copied into this edit target),
             # then strip the now-redundant chunk-graph bookkeeping.
             _inline_internal_sublayers(export_layer, internal_ids)
-            UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+            # Stripped while the arcs still name the session's layers: stripping opens a
+            # stage on this copy, and relocated, an arc names a file beside one that is
+            # not written yet, which that stage cannot open.
             _strip_chunk_prims(export_layer)
-        elif any(p in filenames or p in internal_ids or p in skipped_ids for p in layer.subLayerPaths):
+            UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+        else:
             # Procedural: the recipe only -- leave each chunk's real content where it
             # already lives (its own private layer), dropping the reference to it
             # here rather than inlining, via _relocate's internal_ids handling below.

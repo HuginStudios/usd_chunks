@@ -46,7 +46,7 @@ import random
 
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 
 logger = logging.getLogger(__name__)
 
@@ -1496,7 +1496,7 @@ def execute(node: chunk.Chunk) -> None:
     # become the thing you see instead of the chimney.
     colors["Chimney"] = _mix(brick_color, (0.44, 0.40, 0.37), 0.4)
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Xform.Define(stage, root_path)
         for name in PART_NAMES:
             _author_mesh(stage, root_path.AppendChild(name), meshes[name], colors[name])

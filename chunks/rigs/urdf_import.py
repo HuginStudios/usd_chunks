@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 
 logger = logging.getLogger(__name__)
@@ -517,7 +517,7 @@ def execute(node):
     if layer is None:
         return
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         try:
             with open(file_path, encoding="utf-8") as handle:
                 robot = parse(handle.read())

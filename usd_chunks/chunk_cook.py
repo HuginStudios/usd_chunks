@@ -33,7 +33,7 @@ from contextlib import contextmanager
 
 from pxr import Tf, Usd
 
-from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, skip_cook
+from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, layer_arcs, skip_cook
 
 # The chunks the solves since the last flush() reached, waiting for it -- each with the
 # (alias, propagator) changes that reached it and whether it was stale before they did.
@@ -338,7 +338,7 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
     # this specific chunk, same "not in the local LayerStack" raise as the muted
     # case. load_chunks's own later, correctly-ordered explicit .execute() call
     # (after every chunk's layer is properly registered) still runs normally.
-    not_yet_in_stack = bool(stage and ctx and not stage.HasLocalLayer(ctx))
+    not_yet_in_stack = bool(stage and ctx and not layer_arcs.is_editable(stage, ctx))
     # A blocked chunk (view-driven: not in the active view's tree -- e.g. connected to
     # an inactive view) must never run its module, whatever triggered the solve. recook
     # unblocks the active view's tree before executing it, so cooking is unaffected.
@@ -359,7 +359,7 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
     with executing(chunk), skip_cook.unmasked():
         if ctx:
             try:
-                with Usd.EditContext(stage, ctx):
+                with Usd.EditContext(stage, layer_arcs.edit_target(stage, ctx)):
                     # What the chunks below saw, to tell them what this cook
                     # changed (skip_cook). Anonymous only, like the Clear.
                     skipping = ctx.anonymous
@@ -411,7 +411,7 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
                 # is what the guards above already decided -- a chunk whose
                 # layer is not in the stack has nowhere to author, and the
                 # cook that put it back will run it.
-                if stage.IsLayerMuted(ctx.identifier) or not stage.HasLocalLayer(ctx):
+                if stage.IsLayerMuted(ctx.identifier) or not layer_arcs.is_editable(stage, ctx):
                     # Logged as the solve always has, under chunk_notice.
                     chunk_notice.logger.debug(
                         "skipped cooking %s: its layer left the stage's "

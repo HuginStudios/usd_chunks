@@ -41,7 +41,7 @@ from typing import NamedTuple
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import surface_samples
 from usd_chunks import texture_bake
@@ -369,7 +369,7 @@ def execute(node: chunk.Chunk) -> None:
         _forget(previous, files)
 
     material_path = _material_path(node, target_path)
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         material = _author_material(stage, material_path, files, settings.uv_name, constants)
         if node.get_param("bind", chunk.is_param_t(bool)).value:
             target_prim = stage.GetPrimAtPath(target_path)

@@ -39,7 +39,7 @@ from typing import (
 from attrs import define, field
 from pxr import Sdf, Tf, Usd, Gf
 from typing_extensions import Self, override
-from usd_chunks import chunk_cook, chunk_scheduler
+from usd_chunks import chunk_cook, chunk_scheduler, layer_arcs
 
 logger = logging.getLogger(__name__)
 
@@ -1989,7 +1989,7 @@ class NoticeConnection:
                 # skip; it re-syncs when it unmutes and recooks. Same guard as the execute path.
                 if stage.IsLayerMuted(ctx.identifier):
                     return
-                if not stage.HasLocalLayer(ctx):
+                if not layer_arcs.is_editable(stage, ctx):
                     # Not muted -- just not inserted into the local layer stack YET (hit
                     # live during load_chunks's bulk restore: a ListGroup proxy row's
                     # value setter bypasses the chunk_notice._loading_stage guard that
@@ -2005,7 +2005,7 @@ class NoticeConnection:
                     # edit target, works fine either way.
                     meth(*args)
                     return
-                with Usd.EditContext(stage, ctx):
+                with Usd.EditContext(stage, layer_arcs.edit_target(stage, ctx)):
                     meth(*args)
             else:
                 meth(*args)

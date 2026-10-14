@@ -351,7 +351,7 @@ def _execute(node) -> None:
     if not posed:
         return
 
-    with Usd.EditContext(rig.stage, layer):
+    with Usd.EditContext(rig.stage, chunk_utils.edit_target(rig.stage, layer)):
         prim = rig.stage.OverridePrim(rig.anim_prim.GetPath())
         attr = prim.CreateAttribute("rotations", Sdf.ValueTypeNames.QuatfArray, custom=False)
         attr.Set(builder.FinalizeAndReset())

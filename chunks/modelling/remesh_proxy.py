@@ -44,7 +44,7 @@ from typing import NamedTuple
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import mesh_reduce
 from usd_chunks import surface_samples
@@ -401,7 +401,7 @@ def execute(node: chunk.Chunk) -> None:
     del upstream  # the sources are numpy now; the scratch stage can go
 
     if proxy is not None:
-        with Usd.EditContext(stage, layer):
+        with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
             _author(stage, out_path, proxy, node.get_param("purpose", chunk.is_param_t(str)).value)
 
     if len(_LAST_COOK) > 64:
@@ -418,7 +418,7 @@ def _keep_source(node, stage, layer, source_path, out_path, triangles, keep_unde
     the painting. Below the budget the source already *is* the proxy, with its own UVs,
     materials and textures, which no bake would improve on.
     """
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         prim = stage.DefinePrim(out_path)
         prim.GetReferences().AddInternalReference(source_path)
         prim.SetCustomDataByKey(surface_samples.PASSTHROUGH_KEY, True)

@@ -1192,7 +1192,7 @@ def _write_prim_results(
     # else's and exclude an upstream Transform's op from the order entirely -- placing a
     # prim with a Transform would stop working the moment a simulation existed.
     op_name = chunk_utils.xform_op_name(node) if node is not None else "xformOp:transform"
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         order = (
             chunk_gizmo.xform_op_order(node, prim, op_name)
             if node is not None
@@ -1871,7 +1871,7 @@ def _instancer_steps(
         # (as an animated bake does) means anything reading the instancer at Default() --
         # rather than at a frame -- resolves straight past the simulation to the raw
         # scattered layout underneath.
-        with Usd.EditContext(stage, layer):
+        with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
             positions_attr.Set(settled_pos)
             orientations_attr.Set(settled_ori)
         logger.debug("Settled PointInstancer %s (%d bodies)", prim.GetPath(), num_instances)
@@ -1879,7 +1879,7 @@ def _instancer_steps(
 
     yield sim_bake.MAIN
     # Time samples, all in one change block (sim_bake.write_samples).
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         sim_bake.write_samples(positions_attr, ((start_frame + f, v) for f, v in enumerate(all_positions)))
         sim_bake.write_samples(orientations_attr, ((start_frame + f, v) for f, v in enumerate(all_orientations)))
 
@@ -2847,7 +2847,7 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     written = 0
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for link in (found for root in roots for found in _iter_links(root)):
             mats = results.get(link.name)
             if not mats:
@@ -2962,7 +2962,7 @@ def _run(owner, notice, sender) -> None:
 
     # The target prim comes from the REAL stage, not a scratch one: simulate_mujoco[_instancer]
     # write baked results back through the same instancer/attribute objects they read `prim`
-    # from (positions_attr.Set(...) inside a `with Usd.EditContext(stage, layer)`), and
+    # from (positions_attr.Set(...) inside a `with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer))`), and
     # Usd.EditContext only governs the stage object it's given -- it has no effect on attributes
     # bound to a *different* Usd.Stage. A scratch-stage-bound prim here silently bakes the whole
     # simulation onto the throwaway stage instead of `layer`, discarded the moment this function
@@ -3304,7 +3304,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
             return  # the chunk went away while it was simulating
         if lreg := chunk.get_layer_manager():
             lreg.clear_layer(layer.identifier)
-        with Usd.EditContext(stage, layer):
+        with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
             brk.author_result(stage, stage.GetPrimAtPath(target_path), result, proto_index, start_frame, spins)
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
@@ -3352,7 +3352,7 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
             return
         if lreg := chunk.get_layer_manager():
             lreg.clear_layer(layer.identifier)
-        with Usd.EditContext(stage, layer):
+        with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
             brk.author_result(stage, stage.GetPrimAtPath(target_path), partial, proto_index, start_frame, spins)
         _promote_bake_layer(layer, _chunk)
 

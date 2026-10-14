@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_scheduler
+from usd_chunks import chunk_scheduler, layer_arcs
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 
@@ -383,7 +383,8 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     _active.append(stage)
     _watches.append(watch)
     try:
-        with Usd.EditContext(stage, layer):
+        # The cook stage's own arc, for a layer an asset brings in by one (layer_arcs).
+        with Usd.EditContext(stage, layer_arcs.edit_target(stage, layer)):
             yield watch
     finally:
         _watches.pop()

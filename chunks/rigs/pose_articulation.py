@@ -394,7 +394,7 @@ def _execute(node):
     # somewhere neither value asked for. A wedge sweeping the same slider compounds it once
     # per variant.
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         posed = apply_pose(stage, roots, values, root_path, node,
                            write_targets=bool(targets.value) if targets else True)
     # Only when the shape of the work changes, not once per cook. A slider drag cooks this

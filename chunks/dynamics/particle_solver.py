@@ -34,7 +34,7 @@ import time
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_registry, chunk_stage, sim_bake
+from usd_chunks import chunk, chunk_registry, chunk_stage, sim_bake, chunk_utils
 
 logger = logging.getLogger(__name__)
 
@@ -1283,7 +1283,7 @@ def _run(owner, notice, sender):
         surface_spacing = node.get_param("surface_spacing", is_f).value or spacing * 4.0
         surface = _surface_points(positions[-1], up_idx, spacing * 2.0, surface_spacing)
 
-        with Usd.EditContext(stage, layer):
+        with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
             UsdGeom.Xform.Define(stage, sim_path)
             cloud = UsdGeom.Points.Define(stage, particles_path)
             cloud.SetWidthsInterpolation(UsdGeom.Tokens.constant)

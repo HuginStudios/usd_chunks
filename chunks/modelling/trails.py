@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 from pxr import Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage, sim_bake
+from usd_chunks import chunk, chunk_stage, sim_bake, chunk_utils
 
 
 def _report(node, text: str) -> None:
@@ -180,7 +180,7 @@ def execute(node) -> None:
                  variation=max(0.0, node.get_param("width_variation", is_f).value),
                  frequency=max(0.0, node.get_param("width_frequency", is_f).value),
                  phases=np.random.default_rng(node.get_param("seed", is_i).value).uniform(0, 2 * np.pi, (n, 2)))
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         curves = UsdGeom.BasisCurves.Define(stage, out_path)
         curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
         curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)

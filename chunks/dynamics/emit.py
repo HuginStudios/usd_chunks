@@ -26,7 +26,7 @@ import math
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage, sim_bake
+from usd_chunks import chunk, chunk_stage, sim_bake, chunk_utils
 
 EMIT_FRAME = "primvars:rbd:emitFrame"
 #: How long each instance shows in the preview, from its emit frame.
@@ -140,7 +140,7 @@ def execute(node) -> None:
     ang_local = np.degrees(p["ang"]) @ to_local[:3, :3]
 
     ids = np.arange(count, dtype=np.int64)
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         out = UsdGeom.PointInstancer(stage.OverridePrim(target_path))
         out.CreateProtoIndicesAttr().Set(Vt.IntArray.FromNumpy(p["proto"].astype(np.int32)))
         out.CreatePositionsAttr().Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(pos_local, dtype=np.float32)))
