@@ -2747,10 +2747,15 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         return prim
 
     def _author_param_values(self, prim: Usd.Prim, chunk: core.ChunkBase) -> None:
-        """Write the values chunk's params already hold onto its new prim (_define_prim)."""
+        """Write the values chunk's params already hold onto its new prim (_define_prim).
+
+        TRANSIENT params are left off, as every other writer leaves them: a Layer chunk's
+        anon layer id written here was saved, and a reopen in the same process found the
+        closed scene's layer by it -- leftover sublayers and all -- and exported them.
+        """
         for path, param in _iter_chunk_params(chunk):
             raw = param.raw_value
-            if raw is None:
+            if raw is None or is_transient_param(param):
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             sdf_type = param_sdf_type(param)
@@ -6160,6 +6165,81 @@ def commit_order_from_stage(
     return result
 
 
+def nested_cook_keys(chunks: Iterable[core.ChunkBase], stage: Usd.Stage) -> dict[int, tuple]:
+    """A sort key per chunk (by id) that orders a nested network upstream-first.
+
+    The key is the chunk's ancestor chain, outermost first, each level standing for how far
+    down its own siblings' wiring that ancestor sits (its longest path from a sibling with no
+    input, read from the stage's wires as in commit_order_from_stage). Siblings wired to
+    nothing tie, and a tie goes to the shorter chain, so a chunk still comes before what is
+    nested deeper beside it -- the outermost-first order load_chunks always cooked in.
+
+    What a plain depth sort missed is two groups wired one after the other: the downstream
+    group's inner chunks are shallower than the upstream group's deepest ones, so they cooked
+    first, against a stage without what the upstream group makes, and nothing cooked them
+    again.
+
+    A wire from inside another group counts against the sibling holding its source. A cycle
+    is broken rather than dropped: whatever is left takes the level after the last.
+
+    Args:
+        chunks: The chunks to key; ancestors outside this set end the chain.
+        stage: The stage holding their chunk prims.
+
+    Returns:
+        id(chunk) -> key tuple.
+    """
+    chunks = list(chunks)
+    families: dict[int, list[core.ChunkBase]] = {}
+    for c in chunks:
+        families.setdefault(id(c.get_context()), []).append(c)
+
+    level: dict[int, int] = {}
+    for family in families.values():
+        by_path = {get_chunk_prim_path(c): c for c in family}
+        inputs: dict[int, set[int]] = {}
+        outputs: dict[int, list[core.ChunkBase]] = {id(c): [] for c in family}
+        for c in family:
+            prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
+            found: set[int] = set()
+            if prim and prim.IsValid():
+                for source in _connected_source_paths(prim):
+                    path = Sdf.Path(source)
+                    while path not in (Sdf.Path.absoluteRootPath, Sdf.Path.emptyPath):
+                        if (sibling := by_path.get(str(path))) is not None:
+                            if sibling is not c and id(sibling) not in found:
+                                found.add(id(sibling))
+                                outputs[id(sibling)].append(c)
+                            break
+                        path = path.GetParentPath()
+            inputs[id(c)] = found
+        waiting = {id(c): len(inputs[id(c)]) for c in family}
+        ready = [c for c in family if not waiting[id(c)]]
+        for c in ready:
+            level[id(c)] = 0
+        while ready:
+            c = ready.pop()
+            for down in outputs[id(c)]:
+                level[id(down)] = max(level.get(id(down), 0), level[id(c)] + 1)
+                waiting[id(down)] -= 1
+                if not waiting[id(down)]:
+                    ready.append(down)
+        last = max((level[id(c)] for c in family if id(c) in level), default=-1)
+        for c in family:
+            if waiting[id(c)]:
+                level[id(c)] = last + 1
+
+    keys: dict[int, tuple] = {}
+    for c in chunks:
+        chain = []
+        node = c
+        while node is not None and id(node) in level:
+            chain.append(level[id(node)])
+            node = node.get_context()
+        keys[id(c)] = tuple(reversed(chain))
+    return keys
+
+
 def exec_upstream(chunk: core.ChunkBase, seen: set | None = None) -> set:
     """`chunk` and everything upstream of it, following exec wires only.
 
@@ -7268,10 +7348,12 @@ def _load_chunks(
                 # act on. In `deferred` order a group's inner root could therefore cook
                 # first, against a stage that did not yet hold what it needs -- an inner
                 # BindMaterial running before the Sublayer feeding the group has brought the
-                # mesh onto the stage finds no target and authors nothing. Prim-path depth is exactly
-                # the nesting the ordering has to respect (/chunks/Tab1/Sublayer before
-                # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial), and sorted() is stable, so
-                # chunks at the same depth keep their existing relative order.
+                # mesh onto the stage finds no target and authors nothing. Nesting is half of
+                # the order (/chunks/Tab1/Sublayer before
+                # /chunks/Tab1/AMDMaterialXLibrary/BindMaterial); the wiring between the groups
+                # is the other half -- by depth alone, a group's inner chunks cooked before
+                # those of a deeper group wired upstream of it. nested_cook_keys orders by
+                # both, and sorted() is stable, so ties keep their existing relative order.
                 #
                 # A root an earlier root's solve already cooked is not run again. Everything is
                 # dirty after the build, so the first solve takes in every dirty node connected
@@ -7286,9 +7368,8 @@ def _load_chunks(
                 # out empty. Run in turn, each root still dirties its group itself.
                 unseen = _unseen_by_active_views(stage, scene)
                 stale_before = {id(c) for _, c in deferred if chunk_cook.is_cook_stale(c)}
-                for prim, added in sorted(
-                    deferred, key=lambda item: get_chunk_prim_path(item[1]).count("/")
-                ):
+                cook_keys = nested_cook_keys((c for _, c in deferred), stage)
+                for prim, added in sorted(deferred, key=lambda item: cook_keys[id(item[1])]):
                     if id(added) not in chunks_with_dependencies and not unseen(added):
                         if id(added) in stale_before and not chunk_cook.is_cook_stale(added):
                             continue
@@ -7397,9 +7478,13 @@ def flatten_without_chunks(stage):
 
     Shallowest path first, so removing a parent Chunk takes its children with it and
     the later lookup for those children simply finds nothing.
+
+    The stage's up-axis and units are stamped on as well (stamp_stage_metadata): flattening
+    carries them only when the root layer itself authors them, which a new scene never has.
     """
     flat = UsdUtils.FlattenLayerStack(stage)
     strip_chunks(flat)
+    stamp_stage_metadata(flat, stage)
     return flat
 
 
@@ -7553,7 +7638,7 @@ def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     if not stage:
         return
     dst = _export_layer(scene, Path(path))
-    _stamp_stage_metadata(dst, stage)
+    stamp_stage_metadata(dst, stage)
     dst.Export(str(path))
     _reload_cached_layer(path)
 
@@ -7615,16 +7700,20 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     return dst
 
 
-def _stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage) -> None:
+def stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage) -> None:
     """Stamp the stage's up-axis and units onto the in-memory layer before it is written.
 
-    Uses the same UsdGeom API the live stage answers with, pointed at a stage opened over
-    `dst`, so the file carries the opinion from its first byte rather than being reopened and
-    patched afterwards.
+    Read with the same UsdGeom API the live stage answers with, so the file carries the
+    opinion from its first byte rather than being reopened and patched afterwards. Written
+    straight onto the layer's pseudo-root: opening a stage over `dst` to set them composed
+    the whole layer, which for an exported scene is everything in it.
+
+    Shared by every writer -- save, export_network, scene.export and the Export USD chunk --
+    since a file without them falls back to USD's global default whatever the scene was.
     """
-    dst_stage = Usd.Stage.Open(dst)
-    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(stage))
-    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(stage))
+    root = dst.pseudoRoot
+    root.SetInfo(UsdGeom.Tokens.upAxis, UsdGeom.GetStageUpAxis(stage))
+    root.SetInfo(UsdGeom.Tokens.metersPerUnit, UsdGeom.GetStageMetersPerUnit(stage))
 
 
 def _rebase_paths_in_layer(layer: Sdf.Layer, old_root: Sdf.Path, new_root: Sdf.Path) -> None:
@@ -7692,7 +7781,7 @@ def export_network(scene: chunk_scene.SceneSender, group: core.ChunkBase, path: 
     exec_in = group_spec.properties.get(chunk_naming.EXEC_INPUT)
     if exec_in is not None:
         exec_in.connectionPathList.ClearEdits()
-    _stamp_stage_metadata(out, stage)
+    stamp_stage_metadata(out, stage)
     out.Export(str(path))
     _reload_cached_layer(path)
     return str(dst_root)
@@ -8299,6 +8388,78 @@ def _forward_button_click(inner_param: core.ChunkParamBase, context_param: core.
     )
 
 
+def _wire_loft_sync(param: core.ChunkParamBase, context_param: core.ChunkParamBase) -> None:
+    """Keep a lofted param and the inner param it fronts in step, both ways.
+
+    Shared by loft_param_to_context and _restore_lofted_params, so a reopened group syncs
+    exactly like a freshly lofted one. The restore once wired only the downward half: after
+    a reopen, an edit to the inner param (its own widget, a gizmo, a script) cooked but
+    never reached the group's interface attribute -- the one the file saves and the next
+    load reads back -- so the edit was silently undone on the following save and open.
+    """
+    # Forward value changes from the context interface param back through the inner param
+    # so that the inner chunk's callbacks fire. _on_objects_changed is suppressed during
+    # the USD write, so we bridge the gap with a direct Python callback.
+    #
+    # The closure must be kept alive for as long as context_param lives -- NoticeConnection
+    # stores plain functions as weakrefs, so without a strong reference the callback is
+    # garbage-collected immediately after this function returns. Pinning it onto
+    # context_param ensures the lifetime is tied to the param itself.
+    # Shared by both directions below. Two params that write to each other are a loop, and
+    # the value check alone does not close it: a float round-trips through the USD attr as
+    # float32, so the value coming back is not always equal to the one sent, and a drag
+    # could ping-pong instead of settling. The flag makes each user-facing write produce
+    # exactly one write on the other side, whichever end it started from.
+    syncing: list = []
+
+    def _forward_to_inner(_owner, _notice, _sender=None):
+        if syncing:
+            return
+        syncing.append(True)
+        try:
+            val = context_param.value
+            if val is not None and param.value != val:
+                param.value = val
+        finally:
+            syncing.clear()
+
+    def _forward_to_context(_owner, _notice, _sender=None):
+        """The mirror: what anything else writes to the inner param shows on the interface.
+
+        Without it the loft only ever pushed downward, so a group published a param that
+        showed a stale value the moment the inner chunk was driven by anything else -- a
+        gizmo drag being the way it was noticed (chunk_gizmo writes `param.value`, exactly
+        like a user would), but a script or another chunk writing that param left the
+        group's interface just as wrong, and a saved file recorded the stale number.
+        """
+        if syncing or getattr(context_param, "_deleting", False):
+            return
+        syncing.append(True)
+        try:
+            val = param.value
+            if val is not None and context_param.value != val:
+                context_param.value = val
+        finally:
+            syncing.clear()
+
+    context_param._loft_fwd = _forward_to_inner  # strong-ref pin
+    context_param.add_callback(
+        _forward_to_inner,
+        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+    # Pinned on the INNER param, whose lifetime this direction follows -- same reason the
+    # forward closure is pinned on the context param.
+    param._loft_back = _forward_to_context
+    param.add_callback(
+        _forward_to_context,
+        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
+        send_on_create=False,
+        private=True,
+    )
+
+
 def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -8389,67 +8550,7 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
     context_param._chunk_parent = None
     context_param._connect_param_attr(context_attr)
 
-    # Forward value changes from the context interface param back through the inner param
-    # so that the inner chunk's callbacks fire. _on_objects_changed is suppressed during
-    # the USD write, so we bridge the gap with a direct Python callback.
-    #
-    # The closure must be kept alive for as long as context_param lives -- NoticeConnection
-    # stores plain functions as weakrefs, so without a strong reference the callback is
-    # garbage-collected immediately after this function returns. Pinning it onto
-    # context_param ensures the lifetime is tied to the param itself.
-    # Shared by both directions below. Two params that write to each other are a loop, and
-    # the value check alone does not close it: a float round-trips through the USD attr as
-    # float32, so the value coming back is not always equal to the one sent, and a drag
-    # could ping-pong instead of settling. The flag makes each user-facing write produce
-    # exactly one write on the other side, whichever end it started from.
-    syncing: list = []
-
-    def _forward_to_inner(_owner, _notice, _sender=None):
-        if syncing:
-            return
-        syncing.append(True)
-        try:
-            val = context_param.value
-            if val is not None and param.value != val:
-                param.value = val
-        finally:
-            syncing.clear()
-
-    def _forward_to_context(_owner, _notice, _sender=None):
-        """The mirror: what anything else writes to the inner param shows on the interface.
-
-        Without it the loft only ever pushed downward, so a group published a param that
-        showed a stale value the moment the inner chunk was driven by anything else -- a
-        gizmo drag being the way it was noticed (chunk_gizmo writes `param.value`, exactly
-        like a user would), but a script or another chunk writing that param left the
-        group's interface just as wrong, and a saved file recorded the stale number.
-        """
-        if syncing or getattr(context_param, "_deleting", False):
-            return
-        syncing.append(True)
-        try:
-            val = param.value
-            if val is not None and context_param.value != val:
-                context_param.value = val
-        finally:
-            syncing.clear()
-
-    context_param._loft_fwd = _forward_to_inner  # strong-ref pin
-    context_param.add_callback(
-        _forward_to_inner,
-        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-        send_on_create=False,
-        private=True,
-    )
-    # Pinned on the INNER param, whose lifetime this direction follows -- same reason the
-    # forward closure is pinned on the context param.
-    param._loft_back = _forward_to_context
-    param.add_callback(
-        _forward_to_context,
-        notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-        send_on_create=False,
-        private=True,
-    )
+    _wire_loft_sync(param, context_param)
     _mirror_menu_items(param, context_param)
     _forward_button_click(param, context_param)
 
@@ -8874,18 +8975,10 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
                 private=True,
             )
 
-            def _forward_to_inner(_owner, _notice, _sender=None, _ip=inner_param, _cp=context_param):
-                val = _cp.value
-                if val is not None and _ip.value != val:
-                    _ip.value = val
-
-            context_param._loft_fwd = _forward_to_inner
-            context_param.add_callback(
-                _forward_to_inner,
-                notice_alias=chunk_notice.ChunkNoticeAlias.PARAM_CHANGED,
-                send_on_create=False,
-                private=True,
-            )
+            # As in loft_param_to_context: clone() carries the inner chunk over as the cached
+            # parent, and the param now lives on the group.
+            context_param._chunk_parent = None
+            _wire_loft_sync(inner_param, context_param)
 
             # Deliver the restored value down to the inner param once, by hand. The inner
             # param's own _connect_param_attr deliberately leaves its value alone when it
@@ -8897,6 +8990,6 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # Reference chunk, which cooks to no reference and renders an empty stage --
             # while USD and the lofted UI both showed the saved value. Seeding here is
             # before the execute pass, so the first cook already sees the real value.
-            _forward_to_inner(None, None)
+            context_param._loft_fwd(None, None)
             _mirror_menu_items(inner_param, context_param)
             _forward_button_click(inner_param, context_param)
