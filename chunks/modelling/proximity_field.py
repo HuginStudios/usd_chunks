@@ -31,7 +31,7 @@ import logging
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage, proximity
+from usd_chunks import chunk, chunk_stage, proximity, chunk_utils
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def execute(node) -> None:
     weight = proximity.Proximity(sources, scales, **settings)
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     painted, total, lit = 0, 0, 0.0
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for path in paths:
             root = upstream.GetPrimAtPath(path)
             if not root:

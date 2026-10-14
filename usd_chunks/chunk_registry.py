@@ -2214,6 +2214,10 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         chunk_cook.after_cook(self._after_cook)
         # Every chunk given a layer, for save_cook_layers to find the ones a bake holds.
         self._placed: dict[core.ChunkHash, weakref.ReferenceType] = {}
+        # Per chunk, a layer it made for an asset to bring in by payload or reference rather
+        # than sublayer; see add_arc_layer. Held here: nothing else keeps it alive until an
+        # arc composes it.
+        self._arc_layers: dict[core.ChunkHash, Sdf.Layer] = {}
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
         # can answer in one lookup. Maintained beside the two dicts rather than derived from
@@ -2254,6 +2258,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._drop_deactivations()
         self._cook_layers = {}
         self._placed = {}
+        self._arc_layers = {}
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -2312,6 +2317,26 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             Sdf.Layer | None: The chunk's layer, or None if it has none
         """
         return self.chunk_layers.get(c)
+
+    def add_arc_layer(self, c: core.ChunkBase, layer: Sdf.Layer | None) -> None:
+        """Hold layer as the one c made for an asset to payload or reference, or drop c's.
+
+        A Layer chunk set not to sublayer makes a layer nothing in the stage points at yet:
+        held here it stays alive, and arc_layers lists it for an Edit Target to author into
+        and a Payload or Reference chunk to bring in.
+
+        Args:
+            c: The chunk that made the layer.
+            layer: The layer, or None to drop the one c made.
+        """
+        if layer is None:
+            self._arc_layers.pop(c.get_hash(), None)
+        else:
+            self._arc_layers[c.get_hash()] = layer
+
+    def arc_layers(self) -> list[tuple[str, Sdf.Layer]]:
+        """(display name, layer) for every layer a chunk made to be brought in by arc."""
+        return [(layer.GetDisplayName(), layer) for layer in self._arc_layers.values()]
 
     def get_chunk_target(self, c: core.ChunkHash) -> Sdf.Layer | None:
         """The real layer this chunk's content last resolved against.
@@ -3117,6 +3142,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if chunk_hash in self._retired_chunks:
             return
         self._retired_chunks.add(chunk_hash)
+        self._arc_layers.pop(chunk_hash, None)
         self._chunk_target.pop(chunk_hash, None)
         self._chunk_graph_key.pop(chunk_hash, None)
         self._confirmed_in.pop(chunk_hash, None)

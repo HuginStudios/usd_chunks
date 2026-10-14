@@ -30,7 +30,7 @@ from typing import NamedTuple
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import surface_samples
 from usd_chunks.mesh_math import fan_triangulate, world_points
@@ -310,7 +310,7 @@ def execute(node: chunk.Chunk) -> None:
     plans = previous[1] if previous is not None and previous[0] == stamp else _plan_all(prims, settings)
     del upstream
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for plan in plans:
             _author(stage, plan, settings.name)
 

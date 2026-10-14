@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_naming, chunk_notice
+from usd_chunks import chunk_naming, chunk_notice, layer_arcs
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:  # pragma: no cover -- typing only, no import at runtime
@@ -43,10 +43,11 @@ def get_chunk_prim_path(chunk: core.ChunkBase) -> str:
 
 
 def _prim_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | None:
-    """The layer named by prim's Edit Target marker, if it is in the stage's layer stack.
+    """The layer named by prim's Edit Target marker, if the stage can author into it.
 
-    Only a layer actually in the current stack is returned, so the result is always safe to
-    author into. Otherwise None.
+    That is a layer in the stage's layer stack, or one an asset brings in by payload or
+    reference (layer_arcs), authored through that arc. Only such a layer is returned, so the
+    result is always safe to author into. Otherwise None.
     """
     attr = prim.GetAttribute(_EDIT_TARGET_MARKER)
     if not (attr and attr.IsValid()):
@@ -57,7 +58,16 @@ def _prim_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | Non
     for layer in stage.GetLayerStack(includeSessionLayers=True):
         if layer.identifier == ident:
             return layer
+    if (layer := Sdf.Layer.Find(ident)) is not None and layer_arcs.arc_edit_target(stage, layer) is not None:
+        return layer
     return None
+
+
+def _names_unreachable_layer(prim: Usd.Prim) -> bool:
+    """Whether prim's Edit Target marker names a live layer the stage cannot author into yet."""
+    attr = prim.GetAttribute(_EDIT_TARGET_MARKER)
+    ident = attr.Get() if attr and attr.IsValid() else None
+    return bool(ident) and Sdf.Layer.Find(ident) is not None
 
 
 def _iter_exec_upstream(stage: Usd.Stage, start: Sdf.Path):
@@ -307,6 +317,11 @@ def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | 
         return None if memoised is _NO_UPSTREAM else memoised
 
     result = None
+    # Set when the walk passes an Edit Target whose layer exists but cannot be authored into
+    # yet: a layer an asset brings in by arc, before the payload or reference to it is
+    # authored. Adding that arc changes the answer without touching the layer stack or the
+    # chain, so nothing would drop a memoised one -- left unmemoised, it is asked again.
+    provisional = False
     # Every node on an unbranched run above prim has this same answer, so the walk both
     # stops at the first one already memoised and leaves the answer on the rest. Without
     # that the memo only ever holds the node that was asked about, and a chain restored or
@@ -319,6 +334,8 @@ def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | 
         if layer is not None:
             result = layer
             break
+        if _names_unreachable_layer(p):
+            provisional = True
         if not unbranched:
             continue
         upstream_key = str(path)
@@ -337,6 +354,8 @@ def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | 
         if parent and parent.GetTypeName() == _CHUNK_PRIM_TYPENAME:
             result = upstream_edit_target_layer(stage, parent)
 
+    if provisional:
+        return result
     # None is memoised too, as a sentinel: "nothing upstream" is as costly to re-derive.
     stored = _NO_UPSTREAM if result is None else result
     memo[key] = stored

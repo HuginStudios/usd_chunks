@@ -762,7 +762,7 @@ def execute(node):
 
     counters = {"parts": 0, "uses": [p.uses for p in scene.protos]}
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         primpath_param = node.get_param("primpath_location")
         for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
             root = chunk_utils.define_with_ancestors(stage, target_path, "Xform")

@@ -36,7 +36,7 @@ import math
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage, sim_bake
+from usd_chunks import chunk, chunk_stage, sim_bake, chunk_utils
 
 #: Points whose tangential push is below this fraction of the force sit still: a flat top,
 #: or a flat underside the drop hangs from.
@@ -330,7 +330,7 @@ def execute(node) -> None:
         release=max(0.0, node.get_param("release", is_f).value),
         seed=node.get_param("seed", is_i).value,
     )
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         pts = UsdGeom.Points.Define(stage, out_path)
         pa, na = pts.CreatePointsAttr(), pts.CreateNormalsAttr()
         pa.Set(Vt.Vec3fArray.FromNumpy(pos[-1].astype(np.float32)))

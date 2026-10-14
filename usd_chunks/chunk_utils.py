@@ -18,6 +18,7 @@ from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
 from usd_chunks import chunk_naming
+from usd_chunks.layer_arcs import arc_edit_target, edit_target, is_editable  # noqa: F401
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_topology import (
@@ -83,6 +84,48 @@ def strip_namespace(namespace: str, paths: str) -> str:
             token = token[len(root):]
         out.append(token)
     return "".join(out)
+
+
+#: The Layer menu entry of a Payload or Reference chunk that means "use File Path".
+ARC_FROM_FILE = "(File Path)"
+
+
+def arc_layer_items() -> list[str]:
+    """ARC_FROM_FILE, then the name of every layer a Layer chunk made to be brought in by arc."""
+    lm = chunk_registry.ChunkLayerManager()
+    return [ARC_FROM_FILE] + ([name for name, _layer in lm.arc_layers()] if lm.initialized else [])
+
+
+def arc_source_path(node) -> str:
+    """The asset path a Payload or Reference chunk brings in: its Layer, else its File Path.
+
+    A layer the network made is named by its identifier, which only means something in this
+    session -- Export USD writes the file and rewrites the arc to it. Empty when the picked
+    layer is not there (yet: a Layer chunk upstream that has not cooked).
+    """
+    choice = node.get_param("layer")
+    if choice is None or choice.value in ("", ARC_FROM_FILE):
+        return node.get_param("file_path").value
+    lm = chunk_registry.ChunkLayerManager()
+    return next(
+        (layer.identifier for name, layer in (lm.arc_layers() if lm.initialized else []) if name == choice.value),
+        "",
+    )
+
+
+def refresh_arc_layer_menu(owner, notice, sender) -> None:
+    """Keep a Payload or Reference chunk's Layer menu listing the network's arc layers.
+
+    Only the items: a picked layer that is not listed is kept, since the Layer chunk making
+    it may not have cooked yet -- the arc is simply not authored until it has.
+    """
+    node = owner.get_chunk()
+    menu = node.get_param("layer") if node is not None else None
+    if menu is None:
+        return
+    items = arc_layer_items()
+    if list(getattr(menu, "menu_items", [])) != items:
+        menu.menu_items = items
 
 
 def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
@@ -171,7 +214,9 @@ def get_bookkeeping_layer(stage: Usd.Stage, owner) -> Sdf.Layer:
             return host_edit_layer(stage)
         if not owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             routed = upstream_edit_target_layer(stage, prim)
-            if routed is not None:
+            # Not a layer an asset brings in by arc: the chunk prim is at /chunks, which no
+            # asset's arc maps, so its bookkeeping stays where it would without the target.
+            if routed is not None and stage.HasLocalLayer(routed):
                 return routed
         if (home := chunk_def_layer(prim)) is not None:
             return home

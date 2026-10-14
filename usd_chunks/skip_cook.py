@@ -895,7 +895,10 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     outputs = rec.outputs
     unmaskable = rec.unmaskable
     mask: set[Sdf.Path] | None = None
-    if outputs is not None and not unmaskable:
+    # A layer reached only through a payload or reference is edited through that arc, and
+    # the arc is the main stage's (layer_arcs): a cook stage would have to find it again.
+    # Cooked on the whole stage, as an unmaskable chunk is.
+    if outputs is not None and not unmaskable and main.HasLocalLayer(layer):
         mask = input_paths(chunk) | set(outputs) | set(rec.reads)
     hidden: dict[str, tuple] = {}
     if not _whole(mask) and layer_of is not None and not rec.sees_all:

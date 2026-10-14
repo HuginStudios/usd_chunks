@@ -39,7 +39,7 @@ import math
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage, mesh_math
 
 logger = logging.getLogger(__name__)
@@ -1198,7 +1198,7 @@ def execute(node):
         else ([], [])
     )
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Scope.Define(stage, where[0])
         _author_curves(stage, where[1], strands, nodes, radii, settings, node)
         _author_leaves(stage, where[2], leaves, settings, node)
@@ -1221,7 +1221,7 @@ def _bail(node, stage, layer, where, message):
     nothing at all rather than to an empty result -- and un-painting a surface would break the
     graph below it rather than emptying it.
     """
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Scope.Define(stage, where[0])
         curves = UsdGeom.BasisCurves.Define(stage, where[1])
         curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray())

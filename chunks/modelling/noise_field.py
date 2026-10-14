@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_stage
+from usd_chunks import chunk, chunk_stage, chunk_utils
 
 
 def _report(node, text: str) -> None:
@@ -91,7 +91,7 @@ def execute(node) -> None:
                     seed=node.get_param("seed", is_i).value)
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     painted, total, lit = 0, 0, 0.0
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for path in paths:
             root = upstream.GetPrimAtPath(path)
             if not root:

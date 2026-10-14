@@ -2078,7 +2078,7 @@ def execute(node):
     placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
     sizes = None  # scales the sampler already drew, when spacing follows scale
 
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         instancer = UsdGeom.PointInstancer.Define(stage, inst_path)
         protos = _author_prototypes(
             stage, inst_path, specs, scratch_stage, hide_sources=bool(node.get_param("hide_sources").value),

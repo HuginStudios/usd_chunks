@@ -303,7 +303,7 @@ def _write_weights(node, stage, prim, weights, colours=None):
         setattr(node, _FIELD, {})
     getattr(node, _FIELD)[str(prim.GetPath())] = weights
     layer = node.get_edit_context()
-    context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
+    context = Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)) if layer else contextlib.nullcontext()
     with context:
         over = stage.OverridePrim(prim.GetPath())
         primvar = UsdGeom.PrimvarsAPI(over).CreatePrimvar(
@@ -889,7 +889,7 @@ def _write_points(node, stage, points, normals=None, widths=None):
     setattr(node, _POINTS, (list(points), list(normals), [float(w) for w in widths]))
 
     layer = node.get_edit_context()
-    context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
+    context = Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)) if layer else contextlib.nullcontext()
     with context:
         cloud = UsdGeom.Points.Define(stage, path)
         cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
@@ -1013,7 +1013,7 @@ def _show_points(node, stage):
         return
     show = node.get_param("show_paint")
     layer = node.get_edit_context()
-    context = Usd.EditContext(stage, layer) if layer else contextlib.nullcontext()
+    context = Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)) if layer else contextlib.nullcontext()
     with context:
         imageable = UsdGeom.Imageable(prim)
         imageable.MakeVisible() if (show and show.value) else imageable.MakeInvisible()
@@ -1081,7 +1081,7 @@ def _record_paint(node):
         weights.extend(float(v) for v in values[painted])
 
     layer = chunk_utils.get_bookkeeping_layer(stage, node)
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         chunk_prim = stage.GetPrimAtPath(path)
         if not chunk_prim or not chunk_prim.IsValid():
             return

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-from usd_chunks import chunk
+from usd_chunks import chunk, chunk_utils
 
 MODE_COLLIDER = "Collider"
 MODE_SPIN = "Spin"
@@ -121,7 +121,7 @@ def execute(node) -> None:
     is_f, is_s = chunk.is_param_t(float), chunk.is_param_t(str)
     mode = node.get_param("mode", is_s).value
     lines = []
-    with Usd.EditContext(stage, layer):
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for prim in prims:
             lines.append(apply_drive(
                 stage, stage.GetPrimAtPath(prim.GetPath()), mode,

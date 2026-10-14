@@ -2594,7 +2594,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             layer = _prim_edit_target_layer(self._stage, dep_prim)
             if layer is None:
                 layer = upstream_edit_target_layer(self._stage, dep_prim)
-            if layer is not None:
+            # A layer an asset brings in by arc holds no bookkeeping: /chunks is outside
+            # every asset's arc (chunk_utils.get_bookkeeping_layer).
+            if layer is not None and self._stage.HasLocalLayer(layer):
                 return layer
         return host
 
@@ -5110,12 +5112,29 @@ def _reconcile_destination(stage: Usd.Stage, chunk: core.ChunkBase, prim: Usd.Pr
     layer). Then it goes where a new chunk would (chunk_utils.host_edit_layer).
     """
     routed = upstream_edit_target_layer(stage, prim)
-    if routed is not None:
+    # Not into a layer an asset brings in by arc: /chunks is outside every asset's arc, so
+    # the prim would leave the stage (chunk_utils.get_bookkeeping_layer).
+    if routed is not None and stage.HasLocalLayer(routed):
         return routed
     home = chunk_utils.chunk_def_layer(prim)
     if home is None or not home.anonymous or home in (stage.GetSessionLayer(), stage.GetRootLayer()):
         return None
     return chunk_utils.host_edit_layer(stage)
+
+
+def _arc_cook_target_stale(stage: Usd.Stage, chunk: core.ChunkBase, prim: Usd.Prim) -> bool:
+    """Whether chunk is routed to a layer an asset brings in by arc but cooks somewhere else.
+
+    Such a chunk was placed before the arc existed -- the Payload or Reference bringing the
+    layer in cooks upstream of it -- so it went where it would without the Edit Target.
+    Only arc layers: a local one is re-homed by moving the chunk's bookkeeping, which
+    re-runs it.
+    """
+    routed = upstream_edit_target_layer(stage, prim)
+    if routed is None or stage.HasLocalLayer(routed):
+        return False
+    lm = ChunkLayerManager()
+    return lm.initialized and lm.get_chunk_target(chunk.get_hash()) is not routed
 
 
 def reconcile_edit_targets(
@@ -5192,6 +5211,13 @@ def reconcile_edit_targets(
             # Migrating would have carried a shot's override out of the shot file.
             if chunk_utils.is_composed_in(prim):
                 continue
+            if cook and _arc_cook_target_stale(stage, chunk, prim):
+                # Its bookkeeping stays put (_reconcile_destination), so the move below never
+                # re-runs it -- re-run here, so its cook re-nests in the arc layer.
+                chunk.execute()
+                migratable = _migratable_layers(stage)
+                if protect_root_layer:
+                    migratable = [layer for layer in migratable if layer != stage.GetRootLayer()]
             dst = _reconcile_destination(stage, chunk, prim)
             if dst is None:
                 continue
@@ -5381,7 +5407,15 @@ def publish_edit_target(chunk: core.ChunkBase, stage: Usd.Stage, layer: Sdf.Laye
     # Only re-home downstream when the target actually changed. The Edit Target chunk
     # re-executes on every stage content change (its refresh callback), so reconciling
     # unconditionally here would run -- and thrash -- on every unrelated edit.
-    if old_ident != ident:
+    # Or when the layer is one an asset brings in by arc and has only now become reachable:
+    # the Payload or Reference bringing it in cooks upstream of this, so what is routed to
+    # it was placed before it could be, with the marker unchanged since. Once, not on every
+    # run -- reachable it stays, and the reconcile then has nothing to do.
+    reachable = bool(layer is not None and not stage.HasLocalLayer(layer)
+                     and chunk_utils.arc_edit_target(stage, layer) is not None)
+    became_reachable = reachable and not getattr(chunk, "_arc_layer_reachable", False)
+    chunk._arc_layer_reachable = reachable
+    if old_ident != ident or became_reachable:
         # protect_root_layer while loading -- see _loading. This branch is taken on EVERY
         # open, because an anonymous layer's identifier is new in every process.
         reconcile_edit_targets(stage, _active_scene(), protect_root_layer=_loading)
