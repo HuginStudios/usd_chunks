@@ -72,7 +72,9 @@ def _source_params():
         # The layers are the network's as last seen, so a saved choice is set before the
         # Layer chunk making it has cooked and listed it.
         dynamic_items=True,
-        tooltip="A layer a Layer chunk made with Sublayer off, to bring in by this arc.",
+        tooltip="A layer a Layer chunk made with Sublayer off, to bring in by this arc. Pick "
+        "it, or wire the Layer chunk's Layer Name in: then the Layer chunk need not sit in "
+        "the chain before this one.",
     )
     return from_layer, menu
 

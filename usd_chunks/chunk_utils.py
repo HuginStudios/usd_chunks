@@ -104,13 +104,20 @@ def arc_source_path(node) -> str:
     A layer the network made is named by its identifier, which only means something in this
     session -- Export USD writes the file and rewrites the arc to it. Empty when the picked
     layer is not there (yet: a Layer chunk upstream that has not cooked).
+
+    The Layer may be a Layer chunk's Layer Name wired in rather than picked: "Bottle.geom",
+    where the layer is listed as "Bottle.geom.usda" -- the Layer chunk tags a name with a
+    dot that is not a USD extension so that an arc can open it. Either names it.
     """
     if not arc_from_layer(node):
         return node.get_param("file_path").value
     choice = node.get_param("layer").value
+    if not choice:
+        return ""
     lm = chunk_registry.ChunkLayerManager()
     return next(
-        (layer.identifier for name, layer in (lm.arc_layers() if lm.initialized else []) if name == choice),
+        (layer.identifier for name, layer in (lm.arc_layers() if lm.initialized else [])
+         if name in (choice, choice + ".usda")),
         "",
     )
 
