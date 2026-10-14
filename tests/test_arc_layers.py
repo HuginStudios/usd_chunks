@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import Scene, chunk, chunk_registry, chunk_utils
@@ -225,3 +227,48 @@ def test_existing_layer_shows_the_layer_menu_in_place_of_file_path(tmp_path) -> 
         for c in scene.get_chunks():
             if c.name in ("ref", "payload", "geom_ref"):
                 assert hidden(c, "file_path") and not hidden(c, "layer"), c.name
+
+
+def _wired_bottle(scene, driven: bool = False):
+    """The Bottle with its arc layers wired in: the Layer chunks off the chain, each Layer Name
+    wired into the Payload's or Reference's Layer."""
+    scene.create.layer(layer_name="Bottle_payload", sublayer=False, default_prim="Bottle", name="pay_layer")
+    scene.create.layer(layer_name="Bottle.geom", sublayer=False, default_prim="Bottle", name="geom_layer")
+    asset = scene.create.layer(layer_name="Bottle")
+    with scene.create.edit_target(asset, edit_target="Bottle") as target:
+        arc = scene.create.payload(target, from_layer=True, layer="@pay_layer.layer_name@",
+                                   primpath_location="/Bottle", name="payload")
+    with scene.create.edit_target(arc, edit_target="Bottle_payload") as target:
+        ref = scene.create.reference(target, from_layer=True, layer="@geom_layer.layer_name@",
+                                     primpath_location="/Bottle", name="geom_ref")
+    with scene.create.edit_target(ref, edit_target="Bottle.geom.usda") as target:
+        mesh = scene.create.cube(target, prim_path="/Bottle/geo", name="bottle_mesh")
+    if driven:
+        scene.set_output(mesh)
+    return mesh
+
+
+@pytest.mark.parametrize("driven", [False, True], ids=["headless", "output"])
+def test_a_layer_name_wired_into_the_arc_brings_that_layer_in(tmp_path, driven) -> None:
+    """Bottle.geom wired in names the layer listed as Bottle.geom.usda: either is its name."""
+    with Scene() as scene:
+        _wired_bottle(scene, driven)
+        stage = scene.get_stage()
+        assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+        assert _arcs(stage.GetPrimAtPath("/Bottle")) == (["ArcTypePayload"], ["ArcTypeReference"])
+        scene.save(str(tmp_path / "network.usda"))
+    with Scene.open(str(tmp_path / "network.usda")) as scene:
+        stage = scene.get_stage()
+        assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+        assert _arcs(stage.GetPrimAtPath("/Bottle")) == (["ArcTypePayload"], ["ArcTypeReference"])
+
+
+def test_a_wired_bottle_exports_the_kitchen_set_layout(tmp_path) -> None:
+    with Scene() as scene:
+        _export(scene, _wired_bottle(scene, driven=True), tmp_path)
+    asset = Sdf.Layer.FindOrOpen(str(tmp_path / "Bottle.usda"))
+    payload = Sdf.Layer.FindOrOpen(str(tmp_path / "Bottle_payload.usda"))
+    assert [p.assetPath for p in asset.GetPrimAtPath("/Bottle").payloadList.GetAddedOrExplicitItems()] == ["Bottle_payload.usda"]
+    assert [r.assetPath for r in payload.GetPrimAtPath("/Bottle").referenceList.GetAddedOrExplicitItems()] == ["Bottle.geom.usda"]
+    stage = Usd.Stage.Open(str(tmp_path / "Bottle.usda"))
+    assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
