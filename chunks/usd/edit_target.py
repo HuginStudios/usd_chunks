@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pxr import Sdf
 
-from usd_chunks import chunk, chunk_notice, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils
 from usd_chunks import chunk_stage
 
 # Selecting this instead of a specific layer identifier follows whatever layer the
@@ -59,10 +59,21 @@ def _resolve_layer(stage, selection):
     possibly later in the same load if it executes after this chunk).
     """
     tag = selection.rsplit(":", 1)[-1] if selection.startswith("anon:") else selection
-    for name, layer in chunk_utils.user_layers(stage):
+    for name, layer in _targetable_layers(stage):
         if layer.identifier == selection or name in (selection, tag):
             return layer
     return None
+
+
+def _targetable_layers(stage):
+    """The stage's layers, then the ones a Layer chunk made for an asset to bring in by arc.
+
+    Those are not in the layer stack: authored through the payload or reference that
+    brings them in (chunk_utils.arc_edit_target), so a network can fill Bottle.geom.
+    """
+    lm = chunk_registry.ChunkLayerManager()
+    arc = lm.arc_layers() if lm.initialized else []
+    return list(chunk_utils.user_layers(stage)) + arc
 
 
 def _refresh_edit_target(owner, notice, sender):
@@ -99,7 +110,7 @@ def _refresh_edit_target(owner, notice, sender):
     # _resolve_layer already matches on it. Falls back to the identifier only for a
     # layer with no display name at all (e.g. an anonymous root layer).
     target_items = ["Session Layer"] + [
-        name for name, layer in chunk_utils.user_layers(stage)
+        name for name, layer in _targetable_layers(stage)
         if layer.identifier != session_id and layer.identifier not in internal_ids
     ]
     if _find_upstream_create_layer(_chunk) is not None:

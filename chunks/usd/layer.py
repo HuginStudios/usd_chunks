@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pxr import Sdf
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_registry, chunk_utils
 from usd_chunks import chunk_stage
 
 
@@ -92,8 +92,17 @@ def _update_visibility(owner):
         else:
             param.unset_state(chunk.ChunkFlags.State.HIDDEN)
 
-    _set_hidden("insert_index", mode != "Index")
-    _set_hidden("after_layer", mode != "After Layer")
+    # Where to insert only means something for a layer that is sublayered; a Default Prim
+    # only for one that is not.
+    sublayered = owner.get_param("sublayer").value
+    _set_hidden("insert_mode", not sublayered)
+    _set_hidden("insert_index", not sublayered or mode != "Index")
+    _set_hidden("after_layer", not sublayered or mode != "After Layer")
+    _set_hidden("default_prim", sublayered)
+
+
+def _sublayer_changed(owner, notice, sender):
+    _update_visibility(owner.get_chunk())
 
 
 def _insert_mode_changed(owner, notice, sender):
@@ -183,6 +192,41 @@ def _view_ranked_index(node, stage, paths: list) -> int | None:
     return len(paths)
 
 
+_USD_EXTENSIONS = (".usd", ".usda", ".usdc")
+
+
+def _anon_tag(name: str) -> str:
+    """The tag to make name's anonymous layer with.
+
+    The name itself, unless it has a dot in it that is not a USD extension: an anonymous
+    layer named Bottle.geom can be sublayered, but a reference or payload to it fails --
+    the arc opens the layer by its identifier, which reads ".geom" as a file format. Tagged
+    Bottle.geom.usda it opens, and Export USD writes it as Bottle.geom.usda.
+    """
+    if "." in name and not name.lower().endswith(_USD_EXTENSIONS):
+        return name + ".usda"
+    return name
+
+
+def _author_default_prim(layer, name: str) -> None:
+    """Define /name in layer and make it the default prim -- or clear both when name is empty.
+
+    An arc to a layer needs a prim to target. Left empty until something authors into it
+    through the arc, the payload or reference resolved to nothing, so nothing could. The
+    prim is the layer's own, as Bottle_payload.usd's `def "Bottle"` is.
+    """
+    if not name:
+        if layer.defaultPrim:
+            layer.ClearDefaultPrim()
+        return
+    if not Sdf.Path.IsValidIdentifier(name):
+        return
+    spec = layer.GetPrimAtPath(f"/{name}") or Sdf.CreatePrimInLayer(layer, f"/{name}")
+    spec.specifier = Sdf.SpecifierDef
+    if layer.defaultPrim != name:
+        layer.defaultPrim = name
+
+
 def execute(node):
     """Find or (re-)create the chunk's anon sublayer, and reposition it in the
     current parent layer's subLayerPaths per the current insert settings.
@@ -224,11 +268,29 @@ def execute(node):
         layer = Sdf.Layer.Find(previous_id) if previous_id else None
 
         if layer is None:
-            layer = Sdf.Layer.CreateAnonymous(desired_name)
+            layer = Sdf.Layer.CreateAnonymous(_anon_tag(desired_name))
         elif name_param.value != desired_name:
-            renamed = Sdf.Layer.CreateAnonymous(desired_name)
+            renamed = Sdf.Layer.CreateAnonymous(_anon_tag(desired_name))
             renamed.TransferContent(layer)
             layer = renamed
+
+        lm = chunk_registry.ChunkLayerManager()
+        if not node.get_param("sublayer").value:
+            # Made for an asset to bring in by payload or reference: taken out of wherever it
+            # was sublayered, and held by the layer manager, which nothing else does until
+            # an arc composes it.
+            if previous_parent_id := parent_param.value or None:
+                if old_parent := Sdf.Layer.Find(previous_parent_id):
+                    old_paths = [p for p in old_parent.subLayerPaths if p not in (previous_id, layer.identifier)]
+                    if len(old_paths) != len(old_parent.subLayerPaths):
+                        old_parent.subLayerPaths = old_paths
+            _author_default_prim(layer, node.get_param("default_prim").value.strip())
+            lm.add_arc_layer(node, layer)
+            id_param.value = layer.identifier
+            name_param.value = desired_name
+            parent_param.value = ""
+            return
+        lm.add_arc_layer(node, None)
 
         parent_layer = chunk_utils.get_edit_layer(stage, node)
         if parent_layer.identifier in (layer.identifier, previous_id):
@@ -327,8 +389,26 @@ def main():
     parent_layer_id = chunk.LineEdit("_parent_layer_id", flags=chunk.ChunkFlags.ParamFlags.TRANSIENT)
     parent_layer_id.set_state(chunk.ChunkFlags.State.HIDDEN)
 
+    sublayer = chunk.Checkbox(
+        "sublayer", "Sublayer", default_value=True,
+        tooltip="Checked (default): the layer is sublayered into the current Edit Target. "
+        "Unchecked: it is made but not sublayered -- an asset's layer for a Payload or "
+        "Reference chunk to bring in (pick it in their Layer menu), and an Edit Target "
+        "downstream of that to author into, the way Bottle.usd payloads Bottle_payload.usd.",
+    )
+
+    default_prim = chunk.LineEdit(
+        "default_prim", "Default Prim",
+        tooltip="Only when Sublayer is off: the layer's root prim, defined in it and set as "
+        "its defaultPrim -- what a Payload or Reference to the layer brings in (\"Bottle\").",
+    )
+
+    sublayer.add_callback(_sublayer_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
+
     layerChunk.add_params([
         layer_name,
+        sublayer,
+        default_prim,
         insert_mode,
         insert_index,
         after_layer,

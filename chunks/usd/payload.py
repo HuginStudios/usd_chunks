@@ -9,7 +9,7 @@ def file_changed(owner, notice, sender):
 
 
 def execute(node):
-    payload_path = node.get_param("file_path").value
+    payload_path = chunk_utils.arc_source_path(node)
     if not payload_path:
         return
 
@@ -22,7 +22,8 @@ def execute(node):
     # this chunk's own prim as a payload, and this node becomes the group -- dive in and
     # the network is there. Same as the Reference chunk, with a payload arc, so the
     # network unloads with the stage's other payloads.
-    network = chunk_stage.network_target(payload_path, import_path)
+    from_layer = node.get_param("layer").value not in ("", chunk_utils.ARC_FROM_FILE)
+    network = None if from_layer else chunk_stage.network_target(payload_path, import_path)
     if network is not None:
         chunk_stage.host_network(node, payload_path, network, arc="payload", namespace=raw_path or "")
         if raw_path:  # the namespace root, else only an untyped parent of the network's prims
@@ -60,6 +61,20 @@ def _define(stage, path, prim_type):
     return prim
 
 
+def _layer_menu():
+    """The Layer menu: a layer a Layer chunk upstream made to be brought in by arc, or the file."""
+    menu = chunk.Menu(
+        "layer", "Layer", menu_items=[chunk_utils.ARC_FROM_FILE], default_value=chunk_utils.ARC_FROM_FILE,
+        # The layers are the network's as last seen, so a saved choice is set before the
+        # Layer chunk making it has cooked and listed it.
+        dynamic_items=True,
+        tooltip="(File Path): bring in File Path. Otherwise a layer a Layer chunk made with "
+        "Sublayer off -- an Edit Target downstream of this then authors into it through the "
+        "arc, and Export USD writes it as its own file, with the arc pointing at that file.",
+    )
+    return menu
+
+
 def main():
     PayloadChunk = chunk.Chunk("Payload")
 
@@ -69,6 +84,7 @@ def main():
     Payload_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
     PayloadChunk.add_param(Payload_fb)
+    PayloadChunk.add_param(_layer_menu())
     PayloadChunk.add_param(import_primpath)
 
     # prim location
@@ -82,6 +98,13 @@ def main():
         tooltip="Unchecked: the payload is unloaded, for a lighter stage. Checked loads back "
         "what this unloaded; it never loads a payload unloaded by hand.",
     ))
+
+    PayloadChunk.add_callback(
+        chunk_utils.refresh_arc_layer_menu,
+        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
+        listen_globally=True,
+        send_on_create=True,
+    )
 
     return PayloadChunk
 
