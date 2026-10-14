@@ -33,15 +33,7 @@ def _model_then_tint(scene, driven: bool, nested: bool = False):
     return tint
 
 
-_NESTED_NOT_OWNED = pytest.mark.xfail(
-    strict=True,
-    reason="A group nested in another is owned by the scene, not the group around it, so its "
-    "cooks never reach what is wired after the outer group: on reopen the tint cooks before "
-    "the nested group has made the cube, and authors nothing. Its layer order is right.",
-)
-
-
-@pytest.mark.parametrize("nested", [False, pytest.param(True, marks=_NESTED_NOT_OWNED)], ids=["group", "nested"])
+@pytest.mark.parametrize("nested", [False, True], ids=["group", "nested"])
 @pytest.mark.parametrize("driven", [False, True], ids=["headless", "output"])
 def test_the_chunk_after_a_group_wins_after_a_reopen(tmp_path, driven, nested) -> None:
     path = str(tmp_path / "net.usda")
@@ -65,3 +57,20 @@ def test_a_chunk_after_a_group_ranks_past_every_chunk_in_it() -> None:
         keys = chunk_stage.nested_cook_keys(scene.get_chunks(), scene.get_stage())
         inside = [c for c in scene.get_chunks() if c.name in ("inner", "c_mesh", "color_model")]
         assert all(keys[id(tint)] > keys[id(c)] for c in inside)
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["group", "nested"])
+def test_an_edit_inside_a_group_recooks_what_is_wired_after_it(nested) -> None:
+    """A group nested in another is owned by it, so a cook inside reaches the chunk after
+    the outer group -- as one inside a group always did. Owned by the scene, it stopped at
+    the nested group, and the tint never saw the cube that moved under it."""
+    with Scene() as scene:
+        tint = _model_then_tint(scene, driven=True, nested=nested)
+        scene.set(tint, prim_path="/world/d")
+        stage = scene.get_stage()
+        assert not stage.GetPrimAtPath("/world/d"), "nothing there yet for the tint to colour"
+
+        cube = next(c for c in scene.get_chunks() if c.name == "c_mesh")
+        scene.set(cube, prim_path="/world/d")
+        colour = UsdGeom.Gprim(stage.GetPrimAtPath("/world/d")).GetDisplayColorAttr().Get()
+        assert colour is not None and colour[0][0] == pytest.approx(0.8)

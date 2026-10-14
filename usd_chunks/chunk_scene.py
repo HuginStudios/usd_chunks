@@ -410,6 +410,19 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             send_added = bool(c.get_config() and c.get_config().module)
             self.chunks.add(c, send_added)
             self.chunks.add_nested(c.children)
+            # In the DAG, owned by the group it sits in, as a chunk in it is through that
+            # group's children. A group lives in this flat container, so otherwise a cook
+            # inside it climbed to the scene and stopped: nothing wired after the group it
+            # is nested in cooked again, and on a load the chunk after that group could cook
+            # before the nested group had made what it works on. Not the root group, which
+            # holds every top-level group, nor a tab: neither is wired to anything after.
+            if (
+                parent_ctx is not None
+                and parent_ctx is not self.peek_root_context()
+                and parent_ctx.get_config() is not None
+                and parent_ctx.get_config().module
+            ):
+                c.get_dag_node().set_owner(parent_ctx)
 
             if send_added:
                 # Restore parent context so subsequent chunks don't fall into the group.
