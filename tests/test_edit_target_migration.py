@@ -243,8 +243,12 @@ class TestEditTargetMigration:
             for lyr in stage2.GetLayerStack(includeSessionLayers=True)
         ), "no orphaned layer should fall back to the chunk's default name"
 
-        # The Prim chunk (downstream of the ->B Edit Target) must re-home under layer B, not
-        # the session layer.
+        # The Prim chunk (downstream of the ->B Edit Target) must re-home its cook under the
+        # recreated layer B, not the session layer. Its bookkeeping stays in the file it was
+        # opened from: a load never rewrites that file (reconcile_edit_targets'
+        # protect_root_layer). This once asserted the spec was in B, which only held because
+        # the saved file named B by its anonymous identifier and the reload in this process
+        # found the build's old B by it, prim spec and all -- a leak, now closed.
         prim2 = next(c for c in chunks2 if (c.get_config() and c.get_config().module) == "prim")
         ppath = Sdf.Path(get_chunk_prim_path(prim2))
         layer_b = next(
@@ -252,7 +256,8 @@ class TestEditTargetMigration:
             for lyr in stage2.GetLayerStack(includeSessionLayers=True)
             if lyr.GetDisplayName() == "B"
         )
-        assert layer_b.GetPrimAtPath(ppath) is not None
+        assert chunk_registry.ChunkLayerManager().get_chunk_target(prim2.get_hash()) is layer_b
+        assert stage2.GetRootLayer().GetPrimAtPath(ppath) is not None
         assert stage2.GetSessionLayer().GetPrimAtPath(ppath) is None
 
         # Every chunk prim must survive the reload's migrations still *defined* -- the node
