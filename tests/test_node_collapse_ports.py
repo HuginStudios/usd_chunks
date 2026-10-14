@@ -293,7 +293,10 @@ def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
     rather than just off-screen -- which is exactly what put a port floating below the
     node. A param hidden for a reason that isn't a collapsed group must fall back to the
     nearest visible ContainerWidget ancestor (skipping entirely if there isn't one, as a
-    top-level hidden param like this has none), same as it did before that rewrite."""
+    top-level hidden param like this has none), same as it did before that rewrite.
+
+    Layer's Insert mode is gone (its layer goes where its chunk is wired); Sublayer and the
+    Default Prim field it shows when off are the same value-driven hide and show."""
     qapp, reg, scene, docker = graph
     mod = reg.get_chunk_module("layer")
     chunk = _mk(mod, scene)
@@ -302,12 +305,12 @@ def test_a_plain_hidden_param_gets_no_floating_port(graph) -> None:
     node = gv.scene()._nodes[get_chunk_prim_path(chunk)]
     _pump(qapp, 0.3)
 
-    insert_mode = chunk.get_param("insert_mode")
-    assert insert_mode is not None and insert_mode.value == "Append", "Index starts hidden by default"
+    sublayer = chunk.get_param("sublayer")
+    assert sublayer is not None and sublayer.value is True, "Default Prim starts hidden by default"
 
     node_path = str(node.prim.GetPath())
-    assert node.get_port(f"{node_path}.inputs:insert_index") is None
-    assert node.get_port(f"{node_path}.outputs:insert_index") is None
+    assert node.get_port(f"{node_path}.inputs:default_prim") is None
+    assert node.get_port(f"{node_path}.outputs:default_prim") is None
 
     # Nothing left over from the hidden field should sit outside the node's own body.
     for port in node._typed_ports:
@@ -327,7 +330,10 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
     set_state(HIDDEN) (no group, no animation involved) had nothing wired to it at all,
     leaving it dependent on geometryChanged happening to fire from the resulting Qt
     layout change -- which, like the group-collapse case, does not reliably happen for a
-    widget disappearing specifically."""
+    widget disappearing specifically.
+
+    Layer's Insert mode is gone (its layer goes where its chunk is wired); Sublayer and the
+    Default Prim field it shows when off are the same value-driven hide and show."""
     qapp, reg, scene, docker = graph
     mod = reg.get_chunk_module("layer")
     chunk = _mk(mod, scene)
@@ -337,18 +343,18 @@ def test_a_param_re_hiding_drops_its_port_without_needing_deselect(graph) -> Non
     _pump(qapp, 0.3)
 
     node_path = str(node.prim.GetPath())
-    insert_mode = chunk.get_param("insert_mode")
-    assert insert_mode is not None
+    sublayer = chunk.get_param("sublayer")
+    assert sublayer is not None
 
-    insert_mode.value = "Index"
-    pump_until(qapp, lambda: node.get_port(f"{node_path}.inputs:insert_index") is not None)
-    assert node.get_port(f"{node_path}.inputs:insert_index") is not None, "Index must appear once shown"
+    sublayer.value = False
+    pump_until(qapp, lambda: node.get_port(f"{node_path}.inputs:default_prim") is not None)
+    assert node.get_port(f"{node_path}.inputs:default_prim") is not None, "Default Prim must appear once shown"
 
-    insert_mode.value = "Append"
+    sublayer.value = True
     _pump(qapp, 0.3)  # no deselect anywhere in this test
 
-    assert node.get_port(f"{node_path}.inputs:insert_index") is None, "Index must disappear once re-hidden"
-    assert node.get_port(f"{node_path}.outputs:insert_index") is None
+    assert node.get_port(f"{node_path}.inputs:default_prim") is None, "Default Prim must disappear once re-hidden"
+    assert node.get_port(f"{node_path}.outputs:default_prim") is None
 
 
 _GF = (

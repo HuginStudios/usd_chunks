@@ -31,7 +31,7 @@ import collections
 from collections.abc import Callable
 from contextlib import contextmanager
 
-from pxr import Tf, Usd
+from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, layer_arcs, skip_cook
 
@@ -371,7 +371,18 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
                     # A chunk in a context with a file layer is handed
                     # that file layer, shared and the user's own.
                     if ctx.anonymous:
-                        ctx.Clear()
+                        # Its sublayers kept, in one change: they are layers the chunk put
+                        # in the stack (a Layer chunk's), and between the Clear and the module
+                        # putting them back, everything listening saw them gone -- an Edit
+                        # Target on one reset itself. The module still sets them every cook.
+                        # Only what this chunk itself last cooked there: a chunk handed a
+                        # layer by its hash (a new scene, a reload) starts from empty.
+                        kept = list(ctx.subLayerPaths) if getattr(chunk, "_cooked_into", None) == ctx.identifier else []
+                        with Sdf.ChangeBlock():
+                            ctx.Clear()
+                            if kept:
+                                ctx.subLayerPaths = kept
+                        chunk._cooked_into = ctx.identifier
                     # A module that declared cache_cook may have this exact
                     # cook on disk already -- read it back instead. Anonymous
                     # only, for the same reason as the Clear above.

@@ -57,7 +57,7 @@ def test_a_saved_rbd_scene_reopens_and_bakes(tmp_path) -> None:
         rows = subs.get_param("imports", chunk.is_inst(chunk.ListGroup))
         rows.size = 1
         rows.get_indexed_param("sublayer_path", 0, chunk.is_param_t(str)).value = str(tmp_path / "shot.usda")
-        layer = scene.create.layer(subs, layer_name="cfx", insert_mode="Prepend")
+        layer = scene.create.layer(subs, layer_name="cfx")
         with scene.create.edit_target(layer, edit_target="cfx"):
             scene.create.rbd_solver(prim_path="/World/box", collision_path="/World/ground", frame_count=12)
         scene.save(network)

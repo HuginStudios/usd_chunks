@@ -2641,12 +2641,11 @@ def test_ranked_group_children_inherit_the_groups_own_rank() -> None:
     )
 
 
-def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode() -> None:
+def test_closer_to_view_chunkgroup_wins_layer_strength() -> None:
     """Three sibling ChunkGroups chained by exec -- group1(asd1) -> group2(asd2) ->
-    group3(asd3) -> a real outer View -- each owning an independent Layer chunk
-    with insert_mode="Prepend" (which alone would just mean "whoever executes most
-    recently wins position 0", nothing to do with graph position). The group closest to
-    the view (group3/asd3) must still end up strongest once recooked.
+    group3(asd3) -> a real outer View -- each owning an independent Layer chunk, created
+    in that order, so "whoever executes most recently" is not graph position. The group
+    closest to the view (group3/asd3) must still end up strongest once recooked.
 
     Covers three fixes together, the way the real bug actually manifested:
     - recook_for_view must recurse into groups in cook_list (view-proximity) order, not
@@ -2656,8 +2655,8 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
     - A group with no inner View chunk of its own (the normal case -- view chunks are
       excluded from group copy/paste) must still cook via a synthesized exec tail once
       it's reachable from an active view, not stay permanently blocked.
-    - Layer's _view_ranked_index must override Prepend's raw index=0 once a view
-      is reachable, not just the default Append mode.
+    - A Layer's layer sits in its own cook layer, so its strength is its chunk's place
+      in the wiring, as every chunk's output is.
     """
 
     stage = Usd.Stage.CreateInMemory()
@@ -2696,7 +2695,6 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
         scene._current_context = weakref.ref(g)
         cl = _mk(create_mod)
         cl.get_param("layer_name").value = tag
-        cl.get_param("insert_mode").value = "Prepend"
         cl.execute()
         scene._current_context = None
         groups.append(g)
@@ -2716,12 +2714,10 @@ def test_closer_to_view_chunkgroup_wins_layer_strength_regardless_of_insert_mode
 
     recook_for_view(stage, scene, _Root, view)
 
-    session = stage.GetSessionLayer()
     ids = [cl.get_param("_new_layer_id").value for cl in layers]
-    order = [i for i in session.subLayerPaths if i in ids]
+    order = [lyr.identifier for lyr in stage.GetLayerStack() if lyr.identifier in ids]
     assert order == [ids[2], ids[1], ids[0]], (
-        "closest-to-view chunkgroup's Layer must win strongest, regardless of "
-        "Prepend mode or creation order"
+        "closest-to-view chunkgroup's Layer must win strongest, regardless of creation order"
     )
 
 
