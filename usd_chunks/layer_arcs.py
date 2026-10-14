@@ -84,3 +84,4 @@ def edit_target(stage: Usd.Stage, layer: Sdf.Layer | None):
 def is_editable(stage: Usd.Stage, layer: Sdf.Layer) -> bool:
     """Whether layer can be authored into on stage: local, or reached through an arc."""
     return stage.HasLocalLayer(layer) or arc_edit_target(stage, layer) is not None
+

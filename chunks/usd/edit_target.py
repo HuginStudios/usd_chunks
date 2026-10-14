@@ -76,6 +76,10 @@ def _targetable_layers(stage):
     return list(chunk_utils.user_layers(stage)) + arc
 
 
+# Outside the chunk's edit context: this only refreshes a menu, and resolving the context
+# makes or moves the chunk's layer -- a sublayer edit, from inside the stage's change notice,
+# which a cook stage of the same layers hears before the change it answers (USD refuses it).
+@chunk_notice.without_edit_context
 def _refresh_edit_target(owner, notice, sender):
     """Rebuild the edit-target menu from the current stage's layer stack.
 

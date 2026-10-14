@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_scheduler
+from usd_chunks import chunk_scheduler, layer_arcs
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 
@@ -383,7 +383,8 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     _active.append(stage)
     _watches.append(watch)
     try:
-        with Usd.EditContext(stage, layer):
+        # The cook stage's own arc, for a layer an asset brings in by one (layer_arcs).
+        with Usd.EditContext(stage, layer_arcs.edit_target(stage, layer)):
             yield watch
     finally:
         _watches.pop()
@@ -895,10 +896,7 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     outputs = rec.outputs
     unmaskable = rec.unmaskable
     mask: set[Sdf.Path] | None = None
-    # A layer reached only through a payload or reference is edited through that arc, and
-    # the arc is the main stage's (layer_arcs): a cook stage would have to find it again.
-    # Cooked on the whole stage, as an unmaskable chunk is.
-    if outputs is not None and not unmaskable and main.HasLocalLayer(layer):
+    if outputs is not None and not unmaskable:
         mask = input_paths(chunk) | set(outputs) | set(rec.reads)
     hidden: dict[str, tuple] = {}
     if not _whole(mask) and layer_of is not None and not rec.sees_all:

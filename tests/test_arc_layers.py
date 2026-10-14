@@ -12,7 +12,7 @@ import os
 
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import Scene, chunk_registry, chunk_utils
+from usd_chunks import Scene, chunk, chunk_registry, chunk_utils
 from usd_chunks.chunk_stage import get_chunk_prim_path
 
 
@@ -141,3 +141,35 @@ def test_layers_of_a_new_scene_still_export_as_before(tmp_path) -> None:
         _export(scene, box, tmp_path)
     assert sorted(os.listdir(tmp_path)) == ["model.usda", "tmp.usda"]
     assert Sdf.Layer.FindOrOpen(str(tmp_path / "model.usda")).GetPrimAtPath("/world/box")
+
+
+def test_flipping_a_referenced_layer_to_a_sublayer_and_back() -> None:
+    """Back on, the Reference has nothing to bring in and the mesh composes as a sublayer;
+    off again, the asset is as it was. Off again once crashed: a masked cook ran on a second
+    stage of the same layers, which heard an edit before the change that caused it."""
+    with Scene() as scene:
+        mesh = _bottle(scene)
+        stage = scene.get_stage()
+        geom = next(c for c in scene.get_chunks() if c.get_param("layer_name") is not None
+                    and c.get_param("layer_name").value == "Bottle.geom")
+        geom.get_param("sublayer").value = True
+        assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+        assert _arcs(stage.GetPrimAtPath("/Bottle")) == (["ArcTypePayload"], [])
+        geom.get_param("sublayer").value = False
+        assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+        assert _arcs(stage.GetPrimAtPath("/Bottle")) == (["ArcTypePayload"], ["ArcTypeReference"])
+        lm = chunk_registry.ChunkLayerManager()
+        assert lm.get_chunk_target(mesh.get_hash()).GetDisplayName() == "Bottle.geom.usda"
+
+
+def test_a_disabled_chunk_behind_an_arc_drops_out_and_comes_back() -> None:
+    """Its cook stays in its own layer under the arc layer until export, like any chunk's."""
+
+
+    with Scene() as scene:
+        mesh = _bottle(scene)
+        stage = scene.get_stage()
+        mesh.set_state(chunk.ChunkFlags.State.DISABLED)
+        assert not stage.GetPrimAtPath("/Bottle/geo")
+        mesh.unset_state(chunk.ChunkFlags.State.DISABLED)
+        assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"

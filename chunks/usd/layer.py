@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pxr import Sdf
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils
 from usd_chunks import chunk_stage
 
 
@@ -11,6 +11,10 @@ _INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
 _IN_SCENE = "_layer_in_scene"
 
 
+# Outside the chunk's edit context: this only refreshes a menu, and resolving the context
+# makes or moves the chunk's layer -- a sublayer edit, from inside the stage's change notice,
+# which a cook stage of the same layers hears before the change it answers (USD refuses it).
+@chunk_notice.without_edit_context
 def _refresh_after_layer(owner, notice, sender):
     """Rebuild the after-layer menu from the current parent layer's sublayers.
 
@@ -276,21 +280,21 @@ def execute(node):
 
         lm = chunk_registry.ChunkLayerManager()
         if not node.get_param("sublayer").value:
-            # Made for an asset to bring in by payload or reference: taken out of wherever it
-            # was sublayered, and held by the layer manager, which nothing else does until
-            # an arc composes it.
+            # Made for an asset to bring in by payload or reference: held by the layer
+            # manager, which nothing else does until an arc composes it, and taken out of
+            # wherever it was sublayered. Held first: in between, an Edit Target on it found
+            # it in neither list and reset itself to the session layer.
+            _author_default_prim(layer, node.get_param("default_prim").value.strip())
+            lm.add_arc_layer(node, layer)
             if previous_parent_id := parent_param.value or None:
                 if old_parent := Sdf.Layer.Find(previous_parent_id):
                     old_paths = [p for p in old_parent.subLayerPaths if p not in (previous_id, layer.identifier)]
                     if len(old_paths) != len(old_parent.subLayerPaths):
                         old_parent.subLayerPaths = old_paths
-            _author_default_prim(layer, node.get_param("default_prim").value.strip())
-            lm.add_arc_layer(node, layer)
             id_param.value = layer.identifier
             name_param.value = desired_name
             parent_param.value = ""
             return
-        lm.add_arc_layer(node, None)
 
         parent_layer = chunk_utils.get_edit_layer(stage, node)
         if parent_layer.identifier in (layer.identifier, previous_id):
@@ -339,6 +343,9 @@ def execute(node):
         # layer is actually part of the stack, SetEditTarget on it fails with "not in
         # the local LayerStack".
         parent_layer.subLayerPaths = paths
+        # No longer held for an arc -- dropped only now it is in the stack, so an Edit Target
+        # on it finds it all the way through.
+        lm.add_arc_layer(node, None)
 
         id_param.value = layer.identifier
         name_param.value = desired_name
