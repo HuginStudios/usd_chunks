@@ -173,3 +173,39 @@ def test_a_disabled_chunk_behind_an_arc_drops_out_and_comes_back() -> None:
         assert not stage.GetPrimAtPath("/Bottle/geo")
         mesh.unset_state(chunk.ChunkFlags.State.DISABLED)
         assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+
+
+def test_component_kind_and_variant_set_land_on_the_asset_file(tmp_path) -> None:
+    """As Kitchen_set's Bottle.usd: kind and modelingVariant beside the payload, not inside it."""
+    with Scene() as scene:
+        asset = scene.create.layer(layer_name="Bottle")
+        payload = scene.create.layer(asset, layer_name="Bottle_payload", sublayer=False, default_prim="Bottle")
+        geom = scene.create.layer(payload, layer_name="Bottle.geom", sublayer=False, default_prim="Bottle")
+        with scene.create.edit_target(geom, edit_target="Bottle") as target:
+            arc = scene.create.payload(target, layer="Bottle_payload", primpath_location="/Bottle", name="payload")
+            kind = scene.create.set_metadata(arc, prim_path="/Bottle", metadata_key="kind",
+                                             metadata_value="component", name="kind")
+            variants = scene.create.variant(kind, primpath_location="/Bottle", name="variants")
+            entries = variants.get_param("variant_entries")
+            for name, value in (("vs_name", "modelingVariant"), ("v_names", "Short,Tall"), ("v_default", "Tall")):
+                entries.get_indexed_param(entries.get_param(name), 0).value = value
+        with scene.create.edit_target(variants, edit_target="Bottle_payload") as target:
+            ref = scene.create.reference(target, layer="Bottle.geom.usda", primpath_location="/Bottle", name="geom_ref")
+        with scene.create.edit_target(ref, edit_target="Bottle.geom.usda") as target:
+            mesh = scene.create.cube(target, prim_path="/Bottle/Geom/Bottle", name="bottle_mesh")
+        _export(scene, mesh, tmp_path)
+
+    asset_layer = Sdf.Layer.FindOrOpen(str(tmp_path / "Bottle.usda"))
+    payload_layer = Sdf.Layer.FindOrOpen(str(tmp_path / "Bottle_payload.usda"))
+    asset_spec = asset_layer.GetPrimAtPath("/Bottle")
+    assert asset_spec.kind == "component"
+    assert list(asset_spec.variantSets.keys()) == ["modelingVariant"]
+    assert asset_spec.variantSelections["modelingVariant"] == "Tall"
+    payload_spec = payload_layer.GetPrimAtPath("/Bottle")
+    assert not payload_spec.kind and not payload_spec.variantSets
+
+    stage = Usd.Stage.Open(str(tmp_path / "Bottle.usda"))
+    prim = stage.GetPrimAtPath("/Bottle")
+    assert Usd.ModelAPI(prim).GetKind() == "component"
+    assert prim.GetVariantSets().GetVariantSet("modelingVariant").GetVariantNames() == ["Short", "Tall"]
+    assert stage.GetPrimAtPath("/Bottle/Geom/Bottle").GetTypeName() == "Mesh"
