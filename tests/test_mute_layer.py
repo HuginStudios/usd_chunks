@@ -96,10 +96,14 @@ def test_never_unmutes_a_layer_it_did_not_mute() -> None:
 
 
 def test_only_mutes_while_the_view_reaches_it() -> None:
+    """The layers are wired in above it: a Layer chunk's layer is its cook's output, there
+    only while the view reaches that chunk."""
     with Scene() as scene:
-        _three_layers(scene)
+        layers = scene.create.layer(layer_name="light_key")
+        for name in ("light_fill", "fx"):
+            layers = scene.create.layer(layers, layer_name=name)
         other = scene.create.layer(layer_name="other")
-        mute = scene.create.mute_layer(pattern="fx")
+        mute = scene.create.mute_layer(layers, pattern="fx")
         stage = scene.get_stage()
 
         scene.set_view(other)  # the mute chunk is now off the viewed chain: gated off

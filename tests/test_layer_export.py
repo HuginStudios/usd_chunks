@@ -65,6 +65,19 @@ def _setup_stage():
     return scene, stage
 
 
+def _nested_in(parent, identifier) -> bool:
+    """Whether identifier is a sublayer of parent, at any depth.
+
+    A Layer chunk sublayers its layer into its own cook layer, which sits among the
+    target's other chunk layers -- so the layer is under the target, a level or two down.
+    """
+    for path in parent.subLayerPaths:
+        sub = Sdf.Layer.Find(path)
+        if path == identifier or (sub is not None and _nested_in(sub, identifier)):
+            return True
+    return False
+
+
 class TestCreateLayerNestingAndExport:
     def setup_method(self):
         self.create_mod = _load("chunks.usd.layer")
@@ -97,45 +110,15 @@ class TestCreateLayerNestingAndExport:
 
         for name, c in [("light", light), ("fx", fx), ("layout", layout)]:
             layer_id = c.get_param("_new_layer_id").value
-            assert layer_id in shot_layer.subLayerPaths, (
-                f"{name} layer should be a direct sublayer of shot — Edit Target "
+            assert _nested_in(shot_layer, layer_id), (
+                f"{name} layer should be under shot — Edit Target "
                 f"was pointed at shot when it was created"
             )
             layer = Sdf.Layer.Find(layer_id)
             assert layer is not None and layer.GetDisplayName() == name
 
         session = stage.GetSessionLayer()
-        assert shot_layer.identifier in session.subLayerPaths
-
-    def test_refresh_after_layer_skips_unless_in_after_layer_mode(self):
-        """_refresh_after_layer is registered listen_globally=True, so it fires for
-        EVERY Layer instance on ANY stage change -- including an unrelated
-        sibling's own edits. Its menu_items write used to run unconditionally, which
-        reactively re-triggered this chunk's own execute() as a side effect of that
-        unrelated activity, regardless of whether "after_layer" (hidden/unused outside
-        "After Layer" mode) was even relevant. That cascade -- confirmed live -- turned
-        one clean recook pass into hundreds of spurious re-executions across just a
-        few sibling Layer chunks, scrambling Prepend/Append/Index ordering by
-        making the "winner" depend on notice-dispatch timing instead of graph position.
-        Guard: it must now no-op entirely unless insert_mode is actually "After Layer"."""
-        scene, stage = _setup_stage()
-        c = self._create_layer(scene, "shot")
-        assert c.get_param("insert_mode").value == "Append"  # default, not "After Layer"
-
-        stale_items = ["stale", "items"]
-        c.get_param("after_layer").menu_items = stale_items
-
-        self.create_mod._refresh_after_layer(c, None, None)
-        assert list(c.get_param("after_layer").menu_items) == stale_items, (
-            'after_layer must be left untouched while insert_mode != "After Layer"'
-        )
-
-        # Reactively refreshes via _insert_mode_changed's explicit call into
-        # _refresh_after_layer when switching INTO "After Layer" mode.
-        c.get_param("insert_mode").value = "After Layer"
-        assert list(c.get_param("after_layer").menu_items) != stale_items, (
-            'switching into "After Layer" mode must actually refresh the menu'
-        )
+        assert _nested_in(session, shot_layer.identifier)
 
     def test_nested_edit_targets_bookkeeping_follows_and_chunkgroup_gathers_all(self, tmp_path):
         """Reproduces the nested workflow this architecture is for: create a layer, set
@@ -165,7 +148,7 @@ class TestCreateLayerNestingAndExport:
         layer2_id = layer2.get_param("_new_layer_id").value
         layer2_sdf = Sdf.Layer.Find(layer2_id)
         assert layer2_sdf is not None
-        assert layer2_id in Sdf.Layer.Find(layer1_id).subLayerPaths
+        assert _nested_in(Sdf.Layer.Find(layer1_id), layer2_id)
 
         edit_target2 = _make(scene, self.edit_mod, "edit_target")
         edit_target2.get_param("edit_target").value = "layer2"

@@ -226,7 +226,10 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     value_changed() also treats as "suppress every per-param notice", not just the reserved
     module.execute() hook. Switched to guarding with _executing instead (see _materialize_at),
     which only gates the reserved hook -- insert_index must end up NOT hidden once the import
-    settles, matching what typing "Index" into a live, already-created chunk would do."""
+    settles, matching what typing "Index" into a live, already-created chunk would do.
+
+    Layer's Insert mode is gone (its layer goes where its chunk is wired); Sublayer and the
+    Default Prim field it shows when off are the same value-driven hide and show."""
     qapp, reg, scene, docker = graph
     mod = reg.get_chunk_module("layer")
     cl = _mk(mod, scene)
@@ -236,9 +239,9 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     while time.monotonic() < end and cl_path not in gv.scene()._nodes:
         qapp.processEvents()
 
-    cl.get_param("insert_mode").value = "Index"
+    cl.get_param("sublayer").value = False
     _pump(qapp, 0.3)
-    assert not cl.get_param("insert_index").has_state(ChunkFlags.State.HIDDEN)  # sanity: source is fine
+    assert not cl.get_param("default_prim").has_state(ChunkFlags.State.HIDDEN)  # sanity: source is fine
 
     path = tmp_path / "create_layer_index.usda"
     _export_selected(scene, [cl], path)
@@ -250,8 +253,8 @@ def test_import_as_chunks_restores_value_driven_widget_visibility(graph, tmp_pat
     new_paths = set(gv.scene()._nodes.keys()) - before_paths
     assert len(new_paths) == 1
     imported = gv.scene()._nodes[new_paths.pop()].chunk
-    assert imported.get_param("insert_mode").value == "Index"
-    assert not imported.get_param("insert_index").has_state(ChunkFlags.State.HIDDEN)
+    assert imported.get_param("sublayer").value is False
+    assert not imported.get_param("default_prim").has_state(ChunkFlags.State.HIDDEN)
 
 
 def test_detect_dropped_usd_kind_classifies_chunkgroup_vs_scene(graph, tmp_path) -> None:

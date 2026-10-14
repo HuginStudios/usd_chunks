@@ -32,6 +32,22 @@ def _find_upstream_create_layer(chunk_obj):
     return None
 
 
+def _made_upstream(chunk_obj, name: str) -> bool:
+    """Whether a Layer chunk upstream of chunk_obj makes the layer called name.
+
+    Its layer is its cook's output, there only once it has cooked: a chunk that is not
+    cooked yet (held until the view reaches it, or still to cook in this pass) has not put
+    it in the stack, and a menu refresh in between found the picked layer missing.
+    """
+    for dep in chunk_stage.exec_upstream(chunk_obj):
+        if dep is chunk_obj or dep.get_param("_new_layer_id") is None:
+            continue
+        made = dep.get_param("layer_name").value.strip() or dep.name
+        if name in (made, made + ".usda"):
+            return True
+    return False
+
+
 def _resolve_layer(stage, selection):
     """Resolve `selection` to a layer that's actually part of stage's current layer
     stack -- normally a plain display name (the dropdown-picked/stored case, and also
@@ -154,6 +170,9 @@ def _refresh_edit_target(owner, notice, sender):
         # entirely while loading and let a later refresh pass, triggered by that same
         # layer's own creation, resolve it correctly instead.
         if chunk_notice._loading_stage:
+            return
+        if _made_upstream(_chunk, target_menu.value):
+            # Not made yet: the Layer chunk upstream puts it in the stack when it cooks.
             return
         if target_menu.value == _FOLLOW_UPSTREAM or not _resolve_layer(stage, target_menu.value):
             target_menu.value = target_items[0]

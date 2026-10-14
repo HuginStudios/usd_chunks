@@ -1,199 +1,108 @@
 from __future__ import annotations
-from pxr import Sdf
+import weakref
+
+from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils
-from usd_chunks import chunk_stage
+
+#: Place Below's default: the layer goes in this chunk's own layer, placed by the wiring.
+_WIRED = "(Wired)"
 
 
-_INSERT_MODES = ["Append", "Prepend", "Index", "After Layer"]
+def _file_sublayers(node, target) -> list[str]:
+    """target's own sublayer paths, as written: the files it lists, not the chunks' layers.
 
-#: Set once CHUNK_LOADED has fired -- values are in, the after-layer menu may refresh.
-_IN_SCENE = "_layer_in_scene"
+    What Place Below offers. Chunk layers follow the wiring; these are what a file brought,
+    with no chunk to be wired against -- a shot opened with fx, anim and layout in it.
+    This chunk's own layer is left out.
+    """
+    internal_ids = chunk_utils.chunk_internal_layer_ids()
+    own = node.get_param("_new_layer_id").value
+    return [p for p in target.subLayerPaths if p not in internal_ids and p != own]
 
 
 # Outside the chunk's edit context: this only refreshes a menu, and resolving the context
 # makes or moves the chunk's layer -- a sublayer edit, from inside the stage's change notice,
 # which a cook stage of the same layers hears before the change it answers (USD refuses it).
 @chunk_notice.without_edit_context
-def _refresh_after_layer(owner, notice, sender):
-    """Rebuild the after-layer menu from the current parent layer's sublayers.
+def _refresh_place_menu(owner, notice, sender):
+    """Keep Place Below listing the target's file sublayers.
 
-    Registered with listen_globally=True -- safe with any number of Layer
-    instances since NoticeConnection now shares one real Tf.Notice.RegisterGlobally()
-    per alias across all of them (see chunk_notice._register_global).
+    Only the items: a picked one that is not listed is kept, since the file may not be in
+    the stack yet (an upstream chunk still to cook). And only when they change -- the write
+    re-runs this chunk, and this runs for every Layer chunk on every stage change.
     """
-    _chunk = owner.get_chunk()
-    stage = _chunk.get_stage() if _chunk else None
-    if not stage:
+    node = owner.get_chunk()
+    stage = node.get_stage() if node is not None else None
+    menu = node.get_param("place_below") if node is not None else None
+    if stage is None or menu is None or node.is_blocked():
         return
-    if not getattr(_chunk, _IN_SCENE, False):
-        # Held off until CHUNK_LOADED: a saved After Layer choice is restored after main()
-        # registers this, and resetting a value the list does not hold yet would drop it.
-        return
-    if _chunk.is_blocked():
-        # This is listen_globally=True, so it fires for EVERY Layer instance on
-        # ANY stage content change -- including another Layer's own subLayerPaths
-        # write, or recook_for_view's own layer reorder. The after_menu.value write below
-        # reactively re-triggers THIS chunk's own execute() (chunk_notice.py's DAG solve),
-        # which must not happen for a blocked chunk (not part of the active view's tree --
-        # e.g. not yet wired in, or genuinely hidden). Without this guard, a still-blocked
-        # Layer could get dragged into a cascade of extra premature executes
-        # triggered by its SIBLINGS' unrelated edits, each one reinserting it into
-        # subLayerPaths and scrambling "closer to view wins" into "whichever cascade call
-        # happened to land last".
-        return
-    insert_mode_param = _chunk.get_param("insert_mode")
-    if insert_mode_param is None:
-        # Same half-dismantled-chunk case as the after_menu guard below: deleting this
-        # chunk tears its params down before this global handler (still firing for the
-        # stage edits teardown itself makes) gets a chance to run for it again.
-        return
-    if insert_mode_param.value != "After Layer":
-        # after_layer is hidden/unused in every other mode (_update_visibility). Refreshing
-        # it anyway writes menu_items -- a plain attrs field whose content is "the current
-        # subLayerPaths list", which differs on essentially every sibling Layer's
-        # edit -- and that write unconditionally re-triggers THIS chunk's own execute() as
-        # a side effect (chunk_core.py value_changed -> self.execute()), regardless of
-        # whether anything about THIS chunk actually changed. Live-confirmed: this alone
-        # cascades into hundreds of spurious re-executions across just a few sibling Create
-        # Layer chunks during ordinary graph construction, each one blindly reinserting
-        # this chunk via raw Prepend/Append (no view is reachable yet to rank against
-        # during a build) -- whichever cascade call happens to land last wins the strongest
-        # position, an accident of notice dispatch order having nothing to do with graph
-        # position. That scrambled order then freezes in place, since nothing re-executes a
-        # Layer chunk in response to exec topology changing once it's wired to a view.
-        return
-
-    internal_ids = chunk_utils.chunk_internal_layer_ids()
-    parent_layer = chunk_utils.get_edit_layer(stage, _chunk)
-
-    after_items = ["(none)"] + [p for p in parent_layer.subLayerPaths if p not in internal_ids]
-    after_menu = _chunk.get_param("after_layer")
-    if after_menu is None:
-        # Deleting this chunk tears its params down, but the layer-stack edits that teardown
-        # makes are themselves stage content changes -- so this global handler still fires for
-        # the half-dismantled chunk. Nothing left to refresh.
-        return
-    # Only on a change: every stage change round lands here, for every Layer chunk.
-    if list(after_menu.menu_items or []) != after_items:
-        after_menu.menu_items = after_items
-    if after_menu.value not in after_items:
-        after_menu.value = after_items[0]
+    items = [_WIRED] + _file_sublayers(node, chunk_utils.get_edit_layer(stage, node))
+    if list(getattr(menu, "menu_items", [])) != items:
+        menu.menu_items = items
 
 
-def _chunk_loaded(owner, notice, sender):
-    setattr(owner.get_chunk(), _IN_SCENE, True)
-    _refresh_after_layer(owner, notice, sender)
+def _is_on(node, stage) -> bool:
+    """Whether this chunk's output is part of the stage now: not deleted, disabled or gated off.
+
+    The engine switches a chunk off by muting its own layer. A layer placed below a file is
+    not in it, so this chunk mutes that one itself, the way Mute Layer holds its mutes.
+    """
+    if getattr(node, "_deleting", False) or node.is_blocked():
+        return False
+    if node.has_state(chunk.ChunkFlags.State.DISABLED):
+        return False
+    own = chunk_registry.ChunkLayerManager().get_layer(node)
+    return own is None or not stage.IsLayerMuted(own.identifier)
+
+
+def _sync_placed_mute(node, stage) -> None:
+    """Mute the layer placed below a file while this chunk is off, and unmute it once it is on."""
+    placed = getattr(node, "_placed_layer", None)
+    if placed is None:
+        return
+    off = not _is_on(node, stage)
+    if stage.IsLayerMuted(placed.identifier) != off:
+        stage.MuteAndUnmuteLayers([placed.identifier] if off else [], [] if off else [placed.identifier])
+
+
+def _watch_placement(node, stage) -> None:
+    """Keep a placed layer's mute in step with the chunk, from the stage's own notices.
+
+    The chunk's notices are held back while it is off, so a USD listener on the stage is the
+    one signal that still arrives -- as for Mute Layer, whose watcher this follows: the
+    listener holds the node weakly, the node holds the callback, and it mutes rather than
+    edits a layer, which is safe from inside the notice. Taking the layer out when the chunk
+    is deleted is the layer manager's (add_outside_layer).
+    """
+    if getattr(node, "_place_watch_stage", None) is stage:
+        return
+    ref = weakref.ref(node)
+
+    def changed(_notice, _sender):
+        owner = ref()
+        if owner is not None:
+            _sync_placed_mute(owner, stage)
+
+    node._place_watch_callback = changed
+    node._place_watch = Tf.Notice.Register(Usd.Notice.ObjectsChanged, changed, stage)
+    node._place_watch_stage = stage
 
 
 def _update_visibility(owner):
-    mode = owner.get_param("insert_mode").value
-
-    def _set_hidden(name, hidden):
+    # A Default Prim only means something for a layer that is not sublayered; where to place
+    # it, only for one that is.
+    sublayered = owner.get_param("sublayer").value
+    for name, hidden in (("default_prim", sublayered), ("place_below", not sublayered)):
         param = owner.get_param(name)
         if hidden:
             param.set_state(chunk.ChunkFlags.State.HIDDEN)
         else:
             param.unset_state(chunk.ChunkFlags.State.HIDDEN)
 
-    # Where to insert only means something for a layer that is sublayered; a Default Prim
-    # only for one that is not.
-    sublayered = owner.get_param("sublayer").value
-    _set_hidden("insert_mode", not sublayered)
-    _set_hidden("insert_index", not sublayered or mode != "Index")
-    _set_hidden("after_layer", not sublayered or mode != "After Layer")
-    _set_hidden("default_prim", sublayered)
-
 
 def _sublayer_changed(owner, notice, sender):
     _update_visibility(owner.get_chunk())
-
-
-def _insert_mode_changed(owner, notice, sender):
-    _update_visibility(owner.get_chunk())
-    if owner.get_chunk().get_param("insert_mode").value == "After Layer":
-        # _refresh_after_layer now skips every mode but this one (see its own guard), so
-        # switching INTO "After Layer" needs one explicit refresh here -- otherwise the
-        # menu stays stale (whatever it last showed before this chunk existed/switched
-        # modes) until some unrelated sibling edit happens to trigger the global listener.
-        _refresh_after_layer(owner, notice, sender)
-
-
-def _view_ranked_index(node, stage, paths: list) -> int | None:
-    """Where this chunk's layer belongs among `paths`, ranked by exec-chain proximity to
-    the active downstream view.
-
-    Applies REGARDLESS of Insert mode: two Layer chunks that ARE comparable
-    (reachable from a common view) landing in the wrong relative order isn't something
-    Prepend/Index/After Layer should be able to override -- "closer to the view wins" is
-    a project-wide invariant (recook_for_view enforces it for its own ChunkLayerManager-
-    tracked layers), not a per-chunk style choice. Insert mode only matters when this
-    returns None -- see execute()'s fallback.
-
-    Ranks this chunk's own CONTAINER (its immediate context -- typically a ChunkGroup, or
-    this chunk itself if it has none) as one atomic unit against sibling Layer
-    chunks' containers, using the nearest reachable downstream view's exec-upstream
-    order. Ranking the container rather than the chunk itself is what makes two
-    ChunkGroups (each owning an independent Layer) compare correctly as wholes.
-
-    Returns None -- defer entirely to Insert mode -- whenever there's no view to rank
-    against yet (e.g. right after a fresh paste, before anything is wired in) or this
-    chunk isn't inside any container at all.
-    """
-    scene = node.get_scene()
-    if not scene:
-        return None
-    container = node.get_context()
-    ranking_unit = container if container is not None else node
-    outer = ranking_unit.get_context()
-    view_chunk = chunk_stage.find_group_active_view(outer, stage, scene) if outer is not None else None
-    if view_chunk is None:
-        # No enclosing group context to read a chunk:activeView slot from -- e.g. several
-        # sibling ChunkGroups chained directly under a tab, not nested inside another
-        # group (find_group_active_view has nowhere to look: the root tab's own active
-        # view is tracked only in the Qt widget layer, not on any group prim this pure-
-        # topology function can read) -- or the enclosing group just has no recorded
-        # active view yet. Fall back to whatever real View chunk this unit's own exec
-        # output actually reaches downstream, and rank directly against that view's cook
-        # list instead -- same "closer to the view wins" signal, just found a different
-        # way.
-        downstream = chunk_stage.exec_downstream(ranking_unit, stage, scene)
-        view_chunk = next((c for c in downstream if chunk_stage.is_view_chunk(c)), None)
-    if view_chunk is None:
-        return None
-    cook_list = chunk_stage.view_cook_list(view_chunk, stage, scene)
-    if ranking_unit not in cook_list:
-        return None
-    my_rank = cook_list.index(ranking_unit)
-
-    # Map each existing sublayer identifier back to whichever OTHER Layer chunk (if
-    # any) produced it, so its own container can be ranked the same way.
-    id_to_chunk = {}
-    for c in scene.get_chunks():
-        cfg = c.get_config()
-        if not cfg or cfg.module != "layer":
-            continue
-        lid = c.get_param("_new_layer_id")
-        if lid and lid.value:
-            id_to_chunk[lid.value] = c
-
-    def sibling_rank(path_id: str) -> int:
-        sibling = id_to_chunk.get(path_id)
-        if sibling is None:
-            return -1
-        sib_container = sibling.get_context()
-        sib_unit = sib_container if sib_container is not None else sibling
-        return cook_list.index(sib_unit) if sib_unit in cook_list else -1
-
-    # subLayerPaths[0] is the strongest sublayer; keep entries ordered by descending rank
-    # (closer to the view = higher rank = stronger = lower index) and insert at the first
-    # spot whose existing entry is no stronger than this one. A resolved rank always
-    # returns a real int here (never None) -- "nothing comparable in paths yet" just means
-    # landing at the end, same as a fresh Append would, not "give up and use Insert mode".
-    for i, path_id in enumerate(paths):
-        if sibling_rank(path_id) <= my_rank:
-            return i
-    return len(paths)
 
 
 _USD_EXTENSIONS = (".usd", ".usda", ".usdc")
@@ -232,13 +141,13 @@ def _author_default_prim(layer, name: str) -> None:
 
 
 def execute(node):
-    """Find or (re-)create the chunk's anon sublayer, and reposition it in the
-    current parent layer's subLayerPaths per the current insert settings.
+    """Find or (re-)create the chunk's anon layer, and sublayer it into this chunk's own layer.
 
-    The parent is chunk_utils.get_edit_layer(stage): the session layer by default,
-    or whichever layer an upstream Edit Target chunk has explicitly pointed at -- so
-    a Layer downstream of an Edit Target nests its new layer inside that
-    target instead of always sublayering directly under the session layer.
+    This chunk's layer is under the session layer by default, or under whichever layer an
+    upstream Edit Target chunk has pointed at -- so a Layer downstream of an Edit Target
+    nests its new layer inside that target. Among that target's sublayers it sits where
+    this chunk sits in the wiring, as every chunk's output does: stronger than what is
+    upstream of it, weaker than what is downstream.
 
     Anon layers don't survive a stage reload, so the stored identifier can go
     stale between sessions; if Find() misses, a fresh layer is created and the
@@ -251,8 +160,7 @@ def execute(node):
     layer under the new tag and transferring the old one's content across before
     swapping it into subLayerPaths.
     """
-    # menu_items/value assignments in _refresh_after_layer, and the id_param/name_param/
-    # parent_param writes below, can reactively re-trigger this same chunk's execute()
+    # The id_param/name_param/parent_param writes below can reactively re-trigger this same chunk's execute()
     # before this call returns. We must NOT suppress that reactivity at the notice
     # level (e.g. via set_blocked()) -- that also blocks the notice the node-graph
     # widget needs to know it should repaint, silently breaking the UI. Guard the
@@ -261,8 +169,6 @@ def execute(node):
         return
     node._create_layer_executing = True
     try:
-        stage = node.get_stage()
-
         id_param = node.get_param("_new_layer_id")
         name_param = node.get_param("_layer_name_used")
         parent_param = node.get_param("_parent_layer_id")
@@ -278,6 +184,11 @@ def execute(node):
             renamed.TransferContent(layer)
             layer = renamed
 
+        # Held by the chunk: the cook layer it is sublayered into is cleared before every cook,
+        # and an anonymous layer nothing else holds dies with that -- taking whatever was
+        # authored into it through an Edit Target with it.
+        node._held_layer = layer
+
         lm = chunk_registry.ChunkLayerManager()
         if not node.get_param("sublayer").value:
             # Made for an asset to bring in by payload or reference: held by the layer
@@ -286,6 +197,8 @@ def execute(node):
             # it in neither list and reset itself to the session layer.
             _author_default_prim(layer, node.get_param("default_prim").value.strip())
             lm.add_arc_layer(node, layer)
+            node._placed_layer = None
+            lm.add_outside_layer(node, None)
             if previous_parent_id := parent_param.value or None:
                 if old_parent := Sdf.Layer.Find(previous_parent_id):
                     old_paths = [p for p in old_parent.subLayerPaths if p not in (previous_id, layer.identifier)]
@@ -296,53 +209,51 @@ def execute(node):
             parent_param.value = ""
             return
 
-        parent_layer = chunk_utils.get_edit_layer(stage, node)
-        if parent_layer.identifier in (layer.identifier, previous_id):
-            # The current edit target is this very layer -- either its new identity, or
-            # (mid-rename) its about-to-be-replaced previous one, e.g. because a
-            # downstream Edit Target chunk had already locked onto it. Nesting the new
-            # layer inside either would corrupt the layer stack (self-reference, or
-            # nesting inside a layer we're about to orphan). Fall back to the session
-            # layer rather than either.
-            parent_layer = stage.GetSessionLayer()
+        # Into this chunk's own cook layer, like everything a chunk does: that layer sits among
+        # the other chunks' by its place in the wiring, so the new layer is stronger than
+        # everything upstream of this chunk and weaker than everything downstream. Sublayered
+        # straight into the Edit Target's layer instead, it sat beside the graph's cook layers
+        # as a whole and lost to an upstream chunk's output.
+        own_layer = node.get_edit_context()
+        if own_layer is None:
+            return
+        parent_layer, paths = own_layer, [layer.identifier]
+        below = node.get_param("place_below").value
+        if below and below != _WIRED:
+            # Placed among the files the target lists, just under the one picked -- a shot
+            # opened with fx, anim and layout, a layer slotted in under anim. There it is
+            # weaker than all the chunks' output on that target, as those files are. Not
+            # listed (yet), the layer stays where the wiring puts it.
+            target = chunk_utils.get_edit_layer(node.get_stage(), node)
+            others = [p for p in target.subLayerPaths if p not in (previous_id, layer.identifier)]
+            if target.identifier not in (layer.identifier, previous_id) and below in others:
+                others.insert(others.index(below) + 1, layer.identifier)
+                parent_layer, paths = target, others
+                if own_layer.subLayerPaths:
+                    own_layer.subLayerPaths = []
+        placed = parent_layer is not own_layer
+        node._placed_layer = layer if placed else None
+        lm.add_outside_layer(node, layer if placed else None, parent_layer if placed else None)
+        if placed and (scene_stage := node.get_scene_stage()) is not None:
+            _watch_placement(node, scene_stage)
+
         previous_parent_id = parent_param.value or None
         if previous_parent_id and previous_parent_id != parent_layer.identifier:
-            # The effective edit target changed since the last run (e.g. an upstream
-            # Edit Target's selection changed, or one was added later) -- drop the stale
-            # entry from the OLD parent so the layer doesn't end up sublayered twice.
+            # The cook layer moved since the last run (an upstream Edit Target changed, or one
+            # was added later), or Place Below changed -- drop the stale entry from the OLD
+            # parent so the layer doesn't end up sublayered twice.
             if old_parent := Sdf.Layer.Find(previous_parent_id):
                 old_paths = [p for p in old_parent.subLayerPaths if p not in (previous_id, layer.identifier)]
                 if len(old_paths) != len(old_parent.subLayerPaths):
                     old_parent.subLayerPaths = old_paths
 
-        paths = [p for p in parent_layer.subLayerPaths if p not in (previous_id, layer.identifier)]
-
-        # "Closer to the view wins" always takes priority over Insert mode when it can be
-        # determined -- Insert mode is a fallback for when there's nothing to rank against
-        # yet (no view reachable, or this chunk isn't in a container), not a way to
-        # override a real, resolvable view relationship. See _view_ranked_index.
-        index = _view_ranked_index(node, stage, paths)
-        if index is None:
-            mode = node.get_param("insert_mode").value
-            if mode == "Prepend":
-                # subLayerPaths[0] is the strongest sublayer.
-                index = 0
-            elif mode == "Index":
-                index = int(node.get_param("insert_index").value or 0)
-                index = max(0, min(index, len(paths)))
-            elif mode == "After Layer":
-                after_id = node.get_param("after_layer").value
-                index = paths.index(after_id) + 1 if after_id in paths else len(paths)
-            else:
-                index = len(paths)
-
-        paths.insert(index, layer.identifier)
         # Insert into the composed stack BEFORE updating id_param/name_param/parent_param
         # below: those value assignments can reactively re-execute downstream dependents
         # (e.g. an Edit Target chunk tracking this one), and if that happens before the
         # layer is actually part of the stack, SetEditTarget on it fails with "not in
         # the local LayerStack".
-        parent_layer.subLayerPaths = paths
+        if list(parent_layer.subLayerPaths) != paths:
+            parent_layer.subLayerPaths = paths
         # No longer held for an arc -- dropped only now it is in the stack, so an Edit Target
         # on it finds it all the way through.
         lm.add_arc_layer(node, None)
@@ -365,23 +276,6 @@ def main():
         "already authored into it.",
     )
 
-    insert_mode = chunk.Menu(
-        "insert_mode", "Insert",
-        menu_items=_INSERT_MODES, default_value="Append",
-        tooltip="Where the new layer is inserted among the session layer's sublayers, "
-        "when there's no view downstream to rank it against yet. Once this chunk is "
-        "wired into a view, \"closer to the view wins\" always takes over instead.",
-    )
-    insert_mode.add_callback(_insert_mode_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
-
-    insert_index = chunk.Slider(
-        "insert_index", "Index", is_int=True, min_value=0, default_value=0,
-    )
-    after_layer = chunk.Menu(
-        "after_layer", "After Layer",
-        menu_items=["(none)"], default_value="(none)",
-    )
-
     # All three are bookkeeping for the layer this chunk owns *in this session*: two of them
     # hold an anonymous layer's identifier, which names an in-memory object and nothing else.
     # TRANSIENT keeps them off the chunk prim, so a saved scene does not come back holding the
@@ -398,7 +292,8 @@ def main():
 
     sublayer = chunk.Checkbox(
         "sublayer", "Sublayer", default_value=True,
-        tooltip="Checked (default): the layer is sublayered into the current Edit Target. "
+        tooltip="Checked (default): the layer is sublayered into the current Edit Target, "
+        "stronger than what is upstream of this chunk and weaker than what is downstream. "
         "Unchecked: it is made but not sublayered -- an asset's layer for a Payload or "
         "Reference chunk to bring in (pick it in their Layer menu), and an Edit Target "
         "downstream of that to author into, the way Bottle.usd payloads Bottle_payload.usd.",
@@ -412,13 +307,24 @@ def main():
 
     sublayer.add_callback(_sublayer_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
 
+    place_below = chunk.Menu(
+        "place_below", "Place Below",
+        menu_items=[_WIRED], default_value=_WIRED,
+        # The files are the target's as last seen, so a saved choice is set before they are
+        # in the stack and listed.
+        dynamic_items=True,
+        tooltip="(Wired) (default): the layer is as strong as this chunk's place in the "
+        "wiring -- stronger than what is upstream, weaker than what is downstream. Or one of "
+        "the files the current Edit Target's layer sublayers (a shot opened with fx, anim "
+        "and layout): the layer goes just under it, weaker than all the chunks' output on "
+        "that layer, as those files are.",
+    )
+
     layerChunk.add_params([
         layer_name,
         sublayer,
         default_prim,
-        insert_mode,
-        insert_index,
-        after_layer,
+        place_below,
         new_layer_id,
         layer_name_used,
         parent_layer_id,
@@ -426,11 +332,11 @@ def main():
 
     _update_visibility(layerChunk)
 
-    layerChunk.add_callback(_chunk_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
     layerChunk.add_callback(
-        _refresh_after_layer,
+        _refresh_place_menu,
         notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
         listen_globally=True,
+        send_on_create=True,
     )
 
     return layerChunk
@@ -451,12 +357,16 @@ def config():
         elsewhere (e.g. an Edit Target chunk's dropdown, or Export USD's layer picker);
         leave blank to use the chunk's own name.
 
-        Insert controls where it lands among the parent layer's existing sublayers:
-        Append (weakest), Prepend (strongest), Index (explicit position), or After
-        Layer (just weaker than a chosen sublayer). After Layer's choices refresh
-        automatically as the stage's layer stack changes. If the effective parent
+        Where it lands follows the wiring, as every chunk's output does: the layer is
+        sublayered into this chunk's own layer, so it is stronger than what is upstream
+        of this chunk and weaker than what is downstream. If the effective parent
         changes between runs (e.g. an upstream Edit Target's selection changes), the
         stale entry in the old parent is cleaned up automatically.
+
+        Place Below slots it in among the files the Edit Target's layer already
+        sublayers instead -- a shot opened with fx, anim and layout, a layer just under
+        anim. There it is weaker than all the chunks' output on that layer, as those
+        files are.
 
         The created anonymous layer is idempotent across re-executions: its identifier
         is cached on the chunk, and each run repositions the same layer rather than
@@ -465,6 +375,6 @@ def config():
         behavior of other procedural chunks. Changing Layer Name after the layer
         already exists renames it in place — a new anon layer is created under the
         new tag, the old layer's content is transferred across, and it swaps into
-        subLayerPaths at the position Insert currently specifies.
+        the stack in its place.
         """,
     )

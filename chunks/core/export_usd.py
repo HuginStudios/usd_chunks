@@ -183,25 +183,48 @@ def _read_export_disabled_layer_names(_chunk) -> set:
     return _unchecked_layer_names(_chunk, "export_enabled")
 
 
-def _collect_internal_layers(layer, internal_ids: set, own: list, real: list) -> None:
-    """Walk `layer` and the internal layers under it, strongest first.
+def _collect_internal_layers(layer, internal_ids: set, out: list) -> None:
+    """Walk `layer` and the internal layers under it, strongest first, into `out`.
 
-    Adds a content-only copy of each internal layer to `own` (its sublayer list cleared,
-    so composing the copies never pulls a real file in), and every real sublayer path the
-    walk meets to `real`.
+    Adds a content-only copy of each internal layer (its sublayer list cleared, so
+    composing the copies never pulls a real file in), and every real sublayer path the walk
+    meets, each where it stands -- so `out` keeps which content is stronger than which file.
     """
     copy = Sdf.Layer.CreateAnonymous()
     copy.TransferContent(layer)
     copy.subLayerPaths = []
-    own.append(copy)
+    out.append(copy)
+    for path in layer.subLayerPaths:
+        if path not in internal_ids:
+            out.append(path)
+        elif (sub := Sdf.Layer.Find(path)) is not None:
+            _collect_internal_layers(sub, internal_ids, out)
+
+
+def _real_sublayers(layer, internal_ids: set) -> list:
+    """layer's sublayer paths, each internal layer replaced by the real ones under it, in order.
+
+    A Layer chunk sublayers its layer into its own cook layer, an internal one: the real
+    layer it made is found beneath, and stays in the file as a sublayer where the internal
+    layer stood.
+    """
+    real = []
     for path in layer.subLayerPaths:
         if path not in internal_ids:
             real.append(path)
         elif (sub := Sdf.Layer.Find(path)) is not None:
-            _collect_internal_layers(sub, internal_ids, own, real)
+            real.extend(_real_sublayers(sub, internal_ids))
+    return real
 
 
-def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
+def _flatten_layers(layers: list) -> Sdf.Layer:
+    """layers, strongest first, flattened into one: each one's opinions over the next's."""
+    scratch = Sdf.Layer.CreateAnonymous()
+    scratch.subLayerPaths = [layer.identifier for layer in layers]
+    return UsdUtils.FlattenLayerStack(Usd.Stage.Open(scratch))
+
+
+def _inline_internal_sublayers(dst_layer, internal_ids: set) -> list:
     """Replace any reference to a ChunkLayerManager-internal layer in dst_layer's own
     subLayerPaths with that layer's own content, inlined directly -- rather than dropping
     the reference outright.
@@ -213,9 +236,16 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     real content along with it. Sibling references to other layers being exported for real (light.usda, etc.) are
     untouched here -- those get rewritten to the sibling filename separately, not inlined.
 
-    A real file an internal layer sublayers (a Sublayer chunk's path) is not content to
-    inline: it becomes a sublayer of dst_layer, where the internal layer stood. Flattening
-    it in would pull the whole file into dst_layer, and turn its relative paths absolute.
+    A real file an internal layer sublayers (a Sublayer chunk's path, a Layer chunk's
+    layer) is not content to inline: it becomes a sublayer of dst_layer, where the internal
+    layer stood. Flattening it in would pull the whole file into dst_layer, and turn its
+    relative paths absolute.
+
+    Only content stronger than every such file can be inlined: dst_layer's own opinions
+    beat all its sublayers. Content weaker than one -- a model's chunks, upstream of the
+    Layer chunk that made a look layer -- stays below it, in a layer of its own listed
+    after it. Those are returned, strongest first; their identifiers stand in dst_layer's
+    subLayerPaths, for the caller to write and point at.
     """
     # dst_layer's own content first (strongest), then every internal layer under it, in
     # its sublayer order -- flattened together, once. Flattened one internal layer at a
@@ -224,23 +254,43 @@ def _inline_internal_sublayers(dst_layer, internal_ids: set) -> None:
     own_content = Sdf.Layer.CreateAnonymous()
     own_content.TransferContent(dst_layer)
     own_content.subLayerPaths = []
-    own, remaining = [own_content], []
+    stream = [own_content]
     for path in dst_layer.subLayerPaths:
         if path not in internal_ids:
-            remaining.append(path)
+            stream.append(path)
         elif (internal_layer := Sdf.Layer.Find(path)) is not None:
-            real = []
-            _collect_internal_layers(internal_layer, internal_ids, own, real)
-            remaining.extend(real)
-    if len(own) > 1:
-        scratch = Sdf.Layer.CreateAnonymous()
-        scratch.subLayerPaths = [layer.identifier for layer in own]
-        flat = UsdUtils.FlattenLayerStack(Usd.Stage.Open(scratch))
+            _collect_internal_layers(internal_layer, internal_ids, stream)
+
+    # Runs of content between the real files, strongest first: the first is dst_layer's.
+    runs, paths = [[]], []
+    for item in stream:
+        if isinstance(item, str):
+            paths.append(item)
+            runs.append([])
+        else:
+            runs[-1].append(item)
+            if len(runs) > 1 and len(runs[-1]) == 1:
+                paths.append(None)  # where this run's layer goes, once it has content
+
+    if len(runs[0]) > 1:
+        flat = _flatten_layers(runs[0])
         for name in list(dst_layer.rootPrims.keys()):
             del dst_layer.rootPrims[name]
         for prim_spec in flat.rootPrims.values():
             Sdf.CopySpec(flat, prim_spec.path, dst_layer, prim_spec.path)
-    dst_layer.subLayerPaths = remaining
+
+    below = []
+    weaker = iter(runs[1:])
+    for i, path in enumerate(paths):
+        if path is not None:
+            continue
+        run = next(r for r in weaker if r)
+        flat = _flatten_layers(run)
+        if flat.rootPrims:
+            below.append(flat)
+            paths[i] = flat.identifier
+    dst_layer.subLayerPaths = [p for p in paths if p is not None]
+    return below
 
 
 def _strip_chunk_prims(flat_layer, only_paths=None) -> None:
@@ -445,16 +495,30 @@ def commit(node):
             # Baked: bring each chunk's real content in from its own private layer
             # (only on choosing to bake does it get copied into this edit target),
             # then strip the now-redundant chunk-graph bookkeeping.
-            _inline_internal_sublayers(export_layer, internal_ids)
+            below = _inline_internal_sublayers(export_layer, internal_ids)
+            # Chunk content weaker than a file under this layer: each run its own file
+            # beside it (model.cook.usda), listed where it stands.
+            base, file_ext = os.path.splitext(filenames[layer.identifier])
+            for i, run in enumerate(below):
+                filenames[run.identifier] = f"{base}.cook{i or ''}{file_ext}"
             # Stripped while the arcs still name the session's layers: stripping opens a
             # stage on this copy, and relocated, an arc names a file beside one that is
             # not written yet, which that stage cannot open.
             _strip_chunk_prims(export_layer)
             UsdUtils.ModifyAssetPaths(export_layer, _relocate)
+            for run in below:
+                _strip_chunk_prims(run)
+                UsdUtils.ModifyAssetPaths(run, _relocate)
+                chunk_stage.stamp_stage_metadata(run, stage)
+                run_path = os.path.join(output_dir, filenames[run.identifier])
+                chunk_utils.export_layer(run).Export(run_path)
+                print(f"[ExportUSD] Layer '{name}' chunk output under its sublayers exported to {run_path}")
         else:
             # Procedural: the recipe only -- leave each chunk's real content where it
             # already lives (its own private layer), dropping the reference to it
             # here rather than inlining, via _relocate's internal_ids handling below.
+            # A real layer under one (a Layer chunk's) is lifted out to stand in its place.
+            export_layer.subLayerPaths = _real_sublayers(layer, internal_ids)
             UsdUtils.ModifyAssetPaths(export_layer, _relocate)
 
         chunk_utils.export_layer(export_layer).Export(out_path)
