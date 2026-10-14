@@ -5853,25 +5853,39 @@ def _reorder_graph_layers_by_rank(graph_layers: Iterable[Sdf.Layer], ident_rank:
         _reorder_sublayers(g_layer, ident_rank)
 
 
-def sort_chunk_layers(lm: ChunkLayerManager, chunks: Iterable[core.ChunkBase]) -> None:
-    """Order chunk layers by chain depth (layer_sort_key), for a graph with no View to do it.
+def sort_chunk_layers(lm: ChunkLayerManager, chunks: Iterable[core.ChunkBase], keys: dict | None = None) -> None:
+    """Order chunk layers by their place in the wiring, for a graph with no View to do it.
 
     Each chunk layer is placed when it is made, before it is wired, so placement alone
     leaves creation order and an upstream chunk's opinions win. A View re-sorts on every
     recook; this does the same for a load, or a script still building.
 
+    Ranked by nested_cook_keys, the order a load cooks in: a chunk wired after a chunkgroup
+    sorts past every chunk inside it, however deep. By chain depth (layer_sort_key) it
+    tied with the group's last chunk -- the DAG does not nest a group inside the one that
+    holds it -- and which won came down to the order the layers were made, one way on a
+    fresh build and the other after a reopen. The graph layers are ordered within their
+    targets too, as a View's recook does: a nested group's chunks sit in one of their own.
+
     Args:
         lm: The layer manager.
         chunks: The chunks whose layers to sort.
+        keys: Their nested_cook_keys, when the caller has them (a load reads them once from
+            the stage). Otherwise read here, from the DAG: this runs after every chunk a
+            script makes, and reading every chunk prim's wires each time was quadratic.
     """
+    chunks = list(chunks)
+    if keys is None:
+        keys = nested_cook_keys(chunks, lm.stage, from_dag=True)
     rank = {
-        layer.identifier: chunk_scheduler.layer_sort_key(c.get_dag_node())
+        layer.identifier: keys[id(c)]
         for c in chunks
-        if (layer := lm.get_layer(c)) is not None
+        if id(c) in keys and (layer := lm.get_layer(c)) is not None
     }
     # A snapshot: writing subLayerPaths can cascade into get_or_create_layer, which edits
     # graph_layers while this loop would still be reading it.
     _reorder_graph_layers_by_rank(list(lm.graph_layers.values()), rank)
+    _reorder_graph_layers_in_targets(lm, rank)
 
 
 def _reorder_sublayers(layer: Sdf.Layer, ident_rank: dict) -> None:
@@ -6199,7 +6213,27 @@ def commit_order_from_stage(
     return result
 
 
-def nested_cook_keys(chunks: Iterable[core.ChunkBase], stage: Usd.Stage) -> dict[int, tuple]:
+def _dag_source_paths(c: core.ChunkBase) -> set[str]:
+    """The chunk prim paths c reads from, as its DAG dependencies have them.
+
+    _connected_source_paths' answer without reading the stage: the DAG mirrors exec and
+    param wires alike, and a lofted param's tie to the group around it is dropped the same
+    way, as a path c lies under.
+    """
+    mine = Sdf.Path(get_chunk_prim_path(c))
+    sources = set()
+    for _, dep in c.get_dependencies():
+        if dep is None or dep is c:
+            continue
+        path = get_chunk_prim_path(dep)
+        if path and not mine.HasPrefix(Sdf.Path(path)):
+            sources.add(path)
+    return sources
+
+
+def nested_cook_keys(
+    chunks: Iterable[core.ChunkBase], stage: Usd.Stage, *, from_dag: bool = False,
+) -> dict[int, tuple]:
     """A sort key per chunk (by id) that orders a nested network upstream-first.
 
     The key is the chunk's ancestor chain, outermost first, each level standing for how far
@@ -6219,14 +6253,22 @@ def nested_cook_keys(chunks: Iterable[core.ChunkBase], stage: Usd.Stage) -> dict
     Args:
         chunks: The chunks to key; ancestors outside this set end the chain.
         stage: The stage holding their chunk prims.
+        from_dag: Read the wires from the chunks' DAG dependencies, not the stage. A load
+            reads the stage, which is what the file says; a script sorting after every chunk
+            it makes reads the DAG, which agrees and costs a small fraction of the time.
 
     Returns:
         id(chunk) -> key tuple.
     """
     chunks = list(chunks)
-    families: dict[int, list[core.ChunkBase]] = {}
+    # Siblings by prim parentage, as hosting is decided (#408): get_context is the context
+    # at or above a chunk -- a group's own self -- and the owner chain of a group need not
+    # reach the one around it. Nested so, the groups' wiring was never compared at all.
+    path_of = {id(c): get_chunk_prim_path(c) for c in chunks}
+    by_prim_path = {path: c for c in chunks if (path := path_of[id(c)])}
+    families: dict[str, list[core.ChunkBase]] = {}
     for c in chunks:
-        families.setdefault(id(c.get_context()), []).append(c)
+        families.setdefault(str(Sdf.Path(path_of[id(c)]).GetParentPath()), []).append(c)
 
     level: dict[int, int] = {}
     for family in families.values():
@@ -6234,10 +6276,14 @@ def nested_cook_keys(chunks: Iterable[core.ChunkBase], stage: Usd.Stage) -> dict
         inputs: dict[int, set[int]] = {}
         outputs: dict[int, list[core.ChunkBase]] = {id(c): [] for c in family}
         for c in family:
-            prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
             found: set[int] = set()
-            if prim and prim.IsValid():
-                for source in _connected_source_paths(prim):
+            if from_dag:
+                sources = _dag_source_paths(c)
+            else:
+                prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(c)))
+                sources = _connected_source_paths(prim) if prim and prim.IsValid() else ()
+            if sources:
+                for source in sources:
                     path = Sdf.Path(source)
                     while path not in (Sdf.Path.absoluteRootPath, Sdf.Path.emptyPath):
                         if (sibling := by_path.get(str(path))) is not None:
@@ -6269,7 +6315,7 @@ def nested_cook_keys(chunks: Iterable[core.ChunkBase], stage: Usd.Stage) -> dict
         node = c
         while node is not None and id(node) in level:
             chain.append(level[id(node)])
-            node = node.get_context()
+            node = by_prim_path.get(str(Sdf.Path(path_of[id(node)]).GetParentPath()))
         keys[id(c)] = tuple(reversed(chain))
     return keys
 
@@ -7352,9 +7398,14 @@ def _load_chunks(
                 # wiring) end up with stronger layers than their upstream dependencies.
                 # Layers are created early (during _load_wire_inputs, and now unconditionally
                 # just above) when sort_keys are all 0, so the initial insertion order needs
-                # correction here.
+                # correction here. Every chunk ranked, not this batch's: ranked alone, a batch
+                # loses the wires to chunks loaded in another (a nested group's). Keyed once
+                # for the load: the wiring and nesting they read are final, and the cook order
+                # below and the last sort use the same keys.
+                every_chunk = list(scene.get_chunks())
+                cook_keys = nested_cook_keys(every_chunk, stage)
                 if lm.initialized:
-                    sort_chunk_layers(lm, (c for _, c in deferred))
+                    sort_chunk_layers(lm, every_chunk, cook_keys)
 
                 # Home every chunk's bookkeeping now, while the exec chain is final (it came
                 # from the file and the dependency restore above only mirrored it) and before
@@ -7402,7 +7453,9 @@ def _load_chunks(
                 # out empty. Run in turn, each root still dirties its group itself.
                 unseen = _unseen_by_active_views(stage, scene)
                 stale_before = {id(c) for _, c in deferred if chunk_cook.is_cook_stale(c)}
-                cook_keys = nested_cook_keys((c for _, c in deferred), stage)
+                # Keyed over every chunk (above), the groups included: a batch holds a group's
+                # chunks but not always the groups themselves, and a chain that stops short of
+                # them tied a chunk wired after a nested group with the group's first chunk.
                 for prim, added in sorted(deferred, key=lambda item: cook_keys[id(item[1])]):
                     if id(added) not in chunks_with_dependencies and not unseen(added):
                         if id(added) in stale_before and not chunk_cook.is_cook_stale(added):
@@ -7445,6 +7498,14 @@ def _load_chunks(
                 # ownership chain, which marks a group stale all over again.
                 _clear_cooked_groups(list(scene.get_chunks()))
                 _settle_cooked_params(list(scene.get_chunks()))
+
+                # And again, last: cooking an Edit Target publishes its layer, and the chunks
+                # below it move into that layer's graph layer at a provisional place -- a chunk
+                # wired after a chunkgroup landed under the group's last chunk, and lost to it.
+                # Every chunk, not this batch's: a nested group's are loaded in a batch of their
+                # own, and ranked apart from the chunk after the group they never moved past it.
+                if lm.initialized:
+                    sort_chunk_layers(lm, every_chunk, cook_keys)
             finally:
                 chunk_notice._loading_stage = old_loading_stage
                 # A load that failed part-way still leaves its layers on the stage.
