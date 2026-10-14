@@ -2218,6 +2218,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # than sublayer; see add_arc_layer. Held here: nothing else keeps it alive until an
         # arc composes it.
         self._arc_layers: dict[core.ChunkHash, Sdf.Layer] = {}
+        # Per chunk, a layer it put in a real layer's sublayers itself, outside its own
+        # layer, with that parent; see add_outside_layer. Taken out when the chunk goes.
+        self._outside_layers: dict[core.ChunkHash, tuple[Sdf.Layer, Sdf.Layer]] = {}
         self._chunk_refs = weakref.WeakSet()
         # Identifiers of every layer above that this manager created, so is_chunk_internal_layer
         # can answer in one lookup. Maintained beside the two dicts rather than derived from
@@ -2259,6 +2262,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._cook_layers = {}
         self._placed = {}
         self._arc_layers = {}
+        self._outside_layers = {}
         self.internal_layer_ids = set()
 
     def get_layer_file_name(self, layer: Sdf.Layer):
@@ -2333,6 +2337,23 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._arc_layers.pop(c.get_hash(), None)
         else:
             self._arc_layers[c.get_hash()] = layer
+
+    def add_outside_layer(self, c: core.ChunkBase, layer: Sdf.Layer | None, parent: Sdf.Layer | None = None) -> None:
+        """Record layer as one c sublayered into parent itself, outside its own layer -- or forget c's.
+
+        A Layer chunk placed below a file the target lists has its layer there, not in its
+        own layer, so deleting the chunk does not take it with it: this manager takes it out
+        of parent when it takes c's own layer away.
+
+        Args:
+            c: The chunk that placed the layer.
+            layer: The layer, or None to forget the one c placed.
+            parent: The layer it is a sublayer of.
+        """
+        if layer is None or parent is None:
+            self._outside_layers.pop(c.get_hash(), None)
+        else:
+            self._outside_layers[c.get_hash()] = (layer, parent)
 
     def arc_layers(self) -> list[tuple[str, Sdf.Layer]]:
         """(display name, layer) for every layer a chunk made to be brought in by arc."""
@@ -3143,6 +3164,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return
         self._retired_chunks.add(chunk_hash)
         self._arc_layers.pop(chunk_hash, None)
+        if outside := self._outside_layers.pop(chunk_hash, None):
+            self._remove_outside_layer(*outside)
         self._chunk_target.pop(chunk_hash, None)
         self._chunk_graph_key.pop(chunk_hash, None)
         self._confirmed_in.pop(chunk_hash, None)
@@ -3174,6 +3197,19 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             held, self._held_deletes = self._held_deletes, None
             if held:
                 self._remove_layers(held)
+
+    def _remove_outside_layer(self, layer: Sdf.Layer, parent: Sdf.Layer) -> None:
+        """Take a layer a deleted chunk placed in parent itself out of it, unmuted first."""
+        if self.stage and self.stage.IsLayerMuted(layer.identifier):
+            self.stage.UnmuteLayer(layer.identifier)
+        if layer.identifier not in parent.subLayerPaths:
+            return
+        prev_w = chunk_notice._usd_write_active
+        chunk_notice._usd_write_active = True  # as _remove_layers: no rescan per delete
+        try:
+            parent.subLayerPaths = [p for p in parent.subLayerPaths if p != layer.identifier]
+        finally:
+            chunk_notice._usd_write_active = prev_w
 
     def _remove_layers(self, layers: list) -> None:
         """Take deleted chunks' layers off the stage: one mute, one write per parent, one unmute."""

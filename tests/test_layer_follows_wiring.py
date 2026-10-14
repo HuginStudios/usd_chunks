@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import Scene
+from usd_chunks import Scene, chunk
 
 
 def _model_then_look(scene, driven: bool):
@@ -74,3 +74,80 @@ def test_the_look_layer_stays_put_through_its_chunks_recook() -> None:
         targets = [c.get_param("edit_target").value for c in scene.get_chunks() if c.get_param("edit_target")]
         assert "look" in targets
         assert _red(scene.get_stage()) == pytest.approx(0.8)
+
+
+def _shot(tmp_path):
+    """shot.usda on disk, sublayering fx, anim and layout: anim sets opacity, layout colour."""
+    def make(name, build):
+        stage = Usd.Stage.CreateNew(str(tmp_path / name))
+        build(stage)
+        stage.GetRootLayer().Save()
+    make("fx.usda", lambda st: None)
+    make("anim.usda", lambda st: UsdGeom.Gprim(st.OverridePrim("/world/c")).CreateDisplayOpacityAttr([0.2]))
+    make("layout.usda", lambda st: UsdGeom.Gprim(UsdGeom.Cube.Define(st, "/world/c")).CreateDisplayColorAttr([(0.5, 0.5, 0.5)]))
+    shot = Sdf.Layer.CreateNew(str(tmp_path / "shot.usda"))
+    shot.subLayerPaths = ["fx.usda", "anim.usda", "layout.usda"]
+    shot.Save()
+    return str(tmp_path / "shot.usda")
+
+
+def _light_below_anim(scene, driven: bool):
+    """A light layer placed below anim.usda in the opened shot, tinting the cube 0.9."""
+    stage = scene.get_stage()
+    target = scene.create.edit_target(edit_target=stage.GetRootLayer().GetDisplayName())
+    light = scene.create.layer(target, layer_name="light", place_below="anim.usda")
+    with scene.create.edit_target(light, edit_target="light") as target:
+        key = scene.create.set_display_color(target, prim_path="/world/c", color_r=0.9, name="key")
+    if driven:
+        scene.set_output(key)
+    return light, key
+
+
+def _root_sublayers(stage) -> list[str]:
+    return [p.rsplit(":", 1)[-1] for p in stage.GetRootLayer().subLayerPaths if "graph_" not in p]
+
+
+@pytest.mark.parametrize("driven", [False, True], ids=["headless", "output"])
+def test_place_below_slots_a_layer_into_an_opened_shot(tmp_path, driven) -> None:
+    """Over layout, under anim -- the same headless and with an Output."""
+    with Scene.open(_shot(tmp_path)) as scene:
+        light, _key = _light_below_anim(scene, driven)
+        stage = scene.get_stage()
+        assert _root_sublayers(stage) == ["fx.usda", "anim.usda", "light", "layout.usda"]
+        assert light.get_param("place_below").menu_items == ["(Wired)", "fx.usda", "anim.usda", "layout.usda"]
+        gprim = UsdGeom.Gprim(stage.GetPrimAtPath("/world/c"))
+        assert _red(stage) == pytest.approx(0.9), "stronger than layout"
+        assert list(gprim.GetDisplayOpacityAttr().Get()) == pytest.approx([0.2]), "anim's own value"
+
+
+def test_a_placed_layer_follows_its_chunk_off_and_out(tmp_path) -> None:
+    """Muted while the chunk is disabled, back when it is not; gone with Wired and on delete."""
+    with Scene.open(_shot(tmp_path)) as scene:
+        light, _key = _light_below_anim(scene, driven=True)
+        stage = scene.get_stage()
+        placed = light.get_param("_new_layer_id").value
+
+        light.set_state(chunk.ChunkFlags.State.DISABLED)
+        assert stage.IsLayerMuted(placed)
+        light.unset_state(chunk.ChunkFlags.State.DISABLED)
+        assert not stage.IsLayerMuted(placed)
+
+        light.get_param("place_below").value = "(Wired)"
+        assert _root_sublayers(stage) == ["fx.usda", "anim.usda", "layout.usda"]
+        light.get_param("place_below").value = "fx.usda"
+        assert _root_sublayers(stage) == ["fx.usda", "light", "anim.usda", "layout.usda"]
+
+        scene.remove_chunk(light)
+        assert _root_sublayers(stage) == ["fx.usda", "anim.usda", "layout.usda"]
+
+
+@pytest.mark.parametrize("bake", [True, False], ids=["baked", "procedural"])
+def test_export_keeps_a_placed_layer_where_it_was_placed(tmp_path, bake) -> None:
+    with Scene.open(_shot(tmp_path)) as scene:
+        _light, key = _light_below_anim(scene, driven=True)
+        out = tmp_path / "out"
+        scene.create.export_usd(key, output_dir=str(out), bake_all=bake, keep_session_layer=False)
+        scene.commit()
+    shot = Sdf.Layer.FindOrOpen(str(out / "shot.usda"))
+    assert [p for p in shot.subLayerPaths if p.endswith(("anim.usda", "light.usda", "layout.usda"))][-3:] == [
+        "anim.usda", "light.usda", "layout.usda"]
