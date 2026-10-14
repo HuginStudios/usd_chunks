@@ -86,14 +86,16 @@ def strip_namespace(namespace: str, paths: str) -> str:
     return "".join(out)
 
 
-#: The Layer menu entry of a Payload or Reference chunk that means "use File Path".
-ARC_FROM_FILE = "(File Path)"
+def arc_from_layer(node) -> bool:
+    """Whether a Payload or Reference chunk brings in a layer the network made, not a file."""
+    choice = node.get_param("from_layer")
+    return bool(choice is not None and choice.value)
 
 
 def arc_layer_items() -> list[str]:
-    """ARC_FROM_FILE, then the name of every layer a Layer chunk made to be brought in by arc."""
+    """The name of every layer a Layer chunk made to be brought in by arc."""
     lm = chunk_registry.ChunkLayerManager()
-    return [ARC_FROM_FILE] + ([name for name, _layer in lm.arc_layers()] if lm.initialized else [])
+    return [name for name, _layer in lm.arc_layers()] if lm.initialized else []
 
 
 def arc_source_path(node) -> str:
@@ -103,14 +105,34 @@ def arc_source_path(node) -> str:
     session -- Export USD writes the file and rewrites the arc to it. Empty when the picked
     layer is not there (yet: a Layer chunk upstream that has not cooked).
     """
-    choice = node.get_param("layer")
-    if choice is None or choice.value in ("", ARC_FROM_FILE):
+    if not arc_from_layer(node):
         return node.get_param("file_path").value
+    choice = node.get_param("layer").value
     lm = chunk_registry.ChunkLayerManager()
     return next(
-        (layer.identifier for name, layer in (lm.arc_layers() if lm.initialized else []) if name == choice.value),
+        (layer.identifier for name, layer in (lm.arc_layers() if lm.initialized else []) if name == choice),
         "",
     )
+
+
+def show_arc_source(node) -> None:
+    """Show a Payload or Reference chunk's File Path or its Layer menu, whichever it uses."""
+    from_layer = arc_from_layer(node)
+    for name, hidden in (("file_path", from_layer), ("layer", not from_layer)):
+        param = node.get_param(name)
+        if param is None:
+            continue
+        if hidden:
+            param.set_state(ChunkFlags.State.HIDDEN)
+        else:
+            param.unset_state(ChunkFlags.State.HIDDEN)
+
+
+def arc_source_changed(owner, notice, sender) -> None:
+    """Existing Layer flipped, or the chunk loaded with it: show what it now brings in."""
+    node = owner.get_chunk()
+    if node is not None:
+        show_arc_source(node)
 
 
 @chunk_notice.without_edit_context

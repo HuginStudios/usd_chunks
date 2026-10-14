@@ -22,9 +22,9 @@ def _bottle(scene):
     payload = scene.create.layer(asset, layer_name="Bottle_payload", sublayer=False, default_prim="Bottle")
     geom = scene.create.layer(payload, layer_name="Bottle.geom", sublayer=False, default_prim="Bottle")
     with scene.create.edit_target(geom, edit_target="Bottle") as target:
-        arc = scene.create.payload(target, layer="Bottle_payload", primpath_location="/Bottle", name="payload")
+        arc = scene.create.payload(target, from_layer=True, layer="Bottle_payload", primpath_location="/Bottle", name="payload")
     with scene.create.edit_target(arc, edit_target="Bottle_payload") as target:
-        ref = scene.create.reference(target, layer="Bottle.geom.usda", primpath_location="/Bottle", name="geom_ref")
+        ref = scene.create.reference(target, from_layer=True, layer="Bottle.geom.usda", primpath_location="/Bottle", name="geom_ref")
     with scene.create.edit_target(ref, edit_target="Bottle.geom.usda") as target:
         mesh = scene.create.cube(target, prim_path="/Bottle/geo", name="bottle_mesh")
     return mesh
@@ -182,7 +182,7 @@ def test_component_kind_and_variant_set_land_on_the_asset_file(tmp_path) -> None
         payload = scene.create.layer(asset, layer_name="Bottle_payload", sublayer=False, default_prim="Bottle")
         geom = scene.create.layer(payload, layer_name="Bottle.geom", sublayer=False, default_prim="Bottle")
         with scene.create.edit_target(geom, edit_target="Bottle") as target:
-            arc = scene.create.payload(target, layer="Bottle_payload", primpath_location="/Bottle", name="payload")
+            arc = scene.create.payload(target, from_layer=True, layer="Bottle_payload", primpath_location="/Bottle", name="payload")
             kind = scene.create.set_metadata(arc, prim_path="/Bottle", metadata_key="kind",
                                              metadata_value="component", name="kind")
             variants = scene.create.variant(kind, primpath_location="/Bottle", name="variants")
@@ -190,7 +190,7 @@ def test_component_kind_and_variant_set_land_on_the_asset_file(tmp_path) -> None
             for name, value in (("vs_name", "modelingVariant"), ("v_names", "Short,Tall"), ("v_default", "Tall")):
                 entries.get_indexed_param(entries.get_param(name), 0).value = value
         with scene.create.edit_target(variants, edit_target="Bottle_payload") as target:
-            ref = scene.create.reference(target, layer="Bottle.geom.usda", primpath_location="/Bottle", name="geom_ref")
+            ref = scene.create.reference(target, from_layer=True, layer="Bottle.geom.usda", primpath_location="/Bottle", name="geom_ref")
         with scene.create.edit_target(ref, edit_target="Bottle.geom.usda") as target:
             mesh = scene.create.cube(target, prim_path="/Bottle/Geom/Bottle", name="bottle_mesh")
         _export(scene, mesh, tmp_path)
@@ -209,3 +209,19 @@ def test_component_kind_and_variant_set_land_on_the_asset_file(tmp_path) -> None
     assert Usd.ModelAPI(prim).GetKind() == "component"
     assert prim.GetVariantSets().GetVariantSet("modelingVariant").GetVariantNames() == ["Short", "Tall"]
     assert stage.GetPrimAtPath("/Bottle/Geom/Bottle").GetTypeName() == "Mesh"
+
+
+def test_existing_layer_shows_the_layer_menu_in_place_of_file_path(tmp_path) -> None:
+    hidden = lambda c, name: c.get_param(name).has_state(chunk.ChunkFlags.State.HIDDEN)  # noqa: E731
+    with Scene() as scene:
+        ref = scene.create.reference(name="ref")
+        assert not hidden(ref, "file_path") and hidden(ref, "layer")
+        ref.get_param("from_layer").value = True
+        assert hidden(ref, "file_path") and not hidden(ref, "layer")
+        _bottle(scene)
+        scene.save(str(tmp_path / "network.usda"))
+
+    with Scene.open(str(tmp_path / "network.usda")) as scene:
+        for c in scene.get_chunks():
+            if c.name in ("ref", "payload", "geom_ref"):
+                assert hidden(c, "file_path") and not hidden(c, "layer"), c.name

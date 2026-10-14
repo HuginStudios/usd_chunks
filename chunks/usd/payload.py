@@ -22,8 +22,7 @@ def execute(node):
     # this chunk's own prim as a payload, and this node becomes the group -- dive in and
     # the network is there. Same as the Reference chunk, with a payload arc, so the
     # network unloads with the stage's other payloads.
-    from_layer = node.get_param("layer").value not in ("", chunk_utils.ARC_FROM_FILE)
-    network = None if from_layer else chunk_stage.network_target(payload_path, import_path)
+    network = None if chunk_utils.arc_from_layer(node) else chunk_stage.network_target(payload_path, import_path)
     if network is not None:
         chunk_stage.host_network(node, payload_path, network, arc="payload", namespace=raw_path or "")
         if raw_path:  # the namespace root, else only an untyped parent of the network's prims
@@ -61,18 +60,24 @@ def _define(stage, path, prim_type):
     return prim
 
 
-def _layer_menu():
-    """The Layer menu: a layer a Layer chunk upstream made to be brought in by arc, or the file."""
+def _source_params():
+    """Existing Layer, and its Layer menu: a layer a Layer chunk upstream made to bring in."""
+    from_layer = chunk.Checkbox(
+        "from_layer", "Existing Layer", default_value=False,
+        tooltip="Unchecked (default): bring in File Path. Checked: bring in a layer a Layer "
+        "chunk made with Sublayer off, picked in Layer -- an Edit Target downstream of this "
+        "then authors into it through the arc, and Export USD writes it as its own file, "
+        "with the arc pointing at that file.",
+    )
+    from_layer.add_callback(chunk_utils.arc_source_changed, notice_alias=chunk.ChunkNoticeAlias.VALUE_CHANGED)
     menu = chunk.Menu(
-        "layer", "Layer", menu_items=[chunk_utils.ARC_FROM_FILE], default_value=chunk_utils.ARC_FROM_FILE,
+        "layer", "Layer",
         # The layers are the network's as last seen, so a saved choice is set before the
         # Layer chunk making it has cooked and listed it.
         dynamic_items=True,
-        tooltip="(File Path): bring in File Path. Otherwise a layer a Layer chunk made with "
-        "Sublayer off -- an Edit Target downstream of this then authors into it through the "
-        "arc, and Export USD writes it as its own file, with the arc pointing at that file.",
+        tooltip="A layer a Layer chunk made with Sublayer off, to bring in by this arc.",
     )
-    return menu
+    return from_layer, menu
 
 
 def main():
@@ -83,8 +88,10 @@ def main():
     Payload_fb.set_flag(chunk.ChunkFlags.ParamFlags.FILE_EXISTING)
     Payload_fb.add_callback(file_changed)
     import_primpath = chunk.LineEdit("import_primpath", "Import Prim Path", flags=chunk.ChunkFlags.ParamFlags.LABELED)
+    from_layer, layer_menu = _source_params()
+    PayloadChunk.add_param(from_layer)
     PayloadChunk.add_param(Payload_fb)
-    PayloadChunk.add_param(_layer_menu())
+    PayloadChunk.add_param(layer_menu)
     PayloadChunk.add_param(import_primpath)
 
     # prim location
@@ -105,6 +112,9 @@ def main():
         listen_globally=True,
         send_on_create=True,
     )
+
+    chunk_utils.show_arc_source(PayloadChunk)
+    PayloadChunk.add_callback(chunk_utils.arc_source_changed, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
 
     return PayloadChunk
 
