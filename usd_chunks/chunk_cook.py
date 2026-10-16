@@ -481,7 +481,15 @@ def executing(prop):
     # cleaned it, and its result already takes all of that in. Left dirty, the next solve
     # anywhere below it walked up to it (chunk_scheduler.dirty_component) and cooked it
     # again: a Light, on every edit of the Transform after it.
-    prop.get_dag_node()._dirty = False
+    #
+    # Its reasons go too, as chunk_scheduler.solve clears a node it solved. A cook outside
+    # any solve -- a View's recook, which usdview runs after every open -- left a Light's
+    # rebuilt params' GROUP_CHANGED here, and the next edit handed them to skip_cook as a
+    # change of the Light's own, so it could never be skipped.
+    node = prop.get_dag_node()
+    node._dirty = False
+    node._changes.clear()
+    node._index = 0
 
 
 def is_cook_stage(stage) -> bool:

@@ -62,6 +62,25 @@ def _reader(cooks: list, name: str, *, declared: bool = True):
     return register_stub_module(main=main, execute=execute)
 
 
+def _rebuilder(cooks: list, name: str):
+    """Writes /<name>.size, and adds a param to its own group on every cook, as a Light does
+    when it shows its prim's attributes."""
+
+    def main():
+        c = chunk.Chunk(name)
+        c.add_param(chunk.Group("shown"))
+        return c
+
+    def execute(node):
+        cooks.append(node.name)
+        prim = node.get_stage().DefinePrim(f"/{name}", "Xform")
+        prim.CreateAttribute("size", Sdf.ValueTypeNames.Double).Set(1.0)
+        shown = node.get_param("shown", chunk.is_group)
+        shown.add_param(chunk.Slider(f"attr{len(cooks)}", default_value=0.0))
+
+    return register_stub_module(main=main, execute=execute)
+
+
 def _size(scene, path):
     return scene.get_stage().GetPrimAtPath(path).GetAttribute("size").Get()
 
@@ -118,6 +137,28 @@ def test_the_first_edit_after_opening_skips_like_any_other(tmp_path):
         assert cooks == ["Gen"]
         assert _size(scene, "/Gen") == 2.0
         assert _size(scene, "/Other") == 3.0
+
+
+def test_params_a_cook_adds_are_no_reason_to_cook_again():
+    """A Light's first cook after a load rebuilds its params, and their GROUP_CHANGED stayed.
+
+    The cook cleared its own node's dirty flag but not the reasons. Inside an edit's solve
+    the solve cleared them; a cook outside one -- a View's recook, which usdview runs after
+    every open -- left them, and the next edit handed them to skip_cook as a change of the
+    chunk's own. In the kitchen scene every Light below an edited aim cooked on each step.
+    """
+    cooks: list = []
+    with Scene() as scene:
+        gen = _add(scene, _generator(cooks, "Gen"))
+        shower = _add(scene, _rebuilder(cooks, "Shower"))
+        _chain(scene, gen, shower)
+        shower._cook()  # as recook_for_view cooks it: outside any edit
+        assert not list(shower.get_dag_node().iter_changes()), "a cook takes in what it set on itself"
+        cooks.clear()
+
+        gen.get_param("size").value = 2.0
+
+        assert cooks == ["Gen"], "Shower reads /Shower, which the edit did not touch"
 
 
 def test_a_chunk_that_reads_what_changed_cooks():
