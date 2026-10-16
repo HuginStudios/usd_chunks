@@ -15,6 +15,8 @@ Seen with chunks/materials/AMDMaterialXLibrary.py, which declares requirements=[
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from usd_chunks import chunk_registry
@@ -114,6 +116,22 @@ def test_successful_install_is_recorded(manager, monkeypatch):
     manager.install_packages([PACKAGE])
 
     assert manager.package_in_cache(PACKAGE), "a successful install should not be repeated"
+
+
+def test_an_interpreter_without_pip_says_so(manager, monkeypatch, caplog):
+    """usdview's bundled Python ships no pip. "pip exited 1" hid that; the fix is one command."""
+    monkeypatch.setattr(
+        chunk_registry, "_run_pip", lambda args, on_line=None: (1, f"{args[0]}: No module named pip\n"),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="usd_chunks.chunk_registry"):
+        manager.install_packages([PACKAGE])
+
+    failures = [r.getMessage() for r in caplog.records if "Failed to install" in r.getMessage()]
+    assert failures, "the failed install must still be reported"
+    assert "has no pip" in failures[-1]
+    assert f"{chunk_registry.python_executable()} -m ensurepip" in failures[-1]
+    assert not manager.package_in_cache(PACKAGE)
 
 
 # ---------------------------------------------------------------------------

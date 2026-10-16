@@ -563,6 +563,16 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         # remembered as a success would short-circuit package_in_cache forever: never
         # retried, never prompted again, and the chunk erroring on every creation.
         if returncode != 0:
+            if "No module named pip" in output:
+                # usdview's bundled Python ships no pip. "pip exited 1" hid that, and the
+                # line that said so sat under it, past where a pasted error usually ends.
+                logger.error(
+                    "Failed to install chunk dependencies %s: %s has no pip. Add it with:\n"
+                    "    %s -m ensurepip\n"
+                    "then restart. They will be retried the next time a chunk requires them.",
+                    packages, python_executable(), python_executable(),
+                )
+                return False
             logger.error(
                 "Failed to install chunk dependencies %s (pip exited %s). "
                 "They will be retried the next time a chunk requires them.\n%s",
