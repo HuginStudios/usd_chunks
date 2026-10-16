@@ -18,6 +18,7 @@ from pxr import Sdf, Usd
 from chunk_stubs import register_stub_module
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
+from usd_chunks.chunk_stage import ChunkStageSync
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
 _SCENE = """#usda 1.0
@@ -85,3 +86,40 @@ def test_chunk_after_a_placeholder_cooks_after_its_upstream(qapp, tmp_path) -> N
     assert cooked.index("Up") < cooked.index("Down"), (
         f"a wired chunk must never cook as a root ahead of its upstream: {cooked}"
     )
+
+
+def test_opening_a_file_never_wires_around_a_placeholder(qapp, tmp_path) -> None:
+    """The edge through the placeholder orders the cook; it is not a wire in the file.
+
+    usdview hands its stage over after the plugin is up, so every File > Open loads
+    through reload_for_stage. There the edge was authored as Up -> Down beside the saved
+    Missing -> Down, and the next save kept a wire nobody made.
+    """
+    stages: list[Usd.Stage] = []
+
+    class _Scene(SceneSender):
+        def get_stage(self):
+            return stages[-1]
+
+        def get_selected_prims(self):
+            return []
+
+    scene = _Scene()
+    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
+    up = register_stub_module()
+    down = register_stub_module()
+    path = tmp_path / "scene.usda"
+    path.write_text(_SCENE.format(up=up.module_name, down=down.module_name), encoding="utf-8")
+    stages.append(Usd.Stage.Open(str(path)))
+    chunk_registry.ChunkLayerManager().initialize(stages[0])
+    _chunk_usd_init(stages[0], scene)
+    stages.append(Usd.Stage.Open(str(path)))
+    ChunkStageSync().reload_for_stage(stages[-1])
+    qapp.processEvents()
+
+    stage = stages[-1]
+    wires = stage.GetPrimAtPath("/chunks/ChunkGroup/Down").GetAttribute("inputs:chunk").GetConnections()
+    assert wires == [Sdf.Path("/chunks/ChunkGroup/Missing.outputs:chunk")], "opening must not rewire Down"
+    assert not stage.GetRootLayer().dirty, "opening a file must not rewrite it"
+    by_name = {c.name: c for c in scene.get_chunks()}
+    assert [d.name for _, d in by_name["Down"].get_dependencies()] == ["Up"], "the cook order still holds"
