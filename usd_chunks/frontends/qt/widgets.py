@@ -3389,6 +3389,10 @@ class FilterableChunkMenu(QtWidgets.QMenu):
             self._no_results.setVisible(searching and not ranked)
         if self._results_action is not None:
             self._results_action.setVisible(bool(ranked))
+            # An open QMenu shows a widget action's widget when the action comes back, but
+            # does not hide it when the action goes: the old list stayed drawn under the
+            # category tree after the search was deleted.
+            self.results.setVisible(bool(ranked))
             # A QMenu measures a widget action once and caches it; changing the action's
             # text is what makes it measure again after the list changes size.
             self._results_action.setText(f"{len(ranked or ())}:{self.results.height()}")

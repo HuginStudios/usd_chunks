@@ -183,6 +183,28 @@ def test_clearing_the_search_brings_the_tree_back(menu):
     assert not menu._no_results.isVisible()
 
 
+@pytest.mark.parametrize("cleared_to", ["", "zzzzqq"], ids=["deleted", "no-match"])
+def test_an_open_menu_hides_the_results_once_they_are_gone(menu, qapp, cleared_to):
+    """Viktor: type a valid search, delete it, and the menu is cluttered with text.
+
+    Hiding the results action does not hide its widget while the menu is open, so the old
+    list stayed drawn under the category tree it gave way to.
+    """
+    menu.popup(QtCore.QPoint(0, 0))
+    menu.filter_widget.setText("trans")
+    qapp.processEvents()
+    assert menu.results.isVisible(), "setup: the results show while searching"
+
+    menu.filter_widget.setText(cleared_to)
+    qapp.processEvents()
+    assert not menu.results.isVisible(), "the old results must not stay on screen"
+
+    menu.filter_widget.setText("trans")
+    qapp.processEvents()
+    assert menu.results.isVisible(), "searching again shows them again"
+    menu.close()
+
+
 def test_the_highlight_matches_the_host_menu(qapp):
     """usdview colours menus in its stylesheet, not its palette."""
     previous = qapp.styleSheet()
