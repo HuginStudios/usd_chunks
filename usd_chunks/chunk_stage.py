@@ -7294,27 +7294,37 @@ def _load_chunks(
                         for path, c in group_chunk_by_path.items()
                         if (prim := stage.GetPrimAtPath(Sdf.Path(path))).IsValid()
                     ]
-                    for prim, chunk in wired:
-                        # Every slot, in slot order -- a reloaded merge must regain ALL its branches,
-                        # and regain them strongest-first so the restored DAG matches the saved file.
-                        exec_conns = exec_input_connections(prim)
-                        # No wire in: the layer stack may still say what comes before it.
-                        sources = ([str(conn.GetPrimPath()) for conn in exec_conns]
-                                   or implied_sources(prim))
-                        if not sources:
-                            continue
-                        existing_deps = {id(d) for _, d in chunk.get_dependencies()}
-                        # Through any placeholder: a wire into one must still order this
-                        # chunk after the chain behind it (see _through_placeholders).
-                        for source in _through_placeholders(
-                            stage,
-                            sources,
-                            lambda path: path in chunk_by_path or bool(_chunks_at([path])),
-                        ):
-                            dep = chunk_by_path.get(source)
-                            if dep is not None and id(dep) not in existing_deps:
-                                chunk.add_dependency(dep)
-                                chunks_with_dependencies.add(id(chunk))
+                    # Every edge here is read FROM the stage, so none may be authored back. An
+                    # edge through a placeholder has no wire of its own: on a File > Open
+                    # (reload_for_stage, sync already initialized) it was written into the
+                    # opened file as a second wire, Up -> Down beside Missing -> Down.
+                    sync = ChunkStageSync()
+                    sync._reconciling_exec = True
+                    try:
+                        for prim, chunk in wired:
+                            # Every slot, in slot order -- a reloaded merge must regain ALL its
+                            # branches, and regain them strongest-first so the restored DAG
+                            # matches the saved file.
+                            exec_conns = exec_input_connections(prim)
+                            # No wire in: the layer stack may still say what comes before it.
+                            sources = ([str(conn.GetPrimPath()) for conn in exec_conns]
+                                       or implied_sources(prim))
+                            if not sources:
+                                continue
+                            existing_deps = {id(d) for _, d in chunk.get_dependencies()}
+                            # Through any placeholder: a wire into one must still order this
+                            # chunk after the chain behind it (see _through_placeholders).
+                            for source in _through_placeholders(
+                                stage,
+                                sources,
+                                lambda path: path in chunk_by_path or bool(_chunks_at([path])),
+                            ):
+                                dep = chunk_by_path.get(source)
+                                if dep is not None and id(dep) not in existing_deps:
+                                    chunk.add_dependency(dep)
+                                    chunks_with_dependencies.add(id(chunk))
+                    finally:
+                        sync._reconciling_exec = False
 
                     _restore_lofted_params(stage, deferred)
 
