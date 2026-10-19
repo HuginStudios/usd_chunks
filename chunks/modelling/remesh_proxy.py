@@ -97,6 +97,61 @@ class Field(NamedTuple):
     voxel: float
 
 
+# Up to this many voxels, the dilation is a ball-shaped binary one rather than a distance
+# transform: the same voxels, as a ball is every offset within the radius. On 13M voxels the
+# default 0.75 + 1 (a 3x3x3 ball) took 0.19s against 1.26s, and 3 took 0.76s; at 4 the
+# ball's 257 offsets made it the slower, 1.65s.
+_BALL_REACH = 3.0
+
+# Voxels worked out at once by the slab loops below.
+_SLAB_VOXELS = 2_000_000
+
+
+def _ball(radius: float) -> np.ndarray:
+    """Every voxel offset no further than `radius` from the centre, as a structuring element."""
+    span = np.arange(-int(np.floor(radius)), int(np.floor(radius)) + 1)
+    x, y, z = np.meshgrid(span, span, span, indexing="ij")
+    return x * x + y * y + z * z <= radius * radius + 1e-9
+
+
+def _slabs(shape):
+    """Slices along the first axis, each about _SLAB_VOXELS voxels."""
+    step = max(1, _SLAB_VOXELS // max(1, shape[1] * shape[2]))
+    return [slice(start, min(start + step, shape[0])) for start in range(0, shape[0], step)]
+
+
+def squared_distance_to_false(mask: np.ndarray) -> np.ndarray:
+    """Each voxel's squared distance to the nearest False one, in voxels, as exact int32.
+
+    ndimage.distance_transform_edt(mask) squared, but worked out from its nearest-voxel
+    indices a slab at a time: its own whole-grid arithmetic held about 48 bytes a voxel at
+    once (630 MB for a 13M-voxel rock). Squared and whole, so the volume comes out bit for
+    bit the same as from scipy's own distances.
+    """
+    nearest = ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+    out = np.empty(mask.shape, dtype=np.int32)
+    _nx, ny, nz = mask.shape
+    y = np.arange(ny, dtype=np.int32)[None, :, None]
+    z = np.arange(nz, dtype=np.int32)[None, None, :]
+    for slab in _slabs(mask.shape):
+        x = np.arange(slab.start, slab.stop, dtype=np.int32)[:, None, None]
+        squared = (nearest[0, slab] - x) ** 2
+        squared += (nearest[1, slab] - y) ** 2
+        squared += (nearest[2, slab] - z) ** 2
+        out[slab] = squared
+    return out
+
+
+def _signed_distance(grown: np.ndarray, offset: float) -> np.ndarray:
+    """Distance into `grown` minus distance out of it, minus `offset`, as float32."""
+    inside = squared_distance_to_false(grown)
+    outside = squared_distance_to_false(~grown)
+    values = np.empty(grown.shape, dtype=np.float32)
+    for slab in _slabs(grown.shape):
+        values[slab] = np.sqrt(inside[slab], dtype=np.float64) - np.sqrt(outside[slab], dtype=np.float64) - offset
+    return values
+
+
 def build_field(samples, voxel, thickness, close, fill, smooth) -> Field:
     """The proxy's volume, from surface samples. Sizes are in voxels; see the module doc.
 
@@ -111,17 +166,21 @@ def build_field(samples, voxel, thickness, close, fill, smooth) -> Field:
     occupied = np.zeros(tuple(shape), dtype=bool)
     cells = np.rint((samples - origin) / voxel).astype(np.int64)
     occupied[cells[:, 0], cells[:, 1], cells[:, 2]] = True
+    del cells
 
-    # Distance to the nearest sample, then everything within thickness + close of one:
-    # the dilation half of the closing.
-    grown = ndimage.distance_transform_edt(~occupied) <= (thickness + close)
+    # Everything within thickness + close of a sample: the dilation half of the closing.
+    reach = thickness + close
+    if reach <= _BALL_REACH:
+        grown = ndimage.binary_dilation(occupied, structure=_ball(reach))
+    else:
+        grown = np.sqrt(squared_distance_to_false(~occupied), dtype=np.float64) <= reach
+    del occupied
     if fill:
         grown = ndimage.binary_fill_holes(grown)
     # A signed distance to that grown region, so eroding it by `close` is a level set rather
     # than another binary pass -- and the surface comes out smooth instead of in voxel steps.
-    inside = ndimage.distance_transform_edt(grown)
-    outside = ndimage.distance_transform_edt(~grown)
-    values = (inside - outside - close).astype(np.float32)
+    values = _signed_distance(grown, close)
+    del grown
     if smooth > 0.0:
         values = ndimage.gaussian_filter(values, sigma=smooth)
     return Field(values, origin, float(voxel))

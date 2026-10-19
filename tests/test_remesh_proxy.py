@@ -743,3 +743,63 @@ def test_the_first_cook_remeshes_once(in_a_ui, qapp, monkeypatch) -> None:
 
     assert stage.GetPrimAtPath("/Asset_proxy")
     assert waits == [1], f"remeshed {len(waits)} times"
+
+
+# ---------------------------------------------------------------------------
+# the volume's arithmetic, against scipy's own
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reach", [0.75, 1.75, 3.0, 4.5])
+def test_the_ball_dilation_grows_exactly_what_a_distance_threshold_does(reach) -> None:
+    rng = np.random.default_rng(3)
+    occupied = rng.random((30, 24, 20)) > 0.995
+    expected = rp.ndimage.distance_transform_edt(~occupied) <= reach
+    assert np.array_equal(rp.ndimage.binary_dilation(occupied, structure=rp._ball(reach)), expected)
+
+
+def test_squared_distances_match_scipy_slab_by_slab(monkeypatch) -> None:
+    """Worked out a few slabs at a time, to hold a third of the memory; it must not differ
+    from the whole-grid answer at the slab joins."""
+    monkeypatch.setattr(rp, "_SLAB_VOXELS", 24 * 20 * 3)  # three slabs of x at a time
+    rng = np.random.default_rng(4)
+    mask = rng.random((31, 24, 20)) > 0.02
+    got = rp.squared_distance_to_false(mask)
+    assert got.dtype == np.int32
+    assert np.array_equal(np.sqrt(got, dtype=np.float64), rp.ndimage.distance_transform_edt(mask))
+
+
+def _field_as_it_was(samples, voxel, thickness, close, fill, smooth):
+    """build_field before it was made lighter: scipy's distances over the whole grid."""
+    pad = int(np.ceil(thickness + close + 3.0 * smooth)) + 2
+    lo = samples.min(axis=0)
+    origin = lo - pad * voxel
+    shape = np.ceil((samples.max(axis=0) - lo) / voxel).astype(np.int64) + 1 + 2 * pad
+    occupied = np.zeros(tuple(shape), dtype=bool)
+    cells = np.rint((samples - origin) / voxel).astype(np.int64)
+    occupied[cells[:, 0], cells[:, 1], cells[:, 2]] = True
+    grown = rp.ndimage.distance_transform_edt(~occupied) <= (thickness + close)
+    if fill:
+        grown = rp.ndimage.binary_fill_holes(grown)
+    inside = rp.ndimage.distance_transform_edt(grown)
+    outside = rp.ndimage.distance_transform_edt(~grown)
+    values = (inside - outside - close).astype(np.float32)
+    if smooth > 0.0:
+        values = rp.ndimage.gaussian_filter(values, sigma=smooth)
+    return values
+
+
+@pytest.mark.parametrize("thickness, close", [(0.75, 1.0), (2.0, 4.0)])
+def test_the_volume_is_bit_for_bit_what_it_was(monkeypatch, thickness, close) -> None:
+    """A proxy must not change shape from an update that only made it cheaper: the reduction
+    after it is sensitive enough that float32 rounding alone took a rock from 138 to 110
+    triangles."""
+    monkeypatch.setattr(rp, "_SLAB_VOXELS", 5_000)
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _box(stage, "/Asset/Body")
+    _cards(stage, "/Asset/Leaves", _canopy_centres(150))
+    samples = rp.sample(surface_samples.gather_sources(stage.GetPrimAtPath("/Asset")), _settings())
+    voxel = 4.0 / 48
+    field = rp.build_field(samples.points, voxel, thickness, close, True, 1.0)
+    assert np.array_equal(field.values, _field_as_it_was(samples.points, voxel, thickness, close, True, 1.0))
