@@ -840,3 +840,50 @@ def test_uvs_and_subsets_come_back_from_the_process_intact(in_a_ui, qapp) -> Non
     out_right = np.asarray(UsdGeom.Subset(stage.GetPrimAtPath("/Mesh/right")).GetIndicesAttr().Get())
     assert len(out_left) + len(out_right) == total
     assert not set(out_left.tolist()) & set(out_right.tolist())
+
+
+# ---------------------------------------------------------------------------
+# Write as Proxy
+# ---------------------------------------------------------------------------
+
+
+@needs_simplify
+def test_write_as_proxy_reduces_a_copy_and_leaves_the_mesh_whole(wired) -> None:
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _mesh, counts = _grid_with_subsets(stage, "/Asset/Body")
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("as_proxy").value = True
+    node.get_param("prim_path").value = "/Asset"
+
+    assert _triangle_count(stage, "/Asset/Body") == len(counts), "the mesh itself is not reduced"
+    reduced = _triangle_count(stage, "/Asset_proxy/Body")
+    assert 0 < reduced < len(counts) * 2 * 0.3
+    left = UsdGeom.Subset(stage.GetPrimAtPath("/Asset_proxy/Body/left")).GetIndicesAttr().Get()
+    assert len(left) and max(left) < reduced, "the copy's subsets follow its own topology"
+    assert _subsets_out_of_range(stage, "/Asset_proxy/Body") == []
+
+    purpose = lambda path: UsdGeom.Imageable(stage.GetPrimAtPath(path)).ComputePurpose()  # noqa: E731
+    assert purpose("/Asset") == UsdGeom.Tokens.render
+    assert purpose("/Asset_proxy") == UsdGeom.Tokens.proxy
+    proxy, _owner = UsdGeom.Imageable(stage.GetPrimAtPath("/Asset")).ComputeProxyPrim()
+    assert proxy.GetPath() == Sdf.Path("/Asset_proxy")
+
+
+@needs_simplify
+def test_turning_write_as_proxy_off_reduces_in_place_again(wired) -> None:
+    stage, make = wired
+    points, counts, indices = _grid(30)
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("as_proxy").value = True
+    node.get_param("prim_path").value = "/Mesh"
+    assert stage.GetPrimAtPath("/Mesh_proxy")
+
+    node.get_param("as_proxy").value = False
+
+    assert not stage.GetPrimAtPath("/Mesh_proxy")
+    assert _triangle_count(stage, "/Mesh") < len(counts)
+    assert UsdGeom.Imageable(stage.GetPrimAtPath("/Mesh")).ComputePurpose() == UsdGeom.Tokens.default_

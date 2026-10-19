@@ -252,17 +252,8 @@ def _settings(node) -> _Settings:
 
 
 def _output_path(node, source_path: str) -> str:
-    """The proxy's prim: the param if set, else a sibling of the source named after it.
-
-    A sibling and not a child, so the asset turned `render` does not contain its own proxy.
-    """
-    out = node.get_param("out_path").value
-    if out:
-        return out
-    source = Sdf.Path(source_path)
-    if source == Sdf.Path.absoluteRootPath:
-        return "/Proxy"
-    return str(source.GetParentPath().AppendChild(f"{source.name}_proxy"))
+    """The proxy's prim: the param if set, else a sibling of the source named after it."""
+    return node.get_param("out_path").value or str(proxy_setup.sibling_path(source_path))
 
 
 def _sources(node, paths):

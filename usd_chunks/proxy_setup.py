@@ -13,6 +13,17 @@ from __future__ import annotations
 from pxr import Sdf, Usd, UsdGeom
 
 
+def sibling_path(source_path) -> Sdf.Path:
+    """Where a proxy of `source_path` goes by default: beside it, as `<name>_proxy`.
+
+    A sibling and not a child, so the source turned `render` does not contain its own proxy.
+    """
+    source = Sdf.Path(str(source_path))
+    if source == Sdf.Path.absoluteRootPath:
+        return Sdf.Path("/Proxy")
+    return source.GetParentPath().AppendChild(f"{source.name}_proxy")
+
+
 def _defaults_under(prim) -> list:
     """Imageable prims below `prim` with an authored purpose of `default`.
 

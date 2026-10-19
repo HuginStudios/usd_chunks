@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import logging
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 import numpy as np
@@ -56,6 +56,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import cook_cache
+from usd_chunks import proxy_setup
 from usd_chunks import sim_bake
 from usd_chunks import surface_samples
 from usd_chunks.mesh_math import fan_triangulate
@@ -1043,14 +1044,46 @@ def execute(node: chunk.Chunk) -> None:
         plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
 
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
+        proxies = _write_proxies(stage, paths) if node.get_param("as_proxy", chunk.is_param_t(bool)).value else {}
         for plan in plans:
-            _author(stage, plan)
+            _author(stage, _moved(plan, proxies))
+        for source, proxy in proxies.items():
+            proxy_setup.set_up_proxy(stage, [source], proxy, copy_of=source)
 
     # The refreshed record drops the previous generation's array references.
     _remember(layer.identifier, _CookRecord(fingerprint, signed, plans))
     if node.has_state(chunk.ChunkFlags.State.STALE):
         node.unset_state(chunk.ChunkFlags.State.STALE)
     _report(node, plans)
+
+
+def _write_proxies(stage, paths) -> dict:
+    """A copy of each selected prim beside it, to reduce instead of the prim itself.
+
+    Returns:
+        Each selected path, mapped to its copy's path.
+    """
+    proxies = {}
+    for path in paths:
+        source = Sdf.Path(str(path))
+        if source == Sdf.Path.absoluteRootPath or not stage.GetPrimAtPath(source):
+            continue
+        proxy = proxy_setup.sibling_path(source)
+        stage.DefinePrim(proxy).GetReferences().AddInternalReference(source)
+        proxies[source] = proxy
+    return proxies
+
+
+def _moved(plan: _Plan, proxies: dict) -> _Plan:
+    """`plan` written onto the proxy copy of the prim it was read from, if it has one."""
+    for source, proxy in proxies.items():
+        if plan.path.HasPrefix(source):
+            return replace(
+                plan,
+                path=plan.path.ReplacePrefix(source, proxy),
+                subset_indices=[(path.ReplacePrefix(source, proxy), indices) for path, indices in plan.subset_indices],
+            )
+    return plan
 
 
 def _remember(layer_id: str, record: _CookRecord) -> None:
@@ -1253,6 +1286,15 @@ def main():
                 "Include Children",
                 default_value=True,
                 tooltip="Reduce every mesh under the selected prim, not just the prim itself.",
+            ),
+            chunk.Checkbox(
+                "as_proxy",
+                "Write as Proxy",
+                default_value=False,
+                tooltip="Leave the mesh as it is, and write the reduced one beside it as its proxy,\n"
+                "<name>_proxy: purpose=proxy on the copy, purpose=render on the mesh, and the\n"
+                "mesh's proxyPrim pointing at the copy. Viewports that draw proxies show the\n"
+                "reduced copy; final renders show the full mesh. Its UVs and materials come along.",
             ),
         ]
     )
