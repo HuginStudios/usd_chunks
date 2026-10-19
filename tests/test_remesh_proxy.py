@@ -353,14 +353,71 @@ def test_the_proxy_lands_in_its_parents_space(wired) -> None:
     assert abs(local[:, 0].mean() + 10.0) < 0.2  # world box at x=0, seen from x=10
 
 
-def test_purpose_is_authored_on_the_proxy(wired) -> None:
+def _purpose(stage, path):
+    return UsdGeom.Imageable(stage.GetPrimAtPath(path)).ComputePurpose()
+
+
+def test_the_proxy_is_set_up_as_the_assets_proxy(wired) -> None:
+    """Viktor's ticket: purpose=proxy on the new mesh, and the asset pointing at it with
+    proxyPrim. The asset turns render, so a viewport that draws proxies shows only one."""
     stage, make = wired
     _box(stage, "/Asset")
     node = make()
     node.get_param("resolution").value = 32
-    node.get_param("purpose").value = rp.PURPOSE_PROXY
     node.get_param("prim_path").value = "/Asset"
-    assert UsdGeom.Imageable(stage.GetPrimAtPath("/Asset_proxy")).GetPurposeAttr().Get() == UsdGeom.Tokens.proxy
+
+    assert _purpose(stage, "/Asset_proxy") == UsdGeom.Tokens.proxy
+    assert _purpose(stage, "/Asset") == UsdGeom.Tokens.render
+    proxy, owner = UsdGeom.Imageable(stage.GetPrimAtPath("/Asset")).ComputeProxyPrim()
+    assert proxy.GetPath() == Sdf.Path("/Asset_proxy") and owner.GetPath() == Sdf.Path("/Asset")
+
+
+def test_a_child_with_its_own_default_purpose_turns_render_too(wired) -> None:
+    """A child's authored purpose wins over its parent's, so `default` on a part would leave
+    it on screen beside the proxy."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _box(stage, "/Asset/Body").CreatePurposeAttr().Set(UsdGeom.Tokens.default_)
+    _box(stage, "/Asset/Guide", lo=(2, 2, 2), hi=(3, 3, 3)).CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("prim_path").value = "/Asset"
+
+    assert _purpose(stage, "/Asset/Body") == UsdGeom.Tokens.render
+    assert _purpose(stage, "/Asset/Guide") == UsdGeom.Tokens.guide, "other purposes are left alone"
+
+
+def test_unticked_the_asset_is_left_as_it_is(wired) -> None:
+    stage, make = wired
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("as_proxy").value = False
+    node.get_param("prim_path").value = "/Asset"
+
+    assert stage.GetPrimAtPath("/Asset_proxy")
+    assert _purpose(stage, "/Asset_proxy") == UsdGeom.Tokens.default_
+    assert _purpose(stage, "/Asset") == UsdGeom.Tokens.default_
+    assert not stage.GetPrimAtPath("/Asset").GetRelationship(UsdGeom.Tokens.proxyPrim).HasAuthoredTargets()
+
+
+def test_a_kept_source_is_set_up_as_a_proxy_of_itself(wired) -> None:
+    """The kept proxy is a reference to the asset, so it takes what is authored on the asset
+    too. Its children turned render would hide the proxy's own parts in a proxy view."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/Asset")
+    _box(stage, "/World/Asset/Body").CreatePurposeAttr().Set(UsdGeom.Tokens.default_)
+    node = make(budget=3000)
+    node.get_param("prim_path").value = "/World/Asset"
+
+    assert "kept as is" in node.get_param("readout").value
+    assert _purpose(stage, "/World/Asset/Body") == UsdGeom.Tokens.render
+    assert _purpose(stage, "/World/Asset_proxy") == UsdGeom.Tokens.proxy
+    assert _purpose(stage, "/World/Asset_proxy/Body") == UsdGeom.Tokens.proxy
+    assert stage.GetPrimAtPath("/World/Asset_proxy").GetRelationship(UsdGeom.Tokens.proxyPrim).GetTargets() == []
+    proxy, _owner = UsdGeom.Imageable(stage.GetPrimAtPath("/World/Asset")).ComputeProxyPrim()
+    assert proxy.GetPath() == Sdf.Path("/World/Asset_proxy")
 
 
 def test_an_unchanged_recook_does_not_rebuild(wired, monkeypatch) -> None:

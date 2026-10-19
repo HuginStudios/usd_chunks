@@ -47,6 +47,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import mesh_reduce
+from usd_chunks import proxy_setup
 from usd_chunks import surface_samples
 
 try:
@@ -60,11 +61,6 @@ except ImportError:  # pragma: no cover - exercised only on a machine without th
     _HAS_DEPS = False
 
 logger = logging.getLogger(__name__)
-
-PURPOSE_DEFAULT = "default"
-PURPOSE_RENDER = "render"
-PURPOSE_PROXY = "proxy"
-_PURPOSES = [PURPOSE_DEFAULT, PURPOSE_RENDER, PURPOSE_PROXY]
 
 # Samples per voxel edge. Two keeps every voxel a surface passes through occupied, which
 # is what stops a thin card from coming out as a dotted line of blobs.
@@ -258,8 +254,7 @@ def _settings(node) -> _Settings:
 def _output_path(node, source_path: str) -> str:
     """The proxy's prim: the param if set, else a sibling of the source named after it.
 
-    A sibling and not a child, because purpose inherits -- under a `render` asset a
-    `proxy` mesh would be overruled by its parent.
+    A sibling and not a child, so the asset turned `render` does not contain its own proxy.
     """
     out = node.get_param("out_path").value
     if out:
@@ -324,7 +319,7 @@ def _corner_normals(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(normals, dtype=np.float32)
 
 
-def _author(stage, path: str, proxy: Proxy, purpose: str) -> None:
+def _author(stage, path: str, proxy: Proxy) -> None:
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(path))
     points = proxy.points
     parent_path = Sdf.Path(path).GetParentPath()
@@ -359,7 +354,6 @@ def _author(stage, path: str, proxy: Proxy, purpose: str) -> None:
     # the sheets instead fattened every throw, leaf and rail with them; drawing both sides
     # changes no shape, and on a closed proxy the far sides are depth-tested away anyway.
     mesh.CreateDoubleSidedAttr().Set(True)
-    mesh.CreatePurposeAttr().Set(purpose)
     if proxy.colours is not None:
         colour = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
             "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
@@ -390,7 +384,7 @@ def execute(node: chunk.Chunk) -> None:
     keep_under = int(node.get_param("budget", chunk.is_param_t(int)).value)
     if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
         del upstream
-        _keep_source(node, stage, layer, str(paths[0]), out_path, source_triangles, keep_under)
+        _keep_source(node, stage, layer, paths, out_path, source_triangles, keep_under)
         return
     stamp = fingerprint(sources, settings)
     previous = _LAST_COOK.get(layer.identifier)
@@ -402,7 +396,9 @@ def execute(node: chunk.Chunk) -> None:
 
     if proxy is not None:
         with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
-            _author(stage, out_path, proxy, node.get_param("purpose", chunk.is_param_t(str)).value)
+            _author(stage, out_path, proxy)
+            if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
+                proxy_setup.set_up_proxy(stage, paths, out_path)
 
     if len(_LAST_COOK) > 64:
         _LAST_COOK.clear()  # deleted chunks leave entries; a proxy can be large
@@ -411,19 +407,20 @@ def execute(node: chunk.Chunk) -> None:
     _report(node, proxy, "" if sources else "no meshes under that prim")
 
 
-def _keep_source(node, stage, layer, source_path, out_path, triangles, keep_under) -> None:
+def _keep_source(node, stage, layer, paths, out_path, triangles, keep_under) -> None:
     """The proxy is the source itself: a reference to it, marked so the chain leaves it be.
 
     A 1,500-triangle painting remeshed to a 3,000-triangle proxy is bigger and worse than
     the painting. Below the budget the source already *is* the proxy, with its own UVs,
     materials and textures, which no bake would improve on.
     """
+    source_path = str(paths[0])
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         prim = stage.DefinePrim(out_path)
         prim.GetReferences().AddInternalReference(source_path)
         prim.SetCustomDataByKey(surface_samples.PASSTHROUGH_KEY, True)
-        purpose = node.get_param("purpose", chunk.is_param_t(str)).value
-        UsdGeom.Imageable(prim).CreatePurposeAttr().Set(purpose)
+        if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
+            proxy_setup.set_up_proxy(stage, paths, out_path, copy_of=source_path)
     _LAST_COOK.pop(layer.identifier, None)
     node.get_param("out_mesh").value = out_path
     if readout := node.get_param("readout"):
@@ -569,13 +566,15 @@ def main():
                 tooltip="Bake the asset's colour onto the proxy as vertex displayColor: from its\n"
                 "materials' diffuse / base colour (and their textures), else its displayColor.",
             ),
-            chunk.Menu(
-                "purpose",
-                "Purpose",
-                menu_items=_PURPOSES,
-                default_value=PURPOSE_DEFAULT,
-                tooltip="The proxy mesh's purpose. 'proxy' shows it in viewports that draw proxies\n"
-                "and keeps it out of final renders; pair it with purpose=render on the asset.",
+            chunk.Checkbox(
+                "as_proxy",
+                "Set Up as Proxy",
+                default_value=True,
+                tooltip="Make the new mesh the asset's proxy: purpose=proxy on it, purpose=render\n"
+                "on the asset, and the asset's proxyPrim pointing at it. Viewports that draw\n"
+                "proxies then show it in place of the asset; final renders show the asset.\n"
+                "In usdview, Display > Display Purposes > Render shows the asset again.\n"
+                "Off: the mesh gets no purpose, and the asset is left as it is.",
             ),
         ]
     )
