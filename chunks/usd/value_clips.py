@@ -148,8 +148,27 @@ def _loop_times(start: float, end: float, clip_start: float, clip_end: float) ->
         times.append((at, clip_start))
 
 
+def _loop_until(stage: Usd.Stage, start: float, end: float, loop_until: float, clip_length: float) -> float:
+    """The stage frame a looping clip repeats until.
+
+    Loop Until Frame wins when given. Failing that, an explicit End (the field the
+    non-loop case uses too) is honored, for chunks authored before Loop Until Frame
+    existed. Failing that, the stage's own current end time code -- so checking Loop
+    with everything else left at its default actually loops, instead of silently
+    producing one cycle because End defaults to 0.
+    """
+    if loop_until > start:
+        return loop_until
+    if end > start:
+        return end
+    if stage.HasAuthoredTimeCodeRange() and stage.GetEndTimeCode() > start:
+        return stage.GetEndTimeCode()
+    return start + clip_length
+
+
 def _author_file_set(clips: Usd.ClipsAPI, name: str, path: str, prim_path: str,
-                     start: float, end: float, loop: bool) -> tuple[float, float] | None:
+                     start: float, end: float, loop: bool, loop_until: float,
+                     stage: Usd.Stage) -> tuple[float, float] | None:
     span = _file_range(path)
     if span is None:
         logger.warning("Value Clips: %s has no time samples, skipping clip set %r", path, name)
@@ -158,15 +177,16 @@ def _author_file_set(clips: Usd.ClipsAPI, name: str, path: str, prim_path: str,
     if clip_end <= clip_start:
         logger.warning("Value Clips: %s is a single frame, skipping clip set %r", path, name)
         return None
-    if end <= start:
-        end = start + (clip_end - clip_start)
     clips.SetClipAssetPaths([Sdf.AssetPath(path)], name)
     clips.SetClipPrimPath(prim_path, name)
     clips.SetClipActive([(start, 0)], name)
     if loop:
-        clips.SetClipTimes(_loop_times(start, end, clip_start, clip_end), name)
-    else:
-        clips.SetClipTimes([(start, clip_start), (start + clip_end - clip_start, clip_end)], name)
+        until = _loop_until(stage, start, end, loop_until, clip_end - clip_start)
+        clips.SetClipTimes(_loop_times(start, until, clip_start, clip_end), name)
+        return start, until
+    if end <= start:
+        end = start + (clip_end - clip_start)
+    clips.SetClipTimes([(start, clip_start), (start + clip_end - clip_start, clip_end)], name)
     return start, end
 
 
@@ -206,6 +226,7 @@ def _rows(node):
             "end": float(value("end_frame") or 0),
             "stride": float(value("stride") or 1.0),
             "loop": bool(value("loop")),
+            "loop_until": float(value("loop_until_frame") or 0),
             "manifest": (value("manifest_path") or "").strip(),
         })
     return out
@@ -256,7 +277,8 @@ def execute(node):
                                             row["start"], row["end"], row["stride"])
             else:
                 span = _author_file_set(clips, name, path, prim_path,
-                                        row["start"], row["end"], row["loop"])
+                                        row["start"], row["end"], row["loop"],
+                                        row["loop_until"], stage)
             if span is None:
                 continue
             if row["manifest"]:
@@ -330,7 +352,14 @@ def main():
         ),
         chunk.Checkbox(
             "loop", "Loop", default_value=False,
-            tooltip="Repeat a single clip file until End. Templates play their frames as-is.",
+            tooltip="Repeat a single clip file until Loop Until Frame. Templates play their frames as-is.",
+        ),
+        chunk.Slider(
+            "loop_until_frame", "Loop Until Frame", default_value=0, is_int=True, min_value=0, max_value=10000,
+            tooltip=(
+                "Loop only: stage frame to repeat until. 0: falls back to End if set,\n"
+                "else the stage's current end time code, else one clip length."
+            ),
         ),
         chunk.Slider(
             "stride", "Stride", default_value=1.0, min_value=0.01, max_value=1000.0,
@@ -371,8 +400,12 @@ def config():
                 defaultPrim; else the target path.
               - Start / End: stage frames. End 0 means the clip's own length
                 (a template's: the frames found on disk).
-              - Loop: repeat a single-file clip until End, as jump
-                discontinuities in the clip `times`.
+              - Loop: repeat a single-file clip until Loop Until Frame, as
+                jump discontinuities in the clip `times`.
+              - Loop Until Frame: loop only. 0 falls back to End if set, else
+                the stage's current end time code, else one clip length --
+                so Loop alone, with everything else left at its default,
+                still loops instead of silently playing one cycle.
               - Stride: templates only.
               - Manifest: optional per-set manifest file.
 
