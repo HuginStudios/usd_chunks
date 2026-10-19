@@ -1756,15 +1756,16 @@ class LabeledWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _add_revert_to_default(menu: QtWidgets.QMenu, model) -> QtGui.QAction | None:
-        """Add a Revert to Default item, greyed out when the value already is the default.
+        """Add a Revert to Default item, greyed out when the param holds no edit to undo.
 
         Args:
             menu: The menu to add the item to.
             model: The param or vector the row shows.
 
         Returns:
-            The new action, or None when the row has no value to reset: a button, a label,
-            an output, or a param whose edits would land in a locked file.
+            The new action, or None when the row has no value to reset (a button, a label,
+            an output), when its edits would land in a locked file, or when it overrides a
+            file's value: the Revert to <file> item does the same thing there.
         """
         t = model.evaluate_type()
         # EMPTY covers buttons and separators. `in`, not `&`: the low bits are reused per
@@ -1775,10 +1776,15 @@ class LabeledWidget(QtWidgets.QWidget):
             is_output = model.is_output
         else:
             is_output = model.has_flag(ChunkFlags.ParamFlags.OUTPUT)
-        if is_output or model.default_value is None or chunk_stage.param_locked_by(model) is not None:
+        if (
+            is_output
+            or model.default_value is None
+            or chunk_stage.param_locked_by(model) is not None
+            or chunk_stage.param_override_source(model) is not None
+        ):
             return None
         action = menu.addAction("Revert to Default")
-        action.setEnabled(not chunk_utils.values_match(model.raw_value, model.default_value))
+        action.setEnabled(chunk_stage.can_revert_to_default(model))
         return action
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
@@ -1792,7 +1798,7 @@ class LabeledWidget(QtWidgets.QWidget):
                 event.ignore()
                 return
             if menu.exec_(event.globalPos()) == default_action:
-                vector.value = vector.default_value
+                chunk_stage.revert_param_to_default(vector)
             return
 
         param = self.widget.param
@@ -1857,7 +1863,7 @@ class LabeledWidget(QtWidgets.QWidget):
                 # Next tick: unlofting deletes this widget, which is still inside its own event.
                 QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(param))
             elif default_action and action == default_action:
-                param.value = param.default_value
+                chunk_stage.revert_param_to_default(param)
             elif revert_action and action == revert_action:
                 chunk_stage.revert_param_override(param)
             elif rename_action and action == rename_action:

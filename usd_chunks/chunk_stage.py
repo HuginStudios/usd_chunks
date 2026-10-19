@@ -3799,20 +3799,140 @@ def revert_param_override(param: core.ChunkParamBase) -> None:
     attr = _storage_attr(param)
     if attr is None or param_override_source(param) is None:
         return
+    _drop_owned_specs(attr)
+    param.value = attr.Get()
+
+
+def _owned_specs(attr: Usd.Attribute) -> list[Sdf.PropertySpec]:
+    """attr's specs in layers the stage owns: not composed in from another file or arc.
+
+    Args:
+        attr: The attribute.
+
+    Returns:
+        Its specs in owned layers, strongest first.
+    """
     stage = attr.GetStage()
+    return [
+        spec for spec in attr.GetPropertyStack(Usd.TimeCode.Default())
+        if spec.path == attr.GetPath() and not chunk_utils.is_foreign_layer(spec.layer, stage)
+    ]
+
+
+def _drop_owned_specs(attr: Usd.Attribute) -> None:
+    """Delete attr's specs from the layers the stage owns: value, connections and metadata.
+
+    An attr can have specs in more than one owned layer: it may have been written under
+    more than one edit target over its life.
+
+    Args:
+        attr: The attribute.
+    """
     prev = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
-        for spec in list(attr.GetPropertyStack(Usd.TimeCode.Default())):
-            if spec.path != attr.GetPath() or chunk_utils.is_foreign_layer(spec.layer, stage):
-                continue
+        for spec in _owned_specs(attr):
             prim_spec = spec.layer.GetPrimAtPath(spec.path.GetPrimPath())
             if prim_spec is not None and spec.path.name in prim_spec.properties:
                 del prim_spec.properties[spec.path.name]
     finally:
         chunk_notice._usd_write_active = prev
     invalidate_edit_layer_memo()
-    param.value = attr.Get()
+
+
+def _vector_of(param: core.ChunkCommon) -> core.ChunkVectorBase | None:
+    """The vector param is a field of, or None.
+
+    Args:
+        param: The param.
+
+    Returns:
+        The vector, or None when param is not a field of one.
+    """
+    owner = param.get_owner()
+    if isinstance(owner, core.NameSyncedContainer):
+        owner = owner.get_owner()
+    return owner if isinstance(owner, core.ChunkVectorBase) else None
+
+
+def _own_storage_attr(param: core.ChunkCommon) -> Usd.Attribute | None:
+    """param's storage attr when it is one of its chunk prim's own, else None.
+
+    None too for the params whose attr cannot simply go: a list row or a field of a vector
+    shares one attr with its siblings, and a chunk with no module has no main() to make its
+    params again, so its attrs are the only record that they exist.
+
+    Args:
+        param: The param or vector.
+
+    Returns:
+        The attribute, or None.
+    """
+    if isinstance(param, core.ProxyParam):
+        return None
+    chunk = param.get_chunk()
+    cfg = chunk.get_config() if chunk else None
+    if not (cfg and cfg.module) or _under_list_group(param, chunk):
+        return None
+    if _vector_of(param) is not None:
+        return None
+    attr = _storage_attr(param)
+    if attr is None or attr.GetPrim().GetPath() != Sdf.Path(get_chunk_prim_path(chunk)):
+        return None
+    return attr
+
+
+def can_revert_to_default(param: core.ChunkCommon) -> bool:
+    """Whether revert_param_to_default would change anything.
+
+    Args:
+        param: The param or vector.
+
+    Returns:
+        True when a layer the stage owns holds a value, wire or expression for param, or,
+        for a param without an attr of its own, when its value is not its default.
+    """
+    if (attr := _own_storage_attr(param)) is not None:
+        return bool(_owned_specs(attr))
+    return not chunk_utils.values_match(param.raw_value, param.default_value)
+
+
+def revert_param_to_default(param: core.ChunkCommon) -> None:
+    """Put param back as if it had never been edited.
+
+    Its value, wire and expression text go from every layer the stage owns, and it lets go
+    of its storage attr, so the next edit makes a new one, as on a new chunk. A value from
+    a file the stage does not own (a sequence the shot sublayers) shows through instead.
+
+    A param whose attr cannot go (see _own_storage_attr) is set to its default, which is
+    written into the shared attr. A field that brings its vector back to its default then
+    reverts the vector.
+
+    Args:
+        param: The param or vector to revert.
+    """
+    attr = _own_storage_attr(param)
+    if attr is None:
+        param.value = param.default_value
+        vector = _vector_of(param)
+        if (
+            vector is not None
+            and chunk_utils.values_match(vector.raw_value, vector.default_value)
+            and can_revert_to_default(vector)
+        ):
+            revert_param_to_default(vector)
+        return
+    _drop_owned_specs(attr)
+    if attr.IsValid():
+        # A file the stage does not own still has it: that value is the param's now.
+        param.value = attr.Get()
+        return
+    # Unbound, the value set below writes nothing, and the next edit authors a new attr.
+    param._param_attr_path = None
+    if param._usd_prop_connection:
+        param._usd_prop_connection.disconnect()
+        param._usd_prop_connection = None
+    param.value = param.default_value
 
 
 def _adopt_inputs(chunk: core.ChunkBase, names: Iterable[str] | None = None) -> None:
