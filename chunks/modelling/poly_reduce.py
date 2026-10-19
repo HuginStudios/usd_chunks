@@ -46,7 +46,6 @@ result, like any cook whose inputs have not changed.
 from __future__ import annotations
 
 import logging
-import zlib
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
@@ -823,42 +822,6 @@ class _CookRecord(NamedTuple):
 _LAST_COOK: dict = {}
 
 
-def _checksum(values, previous: dict, current: dict):
-    """A content signature for one USD array -- its length, dtype and a CRC of its bytes.
-
-    The CRC is the whole cost of deciding a recook can be skipped (~90ms of the ~94ms on a
-    4.2M-triangle mesh), and almost every time it is spent confirming that nothing moved.
-    VtArray is copy-on-write, so an attribute whose value has not changed hands back the
-    *same buffer* on every `Get()` -- a matching address is therefore proof the contents
-    match, and no proof is needed beyond it. Holding a reference to the array we signed is
-    what makes that sound: the allocator cannot hand the same address to something else
-    while we still own it.
-
-    `previous` is the last cook's address book and `current` the one being built, so only
-    one generation of arrays is ever retained -- and those are the arrays the stage is
-    holding anyway.
-    """
-    if values is None:
-        return None
-    array = np.asarray(values)
-    # Only a zero-copy *view* may be keyed by address: then the buffer belongs to `values`,
-    # which the entry holds, so nothing else can be allocated there while the entry lives.
-    # A dtype numpy has to copy (tokens, say) would hand back a temporary's address, freed
-    # the moment this returns and free for the next temporary to land on -- a false hit.
-    shared = array.size and not array.flags.owndata
-    address = array.__array_interface__["data"][0] if shared else 0
-    if address and (cached := previous.get(address)) is not None:
-        current[address] = cached
-        return cached[1]
-    try:
-        signature = (len(array), str(array.dtype), zlib.crc32(np.ascontiguousarray(array)))
-    except (TypeError, ValueError):  # pragma: no cover - object dtypes have no buffer
-        return len(array), str(array.dtype), None
-    if address:
-        current[address] = (values, signature)
-    return signature
-
-
 def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
     """Everything this chunk's output depends on, cheaply.
 
@@ -879,7 +842,7 @@ def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
         mesh = UsdGeom.Mesh(prim)
         entry = [str(prim.GetPath())]
         entry += [
-            _checksum(attr.Get(), previous, current)
+            surface_samples.checksum(attr.Get(), previous, current)
             for attr in (
                 mesh.GetPointsAttr(),
                 mesh.GetFaceVertexCountsAttr(),
@@ -890,14 +853,14 @@ def _fingerprint(prims, settings, previous: dict, current: dict) -> tuple:
             (
                 pv.GetPrimvarName(),
                 pv.GetInterpolation(),
-                _checksum(_primvar_values(pv), previous, current),
+                surface_samples.checksum(_primvar_values(pv), previous, current),
             )
             for pv in UsdGeom.PrimvarsAPI(prim).GetPrimvars()
         ]
         entry += [
             (
                 str(subset.GetPrim().GetPath()),
-                _checksum(subset.GetIndicesAttr().Get(), previous, current),
+                surface_samples.checksum(subset.GetIndicesAttr().Get(), previous, current),
             )
             for subset in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(prim))
         ]

@@ -24,6 +24,7 @@ import this module.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import zlib
@@ -391,20 +392,25 @@ def per_corner(values, interpolation, tris, corners, face_of_tri):
     return None
 
 
+def _flattened(primvar):
+    """A primvar's values, out of any indexing."""
+    try:
+        return primvar.ComputeFlattened()
+    except Exception:  # pragma: no cover - a malformed primvar shouldn't take the cook down
+        return primvar.Get()
+
+
 def _primvar_corners(prim, name, tris, corners, face_of_tri):
     primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar(name)
     if not primvar or not primvar.HasValue():
         return None
-    try:
-        values = primvar.ComputeFlattened()
-    except Exception:  # pragma: no cover - a malformed primvar shouldn't take the cook down
-        values = primvar.Get()
+    values = _flattened(primvar)
     if not values:
         return None
     return per_corner(values, primvar.GetInterpolation(), tris, corners, face_of_tri)
 
 
-def _bound_material(prim):
+def _bound_material(prim, walked: set | None = None):
     """The material bound to `prim` (or a subset), looked up through the stage by path.
 
     ComputeBoundMaterial resolves the binding in C++, out of sight of the stage lookups
@@ -412,6 +418,10 @@ def _bound_material(prim):
     material in a shared /Looks scope is simply absent and the binding comes back empty --
     the bake goes grey and nothing says why. Asking for the binding's target by path is a
     lookup it does see: the mask widens to the material and the cook runs again with it.
+
+    `walked` holds the prims an earlier call walked up from, to stop where it did: the rest
+    of the way up is the same, lookup and all. An asset of many unbound meshes walked the
+    same ancestors for each of them.
     """
     material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
     stage = prim.GetStage()
@@ -420,6 +430,10 @@ def _bound_material(prim):
         return material
     walk = prim
     while walk and not walk.IsPseudoRoot():
+        if walked is not None:
+            if walk.GetPath() in walked:
+                break
+            walked.add(walk.GetPath())
         target = UsdShade.MaterialBindingAPI(walk).GetDirectBinding().GetMaterialPath()
         if not target.isEmpty:
             stage.GetPrimAtPath(target)  # absent here: let the cook see it asked
@@ -539,18 +553,30 @@ def read_corner_normals(prim, points, tris, corners, face_of_tri) -> np.ndarray:
     round off.
     """
     mesh = UsdGeom.Mesh(prim)
-    normals = _primvar_corners(prim, "normals", tris, corners, face_of_tri)
+    # Each value is made unit length before it is spread to the corners, not after: the
+    # same arithmetic on each vector, so the same result, on a few times fewer of them.
+    normals = None
+    primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+    if primvar and primvar.HasValue() and (values := _flattened(primvar)):
+        normals = per_corner(_unit(values), primvar.GetInterpolation(), tris, corners, face_of_tri)
     if normals is None and (values := mesh.GetNormalsAttr().Get()):
-        normals = per_corner(values, mesh.GetNormalsInterpolation(), tris, corners, face_of_tri)
-    if normals is not None and np.asarray(normals).shape[-1:] == (3,):
-        normals = np.asarray(normals, dtype=np.float64)
-        length = np.linalg.norm(normals, axis=-1, keepdims=True)
-        normals = np.divide(normals, length, out=np.zeros_like(normals), where=length > 0.0)
-        return normals.astype(np.float32)
+        normals = per_corner(_unit(values), mesh.GetNormalsInterpolation(), tris, corners, face_of_tri)
+    if normals is not None and normals.shape[-1:] == (3,):
+        return normals if normals.flags.writeable else normals.copy()
     flat = face_normals(points, tris)
     if mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded:
         flat = -flat
     return np.repeat(flat[:, None], 3, axis=1).astype(np.float32)
+
+
+def _unit(values) -> np.ndarray:
+    """3-vectors made unit length as float32 (a zero one stays zero); anything else as is."""
+    values = np.asarray(values)
+    if values.shape[-1:] != (3,):
+        return values
+    normals = values.astype(np.float64)
+    length = np.linalg.norm(normals, axis=-1, keepdims=True)
+    return np.divide(normals, length, out=np.zeros_like(normals), where=length > 0.0).astype(np.float32)
 
 
 def _matrix(gf_matrix) -> np.ndarray:
@@ -567,7 +593,8 @@ def _skipped(prim) -> bool:
     return visibility == UsdGeom.Tokens.invisible or purpose in (UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy)
 
 
-def _instancer_sources(prim, xcache, looks: dict, out: list) -> None:
+def _instanced_meshes(prim, xcache):
+    """`(mesh prim, placements)` for every prototype mesh of a PointInstancer."""
     instancer = UsdGeom.PointInstancer(prim)
     time = Usd.TimeCode.Default()
     xforms = instancer.ComputeInstanceTransformsAtTime(time, time)
@@ -590,8 +617,28 @@ def _instancer_sources(prim, xcache, looks: dict, out: list) -> None:
             if not candidate.IsA(UsdGeom.Mesh):
                 continue
             local = _matrix(xcache.ComputeRelativeTransform(candidate, prototype)[0])
-            if (source := _read_mesh(candidate, local @ mine, looks)) is not None:
-                out.append(source)
+            yield candidate, local @ mine
+
+
+def _placed_meshes(root, exclude=()):
+    """`(mesh prim, placements in the world)` for every mesh under `root` worth sampling.
+
+    What gather_sources reads and signature signs, so the two cannot disagree on which
+    meshes an asset has.
+    """
+    if not root or not root.IsValid():
+        return
+    excluded = {Sdf.Path(str(path)) for path in exclude}
+    xcache = UsdGeom.XformCache()
+    prims = iter(Usd.PrimRange(root, Usd.TraverseInstanceProxies()))
+    for prim in prims:
+        if _skipped(prim) or prim.GetPath() in excluded:
+            prims.PruneChildren()
+        elif prim.IsA(UsdGeom.PointInstancer):
+            yield from _instanced_meshes(prim, xcache)
+            prims.PruneChildren()
+        elif prim.IsA(UsdGeom.Mesh):
+            yield prim, _matrix(xcache.GetLocalToWorldTransform(prim))[None]
 
 
 def gather_sources(root, exclude=()) -> list:
@@ -600,24 +647,12 @@ def gather_sources(root, exclude=()) -> list:
     `exclude` is prim paths left out with everything under them -- a bake target that sits
     inside the asset it is baked from, which would otherwise be sampled as part of it.
     """
-    if not root or not root.IsValid():
-        return []
-    excluded = {Sdf.Path(str(path)) for path in exclude}
-    xcache = UsdGeom.XformCache()
     looks: dict = {}
-    sources: list = []
-    prims = iter(Usd.PrimRange(root, Usd.TraverseInstanceProxies()))
-    for prim in prims:
-        if _skipped(prim) or prim.GetPath() in excluded:
-            prims.PruneChildren()
-        elif prim.IsA(UsdGeom.PointInstancer):
-            _instancer_sources(prim, xcache, looks, sources)
-            prims.PruneChildren()
-        elif prim.IsA(UsdGeom.Mesh):
-            world = _matrix(xcache.GetLocalToWorldTransform(prim))[None]
-            if (source := _read_mesh(prim, world, looks)) is not None:
-                sources.append(source)
-    return sources
+    return [
+        source
+        for prim, placements in _placed_meshes(root, exclude)
+        if (source := _read_mesh(prim, placements, looks)) is not None
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -835,10 +870,179 @@ def sample_sources(sources, spacing, keep_cut: bool = False, check=None, progres
 # ---------------------------------------------------------------------------
 
 
+#: str(dtype), remembered: numpy works it out in Python each time, and a signature of a set
+#: of 1,800 small meshes asked for it 12,000 times.
+_dtype_name = functools.cache(str)
+
+
 def crc(array) -> tuple:
     """Shape, dtype and CRC of an array: equal for equal contents, cheap to compare."""
     array = np.ascontiguousarray(array)
-    return array.shape, str(array.dtype), zlib.crc32(array)
+    return array.shape, _dtype_name(array.dtype), zlib.crc32(array)
+
+
+def checksum(values, previous: dict, current: dict):
+    """A content signature for one USD array -- its length, dtype and a CRC of its bytes.
+
+    The CRC is the whole cost of deciding a recook can be skipped (~90ms of the ~94ms on a
+    4.2M-triangle mesh), and almost every time it is spent confirming that nothing moved.
+    VtArray is copy-on-write, so an attribute whose value has not changed hands back the
+    *same buffer* on every `Get()` -- a matching address is therefore proof the contents
+    match, and no proof is needed beyond it. Holding a reference to the array we signed is
+    what makes that sound: the allocator cannot hand the same address to something else
+    while we still own it.
+
+    `previous` is the last cook's address book and `current` the one being built, so only
+    one generation of arrays is ever retained -- and those are the arrays the stage is
+    holding anyway.
+    """
+    if values is None:
+        return None
+    array = np.asarray(values)
+    # Only a zero-copy *view* may be keyed by address: then the buffer belongs to `values`,
+    # which the entry holds, so nothing else can be allocated there while the entry lives.
+    # A dtype numpy has to copy (tokens, say) would hand back a temporary's address, freed
+    # the moment this returns and free for the next temporary to land on -- a false hit.
+    shared = array.size and not array.flags.owndata
+    address = array.__array_interface__["data"][0] if shared else 0
+    if address and (cached := previous.get(address)) is not None:
+        current[address] = cached
+        return cached[1]
+    try:
+        signature = (len(array), _dtype_name(array.dtype), zlib.crc32(np.ascontiguousarray(array)))
+    except (TypeError, ValueError):  # pragma: no cover - object dtypes have no buffer
+        return len(array), _dtype_name(array.dtype), None
+    if address:
+        current[address] = (values, signature)
+    return signature
+
+
+def _value_signature(value, previous: dict, current: dict):
+    """A value as something cheap to compare: arrays by checksum, files by modification
+    time as well as path, anything else by its repr."""
+    if isinstance(value, Sdf.AssetPath):
+        path = value.resolvedPath or value.path
+        try:
+            mtime = os.path.getmtime(path) if path else None
+        except OSError:
+            mtime = None
+        return value.path, path, mtime
+    if isinstance(value, Sdf.AssetPathArray):
+        return tuple(_value_signature(item, previous, current) for item in value)
+    if type(value).__module__ == "pxr.Vt":
+        return checksum(value, previous, current)
+    return repr(value)
+
+
+def _network_signature(material, previous: dict, current: dict) -> tuple:
+    """Every value in a material's network: the material, its prims, and every prim one of
+    them connects to, wherever it is -- what the colour, roughness, metalness, opacity and
+    MaterialX programs are read from."""
+    stage = material.GetPrim().GetStage()
+    parts, seen, todo = [], set(), [material.GetPrim()]
+    while todo:
+        prim = todo.pop()
+        if prim.GetPath() in seen:
+            continue
+        seen.add(prim.GetPath())
+        parts.append(str(prim.GetPath()))
+        for attr in prim.GetAttributes():
+            connections = attr.GetConnections()
+            parts.append(
+                (
+                    attr.GetName(),
+                    _value_signature(attr.Get(), previous, current),
+                    attr.GetColorSpace(),
+                    tuple(str(c) for c in connections),
+                )
+            )
+            for target in connections:
+                if owner := stage.GetPrimAtPath(target.GetPrimPath()):
+                    todo.append(owner)
+                else:
+                    parts.append(("missing", str(target)))
+        todo.extend(reversed(prim.GetChildren()))
+    return tuple(parts)
+
+
+#: The primvars _read_mesh reads by name. The rest it reads only as texture coordinates,
+#: which are 2-vectors: a mesh's other primvars (an exporter's face indices, a rig's rest
+#: pose) are left out of its signature, where on a set of small meshes they were half of it.
+_READ_BY_NAME = frozenset({"displayColor", "normals"})
+_TWO_VECTORS = frozenset({"GfVec2f", "GfVec2d", "GfVec2h", "GfVec2i"})
+
+
+def _is_read(primvar) -> bool:
+    return (
+        primvar.GetPrimvarName() in _READ_BY_NAME
+        or primvar.GetTypeName().scalarType.type.typeName in _TWO_VECTORS
+    )
+
+
+def _mesh_signature(prim, placements, networks: dict, walked: set, previous: dict, current: dict) -> tuple:
+    """Everything _read_mesh reads of one mesh, cheaply. `networks` and `walked` are shared
+    by the meshes of one signature (see _bound_material)."""
+    mesh = UsdGeom.Mesh(prim)
+
+    def material(bound_to):
+        found = _bound_material(bound_to, walked)
+        if not found:
+            return None
+        key = str(found.GetPath())
+        if key not in networks:
+            networks[key] = _network_signature(found, previous, current)
+        return key, networks[key]
+
+    return (
+        str(prim.GetPath()),
+        crc(placements),
+        checksum(mesh.GetPointsAttr().Get(), previous, current),
+        checksum(mesh.GetFaceVertexCountsAttr().Get(), previous, current),
+        checksum(mesh.GetFaceVertexIndicesAttr().Get(), previous, current),
+        str(mesh.GetOrientationAttr().Get()),
+        checksum(mesh.GetNormalsAttr().Get(), previous, current),
+        str(mesh.GetNormalsInterpolation()),
+        tuple(
+            (
+                pv.GetPrimvarName(),
+                pv.GetInterpolation(),
+                pv.GetElementSize(),
+                _value_signature(pv.Get(), previous, current),
+                checksum(pv.GetIndices(), previous, current) if pv.IsIndexed() else None,
+            )
+            for pv in UsdGeom.PrimvarsAPI(prim).GetPrimvarsWithValues()
+            if _is_read(pv)
+        ),
+        material(prim),
+        tuple(
+            (
+                str(subset.GetPrim().GetPath()),
+                checksum(subset.GetIndicesAttr().Get(), previous, current),
+                material(subset.GetPrim()),
+            )
+            for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+        ),
+    )
+
+
+def signature(root, exclude=(), previous: dict | None = None, current: dict | None = None) -> tuple:
+    """What gather_sources(root, exclude) would read, without reading it: the meshes it
+    walks to, their placements, geometry, normals and every primvar, and the networks of
+    the materials bound to them and their subsets -- texture files by modification time.
+
+    Equal signatures read the same sources. A few hundredths of a second on an asset whose
+    read takes half of one, as it signs USD's arrays as they are (`checksum`) where the read
+    triangulates and spreads them over every corner. `previous` and `current` are checksum's
+    address books.
+    """
+    previous = {} if previous is None else previous
+    current = {} if current is None else current
+    networks: dict = {}
+    walked: set = set()
+    return tuple(
+        _mesh_signature(prim, placements, networks, walked, previous, current)
+        for prim, placements in _placed_meshes(root, exclude)
+    )
 
 
 def _texture_stamp(texture: Texture | None):
