@@ -243,6 +243,42 @@ class TestTiming:
         assert _reals(rotations, 17) == [3, 3, 3]
         assert stage.GetStartTimeCode() == 10 and stage.GetEndTimeCode() == 18
 
+    def test_loop_with_everything_else_default_still_loops(self, clips):
+        """Loop checked, End and Loop Until Frame both left at 0, must not collapse to one
+        cycle -- it falls back to the stage's own current end time code."""
+        walk, _ = clips
+        stage = Usd.Stage.CreateInMemory()
+        stage.SetStartTimeCode(0)
+        stage.SetEndTimeCode(50)
+        stage.DefinePrim("/Char/Anim", "SkelAnimation")
+        scene = _make_scene(stage)
+        node = _make_chunk(scene)
+        node.get_param("target_prim").value = "/Char/Anim"
+        _set_rows(node, [{"clip_path": walk, "start_frame": 10, "loop": True}])
+
+        rotations = stage.GetAttributeAtPath("/Char/Anim.rotations")
+        assert _reals(rotations, 10) == [0, 0, 0]
+        assert _reals(rotations, 13) == [3, 3, 3]
+        assert _reals(rotations, 14) == [0, 0, 0], "frame 14 is the jump back to the clip's first frame"
+        assert stage.GetStartTimeCode() == 0 and stage.GetEndTimeCode() == 50
+
+    def test_loop_until_frame_overrides_end(self, clips):
+        walk, _ = clips
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/Char/Anim", "SkelAnimation")
+        scene = _make_scene(stage)
+        node = _make_chunk(scene)
+        node.get_param("target_prim").value = "/Char/Anim"
+        _set_rows(node, [{
+            "clip_path": walk, "start_frame": 10, "end_frame": 18,
+            "loop": True, "loop_until_frame": 22,
+        }])
+
+        rotations = stage.GetAttributeAtPath("/Char/Anim.rotations")
+        assert _reals(rotations, 18) == [0, 0, 0], "frame 18 is a jump back, not the clip's end held"
+        assert _reals(rotations, 21) == [3, 3, 3]
+        assert stage.GetEndTimeCode() == 22, "Loop Until Frame wins over End"
+
     def test_end_zero_means_the_clips_own_length(self, clips):
         walk, _ = clips
         stage = Usd.Stage.CreateInMemory()
