@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtWidgets
 
+from usd_chunks import chunk
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene, ChunkGraphView
 
 
@@ -38,3 +39,31 @@ def test_chunk_deleted_debounces_recook_across_many_notices(qapp, monkeypatch) -
         f"a burst of {30} CHUNK_DELETED notices from one delete must collapse into a single "
         f"recook, got {len(recook_calls)}"
     )
+
+
+def test_params_a_cook_rebuilds_do_not_recook_the_view(qapp, monkeypatch) -> None:
+    """A Light rebuilds its schema params on every cook: 38 CHUNK_DELETED from params, no chunk.
+
+    Each forced a full recook, which cooked the Light again and queued the next. In the
+    kitchen scene one slider step on a light's aim cooked 84 times in usdview. Deleting the
+    chunk itself still recooks: its own CHUNK_DELETED comes after its params'.
+    """
+    scene = ChunkGraphScene()
+    view = ChunkGraphView()
+    view.setScene(scene)
+    recook_calls = []
+    monkeypatch.setattr(
+        ChunkGraphView, "_recook_active_view", lambda self, changed_chunks=None: recook_calls.append(1)
+    )
+    params = [chunk.Checkbox(f"p{i}", f"P{i}") for i in range(38)]
+
+    for param in params:
+        scene._on_chunk_deleted(None, param)
+    QtWidgets.QApplication.instance().processEvents()
+    assert recook_calls == [], "a param rebuilt by a cook is not a deleted chunk"
+
+    for param in params:
+        scene._on_chunk_deleted(None, param)
+    scene._on_chunk_deleted(None, chunk.Chunk("Light"))
+    QtWidgets.QApplication.instance().processEvents()
+    assert len(recook_calls) == 1, "deleting the chunk itself still recooks, once"

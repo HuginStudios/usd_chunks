@@ -2565,6 +2565,12 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # judged here after the fact. Deletes triggered from elsewhere (e.g. the Params panel)
         # never set the flag, so they always recook.
         self._schedule_rebuild()
+        if sender is not None and not isinstance(sender, core.ChunkBase):
+            # A param, not a chunk: a Light rebuilds its schema params on every cook, 38 of
+            # them, and each recook here cooked it again -- 84 cooks for one slider step in the
+            # kitchen scene. A deleted chunk still recooks below on its own notice, which
+            # comes after its params'. The rebuild above stays: ports follow the params.
+            return
         for v in self.views():
             if not isinstance(v, ChunkGraphView):
                 continue
