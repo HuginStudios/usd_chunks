@@ -372,7 +372,7 @@ def execute(node: chunk.Chunk) -> None:
     upstream, sources = _sources(node, paths)
     out_path = _output_path(node, str(paths[0]))
     source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
-    keep_under = int(node.get_param("budget", chunk.is_param_t(int)).value)
+    keep_under = settings.budget if node.get_param("keep_small", chunk.is_param_t(bool)).value else 0
     if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
         del upstream
         _keep_source(node, stage, layer, paths, out_path, source_triangles, keep_under)
@@ -453,7 +453,8 @@ def main():
             "readout",
             "not remeshed yet",
             default_value="not remeshed yet",
-            tooltip="What the last cook produced.",
+            tooltip="What the last cook produced. \"kept as is\": the asset is under the Triangle\n"
+            "Budget, so the proxy is the asset itself (see Keep Small Assets).",
         )
     )
 
@@ -482,10 +483,18 @@ def main():
             max_value=1_000_000,
             default_value=3000,
             tooltip="The most triangles the proxy may have -- fewer where Max Error allows.\n"
-            "An asset with no more triangles than this is not remeshed at all: the proxy\n"
-            "is a reference to the asset itself, with its own UVs and materials, and\n"
-            "Poly Reduce, UV Unwrap and Bake Textures leave it alone.\n"
-            "0: never keep the source, and leave marching cubes' dense output unreduced.",
+            "0: leave marching cubes' dense output unreduced.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "keep_small",
+            "Keep Small Assets",
+            default_value=True,
+            tooltip="An asset with no more triangles than the Triangle Budget is not remeshed:\n"
+            "the proxy is a reference to the asset itself, with its own UVs and materials,\n"
+            "and Poly Reduce, UV Unwrap and Bake Textures leave it alone. A low-poly rock\n"
+            "remeshed only gets blobbier. Untick to remesh every asset, however small.",
         )
     )
     chunk_api.add_param(
