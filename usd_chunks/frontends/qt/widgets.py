@@ -1754,9 +1754,45 @@ class LabeledWidget(QtWidgets.QWidget):
         self.hide_tooltip()
         return super().leaveEvent(event)
 
+    @staticmethod
+    def _add_revert_to_default(menu: QtWidgets.QMenu, model) -> QtGui.QAction | None:
+        """Add a Revert to Default item, greyed out when the value already is the default.
+
+        Args:
+            menu: The menu to add the item to.
+            model: The param or vector the row shows.
+
+        Returns:
+            The new action, or None when the row has no value to reset: a button, a label,
+            an output, or a param whose edits would land in a locked file.
+        """
+        t = model.evaluate_type()
+        # EMPTY covers buttons and separators. `in`, not `&`: the low bits are reused per
+        # type, so a label and a slider share one.
+        if ChunkFlags.ParamType.EMPTY in t or ChunkFlags.ParamType.LABEL in t:
+            return None
+        if isinstance(model, chunk_core.ChunkVectorBase):
+            is_output = model.is_output
+        else:
+            is_output = model.has_flag(ChunkFlags.ParamFlags.OUTPUT)
+        if is_output or model.default_value is None or chunk_stage.param_locked_by(model) is not None:
+            return None
+        action = menu.addAction("Revert to Default")
+        action.setEnabled(not chunk_utils.values_match(model.raw_value, model.default_value))
+        return action
+
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not isinstance(self.widget, ChunkParamWidgetBase):
-            event.ignore()
+            # A vector (Translate, Scale) is a group of fields, so it gets just the one
+            # item, from its header; a field inside it has its own menu.
+            vector = self._model if isinstance(self._model, chunk_core.ChunkVectorBase) else None
+            menu = QtWidgets.QMenu()
+            default_action = self._add_revert_to_default(menu, vector) if vector is not None else None
+            if default_action is None:
+                event.ignore()
+                return
+            if menu.exec_(event.globalPos()) == default_action:
+                vector.value = vector.default_value
             return
 
         param = self.widget.param
@@ -1794,6 +1830,7 @@ class LabeledWidget(QtWidgets.QWidget):
         # not the only option, or "rename the lofted param" would not mean anything.
         rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
         unloft_action = menu.addAction("Unloft") if on_label and getattr(param, "_lofted", False) else None
+        default_action = self._add_revert_to_default(menu, param)
         override_source = chunk_stage.param_override_source(param)
         revert_action = None
         if override_source is not None:
@@ -1819,6 +1856,8 @@ class LabeledWidget(QtWidgets.QWidget):
             elif unloft_action and action == unloft_action:
                 # Next tick: unlofting deletes this widget, which is still inside its own event.
                 QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(param))
+            elif default_action and action == default_action:
+                param.value = param.default_value
             elif revert_action and action == revert_action:
                 chunk_stage.revert_param_override(param)
             elif rename_action and action == rename_action:
