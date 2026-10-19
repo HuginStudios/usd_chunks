@@ -28,21 +28,72 @@ import pytest
 # skipping, taking the whole run down with it.
 pytest.importorskip("pxr.Usdviewq", reason="usdview is not part of the usd-core wheel")
 
+from pxr import Gf, Usd, UsdGeom  # noqa: E402
+
+from usd_chunks.hosts import usdview as usdview_host  # noqa: E402
 from usd_chunks.hosts.usdview import UsdviewScene  # noqa: E402
 
 
+class _Signal:
+    """A Qt signal, as far as the lens code uses one."""
+
+    def __init__(self):
+        self.emits = 0
+        self.slots = []
+
+    def emit(self):
+        self.emits += 1
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def disconnect(self, slot):
+        self.slots.remove(slot)
+
+
 class _FreeCamera:
-    """Only what the reconcile reads and writes. usdview's `fov` setter emits on every write,
-    which is why the real one is corrected before the frustum signal is connected."""
+    """usdview's FreeCamera, as far as the lens code goes: the lens lives on a Gf.Camera, and
+    putting one back is announced on the frustum signals -- which is why the real one is
+    corrected before the frustum signal is connected."""
 
-    def __init__(self, fov):
-        self.fov = fov
-        self.writes = 0
+    def __init__(self, fov, aspect=1.0, offsets=(0.0, 0.0)):
+        self._camera = Gf.Camera()
+        self._camera.SetPerspectiveFromAspectRatioAndFieldOfView(aspect, fov, Gf.Camera.FOVVertical)
+        self._camera.horizontalApertureOffset, self._camera.verticalApertureOffset = offsets
+        self.signalFrustumChanged = _Signal()
+        self.signalFrustumSettingsChanged = _Signal()
 
-    def __setattr__(self, name, value):
-        if name == "fov" and "fov" in self.__dict__:
-            object.__setattr__(self, "writes", self.writes + 1)
-        object.__setattr__(self, name, value)
+    @property
+    def fov(self):
+        return self._camera.GetFieldOfView(Gf.Camera.FOVVertical)
+
+    @fov.setter
+    def fov(self, value):
+        """As usdview's: the field of view changes, the frame keeps its shape and offsets."""
+        self._camera.SetPerspectiveFromAspectRatioAndFieldOfView(self._camera.aspectRatio, value, Gf.Camera.FOVVertical)
+        self.signalFrustumChanged.emit()
+        self.signalFrustumSettingsChanged.emit()
+
+    @property
+    def writes(self):
+        """How often a lens was put on it."""
+        return self.signalFrustumChanged.emits
+
+    def lens(self):
+        cam = self._camera
+        return (
+            cam.focalLength,
+            cam.horizontalAperture,
+            cam.verticalAperture,
+            cam.horizontalApertureOffset,
+            cam.verticalApertureOffset,
+            cam.fStop,
+        )
+
+
+def _lens_of(fov):
+    """The lens of a free camera with this field of view and nothing else changed."""
+    return _FreeCamera(fov).lens()
 
 
 class _Timer:
@@ -60,7 +111,7 @@ def scene():
     """The proxy without usdview's constructor, which needs a running app."""
     s = UsdviewScene.__new__(UsdviewScene)
     s._snap_prim = None
-    s._free_camera_fov = None
+    s._free_camera_lens = None
     s._free_camera_clip = None
     s._restore_lens = False
     return s
@@ -69,7 +120,7 @@ def scene():
 def test_the_users_own_lens_is_remembered_while_nothing_of_ours_is_viewed(scene) -> None:
     scene._reconcile_free_camera_lens(_FreeCamera(60.0))
 
-    assert scene._free_camera_fov == pytest.approx(60.0)
+    assert scene._free_camera_lens == _lens_of(60.0)
 
 
 def test_a_rebuild_while_our_camera_is_viewed_is_left_wearing_its_lens(scene) -> None:
@@ -95,7 +146,7 @@ def test_the_remembered_lens_survives_the_rebuilds_while_locked(scene) -> None:
     for _ in range(3):
         scene._reconcile_free_camera_lens(_FreeCamera(15.15))
 
-    assert scene._free_camera_fov == pytest.approx(60.0)
+    assert scene._free_camera_lens == _lens_of(60.0)
 
 
 def test_releasing_the_lock_puts_the_users_lens_back_once(scene) -> None:
@@ -119,7 +170,7 @@ def test_releasing_the_lock_puts_the_users_lens_back_once(scene) -> None:
     later = _FreeCamera(35.0)
     scene._reconcile_free_camera_lens(later)
     assert later.writes == 0
-    assert scene._free_camera_fov == pytest.approx(35.0), "the user's new choice is remembered"
+    assert scene._free_camera_lens == _lens_of(35.0), "the user's new choice is remembered"
 
 
 def test_release_is_idempotent(scene) -> None:
@@ -134,12 +185,12 @@ def test_release_is_idempotent(scene) -> None:
     scene.release_viewport_camera()
     scene._reconcile_free_camera_lens(_FreeCamera(35.0))
 
-    assert scene._free_camera_fov == pytest.approx(35.0)
+    assert scene._free_camera_lens == _lens_of(35.0)
 
 
 def test_a_lens_that_already_agrees_is_not_written_on_release(scene) -> None:
-    """usdview's fov setter emits regardless, and an unnecessary emit is an unnecessary cook."""
-    scene._free_camera_fov = 60.0
+    """Putting a lens back emits, and an unnecessary emit is an unnecessary cook."""
+    scene._free_camera_lens = _lens_of(60.0)
     scene._restore_lens = True
 
     unchanged = _FreeCamera(60.0)
@@ -162,17 +213,17 @@ def test_nothing_is_restored_before_anything_was_remembered(scene) -> None:
     assert arrived.writes == 0
 
 
-def test_a_free_camera_without_a_fov_does_not_raise(scene) -> None:
+def test_a_free_camera_without_a_lens_does_not_raise(scene) -> None:
     """This sits on the view-settings path, which runs on every setting change. Raising here
     would break far more than a lens."""
     class _Bare:
         pass
 
     scene._reconcile_free_camera_lens(_Bare())
-    assert scene._free_camera_fov is None
+    assert scene._free_camera_lens is None
 
     scene._snap_prim = "/cameras/camera1"
-    scene._free_camera_fov = 60.0
+    scene._free_camera_lens = _lens_of(60.0)
     scene._reconcile_free_camera_lens(_Bare())      # must not raise
 
 
@@ -198,7 +249,7 @@ class _Api:
 def _snapping_scene(camera_prim, free_cam):
     s = UsdviewScene.__new__(UsdviewScene)
     s._snap_prim = None
-    s._free_camera_fov = None
+    s._free_camera_lens = None
     s._free_camera_clip = None
     s._restore_lens = False
     s.usdviewAPI = _Api(camera_prim)
@@ -213,7 +264,7 @@ def test_the_snapshot_refreshes_while_the_user_is_on_their_own_camera() -> None:
 
     s._remember_free_camera_lens()
 
-    assert s._free_camera_fov == pytest.approx(35.0)
+    assert s._free_camera_lens == _lens_of(35.0)
 
 
 def test_the_snapshot_is_not_taken_while_a_camera_prim_is_in_view() -> None:
@@ -221,11 +272,11 @@ def test_the_snapshot_is_not_taken_while_a_camera_prim_is_in_view() -> None:
     camera is up -- and by then the free camera is a copy of that camera. Remembering it would
     bake the leak in permanently instead of undoing it."""
     s = _snapping_scene(camera_prim="/cameras/camera1", free_cam=_FreeCamera(15.15))
-    s._free_camera_fov = 60.0
+    s._free_camera_lens = _lens_of(60.0)
 
     s._remember_free_camera_lens()
 
-    assert s._free_camera_fov == pytest.approx(60.0), "the user's lens, not the chunk camera's"
+    assert s._free_camera_lens == _lens_of(60.0), "the user's lens, not the chunk camera's"
 
 
 def test_the_snapshot_is_not_taken_mid_navigation_while_our_prim_holds_the_lock() -> None:
@@ -233,12 +284,12 @@ def test_the_snapshot_is_not_taken_mid_navigation_while_our_prim_holds_the_lock(
     that camera was built from our prim and wears its lens. With nothing putting the user's
     lens back per move any more, remembering here would remember the prim's."""
     s = _snapping_scene(camera_prim=None, free_cam=_FreeCamera(15.15))
-    s._free_camera_fov = 60.0
+    s._free_camera_lens = _lens_of(60.0)
     s._snap_prim = "/cameras/camera1"
 
     s._remember_free_camera_lens()
 
-    assert s._free_camera_fov == pytest.approx(60.0)
+    assert s._free_camera_lens == _lens_of(60.0)
 
 
 def test_a_host_that_cannot_answer_does_not_raise() -> None:
@@ -249,13 +300,13 @@ def test_a_host_that_cannot_answer_does_not_raise() -> None:
 
     s = UsdviewScene.__new__(UsdviewScene)
     s._snap_prim = None
-    s._free_camera_fov = None
+    s._free_camera_lens = None
     s._free_camera_clip = None
     s._restore_lens = False
     s.usdviewAPI = _Broken()
 
     s._remember_free_camera_lens()      # must not raise
-    assert s._free_camera_fov is None
+    assert s._free_camera_lens is None
 
 
 # ---------------------------------------------------------------------------
@@ -266,9 +317,6 @@ def test_a_host_that_cannot_answer_does_not_raise() -> None:
 # near and far to usdview's defaults unless the free camera holds an override. So while
 # our prim is viewed, the prim's range goes on as the override; on release the user's own
 # overrides (or none) come back with their lens.
-
-from pxr import Gf, Usd, UsdGeom  # noqa: E402
-
 
 class _ClippingFreeCamera(_FreeCamera):
     """usdview's FreeCamera has override setters that emit nothing; None clears one."""
@@ -339,7 +387,7 @@ def test_releasing_clears_the_prims_clipping_when_the_user_had_none(scene) -> No
     scene._reconcile_free_camera_lens(arrived)
 
     assert (arrived.overrideNear, arrived.overrideFar) == (None, None)
-    assert arrived.writes == 0, "a fov never learned is still not invented"
+    assert arrived.writes == 0, "a lens never learned is still not invented"
 
 
 def test_the_users_clipping_is_remembered_with_their_lens() -> None:
@@ -378,3 +426,101 @@ def test_a_snap_finds_a_camera_re_authored_before_it_lands(scene) -> None:
     scene._on_snap_timer()
 
     assert viewed == ["/cameras/camera1"]
+
+
+# ---------------------------------------------------------------------------
+# unlocking: the free camera in view gets the user's whole lens back
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def next_tick(monkeypatch):
+    """QTimer.singleShot without an event loop: calling the fixture runs what was queued."""
+    queued = []
+    monkeypatch.setattr(usdview_host.QtCore.QTimer, "singleShot", lambda _ms, fn: queued.append(fn))
+
+    def run():
+        while queued:
+            queued.pop(0)()
+
+    return run
+
+
+def _locked_camera():
+    """The free camera usdview builds while the lock holds a chunk camera whose aperture was
+    changed: a narrower view, a wider frame, and the frame shifted."""
+    return _FreeCamera(22.62, aspect=1.6, offsets=(12.0, 6.0))
+
+
+def _locked_scene(scene, users_camera):
+    """`scene` with the user's lens remembered and a chunk camera locked into the view."""
+    cameras = {"free": users_camera}
+    scene.usdviewAPI = _Api(camera_prim=None)
+    scene._get_free_camera = lambda: cameras["free"]
+    scene._current_cam = None
+    scene._camera_snap_timer = _Timer()
+    scene._on_view_settings_changed()
+
+    scene._snap_prim = "/cameras/camera1"
+    scene.usdviewAPI.dataModel.viewSettings.cameraPrim = "/cameras/camera1"
+    cameras["free"] = _locked_camera()  # navigated while locked
+    scene._on_view_settings_changed()
+    return cameras
+
+
+def test_unlocking_puts_the_lens_back_on_the_free_camera_usdview_falls_back_to(scene, next_tick) -> None:
+    """Viktor's ticket: lock a camera chunk, change its aperture, unlock, and the free camera
+    kept the chunk camera's aperture. Unlocking cooks the chunk, the cook expires the prim, and
+    usdview drops it and shows the free camera it built while the lock held. No new one is
+    built, so the restore, waiting for one, never ran."""
+    cameras = _locked_scene(scene, _FreeCamera(60.0))
+
+    scene.release_viewport_camera()
+    scene.usdviewAPI.dataModel.viewSettings.cameraPrim = None  # usdview drops the dead prim
+    scene._on_view_settings_changed()
+    next_tick()
+
+    assert cameras["free"].lens() == _lens_of(60.0)
+
+
+def test_unlocking_puts_back_the_whole_lens_not_only_the_field_of_view(scene) -> None:
+    """The offsets and the frame's width are part of the lens too. Putting back only the field
+    of view left the view shifted by the chunk camera's offsets."""
+    _locked_scene(scene, _FreeCamera(60.0))
+
+    scene.release_viewport_camera()
+    rebuilt = _locked_camera()  # the first navigation after unlocking
+    scene._reconcile_free_camera_lens(rebuilt)
+
+    assert rebuilt.lens() == _lens_of(60.0)
+    assert rebuilt.writes == 1
+
+
+def test_a_navigation_after_unlocking_puts_the_lens_on_the_new_camera(scene, next_tick) -> None:
+    """switchToFreeCamera clears the camera prim, which emits, before it hands its new free
+    camera over. Spending the restore on the old one there would leave the new one wearing the
+    chunk camera's lens, remembered as the user's."""
+    cameras = _locked_scene(scene, _FreeCamera(60.0))
+    scene.release_viewport_camera()
+
+    scene.usdviewAPI.dataModel.viewSettings.cameraPrim = None
+    scene._on_view_settings_changed()  # the prim cleared, the old camera still in
+    cameras["free"] = _locked_camera()
+    scene._on_view_settings_changed()  # the new camera handed over
+    next_tick()
+
+    assert cameras["free"].lens() == _lens_of(60.0)
+    assert scene._free_camera_lens == _lens_of(60.0)
+
+
+def test_nothing_is_put_back_while_the_view_is_still_through_the_prim(scene, next_tick) -> None:
+    """Released, but not yet navigated: the free camera is not the one in view, and the one
+    built on the first navigation is the one that needs the lens."""
+    cameras = _locked_scene(scene, _FreeCamera(60.0))
+    scene.release_viewport_camera()
+
+    scene._on_view_settings_changed()
+    next_tick()
+
+    assert cameras["free"].writes == 0
+    assert scene._restore_lens
