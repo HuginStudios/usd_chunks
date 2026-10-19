@@ -55,6 +55,40 @@ def _set_clip_overrides(free_cam, clip):
         free_cam.overrideFar = far
 
 
+#: What a free camera's lens is made of. usdview copies every one of these from a camera prim
+#: it switches away from, so every one is put back.
+_LENS_FIELDS = (
+    "focalLength",
+    "horizontalAperture",
+    "verticalAperture",
+    "horizontalApertureOffset",
+    "verticalApertureOffset",
+    "fStop",
+)
+
+
+def _lens(free_cam):
+    """The free camera's lens, one value per `_LENS_FIELDS`, or None when it has none."""
+    gf_cam = getattr(free_cam, "_camera", None)
+    if gf_cam is None:
+        return None
+    return tuple(getattr(gf_cam, field) for field in _LENS_FIELDS)
+
+
+def _set_lens(free_cam, lens):
+    """Put `lens` on the free camera; nothing is written or emitted when it already wears it.
+
+    Onto its Gf.Camera, as FreeCamera has no setter for the offsets or the f-stop, so the two
+    signals its own lens setters send are sent here, once.
+    """
+    if lens is None or _lens(free_cam) in (None, lens):
+        return
+    for field, value in zip(_LENS_FIELDS, lens):
+        setattr(free_cam._camera, field, value)
+    free_cam.signalFrustumChanged.emit()
+    free_cam.signalFrustumSettingsChanged.emit()
+
+
 class UsdviewScene(chunk_scene.SceneSender):
     """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
     TODO: Make this abstract and move implementation to a UsdView related location
@@ -90,8 +124,8 @@ class UsdviewScene(chunk_scene.SceneSender):
         #: and a cook in between that re-authors the camera (the Camera chunk's own button
         #: cooks it) leaves the handle expired; the path finds the prim it became.
         self._snap_path = None
-        #: The user's own free-camera field of view, held across usdview rebuilding it.
-        self._free_camera_fov = None
+        #: The user's own free-camera lens (see _lens), held across usdview rebuilding it.
+        self._free_camera_lens = None
         #: The user's own free-camera near/far overrides (None each when usdview's defaults),
         #: held for the same reason; while our prim is viewed the free camera wears the prim's.
         self._free_camera_clip = None
@@ -362,17 +396,23 @@ class UsdviewScene(chunk_scene.SceneSender):
             if self.usdviewAPI.dataModel.viewSettings.cameraPrim is not None:
                 return
             free_cam = self._get_free_camera()
-            fov = getattr(free_cam, "fov", None)
+            lens = _lens(free_cam)
         except Exception:  # noqa: BLE001 - a lens is never worth raising into the host over
             return
-        if fov is not None:
-            self._free_camera_fov = fov
+        if lens is not None:
+            self._free_camera_lens = lens
         self._free_camera_clip = _clip_overrides(free_cam)
 
     def _on_view_settings_changed(self):
         current_cam = self._get_free_camera()
 
         if current_cam == self._current_cam:
+            if self._restore_lens:
+                # usdview can let go of our prim without building a new free camera: unlocking
+                # cooks the chunk, the cook expires the prim, and usdview drops it and shows the
+                # free camera it built while the lock held -- wearing the prim's lens. Next tick,
+                # as switchToFreeCamera emits here too, before it hands its new camera over.
+                QtCore.QTimer.singleShot(0, self._restore_lens_in_view)
             return
 
         if self._current_cam is not None:
@@ -380,7 +420,7 @@ class UsdviewScene(chunk_scene.SceneSender):
 
         if current_cam is not None:
             self._current_cam = current_cam
-            # Before connecting, deliberately: the fov setter emits signalFrustumChanged, and
+            # Before connecting, deliberately: a lens put back emits signalFrustumChanged, and
             # hearing our own correction come back as a camera move would write the prim and
             # re-arm the snap, i.e. the very loop this is here to break.
             self._reconcile_free_camera_lens(current_cam)
@@ -420,35 +460,47 @@ class UsdviewScene(chunk_scene.SceneSender):
             return
 
         if self._restore_lens:
-            self._restore_lens = False
-            # Compared rather than set unconditionally: the setter emits regardless, and an
-            # unnecessary emit here is an unnecessary cook downstream.
-            if self._free_camera_fov is not None and (
-                abs(getattr(free_cam, "fov", self._free_camera_fov) - self._free_camera_fov) > 1e-6
-            ):
-                free_cam.fov = self._free_camera_fov
-            _set_clip_overrides(free_cam, self._free_camera_clip)
+            self._put_users_lens_back(free_cam)
             return
 
-        self._free_camera_fov = getattr(free_cam, "fov", None)
+        self._free_camera_lens = _lens(free_cam)
         self._free_camera_clip = _clip_overrides(free_cam)
+
+    def _put_users_lens_back(self, free_cam) -> None:
+        """Put the user's remembered lens and clipping on `free_cam`; the release is then paid."""
+        self._restore_lens = False
+        _set_lens(free_cam, self._free_camera_lens)
+        _set_clip_overrides(free_cam, self._free_camera_clip)
+
+    def _restore_lens_in_view(self) -> None:
+        """Put the user's lens back on the free camera in view, if a release still owes it."""
+        if not self._restore_lens or self._snap_prim is not None:
+            return
+        try:
+            if self.usdviewAPI.dataModel.viewSettings.cameraPrim is not None:
+                return  # still through the prim; the free camera built on navigation gets it
+            free_cam = self._get_free_camera()
+        except Exception:  # noqa: BLE001 - usdview is shutting down
+            return
+        if free_cam is not None:
+            self._put_users_lens_back(free_cam)
 
     def release_viewport_camera(self) -> None:
         """Our prim stops asserting itself as the viewport camera.
 
         The view is left where it is -- still through the prim, until the user navigates --
-        but from here on a free camera usdview builds is the user's again, so the lens
-        remembered at set_viewport_camera goes back on the first one. Idempotent: the
-        camera chunk calls this from a callback that also fires on every camera move.
+        but from here on the free camera is the user's again, so the lens remembered at
+        set_viewport_camera goes back on the first one in view. Idempotent: the camera chunk
+        calls this from a callback that also fires on every camera move.
         """
         if self._snap_prim is None:
             return
         self._camera_snap_timer.stop()
         self._snap_prim = None
         self._snap_path = None
-        # Unconditional, not waiting on a remembered fov: the prim's clipping was put on by us,
+        # Unconditional, not waiting on a remembered lens: the prim's clipping was put on by us,
         # so even a user whose lens was never learned needs it taken off again.
-        # A fov never learned is still left alone -- see _reconcile_free_camera_lens.
+        # A lens never learned is still left alone -- see _set_lens.
         self._restore_lens = True
 
     def _on_snap_timer(self):
