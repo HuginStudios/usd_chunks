@@ -48,6 +48,7 @@ from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import mesh_reduce
 from usd_chunks import proxy_setup
+from usd_chunks import sim_bake
 from usd_chunks import surface_samples
 
 try:
@@ -72,6 +73,13 @@ _MAX_SAMPLES = 30_000_000
 
 # Nearest samples averaged into one baked vertex colour.
 _BAKE_NEIGHBOURS = 8
+
+# A volume with at least this many voxels is built in a separate process, behind a progress
+# window: a 132-triangle rock at the default 256 is 13M voxels and froze the host for 7.4s
+# with no way out, and a big asset at 384 needs gigabytes. Below this a build takes well
+# under a second, and starting the process (about 1.5s, mostly importing USD) would only
+# make the result later.
+_PROCESS_CELLS = 1_000_000
 
 
 
@@ -167,32 +175,121 @@ class Proxy(NamedTuple):
     voxel: float
 
 
-def build_proxy(sources, settings: _Settings) -> Proxy | None:
+def _voxel(sources, settings: _Settings) -> float:
+    """The voxel size: the asset's longest side over Resolution. 0 for an asset with no size."""
+    lo, hi = surface_samples.bounds(sources)
+    return float(np.max(hi - lo)) / max(1, settings.resolution)
+
+
+def grid_cells(sources, settings: _Settings) -> int:
+    """About how many voxels the volume will have: what time and memory grow with."""
+    lo, hi = surface_samples.bounds(sources)
+    voxel = _voxel(sources, settings)
+    if voxel <= 0.0:
+        return 0
+    pad = int(np.ceil(settings.thickness + settings.close + 3.0 * settings.smooth)) + 2
+    return int(np.prod(np.ceil((hi - lo) / voxel) + 1 + 2 * pad))
+
+
+def sample(sources, settings: _Settings, check=None, progress=None):
+    """The surface samples the proxy is built from, or None when there are none.
+
+    The part of a build that reads the sources' looks -- textures, MaterialX programs -- so
+    it runs here, and only arrays go on to `remesh`. `check` raises to stop it part way, and
+    `progress` hears how far it is (surface_samples.sample_sources).
+    """
     if not sources:
         return None
-    lo, hi = surface_samples.bounds(sources)
-    voxel = float(np.max(hi - lo)) / max(1, settings.resolution)
+    voxel = _voxel(sources, settings)
     if voxel <= 0.0:
         return None
-
     spacing = voxel / _SAMPLES_PER_VOXEL
     expected = surface_samples.surface_area(sources) / (spacing * spacing)
     if expected > _MAX_SAMPLES:
         spacing *= float(np.sqrt(expected / _MAX_SAMPLES))
-    samples = surface_samples.sample_sources(sources, spacing)
-    if not len(samples.points):
-        return None
+    samples = surface_samples.sample_sources(sources, spacing, check=check, progress=progress)
+    return samples if len(samples.points) else None
 
-    field = build_field(samples.points, voxel, settings.thickness, settings.close, settings.fill, settings.smooth)
+
+def _stepper(settings: _Settings, progress):
+    """`at(step, share)`: reports `step i of n: what` to progress(done, total, text).
+
+    The steps a remesh takes with these settings, in order. Each is the same length on the
+    bar: how long one takes depends on the asset, so the bar says how far through them it
+    is, not how long is left.
+    """
+    steps = {"sample": "sampling the surface", "volume": "building the volume", "surface": "meshing the surface"}
+    if settings.budget > 0 and mesh_reduce.HAS_DEPS:
+        steps["reduce"] = f"reducing to {settings.budget:,} tris"
+    if settings.bake:
+        steps["colour"] = "baking colours"
+    keys = list(steps)
+
+    def at(step: str, share: float = 0.0) -> None:
+        if progress is not None and step in steps:
+            i = keys.index(step)
+            progress(int(100 * (i + share)), 100 * len(keys), f"step {i + 1} of {len(keys)}: {steps[step]}")
+
+    return at
+
+
+def remesh(progress, points, colours, voxel, settings) -> dict | None:
+    """The proxy's surface, from its samples. Arrays in and out, no USD: it runs in any process.
+
+    Args:
+        progress: progress(done, total, text), for each step (_stepper); or None.
+        points: The samples' world positions.
+        colours: Their colours, or None to bake none.
+        voxel: The voxel size.
+        settings: A `_Settings`, as a plain tuple.
+
+    Returns:
+        The surface's `points`, `triangles` and `colours`, or None when it is empty.
+    """
+    settings = _Settings(*settings)
+    step = _stepper(settings, progress)
+    step("volume")
+    field = build_field(points, voxel, settings.thickness, settings.close, settings.fill, settings.smooth)
+    step("surface")
     surface = extract_surface(field)
+    del field
     if surface is None:
         return None
-    points, triangles = surface
+    surface_points, triangles = surface
     if settings.budget > 0 and mesh_reduce.HAS_DEPS:
-        points, triangles = mesh_reduce.reduce_within(points, triangles, settings.budget, settings.max_error / 100.0)
-    colours = bake_colours(points, samples.points, samples.colours) if settings.bake else None
+        step("reduce")
+        surface_points, triangles = mesh_reduce.reduce_within(
+            surface_points, triangles, settings.budget, settings.max_error / 100.0
+        )
+    if colours is not None:
+        step("colour")
+    baked = bake_colours(surface_points, points, colours) if colours is not None else None
+    return dict(points=surface_points, triangles=triangles, colours=baked)
+
+
+def _remesh_job(samples, sources, settings: _Settings) -> dict:
+    """`remesh`'s arguments for these samples."""
+    return dict(
+        points=samples.points,
+        colours=samples.colours if settings.bake else None,
+        voxel=_voxel(sources, settings),
+        settings=tuple(settings),
+    )
+
+
+def _proxy(surface: dict | None, sources, settings: _Settings) -> Proxy | None:
+    if surface is None:
+        return None
     source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
-    return Proxy(points, triangles, colours, source_triangles, voxel)
+    return Proxy(surface["points"], surface["triangles"], surface["colours"], source_triangles, _voxel(sources, settings))
+
+
+def build_proxy(sources, settings: _Settings) -> Proxy | None:
+    """The whole build, here and now."""
+    samples = sample(sources, settings)
+    if samples is None:
+        return None
+    return _proxy(remesh(None, **_remesh_job(samples, sources, settings)), sources, settings)
 
 
 # ---------------------------------------------------------------------------
@@ -379,23 +476,71 @@ def execute(node: chunk.Chunk) -> None:
         return
     stamp = fingerprint(sources, settings)
     previous = _LAST_COOK.get(layer.identifier)
+    del upstream  # the sources are numpy now; the scratch stage can go
     if previous is not None and previous[0] == stamp:
         proxy = previous[1]
     else:
-        proxy = build_proxy(sources, settings)
-    del upstream  # the sources are numpy now; the scratch stage can go
+        try:
+            proxy = _build(node, sources, settings)
+        except Exception as e:
+            # Cancelled, or the process died: the last proxy stays in view, and the
+            # cook fails, so the chunks below wait for a good one.
+            if previous is not None and previous[1] is not None:
+                _write(node, stage, layer, paths, out_path, previous[1])
+            cancelled = isinstance(e, sim_bake.Cancelled)
+            _report(node, None, "cancelled" if cancelled else f"remesh failed: {e}")
+            raise
 
-    if proxy is not None:
-        with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
-            _author(stage, out_path, proxy)
-            if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
-                proxy_setup.set_up_proxy(stage, paths, out_path)
-
-    if len(_LAST_COOK) > 64:
-        _LAST_COOK.clear()  # deleted chunks leave entries; a proxy can be large
-    _LAST_COOK[layer.identifier] = (stamp, proxy)
+    # Kept before it is written: a first cook runs on a stage of the chunk's inputs alone
+    # (skip_cook), where the proxy's prim can't be defined, and is run again on the whole
+    # stage. Kept first, the second run finds this proxy instead of remeshing again.
+    _remember(layer.identifier, stamp, proxy)
+    _write(node, stage, layer, paths, out_path, proxy)
     node.get_param("out_mesh").value = out_path if proxy is not None else ""
     _report(node, proxy, "" if sources else "no meshes under that prim")
+
+
+def _write(node, stage, layer, paths, out_path: str, proxy: Proxy | None) -> None:
+    if proxy is None:
+        return
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
+        _author(stage, out_path, proxy)
+        if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
+            proxy_setup.set_up_proxy(stage, paths, out_path)
+
+
+def _build(node, sources, settings: _Settings) -> Proxy | None:
+    """The proxy: here, or for a big volume with the volume in a separate process.
+
+    The volume is the seconds and the gigabytes, and a process that runs out of memory
+    does not take the host down with it. The cook waits for it (sim_bake.wait): the
+    chunks below read the proxy, so they cook once, after it, and a progress window shows
+    meanwhile, with Cancel. The samples are taken on the wait's worker thread: they read
+    textures and run MaterialX programs, which do not cross to another process, but they
+    touch no USD.
+    """
+    if not sources or grid_cells(sources, settings) < _PROCESS_CELLS:
+        return build_proxy(sources, settings)
+    def bake(ctx):
+        step = _stepper(settings, lambda done, total, text: ctx.step(text, done, total))
+        step("sample")
+        yield sim_bake.WORKER
+        samples = sample(sources, settings, check=ctx.check, progress=lambda share: step("sample", share))
+        if samples is None:
+            return None
+        job = _remesh_job(samples, sources, settings)
+        del samples
+        return sim_bake.in_subprocess(ctx, remesh, **job)
+
+    surface = sim_bake.wait(node, bake, report=lambda text: _report(node, None, text), name="RemeshProxy")
+    return _proxy(surface, sources, settings)
+
+
+def _remember(layer_id: str, stamp: tuple, proxy: Proxy | None) -> None:
+    """Keep proxy as the last cook of the chunk whose layer is layer_id."""
+    if len(_LAST_COOK) > 64:
+        _LAST_COOK.clear()  # deleted chunks leave entries; a proxy can be large
+    _LAST_COOK[layer_id] = (stamp, proxy)
 
 
 def _keep_source(node, stage, layer, paths, out_path, triangles, keep_under) -> None:
@@ -614,6 +759,8 @@ def config():
             "pillow>=10",
         ],
         cache_cook=True,
+        # A big one waits behind the progress window: a slider drag sets its value once.
+        cook_on_release=True,
         description=(
             "Rebuilds an asset as one closed, coloured proxy mesh by way of a volume: the\n"
             "surface is sampled, turned into a distance field, gaps are closed and enclosed\n"

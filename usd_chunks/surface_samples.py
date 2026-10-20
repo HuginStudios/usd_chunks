@@ -716,7 +716,7 @@ class Samples(NamedTuple):
     cut: np.ndarray  # (s,) bool
 
 
-def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool) -> Samples:
+def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool, check) -> Samples:
     """World-space samples of one source, with what its material shows at each."""
     local_spacing = spacing / placement_scale(source.placements)
     tri_index, bary = sample_triangles(source.points, source.tris, local_spacing, rng)
@@ -729,6 +729,7 @@ def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool)
     cut = np.zeros(len(tri_index), dtype=bool)
 
     for part in source.textured:
+        check()
         # Which samples landed on this part's triangles, and where in its st they are.
         lookup = np.full(len(source.tris), -1, dtype=np.int64)
         lookup[part.tris] = np.arange(len(part.tris))
@@ -746,6 +747,7 @@ def _sample_source(source: Source, spacing, rng, images: Images, keep_cut: bool)
         if part.cutout and (alpha := images.sample(part.cutout, st)) is not None:
             cut[hits[alpha < part.threshold]] = True
         if part.programs:
+            check()
             primvars = {
                 name: np.einsum("sk,skc->sc", bary[hits], values[row[hits]])
                 for name, values in part.corner_primvars.items()
@@ -795,13 +797,25 @@ def _run_programs(programs, primvars, images, hits, colours, roughness, metallic
         logger.warning("MaterialX evaluation failed: %s", exc)
 
 
-def sample_sources(sources, spacing, keep_cut: bool = False) -> Samples:
+def sample_sources(sources, spacing, keep_cut: bool = False, check=None, progress=None) -> Samples:
     """Every source's world-space samples, concatenated; `spacing` is the world distance
     between neighbouring samples on a large triangle. Cut-out samples are dropped unless
-    `keep_cut`, and then flagged in `Samples.cut`."""
+    `keep_cut`, and then flagged in `Samples.cut`. `check` is called between the parts --
+    each source, each textured part, before its MaterialX programs -- to raise and stop it
+    (sim_bake.Context.check): a 7M-triangle tree samples for eleven seconds. `progress` is
+    called after each source with the share of the triangles sampled so far, 0 to 1."""
     images = Images()
     rng = np.random.default_rng(0)  # the same samples every cook, not a shimmering result
-    parts = [_sample_source(source, spacing, rng, images, keep_cut) for source in sources]
+    check = check or (lambda: None)
+    sizes = [len(source.tris) * len(source.placements) for source in sources]
+    total, done = max(1, sum(sizes)), 0
+    parts = []
+    for source, size in zip(sources, sizes):
+        check()
+        parts.append(_sample_source(source, spacing, rng, images, keep_cut, check))
+        done += size
+        if progress is not None:
+            progress(done / total)
     if not parts:
         empty3 = np.zeros((0, 3), dtype=np.float32)
         empty = np.zeros(0, dtype=np.float32)
