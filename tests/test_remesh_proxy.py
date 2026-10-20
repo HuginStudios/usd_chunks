@@ -656,6 +656,32 @@ def test_cancel_keeps_the_last_proxy_and_the_chunks_below_wait(in_a_ui, qapp, mo
     assert cooks == [], "a chunk below cooked after Cancel"
 
 
+def _count_reads(monkeypatch) -> list:
+    """One entry for every read of an asset the chunk makes from here on."""
+    reads: list = []
+    real = surface_samples.gather_sources
+    monkeypatch.setattr(surface_samples, "gather_sources", lambda *a, **k: reads.append(1) or real(*a, **k))
+    return reads
+
+
+def test_a_remesh_in_a_process_reads_the_asset_once(in_a_ui, qapp, monkeypatch) -> None:
+    """On a 1.4M-triangle asset each read is half a second on the main thread, and a
+    settings change read it five times: the cook cache's key and the cook, then both again
+    when the remesh landed, and once more as that cook ran a second time. Once is enough,
+    and a settings change reuses it."""
+    stage, make = in_a_ui
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    reads = _count_reads(monkeypatch)
+    node.get_param("prim_path").value = "/Asset"
+    assert stage.GetPrimAtPath("/Asset_proxy")
+    assert reads == [1]
+
+    node.get_param("thickness").value = 4.0
+    assert reads == [1]
+
+
 def test_a_process_that_dies_fails_the_cook_and_keeps_the_host(in_a_ui, qapp, monkeypatch) -> None:
     """A process that dies (out of memory, say) must not take the host with it."""
     stage, make = in_a_ui
@@ -743,3 +769,140 @@ def test_the_first_cook_remeshes_once(in_a_ui, qapp, monkeypatch) -> None:
 
     assert stage.GetPrimAtPath("/Asset_proxy")
     assert waits == [1], f"remeshed {len(waits)} times"
+
+
+# ---------------------------------------------------------------------------
+# the volume's arithmetic, against scipy's own
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reach", [0.75, 1.75, 3.0, 4.5])
+def test_the_ball_dilation_grows_exactly_what_a_distance_threshold_does(reach) -> None:
+    rng = np.random.default_rng(3)
+    occupied = rng.random((30, 24, 20)) > 0.995
+    expected = rp.ndimage.distance_transform_edt(~occupied) <= reach
+    assert np.array_equal(rp.ndimage.binary_dilation(occupied, structure=rp._ball(reach)), expected)
+
+
+def test_squared_distances_match_scipy_slab_by_slab(monkeypatch) -> None:
+    """Worked out a few slabs at a time, to hold a third of the memory; it must not differ
+    from the whole-grid answer at the slab joins."""
+    monkeypatch.setattr(rp, "_SLAB_VOXELS", 24 * 20 * 3)  # three slabs of x at a time
+    rng = np.random.default_rng(4)
+    mask = rng.random((31, 24, 20)) > 0.02
+    got = rp.squared_distance_to_false(mask)
+    assert got.dtype == np.int32
+    assert np.array_equal(np.sqrt(got, dtype=np.float64), rp.ndimage.distance_transform_edt(mask))
+
+
+def _field_as_it_was(samples, voxel, thickness, close, fill, smooth):
+    """build_field before it was made lighter: scipy's distances over the whole grid."""
+    pad = int(np.ceil(thickness + close + 3.0 * smooth)) + 2
+    lo = samples.min(axis=0)
+    origin = lo - pad * voxel
+    shape = np.ceil((samples.max(axis=0) - lo) / voxel).astype(np.int64) + 1 + 2 * pad
+    occupied = np.zeros(tuple(shape), dtype=bool)
+    cells = np.rint((samples - origin) / voxel).astype(np.int64)
+    occupied[cells[:, 0], cells[:, 1], cells[:, 2]] = True
+    grown = rp.ndimage.distance_transform_edt(~occupied) <= (thickness + close)
+    if fill:
+        grown = rp.ndimage.binary_fill_holes(grown)
+    inside = rp.ndimage.distance_transform_edt(grown)
+    outside = rp.ndimage.distance_transform_edt(~grown)
+    values = (inside - outside - close).astype(np.float32)
+    if smooth > 0.0:
+        values = rp.ndimage.gaussian_filter(values, sigma=smooth)
+    return values
+
+
+@pytest.mark.parametrize("thickness, close", [(0.75, 1.0), (2.0, 4.0)])
+def test_the_volume_is_bit_for_bit_what_it_was(monkeypatch, thickness, close) -> None:
+    """A proxy must not change shape from an update that only made it cheaper: the reduction
+    after it is sensitive enough that float32 rounding alone took a rock from 138 to 110
+    triangles."""
+    monkeypatch.setattr(rp, "_SLAB_VOXELS", 5_000)
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _box(stage, "/Asset/Body")
+    _cards(stage, "/Asset/Leaves", _canopy_centres(150))
+    samples = rp.sample(surface_samples.gather_sources(stage.GetPrimAtPath("/Asset")), _settings())
+    voxel = 4.0 / 48
+    field = rp.build_field(samples.points, voxel, thickness, close, True, 1.0)
+    assert np.array_equal(field.values, _field_as_it_was(samples.points, voxel, thickness, close, True, 1.0))
+
+
+# ---------------------------------------------------------------------------
+# reading the asset only when it changed
+# ---------------------------------------------------------------------------
+
+
+def test_the_asset_is_read_again_only_when_it_changed(wired, monkeypatch) -> None:
+    """Every cook upstream recooks this one, and almost none change what it reads; a
+    settings change does not either. Telling so must not cost the read."""
+    stage, make = wired
+    mesh = _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("prim_path").value = "/Asset"
+    reads = _count_reads(monkeypatch)
+
+    assert node._cook()
+    node.get_param("thickness").value = 2.0
+    assert reads == []
+
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(_box_points((-1, -1, -1), (2, 1, 1))))
+    assert node._cook()
+    assert reads == [1]
+    points = np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetPointsAttr().Get())
+    assert points[:, 0].max() > 2.0, "the proxy of the asset as it is now"
+
+
+def _hsv_material(stage, path, amount):
+    """A MaterialX surface whose base colour is a hue/saturation/value node's output."""
+    material = UsdShade.Material.Define(stage, path)
+    surface = UsdShade.Shader.Define(stage, f"{path}/Surface")
+    surface.CreateIdAttr("ND_open_pbr_surface_surfaceshader")
+    material.CreateSurfaceOutput("mtlx").ConnectToSource(surface.ConnectableAPI(), "surface")
+    hsv = UsdShade.Shader.Define(stage, f"{path}/Hsv")
+    hsv.CreateIdAttr("ND_hsvadjust_color3")
+    hsv.CreateInput("in", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.2, 0.6, 0.1))
+    hsv.CreateInput("amount", Sdf.ValueTypeNames.Vector3f).Set(Gf.Vec3f(*amount))
+    hsv.CreateOutput("out", Sdf.ValueTypeNames.Color3f)
+    surface.CreateInput("base_color", Sdf.ValueTypeNames.Color3f).ConnectToSource(hsv.ConnectableAPI(), "out")
+    return material, hsv
+
+
+def test_an_edit_inside_a_materialx_network_reaches_the_proxy(wired) -> None:
+    """The check that a recook changed nothing compared what was read of the material --
+    its constants and textures -- and not the network the colour is computed by: darkening
+    a hue/saturation/value node left the proxy its old colour."""
+    stage, make = wired
+    mesh = _box(stage, "/Asset")
+    material, hsv = _hsv_material(stage, "/Looks/Mat", (0.0, 1.0, 1.0))
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+    node = make()
+    node.get_param("resolution").value = 32
+    node.get_param("prim_path").value = "/Asset"
+
+    def colour():
+        return np.asarray(UsdGeom.Mesh(stage.GetPrimAtPath("/Asset_proxy")).GetDisplayColorPrimvar().Get()).mean(axis=0)
+
+    assert np.allclose(colour(), (0.2, 0.6, 0.1), atol=1e-3)
+    hsv.GetInput("amount").Set(Gf.Vec3f(0.0, 1.0, 0.3))
+    assert node._cook()
+    assert np.allclose(colour(), np.array([0.2, 0.6, 0.1]) * 0.3, atol=1e-3)
+
+
+def test_ticking_keep_small_assets_after_a_remesh_keeps_the_asset(wired) -> None:
+    """The last remesh is reused only for the same settings, and Keep Small Assets is one."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    _box(stage, "/World/Asset/Body")
+    node = make(budget=3000)
+    node.get_param("resolution").value = 32
+    node.get_param("keep_small").value = False
+    node.get_param("prim_path").value = "/World/Asset"
+    assert "kept as is" not in node.get_param("readout").value
+
+    node.get_param("keep_small").value = True
+    assert "kept as is" in node.get_param("readout").value

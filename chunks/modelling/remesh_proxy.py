@@ -97,6 +97,61 @@ class Field(NamedTuple):
     voxel: float
 
 
+# Up to this many voxels, the dilation is a ball-shaped binary one rather than a distance
+# transform: the same voxels, as a ball is every offset within the radius. On 13M voxels the
+# default 0.75 + 1 (a 3x3x3 ball) took 0.19s against 1.26s, and 3 took 0.76s; at 4 the
+# ball's 257 offsets made it the slower, 1.65s.
+_BALL_REACH = 3.0
+
+# Voxels worked out at once by the slab loops below.
+_SLAB_VOXELS = 2_000_000
+
+
+def _ball(radius: float) -> np.ndarray:
+    """Every voxel offset no further than `radius` from the centre, as a structuring element."""
+    span = np.arange(-int(np.floor(radius)), int(np.floor(radius)) + 1)
+    x, y, z = np.meshgrid(span, span, span, indexing="ij")
+    return x * x + y * y + z * z <= radius * radius + 1e-9
+
+
+def _slabs(shape):
+    """Slices along the first axis, each about _SLAB_VOXELS voxels."""
+    step = max(1, _SLAB_VOXELS // max(1, shape[1] * shape[2]))
+    return [slice(start, min(start + step, shape[0])) for start in range(0, shape[0], step)]
+
+
+def squared_distance_to_false(mask: np.ndarray) -> np.ndarray:
+    """Each voxel's squared distance to the nearest False one, in voxels, as exact int32.
+
+    ndimage.distance_transform_edt(mask) squared, but worked out from its nearest-voxel
+    indices a slab at a time: its own whole-grid arithmetic held about 48 bytes a voxel at
+    once (630 MB for a 13M-voxel rock). Squared and whole, so the volume comes out bit for
+    bit the same as from scipy's own distances.
+    """
+    nearest = ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+    out = np.empty(mask.shape, dtype=np.int32)
+    _nx, ny, nz = mask.shape
+    y = np.arange(ny, dtype=np.int32)[None, :, None]
+    z = np.arange(nz, dtype=np.int32)[None, None, :]
+    for slab in _slabs(mask.shape):
+        x = np.arange(slab.start, slab.stop, dtype=np.int32)[:, None, None]
+        squared = (nearest[0, slab] - x) ** 2
+        squared += (nearest[1, slab] - y) ** 2
+        squared += (nearest[2, slab] - z) ** 2
+        out[slab] = squared
+    return out
+
+
+def _signed_distance(grown: np.ndarray, offset: float) -> np.ndarray:
+    """Distance into `grown` minus distance out of it, minus `offset`, as float32."""
+    inside = squared_distance_to_false(grown)
+    outside = squared_distance_to_false(~grown)
+    values = np.empty(grown.shape, dtype=np.float32)
+    for slab in _slabs(grown.shape):
+        values[slab] = np.sqrt(inside[slab], dtype=np.float64) - np.sqrt(outside[slab], dtype=np.float64) - offset
+    return values
+
+
 def build_field(samples, voxel, thickness, close, fill, smooth) -> Field:
     """The proxy's volume, from surface samples. Sizes are in voxels; see the module doc.
 
@@ -111,17 +166,21 @@ def build_field(samples, voxel, thickness, close, fill, smooth) -> Field:
     occupied = np.zeros(tuple(shape), dtype=bool)
     cells = np.rint((samples - origin) / voxel).astype(np.int64)
     occupied[cells[:, 0], cells[:, 1], cells[:, 2]] = True
+    del cells
 
-    # Distance to the nearest sample, then everything within thickness + close of one:
-    # the dilation half of the closing.
-    grown = ndimage.distance_transform_edt(~occupied) <= (thickness + close)
+    # Everything within thickness + close of a sample: the dilation half of the closing.
+    reach = thickness + close
+    if reach <= _BALL_REACH:
+        grown = ndimage.binary_dilation(occupied, structure=_ball(reach))
+    else:
+        grown = np.sqrt(squared_distance_to_false(~occupied), dtype=np.float64) <= reach
+    del occupied
     if fill:
         grown = ndimage.binary_fill_holes(grown)
     # A signed distance to that grown region, so eroding it by `close` is a level set rather
     # than another binary pass -- and the surface comes out smooth instead of in voxel steps.
-    inside = ndimage.distance_transform_edt(grown)
-    outside = ndimage.distance_transform_edt(~grown)
-    values = (inside - outside - close).astype(np.float32)
+    values = _signed_distance(grown, close)
+    del grown
     if smooth > 0.0:
         values = ndimage.gaussian_filter(values, sigma=smooth)
     return Field(values, origin, float(voxel))
@@ -297,15 +356,51 @@ def build_proxy(sources, settings: _Settings) -> Proxy | None:
 # ---------------------------------------------------------------------------
 
 
-def fingerprint(sources, settings: _Settings) -> tuple:
-    """Everything the proxy depends on. Reading the sources is cheap next to building one
-    (a few hundred ms against several seconds), so a recook that changed nothing upstream
-    -- every upstream cook triggers one -- costs only the read."""
-    return (tuple(settings),) + surface_samples.fingerprint(sources)
+def input_stamp(upstream, paths, settings: _Settings, keep_small: bool, previous: dict, current: dict) -> tuple:
+    """Everything the proxy depends on, without reading the asset.
+
+    Every cook upstream triggers one here, and almost none of them change what it reads. On
+    a 1.4M-triangle asset this takes hundredths of a second where the read takes half of
+    one, and the read was made twice a cook: once for the cook cache's key, once to cook.
+
+    Args:
+        upstream: The stage the asset is read from.
+        paths: The assets' prim paths.
+        settings: The cook's settings.
+        keep_small: Whether an asset under the budget is kept as is.
+        previous: The last cook's surface_samples.checksum address book.
+        current: The address book to fill.
+
+    Returns:
+        `(settings, keep_small, the assets' signatures)`: equal for two cooks that would
+        build the same proxy.
+    """
+    signatures = tuple(
+        surface_samples.signature(upstream.GetPrimAtPath(path), previous=previous, current=current) for path in paths
+    )
+    return tuple(settings), keep_small, signatures
 
 
-# Keyed by the chunk's own layer identifier: (fingerprint, proxy).
+class _CookRecord(NamedTuple):
+    """The last cook of one chunk: its stamp, the arrays it signed (checksum's address
+    book), the proxy it made and where it wrote it (the assets' paths, the proxy's path),
+    and the readout's note when it made none."""
+
+    stamp: tuple
+    arrays: dict
+    proxy: Proxy | None
+    where: tuple = ()
+    note: str = ""
+
+
+# Keyed by the chunk's own layer identifier.
 _LAST_COOK: dict = {}
+
+# The last full read, for the next cook of the same chunk on the same assets as they still
+# are -- a settings change on the chunk being tuned, where on a set of small meshes the read
+# was the one cost left: chunk layer identifier -> (asset paths, their signatures, sources).
+# One entry, not one per chunk: an asset's sources can be a few hundred MB.
+_LAST_READ: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -353,12 +448,37 @@ def _output_path(node, source_path: str) -> str:
     return node.get_param("out_path").value or str(proxy_setup.sibling_path(source_path))
 
 
-def _sources(node, paths):
-    """Read through a composition without this chunk's layer, holding the scratch stage."""
-    upstream = chunk_stage.get_upstream_stage(node.get_stage(), node.get_scene(), node)
-    return upstream, [
-        source for path in paths for source in surface_samples.gather_sources(upstream.GetPrimAtPath(path))
-    ]
+def _upstream(node):
+    """The composition without this chunk's layer. Its prims are valid while it is held."""
+    return chunk_stage.get_upstream_stage(node.get_stage(), node.get_scene(), node)
+
+
+def _sources(upstream, paths) -> list:
+    return [source for path in paths for source in surface_samples.gather_sources(upstream.GetPrimAtPath(path))]
+
+
+def _read(layer_id: str, upstream, paths, signatures: tuple) -> list:
+    """The assets' sources: the last read's, if it was this chunk's of the same assets with
+    the same signatures; else read now."""
+    key = (tuple(map(str, paths)), signatures)
+    last = _LAST_READ.get(layer_id)
+    if last is not None and last[:2] == key:
+        return last[2]
+    _LAST_READ.clear()  # the old sources go before the new ones are read
+    sources = _sources(upstream, paths)
+    _LAST_READ[layer_id] = key + (sources,)
+    return sources
+
+
+def _keeps_small(node) -> bool:
+    return bool(node.get_param("keep_small", chunk.is_param_t(bool)).value)
+
+
+def _last_arrays(node) -> dict:
+    """The arrays the chunk's last cook signed, to recognise them by address."""
+    layer = node.get_edit_context()
+    record = _LAST_COOK.get(layer.identifier) if layer else None
+    return record.arrays if record is not None else {}
 
 
 def cache_key(node):
@@ -366,8 +486,7 @@ def cache_key(node):
     paths = node.get_param("prim_path").resolve_paths()
     if not paths or not _HAS_DEPS:
         return ()
-    _upstream, sources = _sources(node, paths)
-    return fingerprint(sources, _settings(node))
+    return input_stamp(_upstream(node), paths, _settings(node), _keeps_small(node), _last_arrays(node), {})
 
 
 _CREASE_COS = np.cos(np.radians(60.0))
@@ -466,27 +585,32 @@ def execute(node: chunk.Chunk) -> None:
         return
 
     settings = _settings(node)
-    upstream, sources = _sources(node, paths)
+    keep_small = _keeps_small(node)
     out_path = _output_path(node, str(paths[0]))
-    source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
-    keep_under = settings.budget if node.get_param("keep_small", chunk.is_param_t(bool)).value else 0
-    if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
-        del upstream
-        _keep_source(node, stage, layer, paths, out_path, source_triangles, keep_under)
-        return
-    stamp = fingerprint(sources, settings)
+    where = (tuple(map(str, paths)), out_path)
+    upstream = _upstream(node)
     previous = _LAST_COOK.get(layer.identifier)
-    del upstream  # the sources are numpy now; the scratch stage can go
-    if previous is not None and previous[0] == stamp:
-        proxy = previous[1]
+    signed: dict = {}
+    stamp = input_stamp(upstream, paths, settings, keep_small, previous.arrays if previous else {}, signed)
+    if previous is not None and previous.stamp == stamp:
+        del upstream
+        proxy, note = previous.proxy, previous.note
     else:
+        sources = _read(layer.identifier, upstream, paths, signatures=stamp[-1])
+        source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
+        keep_under = settings.budget if keep_small else 0
+        if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
+            del upstream
+            _keep_source(node, stage, layer, paths, out_path, source_triangles, keep_under)
+            return
+        del upstream  # the sources are numpy now; the scratch stage can go
+        note = "" if sources else "no meshes under that prim"
         try:
             proxy = _build(node, sources, settings)
         except Exception as e:
             # Cancelled, or the process died: the last proxy stays in view, and the
             # cook fails, so the chunks below wait for a good one.
-            if previous is not None and previous[1] is not None:
-                _write(node, stage, layer, paths, out_path, previous[1])
+            _show_last(node, stage, layer, paths, out_path, previous)
             cancelled = isinstance(e, sim_bake.Cancelled)
             _report(node, None, "cancelled" if cancelled else f"remesh failed: {e}")
             raise
@@ -494,15 +618,14 @@ def execute(node: chunk.Chunk) -> None:
     # Kept before it is written: a first cook runs on a stage of the chunk's inputs alone
     # (skip_cook), where the proxy's prim can't be defined, and is run again on the whole
     # stage. Kept first, the second run finds this proxy instead of remeshing again.
-    _remember(layer.identifier, stamp, proxy)
-    _write(node, stage, layer, paths, out_path, proxy)
+    _remember(layer.identifier, _CookRecord(stamp, signed, proxy, where, note))
+    if proxy is not None:
+        _write(node, stage, layer, paths, out_path, proxy)
     node.get_param("out_mesh").value = out_path if proxy is not None else ""
-    _report(node, proxy, "" if sources else "no meshes under that prim")
+    _report(node, proxy, note)
 
 
-def _write(node, stage, layer, paths, out_path: str, proxy: Proxy | None) -> None:
-    if proxy is None:
-        return
+def _write(node, stage, layer, paths, out_path, proxy: Proxy) -> None:
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         _author(stage, out_path, proxy)
         if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
@@ -536,11 +659,18 @@ def _build(node, sources, settings: _Settings) -> Proxy | None:
     return _proxy(surface, sources, settings)
 
 
-def _remember(layer_id: str, stamp: tuple, proxy: Proxy | None) -> None:
-    """Keep proxy as the last cook of the chunk whose layer is layer_id."""
+def _show_last(node, stage, layer, paths, out_path, previous: _CookRecord | None) -> None:
+    """Write the last proxy again, if it was of the same assets and at the same path: a
+    remesh that was cancelled or failed leaves the asset the proxy it had."""
+    if previous is not None and previous.proxy is not None and previous.where == (tuple(map(str, paths)), out_path):
+        _write(node, stage, layer, paths, out_path, previous.proxy)
+
+
+def _remember(layer_id: str, record: _CookRecord) -> None:
+    """Keep record as the last cook of the chunk whose layer is layer_id."""
     if len(_LAST_COOK) > 64:
         _LAST_COOK.clear()  # deleted chunks leave entries; a proxy can be large
-    _LAST_COOK[layer_id] = (stamp, proxy)
+    _LAST_COOK[layer_id] = record
 
 
 def _keep_source(node, stage, layer, paths, out_path, triangles, keep_under) -> None:

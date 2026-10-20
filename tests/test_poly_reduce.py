@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk_registry, chunk, sim_bake
+from usd_chunks import chunk_registry, chunk, sim_bake, surface_samples
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -726,9 +726,9 @@ def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
     attr = mesh.GetPointsAttr()
 
     first: dict = {}
-    signature = pr._checksum(attr.Get(), {}, first)
+    signature = surface_samples.checksum(attr.Get(), {}, first)
     second: dict = {}
-    assert pr._checksum(attr.Get(), first, second) == signature
+    assert surface_samples.checksum(attr.Get(), first, second) == signature
     assert len(second) == 1  # carried over rather than recomputed
 
     moved = points + np.array([0.0, 0.0, 3.0])
@@ -736,7 +736,7 @@ def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
     third: dict = {}
 
     # Same length, same dtype, different contents -- the signature has to move with them.
-    assert pr._checksum(attr.Get(), first, third) != signature
+    assert surface_samples.checksum(attr.Get(), first, third) != signature
 
 
 # ---------------------------------------------------------------------------
