@@ -887,3 +887,76 @@ def test_turning_write_as_proxy_off_reduces_in_place_again(wired) -> None:
     assert not stage.GetPrimAtPath("/Mesh_proxy")
     assert _triangle_count(stage, "/Mesh") < len(counts)
     assert UsdGeom.Imageable(stage.GetPrimAtPath("/Mesh")).ComputePurpose() == UsdGeom.Tokens.default_
+
+
+@needs_simplify
+def test_proxy_path_puts_the_copy_where_it_says(wired) -> None:
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _grid_with_subsets(stage, "/Asset/Body")
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("as_proxy").value = True
+    node.get_param("proxy_path").value = "/Proxies/AssetLow"
+    node.get_param("prim_path").value = "/Asset"
+
+    assert not stage.GetPrimAtPath("/Asset_proxy")
+    assert _triangle_count(stage, "/Proxies/AssetLow/Body") > 0
+    assert _subsets_out_of_range(stage, "/Proxies/AssetLow/Body") == []
+    proxy, _owner = UsdGeom.Imageable(stage.GetPrimAtPath("/Asset")).ComputeProxyPrim()
+    assert proxy.GetPath() == Sdf.Path("/Proxies/AssetLow")
+
+
+@needs_simplify
+def test_proxy_path_with_name_gives_each_asset_its_own_copy(wired) -> None:
+    stage, make = wired
+    for name in ("Chair", "Table"):
+        UsdGeom.Xform.Define(stage, f"/{name}")
+        _grid_with_subsets(stage, f"/{name}/Body")
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("as_proxy").value = True
+    node.get_param("proxy_path").value = "/Proxies/{name}_low"
+    node.get_param("prim_path").value = "/Chair /Table"
+
+    for name in ("Chair", "Table"):
+        assert _triangle_count(stage, f"/Proxies/{name}_low/Body") > 0
+        proxy, _owner = UsdGeom.Imageable(stage.GetPrimAtPath(f"/{name}")).ComputeProxyPrim()
+        assert proxy.GetPath() == Sdf.Path(f"/Proxies/{name}_low")
+
+
+@needs_simplify
+@pytest.mark.parametrize(
+    ("assets", "path", "says"),
+    [
+        ("/Chair /Table", "/Proxies/low", "needs {name}"),
+        ("/Chair", "/Chair/low", "can't be inside /Chair"),
+        ("/Chair", "not a path", "is not a prim path"),
+    ],
+)
+def test_a_proxy_path_that_cannot_work_says_why_and_writes_nothing(wired, assets, path, says) -> None:
+    stage, make = wired
+    for name in ("Chair", "Table"):
+        UsdGeom.Xform.Define(stage, f"/{name}")
+        _grid_with_subsets(stage, f"/{name}/Body")
+    before = _triangle_count(stage, "/Chair/Body")
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("as_proxy").value = True
+    node.get_param("proxy_path").value = path
+    node.get_param("prim_path").value = assets
+
+    assert says in node.get_param("readout").value
+    assert _triangle_count(stage, "/Chair/Body") == before, "the asset itself was reduced"
+    assert not stage.GetPrimAtPath("/Proxies") and not stage.GetPrimAtPath("/Chair_proxy")
+
+
+def test_proxy_path_shows_only_while_write_as_proxy_is_on(wired) -> None:
+    _stage, make = wired
+    node = make()
+    hidden = chunk.ChunkFlags.State.HIDDEN
+    assert node.get_param("proxy_path").has_state(hidden)
+    node.get_param("as_proxy").value = True
+    assert not node.get_param("proxy_path").has_state(hidden)
+    node.get_param("as_proxy").value = False
+    assert node.get_param("proxy_path").has_state(hidden)
