@@ -1306,6 +1306,8 @@ def config():
         category=chunk.StandardCategory.MODELLING,
         requirements=["fast-simplification>=0.2,<1", "numpy>=2,<3"],
         cache_cook=True,
+        # A big one waits behind the progress window: a slider drag sets its value once.
+        cook_on_release=True,
         description=(
             "Reduces a mesh's triangle count using quadric error metrics — the method that\n"
             "spends the triangle budget on silhouettes and creases and takes it out of flat\n"
