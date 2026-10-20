@@ -159,6 +159,8 @@ _COL_VIEW_INACTIVE = QtGui.QColor("#4a453e")  # dim grey-brown -- an inactive vi
 _COL_VIEW_ACTIVE = QtGui.QColor("#5fd08a")   # green -- active view border accent
 _COL_OUTPUT_HEADER = QtGui.QColor("#3a6f8f")  # steel blue -- the Output: what the graph delivers
 _COL_STALE = QtGui.QColor("#e0902a")   # amber -- chunk's result no longer reflects its inputs
+_COL_FAILED_HEADER = QtGui.QColor("#7a2626")  # dark red -- the chunk's last cook failed or was cancelled
+_COL_FAILED_BORDER = QtGui.QColor("#d04848")
 _COL_PORT_EXEC = QtGui.QColor("#999999")
 _COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
 _COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
@@ -651,6 +653,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._typed_ports: list[ChunkPortItem] = []
         self._selected = chunk.has_state(ChunkFlags.State.SELECTED)
         self._stale = chunk.has_state(ChunkFlags.State.STALE)
+        self._failed = chunk.has_state(ChunkFlags.State.FAILED)
         # The collapsed state _set_collapsed last applied; None until something has. Kept so
         # a state change that is not a collapse (selecting, going stale) does not rebuild
         # ports -- see _set_collapsed.
@@ -1379,10 +1382,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 head = _COL_OUTPUT_HEADER if self._is_active_output() else _COL_VIEW_INACTIVE
             elif self._is_chunkgroup:
                 head = _COL_GROUP_HEADER
+            elif self._failed:
+                head = _COL_FAILED_HEADER
             elif self._locked:
                 head = _COL_LOCKED_HEADER
             bg = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
-            border = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
+            border = _COL_NODE_SELECTED if self._selected else (
+                _COL_FAILED_BORDER if self._failed else _COL_NODE_BORDER)
             if self._disabled:
                 bg, head, border = _dimmed(bg), _dimmed(head), _dimmed(border)
             painter.setBrush(bg)
@@ -1401,6 +1407,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         is_active_output = self._is_output and self._is_active_output()
         border_color = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
         border_w = 1.5
+        if self._failed and not self._selected:
+            border_color = _COL_FAILED_BORDER
+            border_w = 2.0
         if is_active_view or is_active_output:
             border_color = _COL_VIEW_ACTIVE
             border_w = 2.5
@@ -1419,6 +1428,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             header_color = _COL_OUTPUT_HEADER if is_active_output else _COL_VIEW_INACTIVE
         elif self._is_chunkgroup:
             header_color = _COL_GROUP_HEADER
+        elif self._failed:
+            header_color = _COL_FAILED_HEADER
         elif self._locked:
             header_color = _COL_LOCKED_HEADER
         else:
@@ -1801,8 +1812,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._selected = selected
                 self.update()
             stale = self.chunk.has_state(ChunkFlags.State.STALE)
-            if stale != self._stale:
-                self._stale = stale
+            failed = self.chunk.has_state(ChunkFlags.State.FAILED)
+            if (stale, failed) != (self._stale, self._failed):
+                self._stale, self._failed = stale, failed
                 self._update_stale_tooltip()
                 self.update()
             self._set_collapsed(self.chunk.has_state(ChunkFlags.State.COLLAPSED))
@@ -1875,6 +1887,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             return
 
     def _update_stale_tooltip(self) -> None:
+        if self._failed:
+            self.setToolTip(
+                "Its last cook failed or was cancelled, so the nodes below it did not cook.\n"
+                "It cooks again on the next change."
+            )
+            return
         self.setToolTip(
             "Needs recook — inputs changed since this last ran. Press Run/Recompute to update it."
             if self._stale

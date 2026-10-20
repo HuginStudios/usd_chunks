@@ -349,7 +349,7 @@ class AttributeSender(Generic[ValueT], chunk_notice.ChunkNoticePropagator):
         """A change to the state attribute is presentation only unless it moved DISABLED.
 
         DISABLED decides whether the chunk cooks at all, so it is a real input to everything
-        downstream. HIDDEN, COLLAPSED, SELECTED and STALE are hints to the UI and nothing
+        downstream. HIDDEN, COLLAPSED, SELECTED, STALE and FAILED are hints to the UI and nothing
         else -- hiding in particular is a *consequence* of a chunk reconfiguring (math_ops
         hides b/c because the operation changed), so treating it as a cause re-cooks the
         chunk for something its own cook just did.

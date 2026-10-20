@@ -5551,7 +5551,26 @@ def recook_for_view(
             what it brings in.
         _hidden: The context is outside its parent's cook set, so it cooks nothing at all,
             Output or not.
+
+    A chunk whose cook fails does not stop the pass halfway, with the chunks below it
+    still muted: nothing below it cooks (chunk_cook.cook_pass), the rest of the pass runs
+    and shows their last results, and the first error is raised once it is done. While a
+    chunk waits on a long job (chunk_cook.hold) the recook waits too, and runs after it.
     """
+    if chunk_cook.hold_back(
+        ("recook_for_view", id(context), _hidden),
+        lambda: recook_for_view(stage, scene, context, view_chunk, _synthetic_tail, _force, _hidden),
+    ):
+        return
+    errors: list = []
+    with chunk_cook.cook_pass():
+        _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hidden, errors)
+    if errors:
+        raise errors[0]
+
+
+def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hidden, errors) -> None:
+    """recook_for_view's pass. A failed cook in it goes on errors, and the pass goes on."""
     lm = chunk_registry.ChunkLayerManager()
     disabled = ChunkFlags.State.DISABLED
     # No active view: cook to the Output the graph delivers -- with departments sublayered,
@@ -5717,11 +5736,15 @@ def recook_for_view(
         if is_group_chunk(c):
             if id(c) in deferred_groups:
                 inner_view, synthetic = _group_output_driver(stage, scene, c)
-                recook_for_view(
-                    stage, scene, c, inner_view, _synthetic_tail=synthetic,
-                    _force=_force or chunk_cook.is_cook_stale(c),
-                )
-                chunk_cook.clear_cook_stale(c)
+                try:
+                    recook_for_view(
+                        stage, scene, c, inner_view, _synthetic_tail=synthetic,
+                        _force=_force or chunk_cook.is_cook_stale(c),
+                    )
+                except Exception as e:  # noqa: BLE001 - raised on by recook_for_view
+                    errors.append(e)
+                else:
+                    chunk_cook.clear_cook_stale(c)
             continue
         if not c.has_state(disabled):
             mute(lm.get_layer(c), False)
@@ -5741,7 +5764,10 @@ def recook_for_view(
             # through its input into the parent graph, and those chunks are the parent's
             # to cook -- forcing them re-ran the whole upstream chain on every stale group.
             elif (_force and in_context(c)) or chunk_cook.is_cook_stale(c):
-                c.execute()
+                try:
+                    c.execute()
+                except Exception as e:  # noqa: BLE001 - raised on by recook_for_view
+                    errors.append(e)
 
     if not cook_list:
         return
@@ -5962,6 +5988,9 @@ def recook_focus(
         context: The focused context, or None for the top level.
         view_chunk: The focused context's active view, or None.
     """
+    # Its muting is a recook's too: while a chunk waits on a long job, it waits as well.
+    if chunk_cook.hold_back(("recook_focus",), lambda: recook_focus(stage, scene, context, view_chunk)):
+        return
     if context is not None:
         lm = chunk_registry.ChunkLayerManager()
         group_path = get_chunk_prim_path(context)

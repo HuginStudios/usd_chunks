@@ -103,6 +103,7 @@ _VIEW_ACTIVE_COLOR = (0.78, 0.47, 0.19)
 _VIEW_INACTIVE_COLOR = (0.29, 0.27, 0.24)
 _LOCKED_HEADER_COLOR = (0.23, 0.19, 0.13)
 _STALE_HEADER_COLOR = (0.88, 0.56, 0.16)
+_FAILED_HEADER_COLOR = (0.62, 0.17, 0.17)
 
 #: Default node width. Wider than Blender's 140 because an input socket row here draws the
 #: param's label and its control, not just a socket name.
@@ -413,7 +414,10 @@ class UsdChunksNodeBase(bpy.types.Node):
 
     def draw_buttons(self, context, layout):
         chunk = self.get_chunk()
-        if chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
+        if chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
+            # The header is red (see apply_node_state); this says why.
+            layout.label(text="Cook failed or was cancelled", icon="CANCEL")
+        elif chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
             # Qt draws an amber badge with this as its tooltip. The header is amber here
             # too (see apply_node_state), but a colour alone does not say what to do.
             layout.label(text="Needs recook", icon="ERROR")
@@ -1143,7 +1147,9 @@ class BlenderGraphView:
             colour = _LOCKED_HEADER_COLOR
         else:
             colour = _NODE_HEADER_COLOR
-        if chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
+        if chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
+            colour = _FAILED_HEADER_COLOR
+        elif chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
             colour = _STALE_HEADER_COLOR
         node.color = colour
 

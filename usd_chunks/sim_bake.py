@@ -25,6 +25,11 @@ An engine that holds the GIL while it computes still stops the UI from a thread:
 for over a second at a time. in_subprocess() runs one solve function in a separate Python
 process instead, from inside the WORKER part.
 
+wait() is for a long part of a chunk's own cook. The chunks below it read its result, so
+the cook waits for it, and returns it: nothing else cooks meanwhile (chunk_cook.hold). The
+WORKER parts still run on a thread, so the host paints, and a progress window shows what
+it is doing, with Cancel. The rest of the window takes no input until it ends.
+
 The bake's layer: promote() puts it in front of the chunk layers that authored the same prims,
 so the baked samples win, and keep() / restore() carry a bake across the framework's
 clear-before-cook, since a bake is too expensive to redo on every cook.
@@ -49,13 +54,19 @@ from pathlib import Path
 
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_registry, cook_cache
+from usd_chunks import chunk_cook, chunk_registry, cook_cache
 from usd_chunks.chunk_process import python_executable
+from usd_chunks.cook_errors import CookCancelled
 
 try:
     from PySide6 import QtCore
 except ImportError:  # pragma: no cover - headless install without Qt
     QtCore = None
+
+try:
+    from PySide6 import QtWidgets
+except ImportError:  # pragma: no cover - Qt without widgets
+    QtWidgets = None
 
 try:
     from ctypes import wintypes
@@ -98,8 +109,8 @@ _PROGRESS_EVERY_S = 0.25
 _LINE = "@@sim_bake "
 
 
-class Cancelled(Exception):
-    """The bake was cancelled (cancel(node))."""
+class Cancelled(CookCancelled):
+    """The bake was cancelled (cancel(node)). Out of a cook, it fails the cook quietly."""
 
 
 def in_background() -> bool:
@@ -144,11 +155,13 @@ def cancel(node) -> None:
 class Context:
     """What a bake gets: progress, cancellation and live results, safe from any thread."""
 
-    def __init__(self, node, report: Callable[[str], None], live: Callable | None, relay=None):
+    def __init__(self, node, report: Callable[[str], None], live: Callable | None, relay=None,
+                 bar: Callable[[int, int], None] | None = None):
         self.node = node
         self._report = report
         self._live = live
         self._relay = relay
+        self._bar = bar
         self._started = time.perf_counter()
         self._first_frame = None
         self._last_report = 0.0
@@ -181,6 +194,8 @@ class Context:
         if not last and now - self._last_report < _PROGRESS_EVERY_S:
             return
         self._last_report = now
+        if self._bar is not None:
+            self._call(lambda: self._bar(done + 1, total))
         text = f"simulating... frame {done + 1} of {total}"
         if done > 0:
             left = (now - self._first_frame) / done * (total - done - 1)
@@ -307,6 +322,198 @@ def run(node, bake: Callable[[Context], Generator], *, report: Callable[[str], N
         relay.call.emit((lambda: done(value)) if finished else on_main)
 
     on_main()
+
+
+def wait(node, bake: Callable[[Context], Generator], *, report: Callable[[str], None],
+         name: str = "SimBake"):
+    """Run bake(ctx) for node and return its result, cooking nothing else until it ends.
+
+    For a long part of a chunk's own cook: the chunks below it read the result, so they
+    wait for it rather than cook against the last one and again when it lands. In a UI
+    host the WORKER parts run on a thread while a progress window shows the bake's status,
+    with Cancel; the rest of the window takes no input, and every cook asked for meanwhile
+    runs once it has ended (chunk_cook.hold). Headless it runs straight through.
+
+    Args:
+        node: The chunk cooking.
+        bake: A generator function taking a Context; its return value is the result.
+        report: Shows a line of text in the chunk's readout. Called on the main thread.
+        name: The worker thread's name.
+
+    Returns:
+        What bake returned.
+
+    Raises:
+        Cancelled: Cancel was pressed, or cancel(node) called.
+    """
+    setattr(node, _CANCEL, False)
+    if not in_background():
+        return drive(bake(Context(node, report, None)))
+
+    window = _ProgressWindow(node, lambda: cancel(node))
+
+    def shown(text: str) -> None:
+        report(text)
+        window.show_text(text)
+
+    relay = _Relay()
+    ctx = Context(node, shown, None, relay, bar=window.show_progress)
+    gen = bake(ctx)
+    loop = QtCore.QEventLoop()
+    outcome: dict = {}
+
+    def end(**result) -> None:
+        outcome.update(result)
+        loop.quit()
+
+    def on_main():
+        try:
+            finished, value = _phase(gen, ctx, WORKER)
+        except BaseException as e:  # noqa: BLE001 - raised on to the cook, below
+            end(error=e)
+            return
+        if finished:
+            end(value=value)
+            return
+        threading.Thread(target=on_worker, name=name, daemon=True).start()
+
+    def on_worker():
+        try:
+            finished, value = _phase(gen, ctx, MAIN)
+        except BaseException as e:  # noqa: BLE001
+            relay.call.emit(lambda e=e: end(error=e))
+            return
+        relay.call.emit((lambda: end(value=value)) if finished else on_main)
+
+    setattr(node, _RUNNING, True)
+    try:
+        with chunk_cook.hold(_later), window:
+            on_main()
+            if not outcome:
+                loop.exec()
+    finally:
+        setattr(node, _RUNNING, False)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+def _later(fn: Callable) -> None:
+    """Run fn from the event loop, once the current call stack has returned."""
+    QtCore.QTimer.singleShot(0, QtCore.QCoreApplication.instance(), fn)
+
+
+class _ProgressWindow:
+    """What wait() shows while it waits: the chunk, its status, a bar and Cancel.
+
+    It appears only if the wait lasts: a quarter of a second, so a short one does not flash.
+    From the start, though, the rest of the window takes no input -- clicks, keys, the
+    wheel, closing it -- so nothing can change the graph while a cook waits.
+    """
+
+    _DELAY_MS = 250
+
+    def __init__(self, node, on_cancel: Callable[[], None]):
+        self._node = node
+        self._on_cancel = on_cancel
+        self._dialog = None
+        self._text = ""
+        self._progress: tuple[int, int] | None = None
+        self._timer = None
+        self._filter = None
+
+    def __enter__(self):
+        app = QtWidgets.QApplication.instance() if QtWidgets is not None else None
+        if app is None:
+            return self
+        self._filter = _InputFilter(self)
+        app.installEventFilter(self._filter)
+        self._timer = QtCore.QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._show)
+        self._timer.start(self._DELAY_MS)
+        return self
+
+    def __exit__(self, *exc):
+        if self._timer is not None:
+            self._timer.stop()
+        if self._filter is not None:
+            QtWidgets.QApplication.instance().removeEventFilter(self._filter)
+        if self._dialog is not None:
+            self._dialog.hide()
+            self._dialog.deleteLater()
+            self._dialog = None
+        return False
+
+    def owns(self, obj) -> bool:
+        """Whether obj is the window or a widget in it: the only things that take input."""
+        if self._dialog is None:
+            return False
+        if not isinstance(obj, QtWidgets.QWidget):
+            # Input reaches a window's QWindow before its widgets.
+            return obj is self._dialog.windowHandle()
+        return obj is self._dialog or self._dialog.isAncestorOf(obj)
+
+    def show_text(self, text: str) -> None:
+        self._text = text
+        if self._dialog is not None:
+            self._dialog.setLabelText(self._label())
+
+    def show_progress(self, done: int, total: int) -> None:
+        self._progress = (done, total)
+        if self._dialog is not None:
+            self._dialog.setRange(0, total)
+            self._dialog.setValue(min(done, total))
+
+    def _label(self) -> str:
+        return f"{self._node.name}\n{self._text}" if self._text else self._node.name
+
+    def _show(self) -> None:
+        dialog = QtWidgets.QProgressDialog(self._label(), "Cancel", 0, 0, QtWidgets.QApplication.activeWindow())
+        dialog.setWindowTitle("Cooking")
+        dialog.setWindowModality(QtCore.Qt.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumWidth(360)
+        dialog.canceled.connect(self._cancel)
+        self._dialog = dialog
+        if self._progress is not None:
+            self.show_progress(*self._progress)
+        dialog.show()
+
+    def _cancel(self) -> None:
+        if self._dialog is not None:
+            self._dialog.setLabelText(f"{self._node.name}\ncancelling…")
+            self._dialog.setCancelButton(None)
+        self._on_cancel()
+
+
+if QtCore is not None:
+
+    class _InputFilter(QtCore.QObject):
+        """Eats input meant for anything but the progress window (see _ProgressWindow)."""
+
+        _EATEN = frozenset(
+            getattr(QtCore.QEvent.Type, name)
+            for name in (
+                "MouseButtonPress", "MouseButtonRelease", "MouseButtonDblClick", "MouseMove",
+                "KeyPress", "KeyRelease", "ShortcutOverride", "Shortcut", "Wheel",
+                "ContextMenu", "DragEnter", "DragMove", "Drop", "Close", "TabletPress",
+                "TouchBegin",
+            )
+        )
+
+        def __init__(self, window: _ProgressWindow):
+            super().__init__()
+            self._window = window
+
+        def eventFilter(self, obj, event) -> bool:
+            if event.type() not in self._EATEN or self._window.owns(obj):
+                return False
+            if event.type() == QtCore.QEvent.Type.Close:
+                event.ignore()
+            return True
 
 
 def drive(gen: Generator):
