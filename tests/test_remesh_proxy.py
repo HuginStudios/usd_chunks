@@ -696,3 +696,50 @@ def test_cancel_stops_the_sampling_part_way(in_a_ui, qapp, monkeypatch) -> None:
 
     assert node.get_param("readout").value == "cancelled"
     assert len(sampled) < 8, f"sampled {len(sampled)} of 12 meshes after Cancel"
+
+
+def test_a_remesh_in_a_process_reports_its_steps_in_order(in_a_ui, qapp, monkeypatch) -> None:
+    """The progress window says which step it is on: no true percentage can be had, as how
+    long each one takes depends on the asset."""
+    stage, make = in_a_ui
+    _box(stage, "/Asset", colour=(0.2, 0.4, 0.6))
+    node = make(budget=500)
+    node.get_param("keep_small").value = False
+    node.get_param("resolution").value = 32
+    notes: list = []
+    real = _live_module()._report
+
+    def recording(chunk_node, proxy, note=""):
+        if note.startswith("step") and (not notes or notes[-1] != note):
+            notes.append(note)
+        return real(chunk_node, proxy, note)
+
+    monkeypatch.setattr(_live_module(), "_report", recording)
+    node.get_param("prim_path").value = "/Asset"
+
+    assert notes == [
+        "step 1 of 5: sampling the surface",
+        "step 2 of 5: building the volume",
+        "step 3 of 5: meshing the surface",
+        "step 4 of 5: reducing to 500 tris",
+        "step 5 of 5: baking colours",
+    ]
+    assert stage.GetPrimAtPath("/Asset_proxy")
+
+
+def test_the_first_cook_remeshes_once(in_a_ui, qapp, monkeypatch) -> None:
+    """A first cook runs on a stage of the chunk's inputs alone (skip_cook), where the
+    proxy's prim can't be defined, and then again on the whole stage. The second run took
+    the whole remesh again: on a 7M-triangle tree, two waits of twenty seconds in a row."""
+    stage, make = in_a_ui
+    _box(stage, "/Asset")
+    node = make()
+    node.get_param("resolution").value = 32
+    waits: list = []
+    real = sim_bake.wait
+    monkeypatch.setattr(sim_bake, "wait", lambda *a, **k: waits.append(1) or real(*a, **k))
+
+    node.get_param("prim_path").value = "/Asset"
+
+    assert stage.GetPrimAtPath("/Asset_proxy")
+    assert waits == [1], f"remeshed {len(waits)} times"

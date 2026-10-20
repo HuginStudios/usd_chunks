@@ -191,12 +191,12 @@ def grid_cells(sources, settings: _Settings) -> int:
     return int(np.prod(np.ceil((hi - lo) / voxel) + 1 + 2 * pad))
 
 
-def sample(sources, settings: _Settings, check=None):
+def sample(sources, settings: _Settings, check=None, progress=None):
     """The surface samples the proxy is built from, or None when there are none.
 
     The part of a build that reads the sources' looks -- textures, MaterialX programs -- so
-    it runs here, and only arrays go on to `remesh`. `check` raises to stop it part way
-    (surface_samples.sample_sources).
+    it runs here, and only arrays go on to `remesh`. `check` raises to stop it part way, and
+    `progress` hears how far it is (surface_samples.sample_sources).
     """
     if not sources:
         return None
@@ -207,15 +207,37 @@ def sample(sources, settings: _Settings, check=None):
     expected = surface_samples.surface_area(sources) / (spacing * spacing)
     if expected > _MAX_SAMPLES:
         spacing *= float(np.sqrt(expected / _MAX_SAMPLES))
-    samples = surface_samples.sample_sources(sources, spacing, check=check)
+    samples = surface_samples.sample_sources(sources, spacing, check=check, progress=progress)
     return samples if len(samples.points) else None
+
+
+def _stepper(settings: _Settings, progress):
+    """`at(step, share)`: reports `step i of n: what` to progress(done, total, text).
+
+    The steps a remesh takes with these settings, in order. Each is the same length on the
+    bar: how long one takes depends on the asset, so the bar says how far through them it
+    is, not how long is left.
+    """
+    steps = {"sample": "sampling the surface", "volume": "building the volume", "surface": "meshing the surface"}
+    if settings.budget > 0 and mesh_reduce.HAS_DEPS:
+        steps["reduce"] = f"reducing to {settings.budget:,} tris"
+    if settings.bake:
+        steps["colour"] = "baking colours"
+    keys = list(steps)
+
+    def at(step: str, share: float = 0.0) -> None:
+        if progress is not None and step in steps:
+            i = keys.index(step)
+            progress(int(100 * (i + share)), 100 * len(keys), f"step {i + 1} of {len(keys)}: {steps[step]}")
+
+    return at
 
 
 def remesh(progress, points, colours, voxel, settings) -> dict | None:
     """The proxy's surface, from its samples. Arrays in and out, no USD: it runs in any process.
 
     Args:
-        progress: Not used. in_subprocess passes it, but words its reports for a simulation.
+        progress: progress(done, total, text), for each step (_stepper); or None.
         points: The samples' world positions.
         colours: Their colours, or None to bake none.
         voxel: The voxel size.
@@ -225,16 +247,22 @@ def remesh(progress, points, colours, voxel, settings) -> dict | None:
         The surface's `points`, `triangles` and `colours`, or None when it is empty.
     """
     settings = _Settings(*settings)
+    step = _stepper(settings, progress)
+    step("volume")
     field = build_field(points, voxel, settings.thickness, settings.close, settings.fill, settings.smooth)
+    step("surface")
     surface = extract_surface(field)
     del field
     if surface is None:
         return None
     surface_points, triangles = surface
     if settings.budget > 0 and mesh_reduce.HAS_DEPS:
+        step("reduce")
         surface_points, triangles = mesh_reduce.reduce_within(
             surface_points, triangles, settings.budget, settings.max_error / 100.0
         )
+    if colours is not None:
+        step("colour")
     baked = bake_colours(surface_points, points, colours) if colours is not None else None
     return dict(points=surface_points, triangles=triangles, colours=baked)
 
@@ -463,8 +491,11 @@ def execute(node: chunk.Chunk) -> None:
             _report(node, None, "cancelled" if cancelled else f"remesh failed: {e}")
             raise
 
-    _write(node, stage, layer, paths, out_path, proxy)
+    # Kept before it is written: a first cook runs on a stage of the chunk's inputs alone
+    # (skip_cook), where the proxy's prim can't be defined, and is run again on the whole
+    # stage. Kept first, the second run finds this proxy instead of remeshing again.
     _remember(layer.identifier, stamp, proxy)
+    _write(node, stage, layer, paths, out_path, proxy)
     node.get_param("out_mesh").value = out_path if proxy is not None else ""
     _report(node, proxy, "" if sources else "no meshes under that prim")
 
@@ -490,12 +521,11 @@ def _build(node, sources, settings: _Settings) -> Proxy | None:
     """
     if not sources or grid_cells(sources, settings) < _PROCESS_CELLS:
         return build_proxy(sources, settings)
-    triangles = sum(len(s.tris) * len(s.placements) for s in sources)
-
     def bake(ctx):
-        ctx.status(f"remeshing {_compact(triangles)} tris…")
+        step = _stepper(settings, lambda done, total, text: ctx.step(text, done, total))
+        step("sample")
         yield sim_bake.WORKER
-        samples = sample(sources, settings, check=ctx.check)
+        samples = sample(sources, settings, check=ctx.check, progress=lambda share: step("sample", share))
         if samples is None:
             return None
         job = _remesh_job(samples, sources, settings)

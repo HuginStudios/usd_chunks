@@ -797,19 +797,25 @@ def _run_programs(programs, primvars, images, hits, colours, roughness, metallic
         logger.warning("MaterialX evaluation failed: %s", exc)
 
 
-def sample_sources(sources, spacing, keep_cut: bool = False, check=None) -> Samples:
+def sample_sources(sources, spacing, keep_cut: bool = False, check=None, progress=None) -> Samples:
     """Every source's world-space samples, concatenated; `spacing` is the world distance
     between neighbouring samples on a large triangle. Cut-out samples are dropped unless
     `keep_cut`, and then flagged in `Samples.cut`. `check` is called between the parts --
     each source, each textured part, before its MaterialX programs -- to raise and stop it
-    (sim_bake.Context.check): a 7M-triangle tree samples for eleven seconds."""
+    (sim_bake.Context.check): a 7M-triangle tree samples for eleven seconds. `progress` is
+    called after each source with the share of the triangles sampled so far, 0 to 1."""
     images = Images()
     rng = np.random.default_rng(0)  # the same samples every cook, not a shimmering result
     check = check or (lambda: None)
+    sizes = [len(source.tris) * len(source.placements) for source in sources]
+    total, done = max(1, sum(sizes)), 0
     parts = []
-    for source in sources:
+    for source, size in zip(sources, sizes):
         check()
         parts.append(_sample_source(source, spacing, rng, images, keep_cut, check))
+        done += size
+        if progress is not None:
+            progress(done / total)
     if not parts:
         empty3 = np.zeros((0, 3), dtype=np.float32)
         empty = np.zeros(0, dtype=np.float32)
