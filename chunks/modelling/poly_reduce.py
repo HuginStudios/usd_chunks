@@ -37,10 +37,10 @@ authors `points`/`faceVertexIndices` overrides on the *same* prim it reads, so a
 composed-stage read would find its own previous output and reduce the reduction, and
 again, and again on every cook.
 
-In a UI, a big reduction runs in a separate process (sim_bake.in_subprocess), so the host
-stays usable. A thread would not do: fast_simplification holds the GIL while it works. The
-cook that starts it writes nothing, and the cook that follows when it is done writes the
-result, like any cook whose inputs have not changed.
+A big reduction runs in a separate process (sim_bake.in_subprocess): fast_simplification
+holds the GIL while it works, so even a thread would stop the host. The cook waits for it
+(sim_bake.wait), behind a progress window with Cancel, so the chunks below cook once,
+against the reduced mesh.
 """
 
 from __future__ import annotations
@@ -54,7 +54,6 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
-from usd_chunks import cook_cache
 from usd_chunks import proxy_setup
 from usd_chunks import sim_bake
 from usd_chunks import surface_samples
@@ -78,16 +77,11 @@ _MODES = [MODE_PERCENT, MODE_COUNT, MODE_PLANAR]
 # The fewest triangles a closed surface can have. Asking for less is asking for nothing.
 _MIN_TRIANGLES = 4
 
-# Meshes with at least this many triangles in all are reduced in a separate process, so the
-# host stays usable meanwhile: 4.5M triangles stopped it for 4.6s, and in a process it never
-# stops for more than 0.05s. Below this a plain mesh takes well under a second here, and
-# starting the process (about 1.5s, mostly importing USD) would only make the result later.
-_BACKGROUND_TRIANGLES = 500_000
-
-# Set on a chunk while its reduction runs in the background: the fingerprint it was started
-# for, and whether a newer cook has asked it to stop.
-_JOB = "_poly_reduce_job"
-_SUPERSEDED = "_poly_reduce_superseded"
+# Meshes with at least this many triangles in all are reduced in a separate process, behind
+# a progress window: 4.5M triangles froze the host for 4.6s with no way out. Below this a
+# plain mesh takes well under a second here, and starting the process (about 1.5s, mostly
+# importing USD) would only make the result later.
+_PROCESS_TRIANGLES = 500_000
 
 # Topology-derived attributes with no meaning once the topology changes. `normals` is here
 # rather than remapped on purpose: a remapped normal describes the *old* surface, and every
@@ -655,13 +649,26 @@ def reduce_meshes(progress, jobs) -> list:
     """reduce_mesh for each job. This is what the separate process runs (sim_bake.in_subprocess).
 
     Args:
-        progress: Not used. in_subprocess passes it, but words its reports for a simulation.
+        progress: progress(done, total, text) before each mesh, for the progress window: the
+            triangles reduced so far of all of them. One mesh is one call that says nothing
+            until it ends, so for one the total is 0, which the window shows as busy.
         jobs: reduce_mesh's arguments, one dict per mesh.
 
     Returns:
         reduce_mesh's result for each job.
     """
-    return [reduce_mesh(**job) for job in jobs]
+    sizes = [int(np.maximum(np.asarray(job["counts"], dtype=np.int64) - 2, 0).sum()) for job in jobs]
+    total = sum(sizes)
+    results = []
+    done = 0
+    for i, (job, size) in enumerate(zip(jobs, sizes)):
+        if len(jobs) == 1:
+            progress(0, 0, f"reducing {_compact(size)} tris")
+        else:
+            progress(done, total, f"reducing mesh {i + 1} of {len(jobs)}, {_compact(size)} tris")
+        results.append(reduce_mesh(**job))
+        done += size
+    return results
 
 
 def _finish_plan(read: _MeshRead, result: dict | None) -> _Plan | None:
@@ -1012,12 +1019,29 @@ def execute(node: chunk.Chunk) -> None:
         # Same inputs, same settings: last cook's decimation still holds. The layer was
         # cleared for this cook like any other, so the plans are authored again below.
         plans = previous.plans
-    elif sim_bake.in_background() and _triangle_total(targets) >= _BACKGROUND_TRIANGLES:
-        _reduce_in_background(node, layer.identifier, settings, targets, fingerprint, signed)
-        return
     else:
-        plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
+        try:
+            plans = _reduce(node, targets, settings)
+        except Exception as e:
+            # Cancelled, or the process died: the last result stays in view, and the cook
+            # fails, so the chunks below wait for a good one.
+            if previous is not None:
+                _write(stage, layer, previous.plans, proxy_paths)
+            cancelled = isinstance(e, sim_bake.Cancelled)
+            _report(node, [], "cancelled" if cancelled else f"reduce failed: {e}")
+            raise
 
+    # The refreshed record drops the previous generation's array references. Kept before it
+    # is written: a first cook runs on a stage of the chunk's inputs alone (skip_cook), where
+    # a proxy copy's prim can't be defined, and is run again on the whole stage. Kept first,
+    # the second run finds these plans instead of reducing again.
+    _remember(layer.identifier, _CookRecord(fingerprint, signed, plans))
+    _write(stage, layer, plans, proxy_paths)
+    _report(node, plans)
+
+
+def _write(stage, layer, plans, proxy_paths: dict) -> None:
+    """Author plans into the chunk's layer: onto the meshes, or onto their proxy copies."""
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         proxies = _write_proxies(stage, proxy_paths)
         for plan in plans:
@@ -1025,11 +1049,26 @@ def execute(node: chunk.Chunk) -> None:
         for source, proxy in proxies.items():
             proxy_setup.set_up_proxy(stage, [source], proxy, copy_of=source)
 
-    # The refreshed record drops the previous generation's array references.
-    _remember(layer.identifier, _CookRecord(fingerprint, signed, plans))
-    if node.has_state(chunk.ChunkFlags.State.STALE):
-        node.unset_state(chunk.ChunkFlags.State.STALE)
-    _report(node, plans)
+
+def _reduce(node, targets, settings: _Settings) -> list:
+    """Each target's plan: worked out here, or for a big total in a separate process.
+
+    The cook waits for the process (sim_bake.wait): the chunks below read the reduced mesh,
+    so they cook once, after it, and a progress window shows meanwhile, with Cancel.
+    """
+    if _triangle_total(targets) < _PROCESS_TRIANGLES:
+        return [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
+    reads = [read for prim in targets if (read := _read_mesh(prim, settings)) is not None]
+    jobs = [read.job for read in reads]
+    triangles = _triangle_total(targets)
+
+    def bake(ctx):
+        ctx.status(f"reducing {_compact(triangles)} tris…")
+        yield sim_bake.WORKER
+        return sim_bake.in_subprocess(ctx, reduce_meshes, jobs=jobs)
+
+    results = sim_bake.wait(node, bake, report=lambda text: _report(node, [], text), name="PolyReduce")
+    return [plan for read, result in zip(reads, results) if (plan := _finish_plan(read, result)) is not None]
 
 
 #: Stands for each selected prim's name in Proxy Path.
@@ -1118,79 +1157,6 @@ def _triangle_total(prims) -> int:
         if counts:
             total += int(np.maximum(np.asarray(counts, dtype=np.int64) - 2, 0).sum())
     return total
-
-
-def _reduce_in_background(node, layer_id, settings, targets, fingerprint, signed) -> None:
-    """Reduce targets in a separate process, and cook again when the result is ready.
-
-    This cook writes nothing, so the mesh shows at full resolution until then. The result
-    is kept as the last cook for this fingerprint. The next cook finds it there and writes
-    it, like any unchanged recook. That cook is a normal one, so the chunks below cook
-    again and the cook cache stores it.
-
-    A cook for other inputs while one runs stops it. When it stops, the chunk cooks again
-    and starts the newer one.
-    """
-    stale = chunk.ChunkFlags.State.STALE
-    if not node.has_state(stale):
-        node.set_state(stale)
-    # Nothing to store yet: the layer is empty until the result is ready.
-    cook_cache.incomplete(node)
-    _report(node, [], f"reducing {_compact(_triangle_total(targets))} tris…")
-    if sim_bake.is_running(node):
-        if getattr(node, _JOB, None) != fingerprint:
-            setattr(node, _SUPERSEDED, True)
-            sim_bake.cancel(node)
-        return
-
-    reads = [read for prim in targets if (read := _read_mesh(prim, settings)) is not None]
-    jobs = [read.job for read in reads]
-    setattr(node, _JOB, fingerprint)
-    setattr(node, _SUPERSEDED, False)
-
-    def bake(ctx):
-        yield sim_bake.WORKER
-        try:
-            # A process, not a thread: fast_simplification holds the GIL while it works.
-            return sim_bake.in_subprocess(ctx, reduce_meshes, jobs=jobs)
-        except sim_bake.Cancelled:
-            return None
-        except Exception as e:  # noqa: BLE001 - reported in finish
-            logger.exception("Poly Reduce failed")
-            return e
-
-    def ended() -> bool:
-        """Clear the job. True if the chunk should cook again (the job was stopped)."""
-        setattr(node, _JOB, None)
-        superseded = getattr(node, _SUPERSEDED, False)
-        setattr(node, _SUPERSEDED, False)
-        return superseded
-
-    def finish(results):
-        superseded = ended()
-        if node.get_edit_context() is None:
-            return  # the chunk was deleted while it ran
-        if isinstance(results, Exception) and not superseded:
-            _report(node, [], f"reduce failed: {results}")
-            return
-        if isinstance(results, list) and not superseded:
-            plans = [
-                plan
-                for read, result in zip(reads, results)
-                if (plan := _finish_plan(read, result)) is not None
-            ]
-            _remember(layer_id, _CookRecord(fingerprint, signed, plans))
-        node.execute()
-
-    def report(text):
-        # Reached only when the job ends without finish(): stopped before it started, or
-        # finish() itself failed.
-        if ended():
-            node.execute()
-        else:
-            _report(node, [], text)
-
-    sim_bake.run(node, bake, report=report, finish=finish, name="PolyReduce")
 
 
 _PF = chunk.ChunkFlags.ParamFlags
@@ -1349,6 +1315,8 @@ def config():
         category=chunk.StandardCategory.MODELLING,
         requirements=["fast-simplification>=0.2,<1", "numpy>=2,<3"],
         cache_cook=True,
+        # A big one waits behind the progress window: a slider drag sets its value once.
+        cook_on_release=True,
         description=(
             "Reduces a mesh's triangle count using quadric error metrics — the method that\n"
             "spends the triangle budget on silhouettes and creases and takes it out of flat\n"

@@ -13,9 +13,11 @@ import time
 
 import numpy as np
 import pytest
+from chunk_stubs import register_stub_module
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
+from PySide6 import QtCore
 
-from usd_chunks import chunk_registry, chunk, sim_bake, surface_samples
+from usd_chunks import chunk_registry, chunk, cook_cache, sim_bake, surface_samples
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 
@@ -87,8 +89,11 @@ class _DummyScene(SceneSender):
 
 
 @pytest.fixture
-def wired():
+def wired(tmp_path, monkeypatch):
     """A stage with the chunk machinery live, plus a factory for Poly Reduce chunks."""
+    # A private cook cache: the user's answers a cook from an earlier run, so a test of what
+    # the chunk does would watch the cache instead.
+    monkeypatch.setenv(cook_cache.ENV_DIR, str(tmp_path / "cook_cache"))
     stage = Usd.Stage.CreateInMemory()
     scene = _DummyScene(stage)
     reg = chunk_registry.ChunkRegistry()
@@ -740,7 +745,7 @@ def test_an_unchanged_array_is_recognised_without_rereading_it() -> None:
 
 
 # ---------------------------------------------------------------------------
-# reducing in the background
+# a big reduction, in a separate process
 # ---------------------------------------------------------------------------
 
 
@@ -751,64 +756,154 @@ def in_a_ui(wired, qapp, monkeypatch):
     Every mesh counts as big here, so a small grid takes the same path a 4M-triangle one does.
     """
     monkeypatch.setattr(sim_bake, "in_background", lambda: True)
-    monkeypatch.setattr(_live_module(), "_BACKGROUND_TRIANGLES", 0, raising=False)
-    return wired
+    stage, make = wired
+
+    def make_live():
+        node = make()
+        # After make(): loading the module the first time replaces it.
+        monkeypatch.setattr(_live_module(), "_PROCESS_TRIANGLES", 0)
+        return node
+
+    return stage, make_live
 
 
-def _wait_for(qapp, node, seconds=60.0):
-    """Pump the event loop until node's background reduction has landed and been written."""
-    started = time.perf_counter()
-    while time.perf_counter() - started < seconds:
-        qapp.processEvents()
-        if not sim_bake.is_running(node) and not node.has_state(chunk.ChunkFlags.State.STALE):
-            return
-        time.sleep(0.01)
-    raise AssertionError("the background reduction never landed")
+def _reader(cooks: list):
+    """A chunk that notes /Mesh's triangle count each time it cooks."""
+
+    def main():
+        c = chunk.Chunk("Reader")
+        c.add_param(chunk.Slider("gain", default_value=1.0))
+        return c
+
+    def execute(node):
+        cooks.append(_triangle_count(node.get_stage()))
+
+    return register_stub_module(main=main, execute=execute)
 
 
-@needs_simplify
-def test_in_a_ui_the_cook_returns_at_once_and_the_result_lands_later(in_a_ui, qapp) -> None:
-    """fast_simplification holds the GIL, so a reduction on the main thread -- or on a
-    thread -- stops the host for as long as it runs: 40s on a 4M-triangle mesh. In a UI it
-    runs in a separate process. The cook that starts it leaves the mesh as it was, and the
-    result is written by the cook that follows when it lands."""
-    stage, make = in_a_ui
+def _with_reader(stage, make):
     points, counts, indices = _grid(40, lambda x, y: 0.3 * np.sin(3 * x))
     _define_mesh(stage, "/Mesh", points, counts, indices)
-
-    node = make()
-    node.get_param("keep_percent").value = 10.0
-    node.get_param("prim_path").value = "/Mesh"
-
-    assert _triangle_count(stage) == len(counts), "the cook waited for the reduction"
-    assert node.get_param("readout").value.startswith("reducing")
-    assert node.has_state(chunk.ChunkFlags.State.STALE)
-
-    _wait_for(qapp, node)
-
-    mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/Mesh"))
-    assert set(mesh.GetFaceVertexCountsAttr().Get()) == {3}
-    assert _triangle_count(stage) == pytest.approx(len(counts) * 2 * 0.1, rel=0.1)
-    assert node.get_param("out_triangles").value == _triangle_count(stage)
-
-
-@needs_simplify
-def test_a_setting_changed_while_it_runs_wins(in_a_ui, qapp) -> None:
-    """The reduction already running is for the old setting. It is stopped, and what lands
-    is the newest setting's result, not the old one's."""
-    stage, make = in_a_ui
-    points, counts, indices = _grid(40, lambda x, y: 0.3 * np.sin(3 * x))
-    _define_mesh(stage, "/Mesh", points, counts, indices)
-
     node = make()
     node.get_param("keep_percent").value = 50.0
+    cooks: list = []
+    (reader,) = _reader(cooks).load()
+    chunk_registry.ChunkRegistry().scene.add_chunk(reader)
+    reader.add_dependency(node)
     node.get_param("prim_path").value = "/Mesh"
-    assert sim_bake.is_running(node)
+    return node, cooks, len(counts)
+
+
+@needs_simplify
+def test_in_a_ui_the_cook_waits_for_the_process_and_the_chunks_below_cook_once(in_a_ui, qapp) -> None:
+    """fast_simplification holds the GIL, so a reduction on the main thread -- or on a
+    thread -- stops the host for as long as it runs: 40s on a 4M-triangle mesh. In a UI it
+    runs in a separate process, and the cook waits for it behind a progress window: the
+    chunks below cook once, against the reduced mesh. Run in the background, they cooked
+    against the full mesh first and again when the result landed."""
+    stage, make = in_a_ui
+    node, cooks, faces = _with_reader(stage, make)
+    cooks.clear()
 
     node.get_param("keep_percent").value = 10.0
-    _wait_for(qapp, node)
+    qapp.processEvents()
 
-    assert _triangle_count(stage) == pytest.approx(len(counts) * 2 * 0.1, rel=0.1)
+    assert _triangle_count(stage) == pytest.approx(faces * 2 * 0.1, rel=0.1)
+    assert cooks == [_triangle_count(stage)], f"the chunk below cooked {cooks}"
+    assert node.get_param("out_triangles").value == _triangle_count(stage)
+    assert not node.has_state(chunk.ChunkFlags.State.FAILED)
+
+
+@needs_simplify
+def test_cancel_keeps_the_last_reduction_and_the_chunks_below_wait(in_a_ui, qapp, monkeypatch) -> None:
+    stage, make = in_a_ui
+    node, cooks, _faces = _with_reader(stage, make)
+    before = _triangle_count(stage)
+    cooks.clear()
+
+    def runs_until_cancelled(ctx, function, **kwargs):
+        while True:
+            ctx.check()
+            time.sleep(0.01)
+
+    monkeypatch.setattr(sim_bake, "in_subprocess", runs_until_cancelled)
+    QtCore.QTimer.singleShot(300, qapp, lambda: sim_bake.cancel(node))
+    node.get_param("keep_percent").value = 10.0  # cancelled: nothing raised
+
+    assert _triangle_count(stage) == before, "the last reduction left the stage"
+    assert node.has_state(chunk.ChunkFlags.State.FAILED)
+    assert node.get_param("readout").value == "cancelled"
+    assert cooks == [], "a chunk below cooked after Cancel"
+
+
+@needs_simplify
+def test_a_process_that_dies_fails_the_cook_and_keeps_the_host(in_a_ui, qapp, monkeypatch) -> None:
+    """A process that dies (out of memory, say) must not take the host with it."""
+    stage, make = in_a_ui
+    points, counts, indices = _grid(20)
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    def dies(ctx, function, **kwargs):
+        raise RuntimeError("MemoryError")
+
+    monkeypatch.setattr(sim_bake, "in_subprocess", dies)
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    with pytest.raises(RuntimeError, match="MemoryError"):
+        node.get_param("prim_path").value = "/Mesh"
+
+    assert node.get_param("readout").value == "reduce failed: MemoryError"
+    assert node.has_state(chunk.ChunkFlags.State.FAILED)
+    assert _triangle_count(stage) == len(counts), "the mesh is not left half reduced"
+
+
+@needs_simplify
+def test_the_first_cook_with_write_as_proxy_reduces_once(in_a_ui, qapp, monkeypatch) -> None:
+    """A first cook runs on a stage of the chunk's inputs alone (skip_cook), where the proxy
+    copy's prim can't be defined, and then again on the whole stage. The second run took
+    the whole reduction again."""
+    stage, make = in_a_ui
+    UsdGeom.Xform.Define(stage, "/Asset")
+    _grid_with_subsets(stage, "/Asset/Body")
+    node = make()
+    node.get_param("keep_percent").value = 20.0
+    node.get_param("as_proxy").value = True
+    waits: list = []
+    real = sim_bake.wait
+    monkeypatch.setattr(sim_bake, "wait", lambda *a, **k: waits.append(1) or real(*a, **k))
+
+    node.get_param("prim_path").value = "/Asset"
+
+    assert _triangle_count(stage, "/Asset_proxy/Body") > 0
+    assert waits == [1], f"reduced {len(waits)} times"
+
+
+def _steps_for(triangles: list) -> list:
+    """What reduce_meshes reports for meshes of these many triangles (as quads, two each)."""
+    steps = []
+    jobs = [{"counts": np.full(n // 2, 4)} for n in triangles]
+    module = _live_module()
+    real = module.reduce_mesh
+    module.reduce_mesh = lambda **job: job
+    try:
+        assert module.reduce_meshes(lambda d, t, text: steps.append((d, t, text)), jobs) == jobs
+    finally:
+        module.reduce_mesh = real
+    return steps
+
+
+def test_the_progress_bar_moves_by_the_triangles_each_mesh_has() -> None:
+    """Moved by mesh count, a big mesh first sat the bar at 0% and then it was done."""
+    assert _steps_for([6000, 2000, 2000]) == [
+        (0, 10000, "reducing mesh 1 of 3, 6,000 tris"),
+        (6000, 10000, "reducing mesh 2 of 3, 2,000 tris"),
+        (8000, 10000, "reducing mesh 3 of 3, 2,000 tris"),
+    ]
+
+
+def test_one_mesh_shows_the_window_busy_rather_than_at_nought() -> None:
+    """One mesh is one call that says nothing until it ends: a total of 0 is the busy bar."""
+    assert _steps_for([40000]) == [(0, 0, "reducing 40k tris")]
 
 
 @needs_simplify
@@ -829,7 +924,6 @@ def test_uvs_and_subsets_come_back_from_the_process_intact(in_a_ui, qapp) -> Non
     node = make()
     node.get_param("keep_percent").value = 20.0
     node.get_param("prim_path").value = "/Mesh"
-    _wait_for(qapp, node)
 
     total = _triangle_count(stage)
     assert total < len(counts)
