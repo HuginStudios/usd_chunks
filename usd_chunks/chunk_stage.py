@@ -10,7 +10,7 @@ import math
 import weakref
 from pathlib import Path
 from collections.abc import Callable, Generator, Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
@@ -3799,7 +3799,7 @@ def revert_param_override(param: core.ChunkParamBase) -> None:
     attr = _storage_attr(param)
     if attr is None or param_override_source(param) is None:
         return
-    _drop_owned_specs(attr)
+    _drop_specs(attr, [spec.layer for spec in _owned_specs(attr)])
     param.value = attr.Get()
 
 
@@ -3819,22 +3819,21 @@ def _owned_specs(attr: Usd.Attribute) -> list[Sdf.PropertySpec]:
     ]
 
 
-def _drop_owned_specs(attr: Usd.Attribute) -> None:
-    """Delete attr's specs from the layers the stage owns: value, connections and metadata.
-
-    An attr can have specs in more than one owned layer: it may have been written under
-    more than one edit target over its life.
+def _drop_specs(attr: Usd.Attribute, layers: Iterable[Sdf.Layer]) -> None:
+    """Delete attr's specs from layers: value, connections and metadata.
 
     Args:
         attr: The attribute.
+        layers: The layers to delete them from.
     """
+    path = attr.GetPath()
     prev = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
-        for spec in _owned_specs(attr):
-            prim_spec = spec.layer.GetPrimAtPath(spec.path.GetPrimPath())
-            if prim_spec is not None and spec.path.name in prim_spec.properties:
-                del prim_spec.properties[spec.path.name]
+        for layer in layers:
+            prim_spec = layer.GetPrimAtPath(path.GetPrimPath())
+            if prim_spec is not None and path.name in prim_spec.properties:
+                del prim_spec.properties[path.name]
     finally:
         chunk_notice._usd_write_active = prev
     invalidate_edit_layer_memo()
@@ -3882,34 +3881,84 @@ def _own_storage_attr(param: core.ChunkCommon) -> Usd.Attribute | None:
     return attr
 
 
-def can_revert_to_default(param: core.ChunkCommon) -> bool:
-    """Whether revert_param_to_default would change anything.
+def _rebind(param: core.ChunkCommon, attr: Usd.Attribute) -> None:
+    """Bind param to attr again, taking in what attr composes now: value or expression.
+
+    Args:
+        param: The param or vector.
+        attr: Its storage attr.
+    """
+    param._param_attr_path = None
+    param._connect_param_attr(attr)
+
+
+def _beats_every_opinion(attr: Usd.Attribute, layer: Sdf.Layer) -> bool:
+    """Whether a value written into layer would be the one attr composes.
+
+    Args:
+        attr: The attribute.
+        layer: The layer to write into.
+
+    Returns:
+        True when layer is stronger than every layer that holds an opinion on attr now.
+    """
+    stack = attr.GetStage().GetLayerStack(includeSessionLayers=True)
+    if layer not in stack:
+        return False
+    for spec in attr.GetPropertyStack(Usd.TimeCode.Default()):
+        if spec.path != attr.GetPath():
+            continue  # across an arc: weaker than any local layer
+        if spec.layer not in stack or stack.index(spec.layer) <= stack.index(layer):
+            return False
+    return True
+
+
+class ParamClear(NamedTuple):
+    """What clear_param did, for the UI to tell the user.
+
+    Attributes:
+        layer: The layer it was cleared in; None for a param with no attr of its own.
+        others: The layers that still set it, strongest first.
+        default_can_win: Whether set_param_default_in(layer) would show the default.
+    """
+
+    layer: Sdf.Layer | None = None
+    others: tuple[Sdf.Layer, ...] = ()
+    default_can_win: bool = False
+
+
+def can_clear_param(param: core.ChunkCommon) -> bool:
+    """Whether clear_param has anything to clear, or to say about who still sets param.
 
     Args:
         param: The param or vector.
 
     Returns:
-        True when a layer the stage owns holds a value, wire or expression for param, or,
-        for a param without an attr of its own, when its value is not its default.
+        True when any layer holds a value, wire or expression for param, or, for a param
+        without an attr of its own, when its value is not its default.
     """
     if (attr := _own_storage_attr(param)) is not None:
-        return bool(_owned_specs(attr))
+        return bool(attr.GetPropertyStack(Usd.TimeCode.Default()))
     return not chunk_utils.values_match(param.raw_value, param.default_value)
 
 
-def revert_param_to_default(param: core.ChunkCommon) -> None:
-    """Put param back as if it had never been edited.
+def clear_param(param: core.ChunkCommon) -> ParamClear:
+    """Clear param in the layer its edits go to now, as if it had never been edited there.
 
-    Its value, wire and expression text go from every layer the stage owns, and it lets go
-    of its storage attr, so the next edit makes a new one, as on a new chunk. A value from
-    a file the stage does not own (a sequence the shot sublayers) shows through instead.
+    Its value, wire and expression text go from that one layer (param_storage_layer).
+    Other layers that set it are left alone: the param takes their value, and they are
+    returned so the UI can say so. With nothing left anywhere, the param lets go of its
+    storage attr, so the next edit makes a new one, as on a new chunk.
 
     A param whose attr cannot go (see _own_storage_attr) is set to its default, which is
     written into the shared attr. A field that brings its vector back to its default then
-    reverts the vector.
+    clears the vector.
 
     Args:
-        param: The param or vector to revert.
+        param: The param or vector to clear.
+
+    Returns:
+        Where it was cleared, and which layers still set it.
     """
     attr = _own_storage_attr(param)
     if attr is None:
@@ -3918,21 +3967,52 @@ def revert_param_to_default(param: core.ChunkCommon) -> None:
         if (
             vector is not None
             and chunk_utils.values_match(vector.raw_value, vector.default_value)
-            and can_revert_to_default(vector)
+            and can_clear_param(vector)
         ):
-            revert_param_to_default(vector)
-        return
-    _drop_owned_specs(attr)
-    if attr.IsValid():
-        # A file the stage does not own still has it: that value is the param's now.
-        param.value = attr.Get()
-        return
+            return clear_param(vector)
+        return ParamClear()
+    layer = chunk_utils.param_storage_layer(attr.GetStage(), attr, param.get_chunk())
+    _drop_specs(attr, [layer])
+    if attr.HasAuthoredValue() or attr.HasAuthoredConnections():
+        _rebind(param, attr)
+        others = tuple(dict.fromkeys(s.layer for s in attr.GetPropertyStack(Usd.TimeCode.Default())))
+        return ParamClear(layer, others, _beats_every_opinion(attr, layer))
     # Unbound, the value set below writes nothing, and the next edit authors a new attr.
     param._param_attr_path = None
     if param._usd_prop_connection:
         param._usd_prop_connection.disconnect()
         param._usd_prop_connection = None
     param.value = param.default_value
+    return ParamClear(layer)
+
+
+def set_param_default_in(param: core.ChunkCommon, layer: Sdf.Layer) -> None:
+    """Write param's default into layer, over the value, wire or expression others set.
+
+    For after clear_param, when other layers still set the param: an opinion in layer hides
+    theirs without touching them.
+
+    Args:
+        param: The param or vector.
+        layer: The layer it was cleared in (ParamClear.layer).
+    """
+    attr = _storage_attr(param)
+    if attr is None:
+        return
+    prev = chunk_notice._usd_write_active
+    chunk_notice._usd_write_active = True
+    try:
+        with Usd.EditContext(attr.GetStage(), layer):
+            attr = attr.GetPrim().CreateAttribute(attr.GetName(), attr.GetTypeName(), custom=False)
+            attr.Set(chunk_utils.as_attr_value(attr, param.default_value))
+            if attr.HasAuthoredConnections():
+                attr.SetConnections([])
+            if attr.GetTypeName() != Sdf.ValueTypeNames.String and chunk_utils.read_expression_text(attr):
+                attr.SetCustomDataByKey(chunk_utils.EXPR_TEXT_KEY, "")
+    finally:
+        chunk_notice._usd_write_active = prev
+    invalidate_edit_layer_memo()
+    _rebind(param, attr)
 
 
 def _adopt_inputs(chunk: core.ChunkBase, names: Iterable[str] | None = None) -> None:

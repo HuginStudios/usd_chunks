@@ -1755,17 +1755,16 @@ class LabeledWidget(QtWidgets.QWidget):
         return super().leaveEvent(event)
 
     @staticmethod
-    def _add_revert_to_default(menu: QtWidgets.QMenu, model) -> QtGui.QAction | None:
-        """Add a Revert to Default item, greyed out when the param holds no edit to undo.
+    def _add_clear_param(menu: QtWidgets.QMenu, model) -> QtGui.QAction | None:
+        """Add a Clear Param item, greyed out when no layer sets the param.
 
         Args:
             menu: The menu to add the item to.
             model: The param or vector the row shows.
 
         Returns:
-            The new action, or None when the row has no value to reset (a button, a label,
-            an output), when its edits would land in a locked file, or when it overrides a
-            file's value: the Revert to <file> item does the same thing there.
+            The new action, or None when the row has no value to clear (a button, a label,
+            an output) or when its edits would land in a locked file.
         """
         t = model.evaluate_type()
         # EMPTY covers buttons and separators. `in`, not `&`: the low bits are reused per
@@ -1776,16 +1775,34 @@ class LabeledWidget(QtWidgets.QWidget):
             is_output = model.is_output
         else:
             is_output = model.has_flag(ChunkFlags.ParamFlags.OUTPUT)
-        if (
-            is_output
-            or model.default_value is None
-            or chunk_stage.param_locked_by(model) is not None
-            or chunk_stage.param_override_source(model) is not None
-        ):
+        if is_output or model.default_value is None or chunk_stage.param_locked_by(model) is not None:
             return None
-        action = menu.addAction("Revert to Default")
-        action.setEnabled(chunk_stage.can_revert_to_default(model))
+        action = menu.addAction("Clear Param")
+        action.setEnabled(chunk_stage.can_clear_param(model))
         return action
+
+    @staticmethod
+    def _clear_param(model) -> None:
+        """Clear model in the layer its edits go to, and say so when other layers still set it.
+
+        Where the cleared layer is the strongest, the user is offered to write the default
+        there, over the others.
+
+        Args:
+            model: The param or vector to clear.
+        """
+        cleared = chunk_stage.clear_param(model)
+        if not cleared.others:
+            return
+        names = ", ".join(chunk_stage.layer_label(layer) for layer in cleared.others)
+        msg = f"{model.get_label()} is still set in {names}, so it shows {_value_text(model.value)}."
+        if not cleared.default_can_win:
+            QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Information, "Clear Param", msg).exec()
+            return
+        here = chunk_stage.layer_label(cleared.layer)
+        detail = f"Set it to its default, {_value_text(model.default_value)}, in {here}?"
+        if confirm_dial(msg, title="Clear Param", detail=detail):
+            chunk_stage.set_param_default_in(model, cleared.layer)
 
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not isinstance(self.widget, ChunkParamWidgetBase):
@@ -1793,12 +1810,12 @@ class LabeledWidget(QtWidgets.QWidget):
             # item, from its header; a field inside it has its own menu.
             vector = self._model if isinstance(self._model, chunk_core.ChunkVectorBase) else None
             menu = QtWidgets.QMenu()
-            default_action = self._add_revert_to_default(menu, vector) if vector is not None else None
-            if default_action is None:
+            clear_action = self._add_clear_param(menu, vector) if vector is not None else None
+            if clear_action is None:
                 event.ignore()
                 return
-            if menu.exec_(event.globalPos()) == default_action:
-                chunk_stage.revert_param_to_default(vector)
+            if menu.exec_(event.globalPos()) == clear_action:
+                self._clear_param(vector)
             return
 
         param = self.widget.param
@@ -1836,7 +1853,7 @@ class LabeledWidget(QtWidgets.QWidget):
         # not the only option, or "rename the lofted param" would not mean anything.
         rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
         unloft_action = menu.addAction("Unloft") if on_label and getattr(param, "_lofted", False) else None
-        default_action = self._add_revert_to_default(menu, param)
+        clear_action = self._add_clear_param(menu, param)
         override_source = chunk_stage.param_override_source(param)
         revert_action = None
         if override_source is not None:
@@ -1862,8 +1879,8 @@ class LabeledWidget(QtWidgets.QWidget):
             elif unloft_action and action == unloft_action:
                 # Next tick: unlofting deletes this widget, which is still inside its own event.
                 QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(param))
-            elif default_action and action == default_action:
-                chunk_stage.revert_param_to_default(param)
+            elif clear_action and action == clear_action:
+                self._clear_param(param)
             elif revert_action and action == revert_action:
                 chunk_stage.revert_param_override(param)
             elif rename_action and action == rename_action:
@@ -3091,6 +3108,15 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                     scene.set_selected_chunks([c])
 
         return super().eventFilter(watched, event)
+
+
+def _value_text(value) -> str:
+    """A param value as a short text for a message: floats to 6 digits, vectors as (x, y)."""
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if isinstance(value, (tuple, list)):
+        return "(" + ", ".join(_value_text(v) for v in value) + ")"
+    return str(value)
 
 
 def confirm_dial(msg, title: str | None = None, detail: str | None = None) -> bool:
