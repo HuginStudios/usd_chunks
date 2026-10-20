@@ -458,6 +458,25 @@ def test_a_source_under_the_budget_is_kept_as_is_not_remeshed(wired) -> None:
     assert node.get_param("out_triangles").value == 12
 
 
+def test_unticking_keep_small_assets_remeshes_a_small_one_too(wired) -> None:
+    """Viktor's ticket: a low-poly asset never got a proxy, because the budget that caps the
+    proxy also decided which assets to leave alone. The two are separate settings now."""
+    stage, make = wired
+    UsdGeom.Xform.Define(stage, "/World")
+    _box(stage, "/World/Asset/Body")
+
+    node = make(budget=3000)
+    node.get_param("resolution").value = 32
+    node.get_param("keep_small").value = False
+    node.get_param("prim_path").value = "/World/Asset"
+
+    proxy = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Asset_proxy"))
+    assert proxy, "a mesh of its own, not a reference to the asset"
+    assert not surface_samples.is_passthrough(proxy.GetPrim())
+    assert "kept as is" not in node.get_param("readout").value
+    assert 0 < node.get_param("out_triangles").value <= 3000
+
+
 def test_downstream_chunks_leave_a_kept_source_alone(wired) -> None:
     stage, make = wired
     UsdGeom.Xform.Define(stage, "/World")
