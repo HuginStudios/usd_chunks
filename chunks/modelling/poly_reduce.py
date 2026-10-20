@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import logging
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 import numpy as np
@@ -56,6 +56,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import cook_cache
+from usd_chunks import proxy_setup
 from usd_chunks import sim_bake
 from usd_chunks import surface_samples
 from usd_chunks.mesh_math import fan_triangulate
@@ -937,7 +938,8 @@ def _report(node, plans, note=""):
 
 
 def _sync_mode_params(node) -> None:
-    """Show only the control the current mode actually reads."""
+    """Show only the controls the current settings read: the mode's amount, and Proxy Path
+    while Write as Proxy is on."""
     mode = node.get_param("reduce_mode", chunk.is_param_t(str)).value
     visible = {
         MODE_PERCENT: {"keep_percent"},
@@ -952,6 +954,12 @@ def _sync_mode_params(node) -> None:
             param.unset_state(chunk.ChunkFlags.State.HIDDEN)
         else:
             param.set_state(chunk.ChunkFlags.State.HIDDEN)
+    as_proxy = node.get_param("as_proxy", chunk.is_param_t(bool))
+    if (proxy_path := node.get_param("proxy_path")) is not None and as_proxy is not None:
+        if as_proxy.value:
+            proxy_path.unset_state(chunk.ChunkFlags.State.HIDDEN)
+        else:
+            proxy_path.set_state(chunk.ChunkFlags.State.HIDDEN)
 
 
 def mode_changed(owner, notice, sender) -> None:
@@ -1027,6 +1035,11 @@ def execute(node: chunk.Chunk) -> None:
     if not paths:
         _report(node, [], "pick a mesh to reduce")
         return
+    as_proxy = node.get_param("as_proxy", chunk.is_param_t(bool)).value
+    proxy_paths, problem = _proxy_paths(paths, node.get_param("proxy_path").value) if as_proxy else ({}, "")
+    if problem:
+        _report(node, [], problem)
+        return
 
     upstream, targets = _targets(node, settings, paths)
     previous = _LAST_COOK.get(layer.identifier)
@@ -1043,14 +1056,86 @@ def execute(node: chunk.Chunk) -> None:
         plans = [plan for prim in targets if (plan := _plan_mesh(prim, settings)) is not None]
 
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
+        proxies = _write_proxies(stage, proxy_paths)
         for plan in plans:
-            _author(stage, plan)
+            _author(stage, _moved(plan, proxies))
+        for source, proxy in proxies.items():
+            proxy_setup.set_up_proxy(stage, [source], proxy, copy_of=source)
 
     # The refreshed record drops the previous generation's array references.
     _remember(layer.identifier, _CookRecord(fingerprint, signed, plans))
     if node.has_state(chunk.ChunkFlags.State.STALE):
         node.unset_state(chunk.ChunkFlags.State.STALE)
     _report(node, plans)
+
+
+#: Stands for each selected prim's name in Proxy Path.
+_NAME = "{name}"
+
+
+def _proxy_paths(paths, pattern: str) -> tuple[dict, str]:
+    """Where each selected prim's proxy copy goes, by Proxy Path.
+
+    Empty, it goes beside the prim as `<name>_proxy`. One prim takes the path as it is;
+    several need `{name}` in it, one copy each. A copy is a reference to its prim, so it
+    can be neither inside it nor hold it.
+
+    Args:
+        paths: The selected prims' paths.
+        pattern: Proxy Path, as typed.
+
+    Returns:
+        `(each prim's path mapped to its copy's, "")`, or `({}, what is wrong with the path)`.
+    """
+    sources = [s for s in map(Sdf.Path, map(str, paths)) if s != Sdf.Path.absoluteRootPath]
+    pattern = pattern.strip()
+    if not pattern:
+        return {source: proxy_setup.sibling_path(source) for source in sources}, ""
+    if len(sources) > 1 and _NAME not in pattern:
+        return {}, f"Proxy Path needs {_NAME} in it for {len(sources)} assets"
+    proxies = {}
+    for source in sources:
+        text = pattern.replace(_NAME, source.name)
+        if not Sdf.Path.IsValidPathString(text) or not Sdf.Path(text).IsAbsolutePath() or not Sdf.Path(text).IsPrimPath():
+            return {}, f"Proxy Path {text} is not a prim path"
+        proxy = Sdf.Path(text)
+        if proxy.HasPrefix(source) or source.HasPrefix(proxy):
+            return {}, f"Proxy Path {proxy} can't be inside {source} or hold it"
+        proxies[source] = proxy
+    if len(set(proxies.values())) < len(proxies):
+        return {}, "Proxy Path gives two assets the same copy"
+    return proxies, ""
+
+
+def _write_proxies(stage, proxy_paths: dict) -> dict:
+    """A copy of each selected prim where Proxy Path puts it, to reduce instead of the prim.
+
+    Args:
+        stage: The stage, edited at the chunk's layer.
+        proxy_paths: Each selected prim's path, mapped to its copy's (_proxy_paths).
+
+    Returns:
+        The same, for the prims that exist.
+    """
+    proxies = {}
+    for source, proxy in proxy_paths.items():
+        if not stage.GetPrimAtPath(source):
+            continue
+        stage.DefinePrim(proxy).GetReferences().AddInternalReference(source)
+        proxies[source] = proxy
+    return proxies
+
+
+def _moved(plan: _Plan, proxies: dict) -> _Plan:
+    """`plan` written onto the proxy copy of the prim it was read from, if it has one."""
+    for source, proxy in proxies.items():
+        if plan.path.HasPrefix(source):
+            return replace(
+                plan,
+                path=plan.path.ReplacePrefix(source, proxy),
+                subset_indices=[(path.ReplacePrefix(source, proxy), indices) for path, indices in plan.subset_indices],
+            )
+    return plan
 
 
 def _remember(layer_id: str, record: _CookRecord) -> None:
@@ -1215,6 +1300,15 @@ def main():
         )
     )
 
+    proxy_path = chunk.LineEdit(
+        "proxy_path",
+        "Proxy Path",
+        flags=_PF.LABELED,
+        tooltip="Where Write as Proxy puts the reduced copy. Empty: beside the asset, as\n"
+        "<name>_proxy. With several assets, put {name} where each one's name goes,\n"
+        "e.g. /proxies/{name}.",
+    )
+    proxy_path.set_state(chunk.ChunkFlags.State.HIDDEN)  # shown while Write as Proxy is on
     quality = chunk.Group("Quality", flags=_GF)
     quality.add_params(
         [
@@ -1254,9 +1348,20 @@ def main():
                 default_value=True,
                 tooltip="Reduce every mesh under the selected prim, not just the prim itself.",
             ),
+            chunk.Checkbox(
+                "as_proxy",
+                "Write as Proxy",
+                default_value=False,
+                tooltip="Leave the mesh as it is, and write a reduced copy as its proxy, at Proxy\n"
+                "Path: purpose=proxy on the copy, purpose=render on the mesh, and the mesh's\n"
+                "proxyPrim pointing at the copy. Viewports that draw proxies show the reduced\n"
+                "copy; final renders show the full mesh. Its UVs and materials come along.",
+            ),
+            proxy_path,
         ]
     )
     chunk_api.add_param(quality)
+    chunk_api.add_callback(mode_changed, sender=quality.get_param("as_proxy"))
 
     out_triangles = chunk.Slider(
         "out_triangles",
