@@ -878,9 +878,10 @@ def test_the_first_cook_with_write_as_proxy_reduces_once(in_a_ui, qapp, monkeypa
     assert waits == [1], f"reduced {len(waits)} times"
 
 
-def test_the_progress_window_says_which_mesh_it_is_on() -> None:
+def _steps_for(triangles: list) -> list:
+    """What reduce_meshes reports for meshes of these many triangles (as quads, two each)."""
     steps = []
-    jobs = [dict(zip(("a",), (i,))) for i in range(3)]
+    jobs = [{"counts": np.full(n // 2, 4)} for n in triangles]
     module = _live_module()
     real = module.reduce_mesh
     module.reduce_mesh = lambda **job: job
@@ -888,7 +889,21 @@ def test_the_progress_window_says_which_mesh_it_is_on() -> None:
         assert module.reduce_meshes(lambda d, t, text: steps.append((d, t, text)), jobs) == jobs
     finally:
         module.reduce_mesh = real
-    assert steps == [(0, 3, "reducing mesh 1 of 3"), (1, 3, "reducing mesh 2 of 3"), (2, 3, "reducing mesh 3 of 3")]
+    return steps
+
+
+def test_the_progress_bar_moves_by_the_triangles_each_mesh_has() -> None:
+    """Moved by mesh count, a big mesh first sat the bar at 0% and then it was done."""
+    assert _steps_for([6000, 2000, 2000]) == [
+        (0, 10000, "reducing mesh 1 of 3, 6,000 tris"),
+        (6000, 10000, "reducing mesh 2 of 3, 2,000 tris"),
+        (8000, 10000, "reducing mesh 3 of 3, 2,000 tris"),
+    ]
+
+
+def test_one_mesh_shows_the_window_busy_rather_than_at_nought() -> None:
+    """One mesh is one call that says nothing until it ends: a total of 0 is the busy bar."""
+    assert _steps_for([40000]) == [(0, 0, "reducing 40k tris")]
 
 
 @needs_simplify

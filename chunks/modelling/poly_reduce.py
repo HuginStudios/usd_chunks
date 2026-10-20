@@ -649,16 +649,25 @@ def reduce_meshes(progress, jobs) -> list:
     """reduce_mesh for each job. This is what the separate process runs (sim_bake.in_subprocess).
 
     Args:
-        progress: progress(done, total, text) before each mesh, for the progress window.
+        progress: progress(done, total, text) before each mesh, for the progress window: the
+            triangles reduced so far of all of them. One mesh is one call that says nothing
+            until it ends, so for one the total is 0, which the window shows as busy.
         jobs: reduce_mesh's arguments, one dict per mesh.
 
     Returns:
         reduce_mesh's result for each job.
     """
+    sizes = [int(np.maximum(np.asarray(job["counts"], dtype=np.int64) - 2, 0).sum()) for job in jobs]
+    total = sum(sizes)
     results = []
-    for i, job in enumerate(jobs):
-        progress(i, len(jobs), f"reducing mesh {i + 1} of {len(jobs)}")
+    done = 0
+    for i, (job, size) in enumerate(zip(jobs, sizes)):
+        if len(jobs) == 1:
+            progress(0, 0, f"reducing {_compact(size)} tris")
+        else:
+            progress(done, total, f"reducing mesh {i + 1} of {len(jobs)}, {_compact(size)} tris")
         results.append(reduce_mesh(**job))
+        done += size
     return results
 
 
