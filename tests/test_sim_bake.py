@@ -297,3 +297,24 @@ def test_keep_and_restore_carry_a_bake_across_a_cleared_layer():
     layer.Clear()
     assert not sim_bake.restore(node, layer)
     assert not layer.GetPrimAtPath("/Baked")
+
+
+def test_a_step_reported_again_and_again_reaches_the_main_thread_rarely():
+    """Sampling the Kitchen set reports once per mesh, 1,788 times, with the same text: the
+    readout is set once, and the bar moves at most every _STEP_EVERY_S."""
+    reports, bar, hops = [], [], []
+    relay = types.SimpleNamespace(call=types.SimpleNamespace(emit=lambda fn: (hops.append(1), fn())))
+    ctx = sim_bake.Context(_Node(), reports.append, None, relay, bar=lambda d, t: bar.append((d, t)))
+    done = threading.Event()
+
+    def worker():
+        for i in range(2000):
+            ctx.step("step 1 of 2: sampling", i, 4000)
+        ctx.step("step 2 of 2: meshing", 2000, 4000)
+        done.set()
+
+    threading.Thread(target=worker).start()
+    assert done.wait(10)
+    assert reports == ["step 1 of 2: sampling", "step 2 of 2: meshing"]
+    assert bar[-1] == (2000, 4000)
+    assert len(hops) < 20, f"{len(hops)} hops to the main thread"

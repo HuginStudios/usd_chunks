@@ -106,6 +106,9 @@ _INPUT_KEY = "_sim_bake_input_key"
 #: How often progress reaches the readout, at most.
 _PROGRESS_EVERY_S = 0.25
 
+#: How often a step's bar moves within the same step, at most.
+_STEP_EVERY_S = 0.1
+
 #: On a chunk: how long its last wait() took, shown as the next one's estimate.
 _LAST_WAIT = "_sim_bake_last_wait"
 
@@ -171,6 +174,8 @@ class Context:
         self._first_frame = None
         self._last_report = 0.0
         self._latest = None
+        self._step_text = None
+        self._last_step = 0.0
 
     @property
     def inline(self) -> bool:
@@ -196,9 +201,18 @@ class Context:
         For a bake whose parts are not frames. Its steps take what they take, so the bar
         says how far through them it is, not how long is left.
         """
+        # Only what changed, and the bar at most every _STEP_EVERY_S: sampling the Kitchen
+        # set reports once per mesh, 1,788 times, each a hop to the main thread, and the
+        # readout's text the same each time.
+        now = time.perf_counter()
+        if text != self._step_text:
+            self._step_text = text
+            self.status(text)
+        elif now - self._last_step < _STEP_EVERY_S:
+            return
+        self._last_step = now
         if self._bar is not None:
             self._call(lambda: self._bar(int(done), int(total)))
-        self.status(text)
 
     def progress(self, done: int, total: int) -> None:
         """Report frame done (0-based) of total, with the time left once it can be guessed."""
