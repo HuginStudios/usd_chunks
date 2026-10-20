@@ -276,6 +276,11 @@ class _FineDragSlider(QtWidgets.QSlider):
             return
         super().mouseReleaseEvent(event)
 
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
+        # Like the number beside it: the wheel scrolls the panel or zooms the node graph. Taken
+        # here, scrolling past a node's Keep % changed it, and the chunk cooked again.
+        event.ignore()
+
 
 def caret_step(text: str, caret: int, point: str = ".") -> tuple:
     """Which digit the caret is on, and the size of a step of that digit.
