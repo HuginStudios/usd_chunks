@@ -28,7 +28,9 @@ process instead, from inside the WORKER part.
 wait() is for a long part of a chunk's own cook. The chunks below it read its result, so
 the cook waits for it, and returns it: nothing else cooks meanwhile (chunk_cook.hold). The
 WORKER parts still run on a thread, so the host paints, and a progress window shows what
-it is doing, with Cancel. The rest of the window takes no input until it ends.
+it is doing, with Cancel. The rest of the window takes no input until it ends. A bake made
+of steps says which one it is on with Context.step; the window adds the time so far and
+how long the chunk's last wait took, which is the estimate a bar of steps cannot give.
 
 The bake's layer: promote() puts it in front of the chunk layers that authored the same prims,
 so the baked samples win, and keep() / restore() carry a bake across the framework's
@@ -103,6 +105,9 @@ _INPUT_KEY = "_sim_bake_input_key"
 
 #: How often progress reaches the readout, at most.
 _PROGRESS_EVERY_S = 0.25
+
+#: On a chunk: how long its last wait() took, shown as the next one's estimate.
+_LAST_WAIT = "_sim_bake_last_wait"
 
 #: Marks the lines in_subprocess's child prints for its parent; anything else (an engine's own
 #: banner) is passed through to the log.
@@ -184,6 +189,16 @@ class Context:
     def status(self, text: str) -> None:
         """Show text in the readout."""
         self._call(lambda: self._report(text))
+
+    def step(self, text: str, done: int, total: int) -> None:
+        """Show what a bake made of steps is doing: text in the readout, the bar at done of total.
+
+        For a bake whose parts are not frames. Its steps take what they take, so the bar
+        says how far through them it is, not how long is left.
+        """
+        if self._bar is not None:
+            self._call(lambda: self._bar(int(done), int(total)))
+        self.status(text)
 
     def progress(self, done: int, total: int) -> None:
         """Report frame done (0-based) of total, with the time left once it can be guessed."""
@@ -350,7 +365,7 @@ def wait(node, bake: Callable[[Context], Generator], *, report: Callable[[str], 
     if not in_background():
         return drive(bake(Context(node, report, None)))
 
-    window = _ProgressWindow(node, lambda: cancel(node))
+    window = _ProgressWindow(node, lambda: cancel(node), getattr(node, _LAST_WAIT, None))
 
     def shown(text: str) -> None:
         report(text)
@@ -386,6 +401,7 @@ def wait(node, bake: Callable[[Context], Generator], *, report: Callable[[str], 
         relay.call.emit((lambda: end(value=value)) if finished else on_main)
 
     setattr(node, _RUNNING, True)
+    started = time.perf_counter()
     try:
         with chunk_cook.hold(_later), window:
             on_main()
@@ -395,6 +411,7 @@ def wait(node, bake: Callable[[Context], Generator], *, report: Callable[[str], 
         setattr(node, _RUNNING, False)
     if "error" in outcome:
         raise outcome["error"]
+    setattr(node, _LAST_WAIT, time.perf_counter() - started)
     return outcome["value"]
 
 
@@ -403,8 +420,14 @@ def _later(fn: Callable) -> None:
     QtCore.QTimer.singleShot(0, QtCore.QCoreApplication.instance(), fn)
 
 
+def _duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    return f"{seconds} s" if seconds < 60 else f"{seconds // 60} min {seconds % 60:02d} s"
+
+
 class _ProgressWindow:
-    """What wait() shows while it waits: the chunk, its status, a bar and Cancel.
+    """What wait() shows while it waits: the chunk, its status, a bar, the time so far and
+    the last wait's, and Cancel.
 
     It appears only if the wait lasts: a quarter of a second, so a short one does not flash.
     From the start, though, the rest of the window takes no input -- clicks, keys, the
@@ -413,13 +436,16 @@ class _ProgressWindow:
 
     _DELAY_MS = 250
 
-    def __init__(self, node, on_cancel: Callable[[], None]):
+    def __init__(self, node, on_cancel: Callable[[], None], last: float | None = None):
         self._node = node
         self._on_cancel = on_cancel
+        self._last = last
+        self._started = time.perf_counter()
         self._dialog = None
         self._text = ""
         self._progress: tuple[int, int] | None = None
         self._timer = None
+        self._clock = None
         self._filter = None
 
     def __enter__(self):
@@ -435,8 +461,9 @@ class _ProgressWindow:
         return self
 
     def __exit__(self, *exc):
-        if self._timer is not None:
-            self._timer.stop()
+        for timer in (self._timer, self._clock):
+            if timer is not None:
+                timer.stop()
         if self._filter is not None:
             QtWidgets.QApplication.instance().removeEventFilter(self._filter)
         if self._dialog is not None:
@@ -466,7 +493,14 @@ class _ProgressWindow:
             self._dialog.setValue(min(done, total))
 
     def _label(self) -> str:
-        return f"{self._node.name}\n{self._text}" if self._text else self._node.name
+        clock = _duration(time.perf_counter() - self._started)
+        if self._last is not None:
+            clock += f" · last time {_duration(self._last)}"
+        return "\n".join(line for line in (self._node.name, self._text, clock) if line)
+
+    def _tick(self) -> None:
+        if self._dialog is not None:
+            self._dialog.setLabelText(self._label())
 
     def _show(self) -> None:
         dialog = QtWidgets.QProgressDialog(self._label(), "Cancel", 0, 0, QtWidgets.QApplication.activeWindow())
@@ -478,11 +512,16 @@ class _ProgressWindow:
         dialog.setMinimumWidth(360)
         dialog.canceled.connect(self._cancel)
         self._dialog = dialog
+        self._clock = QtCore.QTimer()
+        self._clock.timeout.connect(self._tick)
+        self._clock.start(1000)
         if self._progress is not None:
             self.show_progress(*self._progress)
         dialog.show()
 
     def _cancel(self) -> None:
+        if self._clock is not None:
+            self._clock.stop()
         if self._dialog is not None:
             self._dialog.setLabelText(f"{self._node.name}\ncancelling…")
             self._dialog.setCancelButton(None)
@@ -554,12 +593,14 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
     For an engine that holds the GIL while it computes, which stops the UI even from a
     thread. function must be a module-level function of a module that can be loaded from its
     file in a fresh interpreter, and kwargs and the result must pickle. function is called
-    with progress(done, total), which reaches ctx.progress. Cancelling kills the process.
+    with progress(done, total), which reaches ctx.progress, or progress(done, total, text)
+    for a step, which reaches ctx.step. Cancelling kills the process.
 
     Inline (ctx.inline) it is a plain call in this process: no event loop is waiting.
     """
     if ctx.inline:
-        return function(progress=ctx.progress, **kwargs)
+        return function(progress=lambda done, total, text="": (
+            ctx.step(text, done, total) if text else ctx.progress(done, total)), **kwargs)
 
     folder = Path(tempfile.mkdtemp(prefix="sim_bake_"))
     job, out = folder / "job.pickle", folder / "result.pickle"
@@ -601,8 +642,10 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
                     break
                 continue
             if line.startswith(_LINE):
-                kind, *rest = line[len(_LINE):].split()
-                if kind == "progress":
+                kind, *rest = line[len(_LINE):].rstrip("\n").split(" ", 3)
+                if kind == "progress" and len(rest) > 2 and rest[2]:
+                    ctx.step(rest[2], int(rest[0]), int(rest[1]))
+                elif kind == "progress":
                     ctx.progress(int(rest[0]), int(rest[1]))
             elif line.strip():
                 logger.debug("[%s] %s", function.__name__, line.rstrip())
@@ -661,8 +704,10 @@ def _child(source: str, function: str, job: str, out: str) -> None:
     with open(job, "rb") as f:
         kwargs = pickle.load(f)
 
-    def progress(done, total):
-        print(f"{_LINE}progress {int(done)} {int(total)}", flush=True)
+    def progress(done, total, text=""):
+        # One line each: the words of a step (Context.step) go last, newlines out.
+        words = " ".join(str(text).split())
+        print(f"{_LINE}progress {int(done)} {int(total)} {words}".rstrip(), flush=True)
 
     result = getattr(module, function)(progress=progress, **kwargs)
     with open(out, "wb") as f:

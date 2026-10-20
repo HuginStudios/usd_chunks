@@ -145,6 +145,31 @@ def test_in_subprocess_runs_the_solve_in_another_process(tmp_path, monkeypatch):
     assert reports[-1].startswith("simulating... frame 5 of 5")
 
 
+def test_in_subprocess_passes_a_steps_words_and_count_on(tmp_path, monkeypatch):
+    """A bake made of steps, not frames: progress(done, total, text) reaches ctx.step, in
+    the other process and inline."""
+    source = tmp_path / "steps.py"
+    source.write_text(
+        "def solve(progress):\n"
+        "    progress(1, 5, 'building the volume')\n"
+        "    progress(2, 5, 'meshing the surface')\n"
+        "    return 'done'\n",
+        encoding="utf-8",
+    )
+    spec = importlib.util.spec_from_file_location("steps_for_test", source)
+    steps = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "steps_for_test", steps)
+    spec.loader.exec_module(steps)
+
+    process = types.SimpleNamespace(call=types.SimpleNamespace(emit=lambda fn: fn()))
+    for relay in (process, None):
+        reports, bar = [], []
+        ctx = sim_bake.Context(_Node(), reports.append, None, relay, bar=lambda d, t: bar.append((d, t)))
+        assert sim_bake.in_subprocess(ctx, steps.solve) == "done"
+        assert bar == [(1, 5), (2, 5)]
+        assert reports == ["building the volume", "meshing the surface"]
+
+
 def test_in_subprocess_uses_this_usd_chunks_not_another_copy(tmp_path, monkeypatch):
     """usdview launched from C:\\usd_chunks while running a worktree: the child found the main
     checkout's usd_chunks first and failed with "No module named usd_chunks.sim_bake"."""

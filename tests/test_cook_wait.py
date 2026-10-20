@@ -172,7 +172,7 @@ def test_the_progress_window_shows_the_chunk_and_cancel_stops_it(threaded):
         slow.get_param("size").value = 3.0  # cancelled: nothing raised
 
         assert time.perf_counter() - started < 3.0, f"Cancel did not stop the wait: {seen}"
-        assert seen["label"] == "Slow\nworking"
+        assert seen["label"].startswith("Slow\nworking\n"), seen["label"]
         assert slow.has_state(FAILED), "a cancelled cook is not marked failed"
         assert log == [], "a chunk below cooked after Cancel"
         assert chunk_cook.is_cook_stale(down)
@@ -232,3 +232,22 @@ def test_a_cook_that_raises_holds_back_only_what_is_below_it():
         breaks.get_param("size").value = 1.0
         assert not breaks.has_state(FAILED)
         assert ("Below", None) in log
+
+
+def test_the_window_shows_the_time_so_far_and_the_last_wait_as_an_estimate(threaded):
+    seen = []
+
+    def look():
+        w = _progress_window()
+        seen.append(w.labelText() if w else None)
+
+    with Scene() as scene:
+        slow, down, log, job = _chain(scene)
+        job["seconds"] = 1.6
+        for size in (3.0, 4.0):
+            _later(1300, look)
+            slow.get_param("size").value = size
+    first, second = seen
+    # The chain's setup cooked once with no job: that wait was over at once.
+    assert first.splitlines()[-1] == "1 s · last time 0 s", first
+    assert second.splitlines()[-1] == "1 s · last time 2 s", second
