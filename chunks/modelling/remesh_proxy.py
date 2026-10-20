@@ -759,6 +759,8 @@ def config():
             "pillow>=10",
         ],
         cache_cook=True,
+        # A big one waits behind the progress window: a slider drag sets its value once.
+        cook_on_release=True,
         description=(
             "Rebuilds an asset as one closed, coloured proxy mesh by way of a volume: the\n"
             "surface is sampled, turned into a distance field, gaps are closed and enclosed\n"
