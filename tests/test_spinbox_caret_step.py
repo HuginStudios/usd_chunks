@@ -15,10 +15,16 @@ after the tenths, by 0.1; after the hundreds, by 100.
 from __future__ import annotations
 
 import pytest
-from PySide6 import QtCore, QtTest
+from PySide6 import QtCore, QtTest, QtWidgets
 
 from usd_chunks import chunk
-from usd_chunks.frontends.qt.widgets import ChunkSliderWidget, NumberField, caret_step
+from usd_chunks.frontends.qt.widgets import (
+    ChunkFloatSpinboxWidget,
+    ChunkIntSpinboxWidget,
+    ChunkSliderWidget,
+    NumberField,
+    caret_step,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +134,68 @@ def test_only_a_number_can_be_typed(qapp) -> None:
     QtTest.QTest.keyClicks(field, "abc-2.x5.7")
 
     assert field.text() == "-2.57", "letters and a second point are refused"
+    QtTest.QTest.keyClick(field, QtCore.Qt.Key.Key_Return)
     assert field.value() == pytest.approx(-2.57)
 
 
-def test_a_half_typed_number_changes_nothing_yet(qapp) -> None:
+def test_a_typed_number_is_a_change_only_on_enter(qapp) -> None:
+    """Typing 5000 into a chunk that takes seconds to cook cooked it for 5, 50 and 500
+    first: every keystroke was a change."""
+    field = _field(qapp, 4.0)
+    seen = []
+    field.valueChanged.connect(seen.append)
+    field.selectAll()
+
+    QtTest.QTest.keyClicks(field, "-3")
+    assert seen == [] and field.value() == pytest.approx(4.0)
+
+    QtTest.QTest.keyClick(field, QtCore.Qt.Key.Key_Return)
+    assert seen == [-3.0] and field.value() == pytest.approx(-3.0)
+
+
+def test_what_does_not_read_as_a_number_goes_back_to_the_value(qapp) -> None:
     field = _field(qapp, 4.0)
     seen = []
     field.valueChanged.connect(seen.append)
     field.selectAll()
 
     QtTest.QTest.keyClicks(field, "-")
-    assert seen == [] and field.value() == pytest.approx(4.0)
+    QtTest.QTest.keyClick(field, QtCore.Qt.Key.Key_Return)
 
-    QtTest.QTest.keyClicks(field, "3")
-    assert seen == [-3.0]
+    assert seen == [] and field.text() == "4.0"
+
+
+def test_leaving_the_field_takes_the_typed_number(qapp) -> None:
+    window = QtWidgets.QWidget()
+    field = NumberField(parent=window)
+    other = QtWidgets.QLineEdit(window)
+    field.setValue(4.0)
+    window.show()
+    window.activateWindow()
+    field.setFocus()
+    qapp.processEvents()
+    seen = []
+    field.valueChanged.connect(seen.append)
+    field.selectAll()
+
+    QtTest.QTest.keyClicks(field, "12")
+    other.setFocus()
+    qapp.processEvents()
+
+    assert seen == [12.0]
+    window.close()
+
+
+def test_up_steps_from_the_number_typed_so_far(qapp) -> None:
+    field = _field(qapp, 4.0)
+    seen = []
+    field.valueChanged.connect(seen.append)
+    field.selectAll()
+
+    QtTest.QTest.keyClicks(field, "12")         # "12|", the ones
+    QtTest.QTest.keyClick(field, QtCore.Qt.Key.Key_Up)
+
+    assert seen == [13.0], "one change, from the typed 12, not from the 4"
 
 
 def test_an_int_field_steps_its_digits_and_refuses_a_point(qapp) -> None:
@@ -174,3 +228,35 @@ def test_the_slider_widget_follows_the_field(qapp) -> None:
 
     assert param.value == pytest.approx(1.35)
     assert widget.slider.value() == 1350
+
+
+def test_typing_into_the_slider_widget_changes_its_param_once(qapp) -> None:
+    param = chunk.Slider("budget", is_int=True, min_value=0, max_value=1_000_000, default_value=3000)
+    widget = ChunkSliderWidget(param)
+    field = widget.spin_box
+    values = []
+    field.valueChanged.connect(lambda _v: values.append(param.value))
+    field.selectAll()
+
+    QtTest.QTest.keyClicks(field, "5000")
+    assert param.value == 3000, "nothing taken while typing"
+
+    QtTest.QTest.keyClick(field, QtCore.Qt.Key.Key_Return)
+    assert param.value == 5000 and values == [5000]
+    assert widget.slider.value() == 5000
+
+
+@pytest.mark.parametrize("widget_type, is_int, typed, expected", [
+    (ChunkIntSpinboxWidget, True, "50", 50),
+    (ChunkFloatSpinboxWidget, False, "2.5", 2.5),
+])
+def test_a_spinbox_takes_a_typed_number_on_enter(qapp, widget_type, is_int, typed, expected) -> None:
+    param = chunk.Spinbox("n", is_int=is_int, min_value=0, max_value=100, default_value=1)
+    widget = widget_type(param)
+    widget.lineEdit().selectAll()
+
+    QtTest.QTest.keyClicks(widget, typed)
+    assert param.value == 1, "nothing taken while typing"
+
+    QtTest.QTest.keyClick(widget, QtCore.Qt.Key.Key_Return)
+    assert param.value == pytest.approx(expected)

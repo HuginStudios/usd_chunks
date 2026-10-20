@@ -320,10 +320,12 @@ class NumberField(QtWidgets.QLineEdit):
 
     What is typed is validated as a number, not clamped: digits, one point, a leading
     sign (float), digits and a sign (int). Up/Down step the digit under the caret (see
-    caret_step); PageUp/PageDown step ten of them. valueChanged fires for every edit that
-    reads as a number, so the slider and the param follow keystroke by keystroke, the way
-    the spin box did. An edit that does not read as one yet ("-", "1.", "") changes nothing
-    until it does.
+    caret_step); PageUp/PageDown step ten of them, and each step is a change at once.
+
+    A typed number is a change on Enter, or on leaving the field -- not keystroke by
+    keystroke: typing 5000 into a chunk that takes seconds to cook cooked it for 5, then 50,
+    then 500. What does not read as a number ("-", "") changes nothing, and the field goes
+    back to showing the value.
     """
 
     valueChanged = QtCore.Signal(float)
@@ -337,8 +339,7 @@ class NumberField(QtWidgets.QLineEdit):
         self._decimals = decimals
         self._value = 0.0 if is_float else 0
         self.setValidator(QtGui.QRegularExpressionValidator(self._FLOAT if is_float else self._INT, self))
-        self.textEdited.connect(self._on_text_edited)
-        self.editingFinished.connect(self._normalise)
+        self.editingFinished.connect(self._commit)
 
     # -- value ---------------------------------------------------------------------------
 
@@ -383,15 +384,13 @@ class NumberField(QtWidgets.QLineEdit):
         except ValueError:
             return None
 
-    def _on_text_edited(self, text: str) -> None:
-        value = self._parse(text)
-        if value is None or value == self._value:
-            return
-        self._value = value
-        self.valueChanged.emit(value)
-
-    def _normalise(self) -> None:
-        """On leaving the field: show the value the way setValue would."""
+    def _commit(self) -> None:
+        """On Enter or on leaving the field: take what was typed as the value, and show it
+        the way setValue would."""
+        value = self._parse(self.text())
+        if value is not None and value != self._value:
+            self._value = value
+            self.valueChanged.emit(value)
         text = self._format(self._value)
         if text != self.text():
             self.setText(text)
@@ -418,6 +417,9 @@ class NumberField(QtWidgets.QLineEdit):
             return
         if not self._is_float:
             step = int(step)
+        # From what is typed, not yet taken: 12 typed over a 4, then Up, is 13.
+        if (typed := self._parse(self.text())) is not None:
+            self._value = typed
         # Rounded to the field's own precision: 0.1 + 0.2 is 0.30000000000000004 in binary,
         # and the caret would land in a text ten digits longer than the one it was in.
         new = self._value + steps * step
@@ -560,6 +562,9 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         else:
             self.setMaximum(999999999.0)
 
+        # A typed number is a change on Enter or on leaving the box, as in the slider's
+        # field (NumberField); the arrows still change it at once.
+        self.setKeyboardTracking(False)
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
 
@@ -603,6 +608,9 @@ class ChunkIntSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QSpin
         else:
             self.setMaximum(999999999)
 
+        # A typed number is a change on Enter or on leaving the box, as in the slider's
+        # field (NumberField); the arrows still change it at once.
+        self.setKeyboardTracking(False)
         self.setup_chunk_widget()
         self.valueChanged.connect(self.value_changed)
 
