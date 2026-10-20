@@ -52,6 +52,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_scheduler, layer_arcs
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKS_ROOT
+from usd_chunks.cook_errors import CookCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -910,6 +911,8 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         watches: list[_Watch] = []
         try:
             _execute(chunk, main, layer, mask, execute, watches, hidden)
+        except CookCancelled:
+            raise  # not a cook the mask broke: cancelled, it is not tried again
         except Exception:
             if _whole(mask):
                 raise

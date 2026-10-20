@@ -35,6 +35,8 @@ class ChunkFlags:
             STALE: The chunk's last computed result no longer reflects its current inputs
                 (e.g. an expensive, manually-triggered chunk whose params or upstream changed
                 since it last ran). Purely a UI hint -- nothing clears or checks it automatically.
+            FAILED: The chunk's last cook raised or was cancelled, so the chunks below it did
+                not cook. Set and cleared by every cook (chunk_cook.cook); the node shows red.
         """
 
         NONE = 0
@@ -43,6 +45,7 @@ class ChunkFlags:
         COLLAPSED = auto()
         SELECTED = auto()
         STALE = auto()
+        FAILED = auto()
 
     class GroupFlags(_FlagRepr):
         """Flags for chunk container type objects (Chunk, Group).

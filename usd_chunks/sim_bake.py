@@ -25,6 +25,13 @@ An engine that holds the GIL while it computes still stops the UI from a thread:
 for over a second at a time. in_subprocess() runs one solve function in a separate Python
 process instead, from inside the WORKER part.
 
+wait() is for a long part of a chunk's own cook. The chunks below it read its result, so
+the cook waits for it, and returns it: nothing else cooks meanwhile (chunk_cook.hold). The
+WORKER parts still run on a thread, so the host paints, and a progress window shows what
+it is doing, with Cancel. The rest of the window takes no input until it ends. A bake made
+of steps says which one it is on with Context.step; the window adds the time so far and
+how long the chunk's last wait took, which is the estimate a bar of steps cannot give.
+
 The bake's layer: promote() puts it in front of the chunk layers that authored the same prims,
 so the baked samples win, and keep() / restore() carry a bake across the framework's
 clear-before-cook, since a bake is too expensive to redo on every cook.
@@ -49,13 +56,19 @@ from pathlib import Path
 
 from pxr import Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_registry, cook_cache
+from usd_chunks import chunk_cook, chunk_registry, cook_cache
 from usd_chunks.chunk_process import python_executable
+from usd_chunks.cook_errors import CookCancelled
 
 try:
     from PySide6 import QtCore
 except ImportError:  # pragma: no cover - headless install without Qt
     QtCore = None
+
+try:
+    from PySide6 import QtWidgets
+except ImportError:  # pragma: no cover - Qt without widgets
+    QtWidgets = None
 
 try:
     from ctypes import wintypes
@@ -93,13 +106,19 @@ _INPUT_KEY = "_sim_bake_input_key"
 #: How often progress reaches the readout, at most.
 _PROGRESS_EVERY_S = 0.25
 
+#: How often a step's bar moves within the same step, at most.
+_STEP_EVERY_S = 0.1
+
+#: On a chunk: how long its last wait() took, shown as the next one's estimate.
+_LAST_WAIT = "_sim_bake_last_wait"
+
 #: Marks the lines in_subprocess's child prints for its parent; anything else (an engine's own
 #: banner) is passed through to the log.
 _LINE = "@@sim_bake "
 
 
-class Cancelled(Exception):
-    """The bake was cancelled (cancel(node))."""
+class Cancelled(CookCancelled):
+    """The bake was cancelled (cancel(node)). Out of a cook, it fails the cook quietly."""
 
 
 def in_background() -> bool:
@@ -144,15 +163,19 @@ def cancel(node) -> None:
 class Context:
     """What a bake gets: progress, cancellation and live results, safe from any thread."""
 
-    def __init__(self, node, report: Callable[[str], None], live: Callable | None, relay=None):
+    def __init__(self, node, report: Callable[[str], None], live: Callable | None, relay=None,
+                 bar: Callable[[int, int], None] | None = None):
         self.node = node
         self._report = report
         self._live = live
         self._relay = relay
+        self._bar = bar
         self._started = time.perf_counter()
         self._first_frame = None
         self._last_report = 0.0
         self._latest = None
+        self._step_text = None
+        self._last_step = 0.0
 
     @property
     def inline(self) -> bool:
@@ -172,6 +195,25 @@ class Context:
         """Show text in the readout."""
         self._call(lambda: self._report(text))
 
+    def step(self, text: str, done: int, total: int) -> None:
+        """Show what a bake made of steps is doing: text in the readout, the bar at done of total.
+
+        For a bake whose parts are not frames. Its steps take what they take, so the bar
+        says how far through them it is, not how long is left.
+        """
+        # Only what changed, and the bar at most every _STEP_EVERY_S: sampling the Kitchen
+        # set reports once per mesh, 1,788 times, each a hop to the main thread, and the
+        # readout's text the same each time.
+        now = time.perf_counter()
+        if text != self._step_text:
+            self._step_text = text
+            self.status(text)
+        elif now - self._last_step < _STEP_EVERY_S:
+            return
+        self._last_step = now
+        if self._bar is not None:
+            self._call(lambda: self._bar(int(done), int(total)))
+
     def progress(self, done: int, total: int) -> None:
         """Report frame done (0-based) of total, with the time left once it can be guessed."""
         now = time.perf_counter()
@@ -181,6 +223,8 @@ class Context:
         if not last and now - self._last_report < _PROGRESS_EVERY_S:
             return
         self._last_report = now
+        if self._bar is not None:
+            self._call(lambda: self._bar(done + 1, total))
         text = f"simulating... frame {done + 1} of {total}"
         if done > 0:
             left = (now - self._first_frame) / done * (total - done - 1)
@@ -309,6 +353,222 @@ def run(node, bake: Callable[[Context], Generator], *, report: Callable[[str], N
     on_main()
 
 
+def wait(node, bake: Callable[[Context], Generator], *, report: Callable[[str], None],
+         name: str = "SimBake"):
+    """Run bake(ctx) for node and return its result, cooking nothing else until it ends.
+
+    For a long part of a chunk's own cook: the chunks below it read the result, so they
+    wait for it rather than cook against the last one and again when it lands. In a UI
+    host the WORKER parts run on a thread while a progress window shows the bake's status,
+    with Cancel; the rest of the window takes no input, and every cook asked for meanwhile
+    runs once it has ended (chunk_cook.hold). Headless it runs straight through.
+
+    Args:
+        node: The chunk cooking.
+        bake: A generator function taking a Context; its return value is the result.
+        report: Shows a line of text in the chunk's readout. Called on the main thread.
+        name: The worker thread's name.
+
+    Returns:
+        What bake returned.
+
+    Raises:
+        Cancelled: Cancel was pressed, or cancel(node) called.
+    """
+    setattr(node, _CANCEL, False)
+    if not in_background():
+        return drive(bake(Context(node, report, None)))
+
+    window = _ProgressWindow(node, lambda: cancel(node), getattr(node, _LAST_WAIT, None))
+
+    def shown(text: str) -> None:
+        report(text)
+        window.show_text(text)
+
+    relay = _Relay()
+    ctx = Context(node, shown, None, relay, bar=window.show_progress)
+    gen = bake(ctx)
+    loop = QtCore.QEventLoop()
+    outcome: dict = {}
+
+    def end(**result) -> None:
+        outcome.update(result)
+        loop.quit()
+
+    def on_main():
+        try:
+            finished, value = _phase(gen, ctx, WORKER)
+        except BaseException as e:  # noqa: BLE001 - raised on to the cook, below
+            end(error=e)
+            return
+        if finished:
+            end(value=value)
+            return
+        threading.Thread(target=on_worker, name=name, daemon=True).start()
+
+    def on_worker():
+        try:
+            finished, value = _phase(gen, ctx, MAIN)
+        except BaseException as e:  # noqa: BLE001
+            relay.call.emit(lambda e=e: end(error=e))
+            return
+        relay.call.emit((lambda: end(value=value)) if finished else on_main)
+
+    setattr(node, _RUNNING, True)
+    started = time.perf_counter()
+    try:
+        with chunk_cook.hold(_later), window:
+            on_main()
+            if not outcome:
+                loop.exec()
+    finally:
+        setattr(node, _RUNNING, False)
+    if "error" in outcome:
+        raise outcome["error"]
+    setattr(node, _LAST_WAIT, time.perf_counter() - started)
+    return outcome["value"]
+
+
+def _later(fn: Callable) -> None:
+    """Run fn from the event loop, once the current call stack has returned."""
+    QtCore.QTimer.singleShot(0, QtCore.QCoreApplication.instance(), fn)
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    return f"{seconds} s" if seconds < 60 else f"{seconds // 60} min {seconds % 60:02d} s"
+
+
+class _ProgressWindow:
+    """What wait() shows while it waits: the chunk, its status, a bar, the time so far and
+    the last wait's, and Cancel.
+
+    It appears only if the wait lasts: a quarter of a second, so a short one does not flash.
+    From the start, though, the rest of the window takes no input -- clicks, keys, the
+    wheel, closing it -- so nothing can change the graph while a cook waits.
+    """
+
+    _DELAY_MS = 250
+
+    def __init__(self, node, on_cancel: Callable[[], None], last: float | None = None):
+        self._node = node
+        self._on_cancel = on_cancel
+        self._last = last
+        self._started = time.perf_counter()
+        self._dialog = None
+        self._text = ""
+        self._progress: tuple[int, int] | None = None
+        self._timer = None
+        self._clock = None
+        self._filter = None
+
+    def __enter__(self):
+        app = QtWidgets.QApplication.instance() if QtWidgets is not None else None
+        if app is None:
+            return self
+        self._filter = _InputFilter(self)
+        app.installEventFilter(self._filter)
+        self._timer = QtCore.QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._show)
+        self._timer.start(self._DELAY_MS)
+        return self
+
+    def __exit__(self, *exc):
+        for timer in (self._timer, self._clock):
+            if timer is not None:
+                timer.stop()
+        if self._filter is not None:
+            QtWidgets.QApplication.instance().removeEventFilter(self._filter)
+        if self._dialog is not None:
+            self._dialog.hide()
+            self._dialog.deleteLater()
+            self._dialog = None
+        return False
+
+    def owns(self, obj) -> bool:
+        """Whether obj is the window or a widget in it: the only things that take input."""
+        if self._dialog is None:
+            return False
+        if not isinstance(obj, QtWidgets.QWidget):
+            # Input reaches a window's QWindow before its widgets.
+            return obj is self._dialog.windowHandle()
+        return obj is self._dialog or self._dialog.isAncestorOf(obj)
+
+    def show_text(self, text: str) -> None:
+        self._text = text
+        if self._dialog is not None:
+            self._dialog.setLabelText(self._label())
+
+    def show_progress(self, done: int, total: int) -> None:
+        self._progress = (done, total)
+        if self._dialog is not None:
+            self._dialog.setRange(0, total)
+            self._dialog.setValue(min(done, total))
+
+    def _label(self) -> str:
+        clock = _duration(time.perf_counter() - self._started)
+        if self._last is not None:
+            clock += f" · last time {_duration(self._last)}"
+        return "\n".join(line for line in (self._node.name, self._text, clock) if line)
+
+    def _tick(self) -> None:
+        if self._dialog is not None:
+            self._dialog.setLabelText(self._label())
+
+    def _show(self) -> None:
+        dialog = QtWidgets.QProgressDialog(self._label(), "Cancel", 0, 0, QtWidgets.QApplication.activeWindow())
+        dialog.setWindowTitle("Cooking")
+        dialog.setWindowModality(QtCore.Qt.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumWidth(360)
+        dialog.canceled.connect(self._cancel)
+        self._dialog = dialog
+        self._clock = QtCore.QTimer()
+        self._clock.timeout.connect(self._tick)
+        self._clock.start(1000)
+        if self._progress is not None:
+            self.show_progress(*self._progress)
+        dialog.show()
+
+    def _cancel(self) -> None:
+        if self._clock is not None:
+            self._clock.stop()
+        if self._dialog is not None:
+            self._dialog.setLabelText(f"{self._node.name}\ncancelling…")
+            self._dialog.setCancelButton(None)
+        self._on_cancel()
+
+
+if QtCore is not None:
+
+    class _InputFilter(QtCore.QObject):
+        """Eats input meant for anything but the progress window (see _ProgressWindow)."""
+
+        _EATEN = frozenset(
+            getattr(QtCore.QEvent.Type, name)
+            for name in (
+                "MouseButtonPress", "MouseButtonRelease", "MouseButtonDblClick", "MouseMove",
+                "KeyPress", "KeyRelease", "ShortcutOverride", "Shortcut", "Wheel",
+                "ContextMenu", "DragEnter", "DragMove", "Drop", "Close", "TabletPress",
+                "TouchBegin",
+            )
+        )
+
+        def __init__(self, window: _ProgressWindow):
+            super().__init__()
+            self._window = window
+
+        def eventFilter(self, obj, event) -> bool:
+            if event.type() not in self._EATEN or self._window.owns(obj):
+                return False
+            if event.type() == QtCore.QEvent.Type.Close:
+                event.ignore()
+            return True
+
+
 def drive(gen: Generator):
     """Run a bake generator straight through, ignoring where it says it may run.
 
@@ -347,12 +607,14 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
     For an engine that holds the GIL while it computes, which stops the UI even from a
     thread. function must be a module-level function of a module that can be loaded from its
     file in a fresh interpreter, and kwargs and the result must pickle. function is called
-    with progress(done, total), which reaches ctx.progress. Cancelling kills the process.
+    with progress(done, total), which reaches ctx.progress, or progress(done, total, text)
+    for a step, which reaches ctx.step. Cancelling kills the process.
 
     Inline (ctx.inline) it is a plain call in this process: no event loop is waiting.
     """
     if ctx.inline:
-        return function(progress=ctx.progress, **kwargs)
+        return function(progress=lambda done, total, text="": (
+            ctx.step(text, done, total) if text else ctx.progress(done, total)), **kwargs)
 
     folder = Path(tempfile.mkdtemp(prefix="sim_bake_"))
     job, out = folder / "job.pickle", folder / "result.pickle"
@@ -394,8 +656,10 @@ def in_subprocess(ctx: Context, function: Callable, **kwargs):
                     break
                 continue
             if line.startswith(_LINE):
-                kind, *rest = line[len(_LINE):].split()
-                if kind == "progress":
+                kind, *rest = line[len(_LINE):].rstrip("\n").split(" ", 3)
+                if kind == "progress" and len(rest) > 2 and rest[2]:
+                    ctx.step(rest[2], int(rest[0]), int(rest[1]))
+                elif kind == "progress":
                     ctx.progress(int(rest[0]), int(rest[1]))
             elif line.strip():
                 logger.debug("[%s] %s", function.__name__, line.rstrip())
@@ -454,8 +718,10 @@ def _child(source: str, function: str, job: str, out: str) -> None:
     with open(job, "rb") as f:
         kwargs = pickle.load(f)
 
-    def progress(done, total):
-        print(f"{_LINE}progress {int(done)} {int(total)}", flush=True)
+    def progress(done, total, text=""):
+        # One line each: the words of a step (Context.step) go last, newlines out.
+        words = " ".join(str(text).split())
+        print(f"{_LINE}progress {int(done)} {int(total)} {words}".rstrip(), flush=True)
 
     result = getattr(module, function)(progress=progress, **kwargs)
     with open(out, "wb") as f:

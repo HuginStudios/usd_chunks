@@ -500,6 +500,16 @@ def test_a_stale_chunk_gets_the_amber_header(view):
     assert tuple(_node(view, "Move").color) == pytest.approx(bg._NODE_HEADER_COLOR)
 
 
+def test_a_failed_chunk_gets_a_red_header_over_the_amber_one(view):
+    move = view.chunks[_node(view, "Move").name]
+    move.set_state(ChunkFlags.State.STALE | ChunkFlags.State.FAILED)
+    _flush(view)
+    assert tuple(_node(view, "Move").color) == pytest.approx(bg._FAILED_HEADER_COLOR)
+    move.unset_state(ChunkFlags.State.FAILED)
+    _flush(view)
+    assert tuple(_node(view, "Move").color) == pytest.approx(bg._STALE_HEADER_COLOR)
+
+
 def test_collapse_is_the_state_bit_shown_as_blenders_hide(view):
     """One direction for the lot, groups and views skipped; node.hide follows the bit so a
     collapse survives a reload and one made in Qt shows here."""

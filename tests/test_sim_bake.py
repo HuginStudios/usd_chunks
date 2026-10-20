@@ -145,6 +145,31 @@ def test_in_subprocess_runs_the_solve_in_another_process(tmp_path, monkeypatch):
     assert reports[-1].startswith("simulating... frame 5 of 5")
 
 
+def test_in_subprocess_passes_a_steps_words_and_count_on(tmp_path, monkeypatch):
+    """A bake made of steps, not frames: progress(done, total, text) reaches ctx.step, in
+    the other process and inline."""
+    source = tmp_path / "steps.py"
+    source.write_text(
+        "def solve(progress):\n"
+        "    progress(1, 5, 'building the volume')\n"
+        "    progress(2, 5, 'meshing the surface')\n"
+        "    return 'done'\n",
+        encoding="utf-8",
+    )
+    spec = importlib.util.spec_from_file_location("steps_for_test", source)
+    steps = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "steps_for_test", steps)
+    spec.loader.exec_module(steps)
+
+    process = types.SimpleNamespace(call=types.SimpleNamespace(emit=lambda fn: fn()))
+    for relay in (process, None):
+        reports, bar = [], []
+        ctx = sim_bake.Context(_Node(), reports.append, None, relay, bar=lambda d, t: bar.append((d, t)))
+        assert sim_bake.in_subprocess(ctx, steps.solve) == "done"
+        assert bar == [(1, 5), (2, 5)]
+        assert reports == ["building the volume", "meshing the surface"]
+
+
 def test_in_subprocess_uses_this_usd_chunks_not_another_copy(tmp_path, monkeypatch):
     """usdview launched from C:\\usd_chunks while running a worktree: the child found the main
     checkout's usd_chunks first and failed with "No module named usd_chunks.sim_bake"."""
@@ -272,3 +297,24 @@ def test_keep_and_restore_carry_a_bake_across_a_cleared_layer():
     layer.Clear()
     assert not sim_bake.restore(node, layer)
     assert not layer.GetPrimAtPath("/Baked")
+
+
+def test_a_step_reported_again_and_again_reaches_the_main_thread_rarely():
+    """Sampling the Kitchen set reports once per mesh, 1,788 times, with the same text: the
+    readout is set once, and the bar moves at most every _STEP_EVERY_S."""
+    reports, bar, hops = [], [], []
+    relay = types.SimpleNamespace(call=types.SimpleNamespace(emit=lambda fn: (hops.append(1), fn())))
+    ctx = sim_bake.Context(_Node(), reports.append, None, relay, bar=lambda d, t: bar.append((d, t)))
+    done = threading.Event()
+
+    def worker():
+        for i in range(2000):
+            ctx.step("step 1 of 2: sampling", i, 4000)
+        ctx.step("step 2 of 2: meshing", 2000, 4000)
+        done.set()
+
+    threading.Thread(target=worker).start()
+    assert done.wait(10)
+    assert reports == ["step 1 of 2: sampling", "step 2 of 2: meshing"]
+    assert bar[-1] == (2000, 4000)
+    assert len(hops) < 20, f"{len(hops)} hops to the main thread"

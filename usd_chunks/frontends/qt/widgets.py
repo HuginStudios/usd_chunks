@@ -246,6 +246,8 @@ class _FineDragSlider(QtWidgets.QSlider):
             self._fine_dragging = True
             self._drag_last_x = event.position().x()
             self._drag_value = float(self.value())
+            # Down, as Qt's own drag is: with tracking off the value then lands on release.
+            self.setSliderDown(True)
             event.accept()
             return
         self._fine_dragging = False
@@ -262,12 +264,14 @@ class _FineDragSlider(QtWidgets.QSlider):
         groove_width = max(self.width(), 1)
         self._drag_value += dx * (span / groove_width) * self._FINE_SENSITIVITY
         self._drag_value = min(self.maximum(), max(self.minimum(), self._drag_value))
-        self.setValue(round(self._drag_value))
+        # The position, not the value: tracking decides whether the value follows now.
+        self.setSliderPosition(round(self._drag_value))
         event.accept()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         if self._fine_dragging:
             self._fine_dragging = False
+            self.setSliderDown(False)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -479,6 +483,12 @@ class ChunkSliderWidget(ChunkParamWidgetBase[chunk.Slider], SpinSlider):
         self.setup_chunk_widget()
         self.slider.valueChanged.connect(self.value_changed)
         self.spin_box.valueChanged.connect(lambda v: self.value_changed(int(v * self._step)))
+        chunk_of = param.get_chunk() if hasattr(param, "get_chunk") else None
+        config = chunk_of.get_config() if chunk_of is not None else None
+        if config is not None and config.cook_on_release:
+            # A drag sets the value once, when it ends; the number follows it meanwhile.
+            self.slider.setTracking(False)
+            self.slider.sliderMoved.connect(self._on_slider_changed)
 
     def _apply_range(self) -> None:
         min_val = self.param.min_value

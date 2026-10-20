@@ -4218,6 +4218,10 @@ class ChunkConfig(AttributesBase):
     # only reproducible where it was made -- Blender Import's, from a .blend that may be
     # gone -- so the cache entry is the result, not a shortcut to it. Implies cache_cook.
     cache_always: bool = attrs.field(default=False)
+    # A cook long enough to wait for (sim_bake.wait): the chunk's sliders set their value when
+    # the mouse lets go, not on every move of a drag, which started a whole remesh per move.
+    # The number beside the slider still follows the drag.
+    cook_on_release: bool = attrs.field(default=False)
     # Kept out of the chunk menu. For a type that exists so something can be SAVED and read
     # back rather than created by hand -- `runtime`, the type a chunk built in the
     # interpreter is written as. It still has to be a registered module, since that is how

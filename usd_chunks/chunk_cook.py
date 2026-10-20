@@ -20,6 +20,13 @@ in by ChunkBase._cook, which is only that.
 Stale tracking (is_cook_stale) records a chunk whose cook was refused -- blocked outside
 the active view, muted, no layer yet -- so chunk_stage.recook_for_view cooks it later.
 
+A cook that raises (or is cancelled) marks its chunk FAILED, and nothing below it cooks
+for the rest of that pass (cook_pass): the chunks below keep their last result, stale.
+The other chunks of the pass still cook. A cook that runs clears FAILED.
+
+A chunk whose cook waits on a long job holds every other cook until it ends (hold): the
+host's event loop runs meanwhile, and a recook it starts waits instead (hold_back).
+
 The graph itself (DagNode, notices) is chunk_notice's; the graph algorithms are
 chunk_scheduler's. Chunk authors never call anything here: they write execute(node) and
 call chunk.execute() to run a chunk again.
@@ -34,6 +41,8 @@ from contextlib import contextmanager
 from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, layer_arcs, skip_cook
+from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.cook_errors import CookCancelled
 
 # The chunks the solves since the last flush() reached, waiting for it -- each with the
 # (alias, propagator) changes that reached it and whether it was stale before they did.
@@ -60,6 +69,18 @@ _solve_deferred: dict = {}
 
 # What runs after every cook, once its write guard is down. See after_cook().
 _after_cook_hooks: list[Callable] = []
+
+# How many holds are open (hold()): while any is, nothing else cooks.
+_held = 0
+
+# What asked to run while a hold was open, by key, to run once it has ended (hold_back).
+_held_back: dict = {}
+
+# How many cook passes are running inside each other (cook_pass), and the DagNodes below a
+# chunk whose cook failed in the outermost one: those do not cook until it has ended.
+_pass_depth = 0
+_below_failed: dict = {}
+
 
 
 def after_cook(fn: Callable) -> None:
@@ -117,6 +138,99 @@ def defer_to_batch_end(key, fn) -> bool:
     return False
 
 
+def is_held() -> bool:
+    """Whether a chunk is waiting on a long job, so nothing else may cook (hold)."""
+    return bool(_held)
+
+
+def hold_back(key, fn) -> bool:
+    """While a hold is open, keep fn to run once it has ended, instead of now.
+
+    For a cook that would start while a chunk waits on its job -- a recook a timer fires, a
+    view switching. Kept under the same key, it runs once, the last one asked for.
+
+    Args:
+        key: Identifies the work.
+        fn: What to run.
+
+    Returns:
+        False when no hold is open: the caller runs it now.
+    """
+    if not _held:
+        return False
+    _held_back[key] = fn
+    return True
+
+
+@contextmanager
+def hold(later: Callable[[Callable], None]):
+    """Cook nothing else until the block ends: for a cook waiting on a long job.
+
+    The cook waiting is one chunk's, inside a flush; the chunks below it must cook against
+    its result, so they wait. The host's event loop runs while it waits, to paint and show
+    progress, and what that loop would start is held: flush() cooks nothing, and a recook
+    asks hold_back() to keep it. They run when the block has ended -- not straight away,
+    as the cook it is in has not finished yet, but through later(fn), which runs fn once
+    the event loop is back at the top.
+
+    Args:
+        later: Runs a function from the host's event loop once the current call stack has
+            returned (a zero-delay timer).
+    """
+    global _held
+    _held += 1
+    try:
+        yield
+    finally:
+        _held -= 1
+        if not _held:
+            later(_release)
+
+
+def _release() -> None:
+    """Run what hold_back() kept, and cook what the held solves left pending."""
+    if _held:
+        return  # held again before this ran; that hold's own release runs it
+    flush()
+    while _held_back:
+        pending = list(_held_back.values())
+        _held_back.clear()
+        for fn in pending:
+            fn()
+
+
+@contextmanager
+def cook_pass():
+    """Around one pass of cooks (a flush, a recook): a failure in it holds back what is below.
+
+    Passes inside each other are one pass, and what failed stays failed until the
+    outermost one ends: a recook runs a flush per chunk, and a chunk below one that failed
+    must not cook in a later one of them.
+    """
+    global _pass_depth
+    _pass_depth += 1
+    try:
+        yield
+    finally:
+        _pass_depth -= 1
+        if not _pass_depth:
+            _below_failed.clear()
+
+
+def below_failed(chunk) -> bool:
+    """Whether a chunk is below one whose cook failed in this pass (cook_pass)."""
+    return bool(_below_failed) and chunk.get_dag_node() in _below_failed
+
+
+def _set_failed(chunk, failed: bool) -> None:
+    flag = ChunkFlags.State.FAILED
+    if chunk.has_state(flag) != failed:
+        if failed:
+            chunk.set_state(flag)
+        else:
+            chunk.unset_state(flag)
+
+
 @contextmanager
 def solving():
     """Around one solve: the outermost one, outside a batch, flushes what it left pending.
@@ -147,10 +261,17 @@ def flush(force: bool = False) -> None:
             cook (a Wedge setting its ranges), which reads the result straight after.
             A plain solve inside a cook waits for the outer flush instead.
     """
-    global _flushing
-    if _flushing and not force:
+    if _held or (_flushing and not force):
         return
+    with cook_pass():
+        _flush()
+
+
+def _flush() -> None:
+    global _flushing
     was_flushing, _flushing = _flushing, True
+    # The first failure among this flush's cooks, raised on once the rest have cooked.
+    error = None
     # The scene's state as skip_cook last read it here; only a cook changes it in between.
     states: list = []
     # The outermost flush's masked cooks share one cook stage, dropped as it ends.
@@ -192,11 +313,17 @@ def flush(force: bool = False) -> None:
                     # cook(), reached through ChunkBase._cook. A chunk whose module has no
                     # execute() has nothing to run and stays stale.
                     states.clear()
-                    chunk._cook()
+                    try:
+                        chunk._cook()
+                    except Exception as e:  # noqa: BLE001 - raised on below, once the rest cooked
+                        # cook() held back what is below it; the other chunks still cook.
+                        error = error or e
     finally:
         _flushing = was_flushing
         if share is not None:
             share.__exit__(None, None, None)
+    if error is not None and not isinstance(error, CookCancelled):
+        raise error
     # The outermost flush, outside a batch (which runs its own): what was deferred until
     # the cooks were done. Each may solve again, which flushes and runs its own.
     if not was_flushing and _batch_deferred is None:
@@ -350,12 +477,29 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
     # window -- usdview clears its stage before opening the next file while still
     # pumping the Qt event loop, so a deferred rebuild, or a click landing in that
     # window, can reach here.
+    # Below a chunk whose cook failed in this pass: what it would read is not there. It
+    # keeps its last result, stale, and cooks in a later pass.
     if not (execute is not None and stage is not None
             and not getattr(chunk, '_executing', False)
             and not getattr(chunk, '_deleting', False)
-            and not muted and not not_yet_in_stack and not chunk.is_blocked()):
+            and not muted and not not_yet_in_stack and not chunk.is_blocked()
+            and not below_failed(chunk)):
         return False
 
+    try:
+        _run(chunk, stage, ctx, execute, layer_of, stamp)
+    except Exception:
+        _below_failed.update(chunk_scheduler.downstream_closure(chunk.get_dag_node()))
+        _set_failed(chunk, True)
+        raise
+    _set_failed(chunk, False)
+    for fn in _after_cook_hooks:
+        fn(chunk)
+    return True
+
+
+def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
+    """cook()'s cook, once it has decided the chunk may run."""
     with executing(chunk), skip_cook.unmasked():
         if ctx:
             try:
@@ -437,9 +581,6 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
             skip_cook.unaccounted(chunk)
             clear_cook_stale(chunk)
             stamp(stage, chunk)
-    for fn in _after_cook_hooks:
-        fn(chunk)
-    return True
 
 
 @contextmanager
