@@ -445,7 +445,9 @@ class SpinSlider(QtWidgets.QWidget):
         # Three decimals, the slider's own resolution (1 / _step). At two, a value of 0.125
         # read 0.13 and the thousandths could be set but never seen.
         self.spin_box = NumberField(is_float=is_float, decimals=3)
-        self.spin_box.setMaximumWidth(48)
+        # Fixed, not just capped: in a narrow row (a node body with its label beside it) the
+        # slider is what gives way, so a value like 6500.0 stays readable.
+        self.spin_box.setFixedWidth(48)
 
         self.slider = _FineDragSlider(QtCore.Qt.Orientation.Horizontal)
 
@@ -1515,8 +1517,69 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         return widget
 
 
+# Width of the label column when a row puts its label beside the field (inline rows).
+INLINE_LABEL_WIDTH = 80
+
+# One-line fields, the kind that fit beside a label. Multi-line ones (text edits, image
+# menus) and those that carry their own text (buttons, labels) keep the label above.
+_INLINE_LABEL_WIDGETS = (
+    ChunkSliderWidget, ChunkFloatSpinboxWidget, ChunkIntSpinboxWidget, ChunkLineEditWidget,
+    ChunkFileWidget, ChunkComboBoxWidget, ChunkCheckBoxWidget, ChunkColorPickerWidget,
+)
+
+
+class _ElidedLabel(QtWidgets.QLabel):
+    """A label that ends its text with "..." when it does not fit its width.
+
+    text() still returns the whole text.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text or ""
+        self._elide()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        # The stylesheet arrives after the text and can change the font.
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange):
+            self._elide()
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        # A cut-short label shows its whole text on hover, unless the row has put a tooltip
+        # of its own here (an expression, an override).
+        if (event.type() == QtCore.QEvent.Type.ToolTip and not self.toolTip()
+                and super().text() != self._full_text):
+            QtWidgets.QToolTip.showText(event.globalPos(), self._full_text, self)
+            return True
+        return super().event(event)
+
+    def _elide(self) -> None:
+        shown = self.fontMetrics().elidedText(
+            self._full_text, QtCore.Qt.TextElideMode.ElideRight, max(self.width(), 0))
+        if shown != super().text():
+            super().setText(shown)
+
+
 class LabeledWidget(QtWidgets.QWidget):
-    def __init__(self, widget, parent=None):
+    def __init__(self, widget, parent=None, inline: bool = False):
+        """A param's row: its widget plus an optional label.
+
+        Args:
+            widget: The param's widget.
+            parent: The container the row sits in.
+            inline: Put the label to the left of a one-line widget instead of above it.
+        """
         super().__init__(parent)
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
@@ -1524,6 +1587,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.widget: ChunkParamWidgetBase = widget
+        # The label and widget side by side, when the row is inline; None otherwise.
+        self._row: QtWidgets.QHBoxLayout | None = None
+        if inline and isinstance(widget, _INLINE_LABEL_WIDGETS):
+            self._row = QtWidgets.QHBoxLayout()
+            self._row.setContentsMargins(0, 0, 0, 0)
         # Made by update_label when the row first gets text (see _ensure_label). Most rows
         # never do, and an eager label was a hidden widget per row, constructed, styled and
         # laid out for nothing. Filters others ask for wait in _label_filters; this row's own
@@ -1533,7 +1601,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.label: QtWidgets.QLabel | None = None
         self._label_filters: list[QtCore.QObject] = []
 
-        self.vlayout.addWidget(widget)
+        if self._row is not None:
+            self._row.addWidget(widget, 1)
+            self.vlayout.addLayout(self._row)
+        else:
+            self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
         # Built on first hover, not here. A Qt.ToolTip label is a top-level window, and
@@ -1664,10 +1736,20 @@ class LabeledWidget(QtWidgets.QWidget):
             self.label.installEventFilter(obj)
 
     def _ensure_label(self) -> QtWidgets.QLabel:
-        """The row's label, made on first need above the widget, where it always sat."""
+        """The row's label, made on first need: beside the widget on an inline row, above it
+        otherwise."""
         if self.label is None:
-            self.label = QtWidgets.QLabel()
-            self.vlayout.insertWidget(0, self.label)
+            if self._row is not None:
+                self.label = _ElidedLabel()
+                # Fixed policy too, not just a fixed width: the row lays out by policy, and
+                # anything looser lets the widget beside it slide under the label.
+                self.label.setFixedWidth(INLINE_LABEL_WIDTH)
+                self.label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                                         QtWidgets.QSizePolicy.Policy.Preferred)
+                self._row.insertWidget(0, self.label)
+            else:
+                self.label = QtWidgets.QLabel()
+                self.vlayout.insertWidget(0, self.label)
             self.label.installEventFilter(self)
             for obj in self._label_filters:
                 self.label.installEventFilter(obj)
@@ -2242,10 +2324,23 @@ class ContainerWidget(
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
 
+    def _in_inline_body(self) -> bool:
+        """True when this container sits in a ChunkWidget whose rows put labels inline.
+
+        Returns:
+            Whether rows added here should be inline.
+        """
+        w: QtWidgets.QWidget | None = self
+        while w is not None:
+            if getattr(w, "_inline_labels", False):
+                return True
+            w = w.parentWidget()
+        return False
+
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
-        labeled = LabeledWidget(widget, self)
+        labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
         # Now parented, so showing it can no longer produce a top-level window -- lift the
         # suppression create_widget put on it.
         widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
@@ -2641,6 +2736,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._is_tab_context_widget = is_tab_context
         # Node bodies style themselves after their reparent, not during construction.
         self._defer_stylesheet = for_proxy
+        # A node body (for_proxy) is narrow and stacks on a canvas, so its rows put their
+        # labels beside the fields. Set before super().__init__, which builds the rows.
+        self._inline_labels = for_proxy
         self._view_state: ViewSlotState | None = None
         self._view_overlay: QtWidgets.QLabel | None = None
         super().__init__(group, parent)
@@ -2902,7 +3000,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
                 and isinstance(widget, ChunkParamWidgetBase)):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
-            labeled = LabeledWidget(widget, self)
+            labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
             if label is not None:
                 labeled.update_label(label)
             labeled._name_hint = widget.param.name
