@@ -15,7 +15,7 @@ from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.frontends.qt import node_theme
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
-from usd_chunks.frontends.qt.nodegraph import ChunkGraphView, ChunkNodeItem
+from usd_chunks.frontends.qt.nodegraph import _PORT_TYPE_COLOR, ChunkGraphView, ChunkNodeItem
 
 from qt_wait import pump_until
 
@@ -82,12 +82,6 @@ def test_icon_takes_a_builtin_name_or_an_existing_path(tmp_path) -> None:
         chunk.Group("g", "G", icon="not_a_builtin_or_a_file")
 
 
-def test_axis_rows_get_axis_colours() -> None:
-    assert node_theme.axis_color("X") == node_theme.AXIS_COLORS["x"]
-    assert node_theme.axis_color(" z ") == node_theme.AXIS_COLORS["z"]
-    assert node_theme.axis_color("Xform") is None
-
-
 def test_every_builtin_icon_draws(qapp) -> None:
     names = {p.stem for p in (node_theme._SVG_DIR).glob("*.svg")}
     assert len(names) > 30
@@ -99,7 +93,8 @@ def test_every_builtin_icon_draws(qapp) -> None:
 
 
 @pytest.fixture
-def graph(qapp):
+def graph(qapp, request):
+    """A graph holding one chunk: a Light, or the module a test names via indirect."""
     stage = Usd.Stage.CreateInMemory()
 
     class _Scene(SceneSender):
@@ -118,7 +113,7 @@ def graph(qapp):
     docker.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
     docker.resize(900, 700)
     docker.show()
-    mod = reg.get_chunk_module("light")
+    mod = reg.get_chunk_module(getattr(request, "param", "light"))
     light = (mod.create() if mod.loaded else mod.load())[0]
     scene.add_chunk(light)
     pump_until(qapp, lambda: any(chunk_stage.is_view_chunk(c) for c in scene.get_chunks()))
@@ -163,3 +158,14 @@ def test_the_header_menu_button_opens_the_node_menu(graph, monkeypatch) -> None:
         QtCore.QCoreApplication.sendEvent(view.viewport(), event)
     assert pump_until(qapp, lambda: bool(opened), seconds=1)
     assert opened == [node()]
+
+
+@pytest.mark.parametrize("graph", ["transform"], indirect=True)
+def test_a_ports_colour_is_always_its_type(graph) -> None:
+    """Even on rows labelled X, Y and Z: they are floats, and are coloured as floats."""
+    qapp, _, node = graph
+    assert pump_until(qapp, lambda: len(node()._typed_ports) >= 6, seconds=3)
+    labels = {port.param.get_label() for port in node()._typed_ports if port.param is not None}
+    assert {"X", "Y", "Z"} <= labels
+    for port in node()._ports:
+        assert port.brush().color() == _PORT_TYPE_COLOR[port.port_type], port.attr_path

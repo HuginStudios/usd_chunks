@@ -1417,13 +1417,6 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
 
-            # A row labelled X, Y or Z shows its axis' colour, the way the rows of a
-            # translate or rotate read at a glance. Its value type is the same either way.
-            axis = node_theme.axis_color(param.get_label())
-            if axis is not None:
-                in_port.setBrush(axis)
-                out_port.setBrush(axis)
-
         self._place_prim_output_ports(self._full_height, extend_height=True)
 
     def _sync_vector_states(self):

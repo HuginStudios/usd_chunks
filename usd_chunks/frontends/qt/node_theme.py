@@ -41,8 +41,6 @@ PORT_BOOL = QtGui.QColor("#facc15")
 PORT_STRING = QtGui.QColor("#4ade80")
 PORT_COLOR = QtGui.QColor("#a855f7")
 PORT_VECTOR = QtGui.QColor("#c084fc")
-# A port on a row labelled X, Y or Z takes that axis' colour.
-AXIS_COLORS = {"x": QtGui.QColor("#ef4444"), "y": QtGui.QColor("#4ade80"), "z": QtGui.QColor("#3b82f6")}
 
 # Each built-in icon's own colour, used unless the prim authors a displayColor.
 _ICON_COLORS = {
@@ -232,11 +230,6 @@ def group_icon(group) -> str:
         if word in words:
             return name
     return ""
-
-
-def axis_color(label: str) -> QtGui.QColor | None:
-    """The axis colour for a row labelled X, Y or Z (any case), else None."""
-    return AXIS_COLORS.get((label or "").strip().lower())
 
 
 def _category(chunk) -> str:
