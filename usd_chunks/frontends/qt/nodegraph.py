@@ -186,6 +186,26 @@ _UNBUILT = object()  # sentinel for ChunkGraphScene._built_context
 # node stays put (greyed out) instead of vanishing.
 _INCLUDE_INACTIVE = Usd.PrimIsDefined & ~Usd.PrimIsAbstract
 
+class _BodyLayoutWatcher(QtCore.QObject):
+    """Calls a function whenever a node body's layout is asked to redo itself.
+
+    Qt sends the body a LayoutRequest when anything inside it is added, removed, shown or
+    hidden, at any depth. A body that grows also resizes its proxy, but one that should
+    shrink does not: a top-level widget never shrinks on its own. Without this, a chunk
+    that swaps params inside a group (Light changing type) kept its old height and ports.
+    """
+
+    def __init__(self, body: QtWidgets.QWidget, on_change) -> None:
+        super().__init__(body)
+        self._on_change = on_change
+        body.installEventFilter(self)
+
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:  # noqa: N802
+        if event.type() == QtCore.QEvent.Type.LayoutRequest:
+            self._on_change()
+        return False
+
+
 # Hidden top-level sink widget: child QWidgets parented here avoid a native OS
 # window (and the Windows flash that comes with it) while staying off the viewport.
 _proxy_sink: QtWidgets.QWidget | None = None
@@ -1043,6 +1063,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Initial port placement is triggered explicitly below so it doesn't
         # depend on geometryChanged firing at the right time relative to the connection.
         self._proxy.geometryChanged.connect(self._port_rebuild_timer.start)
+        # Content changes that should shrink the body never resize the proxy, so
+        # geometryChanged misses them. The rebuild's adjustSize() does the shrinking.
+        _BodyLayoutWatcher(chunk_widget, self._port_rebuild_timer.start)
         # Belt and suspenders for a NESTED group's own collapse/expand: geometryChanged
         # is supposed to cover this too (a group's content resizing should resize the
         # whole chunk_widget in turn), but was observed live to not reliably do so for a
