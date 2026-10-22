@@ -1517,13 +1517,16 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         return widget
 
 
-# The label column of inline rows (a label beside its field). Each node body fits it to
-# its longest label, between this many pixels and this share of the body's width; a label
-# longer than that is cut short with "...".
+# The label column of inline rows (a label beside its field). Each group in a node body
+# fits it to its own longest label, between this many pixels and this share of the body's
+# width; a label longer than that is cut short with "...".
 INLINE_LABEL_MIN_WIDTH = 24
 INLINE_LABEL_MAX_SHARE = 0.4
 # Space between the end of a label and the field beside it.
 _INLINE_LABEL_PAD = 6
+# How far a row straight in a node body (not in a group) starts in from the node's edge,
+# clear of the port dots drawn there.
+_INLINE_TOP_ROW_INDENT = 6
 
 # One-line fields, the kind that fit beside a label. Multi-line ones (text edits, image
 # menus) and those that carry their own text (buttons, labels) keep the label above.
@@ -1757,9 +1760,10 @@ class LabeledWidget(QtWidgets.QWidget):
         if self.label is None:
             if self._row is not None:
                 self.label = _ElidedLabel()
-                # Right-aligned, so a short name sits next to its field rather than across
-                # the column from it. The width is set by the body (fit_label_column).
-                self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight
+                # Left-aligned, starting where the group's content starts. The width is set
+                # by the body, per group (fit_label_column), so a group of short names keeps
+                # its fields close.
+                self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
                                         | QtCore.Qt.AlignmentFlag.AlignVCenter)
                 # Fixed policy too, not just a fixed width: the row lays out by policy, and
                 # anything looser lets the widget beside it slide under the label.
@@ -2914,24 +2918,42 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         QtCore.QTimer.singleShot(0, self, self.fit_label_column)
 
     def fit_label_column(self) -> None:
-        """Size every inline label in this body to fit the longest one.
+        """Size the inline labels of each group in this body to fit that group's longest.
 
-        Capped at INLINE_LABEL_MAX_SHARE of the body's width, so the fields keep most of
-        the row; a longer label is cut short and shows in full on hover.
+        Per group rather than per body: one long name elsewhere in the node does not push
+        a group of short ones (a Translate's X, Y, Z) away from their fields. Capped at
+        INLINE_LABEL_MAX_SHARE of the body's width, so the fields keep most of the row; a
+        longer label is cut short and shows in full on hover.
         """
         self._label_fit_queued = False
-        labels = [row.label for row in self.findChildren(LabeledWidget)
-                  if row._row is not None and row.label is not None and row.label.text()]
-        if not labels:
-            return
-        # Text width plus whatever padding and border the label wraps around it.
-        widest = max(label.fontMetrics().horizontalAdvance(label.text())
-                     + label.width() - label.contentsRect().width() for label in labels)
+        groups: dict[QtWidgets.QWidget | None, list[QtWidgets.QLabel]] = {}
+        for row in self.findChildren(LabeledWidget):
+            if row._row is not None and row.label is not None and row.label.text():
+                # Rows of one group share a parent: the group's content widget.
+                groups.setdefault(row.parentWidget(), []).append(row.label)
         cap = int(self.width() * INLINE_LABEL_MAX_SHARE)
-        column = max(INLINE_LABEL_MIN_WIDTH, min(widest + _INLINE_LABEL_PAD, cap))
-        for label in labels:
-            if label.width() != column:
-                label.setFixedWidth(column)
+        for parent, labels in groups.items():
+            # Rows straight in the body start at the node's edge, under its port dots;
+            # nudge them clear. Rows in a group are already indented by it.
+            indent = _INLINE_TOP_ROW_INDENT if self._owning_container(parent) is self else 0
+            for label in labels:
+                row = label.parentWidget()
+                if isinstance(row, LabeledWidget) and row._row.contentsMargins().left() != indent:
+                    row._row.setContentsMargins(indent, 0, 0, 0)
+            # Text width plus whatever padding and border the label wraps around it.
+            widest = max(label.fontMetrics().horizontalAdvance(label.text())
+                         + label.width() - label.contentsRect().width() for label in labels)
+            column = max(INLINE_LABEL_MIN_WIDTH, min(widest + _INLINE_LABEL_PAD, cap))
+            for label in labels:
+                if label.width() != column:
+                    label.setFixedWidth(column)
+
+    @staticmethod
+    def _owning_container(widget: QtWidgets.QWidget | None) -> ContainerWidget | None:
+        """The nearest ContainerWidget at or above widget."""
+        while widget is not None and not isinstance(widget, ContainerWidget):
+            widget = widget.parentWidget()
+        return widget
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:

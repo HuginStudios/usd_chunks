@@ -78,10 +78,13 @@ def test_the_label_column_fits_the_longest_label_up_to_a_share_of_the_width(qapp
         _shown(long, qapp)
         x = _row(short, "x").label
         assert x.width() < 40, "a node of one-letter labels keeps its column narrow"
-        assert x.alignment() & QtCore.Qt.AlignmentFlag.AlignRight
-        widths = {_row(long, n).label.width() for n in ("length", "ground_clearance_height", "width")}
-        assert len(widths) == 1, "every label in a node shares one column"
-        assert widths.pop() == int(220 * INLINE_LABEL_MAX_SHARE)
+        assert x.alignment() & QtCore.Qt.AlignmentFlag.AlignLeft
+        top = {_row(long, n).label.width() for n in ("length", "ground_clearance_height")}
+        assert len(top) == 1, "the labels of one group share a column"
+        assert top.pop() == int(220 * INLINE_LABEL_MAX_SHARE)
+        # "Width" sits in the Posts group, and its column fits Posts' own labels: the long
+        # name above it does not push its field away.
+        assert _row(long, "width").label.width() < int(220 * INLINE_LABEL_MAX_SHARE)
     finally:
         short.deleteLater()
         long.deleteLater()
