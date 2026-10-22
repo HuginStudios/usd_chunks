@@ -13,6 +13,7 @@ from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
 from usd_chunks.graph import engine as chunk_graph
+from usd_chunks.frontends.qt import node_theme
 
 import logging
 import re
@@ -145,6 +146,87 @@ QLabel[chunkLocked="true"] {
 }
 """
 
+# Added to CHUNK_STYLESHEET for a node body in the node graph (a ChunkWidget built
+# for_proxy): darker fields with rounded corners, sliders filled in the accent colour, and
+# checkboxes that fill when ticked. The params panel keeps the plain sheet.
+NODE_BODY_STYLESHEET = """
+.ChunkWidget {
+    background-color: transparent;
+}
+QLabel {
+    color: #c8cbd1;
+}
+QLineEdit, QComboBox {
+    background-color: #141518;
+    border: 1px solid #2f3136;
+    border-radius: 4px;
+    padding: 1px 4px;
+    color: #e5e7eb;
+    selection-background-color: #3b82f6;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid #3b82f6;
+}
+NumberField {
+    padding: 1px 2px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    border: none;
+    background: transparent;
+    width: 16px;
+}
+QComboBox::down-arrow {
+    image: url(%CHEVRON%);
+    width: 10px;
+    height: 10px;
+    background: transparent;
+    border: none;
+}
+QSlider::groove:horizontal {
+    border: 0px;
+    background: #34363c;
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #3b82f6;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #f2f3f5;
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    margin: -4px 0px;
+}
+QSlider::handle:horizontal:hover {
+    background: #ffffff;
+}
+QCheckBox::indicator {
+    width: 12px;
+    height: 12px;
+    border: 1px solid #4b4f58;
+    border-radius: 3px;
+    background: #141518;
+}
+QCheckBox::indicator:checked {
+    background: #f5b301;
+    border: 1px solid #f5b301;
+}
+QPushButton {
+    background-color: #2a2c31;
+    border: 1px solid #3a3c42;
+    border-radius: 5px;
+    padding: 3px 8px;
+    color: #e5e7eb;
+}
+QPushButton:hover {
+    border-color: #5b5f69;
+}
+""".replace("%CHEVRON%", (chunk_resources.get_icons_path() / "node" / "ui_chevron_down.png").as_posix())
+
 # Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
 _SHEET_FLAG = "_chunk_sheet_applied"
 # Marks a class that always styles itself, so a descendant can skip *before* the ancestor
@@ -196,7 +278,10 @@ def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
         parent = parent.parentWidget()
 
     setattr(widget, _SHEET_FLAG, True)
-    widget.setStyleSheet(CHUNK_STYLESHEET)
+    if getattr(widget, "_inline_labels", False):
+        widget.setStyleSheet(CHUNK_STYLESHEET + NODE_BODY_STYLESHEET)
+    else:
+        widget.setStyleSheet(CHUNK_STYLESHEET)
     return True
 
 
@@ -2037,6 +2122,61 @@ class LabeledWidget(QtWidgets.QWidget):
                 param.value = param.default_value
 
 
+_HEADER_ICON_SIZE = 16
+# A node body's own margins (left, top, right, bottom): room for the port dots on its edges.
+_NODE_BODY_MARGINS = (10, 4, 10, 8)
+# Drawn at this many pixels per logical pixel, so the header stays sharp when the graph is
+# zoomed in (a node body is drawn scaled with the view).
+_HEADER_ICON_DPR = 3.0
+_ARROW_COLOR = QtGui.QColor("#9ca3af")
+_header_pixmaps: dict[tuple, QtGui.QPixmap | None] = {}
+
+
+def _group_header_pixmap(icon: str, expanded: bool | None) -> QtGui.QPixmap | None:
+    """A node-body group header's picture: a fold arrow, then the group's icon.
+
+    Args:
+        icon: The group's icon (node_theme.group_icon), or "" for none.
+        expanded: True for an open group, False for a folded one, None for one that can't fold.
+
+    Returns:
+        The picture, or None when there is neither an arrow nor an icon to show.
+    """
+    key = (icon, expanded)
+    if key in _header_pixmaps:
+        return _header_pixmaps[key]
+    arrow_w = 10 if expanded is not None else 0
+    icon_pix = (node_theme.icon_pixmap(icon, node_theme.icon_color(icon), _HEADER_ICON_SIZE,
+                                       _HEADER_ICON_DPR) if icon else None)
+    width = arrow_w + (_HEADER_ICON_SIZE + 2 if icon_pix is not None else 0)
+    if width == 0:
+        _header_pixmaps[key] = None
+        return None
+    dpr = _HEADER_ICON_DPR
+    pixmap = QtGui.QPixmap(round(width * dpr), round(_HEADER_ICON_SIZE * dpr))
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    pixmap.setDevicePixelRatio(dpr)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    if expanded is not None:
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(_ARROW_COLOR)
+        mid = _HEADER_ICON_SIZE / 2
+        if expanded:
+            points = [QtCore.QPointF(0.5, mid - 2.5), QtCore.QPointF(7.5, mid - 2.5),
+                      QtCore.QPointF(4, mid + 2.5)]
+        else:
+            points = [QtCore.QPointF(1.5, mid - 4), QtCore.QPointF(6.5, mid),
+                      QtCore.QPointF(1.5, mid + 4)]
+        painter.drawPolygon(QtGui.QPolygonF(points))
+    if icon_pix is not None:
+        painter.drawPixmap(QtCore.QRectF(arrow_w, 0, _HEADER_ICON_SIZE, _HEADER_ICON_SIZE),
+                           icon_pix, QtCore.QRectF(icon_pix.rect()))
+    painter.end()
+    _header_pixmaps[key] = pixmap
+    return pixmap
+
+
 class ContainerWidget(
     Generic[chunk_core.GroupT], chunk_core.ChunkContainerWidgetBase[chunk_core.GroupT], QtWidgets.QFrame
 ):
@@ -2131,11 +2271,48 @@ class ContainerWidget(
         self.setLayout(self.__layout__)
         self._update_group_depth()
 
+    def _sync_header_icon(self, expanded: bool | None = None) -> None:
+        """In a node body, show the group's fold arrow and its icon on the header button.
+
+        Drawn as one picture: a QToolButton shows either its arrow or its icon, not both.
+
+        Args:
+            expanded: Whether the group is open; read from the group when not given.
+        """
+        if not self._in_inline_body():
+            return
+        if expanded is None:
+            expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
+        collapsible = self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
+        pixmap = _group_header_pixmap(node_theme.group_icon(self.group),
+                                      expanded if collapsible else None)
+        self.minimize_button.setArrowType(QtCore.Qt.ArrowType.NoArrow)
+        if pixmap is None:
+            self.minimize_button.setIcon(QtGui.QIcon())
+            return
+        self.minimize_button.setIcon(QtGui.QIcon(pixmap))
+        self.minimize_button.setIconSize(QtCore.QSize(
+            round(pixmap.width() / pixmap.devicePixelRatio()),
+            round(pixmap.height() / pixmap.devicePixelRatio())))
+
+    def _header_style(self) -> str:
+        """Extra style for this group's header button: bold, left-aligned text in a node body."""
+        if not self._in_inline_body():
+            return ""
+        return "color: #e5e7eb; font-weight: 600; text-align: left; padding: 3px 2px;"
+
     _GROUP_COLORS = ("#303030", "#333333")
+    # Inside a node body: close to the node's own background, a step lighter per level.
+    _NODE_GROUP_COLORS = ("transparent", "#24252a", "#28292e")
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
-        bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
+        if self._in_inline_body():
+            colors = self._NODE_GROUP_COLORS
+            # The body itself is see-through: the node paints the rounded frame behind it.
+            bg = "transparent" if depth <= 1 else colors[min(depth - 1, len(colors) - 1)]
+        else:
+            bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
         # Two setStyleSheet calls per container, each re-polishing its whole subtree --
         # collectively the single most expensive thing in building a chunk. The colour only
         # depends on nesting depth, so re-applying the same one repaints for nothing.
@@ -2143,7 +2320,8 @@ class ContainerWidget(
             return
         self._group_bg = bg
 
-        self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
+        self.minimize_button.setStyleSheet(
+            f"QToolButton {{ background-color: {bg}; border-radius: 4px; {self._header_style()}}}")
         self.content.setStyleSheet(
             f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
             f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
@@ -2213,6 +2391,7 @@ class ContainerWidget(
             self.minimize_button.setText("")
             if not self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
                 self.minimize_button.setHidden(True)
+        self._sync_header_icon()
 
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
@@ -2286,6 +2465,7 @@ class ContainerWidget(
             self.group.set_state(ChunkFlags.State.COLLAPSED)
 
         self.minimize_button.setArrowType(arrow_type)
+        self._sync_header_icon(checked)
         # Measure the content once, here, rather than on every animation frame.
         self._anim_target_h = self.content_layout.sizeHint().height()
         self.toggle_anim.setDirection(direction)
@@ -2295,12 +2475,13 @@ class ContainerWidget(
             bg = self._group_bg
             if checked:
                 sheet = (
-                    f"QToolButton {{ background-color: {bg}; "
+                    f"QToolButton {{ background-color: {bg}; {self._header_style()}"
                     f"border-top-left-radius: 4px; border-top-right-radius: 4px; "
                     f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
                 )
             else:
-                sheet = f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+                sheet = (f"QToolButton {{ background-color: {bg}; border-radius: 4px; "
+                         f"{self._header_style()}}}")
 
             # Groups that start collapsed reach this during construction, and re-applying
             # the sheet the button already has re-parses and re-polishes for nothing.
@@ -2774,6 +2955,15 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self.installEventFilter(self)
         if is_tab_context:
             self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+    def update_from_flags(self):
+        super().update_from_flags()
+        if self._inline_labels:
+            # A node already shows the chunk's name in its header, and folds the whole body
+            # on a header double-click; the body's own name row would only repeat that.
+            self.minimize_button.setHidden(True)
+            # Clear of the port dots on both edges, and off the node's rounded bottom.
+            self.content_layout.setContentsMargins(*_NODE_BODY_MARGINS)
 
     def set_view_state(self, vs: ViewSlotState) -> None:
         if self._view_state is not None:
