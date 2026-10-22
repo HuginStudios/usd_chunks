@@ -1763,7 +1763,9 @@ class ChunkCommon(AttributesBase):
         self.set_blocked(False)
 
         if not self.can_delete():
-            logger.warning("Deleting node: %s with connected outputs. Stuff may break", self.name)
+            # Debug, not warning: closing a scene deletes every chunk, so a warning here
+            # printed one line per wired chunk each time usdview closed or opened a file.
+            logger.debug("Deleting %s, which still has wires out; disconnecting them", self.name)
             self.get_dag_node().disconnect()
 
         owner = self.get_owner()
