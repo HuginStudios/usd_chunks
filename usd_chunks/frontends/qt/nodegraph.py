@@ -48,7 +48,8 @@ _node_clipboard = chunk_graph.node_clipboard
 _edge_clipboard = chunk_graph.edge_clipboard
 
 _PORT_RADIUS = 5
-_PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
+_PORT_SNAP_PIXELS = 28  # on-screen radius within which a dragged wire jumps to a port
+_PORT_HOVER_RADIUS = 9  # a port reacts to the mouse this far from its centre, past its dot
 _NODE_WIDTH = 250  # a node's width until someone drags its right edge
 _NODE_MIN_WIDTH = 140
 _NODE_MAX_WIDTH = 800
@@ -299,6 +300,14 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
         self.setBrush(_PORT_TYPE_COLOR[port_type])
         self.setPen(QtGui.QPen(QtCore.Qt.NoPen))
         self.setZValue(1)
+        # A valid drop target while a wire is dragged (a white ring), and lit up: hovered,
+        # or the port a dragged wire has jumped to.
+        self._highlighted = False
+        self._hovered = False
+        self._snapped = False
+        self.setAcceptHoverEvents(True)
+        # Its own cursor, so the node edge's resize cursor never shows over a port.
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
         if show_label:
             label_text = attr_path.rsplit(":", 1)[-1]
@@ -312,7 +321,56 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
             text.setPos(-r - 3 - tw, -th / 2)
 
     def set_highlighted(self, on: bool) -> None:
-        self.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5) if on else QtGui.QPen(QtCore.Qt.NoPen))
+        """Mark the port as a place a dragged wire can be dropped."""
+        if on != self._highlighted:
+            self._highlighted = on
+            self.update()
+
+    def set_snapped(self, on: bool) -> None:
+        """Light the port up as the one a dragged wire has jumped to."""
+        if on != self._snapped:
+            self._snapped = on
+            self.update()
+
+    def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
+        r = _PORT_HOVER_RADIUS + 1
+        return QtCore.QRectF(-r, -r, r * 2, r * 2)
+
+    def shape(self) -> QtGui.QPainterPath:
+        # Wider than the dot, so a port is easy to hit and lights up as the mouse comes near.
+        path = QtGui.QPainterPath()
+        path.addEllipse(QtCore.QPointF(0, 0), _PORT_HOVER_RADIUS, _PORT_HOVER_RADIUS)
+        return path
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self.update()
+        super().hoverLeaveEvent(event)
+
+    def paint(self, painter: QtGui.QPainter, option, widget=None) -> None:
+        r = _PORT_RADIUS
+        color = self.brush().color()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        lit = self._hovered or self._snapped
+        if lit:
+            # A soft glow in the port's own colour: "start or end a wire here".
+            glow = QtGui.QColor(color)
+            glow.setAlpha(90)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(QtCore.QPointF(0, 0), r + 4, r + 4)
+        painter.setBrush(color.lighter(125) if lit else color)
+        if lit or self._highlighted:
+            painter.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5))
+        else:
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        radius = r + 1 if lit else r
+        painter.drawEllipse(QtCore.QPointF(0, 0), radius, radius)
 
 
 
@@ -4729,11 +4787,47 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_edge = None
         self._update_wire_drag(scene_pos)
 
+    def _drop_target(self, scene_pos: QtCore.QPointF) -> ChunkPortItem | None:
+        """The port a dragged wire would connect to if dropped at scene_pos, or None.
+
+        The port under the cursor when it is a valid target, else the nearest valid one
+        within _PORT_SNAP_PIXELS on screen. The live wire jumps to the same port, so where it
+        shows it landing is where it lands.
+        """
+        # items(), not itemAt(): the dragged wire itself (Z=10) would hide the port under it.
+        hit = next(
+            (item for item in self.scene().items(scene_pos) if isinstance(item, ChunkPortItem)),
+            None,
+        )
+        if hit is not None and self._drag_target_ok(hit):
+            return hit
+        return self._nearest_target_port(scene_pos)
+
+    def _set_snap_port(self, port: ChunkPortItem | None) -> None:
+        """Light up the port the dragged wire has jumped to, and only that one."""
+        previous = getattr(self, "_drag_snap_port", None)
+        if previous is port:
+            return
+        if previous is not None:
+            try:
+                previous.set_snapped(False)
+            except RuntimeError:
+                pass
+        self._drag_snap_port = port
+        if port is not None:
+            port.set_snapped(True)
+
     def _update_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
+        # Near a port it can connect to, the wire's loose end jumps onto it and turns solid.
+        target = self._drop_target(scene_pos) if self._drag_src_port is not None else None
+        end = target.scenePos() if target is not None else scene_pos
+        style = QtCore.Qt.PenStyle.SolidLine if target is not None else QtCore.Qt.PenStyle.DashLine
+        self._set_snap_port(target)
         if self._drag_reused_edge is not None:
             edge = self._drag_reused_edge
+            edge.setPen(QtGui.QPen(edge.pen().color(), 2.0, style))
             p1 = edge.src_port.scenePos()
-            p2 = scene_pos
+            p2 = end
             dx = abs(p2.x() - p1.x()) * 0.5
             path = QtGui.QPainterPath(p1)
             path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
@@ -4741,8 +4835,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             edge.setPath(path)
             edge._p1, edge._p2 = p1, p2
         elif self._drag_edge is not None:
+            self._drag_edge.setPen(QtGui.QPen(self._drag_edge.pen().color(), 2.0, style))
             p1 = self._drag_src_port.scenePos()
-            p2 = scene_pos
+            p2 = end
             dx = abs(p2.x() - p1.x()) * 0.5
             path = QtGui.QPainterPath(p1)
             path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
@@ -4778,19 +4873,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         return best
 
     def _finish_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
-        # Use items() instead of itemAt() so the rubber-band edge (Z=10) doesn't
-        # occlude the port underneath it.
-        hit = next(
-            (item for item in self.scene().items(scene_pos) if isinstance(item, ChunkPortItem)),
-            None,
-        )
-        # A pixel-perfect drop on the tiny port dot is hard to land, especially when zoomed
-        # out. If the cursor didn't land squarely on a valid target, snap to the nearest
-        # compatible port within a comfortable on-screen radius instead.
-        if hit is None or not self._drag_target_ok(hit):
-            snapped = self._nearest_target_port(scene_pos)
-            if snapped is not None:
-                hit = snapped
+        # The same port the live wire jumped to (_drop_target): a pixel-perfect drop on the
+        # tiny dot is hard to land, so a drop near a valid port lands on it.
+        hit = self._drop_target(scene_pos)
+        if hit is None:
+            # The port under the cursor even when it is not a valid target: dropping a
+            # grabbed wire back on its own port must not read as "dropped on nothing".
+            hit = next((item for item in self.scene().items(scene_pos)
+                        if isinstance(item, ChunkPortItem)), None)
         graph_scene = self.scene()
         if hit is not None and self._drag_target_ok(hit):
             if hit.is_input == self._drag_src_port.is_input:
@@ -4885,11 +4975,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # Otherwise, snap it back to its real solid path/pen.
             try:
                 edge = self._drag_reused_edge
-                edge.setPen(QtGui.QPen(edge.src_port.brush().color(), 1.5))
+                edge.setPen(QtGui.QPen(edge.src_port.brush().color(), 2.0))
                 edge.update_path()
             except RuntimeError:
                 pass
             self._drag_reused_edge = None
+        self._set_snap_port(None)
         graph_scene = self.scene()
         if isinstance(graph_scene, ChunkGraphScene):
             for node in graph_scene._nodes.values():

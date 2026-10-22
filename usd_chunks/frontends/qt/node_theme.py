@@ -33,14 +33,14 @@ TEXT_PRIMARY = QtGui.QColor("#f2f3f5")
 TEXT_SECONDARY = QtGui.QColor("#8b8f98")
 ACCENT = QtGui.QColor("#3b82f6")
 
-# Port colours, one per kind of value.
+# Port colours, one per kind of value: the muted set the graph has always used.
 PORT_EXEC = QtGui.QColor("#999999")  # the flow wires between chunks: grey
-PORT_FLOAT = QtGui.QColor("#f59e0b")
-PORT_INT = QtGui.QColor("#3b82f6")
-PORT_BOOL = QtGui.QColor("#facc15")
-PORT_STRING = QtGui.QColor("#4ade80")
-PORT_COLOR = QtGui.QColor("#a855f7")
-PORT_VECTOR = QtGui.QColor("#c084fc")
+PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
+PORT_INT = QtGui.QColor("#5d7ea8")  # muted blue
+PORT_BOOL = QtGui.QColor("#9e8e4a")  # muted yellow
+PORT_STRING = QtGui.QColor("#6a9070")  # muted green
+PORT_COLOR = QtGui.QColor("#c87060")  # muted red
+PORT_VECTOR = QtGui.QColor("#9a5da8")  # muted purple
 
 # Each built-in icon's own colour, used unless the prim authors a displayColor.
 _ICON_COLORS = {
