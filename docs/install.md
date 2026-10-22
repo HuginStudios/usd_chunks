@@ -206,9 +206,12 @@ chunk](#a-plain-install-wont-show-every-bundled-chunk).
 
 ## Gizmos (viewport handles)
 
-The handles you drag in the viewport to change a chunk's params are in a separate repo,
-[usd_gizmos](https://github.com/HuginStudios/usd_gizmos). Once usd_chunks is set up, it
-takes three more commands:
+This section is for usdview. Blender's add-on has its own handles, with nothing extra to
+install (see [Blender](blender.md#install)). Houdini has none yet.
+
+In usdview, the handles you drag in the viewport to change a chunk's params are in a
+separate repo, [usd_gizmos](https://github.com/HuginStudios/usd_gizmos). Once usd_chunks
+is set up, it takes three more commands:
 
 ```
 git clone https://github.com/HuginStudios/usd_gizmos.git

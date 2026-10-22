@@ -67,6 +67,8 @@ Installer options:
   or something upstream changes.
 - **Params are Houdini parms.** They take keys and expressions and save with the `.hip`.
   To read another chunk's param, use `ch("../mesh1/radius")`.
+- **No viewport handles yet.** Chunk gizmos don't show in Houdini's viewport. Use the
+  parms.
 - **Networks travel between apps.** Tab > usdchunks > **Import Network...** loads a network
   saved in usdview or Blender. A **Chunkgroup** node's **Export Network...** button writes
   one back.

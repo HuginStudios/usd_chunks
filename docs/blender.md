@@ -25,6 +25,7 @@ The commands below are for Blender 5.2. For another version, change `5.2` in the
 **Step 2. Build the add-on:**
 
 ```
+mkdir dist 2>nul
 "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --command extension build --source-dir usd_chunks\frontends\blender\addon --output-dir dist
 ```
 
@@ -39,6 +40,11 @@ Shift+A to add a chunk.
 
 To open a saved network, press N in the editor, go to the **USDChunks** tab and click
 **Open Chunk Network**.
+
+To move things in the viewport, Ctrl+click a prim to pick it, then press G, R or S to move,
+rotate or scale it, like a Blender object. X, Y or Z locks an axis. Click to confirm, Esc
+to cancel. This changes the chunk's params. A prim no chunk drives gets a Transform chunk.
+The handles are part of the add-on, so there is nothing else to install.
 
 ## Updating
 
