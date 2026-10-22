@@ -48,7 +48,11 @@ _edge_clipboard = chunk_graph.edge_clipboard
 
 _PORT_RADIUS = 5
 _PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
-_NODE_WIDTH = 220
+_NODE_WIDTH = 220  # a node's width until someone drags its right edge
+_NODE_MIN_WIDTH = 140
+_NODE_MAX_WIDTH = 800
+_RESIZE_GRIP_IN = 3  # how far inside the node's right edge a press starts a resize
+_RESIZE_GRIP_OUT = 4  # and how far outside it
 _NODE_HEADER_H = 40
 
 # A node stops drawing its embedded ChunkWidget -- showing only the box and header that
@@ -628,6 +632,74 @@ def _snapshot_layer_chunks(layer: Sdf.Layer) -> tuple[list[_ClipboardNode], list
     return clip_nodes, clip_edges
 
 
+def _saved_node_width(prim: Usd.Prim) -> float:
+    """The width a node was resized to, from its UsdUI size, or the default width.
+
+    Args:
+        prim: The chunk prim the node shows.
+
+    Returns:
+        The width, within the allowed range.
+    """
+    if prim and prim.IsValid():
+        attr = UsdUI.NodeGraphNodeAPI(prim).GetSizeAttr()
+        if attr and attr.HasAuthoredValue():
+            size = attr.Get()
+            if size is not None and size[0] > 0:
+                return float(min(max(size[0], _NODE_MIN_WIDTH), _NODE_MAX_WIDTH))
+    return float(_NODE_WIDTH)
+
+
+class _NodeResizeHandle(QtWidgets.QGraphicsItem):
+    """A node's right edge: drag it to change the node's width, double-click to reset it.
+
+    Sits above the body (so the edge of a field does not take the press) and below the
+    ports (so a port on the edge still starts a wire).
+    """
+
+    def __init__(self, node: ChunkNodeItem) -> None:
+        super().__init__(node)
+        self._node = node
+        self._press_x: float | None = None
+        self._start_width = 0.0
+        self.setZValue(0.5)
+        self.setCursor(QtCore.Qt.CursorShape.SizeHorCursor)
+        self.setPos(node._width, 0)
+
+    def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
+        return QtCore.QRectF(-_RESIZE_GRIP_IN, 0,
+                             _RESIZE_GRIP_IN + _RESIZE_GRIP_OUT, self._node._height)
+
+    def paint(self, painter, option, widget=None) -> None:
+        pass
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+        self._press_x = event.scenePos().x()
+        self._start_width = self._node._width
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._press_x is None:
+            return
+        self._node.set_width(self._start_width + event.scenePos().x() - self._press_x)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._press_x is None:
+            return
+        self._press_x = None
+        if self._node._width != self._start_width:
+            self._node._write_size_to_usd()
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self._node.reset_width()
+        event.accept()
+
+
 class ChunkNodeItem(QtWidgets.QGraphicsItem):
     """Represents a single Chunk prim as a compact draggable node.
 
@@ -697,6 +769,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._drag_pending_collapse = False
         self._proxy: QtWidgets.QGraphicsProxyWidget | None = None
         self._port_rebuild_timer: QtCore.QTimer | None = None
+        # The width the user dragged this node to, saved as its size in USD; the default
+        # otherwise. Nodes without a body (dots, merges) keep the default.
+        self._width = (float(_NODE_WIDTH) if self._is_dot or self._is_merge
+                       else _saved_node_width(prim))
+        self._resize_handle: _NodeResizeHandle | None = None
         self._height = _NODE_HEADER_H
         self._full_height = _NODE_HEADER_H
         self._outputs_start_y: float = 0.0  # >0 when typed output ports are present
@@ -807,7 +884,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
-            self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
             self._ports.append(self._exec_out_port)
             return
 
@@ -831,7 +908,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._exec_out_port = ChunkPortItem(
                     f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
                 )
-                self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+                self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
                 self._ports.append(self._exec_out_port)
             else:
                 self._exec_out_port = None
@@ -856,7 +933,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
-            self._exec_out_port.setPos(_NODE_WIDTH, _NODE_HEADER_H // 2)
+            self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
             self._ports.append(self._exec_out_port)
         else:
             self._exec_out_port = None
@@ -926,11 +1003,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # later one (set_selected) finds the guard already set.
         chunk_widget._defer_stylesheet = False
         apply_chunk_stylesheet(chunk_widget)
-        chunk_widget.setFixedWidth(_NODE_WIDTH)
+        chunk_widget.setFixedWidth(int(self._width))
         self._chunk_widget = chunk_widget  # pin Python ref; PySide6 may GC despite Qt C++ ownership
         self._proxy = QtWidgets.QGraphicsProxyWidget(self)
         self._proxy.setWidget(chunk_widget)
         self._proxy.setPos(0, _NODE_HEADER_H)
+        if not self._locked:
+            self._resize_handle = _NodeResizeHandle(self)
         # Proxies are built in deferred batches, so a node can arrive while the view is
         # already zoomed past the LOD threshold. Without this it would come up showing a
         # body every other node has dropped.
@@ -1068,6 +1147,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if self._height == self._last_height_sample:
                 return
             self._last_height_sample = self._height
+            if self._resize_handle is not None:
+                # Its grab area runs the node's full height.
+                self._resize_handle.prepareGeometryChange()
             scene = self.scene()
             if isinstance(scene, ChunkGraphScene):
                 scene.note_height_change()
@@ -1097,7 +1179,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             name = attr.GetName()
             ptype = _sdf_to_port_type(attr.GetTypeName())
             port = ChunkPortItem(f"{self.prim.GetPath()}.{name}", ptype, parent=self, show_label=True)
-            port.setPos(_NODE_WIDTH, y)
+            port.setPos(self._width, y)
             self._ports.append(port)
             self._typed_ports.append(port)
             y += _STEP
@@ -1171,7 +1253,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._ports.append(in_port)
             self._typed_ports.append(in_port)
             out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self, param=param)
-            out_port.setPos(_NODE_WIDTH, y)
+            out_port.setPos(self._width, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
         if y > _NODE_HEADER_H // 2:
@@ -1278,7 +1360,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._typed_ports.append(in_port)
 
             out_port = ChunkPortItem(f"{self.prim.GetPath()}.outputs:{param.name}", ptype, parent=self, param=param)
-            out_port.setPos(_NODE_WIDTH, y)
+            out_port.setPos(self._width, y)
             self._ports.append(out_port)
             self._typed_ports.append(out_port)
 
@@ -1325,7 +1407,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             return QtCore.QRectF(-pad, -pad, _DOT_R * 2 + pad * 2, _DOT_R * 2 + pad * 2)
         return QtCore.QRectF(
             -_PORT_RADIUS, 0,
-            _NODE_WIDTH + _PORT_RADIUS * 2,
+            self._width + _PORT_RADIUS * 2,
             self._height,
         )
 
@@ -1393,14 +1475,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 bg, head, border = _dimmed(bg), _dimmed(head), _dimmed(border)
             painter.setBrush(bg)
             painter.setPen(QtGui.QPen(border, 1.5))
-            painter.drawRect(QtCore.QRectF(0, 0, _NODE_WIDTH, self._height))
+            painter.drawRect(QtCore.QRectF(0, 0, self._width, self._height))
             painter.setBrush(head)
             painter.setPen(QtCore.Qt.NoPen)
-            painter.drawRect(QtCore.QRectF(0, 0, _NODE_WIDTH, _NODE_HEADER_H))
+            painter.drawRect(QtCore.QRectF(0, 0, self._width, _NODE_HEADER_H))
             return
 
         bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
-        body = QtCore.QRectF(0, 0, _NODE_WIDTH, self._height)
+        body = QtCore.QRectF(0, 0, self._width, self._height)
         # The active view (the one currently driving execution) gets a green, thicker border
         # so it's obvious which of several view nodes is live.
         is_active_view = self._is_view and self._is_active_view()
@@ -1436,10 +1518,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             header_color = _COL_NODE_HEADER
         painter.setBrush(header_color)
         painter.setPen(QtCore.Qt.NoPen)
-        header = QtCore.QRectF(0, 0, _NODE_WIDTH, _NODE_HEADER_H)
+        header = QtCore.QRectF(0, 0, self._width, _NODE_HEADER_H)
         painter.drawRoundedRect(header, 4, 4)
         # Cover the rounded bottom of the header rect
-        painter.drawRect(QtCore.QRectF(0, 10, _NODE_WIDTH, _NODE_HEADER_H - 10))
+        painter.drawRect(QtCore.QRectF(0, 10, self._width, _NODE_HEADER_H - 10))
 
         name_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_PRIMARY
         painter.setPen(QtGui.QPen(name_color))
@@ -1461,7 +1543,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._pinned:
             label = f"{label}  \U0001f4cc"
         painter.drawText(
-            QtCore.QRectF(8, 4, _NODE_WIDTH - 16, 18),
+            QtCore.QRectF(8, 4, self._width - 16, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             label,
         )
@@ -1471,7 +1553,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         painter.setPen(QtGui.QPen(sub_color))
         painter.setFont(QtGui.QFont("Arial", 8))
         painter.drawText(
-            QtCore.QRectF(8, 22, _NODE_WIDTH - 16, 14),
+            QtCore.QRectF(8, 22, self._width - 16, 14),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             str(chunk_type),
         )
@@ -1480,7 +1562,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # so it never fights with the selected (gold) or active-view (green) border colors.
         if self._stale:
             badge_r = 7.0
-            badge_c = QtCore.QPointF(_NODE_WIDTH - 15, 13)
+            badge_c = QtCore.QPointF(self._width - 15, 13)
             painter.setBrush(_COL_STALE)
             painter.setPen(QtCore.Qt.NoPen)
             painter.drawEllipse(badge_c, badge_r, badge_r)
@@ -1496,7 +1578,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._outputs_start_y > _NODE_HEADER_H and self._height > self._outputs_start_y:
             outputs_rect = QtCore.QRectF(
                 0, self._outputs_start_y,
-                _NODE_WIDTH, self._height - self._outputs_start_y,
+                self._width, self._height - self._outputs_start_y,
             )
             painter.setBrush(QtGui.QColor("#2a2a2a"))
             painter.setPen(QtCore.Qt.NoPen)
@@ -1504,7 +1586,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             painter.setPen(QtGui.QPen(QtGui.QColor("#555555"), 1))
             painter.drawLine(
                 QtCore.QPointF(0, self._outputs_start_y),
-                QtCore.QPointF(_NODE_WIDTH, self._outputs_start_y),
+                QtCore.QPointF(self._width, self._outputs_start_y),
             )
 
     def mouseDoubleClickEvent(self, event):
@@ -1776,6 +1858,58 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         target = home or chunk_utils.get_bookkeeping_layer(stage, getattr(self, "chunk", None))
         with Usd.EditContext(stage, target):
             pos_attr.Set(Gf.Vec2f(p.x(), -p.y()))
+
+    def set_width(self, width: float) -> None:
+        """Make the node this wide, within the allowed range, and move its right-hand ports.
+
+        Args:
+            width: The new width in scene units.
+        """
+        width = float(min(max(width, _NODE_MIN_WIDTH), _NODE_MAX_WIDTH))
+        old = self._width
+        if width == old:
+            return
+        self.prepareGeometryChange()
+        self._width = width
+        if self._proxy is not None and getattr(self, "_chunk_widget", None) is not None:
+            self._chunk_widget.setFixedWidth(int(width))
+        if self._resize_handle is not None:
+            self._resize_handle.setPos(width, 0)
+        # Right away, so wires follow the edge while it is dragged; the rebuild below puts
+        # them on their rows once the body has reflowed.
+        for port in self._ports:
+            if abs(port.pos().x() - old) < 0.5:
+                port.setPos(width, port.pos().y())
+        scene = self.scene()
+        if isinstance(scene, ChunkGraphScene):
+            scene.update_edges_for(self)
+        self._kick_port_rebuild()
+        self.update()
+
+    def reset_width(self) -> None:
+        """Back to the default width, and drop the saved size."""
+        self.set_width(_NODE_WIDTH)
+        attr = UsdUI.NodeGraphNodeAPI(self.prim).GetSizeAttr()
+        home = chunk_utils.get_attr_home_layer(attr) if attr else None
+        if home is not None:
+            with Usd.EditContext(self.prim.GetStage(), home):
+                attr.Clear()
+
+    def _write_size_to_usd(self) -> None:
+        """Save the width in UsdUI's size, in the same layer the position goes to."""
+        ui_api = UsdUI.NodeGraphNodeAPI(self.prim)
+        size_attr = ui_api.GetSizeAttr() or ui_api.CreateSizeAttr()
+        stage = self.prim.GetStage()
+        home = chunk_utils.get_attr_home_layer(size_attr)
+        target = home or chunk_utils.get_bookkeeping_layer(stage, getattr(self, "chunk", None))
+        with Usd.EditContext(stage, target):
+            size_attr.Set(Gf.Vec2f(self._width, self._height))
+
+    def _apply_usd_size(self) -> None:
+        """Take the width from USD, after something other than a drag here changed it."""
+        if self._is_dot or self._is_merge or not self.prim.IsValid():
+            return
+        self.set_width(_saved_node_width(self.prim))
 
     def _set_collapsed(self, collapsed: bool):
         # Every state change lands here, and re-applying the body's visibility each time is
@@ -2667,6 +2801,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 node = self._nodes.get(prim_path)
                 if node:
                     node._apply_usd_pos(node.prim)
+            elif path.IsPropertyPath() and path.name == "ui:nodegraph:node:size":
+                node = self._nodes.get(str(path.GetPrimPath()))
+                if node:
+                    node._apply_usd_size()
         # Deferred: a single cook emits hundreds of these notices -- one per attribute it
         # writes -- and rebuilding every edge in the scene on each was 286 rebuilds for one
         # group expand. The edges only have to be right once the notices stop arriving.
