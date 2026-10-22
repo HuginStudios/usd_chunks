@@ -50,6 +50,10 @@ _edge_clipboard = chunk_graph.edge_clipboard
 _PORT_RADIUS = 5
 _PORT_SNAP_PIXELS = 28  # on-screen radius within which a dragged wire jumps to a port
 _PORT_HOVER_RADIUS = 9  # a port reacts to the mouse this far from its centre, past its dot
+# A port's outline: invisible, and wide enough to reach _PORT_HOVER_RADIUS. Qt counts the
+# outline in an item's size and hit area, so a port reacts past its dot with no Python in
+# the draw path.
+_PORT_REACH_PEN = QtGui.QPen(QtGui.QColor(0, 0, 0, 0), (_PORT_HOVER_RADIUS - _PORT_RADIUS) * 2)
 _NODE_WIDTH = 250  # a node's width until someone drags its right edge
 _NODE_MIN_WIDTH = 140
 _NODE_MAX_WIDTH = 800
@@ -298,7 +302,7 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
         self.port_type = port_type
         self.is_input = ".inputs:" in attr_path
         self.setBrush(_PORT_TYPE_COLOR[port_type])
-        self.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+        self.setPen(_PORT_REACH_PEN)
         self.setZValue(1)
         # A valid drop target while a wire is dragged (a white ring), and lit up: hovered,
         # or the port a dragged wire has jumped to.
@@ -333,37 +337,44 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
             self._refresh_look()
 
     def _refresh_look(self) -> None:
-        """Ring and glow for the current state. Qt draws the dot itself: a port is painted
-        far more often than it changes, and a Python paint() per port tripled redraw time.
+        """Show the ring and glow for the current state.
+
+        Both are child items made on first need, so Qt draws every port natively: a port is
+        drawn far more often than it changes, and per-port Python in the draw path (paint,
+        boundingRect, shape) made the graph about three times slower to redraw.
         """
         lit = self._hovered or self._snapped
-        ring = lit or self._highlighted
-        self.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5) if ring else QtGui.QPen(QtCore.Qt.NoPen))
-        glow = getattr(self, "_glow", None)
-        if lit and glow is None:
-            # A soft glow in the port's own colour, made on first need: "start or end a wire here".
-            r = _PORT_RADIUS + 4
-            glow = QtWidgets.QGraphicsEllipseItem(-r, -r, r * 2, r * 2, self)
-            color = QtGui.QColor(self.brush().color())
-            color.setAlpha(90)
-            glow.setBrush(color)
-            glow.setPen(QtGui.QPen(QtCore.Qt.NoPen))
-            glow.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemStacksBehindParent)
-            glow.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
-            glow.setAcceptHoverEvents(False)
-            self._glow = glow
-        if glow is not None:
-            glow.setVisible(lit)
+        self._overlay("_ring", lit or self._highlighted, self._make_ring)
+        self._overlay("_glow", lit, self._make_glow)
 
-    def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
-        r = _PORT_HOVER_RADIUS + 1
-        return QtCore.QRectF(-r, -r, r * 2, r * 2)
+    def _overlay(self, name: str, show: bool, make) -> None:
+        item = getattr(self, name, None)
+        if item is None:
+            if not show:
+                return
+            item = make()
+            item.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
+            item.setAcceptHoverEvents(False)
+            setattr(self, name, item)
+        item.setVisible(show)
 
-    def shape(self) -> QtGui.QPainterPath:
-        # Wider than the dot, so a port is easy to hit and lights up as the mouse comes near.
-        path = QtGui.QPainterPath()
-        path.addEllipse(QtCore.QPointF(0, 0), _PORT_HOVER_RADIUS, _PORT_HOVER_RADIUS)
-        return path
+    def _make_ring(self) -> QtWidgets.QGraphicsEllipseItem:
+        r = _PORT_RADIUS
+        ring = QtWidgets.QGraphicsEllipseItem(-r, -r, r * 2, r * 2, self)
+        ring.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5))
+        ring.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        return ring
+
+    def _make_glow(self) -> QtWidgets.QGraphicsEllipseItem:
+        # A soft glow in the port's own colour: "start or end a wire here".
+        r = _PORT_RADIUS + 4
+        glow = QtWidgets.QGraphicsEllipseItem(-r, -r, r * 2, r * 2, self)
+        color = QtGui.QColor(self.brush().color())
+        color.setAlpha(90)
+        glow.setBrush(color)
+        glow.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+        glow.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemStacksBehindParent)
+        return glow
 
     def hoverEnterEvent(self, event) -> None:  # noqa: N802
         self._hovered = True
