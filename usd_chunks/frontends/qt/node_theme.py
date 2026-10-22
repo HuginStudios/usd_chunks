@@ -24,9 +24,9 @@ from PySide6 import QtCore, QtGui, QtSvg
 from usd_chunks import chunk_resources
 
 # Node frame.
-NODE_BG = QtGui.QColor("#1f2024")
-NODE_HEADER_BG = QtGui.QColor("#25262b")
-NODE_BORDER = QtGui.QColor("#3a3c42")
+NODE_BG = QtGui.QColor("#2a2b30")
+NODE_HEADER_BG = QtGui.QColor("#1b1c20")
+NODE_BORDER = QtGui.QColor("#3d3f46")
 NODE_SELECTED = QtGui.QColor("#f5c542")
 NODE_RADIUS = 10.0
 TEXT_PRIMARY = QtGui.QColor("#f2f3f5")
@@ -34,7 +34,7 @@ TEXT_SECONDARY = QtGui.QColor("#8b8f98")
 ACCENT = QtGui.QColor("#3b82f6")
 
 # Port colours, one per kind of value.
-PORT_EXEC = QtGui.QColor("#4ade80")
+PORT_EXEC = QtGui.QColor("#999999")  # the flow wires between chunks: grey
 PORT_FLOAT = QtGui.QColor("#f59e0b")
 PORT_INT = QtGui.QColor("#3b82f6")
 PORT_BOOL = QtGui.QColor("#facc15")

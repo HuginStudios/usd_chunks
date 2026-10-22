@@ -147,7 +147,7 @@ QLabel[chunkLocked="true"] {
 """
 
 # Added to CHUNK_STYLESHEET for a node body in the node graph (a ChunkWidget built
-# for_proxy): darker fields with rounded corners, sliders filled in the accent colour, and
+# for_proxy): darker fields with rounded corners, sliders filled in grey, and
 # checkboxes that fill when ticked. The params panel keeps the plain sheet.
 NODE_BODY_STYLESHEET = """
 .ChunkWidget {
@@ -186,12 +186,12 @@ QComboBox::down-arrow {
 }
 QSlider::groove:horizontal {
     border: 0px;
-    background: #34363c;
+    background: #1a1b1e;
     height: 4px;
     border-radius: 2px;
 }
 QSlider::sub-page:horizontal {
-    background: #3b82f6;
+    background: #5c5f67;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
@@ -2303,14 +2303,20 @@ class ContainerWidget(
 
     _GROUP_COLORS = ("#303030", "#333333")
     # Inside a node body: close to the node's own background, a step lighter per level.
-    _NODE_GROUP_COLORS = ("transparent", "#24252a", "#28292e")
+    # Inside a node body, by how far below the body a group sits: the body itself is
+    # see-through (the node paints its rounded frame behind it), groups a step darker.
+    _NODE_GROUP_COLORS = ("transparent", "#25262b", "#212226")
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
-        if self._in_inline_body():
+        body = self._inline_body()
+        if body is not None:
+            # Counted from the body, not the stage: a chunk inside a chunkgroup is one level
+            # deeper in its identifier, and counting that painted its body opaque, squaring
+            # off the node's rounded bottom corners.
+            level = depth - len(body.group.get_identifier().split("."))
             colors = self._NODE_GROUP_COLORS
-            # The body itself is see-through: the node paints the rounded frame behind it.
-            bg = "transparent" if depth <= 1 else colors[min(depth - 1, len(colors) - 1)]
+            bg = colors[min(max(level, 0), len(colors) - 1)]
         else:
             bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
         # Two setStyleSheet calls per container, each re-polishing its whole subtree --
@@ -2537,12 +2543,20 @@ class ContainerWidget(
         Returns:
             Whether rows added here should be inline.
         """
+        return self._inline_body() is not None
+
+    def _inline_body(self) -> ContainerWidget | None:
+        """The node body (a ChunkWidget built for the node graph) this container is in.
+
+        Returns:
+            That body, which may be this container itself, or None outside a node.
+        """
         w: QtWidgets.QWidget | None = self
         while w is not None:
             if getattr(w, "_inline_labels", False):
-                return True
+                return w
             w = w.parentWidget()
-        return False
+        return None
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)

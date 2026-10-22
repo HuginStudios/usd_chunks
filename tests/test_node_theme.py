@@ -15,6 +15,7 @@ from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.frontends.qt import node_theme
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt.widgets import ContainerWidget
 from usd_chunks.frontends.qt.nodegraph import _PORT_TYPE_COLOR, ChunkGraphView, ChunkNodeItem
 
 from qt_wait import pump_until
@@ -169,3 +170,19 @@ def test_a_ports_colour_is_always_its_type(graph) -> None:
     assert {"X", "Y", "Z"} <= labels
     for port in node()._ports:
         assert port.brush().color() == _PORT_TYPE_COLOR[port.port_type], port.attr_path
+
+
+@pytest.mark.parametrize("graph", ["transform"], indirect=True)
+def test_a_node_body_is_see_through_and_its_groups_are_not(graph) -> None:
+    """The node paints its rounded frame behind the body; an opaque body squares it off.
+
+    The chunk sits inside a chunkgroup here, a level deeper on the stage than a chunk at the
+    root -- the case where its body came out opaque.
+    """
+    qapp, _, node = graph
+    assert pump_until(qapp, lambda: node()._proxy is not None, seconds=3)
+    body = node()._proxy.widget()
+    assert body.group.get_identifier().count(".") >= 1, "expected a chunk inside a group"
+    assert body._group_bg == "transparent"
+    groups = [w for w in body.findChildren(ContainerWidget) if w is not body]
+    assert groups and all(w._group_bg != "transparent" for w in groups)
