@@ -31,7 +31,7 @@ NODE_SELECTED = QtGui.QColor("#f5c542")
 NODE_RADIUS = 10.0
 TEXT_PRIMARY = QtGui.QColor("#f2f3f5")
 TEXT_SECONDARY = QtGui.QColor("#8b8f98")
-ACCENT = QtGui.QColor("#3b82f6")
+
 
 # Port colours, one per kind of value: the muted set the graph has always used.
 PORT_EXEC = QtGui.QColor("#999999")  # the flow wires between chunks: grey

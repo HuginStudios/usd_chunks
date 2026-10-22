@@ -2302,7 +2302,6 @@ class ContainerWidget(
         return "color: #e5e7eb; font-weight: 600; text-align: left; padding: 3px 2px;"
 
     _GROUP_COLORS = ("#303030", "#333333")
-    # Inside a node body: close to the node's own background, a step lighter per level.
     # Inside a node body, by how far below the body a group sits: the body itself is
     # see-through (the node paints its rounded frame behind it), groups a step darker.
     _NODE_GROUP_COLORS = ("transparent", "#25262b", "#212226")

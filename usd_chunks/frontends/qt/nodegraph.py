@@ -324,13 +324,36 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
         """Mark the port as a place a dragged wire can be dropped."""
         if on != self._highlighted:
             self._highlighted = on
-            self.update()
+            self._refresh_look()
 
     def set_snapped(self, on: bool) -> None:
         """Light the port up as the one a dragged wire has jumped to."""
         if on != self._snapped:
             self._snapped = on
-            self.update()
+            self._refresh_look()
+
+    def _refresh_look(self) -> None:
+        """Ring and glow for the current state. Qt draws the dot itself: a port is painted
+        far more often than it changes, and a Python paint() per port tripled redraw time.
+        """
+        lit = self._hovered or self._snapped
+        ring = lit or self._highlighted
+        self.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5) if ring else QtGui.QPen(QtCore.Qt.NoPen))
+        glow = getattr(self, "_glow", None)
+        if lit and glow is None:
+            # A soft glow in the port's own colour, made on first need: "start or end a wire here".
+            r = _PORT_RADIUS + 4
+            glow = QtWidgets.QGraphicsEllipseItem(-r, -r, r * 2, r * 2, self)
+            color = QtGui.QColor(self.brush().color())
+            color.setAlpha(90)
+            glow.setBrush(color)
+            glow.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+            glow.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemStacksBehindParent)
+            glow.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
+            glow.setAcceptHoverEvents(False)
+            self._glow = glow
+        if glow is not None:
+            glow.setVisible(lit)
 
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
         r = _PORT_HOVER_RADIUS + 1
@@ -344,33 +367,13 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
 
     def hoverEnterEvent(self, event) -> None:  # noqa: N802
         self._hovered = True
-        self.update()
+        self._refresh_look()
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: N802
         self._hovered = False
-        self.update()
+        self._refresh_look()
         super().hoverLeaveEvent(event)
-
-    def paint(self, painter: QtGui.QPainter, option, widget=None) -> None:
-        r = _PORT_RADIUS
-        color = self.brush().color()
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        lit = self._hovered or self._snapped
-        if lit:
-            # A soft glow in the port's own colour: "start or end a wire here".
-            glow = QtGui.QColor(color)
-            glow.setAlpha(90)
-            painter.setPen(QtCore.Qt.PenStyle.NoPen)
-            painter.setBrush(glow)
-            painter.drawEllipse(QtCore.QPointF(0, 0), r + 4, r + 4)
-        painter.setBrush(color.lighter(125) if lit else color)
-        if lit or self._highlighted:
-            painter.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5))
-        else:
-            painter.setPen(QtCore.Qt.PenStyle.NoPen)
-        radius = r + 1 if lit else r
-        painter.drawEllipse(QtCore.QPointF(0, 0), radius, radius)
 
 
 
