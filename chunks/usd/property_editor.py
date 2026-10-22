@@ -406,6 +406,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.PROPERTIES,
+        icon="tag",
         description="""
         Property Editor -- pick prims and override their attributes.
 

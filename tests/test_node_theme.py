@@ -1,8 +1,9 @@
 """Which icon and colour a node or group shows, and the header's menu button.
 
-A node's icon comes from the prim's UsdUI icon first, then the chunk's own `icon`, then a
-built-in default for its type and its category. Its colour is the prim's UsdUI displayColor
-when authored, else the icon's own.
+A node's icon comes from the prim's UsdUI icon first, then the chunk's own `icon`, then the
+`icon` in its config(). Nothing else picks one: a chunk that sets no icon shows none, and a
+group shows only the icon it sets. Its colour is the prim's UsdUI displayColor when
+authored, else the icon's own.
 """
 from __future__ import annotations
 
@@ -10,26 +11,26 @@ import pytest
 from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui
 
-from usd_chunks import chunk, chunk_registry, chunk_stage
+from usd_chunks import chunk, chunk_icons, chunk_registry, chunk_resources, chunk_stage
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.frontends.qt import node_theme
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
-from usd_chunks.frontends.qt.widgets import ContainerWidget
+from usd_chunks.frontends.qt.widgets import ChunkWidget, ContainerWidget
 from usd_chunks.frontends.qt.nodegraph import _PORT_TYPE_COLOR, ChunkGraphView, ChunkNodeItem
 
 from qt_wait import pump_until
 
 
 class _Chunk:
-    """Enough of a chunk for node_icon: an icon and a config with a category."""
+    """Enough of a chunk for node_icon: its own icon, and a config with one."""
 
-    def __init__(self, icon="", category=""):
+    def __init__(self, icon="", config_icon=""):
         self.icon = icon
-        self._category = category
+        self._config_icon = config_icon
 
     def get_config(self):
-        return type("Config", (), {"category": self._category})()
+        return type("Config", (), {"icon": self._config_icon})()
 
 
 def _prim():
@@ -38,23 +39,20 @@ def _prim():
     return stage, stage.DefinePrim("/n")
 
 
-def test_a_type_with_a_default_gets_it() -> None:
-    icon, color = node_theme.node_icon(_Chunk(), None, "light")
-    assert icon == "sun"
-    assert color == node_theme.icon_color("sun")
+def test_a_chunk_shows_the_icon_its_config_sets() -> None:
+    icon, color = node_theme.node_icon(_Chunk(config_icon="posts"), None)
+    assert icon == "posts"
+    assert color == node_theme.icon_color("posts")
 
 
-def test_a_type_without_one_falls_back_to_its_category() -> None:
-    icon, _ = node_theme.node_icon(_Chunk(category=chunk.StandardCategory.MATERIALS), None,
-                                   "some_new_shader")
-    assert icon == "sphere"
-    icon, _ = node_theme.node_icon(_Chunk(category="Dynamics/Sims"), None, "some_new_sim")
-    assert icon == "waves"
+def test_a_chunk_that_sets_no_icon_shows_none() -> None:
+    """Nothing guesses one: not from its type, its name or its category."""
+    assert chunk_icons.node_icon(_Chunk(), None)[0] == ""
+    assert chunk_icons.node_icon(chunk.Chunk("Light"), None)[0] == ""
 
 
-def test_the_chunks_own_icon_beats_the_type_default() -> None:
-    icon, _ = node_theme.node_icon(_Chunk(icon="zap"), None, "light")
-    assert icon == "zap"
+def test_the_chunks_own_icon_beats_its_config() -> None:
+    assert chunk_icons.node_icon(_Chunk(icon="zap", config_icon="posts"), None)[0] == "zap"
 
 
 def test_an_authored_usdui_icon_and_colour_win() -> None:
@@ -62,16 +60,43 @@ def test_an_authored_usdui_icon_and_colour_win() -> None:
     api = UsdUI.NodeGraphNodeAPI.Apply(prim)
     api.CreateIconAttr().Set(Sdf.AssetPath("camera"))
     api.CreateDisplayColorAttr().Set(Gf.Vec3f(1.0, 0.0, 0.0))
-    icon, color = node_theme.node_icon(_Chunk(icon="zap"), prim, "light")
+    icon, color = node_theme.node_icon(_Chunk(icon="zap", config_icon="posts"), prim)
     assert icon == "camera"
     assert color == QtGui.QColor.fromRgbF(1.0, 0.0, 0.0)
 
 
-def test_groups_pick_an_icon_from_their_name_or_none(qapp) -> None:
-    assert node_theme.group_icon(chunk.Group("translate_grp", "Translate")) == "move"
-    assert node_theme.group_icon(chunk.Group("vis", "Visibility")) == "eye"
-    assert node_theme.group_icon(chunk.Group("zzz", "Something Else")) == ""
-    assert node_theme.group_icon(chunk.Group("zzz", "Something", icon="dice")) == "dice"
+def test_every_bundled_chunk_names_a_builtin_icon() -> None:
+    """A typo in a chunk's config() icon would quietly show nothing; catch it here."""
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(SceneSender(), "pytest")
+    named = 0
+    for module in reg.get_chunk_modules():
+        icon = getattr(module.config, "icon", "")
+        if icon:
+            named += 1
+            assert chunk_resources.get_node_icon(icon) is not None, (module.module_name, icon)
+    assert named > 50
+
+
+def test_a_group_shows_only_the_icon_it_sets(qapp) -> None:
+    c = chunk.Chunk("Groups")
+    c.add_param(chunk.Group("translate_grp", "Translate"))
+    c.add_param(chunk.Group("moved_grp", "Moved", icon="move"))
+    widget = ChunkWidget(c, for_proxy=True)
+    try:
+        headers = {w.group.name: w.minimize_button for w in widget.findChildren(ContainerWidget)
+                   if w is not widget}
+        plain = headers["translate_grp"].icon().pixmap(32, 16).toImage()
+        with_icon = headers["moved_grp"].icon().pixmap(32, 16).toImage()
+
+        def lit(image):
+            return sum(image.pixelColor(x, y).alpha() > 0
+                       for x in range(image.width()) for y in range(image.height()))
+
+        # Both draw their fold arrow; only the one that set an icon draws more than that.
+        assert lit(with_icon) > lit(plain) * 2
+    finally:
+        widget.deleteLater()
 
 
 def test_icon_takes_a_builtin_name_or_an_existing_path(tmp_path) -> None:
@@ -84,7 +109,7 @@ def test_icon_takes_a_builtin_name_or_an_existing_path(tmp_path) -> None:
 
 
 def test_every_builtin_icon_draws(qapp) -> None:
-    names = {p.stem for p in (node_theme._SVG_DIR).glob("*.svg")}
+    names = {p.stem for p in (chunk_resources.get_icons_path() / "node").glob("*.svg")}
     assert len(names) > 30
     for name in names:
         pixmap = node_theme.icon_pixmap(name, node_theme.icon_color(name), 24, 2.0)

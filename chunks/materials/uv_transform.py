@@ -87,6 +87,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
+        icon="image",
         outputs=[("result", "Float2")],
         description="""
         UV Transform chunk — inserts a UsdTransform2d shader to offset, scale and rotate

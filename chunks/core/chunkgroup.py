@@ -22,6 +22,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
+        icon="folder",
         description="""
         ChunkGroup: An empty container chunk that acts as a collection of Chunks.
 

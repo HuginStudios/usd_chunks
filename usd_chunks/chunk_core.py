@@ -4199,6 +4199,11 @@ class ChunkConfig(AttributesBase):
         return variants
 
     category: str = attrs.field(default="Chunks")
+    # The icon the chunk's nodes show: a built-in icon's name (usd_chunks/resources/icons/
+    # node/<name>.svg) or a path to an image. Set by the chunk itself; nothing else picks one,
+    # so a chunk that sets none shows none. A chunk prim's UsdUINodeGraphNodeAPI icon still
+    # wins, for one node. See chunk_icons.
+    icon: str = attrs.field(default="")
     description: str = attrs.field(default="Chunk description...")
     load_for_plugin: str | None = attrs.field(default=None)
     # The host applications the module runs in, each a name with an optional version

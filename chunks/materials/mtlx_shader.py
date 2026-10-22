@@ -662,6 +662,7 @@ def _menu_variants():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MTLX,
+        icon="sphere",
         variants=_menu_variants,
         description="""
         Authors a MaterialX shader as a UsdShade.Shader prim, with its params generated

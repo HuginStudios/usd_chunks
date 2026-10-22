@@ -2136,7 +2136,7 @@ def _group_header_pixmap(icon: str, expanded: bool | None) -> QtGui.QPixmap | No
     """A node-body group header's picture: a fold arrow, then the group's icon.
 
     Args:
-        icon: The group's icon (node_theme.group_icon), or "" for none.
+        icon: The group's `icon`, or "" for none.
         expanded: True for an open group, False for a folded one, None for one that can't fold.
 
     Returns:
@@ -2284,7 +2284,8 @@ class ContainerWidget(
         if expanded is None:
             expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
         collapsible = self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
-        pixmap = _group_header_pixmap(node_theme.group_icon(self.group),
+        # The group's own icon, set by its chunk; none is guessed for it.
+        pixmap = _group_header_pixmap(self.group.icon or "",
                                       expanded if collapsible else None)
         self.minimize_button.setArrowType(QtCore.Qt.ArrowType.NoArrow)
         if pixmap is None:

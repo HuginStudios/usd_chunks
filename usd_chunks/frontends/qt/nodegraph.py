@@ -872,8 +872,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # slot's port silently disappears the first time the body relayouts.
         self._exec_in_ports: list[ChunkPortItem] = []
         self._chunk_type_label = str(_chunk_type or "")  # cached: paint must not read USD
-        # The header icon and its colour, cached for the same reason. See node_theme.
-        self._icon, self._icon_color = node_theme.node_icon(chunk, prim, self._chunk_type_label)
+        # The header icon ("" for none) and its colour, cached for the same reason. The
+        # chunk decides which icon: see chunk_icons.
+        self._icon, self._icon_color = node_theme.node_icon(chunk, prim)
         self._disabled = chunk.has_state(ChunkFlags.State.DISABLED)
         self._lod_simple = False  # see set_body_visible
         # Height settling -- see _note_height_sample and is_height_settled.
@@ -1544,8 +1545,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         """Read the header icon and colour again, after the prim's UsdUI icon or colour changed."""
         if not self.prim.IsValid():
             return
-        self._icon, self._icon_color = node_theme.node_icon(
-            self.chunk, self.prim, self._chunk_type_label)
+        self._icon, self._icon_color = node_theme.node_icon(self.chunk, self.prim)
         self.update()
 
     def _is_active_output(self) -> bool:

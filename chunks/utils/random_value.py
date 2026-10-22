@@ -29,6 +29,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS,
+        icon="dice",
         description=(
             "Generates a deterministic random float between Min and Max, seeded by Seed.\n"
             "Same seed always produces the same value; Min/Max are swapped if Min > Max."

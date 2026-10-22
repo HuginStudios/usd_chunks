@@ -283,6 +283,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="tag",
         description="""
         Set Metadata — authors metadata on a prim using structured UI widgets.
 

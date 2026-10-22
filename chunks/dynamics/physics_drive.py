@@ -167,6 +167,7 @@ def main() -> chunk.Chunk:
 def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
+        icon="waves",
         description=(
             "Makes a prim a collider, a spinning part (kinematic body on a revolute joint with a\n"
             "velocity drive) or a conveyor (PhysX surface velocity) -- plain UsdPhysics, read by\n"

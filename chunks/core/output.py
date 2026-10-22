@@ -7,6 +7,7 @@ def config():
     return ChunkConfig(
         terminal=True,
         category=chunk.StandardCategory.CORE,
+        icon="output",
         description="What this graph delivers: the end of its chain. Cooks with no active view, and is what a run, a reference or a stronger layer cooks to.",
     )
 

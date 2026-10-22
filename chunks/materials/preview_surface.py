@@ -96,6 +96,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
+        icon="sphere",
         description="""
         Preview Surface chunk — defines a UsdPreviewSurface material and binds it
         to one or more prims on the active stage.

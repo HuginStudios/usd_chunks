@@ -96,17 +96,24 @@ groups, flags and callback signatures you can use in `main()`.
 
 ### Icons in the node graph
 
-Every node shows an icon in its header, and a group can show one beside its name. Set them
-in `main()` with `icon`, which every chunk, group and param has:
+A node shows an icon in its header, and a group can show one beside its name. Only the
+chunk decides them; nothing else picks one, so a chunk or group that sets no icon shows
+none.
+
+The node's icon goes in `config()`, so every node of the chunk gets it:
 
 ```python
-def main():
-    chunk_api = chunk.Chunk("Light")
-    chunk_api.icon = "sun"                                   # the node's header icon
+def config():
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.MODELLING,
+        icon="posts",
+    )
+```
 
-    translate = chunk.Group("translate_grp", "Translate", icon="move")
-    chunk_api.add_param(translate)
-    return chunk_api
+A group's icon goes on the group, in `main()`:
+
+```python
+run_grp = chunk.Group("Run", icon="ruler", flags=_GF)
 ```
 
 `icon` takes either:
@@ -116,24 +123,17 @@ def main():
   Built-in icons are drawn in one colour, and each has a default colour.
 - a path to your own image file (`.svg` or `.png`), drawn as it is.
 
-Anything else raises a `ValueError`.
+On a group or a param, anything else raises a `ValueError`.
 
-**When you don't set one.** A node uses, first match wins:
+**Which icon a node shows,** first match wins:
 
-1. The icon on the chunk's prim in USD (see below).
-2. The chunk's own `icon`.
-3. A built-in default for the chunk's type, then for its menu category. These are the
-   `_TYPE_ICONS` and `_CATEGORY_ICONS` tables in `usd_chunks/frontends/qt/node_theme.py`.
-   A chunk you write yourself is not in them, so it gets its category's icon until you set
-   one.
+1. The icon on the chunk's prim in USD (see below), for that one node.
+2. `icon` set on the chunk in `main()` (`chunk_api.icon = "sun"`), for every node of it.
+3. `icon` in `config()`.
 
-A group without an `icon` gets one from words in its name or label: "Translate" gets
-`move`, "Visibility" gets `eye`, "Posts" gets `posts`. A group whose name matches nothing
-shows no icon. The word list is `_GROUP_WORDS` in the same file.
-
-**Per node, in USD.** A node's icon and its colour can also be set on its chunk prim,
-through USD's own `UsdUINodeGraphNodeAPI`. These win over everything above, are saved in the
-file, and update the node as soon as they change:
+**Per node, in USD.** A node's icon and colour can also be set on its chunk prim, through
+USD's own `UsdUINodeGraphNodeAPI`. These are saved in the file, and the node updates as soon
+as they change:
 
 ```python
 from pxr import Gf, Sdf, UsdUI
@@ -142,6 +142,8 @@ api = UsdUI.NodeGraphNodeAPI.Apply(chunk_prim)
 api.CreateIconAttr().Set(Sdf.AssetPath("camera"))          # a built-in name or an image path
 api.CreateDisplayColorAttr().Set(Gf.Vec3f(1.0, 0.4, 0.3))  # the icon's colour
 ```
+
+The lookup is `usd_chunks/chunk_icons.py`, so any graph frontend can show the same icons.
 
 ## `config()`
 

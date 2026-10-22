@@ -115,6 +115,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="link",
         description="""
         Reference chunk: Lets the user pick an external USD file and insert it as a
         Usd.Reference into the active stage.

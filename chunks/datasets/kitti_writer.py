@@ -1044,6 +1044,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category="Datasets",
+        icon="database",
         requirements=["numpy>=1.24,<3", "OpenEXR>=3.3,<4", "Pillow>=10,<13"],
         description="""
         KITTI Writer — turns rendered frames into a training dataset: KITTI object
