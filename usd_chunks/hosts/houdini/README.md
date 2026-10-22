@@ -17,49 +17,14 @@ Tested with Houdini 21.0.
 
 ## Setup
 
-Houdini uses its own USD and Python 3.11. Don't put another USD on `PATH` or `PYTHONPATH`
-for it. usd_chunks needs only its checkout and its chunks from outside.
-
-**For one session**, set these before launching Houdini (`C:\src\usd_chunks` stands for
-your checkout):
-
-| Variable | Set to | Why |
-|---|---|---|
-| `HOUDINI_PATH` | `C:\src\usd_chunks\usd_chunks\hosts\houdini;&` | Finds the node types (`otls\`) and the startup script that builds the TAB menu. Keep the trailing `&`: it is Houdini's own path (quote the `set`, or cmd reads `&` as a command separator). |
-| `PYTHONPATH` | `C:\src\usd_chunks`, prepended | Makes `usd_chunks` importable by Houdini's Python. The checkout root only. |
-| `USD_CHUNK_DIRS` | `C:\src\usd_chunks\chunks`, prepended | The chunk library. Unset, the TAB menu's usdchunks folder is empty. |
-| `USD_CHUNK_DEPENDENCY_DIR` | optional | Where the missing pure-Python dependencies go. Default `%LOCALAPPDATA%\usd_chunks\installed_deps`. |
-
-Install the missing dependencies once with Houdini's own `hython`, then start Houdini from
-the same shell:
-
-```bat
-set HFS=C:\Program Files\Side Effects Software\Houdini 21.0.857
-set "HOUDINI_PATH=C:\src\usd_chunks\usd_chunks\hosts\houdini;&"
-set PYTHONPATH=C:\src\usd_chunks;%PYTHONPATH%
-set USD_CHUNK_DIRS=C:\src\usd_chunks\chunks;%USD_CHUNK_DIRS%
-"%HFS%\bin\hython.exe" C:\src\usd_chunks\usd_chunks\hosts\houdini\install.py --deps-only
-"%HFS%\bin\houdini.exe"
-```
-
-If `HOUDINI_PATH` is already set, prepend to it instead:
-`set "HOUDINI_PATH=C:\src\usd_chunks\usd_chunks\hosts\houdini;%HOUDINI_PATH%"`.
-
-**For every Houdini session**, run the installer once with the `hython` of the Houdini to
-set up:
+Run the installer once, with the `hython` of the Houdini to set up, then restart Houdini:
 
 ```
-"C:\Program Files\Side Effects Software\Houdini 21.0.857\bin\hython.exe" usd_chunks/hosts/houdini/install.py
+hython usd_chunks/hosts/houdini/install.py
 ```
 
-It installs usd_chunks' two pure-Python dependencies (attrs, typing-extensions) where
-Houdini's Python is missing them, into the usd_chunks dependency dir, and writes
-`usd_chunks.json` into the user's Houdini `packages` folder. Restart Houdini. Options:
-`--chunk-dirs DIR ...` sets `USD_CHUNK_DIRS` (default: the checkout's `chunks/`), and
-`--no-deps` skips the install. `usdchunks plugin-path --host houdini` prints this folder.
-
-Houdini 21 ships attrs 22.2, older than the `>=25.4` usd_chunks declares. It is left in
-place, as replacing a package Houdini itself ships is worse, and usd_chunks runs on it.
+The full steps, the options, and fixes for common problems are in
+[docs/houdini.md](../../../docs/houdini.md).
 
 ## Chunkgroups: import and export
 

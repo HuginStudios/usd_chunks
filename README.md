@@ -31,11 +31,11 @@ usdchunks run layout.usda Transform.tx=5 -o result.usda
    git clone https://github.com/HuginStudios/usd_chunks.git
    python -m pip install -e ./usd_chunks
    for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
-   set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
    usdview anything.usda
    ```
    The install page covers other shells, every environment variable, and what to do if
-   something doesn't show up.
+   something doesn't show up. Using Houdini or Blender? See [Houdini](docs/houdini.md) and
+   [Blender](docs/blender.md).
 2. **[Use the node graph](docs/node-graph-basics.md)**: add and connect your first chunk.
 3. **[Output, View and ChunkGroup](docs/core-chunks.md)**: the chunks that organise a
    graph. Output is what a graph delivers, View is where you look, ChunkGroup is a subnet.

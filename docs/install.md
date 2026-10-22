@@ -1,8 +1,11 @@
 # Install
 
-To get usd_chunks working you need two things: the package installed in the Python your
-host runs, and **USD_CHUNK_DIRS** set to the folder with your chunk modules. The rest of
-this page is detail on those two steps.
+To get usd_chunks working, install the package into the Python your host runs. It comes
+with a set of chunks, so that's all you need to start. Set **USD_CHUNK_DIRS** later, when
+you write chunks of your own.
+
+This page covers usdview and plain Python. **Houdini** and **Blender** install differently:
+see [Houdini](houdini.md) and [Blender](blender.md).
 
 ## Quick start
 
@@ -13,24 +16,30 @@ You need **Python 3.11+**, and it has to be the same Python your USD was built w
 git clone https://github.com/HuginStudios/usd_chunks.git
 python -m pip install -e ./usd_chunks
 for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdview anything.usda
 ```
 
 If `pip install -e` fails, your pip is probably too old for editable installs. Run
 `python -m pip install --upgrade pip` and try again.
 
+If pip fails with `CERTIFICATE_VERIFY_FAILED`, your network checks HTTPS traffic and that
+pip is too old to use Windows' own certificates. Pip 24.2 and newer use them. Download a
+new pip with any Python that works (`python -m pip download pip --no-deps -d wheels`), then
+install that file with the old one (`python -m pip install wheels\pip-<version>.whl`).
+
 To run without usdview, using `usd-core` only:
 
 ```
 git clone https://github.com/HuginStudios/usd_chunks.git
 python -m pip install -e "./usd_chunks[standalone]"
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 usdchunks run --help
 ```
 
+For something to run, the [Scripting](scripting.md#in-a-terminal) page builds and saves a
+small network.
+
 In PowerShell, use `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)` and
-`$env:NAME = "value"` for the other variables. On macOS/Linux, use
+`$env:NAME = "value"` for other variables. On macOS/Linux, use
 `export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"` and `export NAME=value`.
 
 In usdview, right-click the graph canvas (or press Tab) to see the chunks in
@@ -50,8 +59,9 @@ missing](#if-the-chunks-panel-is-missing).
   in 3.11.
 - **The same Python your USD was built with.** USD's Python bindings only work with the
   Python version they were compiled for, so usd_chunks has to be installed into that
-  Python: usdview's, Houdini's `hython`, Maya's `mayapy`, and so on. If your USD was built
-  with a Python older than 3.11, you need to rebuild USD with 3.11 or newer first.
+  Python: usdview's, Maya's `mayapy`, and so on. If your USD was built with a Python older
+  than 3.11, you need to rebuild USD with 3.11 or newer first. Houdini and Blender have
+  their own setup: see [Houdini](houdini.md) and [Blender](blender.md).
 
 ### Getting the package
 
@@ -68,8 +78,8 @@ Check with:
 python -c "import pxr"
 ```
 
-**If that works**, you're in usdview, Houdini's `hython`, Maya's `mayapy`, Blender's
-Python or another DCC. Install it as is:
+**If that works**, you're in usdview's Python, Maya's `mayapy` or another app that has
+USD. Install it as is:
 
 ```
 python -m pip install -e ./usd_chunks
@@ -92,7 +102,8 @@ command without building USD yourself. `usdchunks run my_setup.usda` works strai
     up with two USDs in one process, and things break in confusing ways.
 
 The `usd-core` package on PyPI doesn't include usdview. To use usd_chunks in usdview you
-need a full USD build that includes `pxr.Usdviewq`. See [usdview
+need a full USD build that includes `pxr.Usdviewq`. Build one with OpenUSD's
+`build_scripts/build_usd.py`, or use a prebuilt one, such as NVIDIA's. See [usdview
 integration](#usdview-integration) below.
 
 ### ⚠️ A plain install won't show every bundled chunk
@@ -161,9 +172,11 @@ console, or look in your launcher script), then run pip with that Python:
 
 ```
 "<that path>" -m pip install -e usd_chunks     # usdview
-hython -m pip install -e usd_chunks            # Houdini
 mayapy -m pip install -e usd_chunks            # Maya
 ```
+
+Houdini and Blender don't use `pip install` like this. See [Houdini](houdini.md) and
+[Blender](blender.md).
 
 If you already installed into the wrong Python, reinstall with the right one. A regular
 install can be fixed by pointing `PYTHONPATH` at that environment's `site-packages`, but an

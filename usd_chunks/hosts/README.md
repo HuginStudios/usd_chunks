@@ -14,4 +14,8 @@ or print the right path for an installed copy with `usdchunks plugin-path --host
 
 **houdini** makes every chunk a Solaris LOP, under TAB > usdchunks. Houdini wires the
 chunks and decides when they cook; their params are native Houdini parms. Set it up once
-with `hython usd_chunks/hosts/houdini/install.py` -- see `houdini/README.md`.
+with `hython usd_chunks/hosts/houdini/install.py` -- see
+[docs/houdini.md](../../docs/houdini.md).
+
+**Blender** has no folder here. Its add-on is in `usd_chunks/frontends/blender/addon`. See
+[docs/blender.md](../../docs/blender.md) to install it.

@@ -10,7 +10,8 @@ screen.
 ## Guides
 
 1. [Install](install.md): quick start, fixing things that don't show up, every
-   environment variable, building the docs.
+   environment variable, building the docs. In Houdini or Blender, use
+   [Houdini](houdini.md) or [Blender](blender.md) instead.
 2. [Using the node graph](node-graph-basics.md): creating and connecting nodes, shortcuts.
 3. [Output, View and ChunkGroup](core-chunks.md): the chunks that organise a graph instead of
    changing the stage.

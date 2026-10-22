@@ -63,7 +63,8 @@ CI runs one row — Windows, Python 3.11, the version the DCCs ship (Houdini 20.
   authors import).
 - `usd_chunks/frontends/` — one subpackage per UI toolkit (`qt/`, `flet/`, `imgui/`,
   `blender/`), each with a widget `factory.py` and a `nodegraph.py` over `graph/engine.py`.
-- `usd_chunks/hosts/` — per-application entry points: `usdview/`.
+- `usd_chunks/hosts/` — per-application entry points: `usdview/` and `houdini/`. Blender's
+  add-on is in `usd_chunks/frontends/blender/addon/`.
 - `usd_chunks/cli.py` — the headless `usdchunks` command.
 - `usd_chunks/graph/`, `usd_chunks/gizmo/`, `usd_chunks/store/` — the graph engine and
   layout, the gizmo declaration and runtime, and the store seam with `usdchunks pin`.
