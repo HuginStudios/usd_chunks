@@ -151,3 +151,36 @@ def test_an_expression_reading_the_port_becomes_a_plain_value(env):
     env["settle"]()
 
     assert not isinstance(consumer.raw_value, str)
+
+
+def test_unloft_removes_the_copy_lofted_up_to_the_tab(env):
+    outer = env["mk"]("chunkgroup", name="Outer")
+    env["settle"]()
+    group = env["mk"]("chunkgroup", context=outer, name="Group")
+    inner = env["mk"]("transform", context=group)
+    env["settle"]()
+    tab = outer._parent_context()  # the tab's own group, above Outer
+    lofted = _loft(env, inner.get_param("tx"), group)
+    lofted = _loft(env, lofted, outer)
+    _loft(env, lofted, tab)
+
+    # Unlofted from the bottom, as from the Transform's right-click menu.
+    chunk_stage.unloft_param(_lofted(group)[0])
+    env["settle"]()
+
+    assert (_lofted(group), _lofted(outer), _lofted(tab)) == ([], [], [])
+
+
+def test_deleting_the_inner_chunk_unlofts_its_params(env):
+    stage = env["stage"]
+    group = env["mk"]("chunkgroup", name="Group")
+    inner = env["mk"]("transform", context=group)
+    env["settle"]()
+    lofted = _loft(env, inner.get_param("tx"), group)
+    name = lofted._param_attr_path.rsplit(".", 1)[-1]
+
+    inner.request_delete()
+    env["settle"]()
+
+    assert _lofted(group) == []
+    assert not _prim(stage, group).GetAttribute(name)

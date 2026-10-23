@@ -815,6 +815,25 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         finally:
             self._reloading, self._discarding = was_reloading, was_discarding
 
+    def _unloft_fed_by(self, prim_path: str) -> None:
+        """Unloft every param lofted from the chunk at prim_path, all the way up.
+
+        Args:
+            prim_path: The chunk prim, still on the stage.
+        """
+        prim = self._stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if not (prim and prim.IsValid()) or not self._scene:
+            return
+        targets = {str(t) for attr in prim.GetAttributes() for t in attr.GetConnections()}
+        if not targets:
+            return
+        for context in self._scene.get_contexts():
+            if context.prim_path == prim_path:
+                continue  # a group being deleted: its own params go with it
+            for param in [p for p in context.get_my_params()
+                          if getattr(p, "_lofted", False) and p._param_attr_path in targets]:
+                unloft_param(param)
+
     def _on_chunk_deleted(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
@@ -852,6 +871,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         prim_path_str = str(sdf_path)
         self._loaded_prim_paths.discard(prim_path_str)
         self._chunk_prim_paths.pop(id(sender), None)
+
+        # A param lofted from this chunk would stay on its group, fed by nothing.
+        self._unloft_fed_by(prim_path_str)
 
         # Read who was downstream before healing rewires them off this chunk: nothing after
         # this point can tell, and they are the only chunks whose Edit Target can change.
@@ -9189,6 +9211,26 @@ def lofted_copy(param: core.ChunkParamBase, context: core.ChunkBase) -> core.Chu
                  if getattr(p, "_lofted", False) and p._param_attr_path in targets), None)
 
 
+def _current_scene():
+    """The scene being synced, or the registry's while the sync has not started (a CLI load)."""
+    return getattr(ChunkStageSync(), "_scene", None) or getattr(chunk_registry.ChunkRegistry(), "scene", None)
+
+
+def _child_contexts(context: core.ChunkBase) -> list[core.ChunkBase]:
+    """The groups directly inside context.
+
+    A group is not one of its parent's params (get_my_params leaves it out), but a param
+    lofted from it is fed from there all the same.
+    """
+    scene = _current_scene()
+    children = []
+    for child in scene.get_contexts() if scene else ():
+        parent_ref = getattr(child, "_parent_context", None)
+        if parent_ref is not None and parent_ref() is context:
+            children.append(child)
+    return children
+
+
 def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_path: str):
     """The inner chunk and param whose attribute is lofted to context_attr_path.
 
@@ -9200,7 +9242,7 @@ def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_p
     Returns:
         (inner chunk, inner param), or (None, None) if nothing inside feeds it.
     """
-    for inner_chunk in context.get_my_params():
+    for inner_chunk in (*context.get_my_params(), *_child_contexts(context)):
         if not isinstance(inner_chunk, core.ChunkBase):
             continue
         for _, param in _iter_chunk_params(inner_chunk):
@@ -9235,9 +9277,15 @@ def unloft_param(context_param: core.ChunkParamBase) -> None:
 
     chunks = list(sync._scene.get_chunks()) if sync._scene else []
 
-    # A copy lofted one level up is fed by this one, so it goes first.
+    # A copy lofted one level up is fed by this one, so it goes first. It sits on the group
+    # this one is in, which for the top of a tab is the tab's own group: not in the scene's
+    # chunks, so it is looked at as well.
     targets = {str(c) for c in context_attr.GetConnections()}
-    for outer in chunks if targets else ():
+    outers = list(chunks)
+    parent_ref = getattr(context, "_parent_context", None)
+    if (parent := parent_ref() if parent_ref else None) is not None and parent not in outers:
+        outers.append(parent)
+    for outer in outers if targets else ():
         for upper in [p for p in outer.get_my_params()
                       if getattr(p, "_lofted", False) and p._param_attr_path in targets]:
             unloft_param(upper)
@@ -9272,19 +9320,28 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
     Reconstructs the context_param clone and its forward-to-inner callback so the
     lofted UI and value forwarding work identically to a freshly lofted param.
     """
-    seen_contexts: set = set()
-
+    contexts: dict = {}
     for _prim, chunk in deferred:
         context = chunk.get_context()
-        if not context or id(context) in seen_contexts:
-            continue
+        if context:
+            contexts.setdefault(id(context), context)
+    # And groups holding nothing but other groups, which no chunk names as its context.
+    scene = _current_scene()
+    for context in scene.get_contexts() if scene else ():
+        contexts.setdefault(id(context), context)
 
+    # Deepest group first. A param lofted on up is restored from the copy one group down,
+    # which only exists once that group has been restored: in load order, an outer group
+    # could come first and find nothing to restore from.
+    def _depth(context) -> int:
+        return Sdf.Path(context.prim_path or _CHUNKS_ROOT).pathElementCount
+
+    restored: list = []  # (depth, lofted param), to seed once every level exists
+    for context in sorted(contexts.values(), key=_depth, reverse=True):
         context_prim_path = Sdf.Path(context.prim_path if context.prim_path else _CHUNKS_ROOT)
         context_prim = stage.GetPrimAtPath(context_prim_path)
         if not (context_prim and context_prim.IsValid()):
             continue
-
-        seen_contexts.add(id(context))
 
         for context_attr in context_prim.GetAttributes():
             attr_name = context_attr.GetName()
@@ -9355,6 +9412,13 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             # Reference chunk, which cooks to no reference and renders an empty stage --
             # while USD and the lofted UI both showed the saved value. Seeding here is
             # before the execute pass, so the first cook already sees the real value.
-            context_param._loft_fwd(None, None)
+            # Done below, from the top down, once every level is back: a param lofted on
+            # up has no value of its own yet (it is fed from the group above), and seeding
+            # from it here sent its default down instead of the saved value.
+            restored.append((_depth(context), context_param))
             _mirror_menu_items(inner_param, context_param)
             _forward_button_click(inner_param, context_param)
+
+    # Outermost first: each hands its saved value to the level below, which hands it on.
+    for _, context_param in sorted(restored, key=lambda item: item[0]):
+        context_param._loft_fwd(None, None)
