@@ -59,6 +59,8 @@ _NODE_MIN_WIDTH = 140
 _NODE_MAX_WIDTH = 800
 _RESIZE_GRIP_IN = 3  # how far inside the node's right edge a press starts a resize
 _RESIZE_GRIP_OUT = 4  # and how far outside it
+# On the edge, a press this close to a port (on screen) starts a wire, not a resize.
+_PORT_PRESS_PIXELS = 14
 _NODE_HEADER_H = 48
 
 # A node stops drawing its embedded ChunkWidget -- showing only the box and header that
@@ -770,6 +772,23 @@ def _saved_node_width(prim: Usd.Prim) -> float:
     return float(_NODE_WIDTH)
 
 
+def _drag_wire_path(start: QtCore.QPointF, end: QtCore.QPointF, from_input: bool) -> QtGui.QPainterPath:
+    """The curve of a wire being dragged out of a port.
+
+    Args:
+        start: The port it is dragged from.
+        end: Where its loose end is.
+        from_input: Whether that port is an input: the wire then leaves it to the left, as
+            a wire into an input arrives, instead of to the right.
+    """
+    dx = abs(end.x() - start.x()) * 0.5
+    if from_input:
+        dx = -dx
+    path = QtGui.QPainterPath(start)
+    path.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y())
+    return path
+
+
 class _NodeResizeHandle(QtWidgets.QGraphicsItem):
     """A node's right edge: drag it to change the node's width, double-click to reset it.
 
@@ -782,9 +801,36 @@ class _NodeResizeHandle(QtWidgets.QGraphicsItem):
         self._node = node
         self._press_x: float | None = None
         self._start_width = 0.0
+        self._lit: ChunkPortItem | None = None  # the port a press here would start a wire from
         self.setZValue(0.5)
         self.setCursor(QtCore.Qt.CursorShape.SizeHorCursor)
+        self.setAcceptHoverEvents(True)
         self.setPos(node._width, 0)
+
+    def hoverMoveEvent(self, event) -> None:  # noqa: N802
+        # Near a port a press starts a wire (see ChunkGraphView.mousePressEvent): say so,
+        # with the cursor and the port's glow.
+        view = event.widget().parent() if event.widget() is not None else None
+        near = None
+        if isinstance(view, QtWidgets.QGraphicsView):
+            near = self._node.port_near(event.scenePos(), _PORT_PRESS_PIXELS / (view.transform().m11() or 1.0))
+        self._light(near)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor if near is not None
+                       else QtCore.Qt.CursorShape.SizeHorCursor)
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self._light(None)
+        super().hoverLeaveEvent(event)
+
+    def _light(self, port: ChunkPortItem | None) -> None:
+        if port is self._lit:
+            return
+        for p, on in ((self._lit, False), (port, True)):
+            if p is not None:
+                p._hovered = on
+                p._refresh_look()
+        self._lit = port
 
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
         return QtCore.QRectF(-_RESIZE_GRIP_IN, 0,
@@ -1523,6 +1569,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if port.attr_path == attr_path:
                 return port
         return None
+
+    def port_near(self, scene_pos: QtCore.QPointF, reach: float) -> ChunkPortItem | None:
+        """The port closest to scene_pos, if one is within reach.
+
+        Args:
+            scene_pos: A point in the scene.
+            reach: The furthest a port may be, in scene units.
+        """
+        best, best_dist = None, reach
+        for port in self._ports:
+            if port.isVisible() and (dist := QtCore.QLineF(port.scenePos(), scene_pos).length()) <= best_dist:
+                best, best_dist = port, dist
+        return best
 
     # ------------------------------------------------------------------
     # QGraphicsItem interface
@@ -4499,6 +4558,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             item = item.parentItem()
 
         # Port left-click → start wire drag (drag off a connected input port to disconnect it).
+        if isinstance(hit, _NodeResizeHandle) and event.button() == QtCore.Qt.LeftButton:
+            # The edge a node resizes by runs past its ports: a press just off a port's dot
+            # is meant for the port.
+            near = hit._node.port_near(scene_pos, _PORT_PRESS_PIXELS / (self.transform().m11() or 1.0))
+            hit = near or hit
         if isinstance(hit, ChunkPortItem):
             if event.button() == QtCore.Qt.LeftButton:
                 self._start_wire_drag(hit, scene_pos)
@@ -4850,12 +4914,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             edge._p1, edge._p2 = p1, p2
         elif self._drag_edge is not None:
             self._drag_edge.setPen(QtGui.QPen(self._drag_edge.pen().color(), 2.0, style))
-            p1 = self._drag_src_port.scenePos()
-            p2 = end
-            dx = abs(p2.x() - p1.x()) * 0.5
-            path = QtGui.QPainterPath(p1)
-            path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
-            self._drag_edge.setPath(path)
+            self._drag_edge.setPath(
+                _drag_wire_path(self._drag_src_port.scenePos(), end, self._drag_src_port.is_input))
         else:
             return
 
