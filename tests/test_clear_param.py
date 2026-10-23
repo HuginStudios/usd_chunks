@@ -11,10 +11,10 @@ from tests.test_override_through_composition import (  # noqa: F401 -- composed_
     _SEQ_VALUE, _SHOT_VALUE, _TX, _tx_param, composed_shot,
 )
 from tests.test_unloft import env  # noqa: F401
-from usd_chunks import chunk_core, chunk_undo
-from usd_chunks.chunk_stage import can_clear_param, clear_param, set_param_default_in
+from usd_chunks import chunk_core, chunk_stage, chunk_undo
+from usd_chunks.chunk_stage import can_clear_param, clear_param, get_chunk_prim_path, set_param_default_in
 from usd_chunks.frontends.qt import widgets
-from usd_chunks.frontends.qt.widgets import ChunkPushButtonWidget, ChunkWidget, LabeledWidget
+from usd_chunks.frontends.qt.widgets import ChunkPushButtonWidget, ChunkWidget, LabeledWidget, ViewSlotState
 
 CLEAR = "Clear Param"
 
@@ -75,6 +75,10 @@ def _right_click(target, monkeypatch, pick=None) -> dict:
 def _layers(stage: Usd.Stage) -> dict[str, str]:
     """Every layer the stage uses, as text: what it would save."""
     return {layer.identifier: layer.ExportToString() for layer in stage.GetUsedLayers()}
+
+
+def _prim_of(stage: Usd.Stage, chunk) -> Usd.Prim:
+    return stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
 
 
 def _uv_transform(env):  # noqa: F811 -- the imported fixture
@@ -341,3 +345,59 @@ def test_undo_brings_the_edit_back_and_redo_clears_again(env):  # noqa: F811
         assert not env["stage"].GetAttributeAtPath(rotation._param_attr_path or "/x.y")
     finally:
         history.close()
+
+
+def test_a_menu_clears(env, monkeypatch):  # noqa: F811
+    node = env["mk"]("mesh")
+    widget = ChunkWidget(node)
+    widget.show()
+    menu = node.get_param("mesh_type")
+    menu.value = "cube"
+    env["settle"]()
+
+    offered = _right_click(_row(widget, menu), monkeypatch, pick=CLEAR)
+    env["settle"]()
+
+    assert offered[CLEAR] is True
+    assert menu.value == "none"
+
+
+def test_a_vector_clears_from_its_header_on_the_params_page(env, monkeypatch):  # noqa: F811
+    node = env["mk"]("example")
+    # A tab's Params page, where a right-click on a chunk opens the chunk menu.
+    chunk_stage.set_pin_filter_enabled(node.get_context(), False)
+    page = ChunkWidget(node.get_context(), is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+    page.resize(500, 900)
+    page.show()
+    env["settle"]()
+    vector = node.get_param("SliderVec")
+    vector.value = (5.0, 6.0, 7.0)
+    env["settle"]()
+
+    offered = _right_click(_row(page, vector).widget.minimize_button, monkeypatch, pick=CLEAR)
+    env["settle"]()
+
+    assert offered == {CLEAR: True}
+    assert tuple(vector.value) == tuple(vector.default_value)
+
+
+def test_clear_drops_the_graph_wire_into_a_group_param(env):  # noqa: F811
+    source = env["mk"]("transform", name="Source")
+    dest = env["mk"]("transform", name="Dest")
+    env["settle"]()
+    stage = env["stage"]
+    # As the graph wires it: the wire on inputs:tx, the expression on the param, whose
+    # value lives in inputs:translate_grp:tx.
+    wire = _prim_of(stage, dest).CreateAttribute("inputs:tx", Sdf.ValueTypeNames.Float)
+    wire.SetConnections([Sdf.Path(f"{_prim_of(stage, source).GetPath()}.inputs:tx")])
+    tx = dest.get_param("tx")
+    tx.value = f"@{source.name}.tx@"
+    env["settle"]()
+    assert can_clear_param(tx)
+
+    clear_param(tx)
+    env["settle"]()
+
+    assert not wire.HasAuthoredConnections()
+    assert tx.raw_value == 0.0

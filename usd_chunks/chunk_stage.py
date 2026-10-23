@@ -3937,6 +3937,8 @@ def can_clear_param(param: core.ChunkCommon) -> bool:
         True when any layer holds a value, wire or expression for param, or, for a param
         without an attr of its own, when its value is not its default.
     """
+    if _wire_attrs(param):
+        return True
     if (attr := _own_storage_attr(param)) is not None:
         return bool(attr.GetPropertyStack(Usd.TimeCode.Default()))
     return not chunk_utils.values_match(param.raw_value, param.default_value)
@@ -3954,12 +3956,23 @@ def clear_param(param: core.ChunkCommon) -> ParamClear:
     written into the shared attr. A field that brings its vector back to its default then
     clears the vector.
 
+    A wire the graph drew into the param goes too (see _wire_attrs).
+
     Args:
         param: The param or vector to clear.
 
     Returns:
         Where it was cleared, and which layers still set it.
     """
+    wires = _wire_attrs(param)
+    cleared = _clear_param(param)
+    for attr in wires:
+        clear_attr_connections(attr)
+    return cleared
+
+
+def _clear_param(param: core.ChunkCommon) -> ParamClear:
+    """clear_param, apart from the wires on other attrs."""
     attr = _own_storage_attr(param)
     if attr is None:
         param.value = param.default_value
@@ -3984,6 +3997,40 @@ def clear_param(param: core.ChunkCommon) -> ParamClear:
         param._usd_prop_connection = None
     param.value = param.default_value
     return ParamClear(layer)
+
+
+def _wire_attrs(param: core.ChunkCommon) -> list[Usd.Attribute]:
+    """The connected attrs on param's chunk prim that wire into param, besides its own.
+
+    The graph wires a param through inputs:<name>, while a param in a group keeps its value
+    in inputs:<group>:<name>, so the wire sits on a second attr. A param shown from another
+    prim (a Light's intensity) keeps its value there, and its chunk prim attr only wires.
+
+    Args:
+        param: The param or vector.
+
+    Returns:
+        The attributes, connected, other than the one clear_param clears by layer.
+    """
+    if isinstance(param, core.ProxyParam):
+        return []
+    chunk = param.get_chunk()
+    stage = chunk.get_scene_stage() if chunk else None
+    prim = stage.GetPrimAtPath(get_chunk_prim_path(chunk)) if stage else None
+    if not (prim and prim.IsValid()):
+        return []
+    names = {f"{_INPUTS_PREFIX}{param.name}"}
+    if (path := _param_object_path(chunk, param)) is not None:
+        names.add(_INPUTS_PREFIX + ":".join(path))
+    own = _own_storage_attr(param)
+    wires = []
+    for name in sorted(names):
+        attr = prim.GetAttribute(name)
+        if attr and attr.IsValid() and attr.HasAuthoredConnections() and (
+            own is None or attr.GetPath() != own.GetPath()
+        ):
+            wires.append(attr)
+    return wires
 
 
 def set_param_default_in(param: core.ChunkCommon, layer: Sdf.Layer) -> None:
