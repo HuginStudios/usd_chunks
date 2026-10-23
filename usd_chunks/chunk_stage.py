@@ -221,7 +221,11 @@ def param_sdf_type(param: core.ChunkParamBase) -> Sdf.ValueTypeName | None:
         if ChunkFlags.ParamType.FLOAT in param_type:
             return _VECTOR_TYPE_MAP.get((float, param.length), (None, None))[0]
         return _sdf_vector_type(type_source)[0] if type_source else None
-    return _SDF_TYPE_MAP.get(type(type_source))
+    sdf_type = _SDF_TYPE_MAP.get(type(type_source))
+    if sdf_type is not None and ChunkFlags.ParamType.FLOAT in param_type:
+        # A float slider can hold a whole number (Slider("x") starts at 0): still a float.
+        return _SDF_TYPE_MAP[float]
+    return sdf_type
 
 _VECTOR_TYPE_MAP: dict = {
     (float, 2): (Sdf.ValueTypeNames.Float2, Gf.Vec2f),
@@ -2295,15 +2299,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             if raw is None or is_transient_param(param):
                 continue
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
-            type_source = getattr(param, 'default_value', None) if is_expr else raw
-            sdf_type = _SDF_TYPE_MAP.get(type(type_source))
+            # The same type the attr is made with everywhere else: a type this pass
+            # disagreed with was "stale" and deleted -- a float slider at 0 lost the attr
+            # Loft up had just made for it, and with it the loft.
+            sdf_type = param_sdf_type(param)
             if sdf_type is None:
                 continue
-            if ChunkFlags.ParamType.FLOAT in param.evaluate_type():
-                sdf_type = _SDF_TYPE_MAP[float]
-            # See _sync_param_input: a ColorPicker's tuple has no _SDF_TYPE_MAP entry.
-            if ChunkFlags.ParamType.COLOR_PICKER in param.evaluate_type():
-                sdf_type = Sdf.ValueTypeNames.Color3f
             prefix = "outputs:" if param.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
             attr_name = f"{prefix}{path.replace('.', ':')}"
 

@@ -121,3 +121,17 @@ def test_a_param_can_be_lofted_again_after_unloft(env):  # noqa: F811
     lofted.value = 3.0
     env["settle"]()
     assert slider.value == 3.0
+
+
+def test_a_float_slider_at_a_whole_number_keeps_its_loft(env):  # noqa: F811
+    node = env["mk"]("example")
+    env["settle"]()
+    context = node.get_context()
+    slider = node.get_param("sliderA")  # a float slider, at 0: a whole number
+    chunk_stage.loft_param_to_context(slider, context)
+    env["settle"]()
+
+    [lofted] = _lofted(context)
+    inner = env["stage"].GetAttributeAtPath(slider._param_attr_path)
+    assert inner, "the attr Loft up made was deleted"
+    assert [str(c) for c in inner.GetConnections()] == [lofted._param_attr_path]
