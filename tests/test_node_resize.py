@@ -13,7 +13,7 @@ from usd_chunks import chunk_registry, chunk_stage
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import initialize as _chunk_usd_init
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
-from usd_chunks.frontends.qt.nodegraph import _NODE_HEADER_H, _NODE_WIDTH, ChunkNodeItem
+from usd_chunks.frontends.qt.nodegraph import _NODE_HEADER_H, _NODE_WIDTH, ChunkNodeItem, _NodeResizeHandle
 
 from qt_wait import pump_until
 
@@ -116,3 +116,53 @@ def test_double_clicking_the_edge_resets_the_width(graph) -> None:
     pump_until(qapp, lambda: False, seconds=0.3)
     assert node()._width == _NODE_WIDTH
     assert _saved_size(node()) is None
+
+
+def _port(node, suffix: str):
+    return next(p for p in node._ports if p.attr_path.endswith(suffix))
+
+
+def test_a_press_just_off_a_port_starts_a_wire(graph):
+    qapp, view, node = graph
+    n = node()
+    port = _port(n, ".outputs:tx")
+    width = n._width
+    # Just above or below the port, past its dot, where the edge would take the press:
+    # whichever side is further from the next port.
+    off = 10 / view.transform().m11()
+    start = min((port.scenePos() + QtCore.QPointF(0, dy) for dy in (-off, off)),
+                key=lambda pos: -min(QtCore.QLineF(p.scenePos(), pos).length()
+                                     for p in n._ports if p is not port))
+    assert isinstance(view.scene().itemAt(start, QtGui.QTransform()), _NodeResizeHandle)
+
+    _mouse(view, QtCore.QEvent.Type.MouseButtonPress, start)
+    _mouse(view, QtCore.QEvent.Type.MouseMove, start + QtCore.QPointF(40, 0))
+
+    assert view._drag_src_port is port
+    assert n._width == width
+    view._cancel_wire_drag()
+
+
+def test_the_edge_away_from_ports_still_resizes(graph):
+    qapp, view, node = graph
+    n = node()
+    width = n._width
+
+    _drag_edge(qapp, view, n, 30)
+
+    assert view._drag_src_port is None
+    assert n._width > width
+
+
+def test_a_wire_dragged_out_of_an_input_leaves_it_to_the_left(graph):
+    qapp, view, node = graph
+    port = _port(node(), ".inputs:tx")
+    start = port.scenePos()
+
+    view._start_wire_drag(port, start)
+    view._update_wire_drag(start + QtCore.QPointF(300, 0))
+    path = view._drag_edge.path()
+
+    # The curve's first control point: left of the port, as a wire into an input arrives.
+    assert path.elementAt(1).x < start.x()
+    view._cancel_wire_drag()
