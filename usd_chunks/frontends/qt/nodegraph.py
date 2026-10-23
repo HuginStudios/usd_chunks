@@ -4479,14 +4479,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if isinstance(graph_scene, ChunkGraphScene) and graph_scene._stage:
                 attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
                 conns = list(attr.GetConnections()) if attr and attr.IsValid() else []
-                row_edge = None
-                if not conns and chunk_graph.is_list_row(port.param):
-                    # A row's wire is its expression, drawn as an edge with no USD connection.
-                    row_edge = next((e for e in graph_scene._edges if e.dst_port is port), None)
-                if conns or row_edge:
+                drawn = None
+                if not conns:
+                    # A wire drawn with no connection on the port's own attr: a list row's
+                    # (its expression), or one typed into a param in a group, connected on
+                    # inputs:<group>:<name> (see ChunkNodeItem.input_port).
+                    drawn = next((e for e in graph_scene._edges if e.dst_port is port), None)
+                if conns or drawn:
                     self._drag_detach_attr = attr
                     self._drag_detach_source_port = (
-                        row_edge.src_port if row_edge else self._find_sibling_output_port(conns[0], graph_scene)
+                        drawn.src_port if drawn else self._find_sibling_output_port(conns[0], graph_scene)
                     )
                     # Drag the real edge itself (its src end stays put, dst end follows
                     # the cursor) instead of a separate rubber-band line on top of it.

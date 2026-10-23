@@ -1,6 +1,8 @@
 """A param in a group gets a wire for an expression typed into it, as for one dragged in."""
 from __future__ import annotations
 
+from PySide6 import QtCore
+
 from tests.test_copy_paste import _make_nodes, _pump, graph  # noqa: F401 -- graph is a fixture
 from usd_chunks.frontends.qt import nodegraph
 
@@ -80,3 +82,25 @@ def test_a_text_typed_over_an_expression_takes_the_wire_away(graph):  # noqa: F8
     _pump(qapp, 0.5)
 
     assert not path.get_usd_prop().HasAuthoredConnections()
+
+
+def test_a_typed_wire_can_be_dragged_off(graph):  # noqa: F811
+    qapp = graph[0]
+    gv, chunks, nodes = _two_transforms(graph)
+    source, dest = chunks
+    tx = dest.get_param("tx")
+    tx.value = f"@{source.name}.tx@"
+    _pump(qapp, 0.5)
+    gv.scene()._build_edges()
+    port = _port(nodes[1], "inputs", "tx")
+
+    # Grab the wire at the input and let go on empty canvas.
+    gv._start_wire_drag(port, port.scenePos())
+    assert gv._drag_reused_edge is not None  # picked up, not a new wire
+    gv._finish_wire_drag(port.scenePos() + QtCore.QPointF(-400, 600))
+    _pump(qapp, 0.5)
+    gv.scene()._build_edges()
+
+    assert _wires_into(gv.scene(), nodes[1], "tx") == []
+    assert tx.raw_value == tx.default_value
+    assert not tx.get_usd_prop().HasAuthoredConnections()
