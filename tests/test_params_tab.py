@@ -102,3 +102,22 @@ def test_a_param_is_lofted_once(env, monkeypatch):  # noqa: F811
     _right_click(_row(panel, length), monkeypatch, pick="Unloft")
     env["settle"]()
     assert _lofted(context) == []
+
+
+def test_a_param_can_be_lofted_again_after_unloft(env):  # noqa: F811
+    node = env["mk"]("example")
+    env["settle"]()
+    context = node.get_context()
+    slider = node.get_param("sliderA")  # at its default: its attr only holds the loft
+    chunk_stage.loft_param_to_context(slider, context)
+    env["settle"]()
+    chunk_stage.unloft_param(_lofted(context)[0])
+    env["settle"]()
+
+    chunk_stage.loft_param_to_context(slider, context)
+    env["settle"]()
+
+    [lofted] = _lofted(context)
+    lofted.value = 3.0
+    env["settle"]()
+    assert slider.value == 3.0

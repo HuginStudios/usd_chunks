@@ -8818,6 +8818,13 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
 
     stage = sync._stage
 
+    if param._param_attr_path and not stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path)):
+        # Bound to an attr that has gone: a param at its default, unlofted, whose attr held
+        # nothing but the loft. Let go of it, so the one below is made afresh.
+        param._param_attr_path = None
+        if param._usd_prop_connection:
+            param._usd_prop_connection.disconnect()
+            param._usd_prop_connection = None
     if not param._param_attr_path:
         # A param still at its default has no USD attr yet -- create it so there's something to
         # promote (Loft up right after creating a chunk is the common case).
