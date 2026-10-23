@@ -8813,6 +8813,8 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
     sync = ChunkStageSync()
     if not sync.initialized or not sync._stage:
         return
+    if lofted_copy(param, context) is not None:
+        return  # one copy per group: a second would be a control nothing reads
 
     stage = sync._stage
 
@@ -9156,6 +9158,27 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
             if bound and not (isinstance(val, str) and bound.GetTypeName() != Sdf.ValueTypeNames.String):
                 with Usd.EditContext(stage, layer):
                     bound.Set(val)
+
+
+def lofted_copy(param: core.ChunkParamBase, context: core.ChunkBase) -> core.ChunkParamBase | None:
+    """The param on context that param is lofted to.
+
+    Args:
+        param: The inner param.
+        context: The group it may be lofted to.
+
+    Returns:
+        The lofted param on context, or None when param is not lofted there.
+    """
+    sync = ChunkStageSync()
+    if not (sync.initialized and sync._stage and param._param_attr_path):
+        return None
+    attr = sync._stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path))
+    if not (attr and attr.IsValid()):
+        return None
+    targets = {str(c) for c in attr.GetConnections()}
+    return next((p for p in context.get_my_params()
+                 if getattr(p, "_lofted", False) and p._param_attr_path in targets), None)
 
 
 def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_path: str):

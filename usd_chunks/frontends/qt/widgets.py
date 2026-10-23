@@ -1867,7 +1867,9 @@ class LabeledWidget(QtWidgets.QWidget):
         value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())
         # A button has no label to right-click, so a click anywhere on it counts.
         on_label = not value_rect.contains(event.pos()) or ChunkFlags.ParamType.BUTTON in t
-        loft_action = menu.addAction("Loft up") if context and on_label else None
+        # Lofted already: the menu takes it back down instead of lofting a second copy.
+        lofted_to = chunk_stage.lofted_copy(param, context) if context and on_label else None
+        loft_action = menu.addAction("Loft up") if context and on_label and lofted_to is None else None
         # Lofted params only, via the _lofted marker (set once by loft_param_to_context /
         # _restore_lofted_params, alongside the generated default label itself) -- not
         # every param generally. Lofting gives a param a qualified default label
@@ -1875,7 +1877,8 @@ class LabeledWidget(QtWidgets.QWidget):
         # same-named lofts stay tellable apart, but that default has to be just a default,
         # not the only option, or "rename the lofted param" would not mean anything.
         rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
-        unloft_action = menu.addAction("Unloft") if on_label and getattr(param, "_lofted", False) else None
+        unloft_target = param if getattr(param, "_lofted", False) else lofted_to
+        unloft_action = menu.addAction("Unloft") if on_label and unloft_target is not None else None
         clear_action = self._add_clear_param(menu, param)
         override_source = chunk_stage.param_override_source(param)
         revert_action = None
@@ -1901,7 +1904,7 @@ class LabeledWidget(QtWidgets.QWidget):
                 chunk_stage.loft_param_to_context(param, context)
             elif unloft_action and action == unloft_action:
                 # Next tick: unlofting deletes this widget, which is still inside its own event.
-                QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(param))
+                QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(unloft_target))
             elif clear_action and action == clear_action:
                 self._clear_param(param)
             elif revert_action and action == revert_action:
@@ -2213,16 +2216,28 @@ class ContainerWidget(
             pass
 
     def remove_widget(self, widget: QtWidgets.QWidget):
+        self._remove_row(self.content_layout, widget)
+
+    def _remove_row(self, layout: QtWidgets.QLayout, widget: QtWidgets.QWidget) -> bool:
+        """Remove and delete the row in layout that wraps widget.
+
+        Args:
+            layout: The layout holding the rows.
+            widget: The param or group widget the row wraps.
+
+        Returns:
+            True when the row was found.
+        """
         try:
-            count = self.content_layout.count()
+            count = layout.count()
             for i in reversed(range(count)):
-                item = self.content_layout.itemAt(i)
+                item = layout.itemAt(i)
                 if not item:
                     continue
                 iw = item.widget()
 
                 if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                    self.content_layout.removeItem(item)
+                    layout.removeItem(item)
                     # Tear the wrapper down, not just its layout entry. Otherwise the
                     # LabeledWidget stays a child of this container, keeping a strong ref
                     # to the param widget -> chunk, so the chunk never GCs and its layer's
@@ -2233,7 +2248,7 @@ class ContainerWidget(
                     iw.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
                     iw.setParent(None)
                     iw.deleteLater()
-                    break
+                    return True
         except RuntimeError:
             # This container's own C++ layout/widget was already torn down (e.g. the whole
             # ChunkWidget was deleted via _group_deleted while a sibling's PARAM_REMOVED was
@@ -2241,6 +2256,7 @@ class ContainerWidget(
             # parent teardown handles the children. Swallowing this lets the cascade finish
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
+        return False
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
@@ -2867,8 +2883,10 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self._filter_bar.search_changed.connect(self._on_search_changed)
                 header_layout.addWidget(self._filter_bar)
 
-                self.__layout__.insertWidget(2, self._header_container)
-                next_idx = 3
+                # Above the chunk list: the slot just before the content, not a fixed index,
+                # since the buttons above it are only made when a group needs them.
+                above_content = self.__layout__.indexOf(self.content)
+                self.__layout__.insertWidget(above_content, self._header_container)
 
                 # A plain QFrame HLine would be invisible here -- CHUNK_STYLESHEET sets
                 # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
@@ -2880,11 +2898,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                     "background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
                     " stop:0 #0d0d0d, stop:1 #7a7a7a);"
                 )
-                self.__layout__.insertWidget(next_idx, self._filter_bar_separator)
-                next_idx += 1
+                self.__layout__.insertWidget(above_content + 1, self._filter_bar_separator)
             else:
-                self.__layout__.insertWidget(2, self._prim_path_field)
-                self.__layout__.insertWidget(3, self._lofted_container)
+                above_content = self.__layout__.indexOf(self.content)
+                self.__layout__.insertWidget(above_content, self._prim_path_field)
+                self.__layout__.insertWidget(above_content + 1, self._lofted_container)
 
         if self._is_group_chunk():
             self.minimize_button.installEventFilter(self)
@@ -2910,6 +2928,12 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._lofted_container.setVisible(True)
         else:
             super().add_widget(widget, label)
+
+    def remove_widget(self, widget: QtWidgets.QWidget):
+        # A lofted param's row sits in the header, not in the chunk list.
+        if not self._remove_row(self.content_layout, widget) and hasattr(self, "_lofted_layout"):
+            if self._remove_row(self._lofted_layout, widget) and not self._lofted_layout.count():
+                self._lofted_container.setVisible(False)
 
     def _is_hidden_by_params_filter(self, group_chunk) -> bool:
         """True if group_chunk should be hidden from THIS tab's Params page under the current
