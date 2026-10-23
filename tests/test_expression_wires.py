@@ -47,3 +47,36 @@ def test_a_dragged_wire_is_drawn_once(graph):  # noqa: F811
     gv.scene()._build_edges()
 
     assert len(_wires_into(gv.scene(), nodes[1], "tx")) == 1
+
+
+def test_a_value_typed_over_the_expression_takes_the_wire_away(graph):  # noqa: F811
+    qapp = graph[0]
+    gv, chunks, nodes = _two_transforms(graph)
+    source, dest = chunks
+    tx = dest.get_param("tx")
+    tx.value = f"@{source.name}.tx@"
+    _pump(qapp, 0.5)
+
+    # What dragging the wire off does: the param goes back to a plain value.
+    tx.value = 0.0
+    _pump(qapp, 0.5)
+    gv.scene()._build_edges()
+
+    assert _wires_into(gv.scene(), nodes[1], "tx") == []
+    assert not tx.get_usd_prop().HasAuthoredConnections()
+
+
+def test_a_text_typed_over_an_expression_takes_the_wire_away(graph):  # noqa: F811
+    qapp = graph[0]
+    gv, chunks, nodes = _two_transforms(graph)
+    source, dest = chunks
+    # A String param: its attr keeps the expression as its value.
+    path = dest.get_param("primpath_location")
+    path.value = f"@{source.name}.primpath_location@"
+    _pump(qapp, 0.5)
+    assert path.get_usd_prop().HasAuthoredConnections()
+
+    path.value = "/somewhere"
+    _pump(qapp, 0.5)
+
+    assert not path.get_usd_prop().HasAuthoredConnections()
