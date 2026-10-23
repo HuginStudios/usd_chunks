@@ -130,17 +130,17 @@ def test_clicking_outside_the_selection_targets_only_that_chunk(graph):
 # The actions themselves
 
 
-def test_pin_applies_to_the_whole_selection(graph, monkeypatch):
+def test_loft_chunk_applies_to_the_whole_selection(graph, monkeypatch):
     qapp, reg, scene, d = graph
     a, b = _mk(reg, scene), _mk(reg, scene)
     gv = _view(d, qapp)
     _select(qapp, scene, a, b)
 
-    monkeypatch.setattr(type(gv._view_state), "_exec_menu", _pick("Pin to Params"))
+    monkeypatch.setattr(type(gv._view_state), "_exec_menu", _pick("Loft up chunk"))
     _open_menu_now(gv, a, qapp)
 
-    assert chunk_stage.is_chunk_pinned(a)
-    assert chunk_stage.is_chunk_pinned(b), "the unclicked half of the selection was left behind"
+    assert chunk_stage.is_chunk_lofted(a)
+    assert chunk_stage.is_chunk_lofted(b), "the unclicked half of the selection was left behind"
 
 
 def test_remove_deletes_the_whole_selection(graph, monkeypatch):

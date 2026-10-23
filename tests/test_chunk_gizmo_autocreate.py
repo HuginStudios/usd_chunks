@@ -104,7 +104,7 @@ def scene(monkeypatch):
     # Creation goes through the Params-tab path, which reaches into the stage sync. Neither
     # flag should leak out of the call.
     monkeypatch.setattr(chunk_stage, "_params_tab_create", False, raising=False)
-    monkeypatch.setattr(chunk_stage, "_pin_new_chunks", None, raising=False)
+    monkeypatch.setattr(chunk_stage, "_loft_new_chunks", None, raising=False)
     monkeypatch.setattr(chunk_stage, "_create_node_pos", None, raising=False)
 
     yield stage, registry, module, scene_layer
@@ -395,4 +395,4 @@ def test_creation_does_not_leak_the_params_tab_flags(scene) -> None:
     chunk_gizmo.ensure_transform_chunk(_cube(stage))
 
     assert chunk_stage._params_tab_create is False
-    assert chunk_stage._pin_new_chunks is None
+    assert chunk_stage._loft_new_chunks is None

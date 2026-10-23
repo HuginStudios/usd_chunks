@@ -11,7 +11,6 @@ from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.widgets import (
     ChunkWidget,
-    ViewSlotState,
     ParamsFilterBar,
     _PARAMS_HEADER_BG,
 )
@@ -50,159 +49,12 @@ def _make_scene(stage: Usd.Stage):
 
 
 # ---------------------------------------------------------------------------
-# filter:pinEnabled persistence (issue 05)
+# search
 # ---------------------------------------------------------------------------
-
-def test_pin_filter_defaults_enabled_when_attribute_absent() -> None:
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-
-    assert chunk_stage.is_pin_filter_enabled(ctx) is True
-
-
-def test_set_pin_filter_enabled_roundtrips_and_defines_prim_on_demand() -> None:
-    """A plain tab context's own prim is never authored by _define_prim (PARAM_ADDED never
-    fires for it -- see SceneSender.add_chunk's send_added=False for contexts without a
-    module) -- an empty, just-created tab has no prim at all yet. set_pin_filter_enabled must
-    define one on demand rather than silently no-op."""
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-    assert not stage.GetPrimAtPath("/Tab1").IsValid()
-
-    chunk_stage.set_pin_filter_enabled(ctx, False)
-    assert chunk_stage.is_pin_filter_enabled(ctx) is False
-    assert stage.GetPrimAtPath("/Tab1").IsValid()
-
-    chunk_stage.set_pin_filter_enabled(ctx, True)
-    assert chunk_stage.is_pin_filter_enabled(ctx) is True
-
-
-def test_pin_filter_enabled_uses_own_prim_path_not_get_chunk_prim_path() -> None:
-    """Regression: get_chunk_prim_path(context) double-appends the context's own name for a
-    plain tab (ChunkBase.get_context() returns self for a CONTEXT chunk, so
-    _resolve_chunk_root resolves to the context's own prim_path, and get_chunk_prim_path then
-    appends "/{name}" a second time) -- only chunkgroups dodge this via their own prim_path
-    short-circuit. The context's own .prim_path must be used directly instead."""
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-
-    assert chunk_stage.get_chunk_prim_path(ctx) == "/Tab1/Tab1"  # the trap, not what we want
-    chunk_stage.set_pin_filter_enabled(ctx, False)
-    assert stage.GetPrimAtPath("/Tab1").GetAttribute("filter:pinEnabled").Get() is False
-    assert not stage.GetPrimAtPath("/Tab1/Tab1").IsValid()
-
-
-def test_pin_filter_enabled_works_for_chunkgroup_context_too() -> None:
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    scene.add_context("Tab1")
-    grp = chunk.ChunkBase("mygroup", flags=ChunkFlags.GroupFlags.CONTEXT)
-    grp._config = ChunkConfig(module="group")
-    scene.add_chunk(grp)
-
-    assert chunk_stage.is_pin_filter_enabled(grp) is True
-    chunk_stage.set_pin_filter_enabled(grp, False)
-    assert chunk_stage.is_pin_filter_enabled(grp) is False
-    assert stage.GetPrimAtPath("/Tab1/mygroup").GetAttribute("filter:pinEnabled").Get() is False
-
 
 # ---------------------------------------------------------------------------
 # generalized gate + live toggle (issue 05)
 # ---------------------------------------------------------------------------
-
-def test_pin_filter_on_shows_only_pinned(qapp) -> None:
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-    c_pinned = _chunk_with_module("pinned_chunk")
-    c_unpinned = _chunk_with_module("unpinned_chunk")
-    scene.add_chunk(c_pinned)
-    scene.add_chunk(c_unpinned)
-    chunk_stage.set_chunk_pinned(c_pinned, True)
-    chunk_stage.set_chunk_pinned(c_unpinned, False)
-
-    w = ChunkWidget(ctx, is_tab_context=True)
-    assert c_pinned.get_hash() in w.group_widgets
-    assert c_unpinned.get_hash() not in w.group_widgets
-
-
-def test_toggling_pin_filter_off_reveals_every_chunk_live(qapp) -> None:
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-    c_pinned = _chunk_with_module("pinned_chunk")
-    c_unpinned = _chunk_with_module("unpinned_chunk")
-    scene.add_chunk(c_pinned)
-    scene.add_chunk(c_unpinned)
-    chunk_stage.set_chunk_pinned(c_pinned, True)
-    chunk_stage.set_chunk_pinned(c_unpinned, False)
-
-    w = ChunkWidget(ctx, is_tab_context=True)
-    assert c_unpinned.get_hash() not in w.group_widgets
-
-    w._filter_bar.pin_filter_checkbox.setChecked(False)
-    assert c_unpinned.get_hash() in w.group_widgets
-    assert c_pinned.get_hash() in w.group_widgets  # unaffected
-    assert chunk_stage.is_pin_filter_enabled(ctx) is False
-
-    w._filter_bar.pin_filter_checkbox.setChecked(True)
-    assert c_unpinned.get_hash() not in w.group_widgets
-    assert chunk_stage.is_pin_filter_enabled(ctx) is True
-
-
-def test_pin_toggle_menu_action_respects_disabled_pin_filter(qapp) -> None:
-    """With the pin filter off, explicitly unpinning a chunk via the menu (pin_changed signal)
-    must NOT hide it -- the filter is off, so it should stay visible regardless of pin state."""
-
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-    c = _chunk_with_module("c1")
-    scene.add_chunk(c)
-    chunk_stage.set_chunk_pinned(c, True)
-
-    w = ChunkWidget(ctx, is_tab_context=True)
-    vs = ViewSlotState()
-    w.set_view_state(vs)
-    w._filter_bar.pin_filter_checkbox.setChecked(False)
-    assert c.get_hash() in w.group_widgets
-
-    chunk_stage.set_chunk_pinned(c, False)
-    vs.pin_changed.emit(c, False)
-    assert c.get_hash() in w.group_widgets  # still shown -- filter is off
-
-
-def test_pin_filter_toggle_persists_across_export_reload_cycle(qapp) -> None:
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-    c = _chunk_with_module("c1")
-    scene.add_chunk(c)
-    chunk_stage.set_pin_filter_enabled(ctx, False)
-
-    usda = stage.GetRootLayer().ExportToString()
-    reloaded = Usd.Stage.CreateInMemory()
-    reloaded.GetRootLayer().ImportFromString(usda)
-    attr = reloaded.GetPrimAtPath("/Tab1").GetAttribute("filter:pinEnabled")
-    assert attr.IsValid()
-    assert attr.Get() is False
-
-
-def test_legacy_tab_with_no_filter_attribute_behaves_as_pin_filter_on(qapp) -> None:
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-    c = _chunk_with_module("c1")
-    scene.add_chunk(c)
-    chunk_stage.set_chunk_pinned(c, False)
-    # No filter:pinEnabled ever written for this tab -- matches a scene from before issue 05.
-
-    w = ChunkWidget(ctx, is_tab_context=True)
-    assert c.get_hash() not in w.group_widgets  # pin filter defaults on, chunk is unpinned
-
 
 # ---------------------------------------------------------------------------
 # fuzzy_matches / chunk_matches_search (issue 06)
@@ -305,8 +157,8 @@ def test_search_box_live_filters_by_name(qapp) -> None:
     c2 = _chunk_with_module("light_b", module="lamp")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
-    chunk_stage.set_chunk_pinned(c1, True)
-    chunk_stage.set_chunk_pinned(c2, True)
+    chunk_stage.set_chunk_lofted(c1, True)
+    chunk_stage.set_chunk_lofted(c2, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     assert c1.get_hash() in w.group_widgets and c2.get_hash() in w.group_widgets
@@ -332,8 +184,8 @@ def test_scope_combo_narrows_search_to_type_only(qapp) -> None:
     c2 = _chunk_with_module("light_b", module="lamp")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
-    chunk_stage.set_chunk_pinned(c1, True)
-    chunk_stage.set_chunk_pinned(c2, True)
+    chunk_stage.set_chunk_lofted(c1, True)
+    chunk_stage.set_chunk_lofted(c2, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     _set_scope(w._filter_bar, "type")
@@ -355,33 +207,34 @@ def test_scope_combo_only_ever_has_one_of_three_values(qapp) -> None:
         assert w._filter_bar.current_scope() == scope
 
 
-def test_search_filter_ands_with_pin_filter(qapp) -> None:
-    """Pin filter on + search: only chunks that are BOTH pinned AND matching show."""
+def test_search_shows_every_matching_chunk_lofted_or_not(qapp) -> None:
+    """The page shows what is lofted; a search shows every chunk that matches instead."""
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
-    c_pinned_match = _chunk_with_module("transform_a", module="xform")
-    c_unpinned_match = _chunk_with_module("transform_b", module="xform")
-    c_pinned_nomatch = _chunk_with_module("light_a", module="lamp")
-    scene.add_chunk(c_pinned_match)
-    scene.add_chunk(c_unpinned_match)
-    scene.add_chunk(c_pinned_nomatch)
-    chunk_stage.set_chunk_pinned(c_pinned_match, True)
-    chunk_stage.set_chunk_pinned(c_unpinned_match, False)
-    chunk_stage.set_chunk_pinned(c_pinned_nomatch, True)
+    lofted_match = _chunk_with_module("transform_a", module="xform")
+    other_match = _chunk_with_module("transform_b", module="xform")
+    lofted_nomatch = _chunk_with_module("light_a", module="lamp")
+    scene.add_chunk(lofted_match)
+    scene.add_chunk(other_match)
+    scene.add_chunk(lofted_nomatch)
+    chunk_stage.set_chunk_lofted(lofted_match, True)
+    chunk_stage.set_chunk_lofted(other_match, False)
+    chunk_stage.set_chunk_lofted(lofted_nomatch, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
+    assert other_match.get_hash() not in w.group_widgets  # not lofted: not on the page
+
     w._filter_bar.search_box.setText("transform")
+    assert lofted_match.get_hash() in w.group_widgets
+    assert other_match.get_hash() in w.group_widgets  # matches, though not lofted
+    assert lofted_nomatch.get_hash() not in w.group_widgets  # lofted, but doesn't match
 
-    assert c_pinned_match.get_hash() in w.group_widgets
-    assert c_unpinned_match.get_hash() not in w.group_widgets  # matches search, but not pinned
-    assert c_pinned_nomatch.get_hash() not in w.group_widgets  # pinned, but doesn't match search
-
-    # Turning the pin filter off lets the unpinned match through -- search alone now decides.
-    w._filter_bar.pin_filter_checkbox.setChecked(False)
-    assert c_unpinned_match.get_hash() in w.group_widgets
-    assert c_pinned_nomatch.get_hash() not in w.group_widgets  # still filtered out by search
+    # Cleared: back to what is lofted.
+    w._filter_bar.search_box.setText("")
+    assert other_match.get_hash() not in w.group_widgets
+    assert lofted_nomatch.get_hash() in w.group_widgets
 
 
 def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> None:
@@ -507,33 +360,6 @@ def test_prim_path_and_lofted_container_match_header_panel_tint(qapp) -> None:
 # ---------------------------------------------------------------------------
 # the filter bar's own state, once an Edit Target chunk has moved the target
 # ---------------------------------------------------------------------------
-
-def test_toggling_the_pin_filter_still_works_after_the_edit_target_moves() -> None:
-    """Reported as the pin toggle going dead partway through a session.
-
-    These three setters wrote through the stage's *ambient* edit target, re-resolved on
-    every write. An Edit Target chunk moves that target while the graph is live, so a
-    toggle made before the move and one made after landed in two different layers -- and
-    the older, stronger opinion went on winning. The state stopped responding while the
-    widget went on reporting what the user clicked.
-
-    set_chunk_pinned next door had the right shape already: update an existing spec where
-    it already lives (chunk_utils.get_attr_home_layer), and only resolve a target for a
-    genuinely new one.
-    """
-    stage = Usd.Stage.CreateInMemory()
-    scene = _make_scene(stage)
-    ctx = scene.add_context("Tab1")
-
-    stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
-    chunk_stage.set_pin_filter_enabled(ctx, False)
-    assert chunk_stage.is_pin_filter_enabled(ctx) is False
-
-    stage.SetEditTarget(Usd.EditTarget(stage.GetRootLayer()))
-    chunk_stage.set_pin_filter_enabled(ctx, True)
-
-    assert chunk_stage.is_pin_filter_enabled(ctx) is True
-
 
 def test_the_search_query_still_updates_after_the_edit_target_moves() -> None:
     stage = Usd.Stage.CreateInMemory()

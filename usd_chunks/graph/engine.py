@@ -2003,7 +2003,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     if scene is None:
         return [], "no chunk session; cannot create"
     try:
-        with chunk_stage.creating_at(usd_pos, pin=False), scene.creating_in(nest):
+        with chunk_stage.creating_at(usd_pos, loft=False), scene.creating_in(nest):
             created = entry.create()
             hold_until_wired(scene, nest, created)
             for chunk in created:

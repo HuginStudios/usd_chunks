@@ -640,7 +640,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self.chunk = chunk
         self.prim = prim
         self._locked = locked
-        self._pinned = chunk_stage.is_chunk_pinned(chunk)
+        self._lofted = chunk_stage.is_chunk_lofted(chunk)
         # Navigable subnet, not merely "owns children". A chunk-in-chunk such as
         # AMDMaterialXLibrary also carries GroupFlags.CONTEXT, but its children are an
         # implementation detail: it must not offer a dive, nor the group header and the
@@ -739,11 +739,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # full opacity until the next state change (e.g. selecting it).
         self._apply_dim()
 
-    def set_pinned(self, pinned: bool) -> None:
-        """Update the cached pin badge state after a menu toggle and repaint just this node --
+    def set_lofted(self, lofted: bool) -> None:
+        """Update the cached loft badge after a menu toggle and repaint just this node --
         no full graph rebuild needed for a cosmetic change.
         """
-        self._pinned = pinned
+        self._lofted = lofted
         self.update()
 
     def set_subnet(self, subnet: bool) -> None:
@@ -1458,8 +1458,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             label = f"{label}  ▶"
         elif self._locked:
             label = f"{label}  \U0001f512"
-        if self._pinned:
-            label = f"{label}  \U0001f4cc"
+        if self._lofted:
+            label = f"{label}  ↑"  # up arrow: lofted, so it shows on the Params page
         painter.drawText(
             QtCore.QRectF(8, 4, _NODE_WIDTH - 16, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
@@ -3245,7 +3245,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._view_state.slot_changed.connect(self._on_view_slot_changed)
         self._view_state.create_view_for.connect(self._on_create_view_for_path)
         self._view_state.set_output_for.connect(self._on_set_output_for_path)
-        self._view_state.pin_changed.connect(self._on_pin_changed)
+        self._view_state.loft_changed.connect(self._on_loft_changed)
 
     def _on_toggle_param_edges(self, checked: bool):
         graph_scene = self.scene()
@@ -4998,20 +4998,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._view_state.slot_changed.disconnect(self._on_view_slot_changed)
         self._view_state.create_view_for.disconnect(self._on_create_view_for_path)
         self._view_state.set_output_for.disconnect(self._on_set_output_for_path)
-        self._view_state.pin_changed.disconnect(self._on_pin_changed)
+        self._view_state.loft_changed.disconnect(self._on_loft_changed)
         self._view_state = vs
         vs.slot_changed.connect(self._on_view_slot_changed)
         vs.create_view_for.connect(self._on_create_view_for_path)
         vs.set_output_for.connect(self._on_set_output_for_path)
-        vs.pin_changed.connect(self._on_pin_changed)
+        vs.loft_changed.connect(self._on_loft_changed)
 
-    def _on_pin_changed(self, target_chunk: core.ChunkBase, pinned: bool) -> None:
+    def _on_loft_changed(self, target_chunk: core.ChunkBase, lofted: bool) -> None:
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return
         node = graph_scene._nodes.get(chunk_stage.get_chunk_prim_path(target_chunk))
         if node is not None:
-            node.set_pinned(pinned)
+            node.set_lofted(lofted)
 
     def _on_create_view_for_path(self, prim_path: str, slot: int) -> None:
         self._create_view_node_for_prim(prim_path, slot=slot)
@@ -5206,7 +5206,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     # Bookkeeping like any other chunk-prim attr -- update in place if it
                     # already has a spec, else resolve fresh via the group's current Edit
                     # Target, rather than relying on the stage's ambient one (see
-                    # set_chunk_pinned for the same "second mutation doesn't propagate"
+                    # set_chunk_lofted for the same "second mutation doesn't propagate"
                     # class of bug this avoids).
                     active_view_attr = gp.GetAttribute("chunk:activeView")
                     home = (
@@ -5406,7 +5406,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 if view_exists and not chunk_stage.is_view_chunk(c) and not chunk_stage.is_group_chunk(c):
@@ -5605,7 +5605,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
@@ -5659,7 +5659,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)
@@ -5704,7 +5704,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
-        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
+        with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
                 scene.add_chunk(c)

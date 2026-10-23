@@ -101,6 +101,11 @@ Good to know before you build one:
   real param on the group node. The connection goes *up*, from the inner param to the group
   node. It's not the same as a normal `@Node.param@` link between two chunks, so treat
   lofts separately.
+- **To show a whole chunk on the outside, loft the chunk.** Right-click it and choose
+  **Loft up chunk**. Its full panel then shows on the group's Params page, and in the
+  group's section on the page above. Unlike lofting a param, it adds no params or ports to
+  the group: it's one `chunk:lofted` flag on the chunk's prim. **Unloft chunk** takes it
+  back off.
 - **Groups can be saved as files** and loaded back as a sublayer, reference or payload,
   using plain USD composition. A chunk loaded this way is **locked**: it has an amber header
   and can't be moved (auto-layout works around it). You can still change its params. Your

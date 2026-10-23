@@ -79,7 +79,7 @@ def hierarchy(monkeypatch):
     module = _StubModule()
     monkeypatch.setitem(registry.registered_modules, "transform", module)
     monkeypatch.setattr(chunk_stage, "_params_tab_create", False, raising=False)
-    monkeypatch.setattr(chunk_stage, "_pin_new_chunks", None, raising=False)
+    monkeypatch.setattr(chunk_stage, "_loft_new_chunks", None, raising=False)
     monkeypatch.setattr(chunk_stage, "_create_node_pos", None, raising=False)
     return stage, module
 
