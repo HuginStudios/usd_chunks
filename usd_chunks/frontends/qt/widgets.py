@@ -2132,21 +2132,24 @@ _ARROW_COLOR = QtGui.QColor("#9ca3af")
 _header_pixmaps: dict[tuple, QtGui.QPixmap | None] = {}
 
 
-def _group_header_pixmap(icon: str, expanded: bool | None) -> QtGui.QPixmap | None:
-    """A node-body group header's picture: a fold arrow, then the group's icon.
+def _group_header_pixmap(icon: str, expanded: bool | None,
+                         color: QtGui.QColor | None = None) -> QtGui.QPixmap | None:
+    """A group header's picture: a fold arrow, then the group's icon.
 
     Args:
         icon: The group's `icon`, or "" for none.
         expanded: True for an open group, False for a folded one, None for one that can't fold.
+        color: The colour to draw the icon in; the icon's own when not given.
 
     Returns:
         The picture, or None when there is neither an arrow nor an icon to show.
     """
-    key = (icon, expanded)
+    color = color if color is not None else node_theme.icon_color(icon)
+    key = (icon, expanded, color.rgba())
     if key in _header_pixmaps:
         return _header_pixmaps[key]
     arrow_w = 10 if expanded is not None else 0
-    icon_pix = (node_theme.icon_pixmap(icon, node_theme.icon_color(icon), _HEADER_ICON_SIZE,
+    icon_pix = (node_theme.icon_pixmap(icon, color, _HEADER_ICON_SIZE,
                                        _HEADER_ICON_DPR) if icon else None)
     width = arrow_w + (_HEADER_ICON_SIZE + 2 if icon_pix is not None else 0)
     if width == 0:
@@ -2271,22 +2274,29 @@ class ContainerWidget(
         self.setLayout(self.__layout__)
         self._update_group_depth()
 
+    def _header_icon(self) -> tuple[str, QtGui.QColor | None]:
+        """The icon this container's header shows, and its colour (None for the icon's own).
+
+        The group's own icon, set by its chunk; none is guessed for it.
+        """
+        return self.group.icon or "", None
+
     def _sync_header_icon(self, expanded: bool | None = None) -> None:
-        """In a node body, show the group's fold arrow and its icon on the header button.
+        """Show the group's fold arrow and its icon on the header button.
 
         Drawn as one picture: a QToolButton shows either its arrow or its icon, not both.
+        In a node body every header is drawn this way; elsewhere only one with an icon.
 
         Args:
             expanded: Whether the group is open; read from the group when not given.
         """
-        if not self._in_inline_body():
+        icon, color = self._header_icon()
+        if not (icon or self._in_inline_body()):
             return
         if expanded is None:
             expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
         collapsible = self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
-        # The group's own icon, set by its chunk; none is guessed for it.
-        pixmap = _group_header_pixmap(self.group.icon or "",
-                                      expanded if collapsible else None)
+        pixmap = _group_header_pixmap(icon, expanded if collapsible else None, color)
         self.minimize_button.setArrowType(QtCore.Qt.ArrowType.NoArrow)
         if pixmap is None:
             self.minimize_button.setIcon(QtGui.QIcon())
@@ -2969,6 +2979,14 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self.installEventFilter(self)
         if is_tab_context:
             self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+    def _header_icon(self) -> tuple[str, QtGui.QColor | None]:
+        if not isinstance(self.group, chunk.ChunkBase):
+            return super()._header_icon()
+        # The same icon and colour as the chunk's node (node_theme.node_icon).
+        stage = self.group.get_scene_stage()
+        prim = stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(self.group)) if stage else None
+        return node_theme.node_icon(self.group, prim)
 
     def update_from_flags(self):
         super().update_from_flags()

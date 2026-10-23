@@ -99,6 +99,26 @@ def test_a_group_shows_only_the_icon_it_sets(qapp) -> None:
         widget.deleteLater()
 
 
+def test_the_params_panel_shows_the_chunk_and_group_icons(qapp) -> None:
+    c = chunk.Chunk("Groups")
+    c.icon = "posts"
+    c.add_param(chunk.Group("translate_grp", "Translate",
+                            flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED))
+    c.add_param(chunk.Group("moved_grp", "Moved", icon="move",
+                            flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED))
+    panel = ChunkWidget(c)  # the Params panel's, not a node body
+    try:
+        headers = {w.group.name: w.minimize_button for w in (panel, *panel.findChildren(ContainerWidget))}
+
+        assert not headers["Groups"].icon().isNull()
+        assert not headers["moved_grp"].icon().isNull()
+        # A group that sets no icon keeps the panel's own fold arrow.
+        assert headers["translate_grp"].icon().isNull()
+        assert headers["translate_grp"].arrowType() != QtCore.Qt.ArrowType.NoArrow
+    finally:
+        panel.deleteLater()
+
+
 def test_icon_takes_a_builtin_name_or_an_existing_path(tmp_path) -> None:
     assert chunk.Group("g", "G", icon="sun").icon == "sun"
     image = tmp_path / "mine.png"
