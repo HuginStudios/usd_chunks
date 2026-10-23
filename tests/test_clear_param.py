@@ -401,3 +401,53 @@ def test_clear_drops_the_graph_wire_into_a_group_param(env):  # noqa: F811
 
     assert not wire.HasAuthoredConnections()
     assert tx.raw_value == 0.0
+
+
+def _lofted_tx(env):  # noqa: F811
+    """A Transform's tx, lofted to its group, edited from the group."""
+    group = env["mk"]("chunkgroup", name="Group")
+    env["settle"]()
+    inner = env["mk"]("transform", context=group)
+    env["settle"]()
+    tx = inner.get_param("tx")
+    chunk_stage.loft_param_to_context(tx, group)
+    env["settle"]()
+    [lofted] = [p for p in group.get_my_params() if getattr(p, "_lofted", False)]
+    lofted.value = 4.0
+    env["settle"]()
+    return tx, lofted
+
+
+def _assert_still_lofted(env, tx, lofted):  # noqa: F811
+    """Both attrs are there, joined: what a save keeps and a reopen restores from."""
+    stage = env["stage"]
+    outer = stage.GetAttributeAtPath(lofted._param_attr_path or "/x.y")
+    inner = stage.GetAttributeAtPath(tx._param_attr_path or "/x.y")
+    assert outer and inner, (lofted._param_attr_path, tx._param_attr_path)
+    assert [str(c) for c in inner.GetConnections()] == [str(outer.GetPath())]
+
+
+def test_clearing_a_lofted_param_keeps_the_loft(env):  # noqa: F811
+    tx, lofted = _lofted_tx(env)
+
+    clear_param(lofted)
+    env["settle"]()
+
+    assert (lofted.value, tx.value) == (0.0, 0.0)
+    _assert_still_lofted(env, tx, lofted)
+    lofted.value = 2.0  # still drives the inner param
+    env["settle"]()
+    assert tx.value == 2.0
+
+
+def test_clearing_the_inner_param_of_a_loft_keeps_the_loft(env):  # noqa: F811
+    tx, lofted = _lofted_tx(env)
+
+    clear_param(tx)
+    env["settle"]()
+
+    assert (lofted.value, tx.value) == (0.0, 0.0)
+    _assert_still_lofted(env, tx, lofted)
+    lofted.value = 2.0
+    env["settle"]()
+    assert tx.value == 2.0

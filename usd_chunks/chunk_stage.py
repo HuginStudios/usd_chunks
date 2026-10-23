@@ -3858,8 +3858,9 @@ def _own_storage_attr(param: core.ChunkCommon) -> Usd.Attribute | None:
     """param's storage attr when it is one of its chunk prim's own, else None.
 
     None too for the params whose attr cannot simply go: a list row or a field of a vector
-    shares one attr with its siblings, and a chunk with no module has no main() to make its
-    params again, so its attrs are the only record that they exist.
+    shares one attr with its siblings, a chunk with no module has no main() to make its
+    params again, so its attrs are the only record that they exist, and a lofted param and
+    the inner one it fronts are joined by their attrs: dropping either breaks the loft.
 
     Args:
         param: The param or vector.
@@ -3874,6 +3875,8 @@ def _own_storage_attr(param: core.ChunkCommon) -> Usd.Attribute | None:
     if not (cfg and cfg.module) or _under_list_group(param, chunk):
         return None
     if _vector_of(param) is not None:
+        return None
+    if getattr(param, "_lofted", False) or getattr(param, "_loft_back", None) is not None:
         return None
     attr = _storage_attr(param)
     if attr is None or attr.GetPrim().GetPath() != Sdf.Path(get_chunk_prim_path(chunk)):
@@ -4022,13 +4025,13 @@ def _wire_attrs(param: core.ChunkCommon) -> list[Usd.Attribute]:
     names = {f"{_INPUTS_PREFIX}{param.name}"}
     if (path := _param_object_path(chunk, param)) is not None:
         names.add(_INPUTS_PREFIX + ":".join(path))
-    own = _own_storage_attr(param)
+    # Never the attr the param is bound to: clear_param handles that one, and on a lofted
+    # param's inner one its connection is the loft.
+    bound = getattr(param, "_param_attr_path", None)
     wires = []
     for name in sorted(names):
         attr = prim.GetAttribute(name)
-        if attr and attr.IsValid() and attr.HasAuthoredConnections() and (
-            own is None or attr.GetPath() != own.GetPath()
-        ):
+        if attr and attr.IsValid() and attr.HasAuthoredConnections() and str(attr.GetPath()) != bound:
             wires.append(attr)
     return wires
 
