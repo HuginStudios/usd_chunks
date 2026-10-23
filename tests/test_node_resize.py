@@ -166,3 +166,20 @@ def test_a_wire_dragged_out_of_an_input_leaves_it_to_the_left(graph):
     # The curve's first control point: left of the port, as a wire into an input arrives.
     assert path.elementAt(1).x < start.x()
     view._cancel_wire_drag()
+
+
+def test_a_press_on_a_lit_port_starts_a_wire(graph):
+    qapp, view, node = graph
+    n = node()
+    port = _port(n, ".outputs:tx")
+    width = n._width
+    # Lit, as when the mouse is over it: its ring and glow are drawn over and under the dot.
+    port._hovered = True
+    port._refresh_look()
+
+    _mouse(view, QtCore.QEvent.Type.MouseButtonPress, port.scenePos())
+    _mouse(view, QtCore.QEvent.Type.MouseMove, port.scenePos() + QtCore.QPointF(40, 0))
+
+    assert view._drag_src_port is port
+    assert n._width == width
+    view._cancel_wire_drag()

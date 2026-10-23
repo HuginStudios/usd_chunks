@@ -4547,6 +4547,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         scene_pos = self.mapToScene(event.pos())
         hit = self.scene().itemAt(scene_pos, QtGui.QTransform())
+        if hit is not None and isinstance(hit.parentItem(), ChunkPortItem):
+            # A lit port's ring is drawn over its dot, as an item of its own: the press is
+            # the port's. Taken as the ring's, it fell through to the resize edge below.
+            hit = hit.parentItem()
 
         # Walk up item parent chain to find a proxy widget, if any.
         proxy = None
