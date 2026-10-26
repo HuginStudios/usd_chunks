@@ -397,9 +397,15 @@ def test_the_search_bar_has_no_pin_filter(qapp) -> None:
 
 
 def _in_box(page: ChunkWidget, c) -> bool:
-    """Whether c's panel sits in the page's group box, above the search bar."""
+    """Whether c's panel sits in the page's group box, above the search box."""
     widget = page.group_widgets.get(c.get_hash())
-    return widget is not None and page._lofted_container.isAncestorOf(widget)
+    return widget is not None and page._group_box.isAncestorOf(widget)
+
+
+def _found(page: ChunkWidget, c) -> bool:
+    """Whether c's panel sits in the page's search box."""
+    widget = page.group_widgets.get(c.get_hash())
+    return widget is not None and page._search_panel.isAncestorOf(widget)
 
 
 def test_a_lofted_chunk_sits_in_the_groups_box_and_a_search_match_below(qapp) -> None:
@@ -418,15 +424,14 @@ def test_a_lofted_chunk_sits_in_the_groups_box_and_a_search_match_below(qapp) ->
 
     page._filter_bar.search_box.setText("mesh")
     assert _in_box(page, lofted)
-    assert other.get_hash() in page.group_widgets and not _in_box(page, other)
+    assert _found(page, other)
 
-    # Lofting the match moves it up into the box, and unlofting moves it back down.
+    # Lofting the match moves it up into the box, and unlofting moves it back down. No menu:
+    # set_chunk_lofted tells the page itself, so a script's loft shows too.
     chunk_stage.set_chunk_lofted(other, True)
-    ChunkWidget.chunk_loft_changed(other, True)
-    assert _in_box(page, other)
+    assert _in_box(page, other) and not _found(page, other)
     chunk_stage.set_chunk_lofted(other, False)
-    ChunkWidget.chunk_loft_changed(other, False)
-    assert other.get_hash() in page.group_widgets and not _in_box(page, other)
+    assert _found(page, other) and not _in_box(page, other)
 
 
 def test_the_groups_box_scrolls_with_the_page(qapp) -> None:
@@ -436,7 +441,83 @@ def test_the_groups_box_scrolls_with_the_page(qapp) -> None:
     ctx = scene.add_context("Tab1")
     page = ChunkWidget(ctx, is_tab_context=True)
 
-    assert page.content.widget().isAncestorOf(page._header_container)
+    assert page.content.widget().isAncestorOf(page._group_box)
+    assert page.content.widget().isAncestorOf(page._search_panel)
+
+
+def test_the_header_folds_the_groups_box_only(env) -> None:  # noqa: F811
+    """The header folds the group's box; the search box stays. The group's COLLAPSED state is
+    its node's in the graph above, so the page leaves it alone."""
+    group = env["mk"]("chunkgroup", name="Group")
+    env["settle"]()
+    page = ChunkWidget(group, is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+    page.show()
+    env["settle"]()
+    assert page.minimize_button.isChecked()
+
+    page.minimize_button.click()  # fold
+    env["settle"]()
+    assert page._group_box_body.isHidden()
+    assert page._search_panel.isVisible()
+    assert not group.has_state(ChunkFlags.State.COLLAPSED)
+
+    page.minimize_button.click()  # open
+    env["settle"]()
+    assert not page._group_box_body.isHidden()
+
+
+def test_a_group_whose_node_is_collapsed_opens_a_full_page(env) -> None:  # noqa: F811
+    """Its COLLAPSED state used to fold the page's scroll area to nothing, leaving one
+    stretched field showing."""
+    group = env["mk"]("chunkgroup", name="Group")
+    env["settle"]()
+    group.set_state(ChunkFlags.State.COLLAPSED)
+    page = ChunkWidget(group, is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+    page.resize(400, 600)
+    page.show()
+    env["settle"]()
+
+    assert page.content.height() > 300
+    assert not page._group_box_body.isHidden()
+    assert page._search_panel.isVisible()
+
+
+def test_a_lofted_chunk_leaves_the_page_when_deleted(env) -> None:  # noqa: F811
+    mesh = env["mk"]("mesh")
+    env["settle"]()
+    chunk_stage.set_chunk_lofted(mesh, True)
+    page = ChunkWidget(mesh.get_context(), is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+    page.show()
+    env["settle"]()
+    assert _in_box(page, mesh)
+
+    mesh.request_delete()
+    env["settle"]()
+    assert mesh.get_hash() not in page._lofted_chunks.panels()
+    assert not page._lofted_chunks.isVisible()
+
+
+def test_a_chunkgroup_in_the_graph_can_be_lofted_and_found(env) -> None:  # noqa: F811
+    """A ChunkGroup is not among its parent's params, so the page finds it by its parent."""
+    outer = env["mk"]("chunkgroup", name="Outer")
+    env["settle"]()
+    inner = env["mk"]("chunkgroup", name="Inner", context=outer)
+    env["settle"]()
+    page = ChunkWidget(outer, is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+    page.show()
+    env["settle"]()
+
+    page._filter_bar.search_box.setText("inner")
+    env["settle"]()
+    assert _found(page, inner)
+
+    chunk_stage.set_chunk_lofted(inner, True)
+    env["settle"]()
+    assert _in_box(page, inner)
 
 
 def test_inside_a_group_its_lofted_chunk_sits_in_its_box(env) -> None:  # noqa: F811

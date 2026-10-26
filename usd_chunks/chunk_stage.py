@@ -4431,6 +4431,11 @@ def owning_group(chunk: core.ChunkBase) -> core.ChunkBase | None:
     return chunk.get_context()
 
 
+#: Called as hook(chunk, lofted) after set_chunk_lofted, so a UI showing lofted chunks
+#: follows whoever lofted one: a menu, a script or a test. Set by the Qt frontend.
+chunk_lofted_hook: Callable[[core.ChunkBase, bool], None] | None = None
+
+
 def set_chunk_lofted(chunk: core.ChunkBase, lofted: bool) -> None:
     """Loft chunk to its group's Params page, or take it back down.
 
@@ -4438,18 +4443,32 @@ def set_chunk_lofted(chunk: core.ChunkBase, lofted: bool) -> None:
     spec is updated where it lives (chunk_utils.get_attr_home_layer), else it goes to
     chunk_utils.get_bookkeeping_layer, so toggling never leaves an older, stronger opinion
     in one layer shadowing a newer one in another. An older file's ``chunk:pinned`` is
-    replaced by it.
+    replaced by it. Then chunk_lofted_hook is told.
 
     Args:
         chunk: The chunk.
         lofted: The new state.
     """
+    if _write_chunk_lofted(chunk, lofted) and chunk_lofted_hook is not None:
+        chunk_lofted_hook(chunk, lofted)
+
+
+def _write_chunk_lofted(chunk: core.ChunkBase, lofted: bool) -> bool:
+    """Author set_chunk_lofted's change.
+
+    Args:
+        chunk: The chunk.
+        lofted: The new state.
+
+    Returns:
+        False if the chunk has no prim to write it on.
+    """
     stage = chunk.get_scene_stage()
     if not stage:
-        return
+        return False
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
     if not prim.IsValid():
-        return
+        return False
     prev_w = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
@@ -4464,13 +4483,13 @@ def set_chunk_lofted(chunk: core.ChunkBase, lofted: bool) -> None:
             for name in names:
                 if spec and name in spec.properties:
                     del spec.properties[name]
-        if not lofted:
-            return
-        target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
-        with Usd.EditContext(stage, target):
-            prim.CreateAttribute(_LOFTED_CHUNK_ATTR, Sdf.ValueTypeNames.Bool, custom=True).Set(True)
+        if lofted:
+            target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
+            with Usd.EditContext(stage, target):
+                prim.CreateAttribute(_LOFTED_CHUNK_ATTR, Sdf.ValueTypeNames.Bool, custom=True).Set(True)
     finally:
         chunk_notice._usd_write_active = prev_w
+    return True
 
 
 def _context_own_prim_path(context: core.ChunkBase) -> str | None:

@@ -12,6 +12,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt.widgets import (
     ChunkWidget,
     ParamsFilterBar,
+    ParamsSearchPanel,
     _PARAMS_HEADER_BG,
 )
 
@@ -149,6 +150,16 @@ def test_set_search_scope_rejects_unrecognized_value() -> None:
 # search box + scope chips live-filter the Params page (issue 06)
 # ---------------------------------------------------------------------------
 
+def _found(w: ChunkWidget) -> set:
+    """The chunks the page's search box shows, by hash."""
+    return set(w._search_panel.results.panels())
+
+
+def _boxed(w: ChunkWidget) -> set:
+    """The chunks in the page's group box, by hash."""
+    return set(w._lofted_chunks.panels())
+
+
 def test_search_box_live_filters_by_name(qapp) -> None:
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -157,19 +168,15 @@ def test_search_box_live_filters_by_name(qapp) -> None:
     c2 = _chunk_with_module("light_b", module="lamp")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
-    chunk_stage.set_chunk_lofted(c1, True)
-    chunk_stage.set_chunk_lofted(c2, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
-    assert c1.get_hash() in w.group_widgets and c2.get_hash() in w.group_widgets
+    assert _found(w) == set()
 
     w._filter_bar.search_box.setText("transform")
-    assert c1.get_hash() in w.group_widgets
-    assert c2.get_hash() not in w.group_widgets
+    assert _found(w) == {c1.get_hash()}
 
     w._filter_bar.search_box.setText("")
-    assert c1.get_hash() in w.group_widgets
-    assert c2.get_hash() in w.group_widgets
+    assert _found(w) == set()
 
 
 def _set_scope(filter_bar, scope: str) -> None:
@@ -184,15 +191,14 @@ def test_scope_combo_narrows_search_to_type_only(qapp) -> None:
     c2 = _chunk_with_module("light_b", module="lamp")
     scene.add_chunk(c1)
     scene.add_chunk(c2)
-    chunk_stage.set_chunk_lofted(c1, True)
-    chunk_stage.set_chunk_lofted(c2, True)
 
     w = ChunkWidget(ctx, is_tab_context=True)
     _set_scope(w._filter_bar, "type")
     w._filter_bar.search_box.setText("transform_a")  # matches c1's NAME, not its type
+    assert _found(w) == set()  # name match doesn't count, scope is type-only
 
-    assert c1.get_hash() not in w.group_widgets  # name match doesn't count, scope is type-only
-    assert c2.get_hash() not in w.group_widgets
+    w._filter_bar.search_box.setText("xform")
+    assert _found(w) == {c1.get_hash()}
 
 
 def test_scope_combo_only_ever_has_one_of_three_values(qapp) -> None:
@@ -207,34 +213,46 @@ def test_scope_combo_only_ever_has_one_of_three_values(qapp) -> None:
         assert w._filter_bar.current_scope() == scope
 
 
-def test_search_shows_every_matching_chunk_lofted_or_not(qapp) -> None:
-    """The page shows what is lofted; a search shows every chunk that matches instead."""
+def test_a_search_leaves_the_groups_box_alone(qapp) -> None:
+    """Two meshes and a Transform, one mesh and the Transform lofted, then a search for "me":
+    the Transform stayed in the group's box. The search shows only the other mesh."""
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
-    lofted_match = _chunk_with_module("transform_a", module="xform")
-    other_match = _chunk_with_module("transform_b", module="xform")
-    lofted_nomatch = _chunk_with_module("light_a", module="lamp")
-    scene.add_chunk(lofted_match)
-    scene.add_chunk(other_match)
-    scene.add_chunk(lofted_nomatch)
-    chunk_stage.set_chunk_lofted(lofted_match, True)
-    chunk_stage.set_chunk_lofted(other_match, False)
-    chunk_stage.set_chunk_lofted(lofted_nomatch, True)
-
+    mesh1 = _chunk_with_module("mesh1", module="mesh")
+    mesh2 = _chunk_with_module("mesh2", module="mesh")
+    xform = _chunk_with_module("transform", module="transform")
+    for c in (mesh1, mesh2, xform):
+        scene.add_chunk(c)
+    chunk_stage.set_chunk_lofted(mesh1, True)
+    chunk_stage.set_chunk_lofted(xform, True)
     w = ChunkWidget(ctx, is_tab_context=True)
-    assert other_match.get_hash() not in w.group_widgets  # not lofted: not on the page
+    lofted = {mesh1.get_hash(), xform.get_hash()}
+    assert _boxed(w) == lofted
 
-    w._filter_bar.search_box.setText("transform")
-    assert lofted_match.get_hash() in w.group_widgets
-    assert other_match.get_hash() in w.group_widgets  # matches, though not lofted
-    assert lofted_nomatch.get_hash() not in w.group_widgets  # lofted, but doesn't match
+    w._filter_bar.search_box.setText("me")
+    assert _boxed(w) == lofted
+    assert _found(w) == {mesh2.get_hash()}  # the lofted mesh is already in the box
+    assert w._search_panel.status.text() == "1 found, plus 1 lofted above"
 
-    # Cleared: back to what is lofted.
+    w._filter_bar.search_box.setText("zzz")
+    assert _boxed(w) == lofted
+    assert _found(w) == set()
+    assert w._search_panel.status.text() == "Nothing found"
+
     w._filter_bar.search_box.setText("")
-    assert other_match.get_hash() not in w.group_widgets
-    assert lofted_nomatch.get_hash() in w.group_widgets
+    assert _boxed(w) == lofted
+    assert _found(w) == set()
+
+
+def test_the_search_line_says_what_it_found() -> None:
+    text = ParamsSearchPanel.status_text
+    assert text("", 0, 0) == "Type to find any chunk in this graph."
+    assert text("me", 2, 0) == "2 found"
+    assert text("me", 2, 1) == "2 found, plus 1 lofted above"
+    assert text("me", 0, 1) == "Nothing else found: 1 lofted above"
+    assert text("me", 0, 0) == "Nothing found"
 
 
 def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> None:
@@ -252,9 +270,8 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
 
 
 # ---------------------------------------------------------------------------
-# filter bar placement: a tinted "ParamsHeader" panel (prim path -> lofted own-
-# params, e.g. a chunkgroup's "doc" Description field from chunks/core/chunkgroup.py
-# -> filter bar) -> an embossed separator, together the first item of the chunk list
+# page layout: the group's box (title, prim path, lofted params, lofted chunks), then the
+# search box (filter bar, a status line, what it found)
 # ---------------------------------------------------------------------------
 
 def _layout_widgets(layout) -> list:
@@ -271,33 +288,28 @@ def _index_of(widgets: list, target) -> int:
     raise AssertionError(f"{target!r} not found in layout")
 
 
-def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -> None:
+def test_the_page_is_the_groups_box_then_the_search_box(qapp) -> None:
+    """Two boxes: the group's (title, prim path, lofted params and chunks), then the search."""
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     w = ChunkWidget(ctx, is_tab_context=True)
 
+    assert w.content_layout.itemAt(0).widget() is w._group_box
+    assert w.content_layout.itemAt(1).widget() is w._search_panel
+    assert w.content_layout.count() == 2  # chunks live in the two boxes, not beside them
+    for part in (w.minimize_button, w._prim_path_field, w._lofted_container, w._lofted_chunks):
+        assert w._group_box.isAncestorOf(part)
+    assert w._search_panel.isAncestorOf(w._filter_bar)
+    assert not w._group_box.isAncestorOf(w._filter_bar)
+    assert isinstance(w._filter_bar, ParamsFilterBar)
     assert w._lofted_container.isVisible() is False  # plain tabs have no own params to loft
 
-    top_level = _layout_widgets(w._page_top.layout())
-    header_idx = _index_of(top_level, w._header_container)
-    separator_idx = _index_of(top_level, w._filter_bar_separator)
-    assert separator_idx == header_idx + 1  # separator directly follows the tinted header panel
 
-    header_children = _layout_widgets(w._header_container.layout())
-    prim_path_idx = _index_of(header_children, w._prim_path_field)
-    lofted_idx = _index_of(header_children, w._lofted_container)
-    filter_bar_idx = _index_of(header_children, w._filter_bar)
-    assert lofted_idx == prim_path_idx + 1
-    assert filter_bar_idx == lofted_idx + 1
-    assert isinstance(w._filter_bar, ParamsFilterBar)
-
-
-def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgroup_tab(qapp) -> None:
+def test_a_chunkgroups_description_sits_in_its_box_above_its_lofted_chunks(qapp) -> None:
     """A chunkgroup's own top-level params (e.g. chunks/core/chunkgroup.py's "doc" Description
-    TextEdit) render lofted, above the filter bar -- via ChunkWidget.add_widget's existing
-    lofted-params branch for CONTEXT chunks, not anything the filter bar itself builds. Both
-    live inside the same tinted header panel as the prim path field and the filter bar."""
+    TextEdit) render lofted, via ChunkWidget.add_widget's lofted-params branch for CONTEXT
+    chunks, in the group's box above the chunks lofted to it."""
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
@@ -313,33 +325,25 @@ def test_filter_bar_follows_lofted_description_in_the_header_panel_on_a_chunkgro
 
     w = ChunkWidget(grp, is_tab_context=True)
     assert w._lofted_container.isVisible() is True
-    assert w._lofted_layout.count() == 1  # the "doc" field landed here, not in the chunk list
-
-    header_children = _layout_widgets(w._header_container.layout())
-    prim_path_idx = _index_of(header_children, w._prim_path_field)
-    lofted_idx = _index_of(header_children, w._lofted_container)
-    filter_bar_idx = _index_of(header_children, w._filter_bar)
-    assert lofted_idx == prim_path_idx + 1
-    assert filter_bar_idx == lofted_idx + 1
+    assert w._lofted_layout.count() == 1  # the "doc" field landed here
+    body = _layout_widgets(w._group_box_body.layout())
+    assert body.index(w._prim_path_field) < body.index(w._lofted_container) < body.index(w._lofted_chunks)
 
 
-def test_header_panel_has_a_distinct_tint_and_separator_is_visible(qapp) -> None:
-    """A plain QFrame HLine would be invisible here -- CHUNK_STYLESHEET's global
-    `QFrame { border: none; }` rule strips the border frame-shape painting relies on -- so the
-    header panel's tint and the separator both use explicit background styling instead."""
+def test_the_two_boxes_look_apart(qapp) -> None:
+    """CHUNK_STYLESHEET's global `QFrame { border: none; }` strips plain frame borders, so each
+    box sets its own background and edge, selected by object name."""
 
     stage = Usd.Stage.CreateInMemory()
     scene = _make_scene(stage)
     ctx = scene.add_context("Tab1")
     w = ChunkWidget(ctx, is_tab_context=True)
 
-    assert "background-color" in w._header_container.styleSheet()
-    assert w._filter_bar_separator.height() > 0
-    assert "background" in w._filter_bar_separator.styleSheet()
-
-    top_level = _layout_widgets(w._page_top.layout())
-    header_idx = _index_of(top_level, w._header_container)
-    assert top_level[header_idx + 1] is w._filter_bar_separator
+    for box in (w._group_box, w._search_panel):
+        assert f"#{box.objectName()}" in box.styleSheet()
+        assert "border:" in box.styleSheet()
+    assert _PARAMS_HEADER_BG in w._group_box.styleSheet()
+    assert _PARAMS_HEADER_BG not in w._search_panel.styleSheet()
 
 
 def test_prim_path_and_lofted_container_match_header_panel_tint(qapp) -> None:
