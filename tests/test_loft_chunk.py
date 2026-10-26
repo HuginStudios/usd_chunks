@@ -396,6 +396,66 @@ def test_the_search_bar_has_no_pin_filter(qapp) -> None:
     assert not [b for b in bar.findChildren(QtWidgets.QCheckBox)]
 
 
+def _in_box(page: ChunkWidget, c) -> bool:
+    """Whether c's panel sits in the page's group box, above the search bar."""
+    widget = page.group_widgets.get(c.get_hash())
+    return widget is not None and page._lofted_container.isAncestorOf(widget)
+
+
+def test_a_lofted_chunk_sits_in_the_groups_box_and_a_search_match_below(qapp) -> None:
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+    lofted = _chunk_with_module("mesh_a", module="mesh")
+    other = _chunk_with_module("mesh_b", module="mesh")
+    scene.add_chunk(lofted)
+    scene.add_chunk(other)
+    chunk_stage.set_chunk_lofted(lofted, True)
+    page = ChunkWidget(ctx, is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+
+    assert _in_box(page, lofted)
+
+    page._filter_bar.search_box.setText("mesh")
+    assert _in_box(page, lofted)
+    assert other.get_hash() in page.group_widgets and not _in_box(page, other)
+
+    # Lofting the match moves it up into the box, and unlofting moves it back down.
+    chunk_stage.set_chunk_lofted(other, True)
+    ChunkWidget.chunk_loft_changed(other, True)
+    assert _in_box(page, other)
+    chunk_stage.set_chunk_lofted(other, False)
+    ChunkWidget.chunk_loft_changed(other, False)
+    assert other.get_hash() in page.group_widgets and not _in_box(page, other)
+
+
+def test_the_groups_box_scrolls_with_the_page(qapp) -> None:
+    """A lofted chunk can be tall: outside the scroll area it would push the page past the dock."""
+    stage = Usd.Stage.CreateInMemory()
+    scene = _make_scene(stage)
+    ctx = scene.add_context("Tab1")
+    page = ChunkWidget(ctx, is_tab_context=True)
+
+    assert page.content.widget().isAncestorOf(page._header_container)
+
+
+def test_inside_a_group_its_lofted_chunk_sits_in_its_box(env) -> None:  # noqa: F811
+    group = env["mk"]("chunkgroup", name="Group")
+    env["settle"]()
+    inner = env["mk"]("mesh", context=group)
+    env["settle"]()
+    page = ChunkWidget(group, is_tab_context=True)
+    page.set_view_state(ViewSlotState())
+    page.show()
+    env["settle"]()
+    assert not _in_box(page, inner)
+
+    chunk_stage.set_chunk_lofted(inner, True)
+    ChunkWidget.chunk_loft_changed(inner, True)  # what the menu does
+    env["settle"]()
+    assert _in_box(page, inner)
+
+
 def test_a_groups_section_shows_the_chunks_lofted_into_it(env) -> None:  # noqa: F811
     group = env["mk"]("chunkgroup", name="Group")
     env["settle"]()

@@ -2658,6 +2658,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._node_body = for_proxy
         self._view_state: ViewSlotState | None = None
         self._view_overlay: QtWidgets.QLabel | None = None
+        # Hashes of the chunks lofted into this group's box (see _add_lofted_chunk).
+        self._boxed_chunks: set[str] = set()
         super().__init__(group, parent)
 
         self.installEventFilter(self)
@@ -2701,9 +2703,15 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         Used both for a single chunk's loft toggle and, looped over every child, for a search
         change that can affect many chunks in the tab at once.
         """
+        h = target_chunk.get_hash()
+        boxed = self._belongs_in_box(target_chunk)
+        if (h in self._boxed_chunks) != boxed:
+            self._hide_chunk_widget(target_chunk)  # in the box or the list, wherever it was
         hidden = self._is_hidden_by_params_filter(target_chunk)
-        shown = target_chunk.get_hash() in self.group_widgets
-        if hidden and shown:
+        shown = h in self.group_widgets
+        if boxed:
+            self._add_lofted_chunk(target_chunk)
+        elif hidden and shown:
             self._hide_chunk_widget(target_chunk)
         elif not hidden and not shown:
             self._show_chunk_widget(target_chunk)
@@ -2729,6 +2737,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _hide_chunk_widget(self, target_chunk: chunk.ChunkBase) -> None:
         h = target_chunk.get_hash()
+        self._boxed_chunks.discard(h)
         w = self.group_widgets.get(h)
         if w is None:
             return
@@ -2872,10 +2881,14 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self._filter_bar.search_changed.connect(self._on_search_changed)
                 header_layout.addWidget(self._filter_bar)
 
-                # Above the chunk list: the slot just before the content, not a fixed index,
-                # since the buttons above it are only made when a group needs them.
-                above_content = self.__layout__.indexOf(self.content)
-                self.__layout__.insertWidget(above_content, self._header_container)
+                # The first item of the scrolling page, so it scrolls with the chunks: the
+                # chunks lofted to the group sit in it, and one tall panel would otherwise
+                # push the page past the dock with no way to scroll to the rest.
+                self._page_top = QtWidgets.QWidget(self)
+                page_top_layout = QtWidgets.QVBoxLayout(self._page_top)
+                page_top_layout.setContentsMargins(0, 0, 0, 0)
+                page_top_layout.setSpacing(0)
+                page_top_layout.addWidget(self._header_container)
 
                 # A plain QFrame HLine would be invisible here -- CHUNK_STYLESHEET sets
                 # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
@@ -2887,7 +2900,8 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                     "background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
                     " stop:0 #0d0d0d, stop:1 #7a7a7a);"
                 )
-                self.__layout__.insertWidget(above_content + 1, self._filter_bar_separator)
+                page_top_layout.addWidget(self._filter_bar_separator)
+                self.content_layout.insertWidget(0, self._page_top)
             else:
                 above_content = self.__layout__.indexOf(self.content)
                 self.__layout__.insertWidget(above_content, self._prim_path_field)
@@ -2927,8 +2941,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
     def _is_hidden_by_params_filter(self, group_chunk) -> bool:
         """True if group_chunk should be hidden from THIS tab's Params page.
 
-        The page is the group's interface: it shows the chunks lofted to it. While a search is
-        typed it shows every chunk that matches instead, lofted or not, so anything in the
+        The page is the group's interface: the chunks lofted to it sit in the group's box at
+        the top (see _belongs_in_box), never in the list below. The list is for searching:
+        while a search is typed it shows every other chunk that matches, so anything in the
         graph can still be found from here. Only meaningful when self is the tab-context
         widget -- a context's own direct children are the only things this applies to, never
         nested groups within a chunk's own UI.
@@ -2937,12 +2952,21 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             return False
         if not isinstance(group_chunk, chunk.ChunkBase):
             return False
+        if chunk_stage.is_chunk_lofted(group_chunk):
+            return True
+        return not (chunk_stage.get_search_query(self.group) and self._matches_search(group_chunk))
+
+    def _matches_search(self, child: chunk.ChunkBase) -> bool:
+        """Whether child matches this page's search; anything does while it is empty."""
         query = chunk_stage.get_search_query(self.group)
-        if query:
-            return not chunk_stage.chunk_matches_search(
-                group_chunk, query, chunk_stage.get_search_scope(self.group)
-            )
-        return not chunk_stage.is_chunk_lofted(group_chunk)
+        return not query or chunk_stage.chunk_matches_search(
+            child, query, chunk_stage.get_search_scope(self.group)
+        )
+
+    def _belongs_in_box(self, child: chunk.ChunkBase) -> bool:
+        """Whether child shows in this Params page's box: lofted, and matching the search."""
+        return (self._is_tab_context_widget and isinstance(child, chunk.ChunkBase)
+                and chunk_stage.is_chunk_lofted(child) and self._matches_search(child))
 
     def _add_group_layout(self, group):
         if self._is_group_chunk_node():
@@ -2955,6 +2979,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             # Suppress the normal nested-layout path to avoid a duplicate widget.
             return None
         if self._is_hidden_by_params_filter(group):
+            self._box_if_lofted(group)
             return None
         return super()._add_group_layout(group)
 
@@ -2971,10 +2996,17 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                     if isinstance(child, chunk.ChunkBase) and chunk_stage.is_chunk_lofted(child):
                         self._add_lofted_chunk(child)
             return
+        if self._is_tab_context_widget:
+            ChunkWidget._group_sections.add(self)
         super()._build_param_widgets(group)
 
+    def _box_if_lofted(self, child: chunk.ChunkBase) -> None:
+        """On a Params page, put child in the group's box if it belongs there."""
+        if self._belongs_in_box(child):
+            self._add_lofted_chunk(child)
+
     def _add_lofted_chunk(self, child: chunk.ChunkBase) -> None:
-        """Show child's whole panel in this group's section, with its lofted params."""
+        """Show child's whole panel in this group's box, under its lofted params."""
         if child.get_hash() in self.group_widgets or not hasattr(self, "_lofted_layout"):
             return
         widget = ChunkWidget(child, self)
@@ -2982,10 +3014,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._lofted_layout.addWidget(LabeledWidget(widget, self))
         self._lofted_container.setVisible(True)
         self.group_widgets[child.get_hash()] = widget
+        self._boxed_chunks.add(child.get_hash())
 
     @classmethod
     def chunk_loft_changed(cls, target: chunk.ChunkBase, lofted: bool) -> None:
-        """Show or take away target's panel in the section of the group it is in.
+        """Show or take away target's panel in the sections and Params pages of its group.
 
         Args:
             target: The chunk lofted or unlofted.
@@ -2996,13 +3029,14 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             try:
                 if section.group is not owner:
                     continue
-                if lofted:
+                if section._is_tab_context_widget:
+                    section._reconcile_chunk_visibility(target)
+                elif lofted:
                     section._add_lofted_chunk(target)
-                elif (widget := section.group_widgets.get(target.get_hash())) is not None:
-                    section.remove_widget(widget)
-                    section.group_widgets.pop(target.get_hash(), None)
-            except RuntimeError:
-                continue  # a section whose Qt side has gone
+                else:
+                    section._hide_chunk_widget(target)
+            except (RuntimeError, ReferenceError):
+                continue  # a section whose Qt side or group has gone
 
     def animation_finished(self):
         super().animation_finished()
@@ -3037,6 +3071,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         into this tab context's ownership chain.
         """
         if self._is_hidden_by_params_filter(group_chunk):
+            self._box_if_lofted(group_chunk)
             return
         w = ChunkWidget(group_chunk, self)
         w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)

@@ -254,7 +254,7 @@ def test_search_state_persists_and_reflects_in_filter_bar_on_rebuild(qapp) -> No
 # ---------------------------------------------------------------------------
 # filter bar placement: a tinted "ParamsHeader" panel (prim path -> lofted own-
 # params, e.g. a chunkgroup's "doc" Description field from chunks/core/chunkgroup.py
-# -> filter bar) -> an embossed separator -> the chunk list
+# -> filter bar) -> an embossed separator, together the first item of the chunk list
 # ---------------------------------------------------------------------------
 
 def _layout_widgets(layout) -> list:
@@ -279,7 +279,7 @@ def test_filter_bar_follows_prim_path_in_the_header_panel_on_a_plain_tab(qapp) -
 
     assert w._lofted_container.isVisible() is False  # plain tabs have no own params to loft
 
-    top_level = _layout_widgets(w.__layout__)
+    top_level = _layout_widgets(w._page_top.layout())
     header_idx = _index_of(top_level, w._header_container)
     separator_idx = _index_of(top_level, w._filter_bar_separator)
     assert separator_idx == header_idx + 1  # separator directly follows the tinted header panel
@@ -337,7 +337,7 @@ def test_header_panel_has_a_distinct_tint_and_separator_is_visible(qapp) -> None
     assert w._filter_bar_separator.height() > 0
     assert "background" in w._filter_bar_separator.styleSheet()
 
-    top_level = _layout_widgets(w.__layout__)
+    top_level = _layout_widgets(w._page_top.layout())
     header_idx = _index_of(top_level, w._header_container)
     assert top_level[header_idx + 1] is w._filter_bar_separator
 

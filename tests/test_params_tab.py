@@ -24,9 +24,15 @@ def _lofted(context):
 def test_the_header_sits_above_the_chunks(env):  # noqa: F811
     mesh = env["mk"]("mesh")
     env["settle"]()
+    chunk_stage.set_chunk_lofted(mesh, False)
     page = _tab_widget(env, mesh.get_context())
+    page._filter_bar.search_box.setText("mesh")  # the Mesh in the list below the header
+    env["settle"]()
 
-    assert page._header_container.geometry().bottom() < page.content.geometry().top()
+    # The first item of the scrolling page, so it scrolls with the chunks below it.
+    assert page.content_layout.itemAt(0).widget() is page._page_top
+    first_chunk = page.content_layout.itemAt(1).widget()
+    assert page._page_top.geometry().bottom() < first_chunk.geometry().top()
 
 
 def _list_container(widget: ChunkWidget, group) -> ChunkWidget:
