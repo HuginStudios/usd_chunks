@@ -3167,12 +3167,6 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(16777215)
 
-    def update_from_flags(self):
-        super().update_from_flags()
-        if self._is_tab_context_widget and hasattr(self, "_group_box_body"):
-            # super() resets the arrow; put back whether the box is folded.
-            self._show_group_box_folded(self._group_box_body.isHidden())
-
     def set_expanded(self, checked):
         if self._is_tab_context_widget and hasattr(self, "_group_box_body"):
             # On a Params page the header folds the group's box; the search box stays. Kept on
@@ -3197,6 +3191,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             # above. Applied here it folded the whole page to nothing, leaving one stretched
             # field showing (see set_expanded).
             chunk_core.ChunkContainerWidgetBase.update_from_state(self)
+            if hasattr(self, "_group_box_body"):
+                # update_from_flags, run just before, resets the header's arrow.
+                self._show_group_box_folded(self._group_box_body.isHidden())
             return
         if self._is_group_chunk_node():
             # Skip super() -- it would start the collapse animation which calls
