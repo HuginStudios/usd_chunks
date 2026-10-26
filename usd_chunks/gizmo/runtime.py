@@ -1502,11 +1502,12 @@ def _create_chunk_at_tail(module_name: str):
     # Borrow the Params-tab create semantics -- chain onto the tail of the current context
     # and pull any view along with it. Without this the chunk is created unconnected, which
     # is right when a user places a node by hand and wrong here: nobody asked for a node, so
-    # nobody is going to wire it up.
+    # nobody is going to wire it up. Not lofted, though: nobody asked for it on the Params
+    # page either.
     prev_create, prev_loft = chunk_stage._params_tab_create, chunk_stage._loft_new_chunks
     prev_pos = chunk_stage._create_node_pos
     chunk_stage._params_tab_create = True
-    chunk_stage._loft_new_chunks = True
+    chunk_stage._loft_new_chunks = False
     # Where the node lands, read before the create so the tail is still the tail. The default
     # (child-count * step) counts a view as a child, so an auto-created node is placed by how
     # many prims happen to exist rather than by where it sits in the chain -- which is how it

@@ -387,9 +387,20 @@ def test_a_drag_through_the_new_chunk_moves_the_prim(scene) -> None:
     assert Gf.IsClose(_local(_cube(stage)).ExtractTranslation(), Gf.Vec3d(1.0, 2.0, 3.0), 1e-6)
 
 
+def test_the_new_chunk_is_not_lofted(scene) -> None:
+    """A drag is not a request to show the chunk on the Params page, so it isn't lofted."""
+    stage, _registry, _module, _scene_layer = scene
+
+    desc = chunk_gizmo.ensure_transform_chunk(_cube(stage))
+    created = chunk_gizmo.chunk_at_prim_path(desc.chunk_prim)
+
+    assert not chunk_stage.is_chunk_lofted(created)
+    assert not stage.GetPrimAtPath(desc.chunk_prim).GetAttribute("chunk:lofted").HasAuthoredValue()
+
+
 def test_creation_does_not_leak_the_params_tab_flags(scene) -> None:
     """They are module-level globals on chunk_stage. Left set, every subsequent node-graph
-    create would silently auto-chain and auto-pin."""
+    create would silently auto-chain and auto-loft."""
     stage, _registry, _module, scene_layer = scene
 
     chunk_gizmo.ensure_transform_chunk(_cube(stage))
