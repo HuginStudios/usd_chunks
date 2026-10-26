@@ -24,12 +24,13 @@ views was active when you saved, and opens on that one.
 ## The Params page
 
 The **Params** tab next to it shows the graph's interface: the params and the chunks lofted
-to it (see [ChunkGroup](core-chunks.md#chunkgroup)). To put a chunk there, right-click it
-and choose **Loft up chunk**. A chunk made from the Params tab's own create menu is lofted
-for you, so it shows where you made it.
+to it, in the box at the top (see [ChunkGroup](core-chunks.md#chunkgroup)). To put a chunk
+there, right-click it and choose **Loft up chunk**. A chunk made from the Params tab's own
+create menu is lofted for you, so it shows where you made it.
 
-To get at any other chunk, type in the search box. While it has text, the page shows every
-chunk in the graph that matches, lofted or not.
+To get at any other chunk, type in the search box. While it has text, the box shows only
+the lofted chunks that match, and the list below it shows every other chunk in the graph
+that matches.
 
 ## Creating a node
 
