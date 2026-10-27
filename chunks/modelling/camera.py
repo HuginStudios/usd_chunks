@@ -380,10 +380,10 @@ def _author_camera_transform(node, stage):
         _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
 
-def _section(name: str, label: str, gizmo: str | None = None) -> chunk.Group:
+def _section(name: str, label: str, gizmo: str | None = None, icon: str = "") -> chunk.Group:
     """A collapsed, labelled group."""
     grp = chunk.Group(
-        name, label, gizmo=gizmo,
+        name, label, gizmo=gizmo, icon=icon,
         flags=chunk.ChunkFlags.GroupFlags.COLLAPSABLE | chunk.ChunkFlags.GroupFlags.LABELED,
     )
     grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
@@ -425,19 +425,19 @@ def main():
     chunk_api.add_param(formats)
 
 
-    lens = _section("lens_grp", "Lens")
+    lens = _section("lens_grp", "Lens", icon="camera")
     lens.add_param(chunk.Slider("focalLength", "Focal Length", min_value=1.0, max_value=800.0))
     lens.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
     chunk_api.add_param(lens)
 
-    sensor = _section("sensor_grp", "Sensor")
+    sensor = _section("sensor_grp", "Sensor", icon="box_select")
     sensor.add_param(chunk.Slider("horizontalAperture", "Horizontal Aperture", min_value=1.0, max_value=100.0))
     sensor.add_param(chunk.Slider("verticalAperture", "Vertical Aperture", min_value=1.0, max_value=100.0))
     sensor.add_param(chunk.Slider("horizontalApertureOffset", "Horizontal Aperture Offset", min_value=-50.0, max_value=50.0))
     sensor.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
     chunk_api.add_param(sensor)
 
-    focus = _section("focus_grp", "Focus")
+    focus = _section("focus_grp", "Focus", icon="pivot")
     focus.add_param(chunk.Slider("focusDistance", "Focus Distance", min_value=0.0, max_value=1000.0))
     focus_btn = chunk.Button(
         "focus_on_selection", "Focus on Selection",
@@ -460,7 +460,7 @@ def main():
     ))
     chunk_api.add_param(focus)
 
-    clipping = _section("clipping_grp", "Clipping")
+    clipping = _section("clipping_grp", "Clipping", icon="ruler")
     # One Vector, not two Sliders: UsdGeom.Camera keeps near and far together as the float2
     # `clippingRange`, and a Vector is the one param shape connect_usd_attr binds to a float2
     # whole. Defaults are the schema's own (1, 1000000) so an untouched camera clips as USD would.
@@ -479,12 +479,12 @@ def main():
     # The camera's own transform, so it needs no upstream Transform chunk to be placed.
     # Same param names and grouping as transform.py, so the one transform handle behaves
     # identically wherever it appears.
-    for grp_name, grp_label, axes, min_v, max_v, default, gizmo in [
-        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate"),
-        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"), -180.0, 180.0, 0.0, "rotate"),
-        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),    0.0, 100.0, 1.0, "scale"),
+    for grp_name, grp_label, axes, min_v, max_v, default, gizmo, icon in [
+        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate", "move"),
+        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"), -180.0, 180.0, 0.0, "rotate", "rotate"),
+        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),    0.0, 100.0, 1.0, "scale", "scale"),
     ]:
-        grp = _section(grp_name, grp_label, gizmo=gizmo)
+        grp = _section(grp_name, grp_label, gizmo=gizmo, icon=icon)
         for name, label in zip(axes, ("X", "Y", "Z")):
             grp.add_param(chunk.Slider(
                 name, label, min_value=min_v, max_value=max_v, default_value=default,
@@ -555,6 +555,7 @@ def config():
                         axis="-Z", driver="focusDistance"),
         ],
         category=chunk.StandardCategory.MODELLING,
+        icon="camera",
         description="""
         Camera chunk — creates a UsdGeom.Camera prim and exposes its lens
         parameters as live sliders, with optional real-world camera presets

@@ -619,6 +619,7 @@ def config():
     # entirely -- declaring it turns that silence into a named package.
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
+        icon="cube",
         cache_cook=True,
         # One entry per shape, so "Cube" is found and created directly rather than by
         # creating Mesh and re-picking the type. Ground is a grid preset, sized to stand

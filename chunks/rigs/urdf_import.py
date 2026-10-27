@@ -679,6 +679,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.RIGS,
+        icon="bone",
         requirements=["numpy>=2,<3"],
         cache_cook=True,
         description="""

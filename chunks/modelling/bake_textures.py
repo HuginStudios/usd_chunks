@@ -432,7 +432,7 @@ def main():
         chunk.Label("readout", "not baked yet", default_value="not baked yet", tooltip="What the last cook produced.")
     )
 
-    maps = chunk.Group("Maps", flags=_GF)
+    maps = chunk.Group("Maps", icon="image", flags=_GF)
     maps.add_params(
         [
             chunk.Checkbox(
@@ -493,7 +493,7 @@ def main():
     chunk_api.add_callback(resolution_mode_changed, sender=chunk_api.get_param("auto_resolution"))
     _sync_resolution_param(chunk_api)
 
-    output = chunk.Group("Output", flags=_GF)
+    output = chunk.Group("Output", icon="download", flags=_GF)
     output.add_params(
         [
             chunk.Menu(
@@ -550,6 +550,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="image",
         requirements=["numpy>=2,<3", "scipy>=1.11,<2", "pillow>=10"],
         description=(
             "Bakes a full-detail asset's look onto a low-poly mesh's UVs: base colour,\n"

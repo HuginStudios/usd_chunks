@@ -786,7 +786,7 @@ def main():
         )
     )
 
-    shape = chunk.Group("Shape", flags=_GF)
+    shape = chunk.Group("Shape", icon="cube", flags=_GF)
     shape.add_params(
         [
             chunk.Slider(
@@ -831,7 +831,7 @@ def main():
     )
     chunk_api.add_param(shape)
 
-    look = chunk.Group("Output", flags=_GF)
+    look = chunk.Group("Output", icon="download", flags=_GF)
     look.add_params(
         [
             chunk.Checkbox(
@@ -880,6 +880,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="cube",
         requirements=[
             "numpy>=2,<3",
             "scipy>=1.11,<2",

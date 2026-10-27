@@ -1522,7 +1522,7 @@ def main():
     chunk_api.add_param(cancel)
     chunk_api.add_param(chunk.Label("readout", default_value="not simulated yet"))
 
-    emit = chunk.Group("Emission", flags=_GF)
+    emit = chunk.Group("Emission", icon="sparkles", flags=_GF)
     emit.add_param(chunk.Spinbox(
         "blob_radius", "Blob Radius", default_value=0.0,
         tooltip="Radius of the ball of material at each painted point, in scene units. "
@@ -1542,7 +1542,7 @@ def main():
     emit.set_state(chunk.ChunkFlags.State.COLLAPSED)
     chunk_api.add_param(emit)
 
-    col = chunk.Group("Collision", flags=_GF)
+    col = chunk.Group("Collision", icon="zap", flags=_GF)
     col.add_param(chunk.TextEdit(
         "collision_path", "Collider Prims", flags=_PF.LABELED,
         tooltip="One prim per line. Static meshes are walls and floors. A PointInstancer or "
@@ -1562,7 +1562,7 @@ def main():
     col.set_state(chunk.ChunkFlags.State.COLLAPSED)
     chunk_api.add_param(col)
 
-    dom = chunk.Group("Domain", flags=_GF)
+    dom = chunk.Group("Domain", icon="grid", flags=_GF)
     container = chunk.LineEdit(
         "container_prim", "Container", flags=_PF.LABELED | _PF.PRIM_SELECTION,
         tooltip="Optional. The simulation happens inside this prim's bounding box, whose "
@@ -1582,7 +1582,7 @@ def main():
     dom.set_state(chunk.ChunkFlags.State.COLLAPSED)
     chunk_api.add_param(dom)
 
-    mat = chunk.Group("MaterialSettings", "Material", flags=_GF)
+    mat = chunk.Group("MaterialSettings", "Material", icon="sphere", flags=_GF)
     mat.add_param(chunk.Spinbox(
         "stiffness", "Stiffness", default_value=0.0,
         tooltip="0 = the material's own default. Higher is firmer and slower to simulate.",
@@ -1594,7 +1594,7 @@ def main():
     mat.set_state(chunk.ChunkFlags.State.COLLAPSED)
     chunk_api.add_param(mat)
 
-    out = chunk.Group("Output", flags=_GF)
+    out = chunk.Group("Output", icon="download", flags=_GF)
     out.add_param(chunk.LineEdit(
         "sim_path", "Output Path", default_value="/ParticleSim",
         tooltip="Where the particles are written: <path>/Particles (animated) and "
@@ -1638,7 +1638,7 @@ def main():
     for optional in (container, drive, material):
         optional.value = ""
 
-    sim = chunk.Group("Simulation", flags=_GF)
+    sim = chunk.Group("Simulation", icon="waves", flags=_GF)
     sim.add_param(chunk.Spinbox("start_frame", "Start Frame", default_value=1, is_int=True))
     sim.add_param(chunk.Spinbox("frame_count", "Frame Count", default_value=72, is_int=True))
     sim.add_param(chunk.Spinbox("fps", "FPS", default_value=24.0))
@@ -1680,6 +1680,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
+        icon="waves",
         requirements=["taichi>=1.7,<2", "numpy>=2,<3"],
         cache_cook=True,
         description=(

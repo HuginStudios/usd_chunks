@@ -244,6 +244,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_LAYER,
+        icon="layers",
         description="""
         Mute Layer chunk -- mutes layers on the stage.
 

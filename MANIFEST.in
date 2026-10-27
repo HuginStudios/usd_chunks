@@ -1,6 +1,6 @@
 include README.md
 include NOTICE
-recursive-include usd_chunks/resources *.png
+recursive-include usd_chunks/resources *.png *.svg
 recursive-include usd_chunks/hosts *.json *.shelf
 include usd_chunks/frontends/blender/addon/blender_manifest.toml
 

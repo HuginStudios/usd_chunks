@@ -84,7 +84,7 @@ def test_wire_drop_snaps_to_nearby_port_within_tolerance(graph) -> None:
 
     gv._start_wire_drag(a_out, a_out.scenePos())
     # 12 scene units off-center: outside the 5-unit port dot (would have missed before this
-    # fix) but inside the 20px snap tolerance at the default 1:1 zoom.
+    # fix) but inside the snap tolerance (_PORT_SNAP_PIXELS) at the default 1:1 zoom.
     near_pos = b_in.scenePos() + QtCore.QPointF(12, 0)
     gv._finish_wire_drag(near_pos)
 
@@ -144,3 +144,54 @@ def test_pulling_an_exec_wire_off_cuts_only_that_wire(graph) -> None:
     assert [str(p) for p in stage.GetAttributeAtPath(f"{pc}.inputs:chunk").GetConnections()] == [
         f"{pb}.outputs:chunk"
     ], "C must stay wired to B, not be handed B's old input"
+
+
+def test_a_dragged_wire_jumps_to_the_port_it_would_land_on(graph) -> None:
+    """Near a valid port the wire's loose end sits on it, solid, and the port lights up.
+
+    So the drop lands where the wire shows it landing; away from any port it follows the
+    cursor again, dashed.
+    """
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("transform")
+    a = _mk(mod, scene)
+    b = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    a_out, b_in = _ports(gv, a, b)
+
+    gv._start_wire_drag(a_out, a_out.scenePos())
+    try:
+        gv._update_wire_drag(b_in.scenePos() + QtCore.QPointF(12, 0))
+        path = gv._drag_edge.path()
+        assert path.pointAtPercent(1.0) == b_in.scenePos()
+        assert b_in._snapped
+        assert gv._drag_edge.pen().style() == QtCore.Qt.PenStyle.SolidLine
+
+        far = b_in.scenePos() + QtCore.QPointF(5000, 5000)
+        gv._update_wire_drag(far)
+        assert gv._drag_edge.path().pointAtPercent(1.0) == far
+        assert not b_in._snapped
+        assert gv._drag_edge.pen().style() == QtCore.Qt.PenStyle.DashLine
+    finally:
+        gv._cancel_wire_drag()
+    assert not b_in._snapped
+
+
+def test_a_port_has_its_own_cursor_and_lights_up_on_hover(graph) -> None:
+    """Over a port the cursor is not the node edge's resize cursor, and the port glows."""
+    qapp, reg, scene, docker = graph
+    mod = reg.get_chunk_module("transform")
+    a = _mk(mod, scene)
+    b = _mk(mod, scene)
+    qapp.processEvents()
+    gv = docker.tab_widget.get_current_graph_view()
+    a_out, _ = _ports(gv, a, b)
+
+    assert a_out.hasCursor()
+    assert a_out.cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+    for kind, lit in ((QtCore.QEvent.Type.GraphicsSceneHoverEnter, True),
+                      (QtCore.QEvent.Type.GraphicsSceneHoverLeave, False)):
+        event = QtWidgets.QGraphicsSceneHoverEvent(kind)
+        gv.scene().sendEvent(a_out, event)
+        assert a_out._hovered is lit

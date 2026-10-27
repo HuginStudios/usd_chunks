@@ -380,6 +380,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="cube",
         hosts=["blender>=5.1"],
         requirements=["numpy"],  # Blender ships it
         # Always cached, never a checkbox: an unchanged import reads back on reopen

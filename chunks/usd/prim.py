@@ -40,6 +40,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="cube",
         description="""
         Prim chunk — defines a new USD prim at a given path on the active stage.
 

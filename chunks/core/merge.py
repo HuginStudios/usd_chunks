@@ -18,6 +18,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
+        icon="merge",
         description="Fan-in for the execution chain: many upstream branches converge on one "
         "output, instead of being strung out in a single serial line. Inputs are ordered and "
         "the order decides who wins — input 0 is the strongest opinion, so when two branches "

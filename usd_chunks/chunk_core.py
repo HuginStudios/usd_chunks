@@ -43,7 +43,7 @@ from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
 from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_glob, chunk_naming, chunk_notice, chunk_registry, chunk_utils, skip_cook
+from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_glob, chunk_naming, chunk_notice, chunk_registry, chunk_resources, chunk_utils, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 
 if TYPE_CHECKING:
@@ -1342,7 +1342,8 @@ class ChunkCommon(AttributesBase):
         name: The name of the chunk object
         label: An optional label to display in the ui
         tooltip: A description of the chunk object
-        icon: A path to an image which to use as icon
+        icon: A path to an image to use as icon, or the name of a built-in icon
+            (usd_chunks/resources/icons/node/<name>.svg)
         user_data: A dict of arbitrary data to store on the param
         layout: Flags for setting the layout of the chunk object in the UI
         state: The current state
@@ -1536,7 +1537,9 @@ class ChunkCommon(AttributesBase):
         if attr.name in ["name"]:
             return self._validate_name(attr, val)
         if attr.name == "icon" and val:
-            # Icon path should exist if. if bool(val) is False, then we can ignore the validation
+            # A built-in icon's name ("sun", "move"), or a path to an image that exists.
+            if isinstance(val, str) and chunk_resources.get_node_icon(val) is not None:
+                return True
             return self._validate_existing_path(attr, val)
         if attr.name in ["tooltip", "label"]:
             return self._validate_string(attr, val)
@@ -1763,7 +1766,9 @@ class ChunkCommon(AttributesBase):
         self.set_blocked(False)
 
         if not self.can_delete():
-            logger.warning("Deleting node: %s with connected outputs. Stuff may break", self.name)
+            # Debug, not warning: closing a scene deletes every chunk, so a warning here
+            # printed one line per wired chunk each time usdview closed or opened a file.
+            logger.debug("Deleting %s, which still has wires out; disconnecting them", self.name)
             self.get_dag_node().disconnect()
 
         owner = self.get_owner()
@@ -3350,8 +3355,7 @@ class ChunkListGroupBase(ChunkGroupBase):
             # stable. Clamp the top to the actual length in case it's already shorter.
             removed = range(value, min(old_value, len(self.proxy_params)))
             for i in reversed(removed):
-                self.proxy_params[i].request_delete()
-                self.proxy_params.pop(i)
+                self._delete_row(i)
             self._renumber_row_refs(removed)
 
         if value != old_value:
@@ -3359,6 +3363,20 @@ class ChunkListGroupBase(ChunkGroupBase):
                 grp.name = str(i)
 
         return super().value_changed(attrname, old_value, value)
+
+    def _delete_row(self, index: int) -> None:
+        """Delete row index, telling every UI showing the list that it went.
+
+        PARAM_REMOVED goes first, as PARAM_ADDED does for a new row: a UI finds the row's
+        widget by the row, and deleting the row lets its widget go.
+
+        Args:
+            index: The row to delete.
+        """
+        row = self.proxy_params[index]
+        self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, row)
+        row.request_delete()
+        self.proxy_params.pop(index)
 
     def _renumber_row_refs(self, removed: Iterable[int]) -> None:
         """Keep every expression naming one of these rows (@Node.item[2]@) on the same row.
@@ -3424,12 +3442,8 @@ class ChunkListGroupBase(ChunkGroupBase):
             index (int): The row to remove
         """
         try:
-            param = self.proxy_params[index]
-            param.get_dag_node().disconnect()
-
-            param.request_delete()
-            self.proxy_params.pop(index)
-
+            self.proxy_params[index].get_dag_node().disconnect()
+            self._delete_row(index)
         except IndexError as e:
             self.get_logger().warning("Failed to remove index from list. Index out of range %s", e)
             return
@@ -4196,6 +4210,11 @@ class ChunkConfig(AttributesBase):
         return variants
 
     category: str = attrs.field(default="Chunks")
+    # The icon the chunk's nodes show: a built-in icon's name (usd_chunks/resources/icons/
+    # node/<name>.svg) or a path to an image. Set by the chunk itself; nothing else picks one,
+    # so a chunk that sets none shows none. A chunk prim's UsdUINodeGraphNodeAPI icon still
+    # wins, for one node. See chunk_icons.
+    icon: str = attrs.field(default="")
     description: str = attrs.field(default="Chunk description...")
     load_for_plugin: str | None = attrs.field(default=None)
     # The host applications the module runs in, each a name with an optional version
