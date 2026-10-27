@@ -445,7 +445,9 @@ class SpinSlider(QtWidgets.QWidget):
         # Three decimals, the slider's own resolution (1 / _step). At two, a value of 0.125
         # read 0.13 and the thousandths could be set but never seen.
         self.spin_box = NumberField(is_float=is_float, decimals=3)
-        self.spin_box.setMaximumWidth(48)
+        # Fixed, not just capped: in a narrow row (a node body with its label beside it) the
+        # slider is what gives way, so a value like 6500.0 stays readable.
+        self.spin_box.setFixedWidth(48)
 
         self.slider = _FineDragSlider(QtCore.Qt.Orientation.Horizontal)
 
@@ -1515,8 +1517,79 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         return widget
 
 
+# The label column of inline rows (a label beside its field). Each group in a node body
+# fits it to its own longest label, between this many pixels and this share of the body's
+# width; a label longer than that is cut short with "...".
+INLINE_LABEL_MIN_WIDTH = 24
+INLINE_LABEL_MAX_SHARE = 0.4
+# Space between the end of a label and the field beside it.
+_INLINE_LABEL_PAD = 6
+# How far a row straight in a node body (not in a group) starts in from the node's edge,
+# clear of the port dots drawn there.
+_INLINE_TOP_ROW_INDENT = 6
+
+# One-line fields, the kind that fit beside a label. Multi-line ones (text edits, image
+# menus) and those that carry their own text (buttons, labels) keep the label above.
+_INLINE_LABEL_WIDGETS = (
+    ChunkSliderWidget, ChunkFloatSpinboxWidget, ChunkIntSpinboxWidget, ChunkLineEditWidget,
+    ChunkFileWidget, ChunkComboBoxWidget, ChunkCheckBoxWidget, ChunkColorPickerWidget,
+)
+
+
+class _ElidedLabel(QtWidgets.QLabel):
+    """A label that ends its text with "..." when it does not fit its width.
+
+    text() still returns the whole text.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text or ""
+        self._elide()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        # The stylesheet arrives after the text and can change the font.
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange):
+            self._elide()
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        # A cut-short label shows its whole text on hover, unless the row has put a tooltip
+        # of its own here (an expression, an override).
+        if (event.type() == QtCore.QEvent.Type.ToolTip and not self.toolTip()
+                and super().text() != self._full_text):
+            QtWidgets.QToolTip.showText(event.globalPos(), self._full_text, self)
+            return True
+        return super().event(event)
+
+    def _elide(self) -> None:
+        # The text area, inside any padding or border the stylesheet gives the label.
+        shown = self.fontMetrics().elidedText(
+            self._full_text, QtCore.Qt.TextElideMode.ElideRight,
+            max(self.contentsRect().width(), 0))
+        if shown != super().text():
+            super().setText(shown)
+
+
 class LabeledWidget(QtWidgets.QWidget):
-    def __init__(self, widget, parent=None):
+    def __init__(self, widget, parent=None, inline: bool = False):
+        """A param's row: its widget plus an optional label.
+
+        Args:
+            widget: The param's widget.
+            parent: The container the row sits in.
+            inline: Put the label to the left of a one-line widget instead of above it.
+        """
         super().__init__(parent)
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
@@ -1524,6 +1597,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.widget: ChunkParamWidgetBase = widget
+        # The label and widget side by side, when the row is inline; None otherwise.
+        self._row: QtWidgets.QHBoxLayout | None = None
+        if inline and isinstance(widget, _INLINE_LABEL_WIDGETS):
+            self._row = QtWidgets.QHBoxLayout()
+            self._row.setContentsMargins(0, 0, 0, 0)
         # Made by update_label when the row first gets text (see _ensure_label). Most rows
         # never do, and an eager label was a hidden widget per row, constructed, styled and
         # laid out for nothing. Filters others ask for wait in _label_filters; this row's own
@@ -1533,7 +1611,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.label: QtWidgets.QLabel | None = None
         self._label_filters: list[QtCore.QObject] = []
 
-        self.vlayout.addWidget(widget)
+        if self._row is not None:
+            self._row.addWidget(widget, 1)
+            self.vlayout.addLayout(self._row)
+        else:
+            self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
         # Built on first hover, not here. A Qt.ToolTip label is a top-level window, and
@@ -1663,11 +1745,35 @@ class LabeledWidget(QtWidgets.QWidget):
         if self.label is not None:
             self.label.installEventFilter(obj)
 
+    def _refit_label_column(self) -> None:
+        """Ask the node body this row sits in to fit its label column again."""
+        w = self.parentWidget()
+        while w is not None:
+            if getattr(w, "_inline_labels", False):
+                w.request_label_fit()
+                return
+            w = w.parentWidget()
+
     def _ensure_label(self) -> QtWidgets.QLabel:
-        """The row's label, made on first need above the widget, where it always sat."""
+        """The row's label, made on first need: beside the widget on an inline row, above it
+        otherwise."""
         if self.label is None:
-            self.label = QtWidgets.QLabel()
-            self.vlayout.insertWidget(0, self.label)
+            if self._row is not None:
+                self.label = _ElidedLabel()
+                # Left-aligned, starting where the group's content starts. The width is set
+                # by the body, per group (fit_label_column), so a group of short names keeps
+                # its fields close.
+                self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
+                                        | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                # Fixed policy too, not just a fixed width: the row lays out by policy, and
+                # anything looser lets the widget beside it slide under the label.
+                self.label.setFixedWidth(INLINE_LABEL_MIN_WIDTH)
+                self.label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                                         QtWidgets.QSizePolicy.Policy.Preferred)
+                self._row.insertWidget(0, self.label)
+            else:
+                self.label = QtWidgets.QLabel()
+                self.vlayout.insertWidget(0, self.label)
             self.label.installEventFilter(self)
             for obj in self._label_filters:
                 self.label.installEventFilter(obj)
@@ -1678,6 +1784,8 @@ class LabeledWidget(QtWidgets.QWidget):
             label = self._ensure_label()
             label.setHidden(not bool(text))
             label.setText(text)
+            if self._row is not None:
+                self._refit_label_column()
         self._sync_expression_mark()
         self._sync_override_mark()
 
@@ -2242,10 +2350,23 @@ class ContainerWidget(
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
 
+    def _in_inline_body(self) -> bool:
+        """True when this container sits in a ChunkWidget whose rows put labels inline.
+
+        Returns:
+            Whether rows added here should be inline.
+        """
+        w: QtWidgets.QWidget | None = self
+        while w is not None:
+            if getattr(w, "_inline_labels", False):
+                return True
+            w = w.parentWidget()
+        return False
+
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
-        labeled = LabeledWidget(widget, self)
+        labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
         # Now parented, so showing it can no longer produce a top-level window -- lift the
         # suppression create_widget put on it.
         widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
@@ -2641,6 +2762,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._is_tab_context_widget = is_tab_context
         # Node bodies style themselves after their reparent, not during construction.
         self._defer_stylesheet = for_proxy
+        # A node body (for_proxy) is narrow and stacks on a canvas, so its rows put their
+        # labels beside the fields. Set before super().__init__, which builds the rows.
+        self._inline_labels = for_proxy
+        # Whether a fit_label_column call is already queued (see request_label_fit).
+        self._label_fit_queued = False
         self._view_state: ViewSlotState | None = None
         self._view_overlay: QtWidgets.QLabel | None = None
         super().__init__(group, parent)
@@ -2777,6 +2903,57 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         super().resizeEvent(event)
         if self._view_overlay:
             self._position_view_overlay()
+        if self._inline_labels and event.size().width() != event.oldSize().width():
+            self.request_label_fit()
+
+    def request_label_fit(self) -> None:
+        """Fit the label column once the current burst of row changes is done.
+
+        Rows are added one at a time, and each new label asks for a fit; queuing turns a
+        body's worth of them into one pass.
+        """
+        if self._label_fit_queued:
+            return
+        self._label_fit_queued = True
+        QtCore.QTimer.singleShot(0, self, self.fit_label_column)
+
+    def fit_label_column(self) -> None:
+        """Size the inline labels of each group in this body to fit that group's longest.
+
+        Per group rather than per body: one long name elsewhere in the node does not push
+        a group of short ones (a Translate's X, Y, Z) away from their fields. Capped at
+        INLINE_LABEL_MAX_SHARE of the body's width, so the fields keep most of the row; a
+        longer label is cut short and shows in full on hover.
+        """
+        self._label_fit_queued = False
+        groups: dict[QtWidgets.QWidget | None, list[QtWidgets.QLabel]] = {}
+        for row in self.findChildren(LabeledWidget):
+            if row._row is not None and row.label is not None and row.label.text():
+                # Rows of one group share a parent: the group's content widget.
+                groups.setdefault(row.parentWidget(), []).append(row.label)
+        cap = int(self.width() * INLINE_LABEL_MAX_SHARE)
+        for parent, labels in groups.items():
+            # Rows straight in the body start at the node's edge, under its port dots;
+            # nudge them clear. Rows in a group are already indented by it.
+            indent = _INLINE_TOP_ROW_INDENT if self._owning_container(parent) is self else 0
+            for label in labels:
+                row = label.parentWidget()
+                if isinstance(row, LabeledWidget) and row._row.contentsMargins().left() != indent:
+                    row._row.setContentsMargins(indent, 0, 0, 0)
+            # Text width plus whatever padding and border the label wraps around it.
+            widest = max(label.fontMetrics().horizontalAdvance(label.text())
+                         + label.width() - label.contentsRect().width() for label in labels)
+            column = max(INLINE_LABEL_MIN_WIDTH, min(widest + _INLINE_LABEL_PAD, cap))
+            for label in labels:
+                if label.width() != column:
+                    label.setFixedWidth(column)
+
+    @staticmethod
+    def _owning_container(widget: QtWidgets.QWidget | None) -> ContainerWidget | None:
+        """The nearest ContainerWidget at or above widget."""
+        while widget is not None and not isinstance(widget, ContainerWidget):
+            widget = widget.parentWidget()
+        return widget
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
@@ -2902,7 +3079,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
                 and isinstance(widget, ChunkParamWidgetBase)):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
-            labeled = LabeledWidget(widget, self)
+            labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
             if label is not None:
                 labeled.update_label(label)
             labeled._name_hint = widget.param.name
