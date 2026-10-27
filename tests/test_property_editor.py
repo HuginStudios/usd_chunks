@@ -228,3 +228,73 @@ def test_an_unknown_type_writes_nothing():
         editor.get_param("edits").value = "flaot tint = 1"
 
         assert not stage.GetPrimAtPath("/a").GetAttribute("tint")
+
+
+# ---------------------------------------------------------------------------
+# Lofting a widget to a group
+# ---------------------------------------------------------------------------
+
+
+def _lofted(group) -> list:
+    return [p for p in group.get_my_params() if getattr(p, "_lofted", False)]
+
+
+def _promoted(editor) -> list:
+    return list(editor.get_param("promoted_grp").get_my_params())
+
+
+def _editor_in_group(scene):
+    """A Property Editor on /a's weight, inside a group."""
+    _spheres(scene.get_stage(), "/a")
+    group = scene.create.chunkgroup(name="grp")
+    with group:
+        editor = scene.create.property_editor(prim="/a", name="editor")
+    return group, editor
+
+
+def test_a_lofted_widget_is_published_on_the_group():
+    with Scene() as scene:
+        group, editor = _editor_in_group(scene)
+
+        chunk_stage.loft_param_to_context(_widget(editor, "weight"), group)
+        [lofted] = _lofted(group)
+        lofted.value = 7.0
+
+        assert _get(scene.get_stage(), "/a", "weight") == pytest.approx(7.0)
+        assert [p.name for p in _promoted(editor)] == ["weight"]
+        with pytest.raises(LookupError):
+            _widget(editor, "weight")  # shown under Lofted instead
+
+
+def test_a_lofted_widget_survives_a_reopen(tmp_path):
+    path = str(tmp_path / "lofted.usda")
+    with Scene() as scene:
+        group, editor = _editor_in_group(scene)
+        chunk_stage.loft_param_to_context(_widget(editor, "weight"), group)
+        _lofted(group)[0].value = 7.0
+        scene.save(path)
+
+    with Scene.open(path) as scene:
+        group = next(c for c in scene.get_contexts() if c.name == "grp")
+        editor = next(c for c in scene.get_chunks() if c.name == "editor")
+        [lofted] = _lofted(group)
+        assert lofted.value == pytest.approx(7.0)
+        _spheres(scene.get_stage(), "/a")  # the file holds the network, not the sphere
+
+        lofted.value = 9.0
+
+        assert _get(scene.get_stage(), "/a", "weight") == pytest.approx(9.0)
+        assert [p.name for p in _promoted(editor)] == ["weight"]
+
+
+def test_unlofting_turns_it_back_into_a_widget():
+    with Scene() as scene:
+        group, editor = _editor_in_group(scene)
+        chunk_stage.loft_param_to_context(_widget(editor, "weight"), group)
+        _lofted(group)[0].value = 7.0
+
+        chunk_stage.unloft_param(_lofted(group)[0])
+
+        assert _promoted(editor) == []
+        assert _widget(editor, "weight").value == pytest.approx(7.0)
+        assert _get(scene.get_stage(), "/a", "weight") == pytest.approx(7.0), "the edit stays"
