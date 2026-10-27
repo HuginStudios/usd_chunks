@@ -405,6 +405,28 @@ disk. Modules without `commit` are skipped, since most chunks have nothing to wr
 disabled chunk, or one that isn't connected to the active [view](core-chunks.md#view),
 never commits.
 
+## Lofting params a module builds at runtime
+
+Lofting publishes a param's saved attribute on its group. A param flagged `TRANSIENT` has
+none: it's session state, rebuilt rather than saved. A module whose transient params should
+still be loftable (Property Editor's fields are) defines these:
+
+```python
+def promote_param(node, param):
+    """Return a saved param to loft in place of the transient `param`, or None."""
+
+def restore_params(node, prim):
+    """On load, before saved values are read back: build the promoted params again."""
+
+def param_unlofted(node, param):
+    """`param` was just unlofted from its group."""
+```
+
+`promote_param` runs when a transient param is lofted, and the group publishes the param
+it returns. That param isn't in what `main()` builds, so on load `restore_params` builds it
+again from the chunk's prim, before its value and its link to the group are restored.
+Property Editor keeps the list of promoted attributes in a hidden saved param for this.
+
 ## Discovery, recap
 
 Every folder in `USD_CHUNK_DIRS`, including subfolders, is searched for `.py` files.

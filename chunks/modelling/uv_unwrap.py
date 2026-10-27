@@ -33,7 +33,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 from usd_chunks import chunk, chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import surface_samples
-from usd_chunks.mesh_math import fan_triangulate, world_points
+from usd_chunks.mesh_math import fan_triangulate
 
 try:
     import xatlas
@@ -133,11 +133,29 @@ def _plan(prim) -> _Plan | None:
     return _Plan(prim.GetPath(), triangles, corners, face_of_tri, retopo, None)
 
 
-def _positions(prim, one_atlas):
-    points = UsdGeom.Mesh(prim).GetPointsAttr().Get()
-    # World space when sharing an atlas: one texel density across meshes, whatever their
-    # transforms. Local otherwise -- xatlas is scale-invariant once resolution is fixed.
-    return world_points(prim, points) if one_atlas else np.asarray(points, dtype=np.float64)
+def _sizes_matter(prims, settings: _Settings) -> bool:
+    """Whether the meshes' transforms change the unwrap.
+
+    Only when several meshes share one atlas: their sizes against each other set how much of
+    the square each one gets. One mesh alone fills it whatever its size.
+    """
+    return settings.one_atlas and len(prims) > 1
+
+
+def _sizing(prim) -> np.ndarray:
+    """The 3x3 part of a prim's local-to-world transform: scale, rotation and shear.
+
+    Not the translation, which moves a mesh without changing its shape or size.
+    """
+    matrix = np.asarray(UsdGeom.XformCache().GetLocalToWorldTransform(prim), dtype=np.float64)
+    return matrix[:3, :3]
+
+
+def _positions(prim, sizes_matter: bool) -> np.ndarray:
+    points = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get(), dtype=np.float64)
+    # Sized as in the world when the meshes share an atlas, so they get one texel density.
+    # Local otherwise: xatlas is scale-invariant once resolution is fixed.
+    return points @ _sizing(prim) if sizes_matter else points
 
 
 def _author(stage, plan: _Plan, name: str) -> None:
@@ -241,8 +259,8 @@ def _fingerprint(prims, settings: _Settings) -> tuple:
             _crc(attr.Get() or [])
             for attr in (mesh.GetPointsAttr(), mesh.GetFaceVertexCountsAttr(), mesh.GetFaceVertexIndicesAttr())
         ]
-        if settings.one_atlas:
-            entry.append(tuple(map(tuple, UsdGeom.XformCache().GetLocalToWorldTransform(prim))))
+        if _sizes_matter(prims, settings):
+            entry.append(tuple(map(tuple, _sizing(prim))))
         parts.append(tuple(entry))
     return tuple(parts)
 
@@ -260,7 +278,8 @@ def _plan_all(prims, settings: _Settings) -> list:
     plans = [(prim, plan) for prim in prims if (plan := _plan(prim)) is not None]
     if not plans:
         return []
-    inputs = [(_positions(prim, settings.one_atlas), plan.triangles) for prim, plan in plans]
+    sizes_matter = _sizes_matter(prims, settings)
+    inputs = [(_positions(prim, sizes_matter), plan.triangles) for prim, plan in plans]
     if settings.one_atlas:
         uvs = unwrap(inputs, settings.resolution, settings.padding)
     else:

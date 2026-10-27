@@ -10,8 +10,9 @@ import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import requests
+from pxr import Sdf, Usd, UsdShade
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_core, chunk_utils
 from usd_chunks.chunk_stage import chunk_prim_edit_context, connect_exec, get_chunk_prim_path
 
 logger = logging.getLogger(__name__)
@@ -454,20 +455,142 @@ def _download_and_apply(node, title: str) -> str:
     return f"Ready — {mat_path}"
 
 
+def _apply_inputs(node, title: str) -> tuple:
+    """Everything _download_and_apply reads, to tell whether it has anything new to do."""
+    return (
+        title,
+        node.get_param("resolution", chunk.is_inst(chunk.Menu)).value,
+        node.get_param("mat_scope", chunk.is_param_t(str)).value,
+        node.get_param("cache_dir", chunk.is_param_t(str)).value,
+        node.get_param("target_primpath").value,
+    )
+
+
 def execute(node):
     """Re-applies the stored picked material, (re)creating the Reference and
     BindMaterial children if they're missing -- e.g. after a reload where the
     USD prims exist but their backing Python child chunks weren't reattached.
+
+    Skipped when it already applied these inputs and both children are there: a cook
+    from upstream, such as the target prim moving, changes nothing it reads.
     """
     title = node.get_param("picked_title").value
     if not title:
         return
-    status_param = node.get_param("status", chunk.is_inst(chunk.Label))
-    if status_param:
-        status_param.value = f"Downloading {title}…"
-    result = _download_and_apply(node, title)
-    if status_param:
-        status_param.value = result
+    inputs = _apply_inputs(node, title)
+    if (getattr(node, "_applied_inputs", None) != inputs
+            or not _child_of_type(node, "reference") or not _child_of_type(node, "bind_material")):
+        status_param = node.get_param("status", chunk.is_inst(chunk.Label))
+        if status_param:
+            status_param.value = f"Downloading {title}…"
+        result = _download_and_apply(node, title)
+        if status_param:
+            status_param.value = result
+        node._applied_inputs = inputs if result.startswith("Ready") else None
+    _apply_tiling(node)
+
+
+def _tiling_inputs(material: Usd.Prim) -> list[UsdShade.Input]:
+    """The float constants a material multiplies its texture coordinates by.
+
+    Found by the graph's shape, not by name: the library calls this constant UVScale in one
+    material and uv in another. It is the ND_constant_float feeding an ND_multiply_vector2*
+    whose other input is the texture coordinates (ND_texcoord_vector2).
+
+    Args:
+        material: The material prim.
+
+    Returns:
+        Each constant's value input, once.
+    """
+    found: dict[str, UsdShade.Input] = {}
+    for prim in Usd.PrimRange(material):
+        shader = UsdShade.Shader(prim)
+        if not shader or not str(shader.GetIdAttr().Get() or "").startswith("ND_multiply_vector2"):
+            continue
+        sources = []
+        for shader_input in shader.GetInputs():
+            for source in shader_input.GetConnectedSources()[0]:
+                sources.append(UsdShade.Shader(source.source.GetPrim()))
+        ids = [str(source.GetIdAttr().Get() or "") for source in sources]
+        if not any(i.startswith("ND_texcoord") for i in ids):
+            continue
+        for source, shader_id in zip(sources, ids):
+            value = source.GetInput("value") if shader_id == "ND_constant_float" else None
+            if value:
+                found.setdefault(str(value.GetAttr().GetPath()), value)
+    return list(found.values())
+
+
+def _material_value(attr: Usd.Attribute, own: Sdf.Layer) -> float | None:
+    """attr's value as the material itself sets it, below anything the chunk wrote in own."""
+    for spec in attr.GetPropertyStack():
+        if spec.layer != own and spec.HasDefaultValue():
+            return spec.default
+    return None
+
+
+def _same(have: float | None, want: float | None) -> bool:
+    """Whether two override values are the same, allowing for float32 storage."""
+    if have is None or want is None:
+        return have is None and want is None
+    return abs(have - want) <= 1e-5 * max(1.0, abs(want))
+
+
+def _remake_spec(layer: Sdf.Layer, path: Sdf.Path) -> None:
+    """Take the prim spec at path out of layer and put the same spec back.
+
+    Storm only rebuilds a MaterialX material when the material prim itself changes. A value
+    changed inside its node graph, or a spec added or removed further down, leaves the old
+    shader on screen. Removing the material's spec is such a change.
+    """
+    spec = layer.GetPrimAtPath(path)
+    if spec is None:
+        return
+    keep = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(keep, path)
+    Sdf.CopySpec(layer, path, keep, path)
+    parent = layer.GetPrimAtPath(path.GetParentPath()) or layer.pseudoRoot
+    del parent.nameChildren[spec.name]
+    Sdf.CreatePrimInLayer(layer, path)
+    Sdf.CopySpec(keep, path, layer, path)
+
+
+def _apply_tiling(node) -> None:
+    """Scale the material's texture repeat by the Tiling param, in the chunk's own layer.
+
+    Left alone when the values are already right, so a cook from upstream (the target prim
+    moving) does not rebuild the material. A change remakes the material's spec, which is
+    what makes Storm show it (_remake_spec).
+    """
+    stage = node.get_stage()
+    layer = node.get_edit_context()
+    tiling_param = node.get_param("tiling", chunk.is_param_t(float))
+    mat_path = node.get_param("resolved_material_path").value
+    if not (stage and layer and tiling_param and mat_path):
+        return
+    material = stage.GetPrimAtPath(mat_path)
+    if not material:
+        return
+    tiling = tiling_param.value
+    changes = []
+    for value in _tiling_inputs(material):
+        attr = value.GetAttr()
+        base = _material_value(attr, layer)
+        want = None if tiling == 1.0 or base is None else float(base) * tiling
+        spec = layer.GetAttributeAtPath(attr.GetPath())
+        have = spec.default if spec and spec.HasDefaultValue() else None
+        if not _same(have, want):
+            changes.append((attr, spec, want))
+    if not changes:
+        return
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
+        for attr, spec, want in changes:
+            if want is not None:
+                attr.Set(want)
+            elif spec:
+                spec.ClearDefaultValue()
+    _remake_spec(layer, material.GetPath())
 
 
 def _set_status(owner, text: str) -> None:
@@ -562,6 +685,12 @@ def main():
     )
 
     resolution = chunk.Menu("resolution", "Resolution", menu_items=["2k", "1k", "4k"], default_value="2k")
+    tiling = chunk.Slider(
+        "tiling", "Tiling", default_value=1.0, min_value=0.1, max_value=10.0,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="How many times the texture repeats, against the material's own setting.\n"
+        "1 is the material as it comes, 2 repeats it twice as often (smaller), 0.5 half as often.",
+    )
     status = chunk.Label("status", default_value="")
     apply_btn = chunk.Button("apply_btn", "Download & Assign")
 
@@ -596,7 +725,7 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
     )
 
-    chunk_api.add_params([prim_path, mat_scope, material, resolution, picked_title, material_path, status, advanced, apply_btn])
+    chunk_api.add_params([prim_path, mat_scope, material, resolution, tiling, picked_title, material_path, status, advanced, apply_btn])
 
     chunk_api.add_callback(
         _on_chunk_loaded,
@@ -626,6 +755,8 @@ def config():
             Fetched asynchronously on load and filtered by the search field.
             Thumbnails are loaded lazily as tiles come into view.
           - Resolution: preferred texture resolution (2k default, 1k, 4k).
+          - Tiling: how many times the texture repeats, against the material's own
+            setting. 1 is the material as it comes, 2 repeats it twice as often.
             Falls back to any available package if the requested resolution
             is not found.
           - Status: read-only label showing download/bind progress.

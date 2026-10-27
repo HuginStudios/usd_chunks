@@ -6882,6 +6882,16 @@ def _under_list_group(param: core.ChunkCommon, chunk: core.ChunkBase) -> bool:
     return False
 
 
+#: Module hook promote_param(node, param) -> param | None: the saved param to loft in place of
+#: a session-only (TRANSIENT) one, which has nothing saved to publish. None: not loftable.
+PROMOTE_PARAM_HOOK = "promote_param"
+#: Module hook restore_params(node, prim): build the params a module made at runtime (such
+#: as promoted ones) from the chunk's prim, on load, before their saved values are read back.
+RESTORE_PARAMS_HOOK = "restore_params"
+#: Module hook param_unlofted(node, param): param of node was just unlofted from its group.
+PARAM_UNLOFTED_HOOK = "param_unlofted"
+
+
 def is_transient_param(param) -> bool:
     """Whether param is session state that is never recorded (ParamFlags.TRANSIENT).
 
@@ -8837,6 +8847,19 @@ def _wire_loft_sync(param: core.ChunkParamBase, context_param: core.ChunkParamBa
     )
 
 
+def _promoted_for_loft(param):
+    """The param to loft for param: itself, or the saved one its module promotes it to.
+
+    A session-only param has no saved attribute to publish on the group. Its module can
+    hand back a saved param standing for it (PROMOTE_PARAM_HOOK).
+    """
+    if not is_transient_param(param):
+        return param
+    owner = param.get_chunk()
+    hook = owner._module_hook(PROMOTE_PARAM_HOOK) if owner is not None else None
+    return (hook(owner, param) if hook else None) or param
+
+
 def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -8856,6 +8879,7 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
     sync = ChunkStageSync()
     if not sync.initialized or not sync._stage:
         return
+    param = _promoted_for_loft(param)
     if lofted_copy(param, context) is not None:
         return  # one copy per group: a second would be a control nothing reads
 
@@ -8972,6 +8996,8 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
     # loaded chunk goes through, and getting only some of them back is how a chunk wired
     # into an exec chain came back without its params at all.
     _rebuild_runtime_params(prim, chunk)
+    if hook := chunk._module_hook(RESTORE_PARAMS_HOOK):
+        hook(chunk, prim)
     for attr in prim.GetAttributes():
         name = attr.GetName()
         if not name.startswith(_INPUTS_PREFIX):
@@ -9008,6 +9034,30 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
             param._connect_param_attr(attr)
 
 
+def _with_their_groups(chunks) -> list[core.ChunkBase]:
+    """chunks, then every group they sit in, each once.
+
+    A load's deferred list holds the chunks in groups but not the groups, whose own params
+    (a lofted param a wire from outside feeds) carry expressions too.
+
+    Args:
+        chunks: The chunks.
+
+    Returns:
+        The chunks and their groups.
+    """
+    found: dict[int, core.ChunkBase] = {}
+    for c in chunks:
+        while c is not None and id(c) not in found:
+            found[id(c)] = c
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                parent_ref = getattr(c, "_parent_context", None)
+                c = parent_ref() if parent_ref else None
+            else:
+                c = c.get_context()
+    return list(found.values())
+
+
 def _resolve_pending_expressions(deferred, warn: bool) -> None:
     """Re-assign every @node.param@ expression that still has no live-update listener.
 
@@ -9024,7 +9074,7 @@ def _resolve_pending_expressions(deferred, warn: bool) -> None:
     warn only on the last pass. Reporting from an earlier one would flag every expression
     that is merely waiting for a chunk further down the file.
     """
-    for _, c in deferred:
+    for c in _with_their_groups(c for _, c in deferred):
         for path, param in [*_iter_chunk_params(c), *_iter_list_rows(c)]:
             raw = getattr(param, "raw_value", None)
             if (
@@ -9330,6 +9380,9 @@ def unloft_param(context_param: core.ChunkParamBase) -> None:
 
     context_param.request_delete()
     sync._delete_stale_attr_specs(context_attr.GetPrim(), context_attr.GetName())
+    owner = inner.get_chunk() if inner is not None else None
+    if owner is not None and (hook := owner._module_hook(PARAM_UNLOFTED_HOOK)):
+        hook(owner, inner)
 
 
 def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:

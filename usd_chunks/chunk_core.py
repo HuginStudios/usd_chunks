@@ -2226,6 +2226,13 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if not chunk:
             return None
         context = chunk.get_context()
+        if context is chunk:
+            # A group's own param is a port on its node in the graph around it, so a wire
+            # into it names a chunk beside the group, not one inside it.
+            outer_ref = getattr(chunk, "_parent_context", None)
+            outer = outer_ref() if outer_ref else None
+            if outer is not None and (ref := outer.get_param(f"{node_name}.{param_name}")) is not None:
+                return ref
         if context:
             return context.get_param(f"{node_name}.{param_name}")
         try:
