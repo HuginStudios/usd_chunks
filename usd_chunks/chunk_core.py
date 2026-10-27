@@ -3353,8 +3353,7 @@ class ChunkListGroupBase(ChunkGroupBase):
             # stable. Clamp the top to the actual length in case it's already shorter.
             removed = range(value, min(old_value, len(self.proxy_params)))
             for i in reversed(removed):
-                self.proxy_params[i].request_delete()
-                self.proxy_params.pop(i)
+                self._delete_row(i)
             self._renumber_row_refs(removed)
 
         if value != old_value:
@@ -3362,6 +3361,20 @@ class ChunkListGroupBase(ChunkGroupBase):
                 grp.name = str(i)
 
         return super().value_changed(attrname, old_value, value)
+
+    def _delete_row(self, index: int) -> None:
+        """Delete row index, telling every UI showing the list that it went.
+
+        PARAM_REMOVED goes first, as PARAM_ADDED does for a new row: a UI finds the row's
+        widget by the row, and deleting the row lets its widget go.
+
+        Args:
+            index: The row to delete.
+        """
+        row = self.proxy_params[index]
+        self.send_self(chunk_notice.ChunkNoticeAlias.PARAM_REMOVED, row)
+        row.request_delete()
+        self.proxy_params.pop(index)
 
     def _renumber_row_refs(self, removed: Iterable[int]) -> None:
         """Keep every expression naming one of these rows (@Node.item[2]@) on the same row.
@@ -3427,12 +3440,8 @@ class ChunkListGroupBase(ChunkGroupBase):
             index (int): The row to remove
         """
         try:
-            param = self.proxy_params[index]
-            param.get_dag_node().disconnect()
-
-            param.request_delete()
-            self.proxy_params.pop(index)
-
+            self.proxy_params[index].get_dag_node().disconnect()
+            self._delete_row(index)
         except IndexError as e:
             self.get_logger().warning("Failed to remove index from list. Index out of range %s", e)
             return
