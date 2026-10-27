@@ -32,6 +32,12 @@ same menu opens. The chunk you pick is created and connected to the port you dra
 The menu isn't filtered, so you can pick a chunk with no matching port. In that case the
 node is created without a wire, and no error is shown.
 
+To build a chain quickly, tick **Auto-connect** in the bottom-right corner, next to the
+Output badge. Each chunk you then make from the create menu is wired after the selected
+node. With no node selected, or several, it goes after the one the active Output or View
+shows. The Output or View moves onto the new chunk, and the new chunk is selected, so the
+next one goes after it. The box is remembered between sessions.
+
 A node's header shows its icon, name and type (to set an icon, see [Icons in the node
 graph](writing-a-chunk.md#icons-in-the-node-graph)). The **⋮** button at its right opens
 the same menu as right-clicking the node.
