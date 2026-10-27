@@ -298,3 +298,16 @@ def test_unlofting_turns_it_back_into_a_widget():
         assert _promoted(editor) == []
         assert _widget(editor, "weight").value == pytest.approx(7.0)
         assert _get(scene.get_stage(), "/a", "weight") == pytest.approx(7.0), "the edit stays"
+
+
+def test_a_lofted_field_stays_when_the_prim_changes():
+    with Scene() as scene:
+        group, editor = _editor_in_group(scene)
+        _spheres(scene.get_stage(), "/b")
+        chunk_stage.loft_param_to_context(_widget(editor, "weight"), group)
+        _lofted(group)[0].value = 7.0
+
+        editor.get_param("prim").value = "/b"
+
+        assert [p.name for p in _promoted(editor)] == ["weight"]
+        assert _get(scene.get_stage(), "/b", "weight") == pytest.approx(7.0)
