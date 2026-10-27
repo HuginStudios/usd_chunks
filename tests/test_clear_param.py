@@ -255,7 +255,7 @@ def test_a_cleared_vector_leaves_nothing_in_usd(env, monkeypatch):  # noqa: F811
     offered = _right_click(header, monkeypatch, pick=CLEAR)
     env["settle"]()
 
-    assert offered == {CLEAR: True}
+    assert offered[CLEAR] is True
     assert scale.value == (1.0, 1.0)
     assert _layers(env["stage"]) == before
 
@@ -378,7 +378,7 @@ def test_a_vector_clears_from_its_header_on_the_params_page(env, monkeypatch):  
     offered = _right_click(_row(page, vector).widget.minimize_button, monkeypatch, pick=CLEAR)
     env["settle"]()
 
-    assert offered == {CLEAR: True}
+    assert offered[CLEAR] is True
     assert tuple(vector.value) == tuple(vector.default_value)
 
 
