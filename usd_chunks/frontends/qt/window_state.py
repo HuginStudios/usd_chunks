@@ -47,6 +47,11 @@ def _settings() -> QtCore.QSettings:
     return QtCore.QSettings(_ORG, _APP)
 
 
+def settings() -> QtCore.QSettings:
+    """The QSettings usd_chunks keeps its UI preferences in, between sessions."""
+    return _settings()
+
+
 def _is_reachable(window: QtWidgets.QMainWindow) -> bool:
     """True if enough of the restored frame sits on some connected screen to grab."""
     frame = window.frameGeometry()

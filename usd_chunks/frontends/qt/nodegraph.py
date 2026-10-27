@@ -28,7 +28,7 @@ from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt import node_theme
+from usd_chunks.frontends.qt import node_theme, window_state
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
 logger = logging.getLogger(__name__)
@@ -264,6 +264,12 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
 
 #: Inset of the floating context path from the graph viewport's top-left corner.
 _BREADCRUMB_MARGIN = 6
+#: Where the Auto-connect checkbox remembers its state between sessions.
+_AUTO_CONNECT_KEY = "graph/autoConnect"
+#: Space between the Auto-connect checkbox and the Output badge beside it.
+_AUTO_CONNECT_GAP = 8
+#: Every live graph view, so ticking Auto-connect in one ticks it in all.
+_graph_views: weakref.WeakSet = weakref.WeakSet()
 
 # The port vocabulary lives in chunk_graph so every frontend names types the same way.
 # Aliased rather than re-exported by hand: ~40 references read _PORT_* already, and a
@@ -3573,6 +3579,37 @@ class GraphSearchPopup(QtWidgets.QFrame):
 _set_param_visibly = chunk_graph.set_param_visibly
 
 
+def _auto_connect_saved() -> bool:
+    """Whether Auto-connect was ticked last session."""
+    return window_state.settings().value(_AUTO_CONNECT_KEY, False, type=bool)
+
+
+def _set_auto_connect(on: bool) -> None:
+    """Tick or untick Auto-connect in every graph view, and remember it."""
+    window_state.settings().setValue(_AUTO_CONNECT_KEY, on)
+    for view in list(_graph_views):
+        box = getattr(view, "_auto_connect_box", None)
+        if box is not None and box.isChecked() != on:
+            box.blockSignals(True)
+            box.setChecked(on)
+            box.blockSignals(False)
+
+
+def _badge_font() -> QtGui.QFont:
+    """The font of the Output / View badge in the graph's bottom-right corner."""
+    return QtGui.QFont("monospace", 9, QtGui.QFont.Bold)
+
+
+def _port_node_path(port: ChunkPortItem) -> str:
+    """The prim path of the node a port belongs to."""
+    return str(Sdf.Path(port.attr_path).GetPrimPath())
+
+
+def _exec_port(node: ChunkNodeItem, is_input: bool) -> ChunkPortItem | None:
+    """A node's exec input or output port, or None."""
+    return next((p for p in node._ports if p.port_type == _PORT_EXEC and p.is_input == is_input), None)
+
+
 class ChunkGraphView(QtWidgets.QGraphicsView):
     """QGraphicsView with zoom, pan (middle mouse or Space+drag), and F to frame."""
 
@@ -3639,6 +3676,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
         self._breadcrumb.raise_()
 
+        # Left of the Output badge in the bottom-right corner. Ticked, each chunk made from
+        # the menu wires itself onto the end of the chain (see _chain_tail).
+        self._auto_connect_box = QtWidgets.QCheckBox("Auto-connect", self.viewport())
+        self._auto_connect_box.setToolTip(
+            "Wire each new chunk after the selected one, or after the one the view shows,\n"
+            "and move the view to it, to build a chain quickly."
+        )
+        self._auto_connect_box.setStyleSheet("QCheckBox { color: #c8c8c8; background: transparent; }")
+        self._auto_connect_box.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._auto_connect_box.setChecked(_auto_connect_saved())
+        self._auto_connect_box.toggled.connect(_set_auto_connect)
+        self._auto_connect_box.adjustSize()
+        _graph_views.add(self)
+
         self._proxy_key_router = _ProxyKeyRouter(self)
         self._proxy_key_router.install()
         # Pair the install with a removal, or every view ever built leaves a filter
@@ -3704,11 +3755,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             timer.start()
 
     def _anchor_breadcrumb(self) -> None:
-        """Top-left of the canvas, above whatever is drawn there."""
+        """Top-left of the canvas, above whatever is drawn there.
+
+        Also puts the Auto-connect checkbox back beside the Output badge: both are widgets
+        on the viewport, which scrolls its children with the canvas.
+        """
         breadcrumb = getattr(self, "_breadcrumb", None)
         if breadcrumb is not None:
             breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
             breadcrumb.raise_()
+        box = getattr(self, "_auto_connect_box", None)
+        if box is not None:
+            badge = self._slot_badge()[0]
+            box.move(badge.left() - _AUTO_CONNECT_GAP - box.width(),
+                     badge.center().y() - box.height() // 2)
+            box.raise_()
 
     def hideEvent(self, event: QtGui.QHideEvent):
         super().hideEvent(event)
@@ -3796,32 +3857,33 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         painter.drawPoints(points)
         painter.restore()
 
+    def _slot_badge(self) -> tuple[QtCore.QRect, str, QtGui.QColor]:
+        """The Output / View badge in the bottom-right corner: where it sits, its text, its colour."""
+        if self._view_state.active_slot == 0:
+            text = "Output"
+            colour = _COL_OUTPUT_HEADER
+        else:
+            text = f"View: {chunk_graph.view_number(self._view_state.active_slot)}"
+            colour = _COL_VIEW_HEADER
+        fm = QtGui.QFontMetrics(_badge_font())
+        pad_x, pad_y = 8, 5
+        w = fm.horizontalAdvance(text) + pad_x * 2
+        h = fm.height() + pad_y * 2
+        vp = self.viewport()
+        rect = QtCore.QRect(vp.width() - w - 8, vp.height() - h - 8, w, h)
+        return rect, text, QtGui.QColor(colour.red(), colour.green(), colour.blue(), 210)
+
     def drawForeground(self, painter: QtGui.QPainter, rect) -> None:
         super().drawForeground(painter, rect)
         painter.save()
         painter.resetTransform()
-        vp = self.viewport()
-        if self._view_state.active_slot == 0:
-            text = "Output"
-            bg = QtGui.QColor(_COL_OUTPUT_HEADER.red(), _COL_OUTPUT_HEADER.green(), _COL_OUTPUT_HEADER.blue(), 210)
-            fg = QtGui.QColor("#ffffff")
-        else:
-            text = f"View: {chunk_graph.view_number(self._view_state.active_slot)}"
-            bg = QtGui.QColor(_COL_VIEW_HEADER.red(), _COL_VIEW_HEADER.green(), _COL_VIEW_HEADER.blue(), 210)
-            fg = QtGui.QColor("#ffffff")
-        font = QtGui.QFont("monospace", 9, QtGui.QFont.Bold)
-        painter.setFont(font)
-        fm = QtGui.QFontMetrics(font)
-        pad_x, pad_y = 8, 5
-        w = fm.horizontalAdvance(text) + pad_x * 2
-        h = fm.height() + pad_y * 2
-        x = vp.width() - w - 8
-        y = vp.height() - h - 8
+        badge, text, bg = self._slot_badge()
+        painter.setFont(_badge_font())
         painter.setBrush(bg)
         painter.setPen(QtCore.Qt.NoPen)
-        painter.drawRoundedRect(QtCore.QRect(x, y, w, h), 4, 4)
-        painter.setPen(fg)
-        painter.drawText(QtCore.QRect(x, y, w, h), QtCore.Qt.AlignCenter, text)
+        painter.drawRoundedRect(badge, 4, 4)
+        painter.setPen(QtGui.QColor("#ffffff"))
+        painter.drawText(badge, QtCore.Qt.AlignCenter, text)
         painter.restore()
 
     def sizeHint(self) -> QtCore.QSize:
@@ -5501,6 +5563,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if slot == 0:
             self._forget_saved_view()
         self._recook_active_view(select_view=not self._quiet_slot_change)
+        self._anchor_breadcrumb()
         self.viewport().update()
 
     def _forget_saved_view(self) -> None:
@@ -5865,6 +5928,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
+        # Read before the add, which can change the selection.
+        tail = self._chain_tail() if self._auto_connect_box.isChecked() else None
         with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), pin=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
@@ -5877,7 +5942,74 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._activate_menu_view(menu_view, context, scene.get_stage())
             return
 
+        new_chunk = next((c for c in chunks if not chunk_stage.is_terminal_chunk(c)), None)
+        if self._auto_connect_box.isChecked() and new_chunk is not None:
+            new_path = chunk_stage.get_chunk_prim_path(new_chunk)
+            # Deferred like _create_and_connect_from_menu: the new node's ports come with
+            # the rebuild the add queued.
+            QtCore.QTimer.singleShot(
+                80, self, lambda: self._chain_after(tail, new_path, context))
+            return
+
         QtCore.QTimer.singleShot(60, self, lambda ctx=context: self._ensure_default_view(ctx))
+
+    def _chain_tail(self) -> str | None:
+        """The node a new chunk goes after when Auto-connect is on, as a prim path.
+
+        The one selected node; with none or several, the one the active view or Output
+        shows. None in an empty graph, or with nothing shown yet.
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return None
+        chain = {path: node for path, node in graph_scene._nodes.items()
+                 if not (node._is_view or node._is_output)}
+        picked = [path for path, node in chain.items() if node.chunk.has_state(ChunkFlags.State.SELECTED)]
+        if len(picked) == 1:
+            return picked[0]
+        for edge in graph_scene._edges:
+            if edge.dst_port.port_type != _PORT_EXEC:
+                continue
+            shown_by = graph_scene._nodes.get(_port_node_path(edge.dst_port))
+            if shown_by is not None and (shown_by._is_active_view() or shown_by._is_active_output()):
+                source = _port_node_path(edge.src_port)
+                if source in chain:
+                    return source
+        return None
+
+    def _chain_after(self, tail_path: str | None, new_path: str, context) -> None:
+        """Wire the new node after tail_path, move what showed the tail onto it, and select it.
+
+        Selected, the next new chunk goes after it in turn. Without a tail the new node
+        starts the chain, and the graph gives it an Output as for any first chunk.
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        new_node = graph_scene._nodes.get(new_path)
+        tail = graph_scene._nodes.get(tail_path) if tail_path else None
+        if new_node is not None and tail is not None:
+            tail_out = _exec_port(tail, is_input=False)
+            new_in = _exec_port(new_node, is_input=True)
+            new_out = _exec_port(new_node, is_input=False)
+            # The views and Outputs the tail fed, to hand on to the new end.
+            shown = [
+                edge.dst_port for edge in graph_scene._edges
+                if edge.src_port is tail_out
+                and (dst := graph_scene._nodes.get(_port_node_path(edge.dst_port))) is not None
+                and (dst._is_view or dst._is_output)
+            ]
+            if tail_out is not None and new_in is not None and self._can_connect(tail_out, new_in):
+                self._author_connection(tail_out, new_in)
+                for port in shown:
+                    if new_out is not None and self._can_connect(new_out, port):
+                        self._author_connection(new_out, port)
+        if new_node is not None:
+            scene = _chunk.get_scene()
+            if scene is not None:
+                scene.clear_chunk_selection()
+            new_node.chunk.set_selected(True)
+        self._ensure_default_view(context)
 
     # ------------------------------------------------------------------
     # Drag-and-drop file import
