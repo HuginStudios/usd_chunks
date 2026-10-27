@@ -454,13 +454,31 @@ def _download_and_apply(node, title: str) -> str:
     return f"Ready — {mat_path}"
 
 
+def _apply_inputs(node, title: str) -> tuple:
+    """Everything _download_and_apply reads, to tell whether it has anything new to do."""
+    return (
+        title,
+        node.get_param("resolution", chunk.is_inst(chunk.Menu)).value,
+        node.get_param("mat_scope", chunk.is_param_t(str)).value,
+        node.get_param("cache_dir", chunk.is_param_t(str)).value,
+        node.get_param("target_primpath").value,
+    )
+
+
 def execute(node):
     """Re-applies the stored picked material, (re)creating the Reference and
     BindMaterial children if they're missing -- e.g. after a reload where the
     USD prims exist but their backing Python child chunks weren't reattached.
+
+    Skipped when it already applied these inputs and both children are there: a cook
+    from upstream, such as the target prim moving, changes nothing it reads.
     """
     title = node.get_param("picked_title").value
     if not title:
+        return
+    inputs = _apply_inputs(node, title)
+    if (getattr(node, "_applied_inputs", None) == inputs
+            and _child_of_type(node, "reference") and _child_of_type(node, "bind_material")):
         return
     status_param = node.get_param("status", chunk.is_inst(chunk.Label))
     if status_param:
@@ -468,6 +486,7 @@ def execute(node):
     result = _download_and_apply(node, title)
     if status_param:
         status_param.value = result
+    node._applied_inputs = inputs if result.startswith("Ready") else None
 
 
 def _set_status(owner, text: str) -> None:
