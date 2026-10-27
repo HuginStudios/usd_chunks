@@ -1946,6 +1946,9 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                 usd_attr = None
                         if usd_attr:
                             with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
+                                # Read first: a String attr keeps its expression as its value,
+                                # which the write below replaces.
+                                had_expr = not is_expr and bool(chunk_utils.read_expression_text(usd_attr))
                                 if not is_expr:
                                     current = usd_attr.Get(0)
                                     # Don't write a string to a typed (numeric) attr -- an unresolved
@@ -1988,7 +1991,11 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                         chunk_utils.store_expression_text(usd_attr, raw)
                                 else:
                                     # The wire is gone; text left behind would come back as the
-                                    # wire on the next load.
+                                    # wire on the next load, and the expression's connections
+                                    # still draw as a wire in the graph. Only those: a loft
+                                    # connects the attr too, with no text.
+                                    if had_expr:
+                                        usd_attr.ClearConnections()
                                     chunk_utils.clear_expression_text(usd_attr)
                     if not self.is_blocked() and refused is None:
                         self._write_driven_attrs(stage, val)

@@ -1376,10 +1376,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         _build_edges draws wires for, and cheap since it only runs on collapse/rebuild,
         not per frame.
         """
-        names = {
-            attr_name[len("inputs:"):]
-            for attr_name, _, _ in _iter_prim_connections(self.prim)
-        }
+        names = set()
+        for attr_name, _, _ in _iter_prim_connections(self.prim):
+            name = attr_name[len("inputs:"):]
+            # inputs:<group>:<name> for a param in a group: the port goes by the name.
+            if ":" in name and (param := self.input_param(attr_name)) is not None:
+                name = param.name
+            names.add(name)
         scene = self.scene()
         if isinstance(scene, ChunkGraphScene):
             names |= scene.fed_outputs(str(self.prim.GetPath()))
@@ -1569,6 +1572,33 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if port.attr_path == attr_path:
                 return port
         return None
+
+    def input_param(self, attr_name: str):
+        """The param an inputs: attr on this node's prim holds, or None.
+
+        Args:
+            attr_name: The attribute's name, inputs:<name> or, for a param in a group,
+                inputs:<group>:<name>.
+        """
+        try:
+            return self.chunk.get_param(attr_name[len("inputs:"):].replace(":", "."))
+        except Exception:  # noqa: BLE001 - a chunk mid-teardown still draws
+            return None
+
+    def input_port(self, attr_name: str) -> ChunkPortItem | None:
+        """The port a connection on the inputs: attr attr_name is drawn into.
+
+        A port is named after its param alone (inputs:tx), but a param in a group keeps its
+        value, and an expression typed into it its connection, on inputs:<group>:<name>.
+
+        Args:
+            attr_name: The attribute's name.
+        """
+        if (port := self.get_port(f"{self.prim.GetPath()}.{attr_name}")) is not None:
+            return port
+        if ":" not in attr_name[len("inputs:"):] or (param := self.input_param(attr_name)) is None:
+            return None
+        return self.get_port(f"{self.prim.GetPath()}.inputs:{param.name}")
 
     def port_near(self, scene_pos: QtCore.QPointF, reach: float) -> ChunkPortItem | None:
         """The port closest to scene_pos, if one is within reach.
@@ -2785,6 +2815,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         for edge in self._edges:
             self.removeItem(edge)
         self._edges.clear()
+        # A wire dragged into a param in a group is on inputs:<name> and its expression on
+        # inputs:<group>:<name>: two connections, one wire.
+        drawn: set[tuple] = set()
 
         # Before resolving ports: a merge grows/loses a slot as branches are wired and
         # cleared, and the port the next loop looks up has to exist. Safe to do here (rather
@@ -2810,18 +2843,14 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 is_exec = chunk_stage.is_exec_input_name(attr_name)
                 if not is_exec and not self._show_param_edges:
                     continue
-                dst_attr_path = f"{node.prim.GetPath()}.{attr_name}"
-                dst_port = node.get_port(dst_attr_path)
+                dst_port = node.input_port(attr_name)
                 if dst_port is None:
                     continue
                 expression: str | None = None
-                try:
-                    param = node.chunk.get_param(attr_name[len("inputs:"):])
-                    raw = getattr(param, 'raw_value', None) if param else None
-                    if isinstance(raw, str) and chunk_utils.has_expression(raw):
-                        expression = raw
-                except Exception:
-                    pass
+                param = node.input_param(attr_name)
+                raw = getattr(param, 'raw_value', None) if param else None
+                if isinstance(raw, str) and chunk_utils.has_expression(raw):
+                    expression = raw
 
                 # dict.fromkeys: two rows of one list read by one expression author the same
                 # connection twice, and _source_ports already finds both rows from either.
@@ -2833,6 +2862,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                     # always visualizes from its output dot regardless of attr prefix.
                     src_path = str(conn_path).replace(".inputs:", ".outputs:", 1)
                     for src_port in self._source_ports(src_node, src_path, expression):
+                        if (src_port, dst_port) in drawn:
+                            continue
+                        drawn.add((src_port, dst_port))
                         edge = ChunkEdgeItem(src_port, dst_port, expression)
                         self.addItem(edge)
                         self._edges.append(edge)
@@ -4843,14 +4875,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             if isinstance(graph_scene, ChunkGraphScene) and graph_scene._stage:
                 attr = graph_scene._stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
                 conns = list(attr.GetConnections()) if attr and attr.IsValid() else []
-                row_edge = None
-                if not conns and chunk_graph.is_list_row(port.param):
-                    # A row's wire is its expression, drawn as an edge with no USD connection.
-                    row_edge = next((e for e in graph_scene._edges if e.dst_port is port), None)
-                if conns or row_edge:
+                drawn = None
+                if not conns:
+                    # A wire drawn with no connection on the port's own attr: a list row's
+                    # (its expression), or one typed into a param in a group, connected on
+                    # inputs:<group>:<name> (see ChunkNodeItem.input_port).
+                    drawn = next((e for e in graph_scene._edges if e.dst_port is port), None)
+                if conns or drawn:
                     self._drag_detach_attr = attr
                     self._drag_detach_source_port = (
-                        row_edge.src_port if row_edge else self._find_sibling_output_port(conns[0], graph_scene)
+                        drawn.src_port if drawn else self._find_sibling_output_port(conns[0], graph_scene)
                     )
                     # Drag the real edge itself (its src end stays put, dst end follows
                     # the cursor) instead of a separate rubber-band line on top of it.
