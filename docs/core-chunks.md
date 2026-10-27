@@ -100,7 +100,8 @@ Good to know before you build one:
 - **To show an inner param on the outside, loft it.** Lofting adds the inner param as a
   real param on the group node. The connection goes *up*, from the inner param to the group
   node. It's not the same as a normal `@Node.param@` link between two chunks, so treat
-  lofts separately.
+  lofts separately. A vector (Focus Point, Clipping Range) lofts as one, with all its fields:
+  right-click its header and choose **Loft up**.
 - **Groups can be saved as files** and loaded back as a sublayer, reference or payload,
   using plain USD composition. A chunk loaded this way is **locked**: it has an amber header
   and can't be moved (auto-layout works around it). You can still change its params. Your
