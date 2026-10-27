@@ -791,6 +791,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
+        icon="download",
         description=(
             "Exports every real layer in the composed stack to Output Directory, one file\n"
             "per layer, named after that layer's own name — e.g. a Layer chunk with\n"

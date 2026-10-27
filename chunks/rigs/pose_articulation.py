@@ -463,6 +463,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.RIGS,
+        icon="bone",
         description="""
         Poses an articulation: one slider per joint, read out of UsdPhysics rather than out
         of a .urdf, so a robot arm is only the obvious case. A drawer is a prismatic joint

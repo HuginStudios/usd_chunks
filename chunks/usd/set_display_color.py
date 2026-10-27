@@ -76,6 +76,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
+        icon="palette",
         description=(
             "Authors a uniform displayColor (primvars:displayColor) on the target prim —\n"
             "a quick flat colour for previews or for tagging prims, without needing a\n"

@@ -272,6 +272,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.PROPERTIES,
+        icon="tag",
         description=(
             "Authors UsdSemantics labels — applies SemanticsLabelsAPI:<taxonomy> and sets\n"
             "token[] semantics:labels:<taxonomy> on every matched prim.\n"

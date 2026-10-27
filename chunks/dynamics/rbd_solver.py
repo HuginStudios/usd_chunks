@@ -3559,20 +3559,20 @@ def main() -> chunk.Chunk:
         | chunk.ChunkFlags.GroupFlags.FRAMED
     )
 
-    def _section(name: str, label: str) -> chunk.Group:
+    def _section(name: str, label: str, icon: str = "") -> chunk.Group:
         """A folded section.
 
         Every section starts collapsed: the solver has ~30 params, and showing them all
         meant scrolling past a wall of spinboxes to reach Run. Folding is a pure UI
         preference and is deliberately not treated as a change to the chunk.
         """
-        grp = chunk.Group(name, label, flags=_GF)
+        grp = chunk.Group(name, label, icon=icon, flags=_GF)
         grp.set_state(chunk.ChunkFlags.State.COLLAPSED)
         return grp
 
     # ------------------------------------------------------------------
     # Collision -- what the body hits.
-    col_grp = _section("Collision", "Collision")
+    col_grp = _section("Collision", "Collision", icon="zap")
     col_grp.add_param(
         chunk.TextEdit(
             "collision_path",
@@ -3648,7 +3648,7 @@ def main() -> chunk.Chunk:
 
     # ------------------------------------------------------------------
     # Physics -- what the body is made of.
-    physics_grp = _section("Physics", "Physics")
+    physics_grp = _section("Physics", "Physics", icon="waves")
     physics_grp.add_param(
         chunk.Menu(
             "shape_type",
@@ -3736,7 +3736,7 @@ def main() -> chunk.Chunk:
 
     # ------------------------------------------------------------------
     # Initial State -- where it starts and how hard it is thrown.
-    init_grp = _section("InitialState", "Initial State")
+    init_grp = _section("InitialState", "Initial State", icon="cube")
     # No position or rotation offset here any more, and no gizmo on this chunk. Transform
     # chunks compose, so an upstream Transform does that job -- and having it in two places
     # was actively harmful: with a chair wired Transform -> RBD Solver, going back to adjust
@@ -3767,7 +3767,7 @@ def main() -> chunk.Chunk:
 
     # ------------------------------------------------------------------
     # Forces -- what pushes the body around mid-flight.
-    forces_grp = _section("Forces", "Forces")
+    forces_grp = _section("Forces", "Forces", icon="move")
     forces_grp.add_param(
         chunk.Vector(
             "wind",
@@ -3824,7 +3824,7 @@ def main() -> chunk.Chunk:
 
     # ------------------------------------------------------------------
     # Breakage -- for a fractured PointInstancer (the Fracture chunk's output).
-    brk_grp = _section("Breakage", "Breakage")
+    brk_grp = _section("Breakage", "Breakage", icon="zap")
     brk_grp.add_param(chunk.Checkbox(
         "breakable", "Breakable", default_value=True,
         tooltip="When the target is a fractured PointInstancer, let its bodies break into their "
@@ -3856,7 +3856,7 @@ def main() -> chunk.Chunk:
 
     # ------------------------------------------------------------------
     # Simulation -- how the solve itself is run. Last: set once, rarely touched.
-    sim_grp = _section("Simulation", "Simulation")
+    sim_grp = _section("Simulation", "Simulation", icon="waves")
     sim_grp.add_param(
         chunk.Spinbox(
             "start_frame", "Start Frame", default_value=1, is_int=True, tooltip="First frame of the baked animation."
@@ -3913,6 +3913,7 @@ def main() -> chunk.Chunk:
 def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
+        icon="cube",
         description=(
             "Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance\n"
             "of a PointInstancer — as keyframed animation over the frame range. Add colliders\n"

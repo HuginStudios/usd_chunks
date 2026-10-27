@@ -208,6 +208,7 @@ def main() -> chunk.Chunk:
 def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
+        icon="sparkles",
         description=(
             "Rewrites a PointInstancer's instances as a stream over time: where each appears, when\n"
             "(primvars:rbd:emitFrame), and its velocities -- plain instancer data the RBD Solver reads."

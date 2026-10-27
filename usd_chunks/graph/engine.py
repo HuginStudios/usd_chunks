@@ -751,6 +751,10 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
 
     attr = stage.GetAttributeAtPath(Sdf.Path(port.attr_path))
     if not (attr and attr.IsValid()):
+        # No attr under the port's own name: a wire typed into a param in a group is only
+        # its expression, connected on inputs:<group>:<name>. Resetting the param drops it.
+        if port.port_type != PORT_EXEC and port.is_input and _unwire_param(port, chunks):
+            return GraphChange(touched_nodes=touched)
         return GraphChange(edges_dirty=False, touched_nodes=set())
 
     if port.port_type == PORT_EXEC and heal:
@@ -773,13 +777,31 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     _clear_connections(stage, attr)
 
     if port.port_type != PORT_EXEC and port.is_input:
-        chunk = chunks.get(port.node_path)
-        if chunk is not None:
-            param = chunk.get_param(port.param_name)
-            if param is not None:
-                param.value = param.default_value
+        _unwire_param(port, chunks, always=True)
 
     return GraphChange(touched_nodes=touched, exec_changed=port.port_type == PORT_EXEC)
+
+
+def _unwire_param(port: PortRef, chunks: dict, always: bool = False) -> bool:
+    """Put the param behind an input port back to its default.
+
+    Args:
+        port: The input port.
+        chunks: Maps prim path to live chunk.
+        always: Reset it even when it holds no expression.
+
+    Returns:
+        True when the param was reset.
+    """
+    chunk = chunks.get(port.node_path)
+    param = chunk.get_param(port.param_name) if chunk is not None else None
+    if param is None:
+        return False
+    raw = getattr(param, "raw_value", None)
+    if not (always or (isinstance(raw, str) and chunk_utils.has_expression(raw))):
+        return False
+    param.value = param.default_value
+    return True
 
 
 def iter_copyable_params(chunk: core.ChunkCommon):

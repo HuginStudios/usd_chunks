@@ -201,6 +201,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS,
+        icon="code",
         description=(
             "Declares USD stage expression variables -- a name, a type and a value per row.\n"
             "USD substitutes ${NAME} into asset paths and variant selections and nowhere "

@@ -83,4 +83,4 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.USD)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.USD, icon="tag")

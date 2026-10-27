@@ -345,6 +345,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_LAYER,
+        icon="layers",
         description="""
         Layer chunk — authors a fresh anonymous layer and sublayers it into the
         session layer, or into whichever layer an upstream Edit Target chunk has

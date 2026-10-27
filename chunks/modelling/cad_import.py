@@ -828,7 +828,7 @@ def main():
         )
     )
 
-    tessellation = chunk.Group("Tessellation", flags=_GF)
+    tessellation = chunk.Group("Tessellation", icon="grid", flags=_GF)
     tessellation.add_params(
         [
             chunk.Slider(
@@ -871,7 +871,7 @@ def main():
     )
     cad_chunk.add_param(tessellation)
 
-    structure = chunk.Group("Structure", flags=_GF)
+    structure = chunk.Group("Structure", icon="layers", flags=_GF)
     structure.add_params(
         [
             chunk.Checkbox(
@@ -953,6 +953,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="cube",
         requirements=["cadquery-ocp>=7.8,<9"],
         cache_cook=True,
         description=(

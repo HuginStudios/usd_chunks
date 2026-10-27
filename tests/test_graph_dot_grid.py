@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from usd_chunks.frontends.qt.nodegraph import ChunkGraphView, _ProxyKeyRouter
+from usd_chunks.frontends.qt.nodegraph import _COL_CANVAS_BG, ChunkGraphView, _ProxyKeyRouter
 
 
 def test_grid_points_snap_to_spacing_lines_for_a_positive_rect() -> None:
@@ -61,7 +61,7 @@ def test_draw_background_renders_dots_without_crashing(qapp) -> None:
     gv.render(painter)
     painter.end()
 
-    bg = QtGui.QColor("#252525").rgb()
+    bg = _COL_CANVAS_BG.rgb()
     non_bg_pixels = sum(
         1
         for x in range(0, 400, 2)

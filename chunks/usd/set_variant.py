@@ -103,6 +103,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="merge",
         description="""
         Set Variant chunk — authors an active variant selection on one or more prims.
 

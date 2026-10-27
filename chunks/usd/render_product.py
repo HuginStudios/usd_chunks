@@ -182,6 +182,7 @@ def execute(node):
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
+        icon="film",
         description="""
         Render Product chunk — creates a UsdRender.Product prim: one rendered
         output, the camera it is rendered from, and the ordered list of AOVs it

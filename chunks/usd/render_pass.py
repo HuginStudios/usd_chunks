@@ -92,6 +92,7 @@ def execute(node):
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
+        icon="film",
         description="""
         Render Pass chunk — creates a UsdRender.Pass prim, one step of a render
         pointing at the settings that describe it.

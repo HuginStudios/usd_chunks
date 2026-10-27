@@ -135,4 +135,4 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.MATERIALS)
+    return chunk.DefaultConfig(category=chunk.StandardCategory.MATERIALS, icon="image")

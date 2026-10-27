@@ -186,6 +186,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.UTILS,
+        icon="merge",
         # Two positional exec inputs: the top one is the normal path, the bottom one the
         # matched path. Positional, so they get a port each rather than stacking on one --
         # unlike a Switch's interchangeable inputs, these two mean different things.

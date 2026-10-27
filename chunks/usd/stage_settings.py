@@ -54,6 +54,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_LAYER,
+        icon="sliders",
         description="""
         Stage Settings chunk -- writes a stage's units, up axis, frame range and frame rate
         onto the layer being edited.

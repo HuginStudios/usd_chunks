@@ -1577,7 +1577,7 @@ def main():
         chunk.Label("readout", "not built yet", default_value="not built yet", tooltip="What the last cook produced.")
     )
 
-    footprint = chunk.Group("footprint_grp", "Footprint", flags=_GF)
+    footprint = chunk.Group("footprint_grp", "Footprint", icon="ruler", flags=_GF)
     footprint.add_params(
         [
             chunk.Slider(
@@ -1616,7 +1616,7 @@ def main():
     )
     chunk_api.add_param(footprint)
 
-    roof = chunk.Group("roof_grp", "Roof", flags=_GF)
+    roof = chunk.Group("roof_grp", "Roof", icon="home", flags=_GF)
     roof.add_param(
         chunk.Menu(
             "roof_style",
@@ -1665,7 +1665,7 @@ def main():
     )
     chunk_api.add_param(roof)
 
-    windows = _collapsed(chunk.Group("window_grp", "Windows", flags=_GF))
+    windows = _collapsed(chunk.Group("window_grp", "Windows", icon="grid", flags=_GF))
     windows.add_params(
         [
             chunk.Slider("window_width", "Width", min_value=0.3, max_value=2.0, default_value=0.63),
@@ -1684,7 +1684,7 @@ def main():
     )
     chunk_api.add_param(windows)
 
-    chimney = _collapsed(chunk.Group("chimney_grp", "Chimney", flags=_GF))
+    chimney = _collapsed(chunk.Group("chimney_grp", "Chimney", icon="home", flags=_GF))
     chimney.add_params(
         [
             chunk.Slider("chimney_count", "Count", min_value=0, max_value=2, default_value=1, is_int=True),
@@ -1701,7 +1701,7 @@ def main():
     )
     chunk_api.add_param(chimney)
 
-    detail = _collapsed(chunk.Group("detail_grp", "Detailing", flags=_GF))
+    detail = _collapsed(chunk.Group("detail_grp", "Detailing", icon="sliders", flags=_GF))
     detail.add_params(
         [
             chunk.Slider(
@@ -1744,7 +1744,7 @@ def main():
     )
     chunk_api.add_param(detail)
 
-    materials = _collapsed(chunk.Group("material_grp", "Materials", flags=_GF))
+    materials = _collapsed(chunk.Group("material_grp", "Materials", icon="sphere", flags=_GF))
     materials.add_params(
         [
             chunk.ColorPicker("wall_color", "Walls", default_value=(0.52, 0.12, 0.08)),
@@ -1763,6 +1763,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="home",
         cache_cook=True,
         description="""
         Swedish House — builds a Falu-red cottage from a box.

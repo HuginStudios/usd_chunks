@@ -99,6 +99,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
+        icon="sphere",
         outputs=[("result", "Float2")],
         description="""
         Primvar Reader chunk — adds a UsdPrimvarReader shader of the chosen type into

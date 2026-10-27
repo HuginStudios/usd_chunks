@@ -94,6 +94,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
+        icon="merge",
         description="Picks one upstream branch. Where a Merge sums every branch wired into "
         "it, a Switch passes the one in the selected slot and mutes the rest -- the whole "
         "branch, not just the chunk in the slot. A chunk feeding both the chosen branch and "
