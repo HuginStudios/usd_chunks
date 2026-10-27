@@ -216,3 +216,74 @@ def test_the_uv_set_name_is_honoured(wired) -> None:
     node.get_param("prim_path").value = "/Mesh"
     api = UsdGeom.PrimvarsAPI(stage.GetPrimAtPath("/Mesh"))
     assert api.GetPrimvar("bake") and not api.GetPrimvar("st")
+
+
+# ---------------------------------------------------------------------------
+# what a recook unwraps again
+# ---------------------------------------------------------------------------
+
+
+def _live_module():
+    """The module the registry cooks with: not `uv`, which is a second copy of the file."""
+    return chunk_registry.ChunkRegistry().get_chunk_module("uv_unwrap").module
+
+
+def _counting_unwraps(monkeypatch) -> list:
+    calls = []
+    live = _live_module()
+    real = live.unwrap
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(live, "unwrap", counted)
+    return calls
+
+
+def _two_spheres(stage) -> None:
+    for path, centre in (("/Asset/A", (0.0, 0.0, 0.0)), ("/Asset/B", (3.0, 0.0, 0.0))):
+        _define(stage, path, *_sphere(centre=centre))
+
+
+def test_moving_a_mesh_does_not_unwrap_it_again(wired, monkeypatch) -> None:
+    stage, make = wired
+    _define(stage, "/Mesh", *_sphere())
+    node = make()
+    node.get_param("prim_path").value = "/Mesh"
+    calls = _counting_unwraps(monkeypatch)
+
+    xform = UsdGeom.Xformable(stage.GetPrimAtPath("/Mesh"))
+    xform.AddTranslateOp().Set((5.0, 1.0, 0.0))
+    xform.AddRotateYOp().Set(30.0)
+    xform.AddScaleOp().Set((2.0, 2.0, 2.0))
+    _live_module().execute(node)
+
+    assert calls == []
+
+
+def test_moving_one_of_several_meshes_in_one_atlas_does_not_unwrap_them_again(wired, monkeypatch) -> None:
+    stage, make = wired
+    _two_spheres(stage)
+    node = make()
+    node.get_param("prim_path").value = "/Asset"
+    calls = _counting_unwraps(monkeypatch)
+
+    UsdGeom.Xformable(stage.GetPrimAtPath("/Asset/B")).AddTranslateOp().Set((0.0, 4.0, 0.0))
+    _live_module().execute(node)
+
+    assert calls == []
+
+
+def test_scaling_one_of_several_meshes_in_one_atlas_unwraps_them_again(wired, monkeypatch) -> None:
+    stage, make = wired
+    _two_spheres(stage)
+    node = make()
+    node.get_param("prim_path").value = "/Asset"
+    calls = _counting_unwraps(monkeypatch)
+
+    # Their sizes against each other set how much of the square each one gets.
+    UsdGeom.Xformable(stage.GetPrimAtPath("/Asset/B")).AddScaleOp().Set((2.0, 2.0, 2.0))
+    _live_module().execute(node)
+
+    assert calls != []
