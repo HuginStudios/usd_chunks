@@ -373,7 +373,7 @@ def main():
         )
     )
 
-    run_grp = chunk.Group("Run", flags=_GF)
+    run_grp = chunk.Group("Run", icon="ruler", flags=_GF)
     run_grp.add_param(
         chunk.Slider(
             "length",
@@ -415,7 +415,7 @@ def main():
     )
     chunk_api.add_param(run_grp)
 
-    post_grp = chunk.Group("Posts", flags=_GF)
+    post_grp = chunk.Group("Posts", icon="posts", flags=_GF)
     post_grp.add_param(
         chunk.Slider(
             "post_width",
@@ -468,7 +468,7 @@ def main():
     )
     chunk_api.add_param(post_grp)
 
-    rail_grp = chunk.Group("Rails", flags=_GF)
+    rail_grp = chunk.Group("Rails", icon="rails", flags=_GF)
     rail_grp.add_param(
         chunk.Slider(
             "rail_count",
@@ -533,7 +533,7 @@ def main():
     )
     chunk_api.add_param(rail_grp)
 
-    picket_grp = chunk.Group("Pickets", flags=_GF)
+    picket_grp = chunk.Group("Pickets", icon="bars", flags=_GF)
     picket_grp.add_param(
         chunk.Checkbox(
             "pickets",
@@ -623,7 +623,7 @@ def main():
     )
     chunk_api.add_param(picket_grp)
 
-    var_grp = chunk.Group("Variation", flags=_GF)
+    var_grp = chunk.Group("Variation", icon="shuffle", flags=_GF)
     var_grp.add_param(
         chunk.Slider(
             "seed",
@@ -673,6 +673,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="posts",
         description=(
             "Builds a parametric fence — posts, rails and pickets — as a single mesh.\n"
             "Runs straight, or follows a curve/points prim including its terrain height.\n"

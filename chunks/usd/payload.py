@@ -124,6 +124,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="link",
         description="""
         Payload chunk: Lets the user pick an external USD file and insert it as a
         Usd.Payload into the active stage.

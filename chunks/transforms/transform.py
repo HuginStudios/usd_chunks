@@ -353,15 +353,16 @@ def main():
     # The last column is the whole gizmo declaration. A group already *is* the three params
     # its handle drives, so nothing needs listing -- and three separate handles is what a
     # viewport wants anyway, rather than one handle with modes.
-    for grp_name, grp_label, axes, min_v, max_v, default, gizmo in [
-        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate"),
-        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0, "rotate"),
-        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0, "scale"),
+    for grp_name, grp_label, axes, min_v, max_v, default, gizmo, icon in [
+        ("translate_grp", "Translate", ("tx", "ty", "tz"), -100.0, 100.0, 0.0, "translate", "move"),
+        ("rotate_grp",    "Rotate",    ("rx", "ry", "rz"),  -180.0,  180.0, 0.0, "rotate", "rotate"),
+        ("scale_grp",     "Scale",     ("sx", "sy", "sz"),   0.0,  100.0, 1.0, "scale", "scale"),
     ]:
         grp = chunk.Group(
             grp_name,
             grp_label,
             gizmo=gizmo,
+            icon=icon,
             flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
         )
         if grp_name != "translate_grp":
@@ -380,7 +381,7 @@ def main():
     # one handle -- reported through the gizmo_offset hook above, since it changes as the
     # user drags rather than being static config.
     pivot_grp = chunk.Group(
-        "pivot_grp", "Pivot",
+        "pivot_grp", "Pivot", icon="pivot",
         flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
     )
     pivot_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
@@ -413,6 +414,7 @@ def config():
     return chunk.DefaultConfig(
         # No gizmos block: the handles are declared as gizmo= on the three groups in main().
         category=chunk.StandardCategory.TRANSFORM,
+        icon="move",
         description="""
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and
         scale xform ops to one or more existing prims.

@@ -782,6 +782,7 @@ def commit(node):
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
+        icon="film",
         description="""
         Render chunk — the ROP. Renders the live stage through Hydra, using the
         UsdRender.Settings prim a Render Settings chunk authored.

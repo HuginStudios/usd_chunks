@@ -1422,7 +1422,7 @@ def main():
     )
 
     # --- growth ---
-    grow = chunk.Group("grow_grp", "Growth", flags=_GF)
+    grow = chunk.Group("grow_grp", "Growth", icon="sprout", flags=_GF)
     auto = chunk.Checkbox(
         "auto_step",
         "Auto Step",
@@ -1521,7 +1521,7 @@ def main():
     chunk_api.add_param(grow)
 
     # --- shape ---
-    shape = _collapsed(chunk.Group("shape_grp", "Shape", flags=_GF))
+    shape = _collapsed(chunk.Group("shape_grp", "Shape", icon="curve", flags=_GF))
     shape.add_param(
         chunk.Menu(
             "curve_form",
@@ -1584,7 +1584,7 @@ def main():
     chunk_api.add_param(shape)
 
     # --- leaves ---
-    leaf = _collapsed(chunk.Group("leaf_grp", "Leaves", flags=_GF))
+    leaf = _collapsed(chunk.Group("leaf_grp", "Leaves", icon="sprout", flags=_GF))
     leaves = chunk.Checkbox(
         "leaves",
         "Leaf Points",
@@ -1622,7 +1622,7 @@ def main():
     chunk_api.add_param(leaf)
 
     # --- advanced ---
-    advanced = _collapsed(chunk.Group("advanced_grp", "Advanced", flags=_GF))
+    advanced = _collapsed(chunk.Group("advanced_grp", "Advanced", icon="sliders", flags=_GF))
     advanced.add_param(
         chunk.Slider(
             "influence",
@@ -1662,7 +1662,7 @@ def main():
     chunk_api.add_param(advanced)
 
     # --- display ---
-    display = _collapsed(chunk.Group("display_grp", "Display", flags=_GF))
+    display = _collapsed(chunk.Group("display_grp", "Display", icon="eye", flags=_GF))
     display.add_param(
         chunk.ColorPicker("vine_color", "Vine Color", default_value=(0.18, 0.42, 0.15))
     )
@@ -1683,6 +1683,7 @@ def _collapsed(group):
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="sprout",
         # Growth is array work over thousands of nodes and attractors -- see `_grow`.
         requirements=["numpy>=2,<3"],
         description="""

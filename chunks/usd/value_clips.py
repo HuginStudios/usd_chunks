@@ -380,6 +380,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="film",
         description="""
         Value Clips — stacks one or more USD clip sets on a prim.
 

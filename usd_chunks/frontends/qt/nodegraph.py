@@ -28,6 +28,7 @@ from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
+from usd_chunks.frontends.qt import node_theme
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
 logger = logging.getLogger(__name__)
@@ -47,15 +48,20 @@ _node_clipboard = chunk_graph.node_clipboard
 _edge_clipboard = chunk_graph.edge_clipboard
 
 _PORT_RADIUS = 5
-_PORT_SNAP_PIXELS = 20  # on-screen click-tolerance radius for dropping a dragged wire near a port
-_NODE_WIDTH = 220  # a node's width until someone drags its right edge
+_PORT_SNAP_PIXELS = 28  # on-screen radius within which a dragged wire jumps to a port
+_PORT_HOVER_RADIUS = 9  # a port reacts to the mouse this far from its centre, past its dot
+# A port's outline: invisible, and wide enough to reach _PORT_HOVER_RADIUS. Qt counts the
+# outline in an item's size and hit area, so a port reacts past its dot with no Python in
+# the draw path.
+_PORT_REACH_PEN = QtGui.QPen(QtGui.QColor(0, 0, 0, 0), (_PORT_HOVER_RADIUS - _PORT_RADIUS) * 2)
+_NODE_WIDTH = 250  # a node's width until someone drags its right edge
 _NODE_MIN_WIDTH = 140
 _NODE_MAX_WIDTH = 800
 _RESIZE_GRIP_IN = 3  # how far inside the node's right edge a press starts a resize
 _RESIZE_GRIP_OUT = 4  # and how far outside it
 # On the edge, a press this close to a port (on screen) starts a wire, not a resize.
 _PORT_PRESS_PIXELS = 14
-_NODE_HEADER_H = 40
+_NODE_HEADER_H = 48
 
 # A node stops drawing its embedded ChunkWidget -- showing only the box and header that
 # ChunkNodeItem paints itself -- when either of these says so. The node keeps its size
@@ -130,16 +136,43 @@ _SHAKE_REVERSALS = 4  # horizontal direction changes needed to fire
 _COLLAPSE_TOGGLE_DEBOUNCE = 0.2  # seconds
 
 
-_COL_NODE_BG = QtGui.QColor("#3a3a3a")
-_COL_NODE_HEADER = QtGui.QColor("#2a2a2a")
-_COL_NODE_BORDER = QtGui.QColor("#555555")
-_COL_NODE_SELECTED = QtGui.QColor("#cab46a")  # matches ChunkWidget.SELECTED_COLOR
+_COL_NODE_BG = node_theme.NODE_BG
+_COL_NODE_HEADER = node_theme.NODE_HEADER_BG
+_COL_NODE_BORDER = node_theme.NODE_BORDER
+_COL_NODE_SELECTED = node_theme.NODE_SELECTED
 _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black -- group/context nodes
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber -- locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
-_COL_CANVAS_BG = QtGui.QColor("#252525")  # ChunkGraphView's background brush
+_COL_CANVAS_BG = QtGui.QColor("#17181b")  # ChunkGraphView's background brush
 _DIM_ALPHA = 0.35  # the opacity disabled nodes are drawn at when their body is showing
 _DIM_CACHE: dict[int, QtGui.QColor] = {}
+
+
+_HEADER_FONTS: dict[tuple[int, bool], QtGui.QFont] = {}
+
+
+def _header_font(size: int, bold: bool = False) -> QtGui.QFont:
+    """The application's font at this point size, made once: paint runs per node per frame."""
+    key = (size, bold)
+    font = _HEADER_FONTS.get(key)
+    if font is None:
+        font = QtGui.QFont(QtWidgets.QApplication.font())
+        font.setPointSize(size)
+        font.setBold(bold)
+        _HEADER_FONTS[key] = font
+    return font
+
+
+def _icon_dpr(painter: QtGui.QPainter) -> float:
+    """The resolution to draw a header icon at, so it stays sharp when zoomed in.
+
+    Rounded up to a whole step, so zooming reuses a handful of cached pixmaps rather than
+    rendering one per zoom level.
+    """
+    device = painter.device()
+    screen = device.devicePixelRatioF() if device is not None else 1.0
+    zoom = abs(painter.worldTransform().m11()) or 1.0
+    return float(min(max(1, int(screen * zoom + 0.99)), 4))
 
 
 def _dimmed(color: QtGui.QColor) -> QtGui.QColor:
@@ -167,14 +200,14 @@ _COL_OUTPUT_HEADER = QtGui.QColor("#3a6f8f")  # steel blue -- the Output: what t
 _COL_STALE = QtGui.QColor("#e0902a")   # amber -- chunk's result no longer reflects its inputs
 _COL_FAILED_HEADER = QtGui.QColor("#7a2626")  # dark red -- the chunk's last cook failed or was cancelled
 _COL_FAILED_BORDER = QtGui.QColor("#d04848")
-_COL_PORT_EXEC = QtGui.QColor("#999999")
-_COL_PORT_FLOAT = QtGui.QColor("#a06845")  # muted orange
-_COL_PORT_INT = QtGui.QColor("#5d7ea8")    # muted blue
-_COL_PORT_BOOL = QtGui.QColor("#9e8e4a")   # muted yellow
-_COL_PORT_STRING = QtGui.QColor("#6a9070")  # muted green
-_COL_PORT_VECTOR = QtGui.QColor("#9a5da8")  # muted purple
-_COL_TEXT_PRIMARY = QtGui.QColor("#ffffff")
-_COL_TEXT_SECONDARY = QtGui.QColor("#aaaaaa")
+_COL_PORT_EXEC = node_theme.PORT_EXEC
+_COL_PORT_FLOAT = node_theme.PORT_FLOAT
+_COL_PORT_INT = node_theme.PORT_INT
+_COL_PORT_BOOL = node_theme.PORT_BOOL
+_COL_PORT_STRING = node_theme.PORT_STRING
+_COL_PORT_VECTOR = node_theme.PORT_VECTOR
+_COL_TEXT_PRIMARY = node_theme.TEXT_PRIMARY
+_COL_TEXT_SECONDARY = node_theme.TEXT_SECONDARY
 _COL_TEXT_LOCKED = QtGui.QColor("#888877")
 
 _CHUNKS_ROOT = chunk_naming.CHUNKS_ROOT
@@ -243,7 +276,7 @@ _PORT_STRING = chunk_graph.PORT_STRING
 _PORT_COLOR = chunk_graph.PORT_COLOR
 _PORT_VECTOR = chunk_graph.PORT_VECTOR
 
-_COL_PORT_COLOR = QtGui.QColor("#c87060")  # muted red
+_COL_PORT_COLOR = node_theme.PORT_COLOR
 
 _PORT_TYPE_COLOR = {
     _PORT_EXEC:   _COL_PORT_EXEC,
@@ -271,8 +304,16 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
         self.port_type = port_type
         self.is_input = ".inputs:" in attr_path
         self.setBrush(_PORT_TYPE_COLOR[port_type])
-        self.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+        self.setPen(_PORT_REACH_PEN)
         self.setZValue(1)
+        # A valid drop target while a wire is dragged (a white ring), and lit up: hovered,
+        # or the port a dragged wire has jumped to.
+        self._highlighted = False
+        self._hovered = False
+        self._snapped = False
+        self.setAcceptHoverEvents(True)
+        # Its own cursor, so the node edge's resize cursor never shows over a port.
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
         if show_label:
             label_text = attr_path.rsplit(":", 1)[-1]
@@ -286,7 +327,66 @@ class ChunkPortItem(QtWidgets.QGraphicsEllipseItem):
             text.setPos(-r - 3 - tw, -th / 2)
 
     def set_highlighted(self, on: bool) -> None:
-        self.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5) if on else QtGui.QPen(QtCore.Qt.NoPen))
+        """Mark the port as a place a dragged wire can be dropped."""
+        if on != self._highlighted:
+            self._highlighted = on
+            self._refresh_look()
+
+    def set_snapped(self, on: bool) -> None:
+        """Light the port up as the one a dragged wire has jumped to."""
+        if on != self._snapped:
+            self._snapped = on
+            self._refresh_look()
+
+    def _refresh_look(self) -> None:
+        """Show the ring and glow for the current state.
+
+        Both are child items made on first need, so Qt draws every port natively: a port is
+        drawn far more often than it changes, and per-port Python in the draw path (paint,
+        boundingRect, shape) made the graph about three times slower to redraw.
+        """
+        lit = self._hovered or self._snapped
+        self._overlay("_ring", lit or self._highlighted, self._make_ring)
+        self._overlay("_glow", lit, self._make_glow)
+
+    def _overlay(self, name: str, show: bool, make) -> None:
+        item = getattr(self, name, None)
+        if item is None:
+            if not show:
+                return
+            item = make()
+            item.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
+            item.setAcceptHoverEvents(False)
+            setattr(self, name, item)
+        item.setVisible(show)
+
+    def _make_ring(self) -> QtWidgets.QGraphicsEllipseItem:
+        r = _PORT_RADIUS
+        ring = QtWidgets.QGraphicsEllipseItem(-r, -r, r * 2, r * 2, self)
+        ring.setPen(QtGui.QPen(QtGui.QColor("white"), 1.5))
+        ring.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        return ring
+
+    def _make_glow(self) -> QtWidgets.QGraphicsEllipseItem:
+        # A soft glow in the port's own colour: "start or end a wire here".
+        r = _PORT_RADIUS + 4
+        glow = QtWidgets.QGraphicsEllipseItem(-r, -r, r * 2, r * 2, self)
+        color = QtGui.QColor(self.brush().color())
+        color.setAlpha(90)
+        glow.setBrush(color)
+        glow.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+        glow.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemStacksBehindParent)
+        return glow
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self._refresh_look()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self._refresh_look()
+        super().hoverLeaveEvent(event)
 
 
 
@@ -701,18 +801,36 @@ class _NodeResizeHandle(QtWidgets.QGraphicsItem):
         self._node = node
         self._press_x: float | None = None
         self._start_width = 0.0
+        self._lit: ChunkPortItem | None = None  # the port a press here would start a wire from
         self.setZValue(0.5)
         self.setCursor(QtCore.Qt.CursorShape.SizeHorCursor)
         self.setAcceptHoverEvents(True)
         self.setPos(node._width, 0)
 
     def hoverMoveEvent(self, event) -> None:  # noqa: N802
-        # Near a port a press starts a wire (see ChunkGraphView.mousePressEvent): say so.
+        # Near a port a press starts a wire (see ChunkGraphView.mousePressEvent): say so,
+        # with the cursor and the port's glow.
         view = event.widget().parent() if event.widget() is not None else None
-        near = isinstance(view, QtWidgets.QGraphicsView) and self._node.port_near(
-            event.scenePos(), _PORT_PRESS_PIXELS / (view.transform().m11() or 1.0)) is not None
-        self.setCursor(QtCore.Qt.CursorShape.ArrowCursor if near else QtCore.Qt.CursorShape.SizeHorCursor)
+        near = None
+        if isinstance(view, QtWidgets.QGraphicsView):
+            near = self._node.port_near(event.scenePos(), _PORT_PRESS_PIXELS / (view.transform().m11() or 1.0))
+        self._light(near)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor if near is not None
+                       else QtCore.Qt.CursorShape.SizeHorCursor)
         super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self._light(None)
+        super().hoverLeaveEvent(event)
+
+    def _light(self, port: ChunkPortItem | None) -> None:
+        if port is self._lit:
+            return
+        for p, on in ((self._lit, False), (port, True)):
+            if p is not None:
+                p._hovered = on
+                p._refresh_look()
+        self._lit = port
 
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
         return QtCore.QRectF(-_RESIZE_GRIP_IN, 0,
@@ -800,6 +918,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # slot's port silently disappears the first time the body relayouts.
         self._exec_in_ports: list[ChunkPortItem] = []
         self._chunk_type_label = str(_chunk_type or "")  # cached: paint must not read USD
+        # The header icon ("" for none) and its colour, cached for the same reason. The
+        # chunk decides which icon: see chunk_icons.
+        self._icon, self._icon_color = node_theme.node_icon(chunk, prim)
         self._disabled = chunk.has_state(ChunkFlags.State.DISABLED)
         self._lod_simple = False  # see set_body_visible
         # Height settling -- see _note_height_sample and is_height_settled.
@@ -1475,6 +1596,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._height,
         )
 
+    def _menu_button_rect(self) -> QtCore.QRectF:
+        """Where the header's three-dot menu button is, in node coordinates."""
+        return QtCore.QRectF(self._width - 26, 6, 20, min(_NODE_HEADER_H, self._height) - 12)
+
+    def refresh_icon(self) -> None:
+        """Read the header icon and colour again, after the prim's UsdUI icon or colour changed."""
+        if not self.prim.IsValid():
+            return
+        self._icon, self._icon_color = node_theme.node_icon(self.chunk, self.prim)
+        self.update()
+
     def _is_active_output(self) -> bool:
         """True if this is an Output and no view is active, so the graph cooks to it."""
         if not self._is_output or not self.prim.IsValid():
@@ -1547,12 +1679,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
         bg_color = _COL_LOCKED_BG if self._locked else _COL_NODE_BG
         body = QtCore.QRectF(0, 0, self._width, self._height)
+        radius = node_theme.NODE_RADIUS
         # The active view (the one currently driving execution) gets a green, thicker border
         # so it's obvious which of several view nodes is live.
         is_active_view = self._is_view and self._is_active_view()
         is_active_output = self._is_output and self._is_active_output()
         border_color = _COL_NODE_SELECTED if self._selected else _COL_NODE_BORDER
-        border_w = 1.5
+        border_w = 1.5 if self._selected else 1.0
         if self._failed and not self._selected:
             border_color = _COL_FAILED_BORDER
             border_w = 2.0
@@ -1560,9 +1693,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             border_color = _COL_VIEW_ACTIVE
             border_w = 2.5
 
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.setBrush(bg_color)
-        painter.setPen(QtGui.QPen(border_color, border_w))
-        painter.drawRoundedRect(body, 4, 4)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.drawRoundedRect(body, radius, radius)
 
         # Header background -- square bottom corners so it merges with body
         if self._is_view:
@@ -1580,16 +1714,37 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             header_color = _COL_LOCKED_HEADER
         else:
             header_color = _COL_NODE_HEADER
+        header_h = min(_NODE_HEADER_H, self._height)
         painter.setBrush(header_color)
-        painter.setPen(QtCore.Qt.NoPen)
-        header = QtCore.QRectF(0, 0, self._width, _NODE_HEADER_H)
-        painter.drawRoundedRect(header, 4, 4)
-        # Cover the rounded bottom of the header rect
-        painter.drawRect(QtCore.QRectF(0, 10, self._width, _NODE_HEADER_H - 10))
+        header = QtCore.QRectF(0, 0, self._width, header_h)
+        painter.drawRoundedRect(header, radius, radius)
+        if self._height > header_h + 1:
+            # Square off the header's bottom corners where the body continues below it,
+            # and draw the line between them.
+            painter.drawRect(QtCore.QRectF(0, radius, self._width, header_h - radius))
+            painter.setPen(QtGui.QPen(_COL_NODE_BORDER, 1))
+            painter.drawLine(QtCore.QPointF(1, header_h - 0.5),
+                             QtCore.QPointF(self._width - 1, header_h - 0.5))
+
+        # The outline last, over both fills.
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(QtGui.QPen(border_color, border_w))
+        painter.drawRoundedRect(body.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+
+        # Icon, then name and type beside it.
+        icon_size = 24
+        text_x = 12
+        pixmap = node_theme.icon_pixmap(self._icon, self._icon_color, icon_size,
+                                        _icon_dpr(painter))
+        if pixmap is not None:
+            painter.drawPixmap(QtCore.QRectF(12, (header_h - icon_size) / 2, icon_size, icon_size),
+                               pixmap, QtCore.QRectF(pixmap.rect()))
+            text_x = 12 + icon_size + 10
+        text_w = self._width - text_x - 30
 
         name_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_PRIMARY
         painter.setPen(QtGui.QPen(name_color))
-        painter.setFont(QtGui.QFont("Arial", 9, QtGui.QFont.Bold))
+        painter.setFont(_header_font(10, bold=True))
         label = self.chunk.name
         if self._is_view:
             slot = self.prim.GetAttribute("view:slot").Get()
@@ -1607,7 +1762,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self._pinned:
             label = f"{label}  \U0001f4cc"
         painter.drawText(
-            QtCore.QRectF(8, 4, self._width - 16, 18),
+            QtCore.QRectF(text_x, header_h / 2 - 17, text_w, 18),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             label,
         )
@@ -1615,23 +1770,31 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         chunk_type = self._chunk_type_label
         sub_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_SECONDARY
         painter.setPen(QtGui.QPen(sub_color))
-        painter.setFont(QtGui.QFont("Arial", 8))
+        painter.setFont(_header_font(8))
         painter.drawText(
-            QtCore.QRectF(8, 22, self._width - 16, 14),
+            QtCore.QRectF(text_x, header_h / 2 + 1, text_w, 14),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             str(chunk_type),
         )
+
+        # The node's menu button: three dots at the right of the header.
+        if not self._is_merge:
+            menu = self._menu_button_rect()
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(_COL_TEXT_SECONDARY)
+            for dy in (-5.0, 0.0, 5.0):
+                painter.drawEllipse(QtCore.QPointF(menu.center().x(), menu.center().y() + dy), 1.6, 1.6)
 
         # Stale badge -- a small fixed-position corner icon rather than a border-color swap,
         # so it never fights with the selected (gold) or active-view (green) border colors.
         if self._stale:
             badge_r = 7.0
-            badge_c = QtCore.QPointF(self._width - 15, 13)
+            badge_c = QtCore.QPointF(self._width - 38, header_h / 2)
             painter.setBrush(_COL_STALE)
             painter.setPen(QtCore.Qt.NoPen)
             painter.drawEllipse(badge_c, badge_r, badge_r)
             painter.setPen(QtGui.QPen(_COL_NODE_HEADER))
-            painter.setFont(QtGui.QFont("Arial", 9, QtGui.QFont.Bold))
+            painter.setFont(_header_font(9, bold=True))
             painter.drawText(
                 QtCore.QRectF(badge_c.x() - badge_r, badge_c.y() - badge_r, badge_r * 2, badge_r * 2),
                 QtCore.Qt.AlignCenter,
@@ -1644,14 +1807,20 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 0, self._outputs_start_y,
                 self._width, self._height - self._outputs_start_y,
             )
-            painter.setBrush(QtGui.QColor("#2a2a2a"))
+            # Inside the node's rounded outline, so the strip keeps its bottom corners.
+            painter.save()
+            outline = QtGui.QPainterPath()
+            outline.addRoundedRect(body.adjusted(1, 1, -1, -1), radius, radius)
+            painter.setClipPath(outline)
+            painter.setBrush(_COL_NODE_HEADER)
             painter.setPen(QtCore.Qt.NoPen)
             painter.drawRect(outputs_rect)
-            painter.setPen(QtGui.QPen(QtGui.QColor("#555555"), 1))
+            painter.setPen(QtGui.QPen(_COL_NODE_BORDER, 1))
             painter.drawLine(
                 QtCore.QPointF(0, self._outputs_start_y),
                 QtCore.QPointF(self._width, self._outputs_start_y),
             )
+            painter.restore()
 
     def mouseDoubleClickEvent(self, event):
         # A recomposition (mute/unmute) can expire this node's prim before the graph
@@ -1710,6 +1879,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):
+        if (event.button() == QtCore.Qt.LeftButton and not self._is_dot and not self._is_merge
+                and self._menu_button_rect().contains(event.pos())):
+            # The same menu a right-click opens. Opened after this press has finished, not
+            # inside it: a menu run from within a press handler has crashed the graph (#86).
+            views = self.scene().views() if self.scene() is not None else []
+            if views and hasattr(views[0], "_show_chunk_menu"):
+                view, pos = views[0], event.screenPos()
+                QtCore.QTimer.singleShot(
+                    0, view, lambda: self.prim.IsValid() and view._show_chunk_menu(self, pos))
+            event.accept()
+            return
         if event.button() == QtCore.Qt.LeftButton:
             scene = self.scene()
             sender = getattr(scene, "_scene_sender", None) if scene else None
@@ -2165,7 +2345,7 @@ class ChunkEdgeItem(QtWidgets.QGraphicsPathItem):
         self._expression = expression
         self._p1 = QtCore.QPointF()
         self._p2 = QtCore.QPointF()
-        self.setPen(QtGui.QPen(src_port.brush().color(), 1.5))
+        self.setPen(QtGui.QPen(src_port.brush().color(), 2.0))
         self.setZValue(-1)
         if expression:
             self.setAcceptHoverEvents(True)
@@ -2869,6 +3049,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 node = self._nodes.get(str(path.GetPrimPath()))
                 if node:
                     node._apply_usd_size()
+            elif path.IsPropertyPath() and path.name in (
+                    "ui:nodegraph:node:icon", "ui:nodegraph:node:displayColor"):
+                node = self._nodes.get(str(path.GetPrimPath()))
+                if node:
+                    node.refresh_icon()
         # Deferred: a single cook emits hundreds of these notices -- one per attribute it
         # writes -- and rebuilding every edge in the scene on each was 286 rebuilds for one
         # group expand. The edges only have to be right once the notices stop arriving.
@@ -3369,7 +3554,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # at scale 1.0: matching that reads as an empty canvas once zoomed out.
     _GRID_MIN_SCREEN_SPACING = 55  # px
     _GRID_MAX_DOUBLINGS = 12
-    _GRID_DOT_COLOR = QtGui.QColor("#3d4250")  # muted grey-blue, subtle against #252525
+    _GRID_DOT_COLOR = QtGui.QColor("#2c2f37")  # muted grey-blue, subtle against the canvas
     _GRID_DOT_WIDTH = 2
 
     dive_into = QtCore.Signal(object)  # re-emitted from scene when a group node is double-clicked
@@ -3382,7 +3567,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setRenderHint(QtGui.QPainter.Antialiasing)
         self.setDragMode(QtWidgets.QGraphicsView.NoDrag)
         self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
-        self.setBackgroundBrush(QtGui.QColor("#252525"))
+        self.setBackgroundBrush(_COL_CANVAS_BG)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         # NoFocus prevents Qt's automatic click-to-focus on the view, which would
@@ -4362,6 +4547,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         scene_pos = self.mapToScene(event.pos())
         hit = self.scene().itemAt(scene_pos, QtGui.QTransform())
+        if hit is not None and isinstance(hit.parentItem(), ChunkPortItem):
+            # A lit port's ring is drawn over its dot, as an item of its own: the press is
+            # the port's. Taken as the ring's, it fell through to the resize edge below.
+            hit = hit.parentItem()
 
         # Walk up item parent chain to find a proxy widget, if any.
         proxy = None
@@ -4680,11 +4869,47 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_edge = None
         self._update_wire_drag(scene_pos)
 
+    def _drop_target(self, scene_pos: QtCore.QPointF) -> ChunkPortItem | None:
+        """The port a dragged wire would connect to if dropped at scene_pos, or None.
+
+        The port under the cursor when it is a valid target, else the nearest valid one
+        within _PORT_SNAP_PIXELS on screen. The live wire jumps to the same port, so where it
+        shows it landing is where it lands.
+        """
+        # items(), not itemAt(): the dragged wire itself (Z=10) would hide the port under it.
+        hit = next(
+            (item for item in self.scene().items(scene_pos) if isinstance(item, ChunkPortItem)),
+            None,
+        )
+        if hit is not None and self._drag_target_ok(hit):
+            return hit
+        return self._nearest_target_port(scene_pos)
+
+    def _set_snap_port(self, port: ChunkPortItem | None) -> None:
+        """Light up the port the dragged wire has jumped to, and only that one."""
+        previous = getattr(self, "_drag_snap_port", None)
+        if previous is port:
+            return
+        if previous is not None:
+            try:
+                previous.set_snapped(False)
+            except RuntimeError:
+                pass
+        self._drag_snap_port = port
+        if port is not None:
+            port.set_snapped(True)
+
     def _update_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
+        # Near a port it can connect to, the wire's loose end jumps onto it and turns solid.
+        target = self._drop_target(scene_pos) if self._drag_src_port is not None else None
+        end = target.scenePos() if target is not None else scene_pos
+        style = QtCore.Qt.PenStyle.SolidLine if target is not None else QtCore.Qt.PenStyle.DashLine
+        self._set_snap_port(target)
         if self._drag_reused_edge is not None:
             edge = self._drag_reused_edge
+            edge.setPen(QtGui.QPen(edge.pen().color(), 2.0, style))
             p1 = edge.src_port.scenePos()
-            p2 = scene_pos
+            p2 = end
             dx = abs(p2.x() - p1.x()) * 0.5
             path = QtGui.QPainterPath(p1)
             path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
@@ -4692,8 +4917,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             edge.setPath(path)
             edge._p1, edge._p2 = p1, p2
         elif self._drag_edge is not None:
+            self._drag_edge.setPen(QtGui.QPen(self._drag_edge.pen().color(), 2.0, style))
             self._drag_edge.setPath(
-                _drag_wire_path(self._drag_src_port.scenePos(), scene_pos, self._drag_src_port.is_input))
+                _drag_wire_path(self._drag_src_port.scenePos(), end, self._drag_src_port.is_input))
         else:
             return
 
@@ -4725,19 +4951,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         return best
 
     def _finish_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
-        # Use items() instead of itemAt() so the rubber-band edge (Z=10) doesn't
-        # occlude the port underneath it.
-        hit = next(
-            (item for item in self.scene().items(scene_pos) if isinstance(item, ChunkPortItem)),
-            None,
-        )
-        # A pixel-perfect drop on the tiny port dot is hard to land, especially when zoomed
-        # out. If the cursor didn't land squarely on a valid target, snap to the nearest
-        # compatible port within a comfortable on-screen radius instead.
-        if hit is None or not self._drag_target_ok(hit):
-            snapped = self._nearest_target_port(scene_pos)
-            if snapped is not None:
-                hit = snapped
+        # The same port the live wire jumped to (_drop_target): a pixel-perfect drop on the
+        # tiny dot is hard to land, so a drop near a valid port lands on it.
+        hit = self._drop_target(scene_pos)
+        if hit is None:
+            # The port under the cursor even when it is not a valid target: dropping a
+            # grabbed wire back on its own port must not read as "dropped on nothing".
+            hit = next((item for item in self.scene().items(scene_pos)
+                        if isinstance(item, ChunkPortItem)), None)
         graph_scene = self.scene()
         if hit is not None and self._drag_target_ok(hit):
             if hit.is_input == self._drag_src_port.is_input:
@@ -4832,11 +5053,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # Otherwise, snap it back to its real solid path/pen.
             try:
                 edge = self._drag_reused_edge
-                edge.setPen(QtGui.QPen(edge.src_port.brush().color(), 1.5))
+                edge.setPen(QtGui.QPen(edge.src_port.brush().color(), 2.0))
                 edge.update_path()
             except RuntimeError:
                 pass
             self._drag_reused_edge = None
+        self._set_snap_port(None)
         graph_scene = self.scene()
         if isinstance(graph_scene, ChunkGraphScene):
             for node in graph_scene._nodes.values():

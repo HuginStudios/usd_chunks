@@ -136,6 +136,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
+        icon="image",
         outputs=[
             ("rgb", "Color3f"),
             ("r",   "Float"),

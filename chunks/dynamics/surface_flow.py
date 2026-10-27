@@ -401,6 +401,7 @@ def main() -> chunk.Chunk:
 def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
+        icon="waves",
         description=(
             "Points crawl over a surface under a force (gravity): runs of water, rain on glass.\n"
             "Writes a Points prim over time -- Trails turns the paths into curves."

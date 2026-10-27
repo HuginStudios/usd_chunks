@@ -643,6 +643,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
+        icon="shuffle",
         description=(
             "Turns one network into N variants. Each lofted range drives a param by "
             "connection; cooking at Index picks one value from every range.\n"

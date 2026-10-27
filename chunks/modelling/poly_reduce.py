@@ -1238,7 +1238,7 @@ def main():
         "e.g. /proxies/{name}.",
     )
     proxy_path.set_state(chunk.ChunkFlags.State.HIDDEN)  # shown while Write as Proxy is on
-    quality = chunk.Group("Quality", flags=_GF)
+    quality = chunk.Group("Quality", icon="sliders", flags=_GF)
     quality.add_params(
         [
             chunk.Slider(
@@ -1313,6 +1313,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="cube",
         requirements=["fast-simplification>=0.2,<1", "numpy>=2,<3"],
         cache_cook=True,
         # A big one waits behind the progress window: a slider drag sets its value once.

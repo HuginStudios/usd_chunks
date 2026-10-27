@@ -73,6 +73,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
+        icon="download",
         description=(
             "Exports the current chunk graph as one clean, portable USD file — every\n"
             "chunk's own bookkeeping (wiring, node-graph position, chunk type) freshly\n"

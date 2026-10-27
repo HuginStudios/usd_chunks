@@ -246,6 +246,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_LAYER,
+        icon="layers",
         description="""
         Edit Target chunk — sets the stage's current edit target, mirroring usdview's
         Edit Target dropdown as a chunk.
