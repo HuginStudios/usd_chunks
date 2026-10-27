@@ -10,14 +10,22 @@ see [Houdini](houdini.md) and [Blender](blender.md).
 ## Quick start
 
 You need **Python 3.11+**, and it has to be the same Python your USD was built with (see
-[Requirements](#requirements)). On Windows (cmd), where `python` is usdview's own Python:
+[Requirements](#requirements)). On Windows, where `python` is usdview's own Python:
 
 ```
-git clone https://github.com/HuginStudios/usd_chunks.git
-python -m pip install -e ./usd_chunks
-for /f "delims=" %i in ('usdchunks plugin-path') do set PXR_PLUGINPATH_NAME=%i
+git clone https://github.com/HuginStudios/usd_chunks.git C:\src\usd_chunks
+python -m pip install -e C:\src\usd_chunks
+set PXR_PLUGINPATH_NAME=C:\src\usd_chunks\usd_chunks\hosts\usdview
 usdview anything.usda
 ```
+
+The third line tells usdview where the usd_chunks plugin is: the `usd_chunks\hosts\usdview`
+folder inside your clone. In PowerShell, write it as
+`$env:PXR_PLUGINPATH_NAME = "C:\src\usd_chunks\usd_chunks\hosts\usdview"`. On macOS/Linux,
+use `export PXR_PLUGINPATH_NAME=/path/to/usd_chunks/usd_chunks/hosts/usdview`.
+
+`set` only lasts until you close that window. To keep it, put the line in the script you
+start usdview with.
 
 If `pip install -e` fails, your pip is probably too old for editable installs. Run
 `python -m pip install --upgrade pip` and try again.
@@ -38,9 +46,8 @@ usdchunks run --help
 For something to run, the [Scripting](scripting.md#in-a-terminal) page builds and saves a
 small network.
 
-In PowerShell, use `$env:PXR_PLUGINPATH_NAME = (usdchunks plugin-path)` and
-`$env:NAME = "value"` for other variables. On macOS/Linux, use
-`export PXR_PLUGINPATH_NAME="$(usdchunks plugin-path)"` and `export NAME=value`.
+For other variables on this page, use `$env:NAME = "value"` in PowerShell and
+`export NAME=value` on macOS/Linux.
 
 In usdview, right-click the graph canvas (or press Tab) to see the chunks in
 [`chunks/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks). When you start
@@ -149,11 +156,14 @@ These are only needed for specific work. You can combine them, for example
 ## usdview integration
 
 usdview loads usd_chunks as a USD plugin, so it needs to know where the plugin's
-`plugInfo.json` is. You tell it with `PXR_PLUGINPATH_NAME`. This command prints the right
-path for your install:
+`plugInfo.json` is. You tell it with `PXR_PLUGINPATH_NAME`.
+
+For a clone, the path is the `usd_chunks\hosts\usdview` folder inside it, as in the [quick
+start](#quick-start). If you installed another way, print the path with the same Python
+you installed into:
 
 ```
-usdchunks plugin-path
+python -m usd_chunks.cli plugin-path
 ```
 
 Set `PXR_PLUGINPATH_NAME` to that path before starting usdview. With that and
@@ -189,6 +199,18 @@ If you run `python -c "..."` or a script from the folder that contains `usd_chun
 Python imports that folder instead of your install. The error then names something odd,
 like `ATTRS_VERSION`, instead of saying the module wasn't found. Change to any other folder
 before testing with plain `python`. usdview and the `usdchunks` command aren't affected.
+
+## If "usdchunks" is not recognized
+
+pip put the `usdchunks` command in the `Scripts` folder of the Python you installed into,
+and that folder isn't on `PATH`. This is normal for usdview's own Python. Use
+`python -m usd_chunks.cli` instead, with that same Python. It takes the same commands:
+
+```
+python -m usd_chunks.cli run box_network.usda
+```
+
+Or add that Python's `Scripts` folder to `PATH`.
 
 ## If a chunk is missing from the menu
 
