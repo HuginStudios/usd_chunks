@@ -89,3 +89,10 @@ def test_the_box_is_remembered(graph):  # noqa: F811
     _start(graph, auto=True)
 
     assert window_state.settings().value("graph/autoConnect", False, type=bool) is True
+
+
+def test_the_box_starts_unticked(graph):  # noqa: F811
+    _make_nodes(graph)
+    _pump(graph[0], 0.3)
+
+    assert _view(graph)._auto_connect_box.isChecked() is False
