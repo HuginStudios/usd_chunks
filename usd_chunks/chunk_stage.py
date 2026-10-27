@@ -9038,6 +9038,30 @@ def _load_wire_inputs(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
             param._connect_param_attr(attr)
 
 
+def _with_their_groups(chunks) -> list[core.ChunkBase]:
+    """chunks, then every group they sit in, each once.
+
+    A load's deferred list holds the chunks in groups but not the groups, whose own params
+    (a lofted param a wire from outside feeds) carry expressions too.
+
+    Args:
+        chunks: The chunks.
+
+    Returns:
+        The chunks and their groups.
+    """
+    found: dict[int, core.ChunkBase] = {}
+    for c in chunks:
+        while c is not None and id(c) not in found:
+            found[id(c)] = c
+            if c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                parent_ref = getattr(c, "_parent_context", None)
+                c = parent_ref() if parent_ref else None
+            else:
+                c = c.get_context()
+    return list(found.values())
+
+
 def _resolve_pending_expressions(deferred, warn: bool) -> None:
     """Re-assign every @node.param@ expression that still has no live-update listener.
 
@@ -9054,7 +9078,7 @@ def _resolve_pending_expressions(deferred, warn: bool) -> None:
     warn only on the last pass. Reporting from an earlier one would flag every expression
     that is merely waiting for a chunk further down the file.
     """
-    for _, c in deferred:
+    for c in _with_their_groups(c for _, c in deferred):
         for path, param in [*_iter_chunk_params(c), *_iter_list_rows(c)]:
             raw = getattr(param, "raw_value", None)
             if (
