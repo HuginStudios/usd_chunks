@@ -14,10 +14,18 @@ them is saved or copied. The list is saved and copied, as the "edits" text param
 An edit can also make an attribute the prim does not have yet: put its type before the name,
 as in a .usda file (`bool vray:env:bg:tex:use = true`). Without a type, a prim that lacks the
 attribute is skipped.
+
+Lofting a widget to a group needs something saved to publish, which a widget is not. So
+lofting one promotes it: a saved param for that attribute appears under Lofted, and that is
+what the group publishes. Its changes go into the edit list like a widget's. The promoted
+attributes are saved in the hidden "promoted" param, which is what rebuilds them on load
+(restore_params). Unlofting one turns it back into a widget.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 from pxr import Sdf, Tf, Usd
 
@@ -37,6 +45,11 @@ _SHOWN = "property_editor.shown"
 
 # Chunks whose widgets are being set by _sync_widgets, not by a person.
 _syncing: set[int] = set()
+
+# The hidden param listing the promoted attributes, one JSON object per line, and the group
+# their saved params sit in.
+_PROMOTED = "promoted"
+_PROMOTED_GRP = "promoted_grp"
 
 # Types usd_type_map does not cover, but which are common on real prims.
 _EXTRA_TYPES = {
@@ -76,8 +89,6 @@ def _parse_edits(node) -> tuple[dict, dict]:
     Returns:
         ({name: value}, {name: type name}), in the order the edits were made.
     """
-    import json
-
     edits, types = {}, {}
     for line in (node.get_param("edits").value or "").splitlines():
         head, sep, raw = line.partition("=")
@@ -103,7 +114,6 @@ def read_edits(node) -> dict:
 def write_edits(node, edits: dict) -> None:
     """Store the edits on the chunk, keeping any type written before a name. Setting the
     text cooks the chunk."""
-    import json
 
     types = _parse_edits(node)[1]
     text = "\n".join(
@@ -197,7 +207,8 @@ def _make_widget(name, type_name, value, tokens, hard_limits):
 
 def _signature(node, props) -> tuple:
     """What the widgets are built from. The same signature builds the same widgets."""
-    return (node.get_param("prim").value, tuple((p[0], p[1], p[3]) for p in props))
+    promoted = tuple(sorted(_promoted_props(node)))
+    return (node.get_param("prim").value, tuple((p[0], p[1], p[3]) for p in props), promoted)
 
 
 def _iter_widgets(dyn_grp):
@@ -228,12 +239,20 @@ def _sync_widgets(node) -> None:
     try:
         signature = _signature(node, props)
         if signature != getattr(dyn_grp, "_pe_signature", None):
-            _rebuild(dyn_grp, props)
+            promoted = _promoted_props(node)
+            _rebuild(dyn_grp, [p for p in props if p[0] not in promoted])
             dyn_grp._pe_signature = signature
+
+        if (promoted_grp := node.get_param(_PROMOTED_GRP, chunk.is_group)) is not None:
+            # Only there while something is lofted.
+            if _promoted_params(node):
+                promoted_grp.unset_state(chunk.ChunkFlags.State.HIDDEN)
+            else:
+                promoted_grp.set_state(chunk.ChunkFlags.State.HIDDEN)
 
         edits = read_edits(node)
         values = {p[0]: p[2] for p in props}
-        for widget in _iter_widgets(dyn_grp):
+        for widget in [*_iter_widgets(dyn_grp), *_promoted_params(node)]:
             prop = widget.user_data[_PROP]
             shown = edits.get(prop, values.get(prop))
             widget.user_data[_SHOWN] = shown
@@ -280,6 +299,136 @@ def _rebuild(dyn_grp, props) -> None:
             dyn_grp.add_param(target)
             groups[namespace] = target
         target.add_param(widget)
+
+
+# ---------------------------------------------------------------------------
+# Promoted widgets: what a group publishes when a widget is lofted
+# ---------------------------------------------------------------------------
+
+
+def _promoted_entries(node) -> list[dict]:
+    """The promoted attributes: {"name", "prop", "type", "tokens", "limits"} each."""
+    param = node.get_param(_PROMOTED)
+    return _parse_promoted(param.value if param is not None else "")
+
+
+def _parse_promoted(text: str | None) -> list[dict]:
+    entries = []
+    for line in (text or "").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("name") and entry.get("prop"):
+            entries.append(entry)
+    return entries
+
+
+def _write_promoted(node, entries: list[dict]) -> None:
+    node.get_param(_PROMOTED).value = "\n".join(json.dumps(e, sort_keys=True) for e in entries)
+
+
+def _promoted_props(node) -> set[str]:
+    return {e["prop"] for e in _promoted_entries(node)}
+
+
+def _promoted_params(node) -> list:
+    group = node.get_param(_PROMOTED_GRP, chunk.is_group)
+    return [p for p in group.get_my_params() if _PROP in getattr(p, "user_data", {})] if group else []
+
+
+def _build_promoted(node, entry: dict, value=None):
+    """The saved param for one promoted attribute, added under Lofted."""
+    param = _make_widget(entry["prop"], entry["type"], value, tuple(entry.get("tokens") or ()),
+                         entry.get("limits") or {})
+    if param is None:
+        return None
+    for part in (param, *param.get_my_params()) if isinstance(param, chunk.Vector) else (param,):
+        part.unset_flag(_TRANSIENT)
+        part.presentation_only = True
+    param.name = entry["name"]
+    param.user_data[_PROP] = entry["prop"]
+    param.user_data[_SHOWN] = value
+    param.add_callback(_on_widget_changed, private=True)
+    node.get_param(_PROMOTED_GRP, chunk.is_group).add_param(param)
+    return param
+
+
+def promote_param(node, param):
+    """The saved param to loft for one of the widgets: made the first time, then reused.
+
+    The attribute's value goes into the edit list too, so the lofted value is applied.
+
+    Args:
+        node: The Property Editor.
+        param: The widget being lofted.
+
+    Returns:
+        The promoted param, or None when param is not one of the widgets.
+    """
+    prop = getattr(param, "user_data", {}).get(_PROP)
+    if prop is None:
+        return None
+    for promoted in _promoted_params(node):
+        if promoted.user_data[_PROP] == prop:
+            return promoted
+    stage = node.get_stage()
+    found = next((p for p in _read_properties(stage, node.get_param("prim")) if p[0] == prop), None) if stage else None
+    if found is None:
+        return None
+    _, type_name, _, tokens, limits = found
+    entries = _promoted_entries(node)
+    taken = {e["name"] for e in entries} | {p.name for p in node.get_my_params()}
+    name = base = re.sub(r"\W", "_", prop)
+    n = 1
+    while name in taken:
+        name, n = f"{base}_{n}", n + 1
+    entry = {"name": name, "prop": prop, "type": type_name, "tokens": list(tokens), "limits": dict(limits)}
+    value = _jsonable(param.value)
+    promoted = _build_promoted(node, entry, tuple(value) if isinstance(value, list) else value)
+    if promoted is None:
+        return None
+    _write_promoted(node, [*entries, entry])
+    edits = read_edits(node)
+    edits[prop] = value
+    write_edits(node, edits)
+    _sync_later(node)
+    return promoted
+
+
+def restore_params(node, prim: Usd.Prim) -> None:
+    """Build the promoted params from the saved list, on load, before their values are read."""
+    attr = prim.GetAttribute(f"inputs:{_PROMOTED}")
+    existing = {p.user_data[_PROP] for p in _promoted_params(node)}
+    for entry in _parse_promoted(attr.Get() if attr else None):
+        if entry["prop"] not in existing:
+            _build_promoted(node, entry)
+
+
+def param_unlofted(node, param) -> None:
+    """A promoted param was unlofted: drop it, and show the attribute as a widget again."""
+    if param not in _promoted_params(node):
+        return
+    prop = param.user_data[_PROP]
+    _write_promoted(node, [e for e in _promoted_entries(node) if e["prop"] != prop])
+    stage, attr_path = node.get_stage(), getattr(param, "_param_attr_path", None)
+    param.request_delete()
+    if stage and attr_path:
+        path = Sdf.Path(attr_path)
+        for layer in stage.GetLayerStack(includeSessionLayers=True):
+            spec = layer.GetPrimAtPath(path.GetPrimPath())
+            if spec and path.name in spec.properties:
+                del spec.properties[path.name]
+    _sync_later(node)
+
+
+def _sync_later(node) -> None:
+    """Rebuild the widgets once the current change is done, not from inside it."""
+    scene = node.get_scene()
+    if scene is not None:
+        scene.call_later(lambda: _sync_widgets(node))
+    else:
+        _sync_widgets(node)
 
 
 def _on_widget_changed(owner, notice, sender):
@@ -393,6 +542,16 @@ def main():
     edits_grp.add_param(clear)
     myChunk.add_param(edits_grp)
 
+    promoted = chunk.TextEdit("promoted", "Promoted", default_value="")
+    promoted.set_state(chunk.ChunkFlags.State.HIDDEN)
+    myChunk.add_param(promoted)
+    promoted_grp = chunk.Group(
+        _PROMOTED_GRP, "Lofted",
+        flags=chunk.ChunkFlags.GroupFlags.FRAMED | chunk.ChunkFlags.GroupFlags.LABELED,
+    )
+    promoted_grp.set_state(chunk.ChunkFlags.State.HIDDEN)
+    myChunk.add_param(promoted_grp)
+
     dynGroup = chunk.Group("dyn_grp", flags=chunk.ChunkFlags.GroupFlags.FRAMED)
     myChunk.add_param(dynGroup)
 
@@ -418,6 +577,9 @@ def config():
 
         The widgets below show the first prim's attributes. Changing one adds it to the
         edit list. Only edited attributes are written; the rest are left alone.
+
+        Loft up a widget to publish it on the group: it moves under Lofted as a saved
+        param, and the group's copy drives that edit. Unloft it to turn it back.
 
         The edits are not tied to a prim. Duplicate the chunk and change its Prim, and
         the copy makes the same edits on the new prims. A prim without an edited
