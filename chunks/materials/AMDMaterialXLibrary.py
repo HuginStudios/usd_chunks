@@ -613,6 +613,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MATERIALS,
+        icon="sphere",
         requirements=["requests>=2,<3"],
         description="""
         Assign Material chunk: browses the AMD GPUOpen MaterialX library and

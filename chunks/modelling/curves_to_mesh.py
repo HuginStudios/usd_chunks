@@ -549,7 +549,7 @@ def main():
                     tooltip="What the last cook produced.")
     )
 
-    shape = chunk.Group("shape_grp", "Shape", flags=_GF)
+    shape = chunk.Group("shape_grp", "Shape", icon="curve", flags=_GF)
     shape.add_param(chunk.Menu(
         "profile", "Profile", menu_items=_PROFILES, default_value=_PROFILE_TUBE,
         flags=_PF.LABELED,
@@ -580,7 +580,7 @@ def main():
     ))
     chunk_api.add_param(shape)
 
-    uv = chunk.Group("uv_grp", "UVs", flags=_GF)
+    uv = chunk.Group("uv_grp", "UVs", icon="image", flags=_GF)
     uv.add_param(chunk.Menu(
         "uv_mode", "Layout", menu_items=_UV_MODES, default_value=_UV_PROPORTIONAL,
         flags=_PF.LABELED,
@@ -618,6 +618,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="curve",
         requirements=["numpy>=2,<3"],
         description="""
         Curves to Mesh — sweeps a tube along a BasisCurves and gives it UVs,

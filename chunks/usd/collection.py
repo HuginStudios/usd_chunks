@@ -85,6 +85,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="grid",
         description=(
             "Authors a named UsdCollectionAPI on Owner Prim from an Include/Exclude prim\n"
             "pattern (comma-separated paths or Houdini-style globs: *, **, ?).\n"

@@ -500,6 +500,7 @@ def execute(node):
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
+        icon="film",
         description="""
         Render Settings chunk — creates a UsdRender.Settings prim describing one
         render: its resolution, the camera it uses, and the products it writes.

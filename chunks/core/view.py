@@ -7,6 +7,7 @@ def config():
     return ChunkConfig(
         terminal=True,
         category=chunk.StandardCategory.CORE,
+        icon="view",
         description="Terminates a chunk stack and triggers upstream execution. Place with V in the graph.",
     )
 

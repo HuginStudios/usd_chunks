@@ -13,6 +13,7 @@ from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
 from usd_chunks.graph import engine as chunk_graph
+from usd_chunks.frontends.qt import node_theme
 
 import logging
 import re
@@ -145,6 +146,87 @@ QLabel[chunkLocked="true"] {
 }
 """
 
+# Added to CHUNK_STYLESHEET for a node body in the node graph (a ChunkWidget built
+# for_proxy): darker fields with rounded corners, sliders filled in grey, and
+# checkboxes that fill when ticked. The params panel keeps the plain sheet.
+NODE_BODY_STYLESHEET = """
+.ChunkWidget {
+    background-color: transparent;
+}
+QLabel {
+    color: #c8cbd1;
+}
+QLineEdit, QComboBox {
+    background-color: #141518;
+    border: 1px solid #2f3136;
+    border-radius: 4px;
+    padding: 1px 4px;
+    color: #e5e7eb;
+    selection-background-color: #3b82f6;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid #3b82f6;
+}
+NumberField {
+    padding: 1px 2px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    border: none;
+    background: transparent;
+    width: 16px;
+}
+QComboBox::down-arrow {
+    image: url(%CHEVRON%);
+    width: 10px;
+    height: 10px;
+    background: transparent;
+    border: none;
+}
+QSlider::groove:horizontal {
+    border: 0px;
+    background: #1a1b1e;
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #5c5f67;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #f2f3f5;
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    margin: -4px 0px;
+}
+QSlider::handle:horizontal:hover {
+    background: #ffffff;
+}
+QCheckBox::indicator {
+    width: 12px;
+    height: 12px;
+    border: 1px solid #4b4f58;
+    border-radius: 3px;
+    background: #141518;
+}
+QCheckBox::indicator:checked {
+    background: #f5b301;
+    border: 1px solid #f5b301;
+}
+QPushButton {
+    background-color: #2a2c31;
+    border: 1px solid #3a3c42;
+    border-radius: 5px;
+    padding: 3px 8px;
+    color: #e5e7eb;
+}
+QPushButton:hover {
+    border-color: #5b5f69;
+}
+""".replace("%CHEVRON%", (chunk_resources.get_icons_path() / "node" / "ui_chevron_down.png").as_posix())
+
 # Marks a widget that carries CHUNK_STYLESHEET, so nothing below it applies it again.
 _SHEET_FLAG = "_chunk_sheet_applied"
 # Marks a class that always styles itself, so a descendant can skip *before* the ancestor
@@ -196,7 +278,10 @@ def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
         parent = parent.parentWidget()
 
     setattr(widget, _SHEET_FLAG, True)
-    widget.setStyleSheet(CHUNK_STYLESHEET)
+    if getattr(widget, "_inline_labels", False):
+        widget.setStyleSheet(CHUNK_STYLESHEET + NODE_BODY_STYLESHEET)
+    else:
+        widget.setStyleSheet(CHUNK_STYLESHEET)
     return True
 
 
@@ -445,7 +530,9 @@ class SpinSlider(QtWidgets.QWidget):
         # Three decimals, the slider's own resolution (1 / _step). At two, a value of 0.125
         # read 0.13 and the thousandths could be set but never seen.
         self.spin_box = NumberField(is_float=is_float, decimals=3)
-        self.spin_box.setMaximumWidth(48)
+        # Fixed, not just capped: in a narrow row (a node body with its label beside it) the
+        # slider is what gives way, so a value like 6500.0 stays readable.
+        self.spin_box.setFixedWidth(48)
 
         self.slider = _FineDragSlider(QtCore.Qt.Orientation.Horizontal)
 
@@ -1515,8 +1602,79 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         return widget
 
 
+# The label column of inline rows (a label beside its field). Each group in a node body
+# fits it to its own longest label, between this many pixels and this share of the body's
+# width; a label longer than that is cut short with "...".
+INLINE_LABEL_MIN_WIDTH = 24
+INLINE_LABEL_MAX_SHARE = 0.4
+# Space between the end of a label and the field beside it.
+_INLINE_LABEL_PAD = 6
+# How far a row straight in a node body (not in a group) starts in from the node's edge,
+# clear of the port dots drawn there.
+_INLINE_TOP_ROW_INDENT = 6
+
+# One-line fields, the kind that fit beside a label. Multi-line ones (text edits, image
+# menus) and those that carry their own text (buttons, labels) keep the label above.
+_INLINE_LABEL_WIDGETS = (
+    ChunkSliderWidget, ChunkFloatSpinboxWidget, ChunkIntSpinboxWidget, ChunkLineEditWidget,
+    ChunkFileWidget, ChunkComboBoxWidget, ChunkCheckBoxWidget, ChunkColorPickerWidget,
+)
+
+
+class _ElidedLabel(QtWidgets.QLabel):
+    """A label that ends its text with "..." when it does not fit its width.
+
+    text() still returns the whole text.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text or ""
+        self._elide()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        # The stylesheet arrives after the text and can change the font.
+        if event.type() in (QtCore.QEvent.Type.FontChange, QtCore.QEvent.Type.StyleChange):
+            self._elide()
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        # A cut-short label shows its whole text on hover, unless the row has put a tooltip
+        # of its own here (an expression, an override).
+        if (event.type() == QtCore.QEvent.Type.ToolTip and not self.toolTip()
+                and super().text() != self._full_text):
+            QtWidgets.QToolTip.showText(event.globalPos(), self._full_text, self)
+            return True
+        return super().event(event)
+
+    def _elide(self) -> None:
+        # The text area, inside any padding or border the stylesheet gives the label.
+        shown = self.fontMetrics().elidedText(
+            self._full_text, QtCore.Qt.TextElideMode.ElideRight,
+            max(self.contentsRect().width(), 0))
+        if shown != super().text():
+            super().setText(shown)
+
+
 class LabeledWidget(QtWidgets.QWidget):
-    def __init__(self, widget, parent=None):
+    def __init__(self, widget, parent=None, inline: bool = False):
+        """A param's row: its widget plus an optional label.
+
+        Args:
+            widget: The param's widget.
+            parent: The container the row sits in.
+            inline: Put the label to the left of a one-line widget instead of above it.
+        """
         super().__init__(parent)
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
@@ -1524,6 +1682,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.vlayout.setContentsMargins(0, 0, 0, 0)
         self.vlayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.widget: ChunkParamWidgetBase = widget
+        # The label and widget side by side, when the row is inline; None otherwise.
+        self._row: QtWidgets.QHBoxLayout | None = None
+        if inline and isinstance(widget, _INLINE_LABEL_WIDGETS):
+            self._row = QtWidgets.QHBoxLayout()
+            self._row.setContentsMargins(0, 0, 0, 0)
         # Made by update_label when the row first gets text (see _ensure_label). Most rows
         # never do, and an eager label was a hidden widget per row, constructed, styled and
         # laid out for nothing. Filters others ask for wait in _label_filters; this row's own
@@ -1533,7 +1696,11 @@ class LabeledWidget(QtWidgets.QWidget):
         self.label: QtWidgets.QLabel | None = None
         self._label_filters: list[QtCore.QObject] = []
 
-        self.vlayout.addWidget(widget)
+        if self._row is not None:
+            self._row.addWidget(widget, 1)
+            self.vlayout.addLayout(self._row)
+        else:
+            self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
 
         # Built on first hover, not here. A Qt.ToolTip label is a top-level window, and
@@ -1663,11 +1830,35 @@ class LabeledWidget(QtWidgets.QWidget):
         if self.label is not None:
             self.label.installEventFilter(obj)
 
+    def _refit_label_column(self) -> None:
+        """Ask the node body this row sits in to fit its label column again."""
+        w = self.parentWidget()
+        while w is not None:
+            if getattr(w, "_inline_labels", False):
+                w.request_label_fit()
+                return
+            w = w.parentWidget()
+
     def _ensure_label(self) -> QtWidgets.QLabel:
-        """The row's label, made on first need above the widget, where it always sat."""
+        """The row's label, made on first need: beside the widget on an inline row, above it
+        otherwise."""
         if self.label is None:
-            self.label = QtWidgets.QLabel()
-            self.vlayout.insertWidget(0, self.label)
+            if self._row is not None:
+                self.label = _ElidedLabel()
+                # Left-aligned, starting where the group's content starts. The width is set
+                # by the body, per group (fit_label_column), so a group of short names keeps
+                # its fields close.
+                self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
+                                        | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                # Fixed policy too, not just a fixed width: the row lays out by policy, and
+                # anything looser lets the widget beside it slide under the label.
+                self.label.setFixedWidth(INLINE_LABEL_MIN_WIDTH)
+                self.label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                                         QtWidgets.QSizePolicy.Policy.Preferred)
+                self._row.insertWidget(0, self.label)
+            else:
+                self.label = QtWidgets.QLabel()
+                self.vlayout.insertWidget(0, self.label)
             self.label.installEventFilter(self)
             for obj in self._label_filters:
                 self.label.installEventFilter(obj)
@@ -1678,6 +1869,8 @@ class LabeledWidget(QtWidgets.QWidget):
             label = self._ensure_label()
             label.setHidden(not bool(text))
             label.setText(text)
+            if self._row is not None:
+                self._refit_label_column()
         self._sync_expression_mark()
         self._sync_override_mark()
 
@@ -1867,7 +2060,9 @@ class LabeledWidget(QtWidgets.QWidget):
         value_rect = QtCore.QRect(self.widget.pos(), self.widget.size())
         # A button has no label to right-click, so a click anywhere on it counts.
         on_label = not value_rect.contains(event.pos()) or ChunkFlags.ParamType.BUTTON in t
-        loft_action = menu.addAction("Loft up") if context and on_label else None
+        # Lofted already: the menu takes it back down instead of lofting a second copy.
+        lofted_to = chunk_stage.lofted_copy(param, context) if context and on_label else None
+        loft_action = menu.addAction("Loft up") if context and on_label and lofted_to is None else None
         # Lofted params only, via the _lofted marker (set once by loft_param_to_context /
         # _restore_lofted_params, alongside the generated default label itself) -- not
         # every param generally. Lofting gives a param a qualified default label
@@ -1875,7 +2070,8 @@ class LabeledWidget(QtWidgets.QWidget):
         # same-named lofts stay tellable apart, but that default has to be just a default,
         # not the only option, or "rename the lofted param" would not mean anything.
         rename_action = menu.addAction("Rename…") if on_label and getattr(param, "_lofted", False) else None
-        unloft_action = menu.addAction("Unloft") if on_label and getattr(param, "_lofted", False) else None
+        unloft_target = param if getattr(param, "_lofted", False) else lofted_to
+        unloft_action = menu.addAction("Unloft") if on_label and unloft_target is not None else None
         clear_action = self._add_clear_param(menu, param)
         override_source = chunk_stage.param_override_source(param)
         revert_action = None
@@ -1901,7 +2097,7 @@ class LabeledWidget(QtWidgets.QWidget):
                 chunk_stage.loft_param_to_context(param, context)
             elif unloft_action and action == unloft_action:
                 # Next tick: unlofting deletes this widget, which is still inside its own event.
-                QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(param))
+                QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(unloft_target))
             elif clear_action and action == clear_action:
                 self._clear_param(param)
             elif revert_action and action == revert_action:
@@ -1927,6 +2123,64 @@ class LabeledWidget(QtWidgets.QWidget):
                     param.value = text
             elif clear_expr_action and action == clear_expr_action:
                 param.value = param.default_value
+
+
+_HEADER_ICON_SIZE = 16
+# A node body's own margins (left, top, right, bottom): room for the port dots on its edges.
+_NODE_BODY_MARGINS = (10, 4, 10, 8)
+# Drawn at this many pixels per logical pixel, so the header stays sharp when the graph is
+# zoomed in (a node body is drawn scaled with the view).
+_HEADER_ICON_DPR = 3.0
+_ARROW_COLOR = QtGui.QColor("#9ca3af")
+_header_pixmaps: dict[tuple, QtGui.QPixmap | None] = {}
+
+
+def _group_header_pixmap(icon: str, expanded: bool | None,
+                         color: QtGui.QColor | None = None) -> QtGui.QPixmap | None:
+    """A group header's picture: a fold arrow, then the group's icon.
+
+    Args:
+        icon: The group's `icon`, or "" for none.
+        expanded: True for an open group, False for a folded one, None for one that can't fold.
+        color: The colour to draw the icon in; the icon's own when not given.
+
+    Returns:
+        The picture, or None when there is neither an arrow nor an icon to show.
+    """
+    color = color if color is not None else node_theme.icon_color(icon)
+    key = (icon, expanded, color.rgba())
+    if key in _header_pixmaps:
+        return _header_pixmaps[key]
+    arrow_w = 10 if expanded is not None else 0
+    icon_pix = (node_theme.icon_pixmap(icon, color, _HEADER_ICON_SIZE,
+                                       _HEADER_ICON_DPR) if icon else None)
+    width = arrow_w + (_HEADER_ICON_SIZE + 2 if icon_pix is not None else 0)
+    if width == 0:
+        _header_pixmaps[key] = None
+        return None
+    dpr = _HEADER_ICON_DPR
+    pixmap = QtGui.QPixmap(round(width * dpr), round(_HEADER_ICON_SIZE * dpr))
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    pixmap.setDevicePixelRatio(dpr)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    if expanded is not None:
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(_ARROW_COLOR)
+        mid = _HEADER_ICON_SIZE / 2
+        if expanded:
+            points = [QtCore.QPointF(0.5, mid - 2.5), QtCore.QPointF(7.5, mid - 2.5),
+                      QtCore.QPointF(4, mid + 2.5)]
+        else:
+            points = [QtCore.QPointF(1.5, mid - 4), QtCore.QPointF(6.5, mid),
+                      QtCore.QPointF(1.5, mid + 4)]
+        painter.drawPolygon(QtGui.QPolygonF(points))
+    if icon_pix is not None:
+        painter.drawPixmap(QtCore.QRectF(arrow_w, 0, _HEADER_ICON_SIZE, _HEADER_ICON_SIZE),
+                           icon_pix, QtCore.QRectF(icon_pix.rect()))
+    painter.end()
+    _header_pixmaps[key] = pixmap
+    return pixmap
 
 
 class ContainerWidget(
@@ -2023,11 +2277,61 @@ class ContainerWidget(
         self.setLayout(self.__layout__)
         self._update_group_depth()
 
+    def _header_icon(self) -> tuple[str, QtGui.QColor | None]:
+        """The icon this container's header shows, and its colour (None for the icon's own).
+
+        The group's own icon, set by its chunk; none is guessed for it.
+        """
+        return self.group.icon or "", None
+
+    def _sync_header_icon(self, expanded: bool | None = None) -> None:
+        """Show the group's fold arrow and its icon on the header button.
+
+        Drawn as one picture: a QToolButton shows either its arrow or its icon, not both.
+        In a node body every header is drawn this way; elsewhere only one with an icon.
+
+        Args:
+            expanded: Whether the group is open; read from the group when not given.
+        """
+        icon, color = self._header_icon()
+        if not (icon or self._in_inline_body()):
+            return
+        if expanded is None:
+            expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
+        collapsible = self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
+        pixmap = _group_header_pixmap(icon, expanded if collapsible else None, color)
+        self.minimize_button.setArrowType(QtCore.Qt.ArrowType.NoArrow)
+        if pixmap is None:
+            self.minimize_button.setIcon(QtGui.QIcon())
+            return
+        self.minimize_button.setIcon(QtGui.QIcon(pixmap))
+        self.minimize_button.setIconSize(QtCore.QSize(
+            round(pixmap.width() / pixmap.devicePixelRatio()),
+            round(pixmap.height() / pixmap.devicePixelRatio())))
+
+    def _header_style(self) -> str:
+        """Extra style for this group's header button: bold, left-aligned text in a node body."""
+        if not self._in_inline_body():
+            return ""
+        return "color: #e5e7eb; font-weight: 600; text-align: left; padding: 3px 2px;"
+
     _GROUP_COLORS = ("#303030", "#333333")
+    # Inside a node body, by how far below the body a group sits: the body itself is
+    # see-through (the node paints its rounded frame behind it), groups a step darker.
+    _NODE_GROUP_COLORS = ("transparent", "#25262b", "#212226")
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
-        bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
+        body = self._inline_body()
+        if body is not None:
+            # Counted from the body, not the stage: a chunk inside a chunkgroup is one level
+            # deeper in its identifier, and counting that painted its body opaque, squaring
+            # off the node's rounded bottom corners.
+            level = depth - len(body.group.get_identifier().split("."))
+            colors = self._NODE_GROUP_COLORS
+            bg = colors[min(max(level, 0), len(colors) - 1)]
+        else:
+            bg = self._GROUP_COLORS[depth % len(self._GROUP_COLORS)]
         # Two setStyleSheet calls per container, each re-polishing its whole subtree --
         # collectively the single most expensive thing in building a chunk. The colour only
         # depends on nesting depth, so re-applying the same one repaints for nothing.
@@ -2035,7 +2339,8 @@ class ContainerWidget(
             return
         self._group_bg = bg
 
-        self.minimize_button.setStyleSheet(f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}")
+        self.minimize_button.setStyleSheet(
+            f"QToolButton {{ background-color: {bg}; border-radius: 4px; {self._header_style()}}}")
         self.content.setStyleSheet(
             f"QFrame {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
             f"QScrollArea {{ background-color: {bg};}}border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;"
@@ -2105,6 +2410,7 @@ class ContainerWidget(
             self.minimize_button.setText("")
             if not self.group.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE):
                 self.minimize_button.setHidden(True)
+        self._sync_header_icon()
 
         if usd_chunks.chunk_flags.ChunkFlags.GroupFlags.FRAMED in self.group.flags:
             self.content.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
@@ -2178,6 +2484,7 @@ class ContainerWidget(
             self.group.set_state(ChunkFlags.State.COLLAPSED)
 
         self.minimize_button.setArrowType(arrow_type)
+        self._sync_header_icon(checked)
         # Measure the content once, here, rather than on every animation frame.
         self._anim_target_h = self.content_layout.sizeHint().height()
         self.toggle_anim.setDirection(direction)
@@ -2187,12 +2494,13 @@ class ContainerWidget(
             bg = self._group_bg
             if checked:
                 sheet = (
-                    f"QToolButton {{ background-color: {bg}; "
+                    f"QToolButton {{ background-color: {bg}; {self._header_style()}"
                     f"border-top-left-radius: 4px; border-top-right-radius: 4px; "
                     f"border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }}"
                 )
             else:
-                sheet = f"QToolButton {{ background-color: {bg}; border-radius: 4px; }}"
+                sheet = (f"QToolButton {{ background-color: {bg}; border-radius: 4px; "
+                         f"{self._header_style()}}}")
 
             # Groups that start collapsed reach this during construction, and re-applying
             # the sheet the button already has re-parses and re-polishes for nothing.
@@ -2213,16 +2521,28 @@ class ContainerWidget(
             pass
 
     def remove_widget(self, widget: QtWidgets.QWidget):
+        self._remove_row(self.content_layout, widget)
+
+    def _remove_row(self, layout: QtWidgets.QLayout, widget: QtWidgets.QWidget) -> bool:
+        """Remove and delete the row in layout that wraps widget.
+
+        Args:
+            layout: The layout holding the rows.
+            widget: The param or group widget the row wraps.
+
+        Returns:
+            True when the row was found.
+        """
         try:
-            count = self.content_layout.count()
+            count = layout.count()
             for i in reversed(range(count)):
-                item = self.content_layout.itemAt(i)
+                item = layout.itemAt(i)
                 if not item:
                     continue
                 iw = item.widget()
 
                 if isinstance(iw, LabeledWidget) and iw.widget == widget:
-                    self.content_layout.removeItem(item)
+                    layout.removeItem(item)
                     # Tear the wrapper down, not just its layout entry. Otherwise the
                     # LabeledWidget stays a child of this container, keeping a strong ref
                     # to the param widget -> chunk, so the chunk never GCs and its layer's
@@ -2233,7 +2553,7 @@ class ContainerWidget(
                     iw.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
                     iw.setParent(None)
                     iw.deleteLater()
-                    break
+                    return True
         except RuntimeError:
             # This container's own C++ layout/widget was already torn down (e.g. the whole
             # ChunkWidget was deleted via _group_deleted while a sibling's PARAM_REMOVED was
@@ -2241,11 +2561,33 @@ class ContainerWidget(
             # parent teardown handles the children. Swallowing this lets the cascade finish
             # and reach super().request_delete()/CHUNK_DELETED, so the tab actually closes.
             pass
+        return False
+
+    def _in_inline_body(self) -> bool:
+        """True when this container sits in a ChunkWidget whose rows put labels inline.
+
+        Returns:
+            Whether rows added here should be inline.
+        """
+        return self._inline_body() is not None
+
+    def _inline_body(self) -> ContainerWidget | None:
+        """The node body (a ChunkWidget built for the node graph) this container is in.
+
+        Returns:
+            That body, which may be this container itself, or None outside a node.
+        """
+        w: QtWidgets.QWidget | None = self
+        while w is not None:
+            if getattr(w, "_inline_labels", False):
+                return w
+            w = w.parentWidget()
+        return None
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):  # type: ignore
         widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
 
-        labeled = LabeledWidget(widget, self)
+        labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
         # Now parented, so showing it can no longer produce a top-level window -- lift the
         # suppression create_widget put on it.
         widget.setAttribute(QtCore.Qt.WA_DontShowOnScreen, False)
@@ -2641,6 +2983,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self._is_tab_context_widget = is_tab_context
         # Node bodies style themselves after their reparent, not during construction.
         self._defer_stylesheet = for_proxy
+        # A node body (for_proxy) is narrow and stacks on a canvas, so its rows put their
+        # labels beside the fields. Set before super().__init__, which builds the rows.
+        self._inline_labels = for_proxy
+        # Whether a fit_label_column call is already queued (see request_label_fit).
+        self._label_fit_queued = False
         self._view_state: ViewSlotState | None = None
         self._view_overlay: QtWidgets.QLabel | None = None
         super().__init__(group, parent)
@@ -2648,6 +2995,23 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self.installEventFilter(self)
         if is_tab_context:
             self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+    def _header_icon(self) -> tuple[str, QtGui.QColor | None]:
+        if not isinstance(self.group, chunk.ChunkBase):
+            return super()._header_icon()
+        # The same icon and colour as the chunk's node (node_theme.node_icon).
+        stage = self.group.get_scene_stage()
+        prim = stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(self.group)) if stage else None
+        return node_theme.node_icon(self.group, prim)
+
+    def update_from_flags(self):
+        super().update_from_flags()
+        if self._inline_labels:
+            # A node already shows the chunk's name in its header, and folds the whole body
+            # on a header double-click; the body's own name row would only repeat that.
+            self.minimize_button.setHidden(True)
+            # Clear of the port dots on both edges, and off the node's rounded bottom.
+            self.content_layout.setContentsMargins(*_NODE_BODY_MARGINS)
 
     def set_view_state(self, vs: ViewSlotState) -> None:
         if self._view_state is not None:
@@ -2777,6 +3141,57 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         super().resizeEvent(event)
         if self._view_overlay:
             self._position_view_overlay()
+        if self._inline_labels and event.size().width() != event.oldSize().width():
+            self.request_label_fit()
+
+    def request_label_fit(self) -> None:
+        """Fit the label column once the current burst of row changes is done.
+
+        Rows are added one at a time, and each new label asks for a fit; queuing turns a
+        body's worth of them into one pass.
+        """
+        if self._label_fit_queued:
+            return
+        self._label_fit_queued = True
+        QtCore.QTimer.singleShot(0, self, self.fit_label_column)
+
+    def fit_label_column(self) -> None:
+        """Size the inline labels of each group in this body to fit that group's longest.
+
+        Per group rather than per body: one long name elsewhere in the node does not push
+        a group of short ones (a Translate's X, Y, Z) away from their fields. Capped at
+        INLINE_LABEL_MAX_SHARE of the body's width, so the fields keep most of the row; a
+        longer label is cut short and shows in full on hover.
+        """
+        self._label_fit_queued = False
+        groups: dict[QtWidgets.QWidget | None, list[QtWidgets.QLabel]] = {}
+        for row in self.findChildren(LabeledWidget):
+            if row._row is not None and row.label is not None and row.label.text():
+                # Rows of one group share a parent: the group's content widget.
+                groups.setdefault(row.parentWidget(), []).append(row.label)
+        cap = int(self.width() * INLINE_LABEL_MAX_SHARE)
+        for parent, labels in groups.items():
+            # Rows straight in the body start at the node's edge, under its port dots;
+            # nudge them clear. Rows in a group are already indented by it.
+            indent = _INLINE_TOP_ROW_INDENT if self._owning_container(parent) is self else 0
+            for label in labels:
+                row = label.parentWidget()
+                if isinstance(row, LabeledWidget) and row._row.contentsMargins().left() != indent:
+                    row._row.setContentsMargins(indent, 0, 0, 0)
+            # Text width plus whatever padding and border the label wraps around it.
+            widest = max(label.fontMetrics().horizontalAdvance(label.text())
+                         + label.width() - label.contentsRect().width() for label in labels)
+            column = max(INLINE_LABEL_MIN_WIDTH, min(widest + _INLINE_LABEL_PAD, cap))
+            for label in labels:
+                if label.width() != column:
+                    label.setFixedWidth(column)
+
+    @staticmethod
+    def _owning_container(widget: QtWidgets.QWidget | None) -> ContainerWidget | None:
+        """The nearest ContainerWidget at or above widget."""
+        while widget is not None and not isinstance(widget, ContainerWidget):
+            widget = widget.parentWidget()
+        return widget
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if self._view_state and self._is_tab_context_widget:
@@ -2867,8 +3282,10 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 self._filter_bar.search_changed.connect(self._on_search_changed)
                 header_layout.addWidget(self._filter_bar)
 
-                self.__layout__.insertWidget(2, self._header_container)
-                next_idx = 3
+                # Above the chunk list: the slot just before the content, not a fixed index,
+                # since the buttons above it are only made when a group needs them.
+                above_content = self.__layout__.indexOf(self.content)
+                self.__layout__.insertWidget(above_content, self._header_container)
 
                 # A plain QFrame HLine would be invisible here -- CHUNK_STYLESHEET sets
                 # `QFrame { border: none; }` globally, which strips the border Qt's frame-shape
@@ -2880,11 +3297,11 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                     "background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
                     " stop:0 #0d0d0d, stop:1 #7a7a7a);"
                 )
-                self.__layout__.insertWidget(next_idx, self._filter_bar_separator)
-                next_idx += 1
+                self.__layout__.insertWidget(above_content + 1, self._filter_bar_separator)
             else:
-                self.__layout__.insertWidget(2, self._prim_path_field)
-                self.__layout__.insertWidget(3, self._lofted_container)
+                above_content = self.__layout__.indexOf(self.content)
+                self.__layout__.insertWidget(above_content, self._prim_path_field)
+                self.__layout__.insertWidget(above_content + 1, self._lofted_container)
 
         if self._is_group_chunk():
             self.minimize_button.installEventFilter(self)
@@ -2902,7 +3319,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
                 and isinstance(widget, ChunkParamWidgetBase)):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
-            labeled = LabeledWidget(widget, self)
+            labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
             if label is not None:
                 labeled.update_label(label)
             labeled._name_hint = widget.param.name
@@ -2910,6 +3327,12 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             self._lofted_container.setVisible(True)
         else:
             super().add_widget(widget, label)
+
+    def remove_widget(self, widget: QtWidgets.QWidget):
+        # A lofted param's row sits in the header, not in the chunk list.
+        if not self._remove_row(self.content_layout, widget) and hasattr(self, "_lofted_layout"):
+            if self._remove_row(self._lofted_layout, widget) and not self._lofted_layout.count():
+                self._lofted_container.setVisible(False)
 
     def _is_hidden_by_params_filter(self, group_chunk) -> bool:
         """True if group_chunk should be hidden from THIS tab's Params page under the current

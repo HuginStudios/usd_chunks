@@ -1234,7 +1234,7 @@ def main():
            | chunk_core.ChunkFlags.GroupFlags.LABELED
            | chunk_core.ChunkFlags.GroupFlags.FRAMED)
 
-    grp = chunk.Group("brush_grp", "Brush", flags=_GF)
+    grp = chunk.Group("brush_grp", "Brush", icon="brush", flags=_GF)
     radius = chunk.Slider(
         "radius", "Radius", min_value=0.0, max_value=100.0, default_value=10.0,
         flags=chunk.ChunkFlags.ParamFlags.LABELED,
@@ -1265,7 +1265,7 @@ def main():
     grp.add_param(spray_spacing)
     chunk_api.add_param(grp)
 
-    display = chunk.Group("display_grp", "Display", flags=_GF)
+    display = chunk.Group("display_grp", "Display", icon="eye", flags=_GF)
     colour = chunk.ColorPicker(
         "paint_color", "Paint Color", default_value=(0.15, 0.55, 1.0),
         tooltip="What painted areas are tinted toward. Blue by default because usdview "
@@ -1319,6 +1319,7 @@ def config():
                         driver=("brush_grp.radius", "brush_grp.strength")),
         ],
         category=chunk.StandardCategory.MODELLING,
+        icon="brush",
         # A stroke is array work over every vertex on the surface -- see `_stamp`.
         requirements=["numpy>=2,<3"],
         description="""

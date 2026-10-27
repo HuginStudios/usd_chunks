@@ -451,6 +451,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.RIGS,
+        icon="bone",
         description="""
         Skel Pose -- holds a few joints of a UsdSkel character in a pose, over whatever
         is animating it.

@@ -247,6 +247,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="tag",
         description="""
         Get Metadata — reads metadata from a prim using structured UI widgets.
 

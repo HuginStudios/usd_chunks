@@ -32,10 +32,25 @@ same menu opens. The chunk you pick is created and connected to the port you dra
 The menu isn't filtered, so you can pick a chunk with no matching port. In that case the
 node is created without a wire, and no error is shown.
 
+A node's header shows its icon, name and type (to set an icon, see [Icons in the node
+graph](writing-a-chunk.md#icons-in-the-node-graph)). The **⋮** button at its right opens
+the same menu as right-clicking the node.
+
+To make a node wider or narrower, drag its right edge. Double-click the edge to go back to
+the default width. The width is saved in the file, on the chunk prim's
+`ui:nodegraph:node:size`.
+
 ## Wiring
 
-Drag from one port to another port of the same type to connect them. A few things work
-differently:
+Drag from one port to another port of the same type to connect them. A port lights up when
+the mouse comes near it, to show you can start a wire there. A port's colour always shows
+its type of value.
+
+While you drag, the ports you can drop on get a white ring. Near one, the end of the wire
+jumps onto it, turns solid, and the port lights up: that's where the wire lands if you let
+go. Away from any port, the end follows the mouse again, dashed.
+
+A few things work differently:
 
 - **Drop a node onto an exec wire to insert it.** The exec wire is the chain wire between
   `outputs:chunk` and `inputs:chunk`. It's split and goes through the node.

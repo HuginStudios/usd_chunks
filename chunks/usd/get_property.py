@@ -125,6 +125,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="tag",
         description="""
         Get Property — reads the current value of an attribute or relationship
         from a prim on the stage.

@@ -397,6 +397,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="image",
         requirements=["numpy>=2,<3", "xatlas>=0.0.9,<1"],
         cache_cook=True,
         description=(

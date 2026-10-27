@@ -130,6 +130,7 @@ def execute(node):
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD_RENDER,
+        icon="film",
         description="""
         Render Var chunk — creates a UsdRender.Var prim, the USD description of a
         single AOV (arbitrary output variable).

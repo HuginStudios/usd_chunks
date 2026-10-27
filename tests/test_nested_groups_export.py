@@ -157,6 +157,43 @@ def test_a_reopened_loft_can_be_lofted_up_again(tmp_path) -> None:
         assert _tx(scene.get_stage(), "/world/m2") == 11.0
 
 
+
+def _lofted_on(group):
+    return [p for p in group.get_my_params() if getattr(p, "_lofted", False)]
+
+
+def _lofted_to_the_top(scene):
+    """_nested, with move.tx lofted on up from g2 through g1 to g0."""
+    groups, move = _nested(scene)
+    param = _lofted_on(groups[2])[0]
+    for group in (groups[1], groups[0]):
+        chunk_stage.loft_param_to_context(param, group)
+        param = _lofted_on(group)[0]
+    return groups, move, param
+
+
+def test_a_loft_up_to_the_top_reopens_whole_and_with_its_value(tmp_path) -> None:
+    with Scene() as scene:
+        _, _, top = _lofted_to_the_top(scene)
+        top.value = 8.0
+        scene.save(str(tmp_path / "a.usda"))
+    with Scene.open(str(tmp_path / "a.usda")) as scene:
+        levels = [_lofted_on(_by_name(scene, n)) for n in ("g2", "g1", "g0")]
+        assert [len(level) for level in levels] == [1, 1, 1]
+        assert _by_name(scene, "move").get_param("tx").value == 8.0
+        levels[2][0].value = 3.0
+        assert _tx(scene.get_stage(), "/world/m2") == 3.0
+
+
+def test_a_reopened_loft_up_to_the_top_unlofts_whole(tmp_path) -> None:
+    with Scene() as scene:
+        _lofted_to_the_top(scene)
+        scene.save(str(tmp_path / "a.usda"))
+    with Scene.open(str(tmp_path / "a.usda")) as scene:
+        g2 = _by_name(scene, "g2")
+        chunk_stage.unloft_param(chunk_stage.lofted_copy(_by_name(scene, "move").get_param("tx"), g2))
+        assert [_lofted_on(_by_name(scene, n)) for n in ("g2", "g1", "g0")] == [[], [], []]
+
 # -- export_network --------------------------------------------------------------------
 
 

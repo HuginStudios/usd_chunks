@@ -2484,7 +2484,7 @@ def main():
     )
 
     # --- Distribution ---
-    dist_grp = chunk.Group("Distribution", flags=_GF)
+    dist_grp = chunk.Group("Distribution", icon="scatter", flags=_GF)
     mode_param = chunk.Menu(
         "scatter_mode",
         "Mode",
@@ -2569,7 +2569,7 @@ def main():
     chunk_api.add_param(_collapsed(dist_grp))
 
     # --- Grow Near (ecosystem affinity / repulsion) ---
-    near_grp = chunk.Group("Grow Near", flags=_GF)
+    near_grp = chunk.Group("Grow Near", icon="sprout", flags=_GF)
     near_grp.add_param(
         chunk.LineEdit(
             "near_prims",
@@ -2594,7 +2594,7 @@ def main():
     chunk_api.add_param(_collapsed(near_grp))
 
     # --- Stacking (Stack mode only) ---
-    stack_grp = chunk.Group("Stacking", flags=_GF)
+    stack_grp = chunk.Group("Stacking", icon="layers", flags=_GF)
     orient_param = chunk.Menu(
         "stack_orient",
         "Orientation",
@@ -2722,7 +2722,7 @@ def main():
     stack_grp.set_state(chunk.ChunkFlags.State.HIDDEN)  # Surface is the default mode
 
     # --- Region (Surface only) ---
-    region_grp = chunk.Group("Region", flags=_GF)
+    region_grp = chunk.Group("Region", icon="grid", flags=_GF)
     region_grp.add_param(
         chunk.Spinbox(
             "max_slope",
@@ -2735,7 +2735,7 @@ def main():
     chunk_api.add_param(_collapsed(region_grp))
 
     # --- Variation ---
-    var_grp = chunk.Group("Variation", flags=_GF)
+    var_grp = chunk.Group("Variation", icon="shuffle", flags=_GF)
     var_grp.add_param(
         chunk.Spinbox(
             "scale_min",
@@ -2818,7 +2818,7 @@ def main():
     chunk_api.add_param(_collapsed(var_grp))
 
     # --- Viewport proxy ---
-    proxy_grp = chunk.Group("Viewport Proxy", flags=_GF)
+    proxy_grp = chunk.Group("Viewport Proxy", icon="eye", flags=_GF)
     proxy_mode = chunk.Menu(
         "proxy_mode",
         "Proxy",
@@ -2886,6 +2886,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
+        icon="scatter",
         # The mesh maths runs on arrays -- see `_TriangleSoup` for what it replaced and why.
         # scipy's KD-tree is what keeps spacing and Grow Near fast: without it the fallbacks
         # test each candidate against every placed point in Python, which on a full road

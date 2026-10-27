@@ -228,6 +228,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.PROPERTIES,
+        icon="tag",
         description="""
         Override Chunk Prim -- change another chunk's params from a chunk of your own.
 

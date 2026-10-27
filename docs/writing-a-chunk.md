@@ -94,6 +94,57 @@ add-on calls it today; see `chunks/modelling/blender_import.py`.
 [`docs/example.md`](example.md) has a longer example with notes on the param types,
 groups, flags and callback signatures you can use in `main()`.
 
+### Icons in the node graph
+
+A node shows an icon in its header, and a group can show one beside its name. Only the
+chunk decides them; nothing else picks one, so a chunk or group that sets no icon shows
+none.
+
+The node's icon goes in `config()`, so every node of the chunk gets it:
+
+```python
+def config():
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.MODELLING,
+        icon="posts",
+    )
+```
+
+A group's icon goes on the group, in `main()`:
+
+```python
+run_grp = chunk.Group("Run", icon="ruler", flags=_GF)
+```
+
+`icon` takes either:
+
+- the name of a built-in icon: a file name, without `.svg`, from
+  `usd_chunks/resources/icons/node/` (`sun`, `move`, `rotate`, `cube`, `camera`, `eye`, ...).
+  Built-in icons are drawn in one colour, and each has a default colour.
+- a path to your own image file (`.svg` or `.png`), drawn as it is.
+
+On a group or a param, anything else raises a `ValueError`.
+
+**Which icon a node shows,** first match wins:
+
+1. The icon on the chunk's prim in USD (see below), for that one node.
+2. `icon` set on the chunk in `main()` (`chunk_api.icon = "sun"`), for every node of it.
+3. `icon` in `config()`.
+
+**Per node, in USD.** A node's icon and colour can also be set on its chunk prim, through
+USD's own `UsdUINodeGraphNodeAPI`. These are saved in the file, and the node updates as soon
+as they change:
+
+```python
+from pxr import Gf, Sdf, UsdUI
+
+api = UsdUI.NodeGraphNodeAPI.Apply(chunk_prim)
+api.CreateIconAttr().Set(Sdf.AssetPath("camera"))          # a built-in name or an image path
+api.CreateDisplayColorAttr().Set(Gf.Vec3f(1.0, 0.4, 0.3))  # the icon's colour
+```
+
+The lookup is `usd_chunks/chunk_icons.py`, so any graph frontend can show the same icons.
+
 ## `config()`
 
 ```python

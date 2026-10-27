@@ -57,6 +57,7 @@ def main():
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.USD,
+        icon="merge",
         description="""
         Add Variants chunk — authors one or more variant sets onto one or more prims,
         using OverridePrim so the prims don't need to exist yet.

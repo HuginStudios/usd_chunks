@@ -1002,7 +1002,7 @@ def main() -> chunk.Chunk:
     ))
     chunk_api.add_param(chunk.Spinbox("seed", "Seed", default_value=0, is_int=True))
 
-    rocks = chunk.Group("Rocks", "Procedural Rocks", flags=_GF)
+    rocks = chunk.Group("Rocks", "Procedural Rocks", icon="cube", flags=_GF)
     rocks.add_param(chunk.Spinbox("count", "Rock Shapes", default_value=8, is_int=True))
     rocks.add_param(chunk.Spinbox("size", "Size", default_value=15.0,
                                   tooltip="Average rock diameter, in scene units."))
@@ -1018,7 +1018,7 @@ def main() -> chunk.Chunk:
     # Selected Meshes is the default, so the rock settings start hidden.
     rocks.set_state(chunk.ChunkFlags.State.HIDDEN)
 
-    surf = chunk.Group("Surface", "Surface", flags=_GF)
+    surf = chunk.Group("Surface", "Surface", icon="zap", flags=_GF)
     surf.add_param(chunk.Slider(
         "bevel", "Bevel", min_value=0.0, max_value=1.0, default_value=0.0,
         tooltip="Round the pieces' edges: 0 = sharp, 1 = pebble-round. For looks only -- a piece "
@@ -1038,7 +1038,7 @@ def main() -> chunk.Chunk:
                                   tooltip="Bound to the fracture surfaces. Empty uses the outside's."))
     chunk_api.add_param(surf)
 
-    prev = chunk.Group("Preview", "Start State", flags=_GF)
+    prev = chunk.Group("Preview", "Start State", icon="eye", flags=_GF)
     prev.add_param(chunk.Spinbox("preview_generation", "Start Broken", default_value=0, is_int=True,
                                  tooltip="0 = whole. Higher starts every source already broken into that "
                                  "generation's pieces -- also what the solver starts from."))
@@ -1054,6 +1054,7 @@ def main() -> chunk.Chunk:
 def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.DYNAMICS,
+        icon="zap",
         description=(
             "Pre-breaks a model -- or procedural rocks -- into a tree of pieces that exactly\n"
             "add up to it, with UVs and inside/outside groups. Feed the result to the RBD\n"
