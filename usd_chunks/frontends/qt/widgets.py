@@ -1602,6 +1602,14 @@ class ChunkQTWidgetFactory(chunk_widget_api.ChunkWidgetFactoryBase):
         return widget
 
 
+# The types that hold a value, for telling a param from a button or separator.
+_VALUE_TYPES = (
+    ChunkFlags.ParamType.FLOAT | ChunkFlags.ParamType.STRING | ChunkFlags.ParamType.INT
+    | ChunkFlags.ParamType.BOOL | ChunkFlags.ParamType.VECTOR | ChunkFlags.ParamType.MATRIX
+    | ChunkFlags.ParamType.CUSTOM
+)
+
+
 # The label column of inline rows (a label beside its field). Each group in a node body
 # fits it to its own longest label, between this many pixels and this share of the body's
 # width; a label longer than that is cut short with "...".
@@ -1983,9 +1991,10 @@ class LabeledWidget(QtWidgets.QWidget):
             an output) or when its edits would land in a locked file.
         """
         t = model.evaluate_type()
-        # EMPTY covers buttons and separators. `in`, not `&`: the low bits are reused per
-        # type, so a label and a slider share one.
-        if ChunkFlags.ParamType.EMPTY in t or ChunkFlags.ParamType.LABEL in t:
+        # A button or separator holds no value. Asked by value type, not by EMPTY: a menu's
+        # type (STRING_MENU = STRING | 1 << 4) has EMPTY's bit too. `in`, not `&`, for
+        # LABEL: the low bits are reused per type, so a label and a slider share one.
+        if not t & _VALUE_TYPES or ChunkFlags.ParamType.LABEL in t:
             return None
         if isinstance(model, chunk_core.ChunkVectorBase):
             is_output = model.is_output
@@ -3487,7 +3496,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         return None
 
     def contextMenuEvent(self, event):
-        if self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        # Only a chunk has the chunk menu. A group or vector inside one passes the click up:
+        # to its row for a vector (Clear Param), else to the chunk.
+        if not isinstance(self.group, chunk.ChunkBase) or self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             event.ignore()
             return
         vs = self._find_view_state()
