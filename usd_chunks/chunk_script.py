@@ -132,8 +132,8 @@ class Scene(chunk_scene.SceneSender):
         finds their names taken and builds a second copy of every chunk beside them.
         """
         # Unwire first. request_delete does the same disconnect for a chunk that still has
-        # outputs, but warns "Stuff may break" doing it -- and deleting the downstream end
-        # first does not avoid that, since it leaves the upstream's outputs in place.
+        # outputs, and deleting the downstream end first would not avoid that, since it
+        # leaves the upstream's outputs in place.
         inner = chunk_scene.all_chunks(self.get_chunks())
         for c in inner:
             c.get_dag_node().disconnect()
