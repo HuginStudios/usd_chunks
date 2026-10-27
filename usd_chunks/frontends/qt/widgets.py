@@ -2034,29 +2034,51 @@ class LabeledWidget(QtWidgets.QWidget):
         if confirm_dial(msg, title="Clear Param", detail=detail):
             chunk_stage.set_param_default_in(model, cleared.layer)
 
+    @staticmethod
+    def _loft_context(model):
+        """The group Loft up puts model on, or None.
+
+        If model sits directly on a group, get_context() returns that group itself, so
+        "Loft up" would loft to self. Go one level up to the parent context instead, so a
+        param on a nested group lofts out to its enclosing group.
+        """
+        chunk_obj = model.get_chunk()
+        context = chunk_obj.get_context() if chunk_obj else None
+        if chunk_obj is not None and context is chunk_obj:
+            pc = getattr(chunk_obj, "_parent_context", None)
+            context = pc() if pc else None
+        return context
+
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
         if not isinstance(self.widget, ChunkParamWidgetBase):
-            # A vector (Translate, Scale) is a group of fields, so it gets just the one
-            # item, from its header; a field inside it has its own menu.
+            # A vector (Focus Point, Clipping Range) is a group of fields: lofted, cleared and so
+            # on from its header, as one; a field inside it has its own menu.
             vector = self._model if isinstance(self._model, chunk_core.ChunkVectorBase) else None
-            menu = QtWidgets.QMenu()
-            clear_action = self._add_clear_param(menu, vector) if vector is not None else None
-            if clear_action is None:
+            if vector is None:
                 event.ignore()
                 return
-            if menu.exec_(event.globalPos()) == clear_action:
+            menu = QtWidgets.QMenu()
+            context = self._loft_context(vector)
+            lofted_to = chunk_stage.lofted_copy(vector, context) if context else None
+            loft_action = menu.addAction("Loft up") if context and lofted_to is None else None
+            unloft_target = vector if getattr(vector, "_lofted", False) else lofted_to
+            unloft_action = menu.addAction("Unloft") if unloft_target is not None else None
+            clear_action = self._add_clear_param(menu, vector)
+            if not menu.actions():
+                event.ignore()
+                return
+            action = menu.exec_(event.globalPos())
+            if loft_action and action == loft_action:
+                chunk_stage.loft_param_to_context(vector, context)
+            elif unloft_action and action == unloft_action:
+                # Next tick: unlofting deletes this widget, which is still inside its own event.
+                QtCore.QTimer.singleShot(0, lambda: chunk_stage.unloft_param(unloft_target))
+            elif clear_action and action == clear_action:
                 self._clear_param(vector)
             return
 
         param = self.widget.param
-        chunk_obj = param.get_chunk()
-        context = chunk_obj.get_context() if chunk_obj else None
-        # If the param sits directly on a group, get_context() returns that group itself, so
-        # "Loft up" would loft to self. Go one level up to the parent context instead, so a
-        # param on a nested group lofts out to its enclosing group.
-        if chunk_obj is not None and context is chunk_obj:
-            pc = getattr(chunk_obj, "_parent_context", None)
-            context = pc() if pc else None
+        context = self._loft_context(param)
 
         t = param.evaluate_type()
         is_expr_capable = (
@@ -3478,19 +3500,23 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         self.content_layout.insertWidget(1, self._search_panel)
 
     def add_widget(self, widget: QtWidgets.QWidget, label=None):
-        if self._is_group_chunk_node() and not isinstance(widget, ChunkParamWidgetBase):
+        # A group's own params are the ones lofted to it: fields, and vectors as one.
+        model = getattr(widget, "param", None) if isinstance(widget, ChunkParamWidgetBase) else None
+        if isinstance(getattr(widget, "group", None), chunk_core.ChunkVectorBase):
+            model = widget.group
+        if self._is_group_chunk_node() and model is None:
             # Shown as a node: suppress all non-lofted widgets.
             return
         # A Params page shows its chunks in its two boxes (_refresh_page), so whatever else it
         # is given is the group's own interface: it goes in the group's box.
         if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
-                and (isinstance(widget, ChunkParamWidgetBase) or self._is_tab_context_widget)):
+                and (model is not None or self._is_tab_context_widget)):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
             labeled = LabeledWidget(widget, self, inline=self._in_inline_body())
             if label is not None:
                 labeled.update_label(label)
-            if isinstance(widget, ChunkParamWidgetBase):
-                labeled._name_hint = widget.param.name
+            if model is not None:
+                labeled._name_hint = model.name
             self._lofted_layout.addWidget(labeled)
             self._lofted_container.setVisible(True)
         else:
@@ -3511,8 +3537,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             else:
                 self._sync_lofted_chunks()
             return None
-        if self._is_group_chunk_node():
-            # Don't create orphan Qt child widgets -- they render at (0,0) as overlays.
+        if self._is_group_chunk_node() and not isinstance(group, chunk_core.ChunkVectorBase):
+            # Don't create orphan Qt child widgets -- they render at (0,0) as overlays. A
+            # vector is a param lofted here, shown with the lofted fields (add_widget).
             return None
         if (isinstance(group, chunk.ChunkBase)
                 and group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
@@ -3532,11 +3559,13 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def _build_param_widgets(self, group):
         if self._is_group_chunk_node():
-            # Shown as a node: the group's interface only -- its lofted params, and on a Params
-            # page the chunks lofted to it, not every chunk inside.
+            # Shown as a node: the group's interface only -- its lofted params (fields and
+            # vectors), and on a Params page the chunks lofted to it, not every chunk inside.
             for param in group.get_my_params():
                 if isinstance(param, chunk_core.ChunkParamBase):
                     self._add_param_widget(param)
+                elif isinstance(param, chunk_core.ChunkVectorBase):
+                    self._add_group_layout(param)
             if self._lofted_chunks is not None:
                 ChunkWidget._group_sections.add(self)
                 self._sync_lofted_chunks()

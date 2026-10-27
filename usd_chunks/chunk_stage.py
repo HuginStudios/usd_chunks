@@ -2047,7 +2047,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # can have moved, so the pass starts at the chunk that gained the input.
         reconcile_edit_targets(self._stage, self._scene, roots=[dependent])
 
-    def _sync_vector_input(self, chunk: core.ChunkBase, vector: core.ChunkVectorBase) -> None:
+    def _sync_vector_input(self, chunk: core.ChunkBase, vector: core.ChunkVectorBase, force: bool = False) -> None:
         """Create/restore a chunk-prim attr for a vector and wire it.
 
         If the vector already drives a real prim attr (via connect_usd_attr -- e.g. a
@@ -2091,7 +2091,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 sdf_type, _ = _sdf_vector_type(type_source) if type_source else (None, None)
             if sdf_type is None:
                 return
-            if not is_expr and vector.value == vector.default_value:
+            if not force and not is_expr and vector.value == vector.default_value:
                 return  # still at default -- don't create attr
 
         prefix = "outputs:" if vector.has_flag(ChunkFlags.ParamFlags.OUTPUT) else _INPUTS_PREFIX
@@ -8896,7 +8896,9 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
         # A param still at its default has no USD attr yet -- create it so there's something to
         # promote (Loft up right after creating a chunk is the common case).
         owner = param.get_chunk()
-        if owner is not None:
+        if owner is not None and isinstance(param, core.ChunkVectorBase):
+            sync._sync_vector_input(owner, param, force=True)
+        elif owner is not None:
             sync._sync_param_input(owner, param, force=True)
     if not param._param_attr_path:
         logger.warning("loft_param_to_context: param %r has no USD attribute bound", param.name)
@@ -9315,7 +9317,7 @@ def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_p
     for inner_chunk in (*context.get_my_params(), *_child_contexts(context)):
         if not isinstance(inner_chunk, core.ChunkBase):
             continue
-        for _, param in _iter_chunk_params(inner_chunk):
+        for _, param in (*_iter_chunk_params(inner_chunk), *_iter_chunk_vectors(inner_chunk)):
             if not param._param_attr_path:
                 continue
             inner_attr = stage.GetAttributeAtPath(Sdf.Path(param._param_attr_path))
@@ -9424,7 +9426,7 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
             param_name = attr_name[len(_INPUTS_PREFIX):]
             # Only check direct ChunkParamBase children of context (already-lofted),
             # not nested params inside inner chunks which share the same name.
-            if any(isinstance(p, core.ChunkParamBase) and p.name == param_name
+            if any(isinstance(p, (core.ChunkParamBase, core.ChunkVectorBase)) and p.name == param_name
                    for p in context.get_my_params()):
                 continue
 

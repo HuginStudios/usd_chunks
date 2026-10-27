@@ -100,7 +100,8 @@ Good to know before you build one:
 - **To show an inner param on the outside, loft it.** Lofting adds the inner param as a
   real param on the group node. The connection goes *up*, from the inner param to the group
   node. It's not the same as a normal `@Node.param@` link between two chunks, so treat
-  lofts separately.
+  lofts separately. A vector (Focus Point, Clipping Range) lofts as one, with all its fields:
+  right-click its header and choose **Loft up**.
 - **To show a whole chunk on the outside, loft the chunk.** Right-click it and choose
   **Loft up chunk**. Its full panel then shows on the group's Params page, and in the
   group's section on the page above. Unlike lofting a param, it adds no params or ports to
