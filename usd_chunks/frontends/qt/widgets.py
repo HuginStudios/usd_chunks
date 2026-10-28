@@ -283,7 +283,7 @@ def apply_chunk_stylesheet(widget: QtWidgets.QWidget) -> bool:
         parent = parent.parentWidget()
 
     setattr(widget, _SHEET_FLAG, True)
-    if getattr(widget, "_inline_labels", False):
+    if getattr(widget, "_node_body", False):
         widget.setStyleSheet(CHUNK_STYLESHEET + NODE_BODY_STYLESHEET)
     else:
         widget.setStyleSheet(CHUNK_STYLESHEET)
@@ -2330,7 +2330,7 @@ class ContainerWidget(
             expanded: Whether the group is open; read from the group when not given.
         """
         icon, color = self._header_icon()
-        if not (icon or self._in_inline_body()):
+        if not (icon or self._node_body_around() is not None):
             return
         if expanded is None:
             expanded = not self.group.has_state(ChunkFlags.State.COLLAPSED)
@@ -2347,7 +2347,7 @@ class ContainerWidget(
 
     def _header_style(self) -> str:
         """Extra style for this group's header button: bold, left-aligned text in a node body."""
-        if not self._in_inline_body():
+        if self._node_body_around() is None:
             return ""
         return "color: #e5e7eb; font-weight: 600; text-align: left; padding: 3px 2px;"
 
@@ -2358,7 +2358,7 @@ class ContainerWidget(
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))
-        body = self._inline_body()
+        body = self._node_body_around()
         if body is not None:
             # Counted from the body, not the stage: a chunk inside a chunkgroup is one level
             # deeper in its identifier, and counting that painted its body opaque, squaring
@@ -2605,17 +2605,21 @@ class ContainerWidget(
         Returns:
             Whether rows added here should be inline.
         """
-        return self._inline_body() is not None
+        return self._nearest_with("_inline_labels") is not None
 
-    def _inline_body(self) -> ContainerWidget | None:
+    def _node_body_around(self) -> ContainerWidget | None:
         """The node body (a ChunkWidget built for the node graph) this container is in.
 
         Returns:
             That body, which may be this container itself, or None outside a node.
         """
+        return self._nearest_with("_node_body")
+
+    def _nearest_with(self, flag: str) -> ContainerWidget | None:
+        """This container or the nearest one above it with flag set, or None."""
         w: QtWidgets.QWidget | None = self
         while w is not None:
-            if getattr(w, "_inline_labels", False):
+            if getattr(w, flag, False):
                 return w
             w = w.parentWidget()
         return None
@@ -3156,9 +3160,10 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         # A node's body in the graph, rather than a Params page. Set before super().__init__,
         # which builds the contents.
         self._node_body = for_proxy
-        # A node body (for_proxy) is narrow and stacks on a canvas, so its rows put their
-        # labels beside the fields. Set before super().__init__, which builds the rows.
-        self._inline_labels = for_proxy
+        # Rows put their labels beside the fields, in a node body and on the Params tab alike:
+        # half the height of a label above each field. Set before super().__init__, which
+        # builds the rows.
+        self._inline_labels = True
         # Whether a fit_label_column call is already queued (see request_label_fit).
         self._label_fit_queued = False
         self._view_state: ViewSlotState | None = None
@@ -3182,7 +3187,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
 
     def update_from_flags(self):
         super().update_from_flags()
-        if self._inline_labels:
+        if self._node_body:
             # A node already shows the chunk's name in its header, and folds the whole body
             # on a header double-click; the body's own name row would only repeat that.
             self.minimize_button.setHidden(True)
@@ -3359,9 +3364,9 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
                 groups.setdefault(row.parentWidget(), []).append(row.label)
         cap = int(self.width() * INLINE_LABEL_MAX_SHARE)
         for parent, labels in groups.items():
-            # Rows straight in the body start at the node's edge, under its port dots;
-            # nudge them clear. Rows in a group are already indented by it.
-            indent = _INLINE_TOP_ROW_INDENT if self._owning_container(parent) is self else 0
+            # Rows straight in a node's body start at its edge, under its port dots; nudge
+            # them clear. Rows in a group are already indented by it.
+            indent = _INLINE_TOP_ROW_INDENT if self._node_body and self._owning_container(parent) is self else 0
             for label in labels:
                 row = label.parentWidget()
                 if isinstance(row, LabeledWidget) and row._row.contentsMargins().left() != indent:
