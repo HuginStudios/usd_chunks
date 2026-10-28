@@ -61,7 +61,7 @@ EXEC_OUTPUT = "outputs:chunk"
 # for chunk_utils.get_edit_layer's upstream walk; its value names the layer everything
 # downstream of it authors into. Publishing it (rather than importing the Edit Target
 # script's resolution logic into core) keeps core decoupled from the script -- same
-# published-marker pattern as chunk:pinned / set_chunk_pinned.
+# published-marker pattern as chunk:lofted / set_chunk_lofted.
 EDIT_TARGET_MARKER = "chunk:editTargetLayer"
 
 # Merge chunks fan several exec branches into one node, so they need more than the single

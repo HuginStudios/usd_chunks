@@ -26,7 +26,9 @@ def test_the_header_sits_above_the_chunks(env):  # noqa: F811
     env["settle"]()
     page = _tab_widget(env, mesh.get_context())
 
-    assert page._header_container.geometry().bottom() < page.content.geometry().top()
+    # The group's box (whose title is the header) first, then the search box.
+    assert page._group_box.isAncestorOf(page.minimize_button)
+    assert page._group_box.geometry().bottom() < page._search_panel.geometry().top()
 
 
 def _list_container(widget: ChunkWidget, group) -> ChunkWidget:

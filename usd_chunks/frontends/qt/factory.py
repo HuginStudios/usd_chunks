@@ -196,13 +196,13 @@ def _guarded_paste():
     focused = QtWidgets.QApplication.focusWidget()
     if focused and isinstance(focused, _TEXT_INPUT_TYPES):
         return
-    # Pasted chunks follow the active surface, same as a fresh create: pinned if pasted while
-    # looking at Params, not pinned if pasted while looking at the Graph.
-    chunk_stage._pin_new_chunks = not _focused_view_is_graph(focused)
+    # Pasted chunks follow the active surface, same as a fresh create: lofted (so they show)
+    # if pasted while looking at Params, not if pasted while looking at the Graph.
+    chunk_stage._loft_new_chunks = not _focused_view_is_graph(focused)
     try:
         chunk_stage.paste_chunks()
     finally:
-        chunk_stage._pin_new_chunks = None
+        chunk_stage._loft_new_chunks = None
 
 
 class ChunkTabContextStack(QtWidgets.QStackedWidget):
@@ -476,16 +476,17 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         chunks = entry.create()
 
         # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
-        # view (view-follows-tail) and auto-pins it -- node-graph creates don't set either flag,
-        # there wiring is manual and pin is opt-in via the node's right-click menu.
+        # view (view-follows-tail) and lofts it, so it shows on the Params page it was made
+        # from -- node-graph creates set neither: there wiring is manual, and Loft up chunk is
+        # in the node's right-click menu.
         chunk_stage._params_tab_create = True
-        chunk_stage._pin_new_chunks = True
+        chunk_stage._loft_new_chunks = True
         try:
             for c in chunks:
                 self.add_chunk_to_tab(c)
         finally:
             chunk_stage._params_tab_create = False
-            chunk_stage._pin_new_chunks = None
+            chunk_stage._loft_new_chunks = None
 
     def get_chunk_context(self, idx) -> ChunkWidget | None:
         w = self.widget(idx)

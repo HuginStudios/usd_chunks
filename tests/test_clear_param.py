@@ -365,7 +365,7 @@ def test_a_menu_clears(env, monkeypatch):  # noqa: F811
 def test_a_vector_clears_from_its_header_on_the_params_page(env, monkeypatch):  # noqa: F811
     node = env["mk"]("example")
     # A tab's Params page, where a right-click on a chunk opens the chunk menu.
-    chunk_stage.set_pin_filter_enabled(node.get_context(), False)
+    chunk_stage.set_chunk_lofted(node, True)
     page = ChunkWidget(node.get_context(), is_tab_context=True)
     page.set_view_state(ViewSlotState())
     page.resize(500, 900)
