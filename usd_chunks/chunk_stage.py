@@ -93,7 +93,7 @@ def exec_input_connections(prim: Usd.Prim) -> list[Sdf.Path]:
 # for chunk_utils.get_edit_layer's upstream walk; its value names the layer everything
 # downstream of it authors into. Publishing it (rather than importing the Edit Target
 # script's resolution logic into core) keeps core decoupled from the script -- same
-# published-marker pattern as chunk:pinned / set_chunk_pinned.
+# published-marker pattern as chunk:lofted / set_chunk_lofted.
 _EDIT_TARGET_MARKER = chunk_naming.EDIT_TARGET_MARKER
 
 _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
@@ -103,20 +103,20 @@ _NODE_STEP = 260  # horizontal spacing between nodes in the default auto-layout
 # user wires manually.
 _params_tab_create = False
 
-# Auto-pin decision for the next chunk(s) about to be created, or None when no create/paste flow
-# is active (idle -- e.g. during a scene load). Tri-state, not a plain bool, to fix a real race:
-# the Params-page widget's PARAM_ADDED listener can run BEFORE ChunkStageSync's own listener (both
-# react to the same notice; delivery order isn't guaranteed), so the widget may ask is_chunk_pinned()
-# before _define_prim has written chunk:pinned at all. is_chunk_pinned() falls back to this flag
-# for a chunk with no authored value yet -- but only distinguishing "mid-creation, going to author
-# False" (this flag is True/False) from "not creating anything right now, this is a genuinely old
-# chunk with no attribute" (this flag is None, so the absent-means-pinned migration default holds)
+# Whether the chunk(s) about to be created are lofted to their group (shown on its Params page),
+# or None when no create/paste flow is active (idle -- e.g. during a scene load). Tri-state, not a
+# plain bool, to fix a real race: the Params-page widget's PARAM_ADDED listener can run BEFORE
+# ChunkStageSync's own listener (both react to the same notice; delivery order isn't guaranteed),
+# so the widget may ask is_chunk_lofted() before _define_prim has written chunk:lofted at all.
+# is_chunk_lofted() falls back to this flag for a chunk with no authored value yet -- but only
+# distinguishing "mid-creation, going to author False" (this flag is True/False) from "not
+# creating anything right now, this is an old chunk with no attribute" (this flag is None)
 # requires the None state; a plain bool defaulting False can't tell those two apart.
-# True: created via the Params tab's own create menu, or pasted/duplicated while Params is showing.
-# False: created via the Graph page's create menu, or pasted/duplicated while Graph is showing.
+# True: created via the Params tab's own create menu, or pasted/duplicated while Params is showing
+# -- a chunk made there must show there. False: created or pasted while the Graph is showing.
 # Kept separate from _params_tab_create -- that flag also drives view-follows-tail auto-chaining,
 # which paste must NOT pick up (it already copies the source's own wiring explicitly).
-_pin_new_chunks: bool | None = None
+_loft_new_chunks: bool | None = None
 
 # Set by the node graph to the USD-space (x, y) a new chunk node should be created at (e.g. the
 # right-click / wire-drop point). _define_prim reads it for the node pos instead of the far-away
@@ -125,10 +125,10 @@ _create_node_pos: tuple[float, float] | None = None
 
 
 @contextlib.contextmanager
-def creating_at(pos: tuple[float, float] | None, pin: bool | None = None):
+def creating_at(pos: tuple[float, float] | None, loft: bool | None = None):
     """Create chunks at `pos` (USD space) for the duration of the block.
 
-    The module globals are how a caller passes a position and a pin preference down into
+    The module globals are how a caller passes a position and a loft preference down into
     _define_prim, which is several frames below and has no argument for either. Doing that
     save/assign/restore by hand in every caller would mean one try/finally per call site,
     each an opportunity to forget the restore and leave every later chunk landing at someone
@@ -140,21 +140,22 @@ def creating_at(pos: tuple[float, float] | None, pin: bool | None = None):
 
     Args:
         pos: The node position new chunks get, in USD coordinates, or None for the default.
-        pin: Whether new chunks are pinned to the Params page; None leaves it unchanged.
+        loft: Whether new chunks are lofted to their group's Params page; None leaves it
+            unchanged.
 
     Yields:
-        None, with the position and pin preference in effect.
+        None, with the position and loft preference in effect.
     """
-    global _create_node_pos, _pin_new_chunks
-    previous_pos, previous_pin = _create_node_pos, _pin_new_chunks
+    global _create_node_pos, _loft_new_chunks
+    previous_pos, previous_loft = _create_node_pos, _loft_new_chunks
     _create_node_pos = pos
-    if pin is not None:
-        _pin_new_chunks = pin
+    if loft is not None:
+        _loft_new_chunks = loft
     try:
         yield
     finally:
         _create_node_pos = previous_pos
-        _pin_new_chunks = previous_pin
+        _loft_new_chunks = previous_loft
 
 # Just above float32's ~1e-7 relative precision. A param holds a Python float (64-bit) but
 # is stored in USD as a 32-bit float, so a value that made the round trip comes back
@@ -1040,7 +1041,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
         Authored only when closed. Open is the state a chunk is born in, so writing it would
         put a line on every chunk prim in every scene to say nothing -- the same reasoning
-        chunk:pinned follows.
+        chunk:lofted follows.
         """
         collapsed = chunk.has_state(ChunkFlags.State.COLLAPSED)
         attr = prim.GetAttribute(UsdUI.Tokens.uiNodegraphNodeExpansionState)
@@ -2704,16 +2705,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                     if not attr.Get():
                         attr.Set(module_name or fallback)
 
-                # Only a pinned chunk writes anything: unpinned is the default (see
-                # is_chunk_pinned), and authoring it on every prim put a chunk:pinned = 0 line
-                # in every chunk of every saved file for no information at all.
-                # Views are never auto-pinned, regardless of which surface/flow created them --
-                # see is_chunk_pinned's matching unconditional view special case.
-                if bool(_pin_new_chunks) and not is_terminal_chunk(chunk):
-                    pinned_attr = prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True)
-                    pinned_attr.SetVariability(Sdf.VariabilityUniform)
-                    if not pinned_attr.HasAuthoredValue():
-                        pinned_attr.Set(True)
+                # Only a lofted chunk writes anything: not lofted is the default (see
+                # is_chunk_lofted), and authoring it on every prim would put a chunk:lofted = 0
+                # line in every chunk of every saved file for no information at all.
+                # Views are never lofted on creation, whichever surface created them -- see
+                # is_chunk_lofted's matching view special case.
+                if bool(_loft_new_chunks) and not is_terminal_chunk(chunk):
+                    lofted_attr = prim.CreateAttribute(_LOFTED_CHUNK_ATTR, Sdf.ValueTypeNames.Bool, custom=True)
+                    lofted_attr.SetVariability(Sdf.VariabilityUniform)
+                    if not lofted_attr.HasAuthoredValue():
+                        lofted_attr.Set(True)
 
                 config = chunk.get_config()
                 if not (config and config.terminal):
@@ -4423,90 +4424,122 @@ def is_merge_prim(prim: Usd.Prim) -> bool:
     return bool(attr and attr.IsValid() and attr.Get() == "merge")
 
 
-def is_chunk_pinned(chunk: core.ChunkBase) -> bool:
-    """Whether chunk is pinned into its context's Params page.
+# A chunk lofted to its group: its whole panel shows on the group's Params page. On the chunk
+# prim, which sits inside the group's, so it survives a rename and travels with the group.
+_LOFTED_CHUNK_ATTR = "chunk:lofted"
+# What a chunk lofted this way was called before lofting replaced pinning. Read, never written:
+# a file saved with pinned chunks opens with them lofted.
+_LEGACY_PINNED_ATTR = "chunk:pinned"
 
-    Reads the persisted ``chunk:pinned`` custom attribute (see ADR-0003), following the
-    ``chunk:activeView`` precedent. An explicitly authored value (set by set_chunk_pinned,
-    i.e. the Pin/Unpin menu action, or already written by _define_prim for this chunk)
-    always wins.
 
-    Otherwise -- no authored value, which can mean the PRIM ITSELF doesn't exist yet, not
-    just a missing attribute on an existing one -- it falls back in order:
+def is_chunk_lofted(chunk: core.ChunkBase) -> bool:
+    """Whether chunk is lofted to its group, so its panel shows on the group's Params page.
 
-    1. Views are graph-wiring utility nodes, never meant for Params curation: default
-       unpinned, whether genuinely legacy, mid-creation, or racing _define_prim's own write.
-    2. _pin_new_chunks, when a create/paste flow is actively deciding this chunk's pin state
-       right now. Set by the caller BEFORE the create notice is even sent, so it's correct
-       regardless of listener order. This matters because the Params-page widget and
-       ChunkStageSync both react to the same PARAM_ADDED notice for a newly-created chunk,
-       and delivery order between two independent listeners on one notice isn't guaranteed
-       -- the widget's listener can run (and call this) before ChunkStageSync's has even
-       started _define_prim, let alone authored the attribute.
-    3. Absent means unpinned. Pinning is the exception a user asks for, so it is the only
-       state worth a line in the file; writing chunk:pinned = 0 onto every chunk prim would
-       say nothing at all. A scene saved without pin state therefore opens with an
-       unfiltered Params page rather than everything pinned.
+    An authored ``chunk:lofted`` (or, from an older file, ``chunk:pinned``) always wins.
+    Otherwise -- no authored value, which can mean the prim itself doesn't exist yet -- it
+    falls back in order:
+
+    1. Views and Outputs are wiring, never panels: not lofted.
+    2. _loft_new_chunks, when a create/paste flow is deciding it right now. Set before the
+       create notice is sent, so it is right whichever PARAM_ADDED listener runs first.
+    3. Absent means not lofted.
 
     Args:
         chunk: The chunk.
 
     Returns:
-        True if the chunk is pinned.
+        True if the chunk is lofted.
     """
     stage = chunk.get_scene_stage()
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk))) if stage else None
-    attr = prim.GetAttribute("chunk:pinned") if (prim and prim.IsValid()) else None
-    val = attr.Get() if (attr and attr.IsValid()) else None
-    if val is not None:
-        return bool(val)
+    if prim and prim.IsValid():
+        for name in (_LOFTED_CHUNK_ATTR, _LEGACY_PINNED_ATTR):
+            attr = prim.GetAttribute(name)
+            if (val := attr.Get() if attr and attr.IsValid() else None) is not None:
+                return bool(val)
     if is_terminal_chunk(chunk):
         return False
-    if _pin_new_chunks is not None:
-        return _pin_new_chunks
+    if _loft_new_chunks is not None:
+        return _loft_new_chunks
     return False
 
 
-def set_chunk_pinned(chunk: core.ChunkBase, pinned: bool) -> None:
-    """Persist chunk's pinned state as a custom ``chunk:pinned`` attribute on its prim.
+def owning_group(chunk: core.ChunkBase) -> core.ChunkBase | None:
+    """The group chunk sits in: the one it is lofted to.
 
-    This is chunk-prim bookkeeping like any other inputs:/outputs: attr -- it must not
-    rely on the stage's ambient edit target (chunk_utils.get_bookkeeping_layer resolves
-    it instead, following Edit Target for a regular chunk / pinned to session for a
-    CONTEXT chunk). An existing spec is updated in place (chunk_utils.get_attr_home_layer)
-    so toggling this repeatedly never leaves an older, stronger opinion in one layer
-    shadowing a newer one authored into a different, weaker layer -- the same rule
-    ChunkParamBase.data_changed / update_usd_prop follow.
+    Not get_context() for a group, which answers the group itself.
 
     Args:
         chunk: The chunk.
-        pinned: The new state.
+
+    Returns:
+        The group, or None for the outermost one.
+    """
+    if chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+        parent_ref = getattr(chunk, "_parent_context", None)
+        return parent_ref() if parent_ref else None
+    return chunk.get_context()
+
+
+#: Called as hook(chunk, lofted) after set_chunk_lofted, so a UI showing lofted chunks
+#: follows whoever lofted one: a menu, a script or a test. Set by the Qt frontend.
+chunk_lofted_hook: Callable[[core.ChunkBase, bool], None] | None = None
+
+
+def set_chunk_lofted(chunk: core.ChunkBase, lofted: bool) -> None:
+    """Loft chunk to its group's Params page, or take it back down.
+
+    Written as ``chunk:lofted`` on the chunk prim, as chunk-prim bookkeeping: an existing
+    spec is updated where it lives (chunk_utils.get_attr_home_layer), else it goes to
+    chunk_utils.get_bookkeeping_layer, so toggling never leaves an older, stronger opinion
+    in one layer shadowing a newer one in another. An older file's ``chunk:pinned`` is
+    replaced by it. Then chunk_lofted_hook is told.
+
+    Args:
+        chunk: The chunk.
+        lofted: The new state.
+    """
+    if _write_chunk_lofted(chunk, lofted) and chunk_lofted_hook is not None:
+        chunk_lofted_hook(chunk, lofted)
+
+
+def _write_chunk_lofted(chunk: core.ChunkBase, lofted: bool) -> bool:
+    """Author set_chunk_lofted's change.
+
+    Args:
+        chunk: The chunk.
+        lofted: The new state.
+
+    Returns:
+        False if the chunk has no prim to write it on.
     """
     stage = chunk.get_scene_stage()
     if not stage:
-        return
+        return False
     prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(chunk)))
     if not prim.IsValid():
-        return
+        return False
     prev_w = chunk_notice._usd_write_active
     chunk_notice._usd_write_active = True
     try:
-        attr = prim.GetAttribute("chunk:pinned")
-        if not pinned:
-            # Unpinned is the default, so unpinning removes the opinion rather than writing
-            # a false one -- wherever it was authored, since a stale stronger opinion in
-            # another layer would otherwise shadow its absence here.
-            for layer in stage.GetLayerStack(includeSessionLayers=True):
-                spec = layer.GetPrimAtPath(prim.GetPath())
-                if spec and "chunk:pinned" in spec.properties:
-                    del spec.properties["chunk:pinned"]
-            return
+        attr = prim.GetAttribute(_LOFTED_CHUNK_ATTR)
         home = chunk_utils.get_attr_home_layer(attr) if attr and attr.IsValid() else None
-        target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
-        with Usd.EditContext(stage, target):
-            prim.CreateAttribute("chunk:pinned", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
+        # Not lofted is the default, so unlofting removes the opinion rather than writing a
+        # false one -- wherever it was authored, since a stale stronger opinion in another
+        # layer would otherwise shadow its absence.
+        names = (_LOFTED_CHUNK_ATTR, _LEGACY_PINNED_ATTR) if not lofted else (_LEGACY_PINNED_ATTR,)
+        for layer in stage.GetLayerStack(includeSessionLayers=True):
+            spec = layer.GetPrimAtPath(prim.GetPath())
+            for name in names:
+                if spec and name in spec.properties:
+                    del spec.properties[name]
+        if lofted:
+            target = home or chunk_utils.get_bookkeeping_layer(stage, chunk)
+            with Usd.EditContext(stage, target):
+                prim.CreateAttribute(_LOFTED_CHUNK_ATTR, Sdf.ValueTypeNames.Bool, custom=True).Set(True)
     finally:
         chunk_notice._usd_write_active = prev_w
+    return True
 
 
 def _context_own_prim_path(context: core.ChunkBase) -> str | None:
@@ -4522,70 +4555,6 @@ def _context_own_prim_path(context: core.ChunkBase) -> str | None:
     _on_param_added), so that is used as-is.
     """
     return context.prim_path
-
-
-def is_pin_filter_enabled(context: core.ChunkBase) -> bool:
-    """Whether context's Params page applies the pin filter, showing only pinned chunks.
-
-    Reads the persisted ``filter:pinEnabled`` custom attribute on the context's own prim,
-    same pattern as ``chunk:pinned``. An absent attribute means enabled, so a tab saved
-    without the attribute keeps the pin filter applied.
-
-    Args:
-        context: The context.
-
-    Returns:
-        True if the pin filter is on.
-    """
-    stage = context.get_scene_stage()
-    path = _context_own_prim_path(context)
-    prim = stage.GetPrimAtPath(Sdf.Path(path)) if (stage and path) else None
-    attr = prim.GetAttribute("filter:pinEnabled") if (prim and prim.IsValid()) else None
-    val = attr.Get() if (attr and attr.IsValid()) else None
-    return True if val is None else bool(val)
-
-
-def set_pin_filter_enabled(context: core.ChunkBase, enabled: bool) -> None:
-    """Persist context's pin-filter toggle as ``filter:pinEnabled`` on its own prim.
-
-    That is the context/tab prim itself, not any of its children. Unlike a regular chunk, a
-    plain tab context's own prim is never explicitly authored by _define_prim -- a tab
-    context is added with send_added=False (see SceneSender.add_chunk), so PARAM_ADDED never
-    fires for it and its prim only starts existing as an implicit ancestor once some CHILD
-    chunk is added under it. An empty, just-created tab therefore has no prim at all yet,
-    so one is defined on demand here rather than silently doing nothing.
-
-    Args:
-        context: The context.
-        enabled: The new state.
-    """
-    stage = context.get_scene_stage()
-    path = _context_own_prim_path(context)
-    if not stage or not path:
-        return
-    prev_w = chunk_notice._usd_write_active
-    chunk_notice._usd_write_active = True
-    try:
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        if not prim.IsValid():
-            prim = stage.DefinePrim(Sdf.Path(path), _CHUNK_PRIM_TYPENAME)
-        # An UPDATE goes where the attribute already lives; only a first write picks a
-        # layer. An Edit Target chunk moves the stage's target while the graph is live, so
-        # re-resolving it on every write scattered one attribute's opinions across layers
-        # and let the older, stronger one go on winning -- the toggle stopped responding
-        # mid-session while the widget went on reporting what was clicked.
-        #
-        # The first write deliberately still follows the ambient target rather than the
-        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
-        # document and has to land somewhere that exports; the session layer does not.
-        # Pinning both halves to one answer breaks one of them in each direction.
-        existing = prim.GetAttribute("filter:pinEnabled")
-        home = chunk_utils.get_attr_home_layer(existing) if existing and existing.IsValid() else None
-        ctx = Usd.EditContext(stage, home) if home else contextlib.nullcontext()
-        with ctx:
-            prim.CreateAttribute("filter:pinEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(bool(enabled))
-    finally:
-        chunk_notice._usd_write_active = prev_w
 
 
 _SEARCH_SCOPES = ("both", "name", "type")
@@ -4613,8 +4582,9 @@ def get_search_query(context: core.ChunkBase) -> str:
 def set_search_query(context: core.ChunkBase, query: str) -> None:
     """Persist context's Params-page search query as ``filter:searchQuery`` on its own prim.
 
-    Defines the prim on demand -- see set_pin_filter_enabled for why a plain tab context may
-    not have one yet.
+    Defines the prim on demand: a plain tab context's own prim is never authored by
+    _define_prim (it is added with send_added=False, so PARAM_ADDED never fires for it), and
+    only exists as an implicit ancestor once a child chunk is added under it.
 
     Args:
         context: The context.
@@ -4637,7 +4607,7 @@ def set_search_query(context: core.ChunkBase, query: str) -> None:
         # mid-session while the widget went on reporting what was clicked.
         #
         # The first write deliberately still follows the ambient target rather than the
-        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # bookkeeping layer set_chunk_lofted uses. A tab's filter state is part of the
         # document and has to land somewhere that exports; the session layer does not.
         # Pinning both halves to one answer breaks one of them in each direction.
         existing = prim.GetAttribute("filter:searchQuery")
@@ -4695,7 +4665,7 @@ def set_search_scope(context: core.ChunkBase, scope: str) -> None:
         # mid-session while the widget went on reporting what was clicked.
         #
         # The first write deliberately still follows the ambient target rather than the
-        # bookkeeping layer set_chunk_pinned uses. A tab's filter state is part of the
+        # bookkeeping layer set_chunk_lofted uses. A tab's filter state is part of the
         # document and has to land somewhere that exports; the session layer does not.
         # Pinning both halves to one answer breaks one of them in each direction.
         existing = prim.GetAttribute("filter:searchScope")
@@ -5650,7 +5620,7 @@ def publish_edit_target(chunk: core.ChunkBase, stage: Usd.Stage, layer: Sdf.Laye
 
     The marker is updated in place at its existing home (get_attr_home_layer) so re-pointing
     the Edit Target repeatedly never leaves a stale stronger opinion shadowing the new one --
-    same discipline as set_chunk_pinned.
+    same discipline as set_chunk_lofted.
 
     Args:
         chunk: The Edit Target chunk.
