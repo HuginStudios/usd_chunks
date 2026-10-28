@@ -86,6 +86,12 @@ def _row(widget: ChunkWidget, name: str) -> LabeledWidget:
                 if isinstance(r.widget, ChunkParamWidgetBase) and r.widget.param.name == name)
 
 
+def _label_first(row) -> bool:
+    """Whether row's label comes before its widget: beside it on an inline row, above otherwise."""
+    layout = row._row if row._row is not None else row.vlayout
+    return layout.indexOf(row.label) == 0
+
+
 def test_a_row_label_is_made_only_when_the_row_has_text(qapp) -> None:
     c = chunk.Chunk("Rows")
     c.add_param(chunk.LineEdit("plain", "Plain", flags=ChunkFlags.ParamFlags(0)))
@@ -95,7 +101,7 @@ def test_a_row_label_is_made_only_when_the_row_has_text(qapp) -> None:
         assert _row(widget, "plain").label is None
         named = _row(widget, "named")
         assert named.label is not None and named.label.text() == "Named"
-        assert named.vlayout.indexOf(named.label) == 0, "the label sits above the widget"
+        assert _label_first(named), "the label comes before the widget"
     finally:
         widget.deleteLater()
 
@@ -118,7 +124,7 @@ def test_a_label_arriving_later_gets_the_filters_queued_for_it(qapp) -> None:
         row.add_label_filter(spy)
         row.update_label("Later")
         assert row.label is not None and not row.label.isHidden()
-        assert row.vlayout.indexOf(row.label) == 0
+        assert _label_first(row)
         QtWidgets.QApplication.sendEvent(row.label, QtCore.QEvent(QtCore.QEvent.Type.Enter))
         assert seen, "a filter added before the label existed was not installed on it"
     finally:

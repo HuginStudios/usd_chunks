@@ -1,8 +1,8 @@
-"""A node body puts each one-line param's label beside its field, not above it.
+"""Each one-line param's label sits beside its field, not above it, on nodes and the Params tab.
 
-Labels on their own line made every slider two rows tall, so nodes in the graph came out
-long and thin. The params panel keeps labels above; only node bodies (ChunkWidget built
-for_proxy, the way the node graph builds them) go inline.
+Labels on their own line made every slider two rows tall: nodes in the graph came out long
+and thin, and the Params tab showed half as much before it scrolled. The Params tab keeps its
+own look otherwise (its header and colours); only node bodies get the node styling.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from usd_chunks import chunk, chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from qt_wait import pump_until
 from usd_chunks.frontends.qt.widgets import (
-    INLINE_LABEL_MAX_SHARE, ChunkParamWidgetBase, ChunkWidget, LabeledWidget,
+    INLINE_LABEL_MAX_SHARE, NODE_BODY_STYLESHEET, ChunkParamWidgetBase, ChunkWidget, LabeledWidget,
 )
 
 
@@ -125,10 +125,25 @@ def test_a_multi_line_field_keeps_its_label_above(qapp) -> None:
         widget.deleteLater()
 
 
-def test_the_params_panel_keeps_labels_above(qapp) -> None:
+def test_the_params_panel_puts_the_label_beside_the_field(qapp) -> None:
     widget = ChunkWidget(_chunk())
     try:
-        row = _row(widget, "length")
-        assert row.vlayout.indexOf(row.label) == 0
+        _shown(widget, qapp, width=420)
+        for name in ("length", "width"):
+            row = _row(widget, name)
+            label, field = row.label.geometry(), row.widget.geometry()
+            assert field.left() > label.right(), f"{name}: the field slides under its label"
+            assert abs(label.center().y() - field.center().y()) <= 2, f"{name}: not one row"
+    finally:
+        widget.deleteLater()
+
+
+def test_the_params_panel_keeps_its_own_look(qapp) -> None:
+    widget = ChunkWidget(_chunk())
+    try:
+        _shown(widget, qapp, width=420)
+        assert not widget.minimize_button.isHidden(), "the panel's header with the chunk's name"
+        sheet = widget.styleSheet()
+        assert sheet and NODE_BODY_STYLESHEET not in sheet, "the panel's colours, not a node's"
     finally:
         widget.deleteLater()
