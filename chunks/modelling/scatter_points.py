@@ -61,7 +61,8 @@ _PROXY_MODES = ["Off", "Bounds", "Full"]
 # chunk_utils.split_variant_path's \w+ deliberately doesn't accept, hence the local regex.
 _VARIANT_RE = re.compile(r"\{(\w+)=([\w*]+)\}")
 
-_MAX_PROTOTYPES = 64  # a wildcard row on a big variant set shouldn't author 500 prototypes
+_MAX_PROTOTYPES = 64
+_FALLBACK_LABEL = "cube (default)"  # a wildcard row on a big variant set shouldn't author 500 prototypes
 
 
 # ---------------------------------------------------------------------------
@@ -1480,12 +1481,13 @@ def _parse_proto_spec(raw):
     return _VARIANT_RE.sub("", raw).strip(), selections
 
 
-def _resolve_prototypes(node, scratch_stage):
+def _resolve_prototypes(node, scratch_stage, missing=None):
     """Turn the Prototypes list rows into _Proto entries.
 
     Handles, per row: glob expansion (one prototype per matched prim), an explicit variant
     selection, and ``{set=*}`` wildcards (one prototype per variant in the set, the row's
-    weight split evenly between them).
+    weight split evenly between them). Paths that match no prim are appended to missing, when
+    given, for the readout to name.
     """
     rows = node.get_param("prototypes", chunk.is_inst(chunk.ListGroup))
     if rows is None:
@@ -1518,6 +1520,13 @@ def _resolve_prototypes(node, scratch_stage):
                 if scratch_stage
                 else [base]
             )
+            # A plain path comes back as typed whether or not the prim exists (only a glob is
+            # matched against the stage), so existence is checked here. A path that carries a
+            # variant selection is not a prim path, so only "matched nothing" counts for it.
+            if missing is not None and scratch_stage is not None and (
+                    not matched
+                    or ("{" not in token and not any(scratch_stage.GetPrimAtPath(m) for m in matched))):
+                missing.append(token)
             for path in matched:
                 for expanded in _expand_variants(scratch_stage, path, selections):
                     protos.append(
@@ -1630,7 +1639,7 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
         path = f"{proto_scope}/proto_0"
         cube = UsdGeom.Cube.Define(stage, path)
         cube.GetSizeAttr().Set(1.0)
-        fallback = _Proto(label="cube (default)", path=path)
+        fallback = _Proto(label=_FALLBACK_LABEL, path=path)
         resolved.append(fallback)
     return resolved
 
@@ -2021,7 +2030,8 @@ def execute(node):
     surface_prim = scratch_stage.GetPrimAtPath(surface_paths[0]) if surface_paths else None
 
     _migrate_legacy_proto(node)
-    specs = _resolve_prototypes(node, scratch_stage)
+    missing: list[str] = []
+    specs = _resolve_prototypes(node, scratch_stage, missing)
 
     triangles = _collect_triangles(surface_prim)
     # None whenever the surface carries no painted weight, so an unpainted scatter never pays
@@ -2300,7 +2310,7 @@ def execute(node):
             _author_proxy(stage, f"{inst_path}_proxy", proxy_mode, protos, specs, scratch_stage,
                           keep, (out_positions, out_indices, out_scales, out_orients))
 
-    _report(node, protos, quota, count, scatter_mode, pack_levels)
+    _report(node, protos, quota, count, scatter_mode, pack_levels, missing)
 
 
 def _random_lateral(rng, lat_a, lat_b, axis_vec):
@@ -2309,8 +2319,13 @@ def _random_lateral(rng, lat_a, lat_b, axis_vec):
     return axis_vec[lat_a] * math.cos(ang) + axis_vec[lat_b] * math.sin(ang)
 
 
-def _report(node, protos, quota, count, mode, levels):
-    """Fill the readout label + the output params other chunks can read."""
+def _report(node, protos, quota, count, mode, levels, missing=()):
+    """Fill the readout label + the output params other chunks can read.
+
+    Prototype paths that matched nothing are named, and logged: a typo in one row otherwise
+    passes for a working scatter. When no row resolved, the first line says the default cube
+    is being drawn, since a readout of "7000 instances" alone looks like success.
+    """
     if count and protos:
         mix = "  ".join(
             f"{p.label} {q * 100.0 / count:.0f}% ({q})" for p, q in zip(protos, quota) if q
@@ -2318,7 +2333,12 @@ def _report(node, protos, quota, count, mode, levels):
     else:
         mix = "nothing placed — check the surface mesh and prototype paths"
     suffix = f", {levels} levels" if mode == "Stack" and levels > 1 else ""
-    text = f"{count} instances · {mode}{suffix}\n{mix}"
+    fallback = len(protos) == 1 and protos[0].label == _FALLBACK_LABEL
+    head = f"{count} instances · {mode}{suffix}" + (" · no prototype found, drawing the default cube" if fallback else "")
+    text = f"{head}\n{mix}"
+    if missing:
+        text += "\nnot found: " + ", ".join(missing)
+        logger.warning("%s: prototype path(s) not found: %s", node.name, ", ".join(missing))
 
     if readout := node.get_param("readout"):
         readout.value = text
