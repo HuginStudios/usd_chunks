@@ -98,3 +98,22 @@ def test_hiding_a_view_uninstalls_its_key_router_and_showing_it_reinstalls(qapp)
 
     gv.hide()
     app.processEvents()
+
+
+def test_a_node_past_the_default_canvas_can_be_scrolled_to(qapp) -> None:
+    """Panning moves the scroll bars, and Qt stops them at the view's scene rect. The canvas
+    was a fixed +-50,000 units, so a node laid out past it -- a long scripted chain placed in
+    a row gets there quickly -- could never be reached. The canvas now grows to cover every
+    item."""
+    gv = ChunkGraphView()
+    gv.resize(400, 300)
+    gv.show()
+    far = gv.scene().addRect(QtCore.QRectF(80000, -50, 300, 100))
+    QtWidgets.QApplication.instance().processEvents()
+
+    gv.centerOn(far)
+    centre = gv.mapToScene(gv.viewport().rect().center())
+    assert abs(centre.x() - 80150) < 50, f"view stopped at x={centre.x():.0f}"
+    assert gv.sceneRect().contains(far.sceneBoundingRect())
+    e = ChunkGraphView._SCENE_EXTENT
+    assert gv.sceneRect().contains(QtCore.QRectF(-e, -e, 2 * e, 2 * e)), "and keeps the empty space around"
