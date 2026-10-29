@@ -916,8 +916,10 @@ def _painted_points(stage, points_path, up=None):
     normals = cloud.GetNormalsAttr().Get()
 
     up = up or Gf.Vec3f(0, 0, 1)
-    positions = [Gf.Vec3f(*p) for p in points]
-    facing = [Gf.Vec3f(*n) for n in normals] if normals else []
+    # Straight off the arrays: a Vt array iterates as Gf.Vec3f already, where unpacking each
+    # point into a new one was most of reading a vine's 30k leaf points.
+    positions = list(Vt.Vec3fArray(points))
+    facing = list(Vt.Vec3fArray(normals)) if normals else []
     # Points placed before normals were recorded still work; they simply lie flat.
     facing += [up] * (len(positions) - len(facing))
     return positions, facing[:len(positions)]
@@ -1442,6 +1444,137 @@ def _spun_quats(count, axis, amount_deg, rng):
     quat[:, 3] = np.cos(half)
     out[spun] = quat[spun]
     # Times the identity base: every component carries over exactly.
+    return out
+
+
+def _vectors(vectors, count):
+    """A list of Gf.Vec3f (or 3-sequences) as a (count, 3) float64 array, through Vt's buffer
+    rather than numpy reading each vector as a sequence."""
+    try:
+        return np.asarray(Vt.Vec3fArray(vectors), dtype=np.float64).reshape(count, 3)
+    except (TypeError, ValueError):
+        return np.asarray(vectors, dtype=np.float64).reshape(count, 3)
+
+
+def _align_quats(from_dirs, to_dirs):
+    """_align_quat for many direction pairs at once, as (N, 4) float64 (real, i, j, k).
+
+    Each argument is (N, 3), or one (3,) direction for all of them. The same cases as
+    _align_quat: no turn for a zero vector or a near-parallel pair, a half turn about a
+    perpendicular axis for a near-opposite one.
+    """
+    a = np.asarray(from_dirs, dtype=np.float64)
+    b = np.asarray(to_dirs, dtype=np.float64)
+    n = max(len(a) if a.ndim == 2 else 1, len(b) if b.ndim == 2 else 1)
+    a = np.broadcast_to(a, (n, 3))
+    b = np.broadcast_to(b, (n, 3))
+    out = np.zeros((n, 4))
+    out[:, 0] = 1.0
+    la = np.sqrt(np.einsum("ij,ij->i", a, a))
+    lb = np.sqrt(np.einsum("ij,ij->i", b, b))
+    live = (la >= 1e-8) & (lb >= 1e-8)
+    a = a / np.where(live, la, 1.0)[:, None]
+    b = b / np.where(live, lb, 1.0)[:, None]
+    dot = np.einsum("ij,ij->i", a, b)
+    opposite = live & (dot < -0.9999)
+    if opposite.any():
+        axis = np.cross(a[opposite], [1.0, 0.0, 0.0])
+        short = np.sqrt(np.einsum("ij,ij->i", axis, axis)) < 1e-6
+        axis[short] = np.cross(a[opposite][short], [0.0, 1.0, 0.0])
+        axis /= np.sqrt(np.einsum("ij,ij->i", axis, axis))[:, None]
+        out[opposite] = np.column_stack([np.zeros(len(axis)), axis])
+    turned = live & (dot <= 0.9999) & ~opposite
+    if turned.any():
+        axis = np.cross(a[turned], b[turned])
+        axis /= np.sqrt(np.einsum("ij,ij->i", axis, axis))[:, None]
+        half = np.arccos(np.clip(dot[turned], -1.0, 1.0)) * 0.5
+        out[turned] = np.column_stack([np.cos(half), axis * np.sin(half)[:, None]])
+    return out
+
+
+def _quat_mul_arrays(a, b):
+    """_quat_mul for (N, 4) (real, i, j, k) arrays."""
+    aw, ax, ay, az = a.T
+    bw, bx, by, bz = b.T
+    return np.column_stack([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ])
+
+
+def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng):
+    """The loop's _compute_orientation then _apply_random_rotation, for every instance at once.
+
+    The random numbers come off *rng* one Python call at a time, in the loop's order -- a
+    Random mode's three, then the spin's -- so each instance gets the turn it always did.
+    Only the quaternion maths is in arrays: as Gf objects, one instance at a time, it was a
+    fifth of a wall-ivy cook.
+
+    Args:
+        count: How many instances.
+        mode: The orient mode.
+        normals: (count, 3) surface normals.
+        protos: The resolved prototypes.
+        assignment: (count,) prototype index of each instance.
+        world_up: The stage's up axis, as a Gf.Vec3f.
+        axis: The random spin axis: "Off", "X", "Y", "Z" or "All".
+        amount_deg: The most the spin turns either way.
+        rng: The orient random.Random, left where the loop would have left it -- or a list
+            of one per instance, as painted points seed each their own.
+
+    Returns:
+        (count, 4) float64 quaternions, (real, i, j, k).
+    """
+    up = np.asarray(tuple(world_up), dtype=np.float64)
+    random_mode = mode == "Random"
+    amount_rad = math.radians(amount_deg)
+    per_instance = isinstance(rng, list)
+    if not per_instance:
+        rnd, gauss, uniform = rng.random, rng.gauss, rng.uniform
+    shoemake = np.zeros((count, 3)) if random_mode else None
+    spin_axes = np.zeros((count, 3))
+    angles = np.zeros(count)
+    spun = np.zeros(count, dtype=bool)
+    fixed = None if axis in ("Off", "All") else np.eye(3)["XYZ".index(axis)]
+    for i in range(count):
+        if per_instance:
+            rnd, gauss, uniform = rng[i].random, rng[i].gauss, rng[i].uniform
+        if random_mode:
+            shoemake[i] = (rnd(), rnd(), rnd())
+        if axis == "Off":
+            continue
+        if fixed is None:
+            gx, gy, gz = gauss(0, 1), gauss(0, 1), gauss(0, 1)
+            length = math.sqrt(gx * gx + gy * gy + gz * gz)
+            if length < 1e-8:
+                continue  # as _apply_random_rotation: no axis, no spin, no angle drawn
+            spin_axes[i] = (gx / length, gy / length, gz / length)
+        else:
+            spin_axes[i] = fixed
+        angles[i] = uniform(-amount_rad, amount_rad)
+        spun[i] = True
+
+    if mode == "Align to Normal":
+        base = _align_quats(up, normals)
+    elif random_mode:
+        u1, u2, u3 = shoemake.T
+        s1, s2 = np.sqrt(1 - u1), np.sqrt(u1)
+        base = np.column_stack([s2 * np.cos(2 * np.pi * u3), s1 * np.sin(2 * np.pi * u2),
+                                s1 * np.cos(2 * np.pi * u2), s2 * np.sin(2 * np.pi * u3)])
+    elif mode in ("Long Axis Up", "Long Axis to Normal"):
+        long_axes = np.asarray([tuple(p.long_axis_dir()) for p in protos], dtype=np.float64)[assignment]
+        base = _align_quats(long_axes, up if mode == "Long Axis Up" else normals)
+    else:
+        base = np.zeros((count, 4))
+        base[:, 0] = 1.0
+    if not spun.any():
+        return base
+    half = angles * 0.5
+    spin = np.column_stack([np.cos(half), spin_axes * np.sin(half)[:, None]])
+    out = base.copy()
+    out[spun] = _quat_mul_arrays(spin[spun], base[spun])
     return out
 
 
@@ -2325,7 +2458,35 @@ def execute(node):
             sm = np.asarray(s_all, dtype=np.float64) * mult
             out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
 
-        for i in range(0 if fast else count):
+        # Turned to the surface, pushed off it, or painted: the loop's per-instance draws, in
+        # arrays. Only Stack and Sit on Surface still need the loop below.
+        arrays = bool(count) and not fast and scatter_mode != "Stack" and not sit_on_surface
+        if arrays:
+            if placed:
+                # Seeded per point, as the loop does: see there.
+                scale_rngs = [random.Random(seed + 13 + i) for i in range(count)]
+                orient_rng = [random.Random(seed + 7 + i) for i in range(count)]
+            else:
+                scale_rngs = itertools.repeat(scale_rng, count)
+            s_all = sizes if sizes else [_draw_scale(r, scale_min, scale_max, scale_bias) for r in scale_rngs]
+            normals_np = _vectors(normals, count)
+            positions_np = _vectors(positions, count).astype(np.float32)
+            if abs(normal_offset) > 1e-9:
+                # As the loop: the offset rounded to float32, then a float32 sum.
+                positions_np = positions_np + (normals_np * normal_offset).astype(np.float32)
+            out_positions = Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions_np))
+            out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
+            quats = _orientations(count, orient_mode, normals_np, protos, assignment, world_up,
+                                  rand_axis, rand_amount, orient_rng)
+            # Through float32 as the loop's Gf.Quatf did, then half, (i, j, k, real) for Vt.
+            out_orients = Vt.QuathArray.FromNumpy(
+                np.ascontiguousarray(quats[:, [1, 2, 3, 0]].astype(np.float32).astype(np.float16)))
+            mult = np.asarray([p.scale_mult for p in protos], dtype=np.float64)[assignment]
+            per = np.asarray([tuple(p.scale) for p in protos], dtype=np.float64)[assignment]
+            sm = np.asarray(s_all, dtype=np.float64) * mult
+            out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
+
+        for i in range(0 if fast or arrays else count):
             pidx = int(assignment[i])
             proto = protos[pidx]
             if placed:
