@@ -64,6 +64,11 @@ EXEC_OUTPUT = "outputs:chunk"
 # published-marker pattern as chunk:lofted / set_chunk_lofted.
 EDIT_TARGET_MARKER = "chunk:editTargetLayer"
 
+# Which view slot drives a graph's cook, on the graph's context prim (0 or absent: none, so
+# the graph delivers its Output). Here rather than in graph.engine, which writes it, so the
+# stage code can read it too.
+ACTIVE_VIEW_ATTR = "chunk:activeView"
+
 # Merge chunks fan several exec branches into one node, so they need more than the single
 # inputs:chunk every other chunk has. Extra slots are numbered from 1 -- slot 0 deliberately
 # keeps the plain EXEC_INPUT name, so any consumer that only ever looks up inputs:chunk
