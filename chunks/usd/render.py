@@ -414,6 +414,11 @@ def _make_recorder(node, settings_path="", pass_path=""):
 
     recorder.SetComplexity(_COMPLEXITIES.get(node.get_param("complexity").value, 1.0))
 
+    # FrameRecorder lights the scene from the camera unless told not to (usdrecord's
+    # --disableCameraLight): a headlight that flattens a lit scene's final render.
+    if hasattr(recorder, "SetCameraLightEnabled") and (light := node.get_param("camera_light")) is not None:
+        recorder.SetCameraLightEnabled(bool(light.value))
+
     if purposes := _purposes(node, settings_path):
         if hasattr(recorder, "SetIncludedPurposes"):
             recorder.SetIncludedPurposes(purposes)
@@ -751,6 +756,10 @@ def main():
             menu_items=_COLOR_CORRECTION_MODES, default_value="sRGB",
         ),
         chunk.Checkbox("use_gpu", "Use GPU", default_value=True),
+        chunk.Checkbox(
+            "camera_light", "Camera Light", default_value=True,
+            tooltip="Light the scene from the camera too, as usdrecord does by default. Off for a lit scene's final render.",
+        ),
         chunk.Checkbox("render_on_commit", "Render on Commit", default_value=True),
         chunk.LineEdit("render_command", "Render Command", default_value="usdrecord"),
         chunk.LineEdit("extra_args", "Extra Args"),
