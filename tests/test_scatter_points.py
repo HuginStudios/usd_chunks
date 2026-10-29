@@ -417,6 +417,38 @@ def test_hide_sources_keeps_a_source_other_chunks_write_into_writable() -> None:
     assert UsdGeom.Imageable(proto).ComputeVisibility() == UsdGeom.Tokens.inherited, "and the copies drawn"
 
 
+def test_a_prototype_path_that_matches_nothing_is_named(caplog) -> None:
+    """A row whose path matches nothing is named in the readout and logged, so a typo doesn't
+    pass for a working scatter. With no row resolving, the readout also says the default cube
+    is being drawn."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Cube.Define(stage, "/Library/rock")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 10
+
+    _set_proto(scatter, "/Library/rock", row=0)
+    _set_proto(scatter, "/Library/rokc", row=1)
+    with caplog.at_level("WARNING"):
+        mod.module.execute(scatter)
+    readout = scatter.get_param("readout").value
+    assert "not found: /Library/rokc" in readout
+    assert "default cube" not in readout, "one row resolved, so no fallback"
+    assert len(_instancer(stage).GetPrototypesRel().GetTargets()) == 1
+    assert any("/Library/rokc" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+    _set_proto(scatter, "/Library/nope", row=0)
+    mod.module.execute(scatter)
+    readout = scatter.get_param("readout").value
+    assert "default cube" in readout.splitlines()[0], "the fallback has to show on the first line"
+    assert "/Library/nope" in readout and "/Library/rokc" in readout
+
+    _set_proto(scatter, "/Library/rock", row=0)
+    _set_proto(scatter, "/Library/rock", row=1)
+    mod.module.execute(scatter)
+    assert "not found" not in scatter.get_param("readout").value
+
+
 def test_prototype_variant_selection_in_the_path() -> None:
     """/prim{set=variant} selects per prototype; {set=*} expands to one per variant."""
     stage, mod, scatter = _bootstrap()
