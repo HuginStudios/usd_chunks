@@ -153,10 +153,14 @@ QLabel[chunkLocked="true"] {
 
 # Added to CHUNK_STYLESHEET for a node body in the node graph (a ChunkWidget built
 # for_proxy): darker fields with rounded corners, sliders filled in grey, and
-# checkboxes that fill when ticked. The params panel keeps the plain sheet.
+# checkboxes that fill when ticked, and no selection frame, since the node draws its own
+# rounded outline when selected. The params panel keeps the plain sheet.
 NODE_BODY_STYLESHEET = """
 .ChunkWidget {
     background-color: transparent;
+}
+.ChunkWidget[chunkSelected="true"] {
+    border: 0px solid transparent;
 }
 QLabel {
     color: #c8cbd1;

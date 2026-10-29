@@ -62,6 +62,10 @@ _RESIZE_GRIP_OUT = 4  # and how far outside it
 # On the edge, a press this close to a port (on screen) starts a wire, not a resize.
 _PORT_PRESS_PIXELS = 14
 _NODE_HEADER_H = 48
+# Room under a node's body for its rounded bottom corners. The body is a square widget, so
+# one that reached the bottom edge covered the corners: a group's grey Description box, or
+# the frame round a selected chunk, showed square over the rounded outline.
+_NODE_BODY_BOTTOM = int(node_theme.NODE_RADIUS)
 
 # A node stops drawing its embedded ChunkWidget -- showing only the box and header that
 # ChunkNodeItem paints itself -- when either of these says so. The node keeps its size
@@ -1200,7 +1204,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # (params and all) until something unrelated later toggles COLLAPSED off and
             # back on.
             self._proxy.setVisible(False)
-        self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height()
+        self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height() + _NODE_BODY_BOTTOM
         self._height = self._full_height
         self.prepareGeometryChange()
 
@@ -1447,7 +1451,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
     def _place_param_ports(self, chunk_widget: QtWidgets.QWidget):
 
         chunk_widget.adjustSize()
-        self._full_height = _NODE_HEADER_H + chunk_widget.height()
+        self._full_height = _NODE_HEADER_H + chunk_widget.height() + _NODE_BODY_BOTTOM
         self._height = self._full_height
         self.prepareGeometryChange()
 
