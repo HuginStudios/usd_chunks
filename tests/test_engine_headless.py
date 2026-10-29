@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk, chunk_cook, chunk_registry, chunk_stage
+from usd_chunks import chunk, chunk_cook, chunk_naming, chunk_registry, chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.graph import engine as chunk_graph
@@ -591,3 +591,111 @@ def test_disconnecting_an_output_port_leaves_its_wires(graph):
 
     assert not change.touched_nodes
     assert b.get_param("p").raw_value == "@a.p@"
+
+
+def _exec_wire(graph, a, b, input_name=chunk_graph.EXEC_INPUT):
+    return chunk_graph.EdgeRef(f"{graph.path(a)}.{chunk_graph.EXEC_OUTPUT}",
+                               f"{graph.path(b)}.{input_name}", is_exec=True)
+
+
+def _slots(graph, path):
+    prim = graph.stage.GetPrimAtPath(path)
+    return [[str(c.GetPrimPath()) for c in attr.GetConnections()]
+            for attr in chunk_naming.iter_exec_inputs(prim) if attr.GetConnections()]
+
+
+def test_merge_into_wire_puts_a_merge_between_the_wire_ends(graph):
+    a, b, c = graph.make("a"), graph.make("b"), graph.make("c")
+    graph.wire_exec(a, b)
+
+    change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                                graph.path(c), (100.0, -50.0))
+
+    assert error == ""
+    (merge,) = [p for p in change.touched_nodes if p not in {graph.path(b), graph.path(c)}]
+    assert chunk_stage.is_merge_prim(graph.stage.GetPrimAtPath(merge))
+    # The existing flow keeps slot 0, so it keeps its strength; the branch comes after it.
+    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]
+    assert graph.exec_sources(b) == [merge]
+    assert change.exec_changed
+    assert chunk_graph.node_position(graph.stage.GetPrimAtPath(merge)) == pytest.approx((100.0, -50.0))
+
+
+def test_merge_into_wire_leaves_other_wires_on_the_slot(graph):
+    a, d, b, c = graph.make("a"), graph.make("d"), graph.make("b"), graph.make("c")
+    graph.wire_exec(a, b)
+    graph.wire_exec(d, b)
+
+    change, _ = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                            graph.path(c), (0.0, 0.0))
+
+    (merge,) = [p for p in change.touched_nodes if p not in {graph.path(b), graph.path(c)}]
+    assert graph.exec_sources(b) == [merge, graph.path(d)]
+
+
+def test_merge_into_a_wire_entering_a_merge_adds_a_slot(graph):
+    a, b, c, d = graph.make("a"), graph.make("b"), graph.make("c"), graph.make("d")
+    graph.wire_exec(a, b)
+    change, _ = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                            graph.path(c), (0.0, 0.0))
+    (merge,) = [p for p in change.touched_nodes if p not in {graph.path(b), graph.path(c)}]
+    merges_before = sum(chunk_stage.is_merge_prim(p) for p in graph.stage.Traverse())
+
+    wire = chunk_graph.EdgeRef(f"{graph.path(a)}.{chunk_graph.EXEC_OUTPUT}",
+                               f"{merge}.{chunk_graph.EXEC_INPUT}", is_exec=True)
+    change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(d), (0.0, 0.0))
+
+    assert error == ""
+    assert change.touched_nodes == {merge, graph.path(d)}
+    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)], [graph.path(d)]]
+    assert sum(chunk_stage.is_merge_prim(p) for p in graph.stage.Traverse()) == merges_before
+
+
+@pytest.mark.parametrize("who", ["a", "b"])
+def test_merge_into_wire_refuses_a_chunk_already_on_the_wire(graph, who):
+    a, b = graph.make("a"), graph.make("b")
+    graph.wire_exec(a, b)
+
+    change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                                graph.path({"a": a, "b": b}[who]), (0.0, 0.0))
+
+    assert change is None and error
+    assert graph.exec_sources(b) == [graph.path(a)]
+
+
+def test_merge_into_wire_refuses_a_loop(graph):
+    a, b, c = graph.make("a"), graph.make("b"), graph.make("c")
+    graph.wire_exec(a, b)
+    graph.wire_param(b, c)  # c reads b, so c -> merge -> b would loop
+
+    change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                                graph.path(c), (0.0, 0.0))
+
+    assert change is None and "loop" in error
+    assert graph.exec_sources(b) == [graph.path(a)]
+    assert not any(chunk_stage.is_merge_prim(p) for p in graph.stage.Traverse())
+
+
+def test_merge_into_wire_refuses_a_branch_already_in_the_merge(graph):
+    a, b, c = graph.make("a"), graph.make("b"), graph.make("c")
+    graph.wire_exec(a, b)
+    change, _ = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                            graph.path(c), (0.0, 0.0))
+    (merge,) = [p for p in change.touched_nodes if p not in {graph.path(b), graph.path(c)}]
+    wire = chunk_graph.EdgeRef(f"{graph.path(a)}.{chunk_graph.EXEC_OUTPUT}",
+                               f"{merge}.{chunk_graph.EXEC_INPUT}", is_exec=True)
+
+    change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(c), (0.0, 0.0))
+
+    assert change is None and error
+    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]
+
+
+def test_merge_into_a_data_wire_is_refused(graph):
+    a, b, c = graph.make("a"), graph.make("b"), graph.make("c")
+    graph.wire_param(a, b)
+    wire = chunk_graph.EdgeRef(f"{graph.path(a)}.outputs:p", f"{graph.path(b)}.inputs:p", is_exec=False)
+
+    change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(c), (0.0, 0.0))
+
+    assert change is None and error

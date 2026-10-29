@@ -782,6 +782,90 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
     return GraphChange(touched_nodes=touched, exec_changed=port.port_type == PORT_EXEC)
 
 
+MERGE_MODULE = "merge"
+
+
+def _feeds(stage: Usd.Stage, upstream: str, node: str) -> bool:
+    """Whether upstream reaches node through any wire, exec or data."""
+    seen, todo = set(), [node]
+    while todo:
+        path = todo.pop()
+        if path == upstream:
+            return True
+        if path in seen:
+            continue
+        seen.add(path)
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            continue
+        for attr in prim.GetAttributes():
+            if attr.GetName().startswith(INPUTS_PREFIX):
+                todo.extend(str(conn.GetPrimPath()) for conn in attr.GetConnections())
+    return False
+
+
+def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos,
+                    nest=None) -> tuple[GraphChange | None, str]:
+    """Join a branch into an exec wire A -> B through a Merge: A and branch -> Merge -> B.
+
+    What dropping a node's exec output onto a wire means. A keeps slot 0, so the flow
+    that was already there keeps its strength and the branch can only add to it. A wire
+    that already enters a Merge gets the branch in the Merge's next slot instead of a
+    second Merge in front of it.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the Merge is created in.
+        wire: The exec wire dropped onto.
+        branch: Prim path of the chunk whose exec output was dropped.
+        usd_pos: Where a new Merge goes, in USD coordinates.
+        nest: The context to create it in, from `nest_target`.
+
+    Returns:
+        (what changed, error message); the change is None and the message says why when
+        nothing was wired.
+    """
+    src, dst = wire.src_node_path, wire.dst_node_path
+    if not wire.is_exec:
+        return None, "only an exec wire takes a Merge"
+    if branch in (src, dst):
+        return None, "the chunk is already on that wire"
+    if _feeds(stage, dst, branch):
+        return None, "the chunk is downstream of that wire; joining it in would make a loop"
+
+    dst_prim = stage.GetPrimAtPath(Sdf.Path(dst))
+    if chunk_stage.is_merge_prim(dst_prim):
+        slots = [a for a in chunk_naming.iter_exec_inputs(dst_prim) if a.GetConnections()]
+        if any(str(c.GetPrimPath()) == branch for a in slots for c in a.GetConnections()):
+            return None, "the chunk already feeds that Merge"
+        chunk_stage.connect_exec(stage, scene, branch, dst,
+                                 input_name=chunk_naming.exec_input_name(len(slots)))
+        return GraphChange(touched_nodes={dst, branch}, exec_changed=True), ""
+
+    module = chunk_registry.ChunkRegistry().get_chunk_module(MERGE_MODULE)
+    if module is None:
+        return None, "no Merge chunk is registered"
+    created, error = create_from_entry(
+        scene, chunk_registry.MenuEntry(module=module, namespace=("Merge",)), usd_pos, nest)
+    if error or not created:
+        return None, error or "the Merge was not created"
+    merge = chunk_stage.get_chunk_prim_path(created[0])
+
+    chunk_stage.connect_exec(stage, scene, src, merge, input_name=chunk_naming.exec_input_name(0))
+    chunk_stage.connect_exec(stage, scene, branch, merge, input_name=chunk_naming.exec_input_name(1))
+    # Swap A for the Merge in B's slot, leaving any other wire stacked on it in place.
+    dst_attr = stage.GetAttributeAtPath(Sdf.Path(wire.dst_attr_path))
+    src_conn = Sdf.Path(wire.src_attr_path)
+    wanted = [Sdf.Path(f"{merge}.{EXEC_OUTPUT}") if c == src_conn else c
+              for c in dst_attr.GetConnections()]
+    home = chunk_utils.get_attr_home_layer(dst_attr)
+    target = home or chunk_utils.get_bookkeeping_layer(stage, None)
+    with Usd.EditContext(stage, target):
+        dst_attr.SetConnections(wanted)
+    chunk_stage.reconcile_edit_targets(stage, scene)
+    return GraphChange(touched_nodes={merge, dst, branch}, exec_changed=True), ""
+
+
 def _unwire_param(port: PortRef, chunks: dict, always: bool = False) -> bool:
     """Put the param behind an input port back to its default.
 
