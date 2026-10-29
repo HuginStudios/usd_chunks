@@ -39,7 +39,7 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils, mesh_math, proximity
-from usd_chunks import chunk_stage
+from usd_chunks import chunk_registry, chunk_stage
 
 logger = logging.getLogger(__name__)
 
@@ -1569,7 +1569,29 @@ def _proto_label(path, selections):
     return name
 
 
-def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=False, drop_purpose=None):
+def _written_under(path, layers):
+    """Whether any of these layers authors something below path (not on path itself).
+
+    A Reference chunk that brings in a library entry authors only at its own path; a chunk that
+    writes *into* the entry -- a scatter's instancer, a Noise Field primvar, a Transform on a
+    child -- leaves child specs below it.
+    """
+    for layer in layers:
+        spec = layer.GetPrimAtPath(path)
+        if spec and len(spec.nameChildren):
+            return True
+    return False
+
+
+def _other_chunk_layers(own):
+    """Every chunk and graph layer except own: whatever else in the scene authors opinions."""
+    own_id = own.identifier if own is not None else None
+    return [lyr for _parent, lyr in chunk_registry.ChunkLayerManager().iter_chunk_layers()
+            if lyr.identifier != own_id]
+
+
+def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=False, drop_purpose=None,
+                       foreign_layers=()):
     """Author one prototype prim per _Proto under <inst_path>/Prototypes.
 
     Each is an internal reference to the source prim with its xformOpOrder cleared (the
@@ -1578,8 +1600,13 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
     reference takes the source as authored, active = false included, so the prototype is
     always switched on: a library of deactivated entries is never drawn itself, only
     through the prototypes that use it. hide_sources deactivates each source that resolved
-    (in the edit target), short of one that holds the instancer. drop_purpose deactivates
-    whatever inside a prototype is authored with that purpose (see _drop_purpose).
+    (in the edit target), short of one that holds the instancer. A source that another chunk
+    writes inside (foreign_layers author below it) is hidden with visibility instead: USD refuses
+    to author under an inactive prim, so deactivating it would make that chunk's next cook fail
+    ("Failed to define UsdPrim"); its prototypes are switched visible again. (Visibility only
+    hides an Imageable prim -- a Reference chunk's Xform is one; a typeless source stays visible.)
+    drop_purpose
+    deactivates whatever inside a prototype is authored with that purpose (see _drop_purpose).
 
     Returns the prototypes that actually resolved; an empty result means the caller should
     fall back to the default cube.
@@ -1623,7 +1650,12 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
         inst = Sdf.Path(inst_path)
         for proto in resolved:
             src_path = Sdf.Path(proto.src_path)
-            if not inst.HasPrefix(src_path):
+            if inst.HasPrefix(src_path):
+                continue
+            if _written_under(src_path, foreign_layers):
+                UsdGeom.Imageable(stage.OverridePrim(src_path)).CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+                UsdGeom.Imageable(stage.GetPrimAtPath(proto.path)).CreateVisibilityAttr().Set(UsdGeom.Tokens.inherited)
+            else:
                 stage.OverridePrim(src_path).SetActive(False)
 
     if not resolved:
@@ -2063,6 +2095,7 @@ def execute(node):
         protos = _author_prototypes(
             stage, inst_path, specs, scratch_stage, hide_sources=bool(node.get_param("hide_sources").value),
             drop_purpose=UsdGeom.Tokens.proxy if proxy_mode != "Off" else None,
+            foreign_layers=_other_chunk_layers(layer),
         )
         instancer.GetPrototypesRel().SetTargets([Sdf.Path(p.path) for p in protos])
 
@@ -2440,8 +2473,9 @@ def main():
             default_value=True,
             tooltip="Deactivate the prims the prototypes come from, so only the scattered "
             "instances are drawn -- a library of assets to pick from stays out of the render "
-            "(and its materials out of the renderer). Turn off to keep the originals visible "
-            "when scattering copies of objects placed in the scene.",
+            "(and its materials out of the renderer). A source another chunk writes inside is "
+            "made invisible instead, so that chunk can still cook. Turn off to keep the "
+            "originals visible when scattering copies of objects placed in the scene.",
         )
     )
 

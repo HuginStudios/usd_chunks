@@ -378,6 +378,45 @@ def test_a_deactivated_library_resolves_and_hides_its_sources() -> None:
     assert stage.GetPrimAtPath("/Library/b").IsActive()
 
 
+def test_hide_sources_keeps_a_source_other_chunks_write_into_writable() -> None:
+    """A source another chunk writes inside is hidden, not deactivated.
+
+    Here a second scatter grows ivy onto the library car, its instancer inside the car, and a
+    traffic scatter copies the car with Hide Sources on. USD refuses to author under an inactive
+    prim, so deactivating the car made the ivy scatter's next cook fail with "Failed to define
+    UsdPrim". Hidden with visibility instead, the car stays out of the render, the ivy can still
+    cook, and the copies are switched visible again.
+    """
+    stage, mod, traffic = _bootstrap()
+    _plate(stage)
+    UsdGeom.Xform.Define(stage, "/Library/car")  # a Reference chunk's prim is an Xform
+    _plate(stage, "/Library/car/geo", half=1.0)
+    UsdGeom.Cube.Define(stage, "/Library/leaf")
+
+    ivy = _mk(mod, chunk_registry.ChunkRegistry().scene)
+    _set_proto(ivy, "/Library/leaf")
+    ivy.get_param("inst_path").value = "/Library/car/ivy"
+    ivy.get_param("surface_prim").value = "/Library/car/geo"
+    ivy.get_param("max_count").value = 10
+    ivy.get_param("hide_sources").value = False
+    mod.module.execute(ivy)
+
+    _set_proto(traffic, "/Library/car")
+    traffic.get_param("surface_prim").value = "/plate"
+    traffic.get_param("max_count").value = 5
+    assert traffic.get_param("hide_sources").value is True
+    mod.module.execute(traffic)
+
+    mod.module.execute(ivy)  # raised "Failed to define UsdPrim </Library/car/ivy>" before
+
+    car = stage.GetPrimAtPath("/Library/car")
+    assert car.IsActive(), "a prim other chunks write under must stay active"
+    assert UsdGeom.Imageable(car).ComputeVisibility() == UsdGeom.Tokens.invisible, "but out of the render"
+    assert stage.GetPrimAtPath("/Library/car/ivy").IsA(UsdGeom.PointInstancer)
+    proto = stage.GetPrimAtPath(_instancer(stage).GetPrototypesRel().GetTargets()[0])
+    assert UsdGeom.Imageable(proto).ComputeVisibility() == UsdGeom.Tokens.inherited, "and the copies drawn"
+
+
 def test_prototype_variant_selection_in_the_path() -> None:
     """/prim{set=variant} selects per prototype; {set=*} expands to one per variant."""
     stage, mod, scatter = _bootstrap()
