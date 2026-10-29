@@ -51,7 +51,9 @@ from usd_chunks import chunk, chunk_utils
 # USD_CHUNK_LOG_LEVEL, so DEBUG here is reachable the same way it is everywhere else.
 logger = logging.getLogger(f"usd_chunks.{__name__}")
 
-_FALLBACK_RENDERERS = ["GL", "Embree", "Prman", "Arnold", "VRay", "Cycles"]
+#: A guess, for a build that can't list its delegates (the usd-core wheels): the names
+#: usdview 26 shows, plus GL, Storm's name in older USD builds.
+_FALLBACK_RENDERERS = ["Storm", "GL", "V-Ray", "Cycles", "Arnold", "Prman", "Embree"]
 
 _MODES = ["Hydra", "Command"]
 
@@ -728,13 +730,17 @@ def main():
     chunk_api = chunk.Chunk("Render")
 
     renderers = _available_renderers()
-    default_renderer = "GL" if "GL" in renderers else renderers[0]
+    default_renderer = next((r for r in ("Storm", "GL") if r in renderers), renderers[0])
 
     chunk_api.add_params([
         chunk.LineEdit("settings_path", "Render Settings", flags=chunk.ChunkFlags.ParamFlags.LABELED),
         chunk.LineEdit("pass_path", "Render Pass", flags=chunk.ChunkFlags.ParamFlags.LABELED),
         chunk.Menu("mode", "Mode", menu_items=_MODES, default_value="Hydra"),
-        chunk.Menu("renderer", "Renderer", menu_items=renderers, default_value=default_renderer),
+        # dynamic_items: the list is what *this* process can load. A network built headless
+        # or on another machine names delegates it may not list, and a fixed menu replaced
+        # that name with its first entry -- the render then went to Storm without a word.
+        chunk.Menu("renderer", "Renderer", menu_items=renderers, default_value=default_renderer,
+                   dynamic_items=True),
         chunk.LineEdit("output_image", "Output Image", default_value="render.####.png"),
         chunk.LineEdit("frames", "Frames"),
         chunk.LineEdit(

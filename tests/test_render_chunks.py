@@ -1257,6 +1257,41 @@ class TestRendererMenu:
         assert renderer.value in renderer.menu_items
 
 
+    def test_a_renderer_this_host_does_not_list_is_kept(self, tmp_path):
+        """The menu lists the delegates *this* process can load. A network built headless
+        (where the list is a guess) or on another machine names one it may not have: "V-Ray"
+        was silently replaced by the first entry, so the network rendered in Storm when
+        opened where V-Ray exists. The name is kept, through a save and reload."""
+        scene, _stage = _setup_stage()
+        mod = importlib.import_module("chunks.usd.render")
+        rop = _make(scene, mod, "render")
+        renderer = rop.get_param("renderer")
+        assert "SomeDelegate" not in renderer.menu_items
+
+        renderer.value = "SomeDelegate"
+        assert renderer.value == "SomeDelegate"
+
+        net = tmp_path / "net.usda"
+        export_chunks(scene, net)
+        chunk_registry.ChunkLayerManager().reset()
+        stage2 = Usd.Stage.Open(str(net))
+        scene2 = _DummyScene()
+        chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
+        scene2._stage = stage2
+        init_chunk_usd(stage2, scene2)
+        load_chunks(stage2, scene2)
+        reloaded = next(c for c in _all_chunks(scene2.get_chunks()) if c.get_param("renderer") is not None)
+        assert reloaded.get_param("renderer").value == "SomeDelegate"
+
+    def test_the_fallback_list_uses_current_names(self, monkeypatch):
+        """usdview 26 names its delegates Storm and V-Ray; the headless list should too."""
+        mod = importlib.import_module("chunks.usd.render")
+        monkeypatch.setattr(mod, "rendererArgs", None)
+        monkeypatch.setattr(mod, "UsdImagingGL", None)
+        renderers = mod._available_renderers()
+        assert "Storm" in renderers and "V-Ray" in renderers
+
+
 class TestCliRunRenders:
     """`usdchunks run` on a network containing a Render chunk triggers the render,
     because the CLI calls commit_all() once the solve has settled."""
