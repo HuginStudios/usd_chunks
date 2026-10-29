@@ -1,0 +1,140 @@
+"""Scatter Points' surface sampling gives the scatter it always did, only faster.
+
+The draw loop was rewritten to build candidates and ask the density mask in blocks. A given
+seed must still place exactly the same points, so saved scenes keep their layout: these tests
+hold it to a verbatim copy of the old loop.
+"""
+from __future__ import annotations
+
+import bisect
+import importlib
+import math
+import random
+
+import numpy as np
+import pytest
+from pxr import Gf
+
+sp = importlib.import_module("chunks.modelling.scatter_points")
+
+
+class _OldGrid:
+    """The spacing grid as it was, tuple keys and all."""
+
+    def __init__(self, min_dist):
+        self._grid = {}
+        self._cell = max(min_dist, 1e-6)
+        self._min_sq = min_dist * min_dist
+
+    def _key(self, pt):
+        c = self._cell
+        return (math.floor(pt[0] / c), math.floor(pt[1] / c), math.floor(pt[2] / c))
+
+    def too_close(self, pt):
+        if self._min_sq <= 0:
+            return False
+        kx, ky, kz = self._key(pt)
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                for dz in range(-1, 2):
+                    for ex in self._grid.get((kx + dx, ky + dy, kz + dz), ()):
+                        d = (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2
+                        if d < self._min_sq:
+                            return True
+        return False
+
+    def add(self, pt):
+        self._grid.setdefault(self._key(pt), []).append(pt)
+
+
+def _old_scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
+    """The sampler as it was before the rewrite, line for line."""
+    if not len(triangles):
+        return [], []
+    areas = triangles.areas()
+    total_area = float(areas.sum())
+    if total_area < 1e-10:
+        return [], []
+    cdf = (np.cumsum(areas) / total_area).tolist()
+    v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
+    positions, normals = [], []
+    grid = _OldGrid(min_dist)
+    max_attempts = count * 100
+    attempts = 0
+    while len(positions) < count and attempts < max_attempts:
+        attempts += 1
+        tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
+        u, v = rng.random(), rng.random()
+        if u + v > 1.0:
+            u, v = 1.0 - u, 1.0 - v
+        w = 1.0 - u - v
+        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
+        pt = Gf.Vec3f(
+            w * v0[0] + u * v1[0] + v * v2[0],
+            w * v0[1] + u * v1[1] + v * v2[1],
+            w * v0[2] + u * v1[2] + v * v2[2],
+        )
+        n = Gf.Vec3f(*normals_all[tri_idx])
+        if grid.too_close(pt):
+            continue
+        if mask is not None and rng.random() > mask(pt, n):
+            continue
+        positions.append(pt)
+        normals.append(n)
+        grid.add(pt)
+    return positions, normals
+
+
+def _bumpy_plane(n=24, size=10.0):
+    """An n x n grid of quads, split into triangles, over a wavy surface."""
+    xs = np.linspace(0.0, size, n + 1)
+    x, y = np.meshgrid(xs, xs, indexing="ij")
+    z = 0.4 * np.sin(x) * np.cos(0.7 * y)
+    points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+    i = np.arange(n)[:, None] * (n + 1)
+    j = np.arange(n)[None, :]
+    a = (i + j).ravel()
+    b, c, d = a + (n + 1), a + (n + 2), a + 1
+    return sp._TriangleSoup.from_arrays(points, np.concatenate([a, a]), np.concatenate([b, c]),
+                                        np.concatenate([c, d])), points
+
+
+def _painted(points):
+    """A density field: full on one side of the plane, fading to nothing on the other."""
+    return sp._NearestWeight(points, np.clip(points[:, 0] / 6.0 - 0.3, 0.0, 1.0)).sample
+
+
+@pytest.mark.parametrize(
+    ("count", "spacing", "mask"),
+    [
+        (400, 0.2, None),
+        (400, 0.0, None),
+        (3000, 0.25, None),  # more than fits: runs out of attempts, over many blocks
+        (400, 0.2, "painted"),  # a mask with sample_many, asked in blocks
+        (400, 0.2, "plain"),  # a plain function, asked one candidate at a time
+        (3000, 0.25, "painted"),
+    ],
+)
+def test_the_same_seed_places_the_same_points(count, spacing, mask) -> None:
+    triangles, points = _bumpy_plane()
+    hook = {"painted": _painted(points), "plain": lambda pt, n: 0.5 + 0.5 * math.sin(pt[1]), None: None}[mask]
+    old_rng, new_rng = random.Random(7), random.Random(7)
+
+    old = _old_scatter_on_triangles(triangles, count, old_rng, spacing, mask=hook)
+    new = sp._scatter_on_triangles(triangles, count, new_rng, spacing, mask=hook)
+
+    assert len(new[0]) == len(old[0]) > 0
+    assert new[0] == old[0], "positions"
+    assert new[1] == old[1], "normals"
+    assert new_rng.random() == old_rng.random(), "the generator ends where the old loop left it"
+
+
+def test_the_spacing_grid_answers_as_before() -> None:
+    gen = np.random.default_rng(3)
+    old, new = _OldGrid(0.3), sp._PoissonGrid(0.3)
+    for p in gen.uniform(-5.0, 5.0, (3000, 3)).astype(np.float32).tolist():
+        pt = Gf.Vec3f(*p)
+        assert new.too_close(pt) == old.too_close(pt)
+        if not old.too_close(pt):
+            old.add(pt)
+            new.add(pt)
