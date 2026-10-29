@@ -1150,6 +1150,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not all_changed:
             return
         self._reconcile_changed_exec_inputs(all_changed, notice)
+        # Before the mirror: a lofted param whose attribute an undo removed would read back
+        # empty there, and hand that down to the inner param it fronts.
+        self._match_lofts(stage, notice.GetResyncedPaths())
         self._mirror_changed_params(stage, all_changed)
         self._adopt_changed_inputs(all_changed)
         self._adopt_resynced_inputs(notice.GetResyncedPaths())
@@ -1175,6 +1178,31 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                 chunk.set_state(ChunkFlags.State.DISABLED)
             elif is_active and is_disabled:
                 chunk.unset_state(ChunkFlags.State.DISABLED)
+
+    def _match_lofts(self, stage: Usd.Stage, resynced) -> None:
+        """Line up lofted params with USD in the groups whose inputs this change touched.
+
+        An undo or redo reports its edits as resyncs. A loft has an attribute on the group
+        and a connection on the attribute of the chunk (or group) inside it, so a change on
+        a group's prim counts for that group and for the group it sits in.
+        """
+        prims = {
+            p.GetPrimPath() for p in resynced if p.IsPropertyPath() and p.name.startswith(_INPUTS_PREFIX)
+        }
+        if not prims or _loft_edit_depth:
+            return
+        by_path = {Sdf.Path(c.prim_path or _CHUNKS_ROOT): c for c in self._scene.get_contexts()}
+        contexts = {}
+        for prim in prims:
+            if prim in by_path:
+                contexts[id(by_path[prim])] = by_path[prim]
+            parent = prim.GetParentPath()
+            while not parent.isEmpty and parent not in by_path:
+                parent = parent.GetParentPath()
+            if parent in by_path:
+                contexts[id(by_path[parent])] = by_path[parent]
+        if contexts:
+            match_lofted_params(stage, contexts.values())
 
     @staticmethod
     def _forget_output_children(notice) -> None:
@@ -3607,6 +3635,9 @@ def host_networks(chunk: core.ChunkBase, targets: list[tuple[str, str]],
     for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
                  ChunkFlags.GroupFlags.LABELED):
         chunk.set_flag(flag)
+    # The chunk is a group now. The scene's cached list of groups (get_contexts) is kept
+    # until a chunk is added or removed, so it would go on leaving this one out.
+    core.NameSyncedContainer.generation += 1
     if arc == "payload":
         arcs = [Sdf.Payload(asset, Sdf.Path(target)) for asset, target in targets]
         current = prim.GetMetadata("payload")
@@ -3688,6 +3719,7 @@ def unhost_network(chunk: core.ChunkBase) -> None:
     for flag in (ChunkFlags.GroupFlags.CONTEXT, ChunkFlags.GroupFlags.COLLAPSABLE,
                  ChunkFlags.GroupFlags.LABELED):
         chunk.unset_flag(flag)
+    core.NameSyncedContainer.generation += 1  # not a group any more: see host_networks
     object.__setattr__(chunk, "_network_namespace", "")
 
 
@@ -6891,6 +6923,21 @@ RESTORE_PARAMS_HOOK = "restore_params"
 #: Module hook param_unlofted(node, param): param of node was just unlofted from its group.
 PARAM_UNLOFTED_HOOK = "param_unlofted"
 
+# Above 0 while a loft, an unloft or a restore is under way. Their USD writes arrive as
+# change notices partway through, with the params not yet in line; those are not an undo.
+_loft_edit_depth = 0
+
+
+@contextlib.contextmanager
+def _editing_lofts() -> Generator[None, None, None]:
+    """Mark a loft, unloft or restore as under way, so match_lofted_params leaves it alone."""
+    global _loft_edit_depth
+    _loft_edit_depth += 1
+    try:
+        yield
+    finally:
+        _loft_edit_depth -= 1
+
 
 def is_transient_param(param) -> bool:
     """Whether param is session state that is never recorded (ParamFlags.TRANSIENT).
@@ -8860,6 +8907,7 @@ def _promoted_for_loft(param):
     return (hook(owner, param) if hook else None) or param
 
 
+@_editing_lofts()
 def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -> None:
     """Loft a param up to the context prim's public interface.
 
@@ -9328,6 +9376,7 @@ def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_p
     return None, None
 
 
+@_editing_lofts()
 def unloft_param(context_param: core.ChunkParamBase) -> None:
     """Remove a lofted param from its group. The inner param keeps its current value.
 
@@ -9404,7 +9453,39 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
     scene = _current_scene()
     for context in scene.get_contexts() if scene else ():
         contexts.setdefault(id(context), context)
+    _restore_lofted_on(stage, list(contexts.values()))
 
+
+def match_lofted_params(stage: Usd.Stage, contexts: Iterable[core.ChunkBase]) -> None:
+    """Bring each group's lofted params back in line with its attributes in USD.
+
+    An undo or redo of Loft up or Unloft changes only USD. A lofted param whose attribute
+    is gone is dropped, and one whose attribute came back is made again, so the Params
+    page shows what the stage has.
+
+    Args:
+        stage: The stage.
+        contexts: The groups to check.
+    """
+    if _loft_edit_depth:
+        return
+    contexts = list(contexts)
+    for context in contexts:
+        for param in [p for p in context.get_my_params() if getattr(p, "_lofted", False)]:
+            path = param._param_attr_path
+            if not (path and stage.GetAttributeAtPath(Sdf.Path(path))):
+                param.request_delete()
+    _restore_lofted_on(stage, contexts)
+
+
+@_editing_lofts()
+def _restore_lofted_on(stage: Usd.Stage, contexts: list[core.ChunkBase]) -> None:
+    """Make the lofted params saved in USD on contexts that have no Python param yet.
+
+    Args:
+        stage: The stage.
+        contexts: The groups to restore.
+    """
     # Deepest group first. A param lofted on up is restored from the copy one group down,
     # which only exists once that group has been restored: in load order, an outer group
     # could come first and find nothing to restore from.
@@ -9412,7 +9493,7 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
         return Sdf.Path(context.prim_path or _CHUNKS_ROOT).pathElementCount
 
     restored: list = []  # (depth, lofted param), to seed once every level exists
-    for context in sorted(contexts.values(), key=_depth, reverse=True):
+    for context in sorted(contexts, key=_depth, reverse=True):
         context_prim_path = Sdf.Path(context.prim_path if context.prim_path else _CHUNKS_ROOT)
         context_prim = stage.GetPrimAtPath(context_prim_path)
         if not (context_prim and context_prim.IsValid()):
@@ -9421,6 +9502,11 @@ def _restore_lofted_params(stage: Usd.Stage, deferred: list) -> None:
         for context_attr in context_prim.GetAttributes():
             attr_name = context_attr.GetName()
             if not attr_name.startswith(_INPUTS_PREFIX):
+                continue
+            # An attribute with no type holds no value, and a param bound to one fails on its
+            # first edit. usd-undo leaves one when it undoes Unloft: it puts the deleted
+            # attribute back without its type or value.
+            if not context_attr.GetTypeName():
                 continue
 
             param_name = attr_name[len(_INPUTS_PREFIX):]

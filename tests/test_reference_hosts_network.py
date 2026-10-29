@@ -85,6 +85,22 @@ def _children(scene, host):
                   if c is not host and get_chunk_prim_path(c).rsplit("/", 1)[0] == root)
 
 
+def test_hosting_with_the_scenes_groups_already_cached_keeps_every_child(network_file):
+    """get_contexts is cached until a chunk is added or removed. Hosting turns a chunk that
+    is already in the scene into a group, and then places the network's chunks by asking
+    for the groups: a list cached just before left the host out, and a child with it."""
+    _, scene = _open(None)
+    reference = _add(scene, "reference")
+    try:
+        assert reference not in scene.get_contexts()  # cached before the host
+        reference.get_param("file_path").value = network_file
+        reference.execute()
+        assert _children(scene, reference) == ["Transform", "Transform1"]
+        assert reference in scene.get_contexts()
+    finally:
+        _teardown(scene)
+
+
 class TestPointingAtANetwork:
     def test_the_node_is_a_subnet(self, hosting):
         _, scene, reference, _ = hosting
