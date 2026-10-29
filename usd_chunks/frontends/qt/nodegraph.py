@@ -3652,6 +3652,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self.setAcceptDrops(True)
         e = self._SCENE_EXTENT
         self.setSceneRect(-e, -e, e * 2, e * 2)
+        # The scene's own rect grows as items move out past it; the canvas follows.
+        self.scene().sceneRectChanged.connect(self._grow_to_fit)
         self._pan_active = False
         self._pan_start = QtCore.QPoint()
         self._rubber_band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, self.viewport())
@@ -4513,6 +4515,22 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
     # ------------------------------------------------------------------
     # Zoom
+
+    def _grow_to_fit(self, items_rect: QtCore.QRectF) -> None:
+        """Keep every item reachable: the default canvas, grown to cover the items plus a margin.
+
+        Panning moves the scroll bars, and Qt stops them at the view's scene rect. With the
+        canvas fixed at +-_SCENE_EXTENT, a node placed past it -- a long scripted chain laid out
+        in a row gets there quickly -- could never be scrolled to.
+
+        Args:
+            items_rect: The scene's rect, which grows to cover its items.
+        """
+        e = self._SCENE_EXTENT
+        margin = e * 0.2
+        grown = QtCore.QRectF(-e, -e, e * 2, e * 2).united(items_rect.adjusted(-margin, -margin, margin, margin))
+        if grown != self.sceneRect():
+            self.setSceneRect(grown)
 
     def wheelEvent(self, event: QtGui.QWheelEvent):
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
