@@ -2715,6 +2715,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
                     else:
                         ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
+                # Collapsed before it was added (chunk_graph.start_collapsed): saved closed
+                # with the prim, as _write_expansion_state would for a later collapse.
+                if (chunk.has_state(ChunkFlags.State.COLLAPSED)
+                        and not ui_api.GetExpansionStateAttr().HasAuthoredValue()):
+                    ui_api.CreateExpansionStateAttr(UsdUI.Tokens.closed)
 
                 config = chunk.get_config()
                 # A chunk built in the interpreter has no module, and info:chunkType is how a

@@ -2001,6 +2001,30 @@ def hold_until_wired(scene, context, chunks) -> None:
             chunk.set_blocked(True)
 
 
+#: Chunk types drawn without a body, so there is nothing for them to collapse.
+_BODILESS = frozenset({"merge", "dot"})
+
+
+def start_collapsed(chunks) -> None:
+    """Collapse new chunks before they are added, so their nodes start as a header.
+
+    A graph that branches stacks its nodes under each other, and full bodies make that
+    stack tall: a node shows its header, exec ports and wired ports until it is opened.
+    Set before the add, so the prim is written collapsed and the node is built that way
+    rather than drawn open and then shut. Views, Outputs and groups are left as they are:
+    the first two have no body, and a group's double-click is its dive.
+
+    Args:
+        chunks: The chunks about to be added.
+    """
+    for chunk in chunks:
+        cfg = chunk.get_config()
+        if (chunk_stage.is_terminal_chunk(chunk) or chunk_stage.is_group_chunk(chunk)
+                or (cfg and cfg.module in _BODILESS)):
+            continue
+        chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+
 def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     """Create one menu entry's chunk(s) at a USD position.
 
@@ -2028,6 +2052,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
         with chunk_stage.creating_at(usd_pos, loft=False), scene.creating_in(nest):
             created = entry.create()
             hold_until_wired(scene, nest, created)
+            start_collapsed(created)
             for chunk in created:
                 scene.add_chunk(chunk)
     except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:

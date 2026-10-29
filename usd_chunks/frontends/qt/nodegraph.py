@@ -782,6 +782,18 @@ def _saved_node_width(prim: Usd.Prim) -> float:
     return float(_NODE_WIDTH)
 
 
+# How far a wire runs straight out of a port before it bends, at most. Half the horizontal
+# distance made every wire a wide S: flat runs at both ends and a steep middle, which needs
+# room between columns. Capped, it turns near the port and runs straight between, so
+# branches stacked close and fanning into a Merge stay readable.
+_WIRE_BEND = 50.0
+
+
+def _wire_handle(x1: float, x2: float) -> float:
+    """The length of a wire's bezier handles between ports at x1 and x2."""
+    return min(abs(x2 - x1) * 0.5, _WIRE_BEND)
+
+
 def _drag_wire_path(start: QtCore.QPointF, end: QtCore.QPointF, from_input: bool) -> QtGui.QPainterPath:
     """The curve of a wire being dragged out of a port.
 
@@ -791,7 +803,7 @@ def _drag_wire_path(start: QtCore.QPointF, end: QtCore.QPointF, from_input: bool
         from_input: Whether that port is an input: the wire then leaves it to the left, as
             a wire into an input arrives, instead of to the right.
     """
-    dx = abs(end.x() - start.x()) * 0.5
+    dx = _wire_handle(start.x(), end.x())
     if from_input:
         dx = -dx
     path = QtGui.QPainterPath(start)
@@ -933,6 +945,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._icon, self._icon_color = node_theme.node_icon(chunk, prim)
         self._disabled = chunk.has_state(ChunkFlags.State.DISABLED)
         self._lod_simple = False  # see set_body_visible
+        self._drop_hint = False  # a dragged wire is over it, see ChunkGraphView._set_drop_hint
         # Height settling -- see _note_height_sample and is_height_settled.
         self._last_height_sample = None
         self._drag_active = False
@@ -1732,6 +1745,9 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if is_active_view or is_active_output:
             border_color = _COL_VIEW_ACTIVE
             border_w = 2.5
+        if self._drop_hint:
+            border_color = _COL_NODE_SELECTED
+            border_w = 2.5
 
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.setBrush(bg_color)
@@ -2218,6 +2234,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if expanding and self._port_rebuild_timer is not None:
                 # Recompute port positions from widget geometry now that proxy is visible.
                 self._port_rebuild_timer.start()
+        self._apply_z()
         self.update()
 
     def _on_state_changed(self, notice, sender):
@@ -2241,8 +2258,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 self._disabled = disabled
                 self.update()
             self._apply_dim()
+            self._apply_z()
         except RuntimeError:
             return
+
+    def _apply_z(self) -> None:
+        """Stack the selected node on top, then open ones, then collapsed ones.
+
+        Nothing moves aside when a node opens: with branches stacked close, an open node
+        floats over the ones below it, and selecting one brings it to the front of others.
+        """
+        self.setZValue(2 if self._selected else 1 if self._collapsed is False else 0)
 
     def set_body_visible(self, visible: bool) -> None:
         """Switch the node between full detail and a cheap far-zoom representation.
@@ -2397,7 +2423,7 @@ class ChunkEdgeItem(QtWidgets.QGraphicsPathItem):
         self._p1 = self.src_port.scenePos()
         self._p2 = self.dst_port.scenePos()
         p1, p2 = self._p1, self._p2
-        dx = abs(p2.x() - p1.x()) * 0.5
+        dx = _wire_handle(p1.x(), p2.x())
         path = QtGui.QPainterPath(p1)
         path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
         self.setPath(path)
@@ -3710,6 +3736,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_detach_attr: Usd.Attribute | None = None
         self._drag_detach_source_port: ChunkPortItem | None = None
         self._drag_reused_edge: ChunkEdgeItem | None = None
+        # The collapsed node a dragged typed wire is over, outlined: a drop there lists its
+        # params to wire (_pick_port_on).
+        self._drag_hint_node: ChunkNodeItem | None = None
         # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
         # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
         self._suppress_default_view = False
@@ -5023,12 +5052,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         end = target.scenePos() if target is not None else scene_pos
         style = QtCore.Qt.PenStyle.SolidLine if target is not None else QtCore.Qt.PenStyle.DashLine
         self._set_snap_port(target)
+        # A port wins over a node: only with none in reach does a collapsed node light.
+        self._set_drop_hint(self._collapsed_node_at(scene_pos) if target is None else None)
         if self._drag_reused_edge is not None:
             edge = self._drag_reused_edge
             edge.setPen(QtGui.QPen(edge.pen().color(), 2.0, style))
             p1 = edge.src_port.scenePos()
             p2 = end
-            dx = abs(p2.x() - p1.x()) * 0.5
+            dx = _wire_handle(p1.x(), p2.x())
             path = QtGui.QPainterPath(p1)
             path.cubicTo(p1.x() + dx, p1.y(), p2.x() - dx, p2.y(), p2.x(), p2.y())
             edge.prepareGeometryChange()
@@ -5090,6 +5121,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         elif self._drag_detach_attr is not None and hit is not self._drag_src_port:
             if isinstance(graph_scene, ChunkGraphScene):
                 self._disconnect_port(self._drag_src_port, self._drag_detach_attr, graph_scene)
+        elif hit is None and self._drag_hint_node is not None:
+            # Dropped on a collapsed node: pick which of its params to wire, as in Maya's
+            # node editor. After this release has finished: a menu run from inside a mouse
+            # handler has crashed the graph (#86).
+            node, src = self._drag_hint_node, self._as_port_ref(self._drag_src_port)
+            global_pos = self.viewport().mapToGlobal(self.mapFromScene(scene_pos))
+            self._cancel_wire_drag()
+            QtCore.QTimer.singleShot(0, self, lambda: self._pick_port_on(node, src, global_pos))
+            return
         elif hit is None and self._drag_detach_attr is None and self._drag_src_port is not None:
             # Fresh wire dragged out to empty space → open the chunk menu; whatever the user
             # picks is created and wired to the dragged port.
@@ -5099,6 +5139,82 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._create_and_connect_from_menu(src_attr, src_is_input, scene_pos)
             return
         self._cancel_wire_drag()
+
+    def _pick_candidates(self, node: ChunkNodeItem, src: chunk_graph.PortRef) -> list[chunk_graph.PortRef]:
+        """The params of node a wire from src could land on: same type, opposite direction.
+
+        Exec wires are not offered: a node's exec ports always show, collapsed or not.
+        """
+        if src.port_type == _PORT_EXEC or node.prim is None or not node.prim.IsValid():
+            return []
+        path = str(node.prim.GetPath())
+        prefix = "outputs:" if src.is_input else "inputs:"
+        refs = []
+        for param in _iter_connectable_params(node.chunk):
+            if _param_port_type(param) != src.port_type:
+                continue
+            ref = chunk_graph.PortRef(path, f"{path}.{prefix}{param.name}", src.port_type,
+                                      not src.is_input, param=param)
+            if chunk_graph.can_connect(src, ref):
+                refs.append(ref)
+        return refs
+
+    def _collapsed_node_at(self, scene_pos: QtCore.QPointF) -> ChunkNodeItem | None:
+        """The collapsed node under a fresh typed wire that has a param it could land on."""
+        src = self._drag_src_port
+        if src is None or self._drag_detach_attr is not None or src.port_type == _PORT_EXEC:
+            return None
+        for item in self.scene().items(scene_pos):
+            node = item if isinstance(item, ChunkNodeItem) else item.parentItem()
+            if not isinstance(node, ChunkNodeItem) or node is src.parentItem():
+                continue
+            if node.chunk.has_state(ChunkFlags.State.COLLAPSED) and self._pick_candidates(node, self._as_port_ref(src)):
+                return node
+            return None
+        return None
+
+    def _set_drop_hint(self, node: ChunkNodeItem | None) -> None:
+        """Outline the collapsed node a drop would open the param list on, and only that one."""
+        previous = self._drag_hint_node
+        if previous is node:
+            return
+        if previous is not None:
+            try:
+                previous._drop_hint = False
+                previous.update()
+            except RuntimeError:
+                pass
+        self._drag_hint_node = node
+        if node is not None:
+            node._drop_hint = True
+            node.update()
+
+    def _pick_port_on(self, node: ChunkNodeItem, src: chunk_graph.PortRef, global_pos: QtCore.QPoint) -> None:
+        """Ask which of a collapsed node's params to wire src to, then wire it."""
+        try:
+            candidates = self._pick_candidates(node, src)
+        except RuntimeError:
+            return  # the node went while the menu was being scheduled
+        if not candidates:
+            return
+        menu = QtWidgets.QMenu(self)
+        actions = {}
+        for ref in candidates:
+            # Under the groups it sits in: a Transform's tx, ty and rx are all labelled "X".
+            parts, owner = [ref.param.get_label()], ref.param.get_owner()
+            while owner is not None and owner is not node.chunk and not isinstance(owner, core.ChunkBase):
+                if hasattr(owner, "get_label"):  # a group; the containers between have no label
+                    parts.insert(0, owner.get_label())
+                owner = owner.get_owner() if hasattr(owner, "get_owner") else None
+            action = menu.addAction(" › ".join(parts))
+            action.setData(ref.attr_path)
+            actions[action] = ref
+        chosen = self._exec_menu(menu, global_pos)
+        if chosen not in actions:
+            return
+        self._author_port_refs(src, actions[chosen])
+        # A collapsed node shows only wired ports: rebuild them so the new wire has an end.
+        node._kick_port_rebuild()
 
     def _create_and_connect_from_menu(
         self, src_attr_path: str, src_is_input: bool, scene_pos: QtCore.QPointF
@@ -5123,6 +5239,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
         # Create the node at the wire-drop point instead of the far-away index default.
+        chunk_graph.start_collapsed(chunks)
         with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y())), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
@@ -5177,6 +5294,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 pass
             self._drag_reused_edge = None
         self._set_snap_port(None)
+        self._set_drop_hint(None)
         graph_scene = self.scene()
         if isinstance(graph_scene, ChunkGraphScene):
             for node in graph_scene._nodes.values():
@@ -5255,12 +5373,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         the same operation rather than two implementations that agree only until one of
         them is fixed.
         """
+        self._author_port_refs(self._as_port_ref(a), self._as_port_ref(b))
+
+    def _author_port_refs(self, a: chunk_graph.PortRef, b: chunk_graph.PortRef) -> None:
+        """_author_connection for ports that may have no item yet: a collapsed node's
+        unwired param, picked from its list (_pick_port_on)."""
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
             return
         _prims, chunks = self._engine_context(graph_scene)
-        change = chunk_graph.connect(graph_scene._stage, self._as_port_ref(a),
-                                     self._as_port_ref(b), chunks)
+        change = chunk_graph.connect(graph_scene._stage, a, b, chunks)
         if change is None:
             return
         if change.expression_error:
@@ -5952,6 +6074,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         view_exists = self._context_has_view(scene, context)
         # Read before the add, which can change the selection.
         tail = self._chain_tail() if self._auto_connect_box.isChecked() else None
+        chunk_graph.start_collapsed(chunks)
         with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
@@ -6218,6 +6341,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
+        chunk_graph.start_collapsed(chunks)
         with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
@@ -6272,6 +6396,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
+        chunk_graph.start_collapsed(chunks)
         with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
@@ -6317,6 +6442,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         view_exists = self._context_has_view(scene, context)
+        chunk_graph.start_collapsed(chunks)
         with chunk_stage.creating_at((scene_pos.x(), -scene_pos.y()), loft=False), \
                 scene.creating_in(self._nest_target(context)):
             for c in chunks:
