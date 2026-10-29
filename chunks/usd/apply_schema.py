@@ -1,7 +1,12 @@
 from __future__ import annotations
+
+import logging
+
 from usd_chunks import chunk
 
 from pxr import Usd, Tf
+
+logger = logging.getLogger(__name__)
 
 
 def apply(owner: chunk.Chunk, notice, sender):
@@ -16,8 +21,12 @@ def apply(owner: chunk.Chunk, notice, sender):
         return
 
     schema_reg = Usd.SchemaRegistry()
+    # Takes the type name the menu lists ("UsdPhysicsRigidBodyAPI") and the name a .usda
+    # file shows ("PhysicsRigidBodyAPI") alike.
     schema = schema_reg.GetTypeFromName(menu.value)
-    if not schema:
+    if not schema or not schema_reg.IsAppliedAPISchema(schema):
+        if menu.value:
+            logger.warning("%s: no API schema called %r, nothing applied", owner.name, menu.value)
         return
 
     for prim in prims:
@@ -66,7 +75,9 @@ def update(owner: chunk.Chunk, notice, sender: chunk.LineEdit):
 
 
 def main():
-    menu = chunk.Menu("schemas", "Schemas")
+    # The list depends on the picked prim, so a name from a script or a saved scene is kept
+    # as given rather than swapped for the first entry, which then got applied instead.
+    menu = chunk.Menu("schemas", "Schemas", dynamic_items=True)
     primSel = chunk.LineEdit(
         "prim", flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION
     )
