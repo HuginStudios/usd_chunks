@@ -77,6 +77,10 @@ _MODES = [MODE_PERCENT, MODE_COUNT, MODE_PLANAR]
 # The fewest triangles a closed surface can have. Asking for less is asking for nothing.
 _MIN_TRIANGLES = 4
 
+# A result more than this many times the count asked for has stopped early, and the readout
+# says so. The decimator otherwise lands within a few triangles of the count.
+_STOPPED_EARLY = 1.25
+
 # Meshes with at least this many triangles in all are reduced in a separate process, behind
 # a progress window: 4.5M triangles froze the host for 4.6s with no way out. Below this a
 # plain mesh takes well under a second here, and starting the process (about 1.5s, mostly
@@ -386,6 +390,34 @@ def collapse_mapping(triangles, collapses, n_points, n_reduced):
     return np.where(survivors[position] == parent, position, -1)
 
 
+def count_pieces(triangles) -> int:
+    """Count the separate pieces in a mesh: triangles that share a point are one piece.
+
+    Args:
+        triangles: (n, 3) point indices.
+
+    Returns:
+        How many pieces; 0 for no triangles.
+    """
+    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if not len(triangles):
+        return 0
+    # Union-find in whole-array passes: hook each root onto the lowest root across an edge,
+    # then pointer-jump to the roots, until no edge joins two roots.
+    start = triangles[:, :2].ravel()
+    end = triangles[:, 1:].ravel()
+    parent = np.arange(int(triangles.max()) + 1, dtype=np.int64)
+    while True:
+        a, b = parent[start], parent[end]
+        apart = a != b
+        if not apart.any():
+            break
+        np.minimum.at(parent, np.maximum(a[apart], b[apart]), np.minimum(a[apart], b[apart]))
+        while not np.array_equal(jumped := parent[parent], parent):
+            parent = jumped
+    return len(np.unique(parent[triangles[:, 0]]))
+
+
 def target_triangle_count(mode, n_tris, keep_percent, target_tris) -> int | None:
     """How many triangles the user asked for, or None for the modes that don't ask."""
     if mode == MODE_PLANAR:
@@ -508,6 +540,8 @@ class _Plan:
     blocked_primvars: list  # names
     subset_indices: list  # (subset path, Vt.IntArray)
     drop_subdivision: bool
+    asked: int | None = None  # the triangle count aimed for; None in Planar Only
+    pieces: int | None = None  # separate pieces in the mesh, counted only when it stopped short
 
 
 @dataclass
@@ -619,9 +653,11 @@ def reduce_mesh(
     """Triangulate and decimate one mesh read by _read_mesh. No USD, so it runs in any process.
 
     Returns:
-        The ReducedMesh's fields plus `before`, the triangle count it started from, as a
-        dict of plain arrays so it can come back from another process. None if there is
-        nothing to reduce.
+        The ReducedMesh's fields plus `before`, the triangle count it started from, `asked`,
+        the count it aimed for (None in Planar Only), and `pieces`, how many separate
+        pieces the mesh is (None unless it stopped well short of `asked`), as a dict of
+        plain arrays so it can come back from another process. None if there is nothing
+        to reduce.
     """
     triangles, corners, _ = fan_triangulate(counts, indices)
     if len(triangles) <= _MIN_TRIANGLES:
@@ -629,12 +665,13 @@ def reduce_mesh(
     columns = list(split_columns)
     for values in face_varying:
         columns.extend(component_codes(values))
+    target = target_triangle_count(mode, len(triangles), keep_percent, target_tris)
     reduced = reduce_triangles(
         points,
         triangles,
         corners,
         combine_codes(*columns) if columns else None,
-        target_count=target_triangle_count(mode, len(triangles), keep_percent, target_tris),
+        target_count=target,
         planar_only=mode == MODE_PLANAR,
         aggressiveness=aggressiveness,
         lock_boundary=lock_boundary,
@@ -642,7 +679,10 @@ def reduce_mesh(
     )
     if reduced is None:
         return None
-    return dict(vars(reduced), before=len(triangles))
+    asked = None if target is None else max(_MIN_TRIANGLES, target)
+    # Counted only when it stopped short, to say why: most of a second on a 3.9M-triangle tree.
+    short = asked is not None and len(reduced.triangles) > asked * _STOPPED_EARLY
+    return dict(vars(reduced), before=len(triangles), asked=asked, pieces=count_pieces(triangles) if short else None)
 
 
 def reduce_meshes(progress, jobs) -> list:
@@ -676,7 +716,7 @@ def _finish_plan(read: _MeshRead, result: dict | None) -> _Plan | None:
     if result is None:
         return None
     result = dict(result)
-    before = result.pop("before")
+    before, asked, pieces = result.pop("before"), result.pop("asked"), result.pop("pieces")
     reduced = ReducedMesh(**result)
 
     if reduced.source_corner is None:
@@ -725,6 +765,8 @@ def _finish_plan(read: _MeshRead, result: dict | None) -> _Plan | None:
         blocked_primvars=blocked,
         subset_indices=subset_indices,
         drop_subdivision=read.drop_subdivision,
+        asked=asked,
+        pieces=pieces,
     )
 
 
@@ -891,6 +933,21 @@ def _compact(count: int) -> str:
     return f"{count:,}"
 
 
+def _stopped_early(plans) -> str:
+    """The readout's second line when a mesh stopped well short of its count, else "".
+
+    Returns:
+        "asked 155k · stopped early · 91k separate pieces": the separate pieces are the
+        usual reason, since each keeps a few triangles. Left out when there is only one.
+    """
+    if not any(plan.pieces is not None for plan in plans):
+        return ""
+    asked = sum(plan.asked or 0 for plan in plans)
+    pieces = sum(plan.pieces or 0 for plan in plans)
+    text = f"asked {_compact(asked)} · stopped early"
+    return text + f" · {_compact(pieces)} separate pieces" if pieces > 1 else text
+
+
 def _report(node, plans, note=""):
     before = sum(p.before for p in plans)
     after = sum(len(p.reduced.triangles) for p in plans)
@@ -898,6 +955,8 @@ def _report(node, plans, note=""):
         share = f"{after * 100.0 / before:.0f}%" if before else "?"
         meshes = f" · {len(plans)} meshes" if len(plans) > 1 else ""
         text = f"{_compact(before)} → {_compact(after)} tris ({share}){meshes}"
+        if short := _stopped_early(plans):
+            text += "\n" + short
     else:
         text = note or "nothing reduced — check the mesh path"
     if readout := node.get_param("readout"):
@@ -1187,7 +1246,10 @@ def main():
             # starting text has to be the label; the value takes over from the first cook.
             "not reduced yet",
             default_value="not reduced yet",
-            tooltip="What the last cook produced.",
+            tooltip="What the last cook produced.\n"
+            "If it stopped well short of the count you asked for, a second line says so and\n"
+            "counts the mesh's separate pieces. Most pieces keep a few triangles each: a tree\n"
+            "made of 90k loose leaves and twigs stopped at 16% when asked for 4%.",
         )
     )
 

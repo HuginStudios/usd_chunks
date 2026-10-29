@@ -628,6 +628,52 @@ def test_the_readout_stays_short_enough_for_the_node_header() -> None:
     assert pr._compact(940) == "940"
 
 
+def _cards(n_cards, k=3):
+    """n_cards separate, slightly bent k x k vertex grids in a row: a tree's leaves."""
+    points, counts, indices = _grid(k, lambda x, y: 0.1 * np.sin(4 * x) * np.cos(3 * y))
+    points = np.concatenate([points * 0.4 + [card * 1.0, 0.0, 0.0] for card in range(n_cards)])
+    indices = np.concatenate([indices + card * k * k for card in range(n_cards)])
+    return points, np.tile(counts, n_cards), indices
+
+
+@needs_simplify
+def test_stopping_short_of_the_target_says_why(wired) -> None:
+    """Live-reported: a tree asked for 4% gave 16% and said only "3.86M → 603k tris (16%)".
+    It was 90,717 separate leaves and twigs, and each keeps a few triangles."""
+    stage, make = wired
+    points, counts, indices = _cards(300)
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 4.0
+    node.get_param("prim_path").value = "/Mesh"
+
+    asked = round(len(counts) * 2 * 0.04)
+    assert _triangle_count(stage) > 2 * asked  # the shape this test needs: it stops short
+    assert node.get_param("readout").value.splitlines()[1] == f"asked {asked} · stopped early · 300 separate pieces"
+
+
+@needs_simplify
+def test_reaching_the_target_says_nothing_more(wired) -> None:
+    stage, make = wired
+    points, counts, indices = _grid(40, lambda x, y: 0.3 * np.sin(3 * x))
+    _define_mesh(stage, "/Mesh", points, counts, indices)
+
+    node = make()
+    node.get_param("keep_percent").value = 10.0
+    node.get_param("prim_path").value = "/Mesh"
+
+    assert "\n" not in node.get_param("readout").value
+
+
+def test_pieces_are_counted_by_shared_points() -> None:
+    points, counts, indices = _cards(7)
+    triangles, _, _ = pr.fan_triangulate(counts, indices)
+    assert pr.count_pieces(triangles) == 7
+    assert pr.count_pieces(np.array([[0, 1, 2], [2, 3, 4], [5, 6, 7]])) == 2
+    assert pr.count_pieces(np.zeros((0, 3), dtype=np.int64)) == 0
+
+
 # ---------------------------------------------------------------------------
 # subsets and topology have to change together
 # ---------------------------------------------------------------------------
