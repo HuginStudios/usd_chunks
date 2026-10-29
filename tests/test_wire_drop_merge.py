@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import pytest
 from pxr import Sdf, Usd
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
 from usd_chunks.chunk_stage import get_chunk_prim_path, initialize as _chunk_usd_init, is_merge_prim
 from usd_chunks import chunk_naming, chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
+from usd_chunks.frontends.qt.nodegraph import _merge_radius
+
+from qt_wait import pump_until
 
 
 class _DummyScene(SceneSender):
@@ -107,3 +110,42 @@ def test_a_picked_up_input_wire_never_lights_a_wire(wired) -> None:
 
     assert gv._drag_merge_wire is None
     gv._cancel_wire_drag()
+
+
+def _joined(gv, stage, pc, edge):
+    c_out = gv.scene()._nodes[pc].get_port(f"{pc}.outputs:chunk")
+    gv._start_wire_drag(c_out, c_out.scenePos())
+    drop = edge.path().pointAtPercent(0.5)
+    gv._update_wire_drag(drop)
+    gv._finish_wire_drag(drop)
+    (merge,) = [p for p in stage.Traverse() if is_merge_prim(p)]
+    pump_until(QtWidgets.QApplication.instance(), lambda: str(merge.GetPath()) in gv.scene()._nodes)
+    return merge, gv.scene()._nodes[str(merge.GetPath())]
+
+
+def test_a_merge_is_a_small_circle_centred_on_the_drop(wired) -> None:
+    gv, stage, (_pa, _pb, pc), edge = wired
+    drop = edge.path().pointAtPercent(0.5)
+
+    _merge, node = _joined(gv, stage, pc, edge)
+
+    assert node._width == node._height == pytest.approx(2 * _merge_radius(3))
+    centre = node.mapToScene(QtCore.QPointF(node._width / 2, node._height / 2))
+    assert (centre.x(), centre.y()) == pytest.approx((drop.x(), drop.y()), abs=1)
+    ins = [p.pos().y() for p in node._exec_in_ports]
+    assert len(ins) == 3, "two branches and the empty trailer"
+    assert node._exec_out_port.pos().y() == pytest.approx(node._height / 2)
+
+
+def test_dragging_a_slots_wire_onto_another_slot_swaps_them(wired) -> None:
+    gv, stage, (pa, _pb, pc), edge = wired
+    merge, node = _joined(gv, stage, pc, edge)
+    gv.scene()._build_edges()
+    slot0, slot1 = node._exec_in_ports[0], node._exec_in_ports[1]
+
+    gv._start_wire_drag(slot1, slot1.scenePos())
+    gv._finish_wire_drag(slot0.scenePos())
+
+    slots = [[str(conn.GetPrimPath()) for conn in attr.GetConnections()]
+             for attr in chunk_naming.iter_exec_inputs(merge)]
+    assert slots == [[pc], [pa]], "swapped, and neither branch dropped"

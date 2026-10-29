@@ -699,3 +699,34 @@ def test_merge_into_a_data_wire_is_refused(graph):
     change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(c), (0.0, 0.0))
 
     assert change is None and error
+
+
+def _merge_of(graph, a, b, c):
+    graph.wire_exec(a, b)
+    change, _ = chunk_graph.merge_into_wire(graph.stage, graph.scene, _exec_wire(graph, a, b),
+                                            graph.path(c), (0.0, 0.0))
+    (merge,) = [p for p in change.touched_nodes if p not in {graph.path(b), graph.path(c)}]
+    return merge
+
+
+def _slot_port(merge, index):
+    return chunk_graph.PortRef(merge, f"{merge}.{chunk_naming.exec_input_name(index)}",
+                               chunk_graph.PORT_EXEC, True)
+
+
+def test_swap_exec_slots_reorders_a_merges_branches(graph):
+    a, b, c = graph.make("a"), graph.make("b"), graph.make("c")
+    merge = _merge_of(graph, a, b, c)
+
+    change = chunk_graph.swap_exec_slots(graph.stage, _slot_port(merge, 0), _slot_port(merge, 1))
+
+    assert change.touched_nodes == {merge} and change.exec_changed
+    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(a)]]
+
+
+def test_swap_exec_slots_refuses_an_empty_slot(graph):
+    a, b, c = graph.make("a"), graph.make("b"), graph.make("c")
+    merge = _merge_of(graph, a, b, c)
+
+    assert chunk_graph.swap_exec_slots(graph.stage, _slot_port(merge, 0), _slot_port(merge, 2)) is None
+    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]

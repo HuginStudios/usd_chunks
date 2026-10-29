@@ -866,6 +866,36 @@ def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos
     return GraphChange(touched_nodes={merge, dst, branch}, exec_changed=True), ""
 
 
+def swap_exec_slots(stage: Usd.Stage, a: PortRef, b: PortRef) -> GraphChange | None:
+    """Swap what two exec input slots of one node are wired to.
+
+    How a Merge's branches are reordered: slot order is what decides whose opinion wins.
+    A wire dragged from one occupied slot to another lands as a swap, not a replace, which
+    would drop the branch that was there.
+
+    Args:
+        stage: The stage to author on.
+        a: One exec input slot.
+        b: Another exec input slot of the same node.
+
+    Returns:
+        What changed, or None when the two are not both wired exec inputs of one node.
+    """
+    if a.node_path != b.node_path or a.attr_path == b.attr_path or not (a.is_exec and b.is_exec
+                                                                        and a.is_input and b.is_input):
+        return None
+    attrs = [stage.GetAttributeAtPath(Sdf.Path(p.attr_path)) for p in (a, b)]
+    if not all(attr and attr.IsValid() and attr.GetConnections() for attr in attrs):
+        return None
+    conns = [list(attr.GetConnections()) for attr in attrs]
+    # Each slot keeps the layer it lives in; only what it points at changes.
+    for attr, wanted in zip(attrs, reversed(conns)):
+        home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, None)
+        with Usd.EditContext(stage, home):
+            attr.SetConnections(wanted)
+    return GraphChange(touched_nodes={a.node_path}, exec_changed=True)
+
+
 def _unwire_param(port: PortRef, chunks: dict, always: bool = False) -> bool:
     """Put the param behind an input port back to its default.
 
