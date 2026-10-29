@@ -1356,54 +1356,34 @@ def _compute_orientation(mode, normal, rng, proto=None, world_up=None):
     return Gf.Quatf(1, 0, 0, 0)
 
 
-def _gf_div(v32, length32):
-    """Gf's Vec3f / float: the float32 components times 1/length in double, back to float32."""
-    return (v32.astype(np.float64) * (1.0 / length32.astype(np.float64))[:, None]).astype(np.float32)
-
-
-def _gf_length(v32):
-    """Gf.GetLength of Vec3f rows: float32 x*x + y*y + z*z, in that order, then sqrt."""
-    x, y, z = v32[:, 0], v32[:, 1], v32[:, 2]
-    return np.sqrt((x * x + y * y) + z * z).astype(np.float32)
-
-
 def _spun_quats(count, axis, amount_deg, rng):
-    """_apply_random_rotation(identity, ...) for *count* instances at once, as (count, 4)
-    float32 (i, j, k, real) -- the layout Vt.QuathArray takes from numpy.
+    """A random spin for *count* upright instances, as (count, 4) float32 (i, j, k, real) --
+    the layout Vt.QuathArray takes from numpy. The same spin _apply_random_rotation gives one
+    instance: about *axis* ("X"/"Y"/"Z", or "All" for a random axis), up to *amount_deg*
+    either way.
 
-    The draws are made one instance at a time, in the loop's order, so the generator ends where
-    the loop would have left it; only the arithmetic is batched, rounded to float32 wherever
-    Gf.Vec3f / Gf.Quatf would round it.
+    Drawn as arrays from a numpy generator seeded off *rng*, not one instance at a time: the
+    per-instance gauss/uniform calls were a third of a 9M-instance forest's cook.
     """
     out = np.zeros((count, 4), dtype=np.float32)
     out[:, 3] = 1.0
-    if axis == "Off":
+    if axis == "Off" or not count:
         return out
+    gen = np.random.default_rng(rng.getrandbits(63))
     amount_rad = math.radians(amount_deg)
-    angle = np.zeros(count)
     spun = np.ones(count, dtype=bool)
     if axis == "All":
-        g = np.zeros((count, 3))
-        for i in range(count):
-            g[i] = (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1))
-            if math.sqrt(g[i] @ g[i]) < 1e-8:
-                spun[i] = False         # the loop returns the base quat and draws no angle
-                continue
-            angle[i] = rng.uniform(-amount_rad, amount_rad)
-        ax = g.astype(np.float32)
-        ax = _gf_div(ax, _gf_length(ax))
+        ax = gen.standard_normal((count, 3))
+        length = np.sqrt(np.einsum("ij,ij->i", ax, ax))
+        spun = length >= 1e-8      # as _apply_random_rotation: no axis, no spin
+        ax /= np.where(spun, length, 1.0)[:, None]
     else:
-        for i in range(count):
-            angle[i] = rng.uniform(-amount_rad, amount_rad)
-        ax = np.zeros((count, 3), dtype=np.float32)
+        ax = np.zeros((count, 3))
         ax[:, "XYZ".index(axis)] = 1.0
-    # _axis_quat: normalise again (as Gf does), then (cos h, a sin h) in double -> float32.
-    a = _gf_div(ax, _gf_length(ax))
-    half = angle * 0.5
-    s = np.sin(half)
+    half = gen.uniform(-amount_rad, amount_rad, count) * 0.5
     quat = np.empty((count, 4), dtype=np.float32)
-    quat[:, :3] = (a.astype(np.float64) * s[:, None]).astype(np.float32)
-    quat[:, 3] = np.cos(half).astype(np.float32)
+    quat[:, :3] = ax * np.sin(half)[:, None]
+    quat[:, 3] = np.cos(half)
     out[spun] = quat[spun]
     # Times the identity base: every component carries over exactly.
     return out
@@ -2213,10 +2193,11 @@ def execute(node):
 
         # Exact mix: quota per prototype, then shuffled so the shares are spread over the
         # scatter instead of arriving in blocks.
+        # A numpy shuffle: random.shuffle, an element at a time, was a sixth of a big cook.
         quota = _quota([p.weight for p in protos], count)
-        assignment = [i for i, n in enumerate(quota) for _ in range(n)]
-        assignment += [0] * (count - len(assignment))
-        random.Random(seed + 31).shuffle(assignment)
+        assignment = np.zeros(count, dtype=np.int64)
+        assignment[:sum(quota)] = np.repeat(np.arange(len(quota)), quota)
+        np.random.default_rng(seed + 31).shuffle(assignment)
 
         scale_rng = random.Random(seed + 13)
         orient_rng = random.Random(seed + 7)
@@ -2232,9 +2213,9 @@ def execute(node):
         fast = (count and scatter_mode != "Stack" and not placed and not sit_on_surface
                 and orient_mode in ("Up", "Keep Original") and abs(normal_offset) <= 1e-9)
         if fast:
-            # The common case -- every instance upright, spun at random -- as arrays. Same
-            # draws, same order, same float32 rounding as the loop below, so the same result;
-            # the loop's per-instance Gf quaternions were a tenth of a 45k-grass cook.
+            # The common case -- every instance upright, spun at random -- as arrays: the
+            # loop's per-instance Gf quaternions were a tenth of a 45k-grass cook. The spin is
+            # the loop's, drawn differently, so the two paths don't match instance for instance.
             s_all = sizes if sizes else [_draw_scale(scale_rng, scale_min, scale_max, scale_bias)
                                          for _ in range(count)]
             out_positions = Vt.Vec3fArray.FromNumpy(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2247,7 +2228,7 @@ def execute(node):
             out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
 
         for i in range(0 if fast else count):
-            pidx = assignment[i]
+            pidx = int(assignment[i])
             proto = protos[pidx]
             if placed:
                 # Seeded per point when the points were placed by hand, so a point's look is

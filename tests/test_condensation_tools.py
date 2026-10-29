@@ -327,18 +327,29 @@ def test_keeping_off_a_wide_curve_needs_no_spacing(scene):
 
 
 @pytest.mark.parametrize("axis,amount", [("Z", 360.0), ("X", 30.0), ("All", 25.0), ("Off", 0.0)])
-def test_the_batched_spin_is_the_loops_spin_exactly(axis, amount) -> None:
-    """Scatter's upright-and-spun fast path must give the per-instance loop's quaternions to
-    the bit (as halves) and leave the generator where the loop would."""
+def test_the_batched_spin_is_the_loops_kind_of_spin(axis, amount) -> None:
+    """Scatter's upright-and-spun fast path spins as the per-instance loop does -- unit
+    quaternions about the axis, up to the amount either way -- and the same seed gives the
+    same spin. Not the loop's draws: those are made as arrays."""
     import random
-    from pxr import Gf, Vt
     sp = importlib.import_module("chunks.modelling.scatter_points")
-    a, b = random.Random(7), random.Random(7)
-    want = Vt.QuathArray([sp._to_quath(sp._apply_random_rotation(Gf.Quatf(1, 0, 0, 0), axis, amount, a))
-                          for _ in range(3000)])
-    got = Vt.QuathArray.FromNumpy(sp._spun_quats(3000, axis, amount, b).astype(np.float16))
-    assert np.array_equal(np.asarray(want), np.asarray(got))
-    assert a.random() == b.random()
+    q = sp._spun_quats(3000, axis, amount, random.Random(7))
+    assert q.shape == (3000, 4) and q.dtype == np.float32
+    assert np.array_equal(q, sp._spun_quats(3000, axis, amount, random.Random(7)))
+    assert np.allclose(np.linalg.norm(q, axis=1), 1.0, atol=1e-6)
+    angle = 2.0 * np.degrees(np.arctan2(np.linalg.norm(q[:, :3], axis=1), q[:, 3]))
+    assert angle.max() <= amount + 1e-3
+    if axis == "Off":
+        assert np.array_equal(q, np.tile(np.float32([0, 0, 0, 1]), (3000, 1)))
+        return
+    assert not np.array_equal(q, sp._spun_quats(3000, axis, amount, random.Random(8)))
+    if axis != "All":
+        others = [i for i in range(3) if i != "XYZ".index(axis)]
+        assert not q[:, others].any()
+        # Both ways round, and most of the range: a spread, not a constant.
+        assert angle.max() > amount * 0.9 and (q[:, "XYZ".index(axis)] < 0).any()
+    else:
+        assert (q[:, :3] < 0).any(axis=0).all() and (q[:, :3] > 0).any(axis=0).all()
 
 
 @pytest.mark.parametrize("pocket", [False, True])
