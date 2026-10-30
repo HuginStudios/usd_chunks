@@ -3183,7 +3183,7 @@ def reached_by_graph_driver(
         return True
     slot = None
     if context is not None and (prim := stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))):
-        attr = prim.GetAttribute("chunk:activeView")
+        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR)
         slot = attr.Get() if attr and attr.IsValid() else None
     view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
     drivers = [view] if view is not None else outputs
@@ -4793,7 +4793,7 @@ def find_group_active_view(
     gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
     slot = None
     if gp and gp.IsValid():
-        a = gp.GetAttribute("chunk:activeView")
+        a = gp.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR)
         if a and a.IsValid():
             slot = a.Get()
     if slot:
@@ -6180,14 +6180,22 @@ def order_layers_like_the_views(stage, scene, lm: ChunkLayerManager) -> None:
     """
     if not lm.initialized:
         return
+    root = scene.peek_root_context()
     contexts = sorted(scene.get_contexts(), key=lambda c: -get_chunk_prim_path(c).count("/"))
     for context in contexts:
-        prim = stage.GetPrimAtPath(get_chunk_prim_path(context))
-        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim else None
-        slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
-        view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
-        if view is not None and not is_output_chunk(view):
-            cook_list = _cook_list(stage, scene, view)
+        if context is root:
+            # The outermost graph: the View its saved slot names, else its Outputs.
+            prim = stage.GetPrimAtPath(get_chunk_prim_path(context))
+            attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim else None
+            slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
+            driver = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
+            synthetic = False
+        else:
+            # A group: what its parent's recook cooks it by -- its Output, then its inner View,
+            # then the end of its chain.
+            driver, synthetic = _group_output_driver(stage, scene, context)
+        if driver is not None and not is_output_chunk(driver):
+            cook_list = _cook_list(stage, scene, driver, None, synthetic)
         else:
             outputs = graph_outputs(stage, scene, context)
             cook_list = _cook_list(stage, scene, outputs[-1] if outputs else None, outputs)
@@ -7204,7 +7212,7 @@ def _unseen_by_active_views(
         if any(path.startswith(p + "/") for p in paths):
             continue  # a group -- walked from the outermost context that holds it
         prim = stage.GetPrimAtPath(Sdf.Path(path))
-        attr = prim.GetAttribute("chunk:activeView") if prim and prim.IsValid() else None
+        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim and prim.IsValid() else None
         slot = attr.Get() if attr and attr.IsValid() else None
         view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
         # No active view: the context cooks to its Outputs, as recook_for_view does.

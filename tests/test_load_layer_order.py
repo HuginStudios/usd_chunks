@@ -62,3 +62,33 @@ def test_the_graphs_first_recook_after_opening_moves_no_layer(tmp_path) -> None:
         stale = [c.name for c in scene.get_chunks()
                  if skip_cook.record(c).scene is not None and skip_cook.record(c).scene != before]
         assert not stale, f"these could not skip their next cook: {stale}"
+
+
+def test_a_group_ranks_by_its_output_even_with_an_inner_view_saved(tmp_path) -> None:
+    """Inside a group the graph's recook goes by the group's Output, not a View saved inside it
+    (_group_output_driver). The load went by the saved View and the longer branch won."""
+    path = str(tmp_path / "group.usda")
+    with Scene() as scene:
+        with scene.create.chunkgroup(name="grp") as group:
+            ball = scene.create.prim(primpath_location="/World/ball", prim_type="Sphere", name="ball")
+            first = scene.create.property_editor(ball, prim="/World/ball", edits="double radius = 1", name="first")
+            second = ball
+            for i, radius in enumerate((5, 6, 7)):
+                second = scene.create.property_editor(second, prim="/World/ball", edits=f"double radius = {radius}",
+                                                      name=f"second{i}")
+            scene.set_output(scene.create.merge(first, second, name="merge"))
+            scene.set_view(second)
+        scene.set_output(group)
+        built = _radius(scene)
+        scene.save(path)
+    assert built == 1.0
+
+    with Scene.open(path) as scene:
+        assert _radius(scene) == 1.0, "opened by a script, the inner View's branch won"
+        stage = scene.get_stage()
+        before = skip_cook.scene_state(stage)
+        _deliver(scene)
+        assert _radius(scene) == 1.0
+        stale = [c.name for c in scene.get_chunks()
+                 if skip_cook.record(c).scene is not None and skip_cook.record(c).scene != skip_cook.scene_state(stage)]
+        assert skip_cook.scene_state(stage) == before and not stale, stale
