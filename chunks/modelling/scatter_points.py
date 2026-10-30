@@ -1538,6 +1538,8 @@ def _twist_up(base, normals, axis, up):
         (N, 4) quaternions about the prototype's up axis, to apply before base.
     """
     n = np.asarray(normals, dtype=np.float64)
+    length = np.linalg.norm(n, axis=1, keepdims=True)
+    n = np.divide(n, length, out=np.zeros_like(n), where=length > 1e-12)
     turned = _rotate_arrays(base, np.broadcast_to(np.asarray(axis, dtype=np.float64), n.shape))
     target = up[None, :] - np.einsum("ij,j->i", n, up)[:, None] * n
     length = np.linalg.norm(target, axis=1)
@@ -2144,6 +2146,15 @@ def _set_hidden(obj, hidden):
         obj.unset_state(chunk.ChunkFlags.State.HIDDEN)
 
 
+def _on_orient_changed(owner, notice, sender):
+    """Up Along Surface only does something with Align to Normal: hide it otherwise."""
+    chunk_obj = owner.get_chunk()
+    var = chunk_obj.get_param("Variation") if chunk_obj else None
+    if var:
+        stack = (chunk_obj.get_param("scatter_mode") or owner).value == "Stack"
+        _set_hidden(var.get_param("align_up"), stack or owner.value != "Align to Normal")
+
+
 def _on_mode_changed(owner, notice, sender):
     """Only show the controls that mean something for the current mode."""
     chunk_obj = owner.get_chunk()
@@ -2162,7 +2173,8 @@ def _on_mode_changed(owner, notice, sender):
     var = chunk_obj.get_param("Variation")
     if var:
         _set_hidden(var.get_param("orient_mode"), mode == "Stack")
-        _set_hidden(var.get_param("align_up"), mode == "Stack")
+        orient = var.get_param("orient_mode")
+        _set_hidden(var.get_param("align_up"), mode == "Stack" or (orient is not None and orient.value != "Align to Normal"))
         _set_hidden(var.get_param("sit_on_surface"), mode == "Stack")
 
     # Last word to the painted-points rule. The two systems overlap on auto_spacing/spacing,
@@ -2544,6 +2556,14 @@ def execute(node):
             sm = np.asarray(s_all, dtype=np.float64) * mult
             out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
 
+        # Rest on Surface with Align to Normal: every turn in one call before the loop. The
+        # orient generator is only drawn from for the turn here, so the draws are the loop's.
+        loop_quats = None
+        if count and not (fast or arrays) and scatter_mode != "Stack" and orient_mode == "Align to Normal":
+            loop_rngs = [random.Random(seed + 7 + i) for i in range(count)] if placed else orient_rng
+            loop_quats = _orientations(count, orient_mode, _vectors(normals, count), protos, assignment,
+                                       world_up, rand_axis, rand_amount, loop_rngs, align_up)
+
         for i in range(0 if fast or arrays else count):
             pidx = int(assignment[i])
             proto = protos[pidx]
@@ -2570,9 +2590,7 @@ def execute(node):
                     quat = _quat_mul(_axis_quat(tilt_axis, math.radians(tilt_rng.uniform(0.0, pack_tilt))), quat)
                 quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
             elif orient_mode == "Align to Normal":
-                # As the array path: spun about its own axis, turned up the surface if asked.
-                w, x, y, z = _orientations(1, orient_mode, _vectors([nrm], 1), protos, np.array([pidx]),
-                                           world_up, rand_axis, rand_amount, orient_rng, align_up)[0]
+                w, x, y, z = loop_quats[i]
                 quat = Gf.Quatf(float(w), float(x), float(y), float(z))
             else:
                 quat = _compute_orientation(orient_mode, nrm, orient_rng, proto, world_up)
@@ -3113,6 +3131,7 @@ def main():
             "way the surface faces. Surfaces facing straight up or down are left as Off.",
         )
     )
+    var_grp.get_param("orient_mode").add_callback(_on_orient_changed)
     var_grp.add_param(
         chunk.Checkbox(
             "sit_on_surface",

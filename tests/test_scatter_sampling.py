@@ -15,6 +15,8 @@ import numpy as np
 import pytest
 from pxr import Gf
 
+from usd_chunks import Scene, chunk
+
 sp = importlib.import_module("chunks.modelling.scatter_points")
 
 
@@ -236,3 +238,34 @@ def test_up_along_surface_leaves_a_floor_alone() -> None:
                               "Off", 0.0, random.Random(1), "+X")
     assert np.all(np.isfinite(turned)) and np.allclose(plain, turned)
 
+
+
+def test_up_along_surface_on_a_y_up_stage() -> None:
+    """On a Y-up stage the prototype stands along Y, so +X is turned up a wall toward +Y."""
+    up = Gf.Vec3f(0, 1, 0)
+    n = np.array([[0.0, 0.0, 1.0]])  # a wall facing +Z
+    q = sp._orientations(1, "Align to Normal", n, [_Proto(0)], np.array([0]), up, "Off", 0.0, random.Random(1), "+X")[0]
+    assert np.allclose(_turn(q, (0, 1, 0)), n[0], atol=1e-6)
+    assert np.allclose(_turn(q, (1, 0, 0)), (0, 1, 0), atol=1e-6)
+
+
+def test_up_along_surface_takes_unnormalised_normals() -> None:
+    """Painted points bring their normals from the file, not always of length 1."""
+    up = Gf.Vec3f(0, 0, 1)
+    unit = sp._orientations(1, "Align to Normal", np.array([[0.0, 1.0, 0.0]]), [_Proto(0)], np.array([0]), up,
+                            "Off", 0.0, random.Random(1), "+X")
+    long = sp._orientations(1, "Align to Normal", np.array([[0.0, 3.0, 0.0]]), [_Proto(0)], np.array([0]), up,
+                            "Off", 0.0, random.Random(1), "+X")
+    assert np.allclose(unit, long, atol=1e-9)
+
+
+def test_up_along_surface_shows_only_with_align_to_normal() -> None:
+    hidden = chunk.ChunkFlags.State.HIDDEN
+    with Scene() as scene:
+        node = scene.create.scatter_points(name="s", inst_path="/World/s")
+        align_up = node.get_param("align_up")
+        assert not align_up.has_state(hidden)
+        node.get_param("orient_mode").value = "Up"
+        assert align_up.has_state(hidden)
+        node.get_param("orient_mode").value = "Align to Normal"
+        assert not align_up.has_state(hidden)
