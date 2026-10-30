@@ -26,7 +26,6 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSou
 
 from __future__ import annotations
 
-import bisect
 import itertools
 import logging
 import math
@@ -290,6 +289,16 @@ def _ray_triangles(origin, direction, v0, v1, v2):
     return np.where(hit, t, np.nan)
 
 
+# _PoissonGrid's cell key is (x * _GRID_STRIDE + y) * _GRID_STRIDE + z, so a neighbour is the
+# key plus a fixed offset: no tuple built per neighbour. Two far-apart cells can share a key,
+# which only adds points to check; a neighbour is never missed, since the sum is exact.
+_GRID_STRIDE = 1 << 32
+_GRID_NEIGHBOURS = tuple(
+    (dx * _GRID_STRIDE + dy) * _GRID_STRIDE + dz
+    for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+)
+
+
 class _PoissonGrid:
     """Spatial hash for O(1) min-distance rejection during sampling."""
 
@@ -300,23 +309,25 @@ class _PoissonGrid:
 
     def _key(self, pt):
         c = self._cell
-        return (math.floor(pt[0] / c), math.floor(pt[1] / c), math.floor(pt[2] / c))
+        return (math.floor(pt[0] / c) * _GRID_STRIDE + math.floor(pt[1] / c)) * _GRID_STRIDE + math.floor(pt[2] / c)
 
     def too_close(self, pt):
-        if self._min_sq <= 0:
+        min_sq = self._min_sq
+        if min_sq <= 0:
             return False
-        kx, ky, kz = self._key(pt)
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    for ex in self._grid.get((kx + dx, ky + dy, kz + dz), ()):
-                        d = (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2
-                        if d < self._min_sq:
-                            return True
+        x, y, z = pt[0], pt[1], pt[2]
+        key = self._key(pt)
+        get = self._grid.get
+        for offset in _GRID_NEIGHBOURS:
+            cell = get(key + offset)
+            if cell is not None:
+                for ex, ey, ez in cell:
+                    if (x - ex) ** 2 + (y - ey) ** 2 + (z - ez) ** 2 < min_sq:
+                        return True
         return False
 
     def add(self, pt):
-        self._grid.setdefault(self._key(pt), []).append(pt)
+        self._grid.setdefault(self._key(pt), []).append((pt[0], pt[1], pt[2]))
 
 
 class _AvoidSet:
@@ -905,8 +916,10 @@ def _painted_points(stage, points_path, up=None):
     normals = cloud.GetNormalsAttr().Get()
 
     up = up or Gf.Vec3f(0, 0, 1)
-    positions = [Gf.Vec3f(*p) for p in points]
-    facing = [Gf.Vec3f(*n) for n in normals] if normals else []
+    # Straight off the arrays: a Vt array iterates as Gf.Vec3f already, where unpacking each
+    # point into a new one was most of reading a vine's 30k leaf points.
+    positions = list(Vt.Vec3fArray(points))
+    facing = list(Vt.Vec3fArray(normals)) if normals else []
     # Points placed before normals were recorded still work; they simply lie flat.
     facing += [up] * (len(positions) - len(facing))
     return positions, facing[:len(positions)]
@@ -1132,6 +1145,18 @@ def _combine_masks(*hooks):
     return mask
 
 
+def _batched(mask):
+    """A mask hook's array form: the `sample_many` of the object whose bound `sample` the hook
+    is, or None when it has none."""
+    return getattr(getattr(mask, "__self__", None), "sample_many", None)
+
+
+#: How many random numbers _scatter_on_triangles draws ahead at a time, and how many candidates
+#: it asks a batched mask about at once.
+_DRAW_BLOCK = 16384
+_MASK_BLOCK = 2048
+
+
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     """Area-weighted point sampling with min-distance rejection.
 
@@ -1139,11 +1164,14 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     gizmo will pass a weight function here; a candidate is kept with that
     probability. None means accept everything that passes spacing.
 
-    The area table and its cumulative distribution are built in one array pass -- adding up
-    679,936 triangle areas a Gf.Vec3f cross product at a time took twenty seconds, which was
-    most of a cook on a photogrammetry mesh. The draw loop itself is deliberately unchanged:
-    it consumes the generator in exactly the same order (triangle, u, v, then the mask's
-    roll), so a given seed still produces the scatter it always did.
+    The draw is unchanged since it was written: a candidate takes three numbers from *rng*
+    (triangle, u, v), and one more for the mask's roll if it passes spacing, so a given seed
+    still produces the scatter it always did. Only the work around each draw is in arrays:
+    the numbers are drawn ahead in blocks, every block's candidates are built at once, and a
+    mask with a `sample_many` is asked about candidates a block at a time. One at a time, the
+    triangle search, the point and the mask lookup were most of a wall-ivy cook. The spacing
+    test stays one candidate at a time, as it depends on the points already kept. Numbers
+    drawn ahead but not used are given back, so *rng* ends where the old loop left it.
     """
     if not len(triangles):
         return [], []
@@ -1152,40 +1180,69 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     total_area = float(areas.sum())
     if total_area < 1e-10:
         return [], []
-    # Back to a plain list for the draw: bisect over one is faster per call than
-    # np.searchsorted, which pays array-protocol overhead on a single scalar.
-    cdf = (np.cumsum(areas) / total_area).tolist()
+    cdf = np.cumsum(areas) / total_area
+    last_tri = len(triangles) - 1
 
     v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
+    many = _batched(mask) if mask is not None else None
     positions, normals = [], []
     grid = _PoissonGrid(min_dist)
     max_attempts = count * 100
     attempts = 0
-    while len(positions) < count and attempts < max_attempts:
-        attempts += 1
-        tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
 
-        u, v = rng.random(), rng.random()
-        if u + v > 1.0:
-            u, v = 1.0 - u, 1.0 - v
+    start_state = rng.getstate()
+    draw = rng.random
+    numbers = np.empty(0)  # drawn, from the global draw index `base` on
+    base = 0
+    used = 0  # global index of the next number to use
+    tri = points = coords = weights = None
+
+    def refill():
+        """Keep the unused numbers, draw a block more, and build a candidate at each index."""
+        nonlocal numbers, base, tri, points, coords, weights
+        numbers = np.concatenate([numbers[used - base:], np.fromiter(
+            (draw() for _ in range(_DRAW_BLOCK)), dtype=np.float64, count=_DRAW_BLOCK)])
+        base = used
+        r, u, v = numbers[:-2], numbers[1:-1].copy(), numbers[2:].copy()
+        tri = np.minimum(np.searchsorted(cdf, r, side="left"), last_tri)
+        flip = u + v > 1.0
+        u[flip], v[flip] = 1.0 - u[flip], 1.0 - v[flip]
         w = 1.0 - u - v
-        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
-        pt = Gf.Vec3f(
-            w * v0[0] + u * v1[0] + v * v2[0],
-            w * v0[1] + u * v1[1] + v * v2[1],
-            w * v0[2] + u * v1[2] + v * v2[2],
-        )
-        n = Gf.Vec3f(*normals_all[tri_idx])
+        # The old loop's arithmetic, in its order, then to float32 as Gf.Vec3f did.
+        points = (w[:, None] * v0s[tri] + u[:, None] * v1s[tri] + v[:, None] * v2s[tri]).astype(np.float32)
+        coords = points.tolist()
+        weights = np.full(len(points), np.nan) if many is not None else None
 
+    while len(positions) < count and attempts < max_attempts:
+        if used - base + 4 > len(numbers):
+            refill()
+        at = used - base
+        attempts += 1
+        used += 3
+        pt = coords[at]
         if grid.too_close(pt):
             continue
-        if mask is not None and rng.random() > mask(pt, n):
-            continue
-
-        positions.append(pt)
-        normals.append(n)
+        if mask is not None:
+            if many is not None:
+                weight = weights[at]
+                if weight != weight:  # not asked yet: ask about this block of candidates
+                    stop = min(at + _MASK_BLOCK, len(points))
+                    weights[at:stop] = many(points[at:stop].astype(np.float64))
+                    weight = weights[at]
+            else:
+                weight = mask(Gf.Vec3f(*pt), Gf.Vec3f(*normals_all[tri[at]]))
+            roll = numbers[used - base]
+            used += 1
+            if roll > weight:
+                continue
+        positions.append(Gf.Vec3f(*pt))
+        normals.append(Gf.Vec3f(*normals_all[tri[at]]))
         grid.add(pt)
 
+    # Give back what was drawn ahead: rng moves on by exactly the numbers used.
+    rng.setstate(start_state)
+    for _ in range(used):
+        draw()
     return positions, normals
 
 
@@ -1387,6 +1444,195 @@ def _spun_quats(count, axis, amount_deg, rng):
     quat[:, 3] = np.cos(half)
     out[spun] = quat[spun]
     # Times the identity base: every component carries over exactly.
+    return out
+
+
+def _vectors(vectors, count):
+    """A list of Gf.Vec3f (or 3-sequences) as a (count, 3) float64 array, through Vt's buffer
+    rather than numpy reading each vector as a sequence."""
+    try:
+        return np.asarray(Vt.Vec3fArray(vectors), dtype=np.float64).reshape(count, 3)
+    except (TypeError, ValueError):
+        return np.asarray(vectors, dtype=np.float64).reshape(count, 3)
+
+
+def _align_quats(from_dirs, to_dirs):
+    """_align_quat for many direction pairs at once, as (N, 4) float64 (real, i, j, k).
+
+    Each argument is (N, 3), or one (3,) direction for all of them. The same cases as
+    _align_quat: no turn for a zero vector or a near-parallel pair, a half turn about a
+    perpendicular axis for a near-opposite one.
+    """
+    a = np.asarray(from_dirs, dtype=np.float64)
+    b = np.asarray(to_dirs, dtype=np.float64)
+    n = max(len(a) if a.ndim == 2 else 1, len(b) if b.ndim == 2 else 1)
+    a = np.broadcast_to(a, (n, 3))
+    b = np.broadcast_to(b, (n, 3))
+    out = np.zeros((n, 4))
+    out[:, 0] = 1.0
+    la = np.sqrt(np.einsum("ij,ij->i", a, a))
+    lb = np.sqrt(np.einsum("ij,ij->i", b, b))
+    live = (la >= 1e-8) & (lb >= 1e-8)
+    a = a / np.where(live, la, 1.0)[:, None]
+    b = b / np.where(live, lb, 1.0)[:, None]
+    dot = np.einsum("ij,ij->i", a, b)
+    opposite = live & (dot < -0.9999)
+    if opposite.any():
+        axis = np.cross(a[opposite], [1.0, 0.0, 0.0])
+        short = np.sqrt(np.einsum("ij,ij->i", axis, axis)) < 1e-6
+        axis[short] = np.cross(a[opposite][short], [0.0, 1.0, 0.0])
+        axis /= np.sqrt(np.einsum("ij,ij->i", axis, axis))[:, None]
+        out[opposite] = np.column_stack([np.zeros(len(axis)), axis])
+    turned = live & (dot <= 0.9999) & ~opposite
+    if turned.any():
+        axis = np.cross(a[turned], b[turned])
+        axis /= np.sqrt(np.einsum("ij,ij->i", axis, axis))[:, None]
+        half = np.arccos(np.clip(dot[turned], -1.0, 1.0)) * 0.5
+        out[turned] = np.column_stack([np.cos(half), axis * np.sin(half)[:, None]])
+    return out
+
+
+def _quat_mul_arrays(a, b):
+    """_quat_mul for (N, 4) (real, i, j, k) arrays."""
+    aw, ax, ay, az = a.T
+    bw, bx, by, bz = b.T
+    return np.column_stack([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ])
+
+
+def _rotate_arrays(quats, vectors):
+    """(N, 3) vectors turned by (N, 4) (real, i, j, k) quaternions."""
+    w = quats[:, :1]
+    u = quats[:, 1:]
+    uv = np.cross(u, vectors)
+    return vectors + 2.0 * w * uv + 2.0 * np.cross(u, uv)
+
+
+#: Up Along Surface menu entries -> the prototype axis that should point up the surface.
+_ALIGN_UP_AXES = {
+    "+X": (1.0, 0.0, 0.0), "-X": (-1.0, 0.0, 0.0),
+    "+Y": (0.0, 1.0, 0.0), "-Y": (0.0, -1.0, 0.0),
+    "+Z": (0.0, 0.0, 1.0), "-Z": (0.0, 0.0, -1.0),
+}
+
+
+def _twist_up(base, normals, axis, up):
+    """The turn about each instance's own up axis that points *axis* up the surface.
+
+    After base, the prototype's up axis lies along the normal and *axis* somewhere in the
+    surface plane. This turns it toward world up as seen on the surface -- straight up a
+    wall -- so a strand hangs down any wall it is on. Where the surface faces up or down
+    there is no "up the surface", and nothing turns.
+
+    Args:
+        base: (N, 4) quaternions taking the prototype's up axis to each normal.
+        normals: (N, 3) unit normals.
+        axis: (3,) the prototype axis, at right angles to its up axis.
+        up: (3,) world (and prototype) up.
+
+    Returns:
+        (N, 4) quaternions about the prototype's up axis, to apply before base.
+    """
+    n = np.asarray(normals, dtype=np.float64)
+    length = np.linalg.norm(n, axis=1, keepdims=True)
+    n = np.divide(n, length, out=np.zeros_like(n), where=length > 1e-12)
+    turned = _rotate_arrays(base, np.broadcast_to(np.asarray(axis, dtype=np.float64), n.shape))
+    target = up[None, :] - np.einsum("ij,j->i", n, up)[:, None] * n
+    length = np.linalg.norm(target, axis=1)
+    on_slope = length > 1e-6
+    target[on_slope] /= length[on_slope, None]
+    angle = np.arctan2(np.einsum("ij,ij->i", np.cross(turned, target), n), np.einsum("ij,ij->i", turned, target))
+    angle[~on_slope] = 0.0
+    half = angle * 0.5
+    return np.column_stack([np.cos(half), up[None, :] * np.sin(half)[:, None]])
+
+
+def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng, align_up="Off"):
+    """The loop's _compute_orientation then _apply_random_rotation, for every instance at once.
+
+    The random numbers come off *rng* one Python call at a time, in the loop's order -- a
+    Random mode's three, then the spin's -- so each instance gets the turn it always did.
+    Only the quaternion maths is in arrays: as Gf objects, one instance at a time, it was a
+    fifth of a wall-ivy cook.
+
+    Args:
+        count: How many instances.
+        mode: The orient mode.
+        normals: (count, 3) surface normals.
+        protos: The resolved prototypes.
+        assignment: (count,) prototype index of each instance.
+        world_up: The stage's up axis, as a Gf.Vec3f.
+        axis: The random spin axis: "Off", "X", "Y", "Z" or "All".
+        amount_deg: The most the spin turns either way.
+        rng: The orient random.Random, left where the loop would have left it -- or a list
+            of one per instance, as painted points seed each their own.
+        align_up: Align to Normal only: the prototype axis turned up the surface ("+X", ...),
+            or "Off".
+
+    Returns:
+        (count, 4) float64 quaternions, (real, i, j, k).
+    """
+    up = np.asarray(tuple(world_up), dtype=np.float64)
+    random_mode = mode == "Random"
+    amount_rad = math.radians(amount_deg)
+    per_instance = isinstance(rng, list)
+    if not per_instance:
+        rnd, gauss, uniform = rng.random, rng.gauss, rng.uniform
+    shoemake = np.zeros((count, 3)) if random_mode else None
+    spin_axes = np.zeros((count, 3))
+    angles = np.zeros(count)
+    spun = np.zeros(count, dtype=bool)
+    fixed = None if axis in ("Off", "All") else np.eye(3)["XYZ".index(axis)]
+    for i in range(count):
+        if per_instance:
+            rnd, gauss, uniform = rng[i].random, rng[i].gauss, rng[i].uniform
+        if random_mode:
+            shoemake[i] = (rnd(), rnd(), rnd())
+        if axis == "Off":
+            continue
+        if fixed is None:
+            gx, gy, gz = gauss(0, 1), gauss(0, 1), gauss(0, 1)
+            length = math.sqrt(gx * gx + gy * gy + gz * gz)
+            if length < 1e-8:
+                continue  # as _apply_random_rotation: no axis, no spin, no angle drawn
+            spin_axes[i] = (gx / length, gy / length, gz / length)
+        else:
+            spin_axes[i] = fixed
+        angles[i] = uniform(-amount_rad, amount_rad)
+        spun[i] = True
+
+    if mode == "Align to Normal":
+        base = _align_quats(up, normals)
+        turn_axis = np.asarray(_ALIGN_UP_AXES.get(align_up, (0.0, 0.0, 0.0)))
+        if np.abs(np.cross(turn_axis, up)).sum() > 1e-6:  # an axis along up has nothing to turn
+            base = _quat_mul_arrays(base, _twist_up(base, np.asarray(normals, dtype=np.float64), turn_axis, up))
+    elif random_mode:
+        u1, u2, u3 = shoemake.T
+        s1, s2 = np.sqrt(1 - u1), np.sqrt(u1)
+        base = np.column_stack([s2 * np.cos(2 * np.pi * u3), s1 * np.sin(2 * np.pi * u2),
+                                s1 * np.cos(2 * np.pi * u2), s2 * np.sin(2 * np.pi * u3)])
+    elif mode in ("Long Axis Up", "Long Axis to Normal"):
+        long_axes = np.asarray([tuple(p.long_axis_dir()) for p in protos], dtype=np.float64)[assignment]
+        base = _align_quats(long_axes, up if mode == "Long Axis Up" else normals)
+    else:
+        base = np.zeros((count, 4))
+        base[:, 0] = 1.0
+    if not spun.any():
+        return base
+    half = angles * 0.5
+    spin = np.column_stack([np.cos(half), spin_axes * np.sin(half)[:, None]])
+    out = base.copy()
+    if mode == "Align to Normal":
+        # About the instance's own axes, so a spin about up turns it about the normal and it
+        # stays on the surface. About the world's, a leaf on a wall spun about Z stood out of
+        # the wall: the same spin as on the ground, where the two agree.
+        out[spun] = _quat_mul_arrays(base[spun], spin[spun])
+    else:
+        out[spun] = _quat_mul_arrays(spin[spun], base[spun])
     return out
 
 
@@ -1900,6 +2146,15 @@ def _set_hidden(obj, hidden):
         obj.unset_state(chunk.ChunkFlags.State.HIDDEN)
 
 
+def _on_orient_changed(owner, notice, sender):
+    """Up Along Surface only does something with Align to Normal: hide it otherwise."""
+    chunk_obj = owner.get_chunk()
+    var = chunk_obj.get_param("Variation") if chunk_obj else None
+    if var:
+        stack = (chunk_obj.get_param("scatter_mode") or owner).value == "Stack"
+        _set_hidden(var.get_param("align_up"), stack or owner.value != "Align to Normal")
+
+
 def _on_mode_changed(owner, notice, sender):
     """Only show the controls that mean something for the current mode."""
     chunk_obj = owner.get_chunk()
@@ -1918,6 +2173,8 @@ def _on_mode_changed(owner, notice, sender):
     var = chunk_obj.get_param("Variation")
     if var:
         _set_hidden(var.get_param("orient_mode"), mode == "Stack")
+        orient = var.get_param("orient_mode")
+        _set_hidden(var.get_param("align_up"), mode == "Stack" or (orient is not None and orient.value != "Align to Normal"))
         _set_hidden(var.get_param("sit_on_surface"), mode == "Stack")
 
     # Last word to the painted-points rule. The two systems overlap on auto_spacing/spacing,
@@ -2021,6 +2278,7 @@ def execute(node):
     avoid_distance = max(0.0, node.get_param("avoid_distance", is_f).value)
     normal_offset = node.get_param("normal_offset", is_f).value
     orient_mode = node.get_param("orient_mode", is_s).value
+    align_up = node.get_param("align_up", is_s).value if node.get_param("align_up", is_s) else "Off"
     sit_on_surface = node.get_param("sit_on_surface", is_b).value
     rand_axis = node.get_param("rand_axis", is_s).value
     rand_amount = node.get_param("rand_amount", is_f).value
@@ -2270,7 +2528,43 @@ def execute(node):
             sm = np.asarray(s_all, dtype=np.float64) * mult
             out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
 
-        for i in range(0 if fast else count):
+        # Turned to the surface, pushed off it, or painted: the loop's per-instance draws, in
+        # arrays. Only Stack and Sit on Surface still need the loop below.
+        arrays = bool(count) and not fast and scatter_mode != "Stack" and not sit_on_surface
+        if arrays:
+            if placed:
+                # Seeded per point, as the loop does: see there.
+                scale_rngs = [random.Random(seed + 13 + i) for i in range(count)]
+                orient_rng = [random.Random(seed + 7 + i) for i in range(count)]
+            else:
+                scale_rngs = itertools.repeat(scale_rng, count)
+            s_all = sizes if sizes else [_draw_scale(r, scale_min, scale_max, scale_bias) for r in scale_rngs]
+            normals_np = _vectors(normals, count)
+            positions_np = _vectors(positions, count).astype(np.float32)
+            if abs(normal_offset) > 1e-9:
+                # As the loop: the offset rounded to float32, then a float32 sum.
+                positions_np = positions_np + (normals_np * normal_offset).astype(np.float32)
+            out_positions = Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions_np))
+            out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
+            quats = _orientations(count, orient_mode, normals_np, protos, assignment, world_up,
+                                  rand_axis, rand_amount, orient_rng, align_up)
+            # Through float32 as the loop's Gf.Quatf did, then half, (i, j, k, real) for Vt.
+            out_orients = Vt.QuathArray.FromNumpy(
+                np.ascontiguousarray(quats[:, [1, 2, 3, 0]].astype(np.float32).astype(np.float16)))
+            mult = np.asarray([p.scale_mult for p in protos], dtype=np.float64)[assignment]
+            per = np.asarray([tuple(p.scale) for p in protos], dtype=np.float64)[assignment]
+            sm = np.asarray(s_all, dtype=np.float64) * mult
+            out_scales = Vt.Vec3fArray.FromNumpy((sm[:, None] * per).astype(np.float32))
+
+        # Rest on Surface with Align to Normal: every turn in one call before the loop. The
+        # orient generator is only drawn from for the turn here, so the draws are the loop's.
+        loop_quats = None
+        if count and not (fast or arrays) and scatter_mode != "Stack" and orient_mode == "Align to Normal":
+            loop_rngs = [random.Random(seed + 7 + i) for i in range(count)] if placed else orient_rng
+            loop_quats = _orientations(count, orient_mode, _vectors(normals, count), protos, assignment,
+                                       world_up, rand_axis, rand_amount, loop_rngs, align_up)
+
+        for i in range(0 if fast or arrays else count):
             pidx = int(assignment[i])
             proto = protos[pidx]
             if placed:
@@ -2294,9 +2588,13 @@ def execute(node):
                     # Lean about a random lateral axis -- a pile that isn't machine-perfect.
                     tilt_axis = Gf.Cross(world_up, _random_lateral(tilt_rng, lat_a, lat_b, axis_vec))
                     quat = _quat_mul(_axis_quat(tilt_axis, math.radians(tilt_rng.uniform(0.0, pack_tilt))), quat)
+                quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
+            elif orient_mode == "Align to Normal":
+                w, x, y, z = loop_quats[i]
+                quat = Gf.Quatf(float(w), float(x), float(y), float(z))
             else:
                 quat = _compute_orientation(orient_mode, nrm, orient_rng, proto, world_up)
-            quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
+                quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
 
             pos = positions[i]
             if scatter_mode == "Stack":
@@ -2820,6 +3118,20 @@ def main():
             "Long Axis to Normal: same, but along the surface normal.",
         )
     )
+    var_grp.add_param(
+        chunk.Menu(
+            "align_up",
+            "Up Along Surface",
+            menu_items=["Off", *_ALIGN_UP_AXES],
+            default_value="Off",
+            tooltip="Align to Normal only. Which prototype axis points up the surface, so on a wall\n"
+            "it points straight up and on a slope uphill. A strand modelled hanging along -X\n"
+            "takes +X: it then hangs down whatever wall it is on. Off: the prototype is\n"
+            "only tipped onto the surface, and how it is turned on it depends on which\n"
+            "way the surface faces. Surfaces facing straight up or down are left as Off.",
+        )
+    )
+    var_grp.get_param("orient_mode").add_callback(_on_orient_changed)
     var_grp.add_param(
         chunk.Checkbox(
             "sit_on_surface",
