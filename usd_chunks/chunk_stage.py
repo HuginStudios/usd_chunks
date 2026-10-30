@@ -6052,6 +6052,7 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
     if not cook_list:
         return
 
+    lm.follow_merged_graphs(scene.get_chunks())
     # Layer-win order follows the exec traversal: the chunk nearest the view (last in
     # cook_list) must win, so reorder each graph layer's sublayers to put the most
     # downstream layer strongest (subLayerPaths[0]). This is what makes rewiring change
@@ -6181,6 +6182,7 @@ def sort_chunk_layers(lm: ChunkLayerManager, chunks: Iterable[core.ChunkBase], k
             script makes, and reading every chunk prim's wires each time was quadratic.
     """
     chunks = list(chunks)
+    lm.follow_merged_graphs(chunks)
     if keys is None:
         keys = nested_cook_keys(chunks, lm.stage, from_dag=True)
     rank = {

@@ -2497,6 +2497,25 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             for c in held:
                 self.get_or_create_layer(c)
 
+    def follow_merged_graphs(self, chunks: Iterable[core.ChunkCommon]) -> None:
+        """Move each chunk's layer into its graph's layer when a wire merged its graph into another.
+
+        A layer moves on its chunk's next get_or_create_layer, which a cook asks for. The chunk
+        above a new wire doesn't cook again, so ranking calls this first, or that chunk's layer
+        stays in its old graph layer where the ranking can't place it.
+
+        Args:
+            chunks: The chunks about to be ranked.
+        """
+        moved = [c for c in chunks
+                 if (key := self._chunk_graph_key.get(c.get_hash())) is not None
+                 and key[0] != c.get_dag_node().get_graph_id()]
+        # One at a time, not batched_placement: that writes the old graph layer's list before
+        # the new one's, and a layer sublayered under the moving one (a Layer chunk's) leaves
+        # the stack in between, which resets an Edit Target on it.
+        for c in moved:
+            self.get_or_create_layer(c)
+
     @contextlib.contextmanager
     def batched_placement(self):
         """Collect graph-layer sublayer edits made inside, and write each list once at the end.
