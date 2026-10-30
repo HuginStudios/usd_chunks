@@ -535,8 +535,18 @@ class FletGroupWidget:
                 pass
 
 
+def _iter_folded_params(group):
+    """Every param under a group, however deeply nested -- the ones its fold hides."""
+    for param in group.get_my_params():
+        if isinstance(param, chunk_core.ChunkParamBase):
+            yield param
+        else:
+            yield param  # a nested group or vector can be a port of its own
+            yield from _iter_folded_params(param)
+
+
 def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = None,
-                         focus: FocusTracker | None = None):
+                         focus: FocusTracker | None = None, folded: dict | None = None):
     """Every param of a chunk as Flet controls, groups collapsible, nothing hidden.
 
     Returns (controls, widgets, offsets). The widgets come back because nothing else holds
@@ -544,6 +554,10 @@ def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = Non
     each registers a notice callback, and a widget that is collected stops updating -- the
     same lifetime trap plain closures have with add_callback. Group widgets are included
     for the same reason: they own the collapse toggle.
+
+    A param inside a folded group has no control to be level with, so it has no offset.
+    Given `folded`, it is filled with {param name: y of that group's header} for each of
+    them, which is where Qt anchors a wired port whose param is folded away.
     """
     factory = factory or ChunkFletWidgetFactory()
     widgets = []
@@ -560,6 +574,9 @@ def build_chunk_controls(chunk_obj, factory: ChunkFletWidgetFactory | None = Non
                 collapsed = (param.has_flag(ChunkFlags.GroupFlags.COLLAPSABLE)
                              and param.has_state(ChunkFlags.State.COLLAPSED))
                 inner, inner_height = ([], 0.0) if collapsed else walk(param, y + GROUP_HEADER_H)
+                if collapsed and folded is not None:
+                    for inner_param in _iter_folded_params(param):
+                        folded.setdefault(inner_param.name, y + GROUP_HEADER_H / 2.0)
                 group = FletGroupWidget(param, inner)
                 widgets.append(group)
                 controls.append(group.control)

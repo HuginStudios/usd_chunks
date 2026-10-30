@@ -72,6 +72,7 @@ PORT_R = 5.0
 #: so the two frontends read identically.
 EXP_R = 12.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
+PLUS_INSET = 11.0  # a collapsed node's "+" sits this far inside its edge
 MARGIN = 120.0
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 3.0, 1.1
 
@@ -111,6 +112,14 @@ class _Scene(SceneSender):
 #: drifted. Kept as module-level names because this module's readers and tests use them.
 contexts = chunk_graph.contexts
 default_context = chunk_graph.default_context
+
+
+def _collapsed_row_y(row: int) -> float:
+    """A collapsed node's row, down from its top: the exec row on the header's centre,
+    and every row after it below the header rather than across its edge."""
+    if row == 0:
+        return HEADER_H / 2.0
+    return HEADER_H + ROW_H * (row - 1) + ROW_H / 2.0 + 2.0
 
 
 def _end_name(end) -> str:
@@ -166,6 +175,11 @@ class GraphView:
         self.pending_pick: tuple[list, object] | None = None
         #: {node path: (ports shown, "+" in, "+" out)} for each collapsed node -- see reload.
         self.collapsed: dict = {}
+        #: Every attr path a wire touches, for which folded ports still show -- see reload.
+        self.wired: set = set()
+        #: {node path: {param name: y of the folded group's header}} -- filled with
+        #: param_offsets by node_controls, for the params a folded group hides.
+        self.folded_offsets: dict = {}
         self.wire_to = (0.0, 0.0)
         self.canvas: cv.Canvas | None = None
         self.stack: ft.Stack | None = None
@@ -222,6 +236,7 @@ class GraphView:
                           for p, (x, y) in flipped.items()}
         # Which ports a collapsed node shows is the engine's call. Worked out once per
         # reload: hit-testing asks for a node's ports on every pointer move.
+        self.wired = {end for edge in self.edges for end in (edge.src_attr_path, edge.dst_attr_path)}
         self.collapsed = {}
         for path in self.prims:
             chunk_obj = self.chunks.get(path)
@@ -230,8 +245,23 @@ class GraphView:
                     chunk_obj, path, self.ports[path], self.edges)
 
     def shown_ports(self, path: str) -> list:
-        """The ports a node draws: all of them, or a collapsed node's cut (see reload)."""
-        return self.collapsed[path][0] if path in self.collapsed else self.ports[path]
+        """The ports a node draws.
+
+        Collapsed: the engine's cut (see reload). Open, once its body is built: the exec
+        ports, each port whose control is on show, and a wired port whose param a folded
+        group hides -- at that group's header, as Qt does. An unwired one in a fold has
+        nothing to sit beside, and drawn on the fallback grid they piled up under the
+        header. Before the body exists (headless), every port.
+        """
+        if path in self.collapsed:
+            return self.collapsed[path][0]
+        offsets = self.param_offsets.get(path)
+        if offsets is None:
+            return self.ports[path]
+        folded = self.folded_offsets.get(path, {})
+        return [p for p in self.ports[path]
+                if p.port_type == chunk_graph.PORT_EXEC or p.name in offsets
+                or (p.name in folded and p.attr_path in self.wired)]
 
     def pluses(self, path: str) -> list:
         """A collapsed node's "+"s, as the PlusRefs a wire can start or end on."""
@@ -253,8 +283,9 @@ class GraphView:
         ins, outs = self.rows(path)
         ports = HEADER_H + ROW_H * max(len(ins), len(outs), 1) + 8
         if path in self.collapsed:
-            # Header and ports only, plus a row for the "+"s when there are any.
-            return ports + (ROW_H if self.pluses(path) else 0.0)
+            # Header and port rows only, plus a row for the "+"s when there are any.
+            rows = max(len(ins), len(outs), 1) + (1 if self.pluses(path) else 0)
+            return _collapsed_row_y(rows - 1) + ROW_H / 2.0 + 4.0
         chunk_obj = self.chunks.get(path)
         body = 0.0
         if chunk_obj is not None:
@@ -314,22 +345,28 @@ class GraphView:
         # put each row and this places the dot against it. Without that the ports march
         # down a fixed grid while the params sit wherever their controls landed, and the
         # two only agree by accident.
-        offsets = self.param_offsets.get(port.node_path) or {}
-        if port.name in offsets and port.node_path not in self.collapsed:
-            return x, y0 + HEADER_H + BODY_PAD + offsets[port.name]
-
-        # Exec ports, a collapsed node's, and anything with no control of its own, fall
-        # back to rows down from the header.
         ins, outs = self.rows(port.node_path)
         row = (ins if port.is_input else outs).index(port)
+        if port.node_path in self.collapsed:
+            return x, y0 + _collapsed_row_y(row)
+        offsets = self.param_offsets.get(port.node_path) or {}
+        if port.name in offsets:
+            return x, y0 + HEADER_H + BODY_PAD + offsets[port.name]
+        folded = self.folded_offsets.get(port.node_path) or {}
+        if port.name in folded:
+            return x, y0 + HEADER_H + BODY_PAD + folded[port.name]
+
+        # Exec ports, and anything with no control of its own, fall back to rows down
+        # from the header.
         return x, y0 + HEADER_H / 2.0 + ROW_H * row
 
     def plus_xy(self, plus: chunk_graph.PlusRef):
-        """Where a collapsed node's "+" sits: one row below its last port."""
+        """Where a collapsed node's "+" sits: one row below its last port, just inside the
+        edge -- it is drawn in the node's body (node_controls), which covers the edge."""
         x0, y0 = self.positions[plus.node_path]
         ins, outs = self.rows(plus.node_path)
-        return (x0 if plus.is_input else x0 + NODE_W,
-                y0 + HEADER_H / 2.0 + ROW_H * max(len(ins), len(outs)))
+        return (x0 + PLUS_INSET if plus.is_input else x0 + NODE_W - PLUS_INSET,
+                y0 + _collapsed_row_y(max(len(ins), len(outs))))
 
     def end_xy(self, end):
         """Where a wire end sits, a port or a "+"."""
@@ -395,14 +432,16 @@ class GraphView:
                 self.status = ""
             return self.refresh()
 
+        # A "+" shows its selection in the node body, which only a body rebuild redraws.
+        plus = isinstance(port, chunk_graph.PlusRef) or isinstance(self.selected, chunk_graph.PlusRef)
         if self.selected is None:
             self.selected = port
             self.status = f"selected {_end_name(port)}"
-            return self.refresh()
+            return self.refresh(bodies=plus)
 
         if port == self.selected:
             self.selected, self.status = None, ""
-            return self.refresh()
+            return self.refresh(bodies=plus)
 
         first, self.selected = self.selected, None
         self.join(first, port)
@@ -1227,18 +1266,6 @@ class GraphView:
             # The body is a real control now (see node_controls); the canvas keeps the
             # wires and the ports, which have to sit on the same surface as the curves
             # that meet them.
-            for plus in self.pluses(path):
-                # A ring with a cross: drop a wire on it, or start one from it, and pick
-                # the param it stands for.
-                px, py = self.plus_xy(plus)
-                if plus == self.selected:
-                    out.append(cv.Circle(px, py, PORT_R + 4, paint=ft.Paint(color=COL_ACCENT)))
-                ring = ft.Paint(color="#9a9a9a", stroke_width=1.5, style=ft.PaintingStyle.STROKE)
-                out.append(cv.Circle(px, py, PORT_R + 1, paint=ft.Paint(color=COL_NODE_BG)))
-                out.append(cv.Circle(px, py, PORT_R + 1, paint=ring))
-                arm = PORT_R - 1.5
-                out.append(cv.Line(px - arm, py, px + arm, py, paint=ring))
-                out.append(cv.Line(px, py - arm, px, py + arm, paint=ring))
             for port in self.shown_ports(path):
                 px, py = self.port_xy(port)
                 if self.selected is not None and port == self.selected:
@@ -1300,14 +1327,29 @@ class GraphView:
 
             if path in self.collapsed:
                 # Collapsed: the header alone. Its ports run in rows below it (port_xy),
-                # so the body has to stand as tall as they need.
+                # so the body has to stand as tall as they need -- and it carries the
+                # "+"s, a ring with a cross that a wire starts from or drops on. In the
+                # body rather than on the canvas, which the body would cover.
                 self.param_offsets.pop(path, None)
-                body.append(ft.Container(height=self.node_height(path) - HEADER_H, width=NODE_W))
+                self.folded_offsets.pop(path, None)
+                glyphs = []
+                for plus in self.pluses(path):
+                    px, py = self.plus_xy(plus)
+                    glyphs.append(ft.Container(
+                        ft.Icon(ft.Icons.ADD, size=12, color=COL_TEXT),
+                        left=px - x - 8, top=py - y - HEADER_H - 8, width=16, height=16,
+                        alignment=ft.Alignment.CENTER, border_radius=8,
+                        border=ft.Border.all(1.5, COL_ACCENT if plus == self.selected else "#9a9a9a")))
+                body.append(ft.Container(ft.Stack(glyphs), width=NODE_W,
+                                         height=self.node_height(path) - HEADER_H))
             elif chunk_obj is not None:
+                folded: dict = {}
                 param_controls, widgets, offsets = chunk_flet.build_chunk_controls(
-                    chunk_obj, focus=self.focus)
-                # Where each param's control ended up, so a port lands level with it.
+                    chunk_obj, focus=self.focus, folded=folded)
+                # Where each param's control ended up, so a port lands level with it, and
+                # the folded group's header for a param that has none (see shown_ports).
                 self.param_offsets[path] = offsets
+                self.folded_offsets[path] = folded
                 if self.live:
                     chunk_flet.mark_live(widgets)
                 self.param_widgets += widgets
