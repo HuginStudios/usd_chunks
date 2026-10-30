@@ -160,7 +160,7 @@ _COL_NODE_SELECTED = node_theme.NODE_SELECTED
 _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black -- group/context nodes
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber -- locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
-_COL_CANVAS_BG = QtGui.QColor("#17181b")  # ChunkGraphView's background brush
+_COL_CANVAS_BG = QtGui.QColor("#252525")  # ChunkGraphView's background brush
 _DIM_ALPHA = 0.35  # the opacity disabled nodes are drawn at when their body is showing
 _DIM_CACHE: dict[int, QtGui.QColor] = {}
 
@@ -3642,17 +3642,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     """QGraphicsView with zoom, pan (middle mouse or Space+drag), and F to frame."""
 
     _SCENE_EXTENT = 50000
-    _GRID_SPACING = 200  # scene units -- fixed world-space, so it scales naturally with zoom
-    # ...but only down to a point. The dots are cosmetic (constant screen size), so as the
-    # view zooms out they crowd together into a speckle that reads as noise rather than a
-    # grid, and their count grows with the square of the zoom-out -- thousands of them at
-    # the far end. The spacing doubles instead, holding the on-screen gap between this and
-    # twice it at every zoom, which bounds the count. Deliberately below the 200px gap seen
-    # at scale 1.0: matching that reads as an empty canvas once zoomed out.
-    _GRID_MIN_SCREEN_SPACING = 55  # px
-    _GRID_MAX_DOUBLINGS = 12
-    _GRID_DOT_COLOR = QtGui.QColor("#2c2f37")  # muted grey-blue, subtle against the canvas
-    _GRID_DOT_WIDTH = 2
 
     dive_into = QtCore.Signal(object)  # re-emitted from scene when a group node is double-clicked
 
@@ -3832,64 +3821,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # so it has to take the width its buttons actually need or it clips them.
         breadcrumb.resize(breadcrumb.sizeHint())
         self._anchor_breadcrumb()
-
-    @staticmethod
-    def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:
-        """Scene-space grid dot positions covering rect, snapped to fixed spacing-unit lines.
-
-        Pure math, no painter -- kept separate from drawBackground so the snapping/coverage
-        logic is unit-testable without a real paint device.
-        """
-        # Snap down to the nearest grid line at or before rect's edges. Python's % on a
-        # negative left/top already returns a non-negative remainder (floor-division
-        # semantics), so this snaps correctly on the negative half of the scene too.
-        left = int(rect.left()) - (int(rect.left()) % spacing)
-        top = int(rect.top()) - (int(rect.top()) % spacing)
-
-        points = []
-        x = left
-        while x < rect.right():
-            y = top
-            while y < rect.bottom():
-                points.append(QtCore.QPointF(x, y))
-                y += spacing
-            x += spacing
-        return points
-
-    def _grid_spacing_for_view(self) -> int:
-        """Grid spacing in scene units, doubled until the dots are far enough apart on screen.
-
-        Kept separate from _grid_points_in_rect so that stays pure coverage math with no
-        view attached, and remains unit-testable on its own.
-        """
-        spacing = self._GRID_SPACING
-        scale = self.transform().m11()
-        if scale <= 0:
-            return spacing
-        for _ in range(self._GRID_MAX_DOUBLINGS):
-            if spacing * scale >= self._GRID_MIN_SCREEN_SPACING:
-                break
-            spacing *= 2
-        return spacing
-
-    def drawBackground(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
-        # super() fills with setBackgroundBrush's flat color; dots paint on top of that.
-        super().drawBackground(painter, rect)
-        # Only the exposed rect is ever painted here (never the full 100k-unit scene extent --
-        # Qt only calls drawBackground for the currently visible region).
-        points = self._grid_points_in_rect(rect, self._grid_spacing_for_view())
-        if not points:
-            return
-
-        # A single batched drawPoints call is far cheaper than one drawEllipse call per dot.
-        painter.save()
-        pen = QtGui.QPen(self._GRID_DOT_COLOR)
-        pen.setWidth(self._GRID_DOT_WIDTH)
-        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-        pen.setCosmetic(True)  # constant screen-space dot size regardless of view zoom/scale
-        painter.setPen(pen)
-        painter.drawPoints(points)
-        painter.restore()
 
     def _slot_badge(self) -> tuple[QtCore.QRect, str, QtGui.QColor]:
         """The Output / View badge in the bottom-right corner: where it sits, its text, its colour."""
