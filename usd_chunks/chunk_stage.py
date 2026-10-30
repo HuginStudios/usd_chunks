@@ -3161,9 +3161,8 @@ def reached_by_graph_driver(
 ) -> bool:
     """Whether what drives chunk's graph reaches it, so that it is one the graph cooks.
 
-    The driver is the graph's active view, or with none active its Outputs -- what
-    recook_for_view cooks. A graph with neither a view nor an Output is not view-driven at
-    all (a script building one, a headless run), and everything in it cooks.
+    The driver is graph_driver's. A graph with neither a view nor an Output is not
+    view-driven at all (a script building one, a headless run), and everything in it cooks.
 
     Args:
         chunk: The chunk.
@@ -3181,13 +3180,9 @@ def reached_by_graph_driver(
     outputs = graph_outputs(stage, scene, context)
     if not views and not outputs:
         return True
-    slot = None
-    if context is not None and (prim := stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))):
-        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR)
-        slot = attr.Get() if attr and attr.IsValid() else None
-    view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
-    drivers = [view] if view is not None else outputs
-    return any(chunk in view_cook_list(driver, stage, scene) for driver in drivers)
+    driver, _ = graph_driver(stage, scene, context)
+    drivers = outputs if driver is None or is_output_chunk(driver) else [driver]
+    return any(chunk in view_cook_list(d, stage, scene) for d in drivers)
 
 
 def strongest_output(
@@ -4772,10 +4767,7 @@ def chunk_matches_search(chunk: core.ChunkBase, query: str, scope: str = "both")
 def find_group_active_view(
     group: core.ChunkBase, stage: Usd.Stage, scene: chunk_scene.SceneSender
 ) -> core.ChunkBase | None:
-    """The inner active view of a group -- its output driver.
-
-    Reads the group prim's ``chunk:activeView`` slot (written when the view is switched
-    inside the group), falling back to the first inner view.
+    """The View a group's saved slot names, else its lowest-slot View (inert ones last).
 
     Args:
         group: The group.
@@ -4785,23 +4777,37 @@ def find_group_active_view(
     Returns:
         The view chunk, or None if the group has no inner view.
     """
-    inner_views = [
-        c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, group)
-    ]
-    if not inner_views:
+    return _saved_view(stage, scene, group) or next(iter(_views_by_slot(stage, scene, group)), None)
+
+
+def view_slot(stage: Usd.Stage, view: core.ChunkBase) -> int:
+    """A View's slot.
+
+    Args:
+        stage: The stage.
+        view: The View.
+
+    Returns:
+        The slot, or 0 for an inert View (made from the chunk menu, not given one yet).
+    """
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(view)))
+    return int(prim.GetAttribute("view:slot").Get() or 0) if prim and prim.IsValid() else 0
+
+
+def _views_by_slot(stage: Usd.Stage, scene: chunk_scene.SceneSender, context) -> list[core.ChunkBase]:
+    """A graph's Views, lowest slot first, inert ones last."""
+    views = [c for c in scene.get_chunks() if is_view_chunk(c) and is_node_in_context(c, context)]
+    return sorted(views, key=lambda v: view_slot(stage, v) or float("inf"))
+
+
+def _saved_view(stage: Usd.Stage, scene: chunk_scene.SceneSender, context) -> core.ChunkBase | None:
+    """The View a graph's saved slot (chunk:activeView) names, or None."""
+    if context is None:
         return None
-    gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
-    slot = None
-    if gp and gp.IsValid():
-        a = gp.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR)
-        if a and a.IsValid():
-            slot = a.Get()
-    if slot:
-        for v in inner_views:
-            vp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(v)))
-            if vp and vp.IsValid() and vp.GetAttribute("view:slot").Get() == slot:
-                return v
-    return inner_views[0]
+    prim = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))
+    attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim and prim.IsValid() else None
+    slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
+    return find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
 
 
 def find_view_chunk_for_slot(
@@ -5994,7 +6000,7 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
     for c in cook_list:
         if is_group_chunk(c):
             if id(c) in deferred_groups:
-                inner_view, synthetic = _group_output_driver(stage, scene, c)
+                inner_view, synthetic = graph_driver(stage, scene, c, deliver=True)
                 try:
                     recook_for_view(
                         stage, scene, c, inner_view, _synthetic_tail=synthetic,
@@ -6034,48 +6040,41 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
     _rank_layers_by_cook_list(lm, scene, cook_list)
 
 
-def _group_output_driver(stage: Usd.Stage, scene: chunk_scene.SceneSender, group: core.ChunkBase):
-    """(what drives group's output, whether it is a stand-in exec tail rather than a view).
+def graph_driver(
+    stage: Usd.Stage, scene: chunk_scene.SceneSender, context: core.ChunkBase | None, deliver: bool = False
+) -> tuple[core.ChunkBase | None, bool]:
+    """What a graph cooks by: a View, an Output (standing for all its Outputs), or its chain's end.
 
-    The group's Output, when it has one wired to something: what a group delivers is its
-    Output, and its inner views are only for looking while inside it. Older groups with no
-    Output fall back to the inner active view, then the exec tail.
+    Shown (deliver False): the View its saved slot names, else its Output, else its
+    lowest-slot View (a file from before Outputs). Handed to its parent graph (deliver True):
+    its Output, else its active View, else the end of its chain; one wired to nothing
+    doesn't count, since it would cook nothing.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+        context: The graph.
+        deliver: What the graph hands on, as its parent's recook cooks a group, not what it shows.
+
+    Returns:
+        (the driver or None, True when it is the chain's end standing in for a View).
     """
-    output = find_output_chunk(stage, scene, group)
+    if not deliver:
+        if (view := _saved_view(stage, scene, context)) is not None:
+            return view, False
+        if outputs := graph_outputs(stage, scene, context):
+            return outputs[-1], False
+        # An inert View can't be made active, so it can't drive a graph that is shown.
+        return next((v for v in _views_by_slot(stage, scene, context) if view_slot(stage, v)), None), False
+    output = find_output_chunk(stage, scene, context)
     if output is not None and view_cook_list(output, stage, scene):
         return output, False
-    inner_view = find_group_active_view(group, stage, scene)
-    synthetic = False
-    if inner_view is not None and not view_cook_list(inner_view, stage, scene):
-        # A view wired to NOTHING is not an answer to "what does this group
-        # output" -- it is a default view that never got pointed at anything,
-        # or one left dangling when the chunk it watched was deleted (an exec
-        # heal clears the connection when the deleted node had no predecessor
-        # to inherit). Taken literally it means the group cooks nothing at all:
-        # its contents go blocked and muted, it stops feeding everything
-        # downstream of it, and there is no sign of why.
-        #
-        # Fall through to the exec-tail fallback below, which is the same
-        # question ("what is the end of this group's chain") asked of a group
-        # whose view is missing rather than empty.
-        inner_view = None
-    if inner_view is None:
-        # No real inner view chunk -- the common case for a group whose
-        # contents were never explicitly given one (view chunks are
-        # deliberately excluded from group copy/paste, see
-        # _iter_group_children). Without this fallback, a reachable group's
-        # contents never actually cook via view-driven execution at all --
-        # they only ever ran as an accidental side effect of the user diving
-        # into the group, which auto-wires a default view as a UI action
-        # (ChunkGraphView._ensure_default_view). That made execution order
-        # (and therefore which sibling's self-managed layer, e.g. Create
-        # Layer's, ends up strongest) depend on dive/rename order instead of
-        # actual graph position. Cook through the group's own exec tail
-        # instead, exactly as if a real inner view were pointed at it.
-        tails = exec_tails(stage, scene, group)
-        inner_view = tails[0] if tails else None
-        synthetic = inner_view is not None
-    return inner_view, synthetic
+    view = find_group_active_view(context, stage, scene)
+    if view is not None and view_cook_list(view, stage, scene):
+        return view, False
+    # No View (they don't survive a copy/paste): cook through the chain's end, as one there would.
+    tails = exec_tails(stage, scene, context)
+    return (tails[0], True) if tails else (None, False)
 
 
 def _cook_list(stage, scene, view_chunk, outputs=None, synthetic_tail=False) -> list[core.ChunkBase]:
@@ -6183,17 +6182,8 @@ def order_layers_like_the_views(stage, scene, lm: ChunkLayerManager) -> None:
     root = scene.peek_root_context()
     contexts = sorted(scene.get_contexts(), key=lambda c: -get_chunk_prim_path(c).count("/"))
     for context in contexts:
-        if context is root:
-            # The outermost graph: the View its saved slot names, else its Outputs.
-            prim = stage.GetPrimAtPath(get_chunk_prim_path(context))
-            attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim else None
-            slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
-            driver = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
-            synthetic = False
-        else:
-            # A group: what its parent's recook cooks it by -- its Output, then its inner View,
-            # then the end of its chain.
-            driver, synthetic = _group_output_driver(stage, scene, context)
+        # The outermost graph as it is shown; a group as its parent's recook cooks it.
+        driver, synthetic = graph_driver(stage, scene, context, deliver=context is not root)
         if driver is not None and not is_output_chunk(driver):
             cook_list = _cook_list(stage, scene, driver, None, synthetic)
         else:
@@ -7176,7 +7166,7 @@ def _unseen_by_active_views(
     skipped stays stale, and recook_for_view cooks it when its view is activated.
 
     Only for a host that opts in (SceneSender.load_cooks_active_views_only), and only in a
-    context that has an active view or an Output: one with neither cooks as before, since
+    context something drives (graph_driver): one with nothing cooks as before, since
     nothing says yet what matters. Views and Outputs themselves are never skipped.
 
     Args:
@@ -7203,7 +7193,7 @@ def _unseen_by_active_views(
                 continue
             reached.add(id(c))
             if is_group_chunk(c):
-                inner, inner_synthetic = _group_output_driver(stage, scene, c)
+                inner, inner_synthetic = graph_driver(stage, scene, c, deliver=True)
                 if inner is not None:
                     walk(inner, inner_synthetic)
 
@@ -7211,12 +7201,9 @@ def _unseen_by_active_views(
         path = context.prim_path
         if any(path.startswith(p + "/") for p in paths):
             continue  # a group -- walked from the outermost context that holds it
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim and prim.IsValid() else None
-        slot = attr.Get() if attr and attr.IsValid() else None
-        view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
-        # No active view: the context cooks to its Outputs, as recook_for_view does.
-        ends = [view] if view is not None else graph_outputs(stage, scene, context)
+        driver, _ = graph_driver(stage, scene, context)
+        # An Output: the context cooks to all its Outputs, as recook_for_view does.
+        ends = graph_outputs(stage, scene, context) if driver is None or is_output_chunk(driver) else [driver]
         if not ends:
             continue
         gated.append(path + "/")

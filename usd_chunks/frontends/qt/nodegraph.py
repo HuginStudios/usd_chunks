@@ -5622,16 +5622,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._quiet_slot_change = False
 
     def _restore_active_view(self, changed_chunks: Iterable[core.ChunkBase] | None = None) -> None:
-        """Adopt this context's saved view as the active view after a (re)build.
+        """Adopt the View that drives this context as the active view after a (re)build.
 
         A freshly built graph starts at slot 0 (no view, so it cooks to its Output) -- but a
         loaded file whose graph had a view active should come up with that view driving
-        execution, as it was when saved. Both groups and tabs persist their slot on the
-        context prim (chunk:activeView, written by _recook_active_view, 0 once the Output is
-        picked). With no saved slot a graph with an Output stays on it; one without (a file
-        from before Outputs) falls back to the lowest existing view:slot. With a slot
-        already active (context switch, not a load) this is just the recook the build
-        always did.
+        execution, as it was when saved. Which View that is, is chunk_stage.graph_driver's to
+        say. With a slot already active (context switch, not a load) this is just the recook
+        the build always did.
 
         changed_chunks is passed straight through to _recook_active_view (see its docstring)
         on the paths that recook the CURRENT slot. The set_slot path below deliberately does
@@ -5646,27 +5643,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         stage = registry.scene.get_stage()
         if not stage:
             return
-        context = self._graph_context()
-        slot = None
-        if context is not None:
-            gp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(context)))
-            if gp and gp.IsValid():
-                a = gp.GetAttribute(chunk_graph.ACTIVE_VIEW_ATTR)
-                if a and a.IsValid():
-                    slot = a.Get()
-        if not slot or not chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context):
-            slot = None
-        if slot is None and not chunk_stage.graph_outputs(stage, registry.scene, context):
-            # No saved view and no Output: a file from before Outputs, driven by a view.
-            slots = []
-            for c in registry.scene.get_chunks():
-                if not (chunk_stage.is_view_chunk(c) and chunk_stage.is_node_in_context(c, context)):
-                    continue
-                p = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(c)))
-                s = p.GetAttribute("view:slot").Get() if p.IsValid() else None
-                if s:
-                    slots.append(int(s))
-            slot = min(slots) if slots else None
+        driver, _ = chunk_stage.graph_driver(stage, registry.scene, self._graph_context())
+        slot = chunk_stage.view_slot(stage, driver) if driver is not None and chunk_stage.is_view_chunk(driver) else 0
         # A restore after a rebuild is the graph's doing, not a view switch: it must not take
         # the selection (a paste lost its pasted nodes to the view this way).
         if slot:

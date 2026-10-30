@@ -11,9 +11,10 @@ from __future__ import annotations
 from pxr import UsdGeom
 
 from usd_chunks import Scene, chunk_stage, skip_cook
+from usd_chunks.graph import engine
 
 
-def _two_branches(scene):
+def _two_branches(scene, output=True):
     """A sphere, then a Merge of a one-chunk branch (radius 1) and a three-chunk one (7)."""
     ball = scene.create.prim(primpath_location="/World/ball", prim_type="Sphere", name="ball")
     first = scene.create.property_editor(ball, prim="/World/ball", edits="double radius = 1", name="first")
@@ -21,7 +22,10 @@ def _two_branches(scene):
     for i, radius in enumerate((5, 6, 7)):
         second = scene.create.property_editor(second, prim="/World/ball", edits=f"double radius = {radius}",
                                               name=f"second{i}")
-    scene.set_output(scene.create.merge(first, second, name="merge"))
+    merge = scene.create.merge(first, second, name="merge")
+    if output:
+        scene.set_output(merge)
+    return merge
 
 
 def _radius(scene):
@@ -66,7 +70,7 @@ def test_the_graphs_first_recook_after_opening_moves_no_layer(tmp_path) -> None:
 
 def test_a_group_ranks_by_its_output_even_with_an_inner_view_saved(tmp_path) -> None:
     """Inside a group the graph's recook goes by the group's Output, not a View saved inside it
-    (_group_output_driver). The load went by the saved View and the longer branch won."""
+    (graph_driver). The load went by the saved View and the longer branch won."""
     path = str(tmp_path / "group.usda")
     with Scene() as scene:
         with scene.create.chunkgroup(name="grp") as group:
@@ -92,3 +96,27 @@ def test_a_group_ranks_by_its_output_even_with_an_inner_view_saved(tmp_path) -> 
         stale = [c.name for c in scene.get_chunks()
                  if skip_cook.record(c).scene is not None and skip_cook.record(c).scene != skip_cook.scene_state(stage)]
         assert skip_cook.scene_state(stage) == before and not stale, stale
+
+
+def test_a_file_from_before_outputs_ranks_by_its_lowest_view(tmp_path) -> None:
+    """No Output and no saved slot: the graph picks its lowest-slot View after opening
+    (graph_driver), so the load ranks by that View too. It ranked by wiring depth."""
+    path = str(tmp_path / "views.usda")
+    with Scene() as scene:
+        merge = _two_branches(scene, output=False)
+        scene.set_view(merge)
+        context_path, _, _, _ = scene._active_view_of(merge)
+        engine.write_active_slot(scene.get_stage(), context_path, 0)
+        scene.save(path)
+
+    with Scene.open(path) as scene:
+        stage = scene.get_stage()
+        merge = next(c for c in scene.get_chunks() if c.name == "merge")
+        context_path, context, slot, _ = scene._active_view_of(merge)
+        assert slot == 0 and not chunk_stage.graph_outputs(stage, scene, context), "precondition"
+        assert _radius(scene) == 1.0, "opened by a script, the longer second branch won"
+        view = next(c for c in scene.get_chunks() if chunk_stage.is_view_chunk(c))
+        before = skip_cook.scene_state(stage)
+        chunk_stage.recook_for_view(stage, scene, context, view)
+        assert _radius(scene) == 1.0
+        assert skip_cook.scene_state(stage) == before, "the graph's first recook moved layers"
