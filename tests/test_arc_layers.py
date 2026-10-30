@@ -272,3 +272,31 @@ def test_a_wired_bottle_exports_the_kitchen_set_layout(tmp_path) -> None:
     assert [r.assetPath for r in payload.GetPrimAtPath("/Bottle").referenceList.GetAddedOrExplicitItems()] == ["Bottle.geom.usda"]
     stage = Usd.Stage.Open(str(tmp_path / "Bottle.usda"))
     assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+
+
+def test_the_layer_menu_lists_the_arc_layers_as_it_opens() -> None:
+    """Filled when a frontend opens it (Menu.refresh_items), not kept current on every change."""
+    with Scene() as scene:
+        _bottle(scene)
+        for c in scene.get_chunks():
+            if c.name in ("payload", "geom_ref"):
+                menu = c.get_param("layer")
+                menu.refresh_items()
+                assert {"Bottle_payload", "Bottle.geom.usda"} <= set(menu.menu_items), c.name
+
+
+def test_references_and_payloads_do_not_each_hear_every_stage_change() -> None:
+    """Each one listened to every USD change to keep its Layer menu current: on a network with
+    106 References that was 397k calls, 12 s of opening it."""
+    from usd_chunks import chunk_notice
+
+    def listeners():
+        dispatch = chunk_notice._global_dispatches.get(chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED)
+        return len(dispatch.subscribers) if dispatch else 0
+
+    with Scene() as scene:
+        before = listeners()
+        for i in range(3):
+            scene.create.reference(name=f"ref{i}")
+            scene.create.payload(name=f"pay{i}")
+        assert listeners() == before
