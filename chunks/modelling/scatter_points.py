@@ -1504,7 +1504,52 @@ def _quat_mul_arrays(a, b):
     ])
 
 
-def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng):
+def _rotate_arrays(quats, vectors):
+    """(N, 3) vectors turned by (N, 4) (real, i, j, k) quaternions."""
+    w = quats[:, :1]
+    u = quats[:, 1:]
+    uv = np.cross(u, vectors)
+    return vectors + 2.0 * w * uv + 2.0 * np.cross(u, uv)
+
+
+#: Up Along Surface menu entries -> the prototype axis that should point up the surface.
+_ALIGN_UP_AXES = {
+    "+X": (1.0, 0.0, 0.0), "-X": (-1.0, 0.0, 0.0),
+    "+Y": (0.0, 1.0, 0.0), "-Y": (0.0, -1.0, 0.0),
+    "+Z": (0.0, 0.0, 1.0), "-Z": (0.0, 0.0, -1.0),
+}
+
+
+def _twist_up(base, normals, axis, up):
+    """The turn about each instance's own up axis that points *axis* up the surface.
+
+    After base, the prototype's up axis lies along the normal and *axis* somewhere in the
+    surface plane. This turns it toward world up as seen on the surface -- straight up a
+    wall -- so a strand hangs down any wall it is on. Where the surface faces up or down
+    there is no "up the surface", and nothing turns.
+
+    Args:
+        base: (N, 4) quaternions taking the prototype's up axis to each normal.
+        normals: (N, 3) unit normals.
+        axis: (3,) the prototype axis, at right angles to its up axis.
+        up: (3,) world (and prototype) up.
+
+    Returns:
+        (N, 4) quaternions about the prototype's up axis, to apply before base.
+    """
+    n = np.asarray(normals, dtype=np.float64)
+    turned = _rotate_arrays(base, np.broadcast_to(np.asarray(axis, dtype=np.float64), n.shape))
+    target = up[None, :] - np.einsum("ij,j->i", n, up)[:, None] * n
+    length = np.linalg.norm(target, axis=1)
+    on_slope = length > 1e-6
+    target[on_slope] /= length[on_slope, None]
+    angle = np.arctan2(np.einsum("ij,ij->i", np.cross(turned, target), n), np.einsum("ij,ij->i", turned, target))
+    angle[~on_slope] = 0.0
+    half = angle * 0.5
+    return np.column_stack([np.cos(half), up[None, :] * np.sin(half)[:, None]])
+
+
+def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng, align_up="Off"):
     """The loop's _compute_orientation then _apply_random_rotation, for every instance at once.
 
     The random numbers come off *rng* one Python call at a time, in the loop's order -- a
@@ -1523,6 +1568,8 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
         amount_deg: The most the spin turns either way.
         rng: The orient random.Random, left where the loop would have left it -- or a list
             of one per instance, as painted points seed each their own.
+        align_up: Align to Normal only: the prototype axis turned up the surface ("+X", ...),
+            or "Off".
 
     Returns:
         (count, 4) float64 quaternions, (real, i, j, k).
@@ -1558,6 +1605,9 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
 
     if mode == "Align to Normal":
         base = _align_quats(up, normals)
+        turn_axis = np.asarray(_ALIGN_UP_AXES.get(align_up, (0.0, 0.0, 0.0)))
+        if np.abs(np.cross(turn_axis, up)).sum() > 1e-6:  # an axis along up has nothing to turn
+            base = _quat_mul_arrays(base, _twist_up(base, np.asarray(normals, dtype=np.float64), turn_axis, up))
     elif random_mode:
         u1, u2, u3 = shoemake.T
         s1, s2 = np.sqrt(1 - u1), np.sqrt(u1)
@@ -1574,7 +1624,13 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
     half = angles * 0.5
     spin = np.column_stack([np.cos(half), spin_axes * np.sin(half)[:, None]])
     out = base.copy()
-    out[spun] = _quat_mul_arrays(spin[spun], base[spun])
+    if mode == "Align to Normal":
+        # About the instance's own axes, so a spin about up turns it about the normal and it
+        # stays on the surface. About the world's, a leaf on a wall spun about Z stood out of
+        # the wall: the same spin as on the ground, where the two agree.
+        out[spun] = _quat_mul_arrays(base[spun], spin[spun])
+    else:
+        out[spun] = _quat_mul_arrays(spin[spun], base[spun])
     return out
 
 
@@ -2106,6 +2162,7 @@ def _on_mode_changed(owner, notice, sender):
     var = chunk_obj.get_param("Variation")
     if var:
         _set_hidden(var.get_param("orient_mode"), mode == "Stack")
+        _set_hidden(var.get_param("align_up"), mode == "Stack")
         _set_hidden(var.get_param("sit_on_surface"), mode == "Stack")
 
     # Last word to the painted-points rule. The two systems overlap on auto_spacing/spacing,
@@ -2209,6 +2266,7 @@ def execute(node):
     avoid_distance = max(0.0, node.get_param("avoid_distance", is_f).value)
     normal_offset = node.get_param("normal_offset", is_f).value
     orient_mode = node.get_param("orient_mode", is_s).value
+    align_up = node.get_param("align_up", is_s).value if node.get_param("align_up", is_s) else "Off"
     sit_on_surface = node.get_param("sit_on_surface", is_b).value
     rand_axis = node.get_param("rand_axis", is_s).value
     rand_amount = node.get_param("rand_amount", is_f).value
@@ -2477,7 +2535,7 @@ def execute(node):
             out_positions = Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions_np))
             out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
             quats = _orientations(count, orient_mode, normals_np, protos, assignment, world_up,
-                                  rand_axis, rand_amount, orient_rng)
+                                  rand_axis, rand_amount, orient_rng, align_up)
             # Through float32 as the loop's Gf.Quatf did, then half, (i, j, k, real) for Vt.
             out_orients = Vt.QuathArray.FromNumpy(
                 np.ascontiguousarray(quats[:, [1, 2, 3, 0]].astype(np.float32).astype(np.float16)))
@@ -2510,9 +2568,15 @@ def execute(node):
                     # Lean about a random lateral axis -- a pile that isn't machine-perfect.
                     tilt_axis = Gf.Cross(world_up, _random_lateral(tilt_rng, lat_a, lat_b, axis_vec))
                     quat = _quat_mul(_axis_quat(tilt_axis, math.radians(tilt_rng.uniform(0.0, pack_tilt))), quat)
+                quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
+            elif orient_mode == "Align to Normal":
+                # As the array path: spun about its own axis, turned up the surface if asked.
+                w, x, y, z = _orientations(1, orient_mode, _vectors([nrm], 1), protos, np.array([pidx]),
+                                           world_up, rand_axis, rand_amount, orient_rng, align_up)[0]
+                quat = Gf.Quatf(float(w), float(x), float(y), float(z))
             else:
                 quat = _compute_orientation(orient_mode, nrm, orient_rng, proto, world_up)
-            quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
+                quat = _apply_random_rotation(quat, rand_axis, rand_amount, orient_rng)
 
             pos = positions[i]
             if scatter_mode == "Stack":
@@ -3034,6 +3098,19 @@ def main():
             "Random: fully random.\n"
             "Long Axis Up: turn the prototype's longest axis to world up.\n"
             "Long Axis to Normal: same, but along the surface normal.",
+        )
+    )
+    var_grp.add_param(
+        chunk.Menu(
+            "align_up",
+            "Up Along Surface",
+            menu_items=["Off", *_ALIGN_UP_AXES],
+            default_value="Off",
+            tooltip="Align to Normal only. Which prototype axis points up the surface, so on a wall\n"
+            "it points straight up and on a slope uphill. A strand modelled hanging along -X\n"
+            "takes +X: it then hangs down whatever wall it is on. Off: the prototype is\n"
+            "only tipped onto the surface, and how it is turned on it depends on which\n"
+            "way the surface faces. Surfaces facing straight up or down are left as Off.",
         )
     )
     var_grp.add_param(
