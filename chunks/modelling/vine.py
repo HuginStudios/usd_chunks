@@ -474,25 +474,36 @@ class _Projector:
         if not len(live):
             return landed, normals, found
 
-        # The ragged candidate lists as one (Q, K) block, by index arithmetic rather than a
+        # The ragged candidate lists as (Q, K) blocks, by index arithmetic rather than a
         # np.full per row: padding a row at a time was thousands of tiny allocations a cook.
         # Short rows repeat their last entry, which is already a candidate of that row, so a
-        # padded column can only tie with a real answer and never beat one.
+        # padded column can only tie with a real answer and never beat one. Rows go in blocks
+        # of about the same length, shortest first: one block padded every row to the
+        # longest, about twice the work. Each row's answer is the same either way.
         lengths = lengths[live]
-        width = int(lengths.max())
-        flat = np.concatenate([per_point[i] for i in live])
-        starts = np.concatenate(([0], np.cumsum(lengths)[:-1]))
-        column = np.minimum(np.arange(width)[None, :], (lengths - 1)[:, None])
-        index = flat[starts[:, None] + column]
-
+        by_length = np.argsort(lengths, kind="stable")
         s = self._surface
-        query = points[live][:, None, :]
-        candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
-        offset = candidates - query
-        best = np.argmin(_dot(offset, offset), axis=1)
-        rows = np.arange(len(live))
-        landed[live] = candidates[rows, best]
-        normals[live] = s.n[index[rows, best]]
+        start = 0
+        while start < len(by_length):
+            width = int(lengths[by_length[start]])
+            stop = int(np.searchsorted(lengths[by_length], width * 1.25, side="right"))
+            stop = max(stop, start + 1)
+            block = by_length[start:stop]
+            rows_live = live[block]
+            block_lengths = lengths[block]
+            width = int(block_lengths.max())
+            flat = np.concatenate([per_point[i] for i in rows_live])
+            starts = np.concatenate(([0], np.cumsum(block_lengths)[:-1]))
+            column = np.minimum(np.arange(width)[None, :], (block_lengths - 1)[:, None])
+            index = flat[starts[:, None] + column]
+            query = points[rows_live][:, None, :]
+            candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
+            offset = candidates - query
+            best = np.argmin(_dot(offset, offset), axis=1)
+            rows = np.arange(len(rows_live))
+            landed[rows_live] = candidates[rows, best]
+            normals[rows_live] = s.n[index[rows, best]]
+            start = stop
         found[live] = True
         return landed, normals, found
 
@@ -639,14 +650,26 @@ def _choose_roots(points, up, count, spacing):
         for i in order.tolist():
             if len(chosen) >= count:
                 break
-            if gap > 0.0 and any(
-                float(np.linalg.norm(points[i] - points[j])) < gap for j in chosen
-            ):
+            if gap > 0.0 and chosen and _too_near(points, i, chosen, gap):
                 continue
             chosen.append(i)
         if len(chosen) >= count:
             break
     return chosen
+
+
+def _too_near(points, i, chosen, gap) -> bool:
+    """Whether point i is closer than gap to any chosen point.
+
+    The distances in one array call; a pair within rounding of the gap is decided by the
+    one-pair norm the per-pair loop used, so the answer is the loop's exactly. Pair by pair
+    it was 64k norm calls a vine.
+    """
+    near = np.sqrt(np.einsum("ij,ij->i", points[chosen] - points[i], points[chosen] - points[i]))
+    if (near < gap * (1.0 - 1e-9)).any():
+        return True
+    close = np.flatnonzero(np.abs(near - gap) <= gap * 1e-9)
+    return any(float(np.linalg.norm(points[i] - points[chosen[k]])) < gap for k in close.tolist())
 
 
 def _grow(roots, attractors, projector, settings, rng):
