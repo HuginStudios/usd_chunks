@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -2115,6 +2116,121 @@ def hold_until_wired(scene, context, chunks) -> None:
             chunk.set_blocked(True)
 
 
+#: Chunk types drawn without a body, so there is nothing for them to collapse.
+_BODILESS = frozenset({"merge", "dot"})
+
+
+def start_collapsed(chunks) -> None:
+    """Collapse new chunks before they are added, so their nodes start as a header.
+
+    A graph that branches stacks its nodes under each other, and full bodies make that
+    stack tall: a node shows its header, exec ports and wired ports until it is opened.
+    Set before the add, so the prim is written collapsed and the node is built that way
+    rather than drawn open and then shut. Views, Outputs and groups are left as they are:
+    the first two have no body, and a group's double-click is its dive.
+    USD_CHUNKS_START_COLLAPSED=0 starts every node open instead. It is read on each call,
+    so a script can flip it mid-session.
+
+    Args:
+        chunks: The chunks about to be added.
+    """
+    if os.environ.get("USD_CHUNKS_START_COLLAPSED", "").strip().lower() in ("0", "false", "no", "off"):
+        return
+    for chunk in chunks:
+        if has_collapsible_body(chunk):
+            chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+
+def has_collapsible_body(chunk) -> bool:
+    """Whether a chunk's node has a body of params to fold away.
+
+    Not a View or Output, nor a Merge or Dot (no body), nor a group (its double-click is
+    its dive).
+    """
+    cfg = chunk.get_config()
+    return not (chunk_stage.is_terminal_chunk(chunk) or chunk_stage.is_group_chunk(chunk)
+                or chunk_stage.is_subnet(chunk) or (cfg and cfg.module in _BODILESS))
+
+
+@dataclass
+class CollapsedPorts:
+    """What a collapsed node shows of its params: see collapsed_ports."""
+
+    #: (param, show its input end, show its output end), in param order, one per wired param.
+    rows: list = field(default_factory=list)
+    #: A "+" on the input side: a wire dropped there picks one of pick_candidates.
+    plus_in: bool = False
+    #: A "+" on the output side: clicked, it picks one of output_choices to drag a wire from.
+    plus_out: bool = False
+
+
+def collapsed_ports(chunk, fed: set[str], feeding: set[str]) -> CollapsedPorts:
+    """Which ports a collapsed node shows, for any frontend to draw.
+
+    Only the wired end of a wired param: a param that feeds something downstream has no
+    use for its input dot there. The rest stay reachable through a "+" on each side that
+    has any left -- so nothing needs opening to wire it.
+
+    Args:
+        chunk: The collapsed chunk.
+        fed: Names of its params with a wire coming in.
+        feeding: Names of its params with a wire going out.
+    """
+    result = CollapsedPorts()
+    unfed = unfeeding = False
+    for param in iter_connectable_params(chunk):
+        name = param.name
+        unfed |= name not in fed
+        unfeeding |= name not in feeding
+        if name in fed or name in feeding:
+            result.rows.append((param, name in fed, name in feeding))
+    if has_collapsible_body(chunk):
+        result.plus_in, result.plus_out = unfed, unfeeding
+    return result
+
+
+def param_menu_label(param, chunk) -> str:
+    """A param's name under the groups it sits in, for a menu that lists a node's params.
+
+    A Transform's tx, ty and rx are all labelled "X"; this gives "Translate › X".
+    """
+    parts, owner = [param.get_label()], param.get_owner()
+    while owner is not None and owner is not chunk and not isinstance(owner, core.ChunkBase):
+        if hasattr(owner, "get_label"):  # a group; the containers between have no label
+            parts.insert(0, owner.get_label())
+        owner = owner.get_owner() if hasattr(owner, "get_owner") else None
+    return " › ".join(parts)
+
+
+def pick_candidates(chunk, node_path: str, src: PortRef) -> list[PortRef]:
+    """The params of a node a wire from src could land on: same type, opposite direction.
+
+    What a wire dropped on a collapsed node (or its input "+") offers. Exec wires are not
+    offered: a node's exec ports always show, collapsed or not.
+    """
+    if src.port_type == PORT_EXEC:
+        return []
+    prefix = "outputs:" if src.is_input else "inputs:"
+    refs = []
+    for param in iter_connectable_params(chunk):
+        if param_port_type(param) != src.port_type:
+            continue
+        ref = PortRef(node_path, f"{node_path}.{prefix}{param.name}", src.port_type,
+                      not src.is_input, param=param)
+        if can_connect(src, ref):
+            refs.append(ref)
+    return refs
+
+
+def output_choices(chunk, node_path: str) -> list[PortRef]:
+    """Every param of a node a wire could start from: what its output "+" offers."""
+    return [
+        PortRef(node_path, f"{node_path}.outputs:{param.name}", ptype, False, param=param)
+        for param in iter_connectable_params(chunk)
+        if (ptype := param_port_type(param)) is not None and ptype != PORT_EXEC
+    ]
+
+
 def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     """Create one menu entry's chunk(s) at a USD position.
 
@@ -2142,6 +2258,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
         with chunk_stage.creating_at(usd_pos, loft=False), scene.creating_in(nest):
             created = entry.create()
             hold_until_wired(scene, nest, created)
+            start_collapsed(created)
             for chunk in created:
                 scene.add_chunk(chunk)
     except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:

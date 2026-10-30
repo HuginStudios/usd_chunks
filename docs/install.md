@@ -270,6 +270,7 @@ get the path with `python -m usd_chunks.cli plugin-path` instead.
 | `USD_CHUNKS_COOK_CACHE_DIR` | `%LOCALAPPDATA%/usd_chunks/cook_cache` (`~/.cache/usd_chunks/cook_cache` elsewhere) | Where cached cooks are kept. Safe to delete at any time. |
 | `USD_CHUNKS_COOK_CACHE_MAX_GB` | `2` | The most the cook cache may use. Each time something is stored, results unread for 30 days are deleted, then the least recently read until the folder fits. |
 | `USD_CHUNKS_PROBE_DELEGATES` | *(auto-detected)* | Whether to ask render delegates for their settings. By default this is skipped in a GUI host like usdview (when a `QApplication` is running), because loading a second render engine there can crash it. Scripts and tests do ask. `=1` always asks, `=0` never does. Note the name starts with `USD_CHUNKS_`, unlike the other variables. |
+| `USD_CHUNKS_START_COLLAPSED` | on | Nodes you create in the graph start collapsed, showing only their header and wired ports; double-click one to open it. `=0` starts them open. Nodes in a file you open keep however they were saved. |
 
 ## Build documentation
 
