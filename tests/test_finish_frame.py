@@ -100,3 +100,72 @@ def test_nothing_rendered_yet_says_so(tmp_path) -> None:
         node = scene.create.finish_frame(source_image=str(tmp_path / "missing.png"))
         node.get_chunk_module().module.run(node)
         assert node.get_param("readout").value == "no rendered image to finish yet"
+
+
+def test_simple_shapes_and_nested_instancers_are_in_the_depth_pass() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Sphere.Define(stage, "/World/ball").GetRadiusAttr().Set(1.0)
+    outer = UsdGeom.PointInstancer.Define(stage, "/World/outer")
+    inner = UsdGeom.PointInstancer.Define(stage, "/World/outer/proto/inner")
+    UsdGeom.Cube.Define(stage, "/World/outer/proto/inner/proto/box")
+    inner.GetPrototypesRel().SetTargets(["/World/outer/proto/inner/proto"])
+    inner.GetProtoIndicesAttr().Set([0, 0, 0])
+    inner.GetPositionsAttr().Set([(0, 0, 0), (3, 0, 0), (6, 0, 0)])
+    outer.GetPrototypesRel().SetTargets(["/World/outer/proto"])
+    outer.GetProtoIndicesAttr().Set([0, 0])
+    outer.GetPositionsAttr().Set([(0, 10, 0), (0, 20, 0)])
+    tris, capped = ff.depth_triangles(stage, ["/World"])
+    sphere = len(ff._local_triangles(stage.GetPrimAtPath("/World/ball")))
+    # The sphere, plus 2 outer x 3 inner copies of a 12-triangle box. The prototypes themselves
+    # are under the instancers, so they only count as copies.
+    assert len(tris) == sphere + 2 * 3 * 12 and not capped
+
+
+def _haze_at(tmp_path, meters_per_unit, distance_m=300.0):
+    """Finish a grey render of a far cube on a stage in the given units; the centre pixel."""
+    stage = Usd.Stage.CreateNew(str(tmp_path / f"u{meters_per_unit}.usda"))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, meters_per_unit)
+    scale = 1.0 / meters_per_unit
+    # A mesh wall facing the camera (a Mesh, so the depth pass sees it either way).
+    wall = UsdGeom.Mesh.Define(stage, "/World/far")
+    half, y = 60.0 * scale, distance_m * scale
+    wall.GetPointsAttr().Set([(-half, y, -half), (half, y, -half), (half, y, half), (-half, y, half)])
+    wall.GetFaceVertexCountsAttr().Set([4])
+    wall.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+    camera = UsdGeom.Camera.Define(stage, "/World/cam")
+    camera.AddRotateXOp().Set(90.0)
+    camera.GetFocalLengthAttr().Set(10.0)
+    stage.GetRootLayer().Save()
+    render = tmp_path / f"r{meters_per_unit}.png"
+    Image.fromarray(np.full((24, 32, 4), (90, 90, 90, 255), dtype=np.uint8)).save(render)
+    out = tmp_path / f"o{meters_per_unit}.png"
+    with Scene.open(str(tmp_path / f"u{meters_per_unit}.usda")) as scene:
+        node = scene.create.finish_frame(source_image=str(render), output_image=str(out), camera="/World/cam",
+                                         sky_enabled=False, ground_below=False, rays=0.0, bloom=0.0, sun_disc=0.0)
+        node.get_chunk_module().module.run(node)
+    return np.asarray(Image.open(out).convert("RGB"), dtype=np.float64)[12, 16]
+
+
+def test_haze_distance_is_in_metres_whatever_the_stage_units(tmp_path) -> None:
+    pytest.importorskip("embreex")
+    metres = _haze_at(tmp_path, 1.0)
+    centimetres = _haze_at(tmp_path, 0.01)
+    assert np.allclose(metres, centimetres, atol=2.0), (metres, centimetres)
+
+
+def test_an_exr_goes_in_and_out_linear(tmp_path) -> None:
+    pytest.importorskip("OpenEXR")
+    _shot(tmp_path)
+    source = tmp_path / "render.exr"
+    bright = np.zeros((48, 64, 3))
+    bright[..., 0] = 4.0  # brighter than an 8-bit image can hold
+    ff.write_exr(str(source), bright, np.ones((48, 64)))
+    out = tmp_path / "final.exr"
+    with Scene.open(str(tmp_path / "shot.usda")) as scene:
+        node = scene.create.finish_frame(source_image=str(source), output_image=str(out), camera="/World/cam",
+                                         sky_enabled=False, haze_enabled=False, rays=0.0, bloom=0.0, sun_disc=0.0,
+                                         exposure=0.5)
+        node.get_chunk_module().module.run(node)
+    rgb, alpha = ff.read_image(str(out))
+    assert rgb[24, 32, 0] == pytest.approx(2.0, abs=1e-3), "linear and unclipped, exposure applied"

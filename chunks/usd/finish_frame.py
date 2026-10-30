@@ -117,6 +117,39 @@ def screen_point(direction, m, gf, width, height):
 # ---------------------------------------------------------------------------
 
 
+def read_image(path: str):
+    """A rendered image as (linear RGB (H, W, 3) float64, alpha (H, W)).
+
+    An .exr is read as it is, linear and unclipped; anything else as 8-bit sRGB.
+    """
+    if path.lower().endswith(".exr"):
+        if OpenEXR is None:
+            raise RuntimeError("reading an .exr needs OpenEXR — pip install OpenEXR")
+        with OpenEXR.File(path) as f:
+            channels = f.channels()
+            if "RGBA" in channels or "RGB" in channels:
+                pixels = np.asarray((channels["RGBA"] if "RGBA" in channels else channels["RGB"]).pixels,
+                                    dtype=np.float64)
+                rgb = pixels[..., :3]
+                alpha = pixels[..., 3] if pixels.shape[-1] > 3 else np.ones(rgb.shape[:2])
+            else:
+                rgb = np.stack([np.asarray(channels[c].pixels, dtype=np.float64) for c in "RGB"], axis=-1)
+                alpha = np.asarray(channels["A"].pixels, dtype=np.float64) if "A" in channels else np.ones(rgb.shape[:2])
+        return rgb, alpha
+    rgba = np.asarray(Image.open(path).convert("RGBA"), dtype=np.float64) / 255.0
+    return srgb_to_linear(rgba[..., :3]), rgba[..., 3]
+
+
+def write_exr(path: str, linear_rgb, alpha) -> None:
+    """A linear image as a float RGBA .exr."""
+    if OpenEXR is None:
+        raise RuntimeError("writing an .exr needs OpenEXR — pip install OpenEXR")
+    pixels = np.ascontiguousarray(np.dstack([linear_rgb, alpha]).astype(np.float32))
+    header = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage}
+    with OpenEXR.File(header, {"RGBA": pixels}) as f:
+        f.write(path)
+
+
 def read_hdri(path: str) -> np.ndarray:
     """An HDR image as (H, W, 3) float64 linear radiance: .exr through OpenEXR, else Pillow."""
     if path.lower().endswith(".exr"):
@@ -166,89 +199,180 @@ def fill_sky(linear_rgb, alpha, sky):
 # ---------------------------------------------------------------------------
 
 
-def _mesh_triangles(prim, cache, to_world=None):
-    """World triangles (N, 3, 3) of every visible render mesh under prim, as float32 parts."""
-    parts = []
-    for p in Usd.PrimRange(prim, Usd.TraverseInstanceProxies()):
-        if not p.IsA(UsdGeom.Mesh):
-            continue
-        imageable = UsdGeom.Imageable(p)
-        if imageable.ComputeVisibility() == UsdGeom.Tokens.invisible:
-            continue
-        if imageable.ComputePurpose() in (UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy):
-            continue
-        mesh = UsdGeom.Mesh(p)
+#: Sides of a Sphere, Cylinder, Cone or Capsule in the depth pass: coarse is enough for haze.
+_SIDES = 16
+
+
+def _fan(counts, indices):
+    """(N, 3) triangle corner indices from face counts and face-vertex indices, by fans."""
+    counts = np.asarray(counts)
+    indices = np.asarray(indices)
+    starts = np.r_[0, np.cumsum(counts)[:-1]]
+    tris = [np.stack([indices[starts[counts > k + 1]], indices[starts[counts > k + 1] + k],
+                      indices[starts[counts > k + 1] + k + 1]], axis=1)
+            for k in range(1, int(counts.max(initial=0)) - 1)]
+    return np.concatenate(tris) if tris else np.zeros((0, 3), dtype=np.int64)
+
+
+def _ring(radius, z, axis):
+    """_SIDES points on a circle of *radius* at height z along *axis* ("X", "Y" or "Z")."""
+    a = np.linspace(0.0, 2.0 * np.pi, _SIDES, endpoint=False)
+    u, v = radius * np.cos(a), radius * np.sin(a)
+    w = np.full(_SIDES, float(z))
+    return {"X": np.stack([w, u, v], 1), "Y": np.stack([v, w, u], 1), "Z": np.stack([u, v, w], 1)}[axis]
+
+
+def _local_triangles(prim):
+    """A gprim's triangles (N, 3, 3) in its own space: a Mesh's faces, or a coarse Cube,
+    Sphere, Cylinder, Cone or Capsule. None for anything else (curves, points, volumes)."""
+    if prim.IsA(UsdGeom.Mesh):
+        mesh = UsdGeom.Mesh(prim)
         points = mesh.GetPointsAttr().Get()
         counts = mesh.GetFaceVertexCountsAttr().Get()
-        indices = mesh.GetFaceVertexIndicesAttr().Get()
         if not points or not counts:
+            return None
+        return np.asarray(points, dtype=np.float64)[_fan(counts, mesh.GetFaceVertexIndicesAttr().Get())]
+    if prim.IsA(UsdGeom.Cube):
+        h = (UsdGeom.Cube(prim).GetSizeAttr().Get() or 2.0) / 2.0
+        c = np.array([[x, y, z] for x in (-h, h) for y in (-h, h) for z in (-h, h)])
+        faces = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+        return c[_fan([4] * 6, [i for f in faces for i in f])]
+    if prim.IsA(UsdGeom.Sphere):
+        r = UsdGeom.Sphere(prim).GetRadiusAttr().Get() or 1.0
+        rings = [_ring(r * np.sin(t), r * np.cos(t), "Z") for t in np.linspace(0.0, np.pi, _SIDES // 2 + 1)]
+        return _bands(rings)
+    for schema in (UsdGeom.Cylinder, UsdGeom.Cone, UsdGeom.Capsule):
+        if prim.IsA(schema):
+            g = schema(prim)
+            r = g.GetRadiusAttr().Get() or 1.0
+            h = (g.GetHeightAttr().Get() or 2.0) / 2.0
+            axis = g.GetAxisAttr().Get() or "Z"
+            if schema is UsdGeom.Capsule:
+                h += r  # its round ends as flat caps: close enough for haze
+            top = _ring(0.0 if schema is UsdGeom.Cone else r, h, axis)
+            bottom = _ring(r, -h, axis)
+            return np.concatenate([_bands([top, bottom]), _cap(top), _cap(bottom)])
+    return None
+
+
+def _bands(rings):
+    """Triangles joining each ring of points to the next."""
+    tris = []
+    for a, b in zip(rings[:-1], rings[1:]):
+        a2, b2 = np.roll(a, -1, 0), np.roll(b, -1, 0)
+        tris += [np.stack([a, b, b2], 1), np.stack([a, b2, a2], 1)]
+    return np.concatenate(tris)
+
+
+def _cap(ring):
+    """A fan closing one ring."""
+    centre = np.broadcast_to(ring.mean(0), ring.shape)
+    return np.stack([centre, ring, np.roll(ring, -1, 0)], 1)
+
+
+def _hidden(prim) -> bool:
+    imageable = UsdGeom.Imageable(prim)
+    return bool(imageable) and (imageable.ComputeVisibility() == UsdGeom.Tokens.invisible
+                                or imageable.ComputePurpose() in (UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy))
+
+
+def _apply(local, xf):
+    """(N, 3, 3) local triangles through a 4x4 row-vector matrix, as float32."""
+    flat = local.reshape(-1, 3)
+    return (flat @ xf[:3, :3] + xf[3, :3]).reshape(-1, 3, 3).astype(np.float32)
+
+
+def _collect(stage, root, cache, budget, relative_to=None, instancers=True, depth=0):
+    """Triangles of every visible render gprim under root, PointInstancers expanded (nested
+    ones too), in world space -- or in the space of *relative_to*, for a prototype.
+
+    Args:
+        stage: The stage.
+        root: The prim to start from.
+        cache: A UsdGeom.XformCache.
+        budget: [triangles left]; collection stops when it runs out.
+        relative_to: The prim whose space to collect in, or None for world space.
+        instancers: Expand PointInstancers.
+        depth: How deep inside instancers this is (nesting stops at 4).
+
+    Returns:
+        A list of (N, 3, 3) float32 arrays.
+    """
+    to_space = np.linalg.inv(np.asarray(cache.GetLocalToWorldTransform(relative_to))) if relative_to else None
+    parts = []
+    it = iter(Usd.PrimRange(root, Usd.TraverseInstanceProxies()))
+    for prim in it:
+        if budget[0] <= 0:
+            break
+        if _hidden(prim):
+            it.PruneChildren()
             continue
-        points = np.asarray(points, dtype=np.float64)
-        counts = np.asarray(counts)
-        indices = np.asarray(indices)
-        if to_world is None:
-            xf = np.asarray(cache.GetLocalToWorldTransform(p))
-        else:
-            # Relative to the instancer's prototype root, then through the instance's matrix.
-            xf = np.asarray(cache.GetLocalToWorldTransform(p)) @ np.linalg.inv(
-                np.asarray(cache.GetLocalToWorldTransform(prim))) @ to_world
-        world = np.c_[points, np.ones(len(points))] @ xf
-        starts = np.r_[0, np.cumsum(counts)[:-1]]
-        tris = []
-        for k in range(1, int(counts.max()) - 1):
-            s = starts[counts > k + 1]
-            tris.append(np.stack([indices[s], indices[s + k], indices[s + k + 1]], axis=1))
-        if tris:
-            parts.append(world[:, :3][np.concatenate(tris)].astype(np.float32))
+        xf = np.asarray(cache.GetLocalToWorldTransform(prim))
+        if to_space is not None:
+            xf = xf @ to_space
+        if prim.IsA(UsdGeom.PointInstancer):
+            it.PruneChildren()
+            if instancers and depth < 4:
+                parts += _instanced(stage, prim, cache, budget, xf, depth)
+            continue
+        local = _local_triangles(prim)
+        if local is not None and len(local):
+            parts.append(_apply(local, xf))
+            budget[0] -= len(local)
     return parts
 
 
-def depth_triangles(stage, roots, instancers=True):
-    """Every triangle the depth pass can hit under *roots*, instances expanded.
+def _instanced(stage, prim, cache, budget, parent, depth):
+    """The copies of an instancer's prototypes, each prototype's copies in one array call."""
+    inst = UsdGeom.PointInstancer(prim)
+    mats = inst.ComputeInstanceTransformsAtTime(Usd.TimeCode.Default(), Usd.TimeCode.Default())
+    ids = inst.GetProtoIndicesAttr().Get()
+    if mats is None or ids is None or not len(ids):
+        return []
+    mats = np.asarray(mats, dtype=np.float64) @ parent
+    ids = np.asarray(ids)
+    parts = []
+    for i, path in enumerate(inst.GetPrototypesRel().GetTargets()):
+        chosen = np.flatnonzero(ids == i)
+        proto = stage.GetPrimAtPath(path)
+        if not len(chosen) or not proto or budget[0] <= 0:
+            continue
+        local = _collect(stage, proto, cache, [budget[0]], proto, True, depth + 1)
+        if not local:
+            continue
+        tris = np.concatenate(local).reshape(-1, 3).astype(np.float64)
+        chosen = chosen[: max(1, budget[0] // max(1, len(tris) // 3))]
+        world = np.einsum("pj,kji->kpi", np.c_[tris, np.ones(len(tris))], mats[chosen])[..., :3]
+        parts.append(world.reshape(-1, 3, 3).astype(np.float32))
+        budget[0] -= len(chosen) * (len(tris) // 3)
+    return parts
+
+
+def depth_triangles(stage, roots, instancers=True, limit=40_000_000):
+    """Every triangle the depth pass can hit under *roots*.
+
+    Meshes, and Cube, Sphere, Cylinder, Cone and Capsule as coarse shapes; PointInstancers
+    expanded, nested ones too. Curves, points and cut-out (alpha) cards are not in it.
 
     Args:
         stage: The stage.
         roots: Prim paths.
-        instancers: Expand PointInstancers too. Their copies are often the bulk of a scene's
+        instancers: Expand PointInstancers. Their copies are often the bulk of a scene's
             triangles; small ones (grass, ivy) sit on surfaces close enough for haze anyway.
+        limit: Stop collecting at about this many triangles.
 
     Returns:
-        (N, 3, 3) float32 world triangles.
+        ((N, 3, 3) float32 world triangles, whether the limit cut it short).
     """
     cache = UsdGeom.XformCache()
+    budget = [int(limit)]
     parts = []
     for root in roots:
         prim = stage.GetPrimAtPath(root)
-        if not prim or not prim.IsValid():
-            continue
-        it = iter(Usd.PrimRange(prim))
-        for p in it:
-            if p.IsA(UsdGeom.PointInstancer):
-                it.PruneChildren()
-                if not instancers:
-                    continue
-                inst = UsdGeom.PointInstancer(p)
-                xforms = inst.ComputeInstanceTransformsAtTime(Usd.TimeCode.Default(), Usd.TimeCode.Default())
-                protos = inst.GetPrototypesRel().GetTargets()
-                ids = inst.GetProtoIndicesAttr().Get()
-                if xforms is None or ids is None:
-                    continue
-                parent = np.asarray(cache.GetLocalToWorldTransform(p))
-                proto_tris = {}
-                for i, path in enumerate(protos):
-                    proto = stage.GetPrimAtPath(path)
-                    found = _mesh_triangles(proto, cache, np.eye(4)) if proto else []
-                    proto_tris[i] = np.concatenate(found).reshape(-1, 3).astype(np.float64) if found else None
-                for xf, pi in zip(xforms, ids):
-                    base = proto_tris.get(int(pi))
-                    if base is None:
-                        continue
-                    world = np.asarray(xf) @ parent
-                    parts.append((base @ world[:3, :3] + world[3, :3]).reshape(-1, 3, 3).astype(np.float32))
-            elif p.IsA(UsdGeom.Mesh):
-                parts.extend(_mesh_triangles(p, cache))
-                it.PruneChildren()
-    return np.concatenate(parts) if parts else np.zeros((0, 3, 3), dtype=np.float32)
+        if prim and prim.IsValid():
+            parts += _collect(stage, prim, cache, budget, None, instancers)
+    tris = np.concatenate(parts) if parts else np.zeros((0, 3, 3), dtype=np.float32)
+    return tris, budget[0] <= 0
 
 
 def ray_depth(triangles, origin, dirs):
@@ -468,9 +592,8 @@ def finish(node, source: str, output: str) -> str:
     """Finish one image. Returns a one-line summary of what was done."""
     stage = node.get_stage()
     v = lambda name: node.get_param(name).value  # noqa: E731
-    rgba = np.asarray(Image.open(source).convert("RGBA"), dtype=np.float64) / 255.0
-    h, w = rgba.shape[:2]
-    lin = srgb_to_linear(rgba[..., :3])
+    lin, alpha = read_image(source)
+    h, w = lin.shape[:2]
     done = []
     camera = _camera(node, stage)
     if camera is None:
@@ -501,36 +624,43 @@ def finish(node, source: str, output: str) -> str:
                     intensity = light.GetIntensityAttr().Get() * 2.0 ** (light.GetExposureAttr().Get() or 0.0)
                     dome_matrix = np.asarray(UsdGeom.Xformable(dome).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
                 sky = sky_radiance(dirs, read_hdri(image), dome_matrix, v("sky_turn")) * intensity * v("sky_gain")
-                lin = fill_sky(lin, rgba[..., 3], sky)
-                done.append(f"sky {100 * (rgba[..., 3] < 0.5).mean():.0f}%")
+                lin = fill_sky(lin, alpha, sky)
+                done.append(f"sky {100 * (alpha < 0.5).mean():.0f}%")
             else:
                 done.append("no sky image found")
 
     depth = None
     if v("haze_enabled"):
-        tris = depth_triangles(stage, _paths(v("depth_from")) or ["/"], v("depth_instancers"))
+        roots = _paths(v("depth_from")) or [str(stage.GetDefaultPrim().GetPath()) if stage.GetDefaultPrim() else "/"]
+        tris, capped = depth_triangles(stage, roots, v("depth_instancers"))
         depth = ray_depth(tris, origin, dirs)
         if v("ground_below"):
-            # Rays that miss but point down meet the ground plane at height 0.
+            # Rays that miss but point down meet a ground at Ground Height.
             down = ~np.isfinite(depth) & (dirs @ up < -1e-4)
-            height = float(origin @ up)
-            depth[down] = height / -(dirs @ up)[down]
+            depth[down] = (float(origin @ up) - v("ground_height")) / -(dirs @ up)[down]
+        # Depth is in stage units; the haze distance is in metres.
+        depth = depth * UsdGeom.GetStageMetersPerUnit(stage)
         lin = add_haze(lin, depth, dirs, up, to_sun, v("haze_distance"), srgb_to_linear(v("haze_color")),
                        v("haze_level"), v("sun_glow"))
         hit = np.isfinite(depth)
-        done.append(f"haze ({len(tris):,} triangles, median {np.median(depth[hit]):.0f} m)" if hit.any() else "haze")
+        done.append((f"haze ({len(tris):,} triangles{', capped' if capped else ''}, median {np.median(depth[hit]):.0f} m)")
+                    if hit.any() else "haze")
 
     if v("rays") > 0:
         lin = add_rays(lin, dirs, to_sun, sun_xy, v("rays"), srgb_to_linear(v("haze_color")))
     lin = add_bloom(lin, v("bloom"))
     if v("sun_disc") > 0 and sun_xy is not None:
-        sky_mask = ~np.isfinite(depth) if depth is not None else rgba[..., 3] < 0.5
+        sky_mask = ~np.isfinite(depth) if depth is not None else alpha < 0.5
         lin = add_sun_disc(lin, sun_xy, sky_mask, v("sun_disc"))
-    out = grade(lin, v("exposure"), v("balance"), v("contrast"), v("saturation"), v("lift"))
-
     output = chunk_utils.cwd_relative(output)
     os.makedirs(os.path.dirname(os.path.abspath(output)) or ".", exist_ok=True)
-    Image.fromarray((out * 255 + 0.5).astype(np.uint8)).save(output)
+    if output.lower().endswith(".exr"):
+        # Linear, for a comp: exposure and balance are light; contrast, saturation and the lift
+        # are display steps, left to whatever views it.
+        write_exr(output, lin * np.asarray(v("balance"), dtype=np.float64) * v("exposure"), alpha)
+    else:
+        out = grade(lin, v("exposure"), v("balance"), v("contrast"), v("saturation"), v("lift"))
+        Image.fromarray((out * 255 + 0.5).astype(np.uint8)).save(output)
     return ", ".join(done) or "graded"
 
 
@@ -578,10 +708,13 @@ def main():
                     tooltip="What the last run did."),
         chunk.LineEdit("source_image", "Source Image", flags=_PF.LABELED,
                        tooltip="The rendered image. Empty: the Output Image of the Render chunk\n"
-                       "wired into this one. #### stands for the frame number."),
+                       "wired into this one. #### stands for the frame number. An .exr is read\n"
+                       "linear and unclipped; other formats as 8-bit sRGB."),
         chunk.LineEdit("output_image", "Output Image", flags=_PF.LABELED,
                        tooltip="Where the finished image goes. Empty: beside the source, named\n"
-                       "<name>_finished.png."),
+                       "<name>_finished.png. An .exr is written linear and unclipped, with\n"
+                       "exposure and balance applied and the display steps (contrast,\n"
+                       "saturation, lift) left out."),
         chunk.LineEdit("camera", "Camera", flags=_PF.LABELED | _PF.PRIM_SELECTION,
                        tooltip="The camera the image was rendered from. Empty: the stage's Render\n"
                        "Settings camera, else the first camera."),
@@ -597,7 +730,9 @@ def main():
         chunk.FileBrowser("backplate", extensions=[".exr", ".hdr", ".png", ".jpg"],
                           tooltip="Show this image instead of the dome's. Empty: the dome's own."),
         chunk.Slider("sky_turn", "Turn", min_value=-180.0, max_value=180.0, default_value=0.0,
-                     tooltip="Turn the sky image about the dome's up axis, degrees."),
+                     tooltip="Turn the sky image about the dome's up axis, degrees. The image is laid\n"
+                     "out as hdVRay lays it (centre toward the dome's +Z, checked with a test\n"
+                     "render); other renderers were not checked and may need a turn."),
         chunk.Slider("sky_gain", "Brightness", min_value=0.0, max_value=4.0, default_value=1.0,
                      tooltip="How bright the camera sees the sky, against the dome's intensity."),
     ])
@@ -605,14 +740,19 @@ def main():
     haze.add_params([
         chunk.Checkbox("haze_enabled", "Haze", default_value=True,
                        tooltip="Distance haze from a depth pass ray-cast through the camera."),
-        chunk.LineEdit("depth_from", "Depth From", default_value="/World", flags=_PF.LABELED | _PF.PRIM_SELECTION,
-                       tooltip="Prims the depth pass hits, separated by spaces or commas. The big\n"
-                       "geometry is enough: small things sit on surfaces close enough for haze."),
+        chunk.LineEdit("depth_from", "Depth From", flags=_PF.LABELED | _PF.PRIM_SELECTION,
+                       tooltip="Prims the depth pass hits, separated by spaces or commas. Empty: the\n"
+                       "stage's default prim, else everything. The big geometry is enough: small\n"
+                       "things sit on surfaces close enough for haze. Meshes and the simple shapes\n"
+                       "are hit; curves, points and cut-out (alpha) cards are not."),
         chunk.Checkbox("depth_instancers", "Include Instancers", default_value=True,
                        tooltip="Expand Point Instancers for the depth pass. Off: faster, and the\n"
                        "copies are left out."),
         chunk.Checkbox("ground_below", "Ground Below", default_value=True,
-                       tooltip="A ray that hits nothing but points down meets a ground at height 0."),
+                       tooltip="A ray that hits nothing but points down meets a flat ground at\n"
+                       "Ground Height. Off: such rays count as sky."),
+        chunk.Spinbox("ground_height", "Ground Height", default_value=0.0,
+                      tooltip="Height of that ground along the stage's up axis, in stage units."),
         chunk.Slider("haze_distance", "Distance", min_value=1.0, max_value=5000.0, default_value=420.0,
                      tooltip="Metres at which the haze covers about two thirds of what is behind it."),
         chunk.ColorPicker("haze_color", "Colour", default_value=(1.0, 0.78, 0.55),
