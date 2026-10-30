@@ -1117,6 +1117,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             k: v for k, v in values.items()
             if k not in early or not chunk_utils.values_match(_scripted_param(new, k).value, v)
         }
+        if chunk_cook.is_held():
+            # Inside building(): nothing else cooks, but each new chunk does once, now: one
+            # that builds params in its cook (Light's schema inputs) has them for the script
+            # to set, and readouts say something. What changes later cooks at the block's end.
+            new._cook()
         self.set(new, **late)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
@@ -1144,6 +1149,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 param.connect_value(value)
             else:
                 param.value = value
+
+    @contextlib.contextmanager
+    def building(self):
+        """Make many chunks with nothing cooking, then cook what they need once.
+
+        For a script building a network. Each chunk made or set outside the block cooks what
+        it affects straight away, and with each new chunk wired below the last that is the
+        whole chain above it, again: a 336-chunk network took 17-27 minutes to build and 75 s
+        to open. Inside the block each chunk cooks once as it is made, against its inputs then,
+        and nothing else cooks; at the end everything changed since cooks once, upstream
+        first. Readouts read inside the block are from that first cook.
+        """
+        with chunk_cook.holding():
+            yield
 
     def execute(self) -> None:
         """Run every chunk, upstream first: chunk.execute() for the whole scene.

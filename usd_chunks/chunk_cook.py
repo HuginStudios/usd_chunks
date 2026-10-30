@@ -187,6 +187,26 @@ def hold(later: Callable[[Callable], None]):
             later(_release)
 
 
+@contextmanager
+def holding():
+    """hold() for a script building a network: nothing cooks inside, all of it at the end.
+
+    A script making chunks one after another cooked each of them again for every chunk wired
+    after it -- a 336-chunk network took 3,593 cooks to build and 336 to open. Inside the
+    block a change only marks what it affects; when the block ends, what is pending cooks in
+    one flush, upstream first, as a load does. Released here, not from an event loop: a script
+    has none, and what follows the block reads the result.
+    """
+    global _held
+    _held += 1
+    try:
+        yield
+    finally:
+        _held -= 1
+        if not _held:
+            _release()
+
+
 def _release() -> None:
     """Run what hold_back() kept, and cook what the held solves left pending."""
     if _held:
