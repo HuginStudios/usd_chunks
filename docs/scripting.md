@@ -251,9 +251,10 @@ with scene.building():
 # here everything has cooked, once
 ```
 
-Inside the block each chunk cooks once as it is made, and nothing else cooks. When the block
-ends, what changed since then cooks once, upstream first. A readout you read inside the block
-is from that first cook. A 336-chunk network took 250 s this way, against 17-27 minutes.
+Inside the block each chunk cooks once as it is made, before it is wired, and nothing else
+cooks. When the block ends, what changed since then cooks once, upstream first: about two cooks
+per chunk. A readout you read inside the block is from that first, unwired cook. A 336-chunk
+network took 250 s this way, against 17-27 minutes.
 
 ## Inside usdview
 

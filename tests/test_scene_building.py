@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 from pxr import UsdGeom
 
-from usd_chunks import Scene, chunk_cook
+from usd_chunks import Scene, chunk_cook, chunk_registry
 
 
 @pytest.fixture
@@ -67,3 +67,75 @@ def test_a_light_made_in_a_block_takes_its_settings() -> None:
             intensity = next(p for p in light.get_params() if p.name == "intensity" or p.name.endswith(":intensity"))
             intensity.value = 3.0
         assert intensity.value == 3.0
+
+
+# --- the block must give the same layer order, Merge results and Edit Target results ---
+
+
+def _color(scene, path="/box"):
+    return tuple(UsdGeom.Gprim(scene.get_stage().GetPrimAtPath(path)).GetDisplayColorAttr().Get()[0])
+
+
+def _edit_target_with_a_group(scene):
+    """An Edit Target, red, then a group setting blue: the group, downstream, must win."""
+    layer = scene.create.layer(layer_name="look")
+    with scene.create.edit_target(layer, edit_target="look"):
+        box = scene.create.cube(prim_path="/box", name="box_mesh")
+        red = scene.create.set_display_color(box, prim_path="/box", color_r=1.0, color_g=0.0, color_b=0.0,
+                                             name="red")
+        with scene.create.chunkgroup(red, name="recolor"):
+            blue = scene.create.set_display_color(prim_path="/box", color_r=0.0, color_g=0.0, color_b=1.0,
+                                                  name="blue")
+    return blue
+
+
+def _merge_with_unequal_branches(scene):
+    """A Merge of a one-chunk branch (red) and a three-chunk one (green last): the first input wins."""
+    box = scene.create.cube(prim_path="/box", name="box_mesh")
+    first = scene.create.set_display_color(box, prim_path="/box", color_r=1.0, color_g=0.0, color_b=0.0,
+                                           name="first")
+    second = box
+    for i, g in enumerate((0.2, 0.5, 1.0)):
+        second = scene.create.set_display_color(second, prim_path="/box", color_r=0.0, color_g=g, color_b=0.0,
+                                                name=f"second{i}")
+    return scene.create.merge(first, second, name="merge")
+
+
+@pytest.mark.parametrize("make", [_edit_target_with_a_group, _merge_with_unequal_branches],
+                         ids=["edit-target-with-a-group", "merge"])
+def test_a_block_gives_the_same_layer_order_and_result(make) -> None:
+    with Scene() as scene:
+        make(scene)
+        plain = (_color(scene), _chunk_layer_order(scene))
+    with Scene() as scene:
+        with scene.building():
+            make(scene)
+        assert (_color(scene), _chunk_layer_order(scene)) == plain
+
+
+def test_a_block_with_an_active_view_gives_the_same_result() -> None:
+    with Scene() as scene:
+        scene.set_view(_merge_with_unequal_branches(scene))
+        plain = (_color(scene), _chunk_layer_order(scene))
+    with Scene() as scene:
+        with scene.building():
+            scene.set_view(_merge_with_unequal_branches(scene))
+        assert (_color(scene), _chunk_layer_order(scene)) == plain
+
+
+def test_an_edit_target_with_a_group_built_in_a_block_still_follows_edits() -> None:
+    """The reviewer's case: built in the block it came out red and stayed red after an edit."""
+    with Scene() as scene:
+        with scene.building():
+            blue = _edit_target_with_a_group(scene)
+        assert _color(scene) == (0.0, 0.0, 1.0)
+        blue.get_param("color_g").value = 1.0
+        assert _color(scene) == (0.0, 1.0, 1.0)
+
+
+def _chunk_layer_order(scene):
+    """The chunks' layers in stack order, by chunk name, strongest first."""
+    lm = chunk_registry.ChunkLayerManager()
+    by_id = {lm.get_layer(c).identifier: c.name for c in scene.get_chunks() if lm.get_layer(c) is not None}
+    stack = [layer.identifier for layer in scene.get_stage().GetLayerStack()]
+    return [by_id[i] for i in stack if i in by_id]
