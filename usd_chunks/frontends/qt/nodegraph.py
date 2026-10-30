@@ -121,11 +121,23 @@ _DOT_R = 10  # dot node circle radius
 _PROXY_BUSY_RETRY_MS = 50
 _PROXY_BUSY_WAIT_MAX_S = 15.0
 
-# Merge node slot ports: vertical gap between stacked exec inputs, and the y of the first
-# one. The first slot sits at the header centre so it lines up with the output port, which
-# keeps a one-input merge looking like every other node.
-_MERGE_PORT_SPACING = 20
-_MERGE_PORT_TOP = _NODE_HEADER_H // 2
+# A Merge is a circle, not a node box: it has no params, so a full-width node was length
+# spent on nothing. Its exec inputs sit on the left of the circle across _MERGE_ARC,
+# top (slot 0, strongest) to bottom; the circle grows only when they would crowd.
+_MERGE_MIN_R = 13
+_MERGE_ARC = math.radians(150)
+_MERGE_PORT_GAP = 15  # along the arc, between neighbouring slot ports
+
+
+def _merge_radius(slots: int) -> float:
+    """The radius of a Merge circle with this many exec input ports."""
+    return max(_MERGE_MIN_R, _MERGE_PORT_GAP * (slots - 1) / _MERGE_ARC)
+
+
+def _merge_port_pos(index: int, slots: int, radius: float) -> QtCore.QPointF:
+    """Where slot index sits on the left arc of a Merge circle, in node coordinates."""
+    angle = 0.0 if slots == 1 else -_MERGE_ARC / 2 + index * _MERGE_ARC / (slots - 1)
+    return QtCore.QPointF(radius - radius * math.cos(angle), radius + radius * math.sin(angle))
 
 # Shake-to-disconnect tuning: a fast back-and-forth drag disconnects the node.
 _SHAKE_WINDOW = 0.4  # seconds of drag samples to look at
@@ -148,7 +160,7 @@ _COL_NODE_SELECTED = node_theme.NODE_SELECTED
 _COL_GROUP_HEADER = QtGui.QColor("#1a1a1a")   # near-black -- group/context nodes
 _COL_LOCKED_HEADER = QtGui.QColor("#3a3020")  # dark amber -- locked (external-layer) nodes
 _COL_LOCKED_BG = QtGui.QColor("#2e2e28")
-_COL_CANVAS_BG = QtGui.QColor("#17181b")  # ChunkGraphView's background brush
+_COL_CANVAS_BG = QtGui.QColor("#252525")  # ChunkGraphView's background brush
 _DIM_ALPHA = 0.35  # the opacity disabled nodes are drawn at when their body is showing
 _DIM_CACHE: dict[int, QtGui.QColor] = {}
 
@@ -920,12 +932,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # a state change that is not a collapse (selecting, going stale) does not rebuild
         # ports -- see _set_collapsed.
         self._collapsed: bool | None = None
-        self._update_stale_tooltip()
         _chunk_type = prim.GetAttribute("info:chunkType").Get()
         self._is_view = _chunk_type == "view"
         self._is_output = _chunk_type == "output"
         self._is_dot = _chunk_type == "dot"
         self._is_merge = _chunk_type == "merge"
+        self._update_stale_tooltip()
         # Dynamic exec inputs (config.dynamic_exec_inputs): the port count isn't fixed, it grows
         # one port per connected branch plus a trailing empty one (Merge, Switch, ...).
         # Distinct from _is_merge, which additionally means "no body at all" -- a Switch
@@ -973,8 +985,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._proxy: QtWidgets.QGraphicsProxyWidget | None = None
         self._port_rebuild_timer: QtCore.QTimer | None = None
         # The width the user dragged this node to, saved as its size in USD; the default
-        # otherwise. Nodes without a body (dots, merges) keep the default.
-        self._width = (float(_NODE_WIDTH) if self._is_dot or self._is_merge
+        # otherwise. Nodes without a body keep a fixed one: a dot the default, a merge its pill.
+        self._width = (_merge_radius(1) * 2 if self._is_merge else float(_NODE_WIDTH) if self._is_dot
                        else _saved_node_width(prim))
         self._resize_handle: _NodeResizeHandle | None = None
         self._height = _NODE_HEADER_H
@@ -1070,24 +1082,22 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # serialized into every saved file forever -- just to give a wire somewhere to
             # land. Ports read top-to-bottom as strongest-to-weakest.
             slots = len(chunk_stage.exec_input_connections(prim)) + 1
+            radius = _merge_radius(slots)
             for i in range(slots):
                 port = ChunkPortItem(
                     f"{prim.GetPath()}.{chunk_stage.exec_input_name(i)}", _PORT_EXEC, parent=self
                 )
-                port.setPos(0, _MERGE_PORT_TOP + i * _MERGE_PORT_SPACING)
+                port.setPos(_merge_port_pos(i, slots, radius))
                 self._ports.append(port)
             # Everything that asks a node for "its" exec input (splice-on-drop, wire-drop
             # targeting) should get the primary one, which is slot 0 -- the strongest.
             self._exec_in_port = self._ports[0]
             self._exec_in_ports = list(self._ports)
-            self._height = max(
-                _NODE_HEADER_H, _MERGE_PORT_TOP * 2 + (slots - 1) * _MERGE_PORT_SPACING
-            )
-            self._full_height = self._height
+            self._width = self._height = self._full_height = radius * 2
             self._exec_out_port = ChunkPortItem(
                 f"{prim.GetPath()}.outputs:chunk", _PORT_EXEC, parent=self
             )
-            self._exec_out_port.setPos(self._width, _NODE_HEADER_H // 2)
+            self._exec_out_port.setPos(self._width, self._height / 2)
             self._ports.append(self._exec_out_port)
             return
 
@@ -1754,6 +1764,16 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 painter.drawEllipse(QtCore.QPointF(_DOT_R, _DOT_R), _DOT_R + 3, _DOT_R + 3)
             return
 
+        if self._is_merge:
+            # No slot numbers: the ports run top (slot 0, strongest) to bottom around the arc.
+            border = _COL_NODE_SELECTED if self._selected else (
+                _COL_FAILED_BORDER if self._failed else _COL_NODE_BORDER)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            painter.setBrush(_COL_NODE_HEADER)
+            painter.setPen(QtGui.QPen(border, 1.5 if self._selected else 1.0))
+            painter.drawEllipse(QtCore.QRectF(0, 0, self._width, self._height).adjusted(0.5, 0.5, -0.5, -0.5))
+            return
+
         if self._lod_simple:
             # Too far out for the title to be legible or the 4px corner radius to survive
             # rounding: two flat rects per node, no text, no font construction, no prim
@@ -1949,7 +1969,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if self.prim is None or not self.prim.IsValid():
             event.accept()
             return
-        if self._is_dot:
+        if self._is_dot or self._is_merge:
+            # Nothing to collapse: neither has a body.
             event.accept()
             return
         if event.pos().y() <= _NODE_HEADER_H:
@@ -2405,6 +2426,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self.setToolTip(
             "Needs recook — inputs changed since this last ran. Press Run/Recompute to update it."
             if self._stale
+            # A merge draws no title, so its name is only here.
+            else f"{self.chunk.name} -- the top input is strongest" if self._is_merge
             else ""
         )
 
@@ -3711,17 +3734,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     """QGraphicsView with zoom, pan (middle mouse or Space+drag), and F to frame."""
 
     _SCENE_EXTENT = 50000
-    _GRID_SPACING = 200  # scene units -- fixed world-space, so it scales naturally with zoom
-    # ...but only down to a point. The dots are cosmetic (constant screen size), so as the
-    # view zooms out they crowd together into a speckle that reads as noise rather than a
-    # grid, and their count grows with the square of the zoom-out -- thousands of them at
-    # the far end. The spacing doubles instead, holding the on-screen gap between this and
-    # twice it at every zoom, which bounds the count. Deliberately below the 200px gap seen
-    # at scale 1.0: matching that reads as an empty canvas once zoomed out.
-    _GRID_MIN_SCREEN_SPACING = 55  # px
-    _GRID_MAX_DOUBLINGS = 12
-    _GRID_DOT_COLOR = QtGui.QColor("#2c2f37")  # muted grey-blue, subtle against the canvas
-    _GRID_DOT_WIDTH = 2
 
     dive_into = QtCore.Signal(object)  # re-emitted from scene when a group node is double-clicked
 
@@ -3812,6 +3824,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_temp_port: ChunkPortItem | None = None
         self._drag_by_click = False
         self._swallow_release = False
+        # The exec wire a dragged exec output would join through a Merge, lit while it is
+        # under the cursor, with the pen to give back when it is not.
+        self._drag_merge_wire: ChunkEdgeItem | None = None
+        self._drag_merge_pen: QtGui.QPen | None = None
         # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
         # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
         self._suppress_default_view = False
@@ -3906,64 +3922,6 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # so it has to take the width its buttons actually need or it clips them.
         breadcrumb.resize(breadcrumb.sizeHint())
         self._anchor_breadcrumb()
-
-    @staticmethod
-    def _grid_points_in_rect(rect: QtCore.QRectF, spacing: int) -> list:
-        """Scene-space grid dot positions covering rect, snapped to fixed spacing-unit lines.
-
-        Pure math, no painter -- kept separate from drawBackground so the snapping/coverage
-        logic is unit-testable without a real paint device.
-        """
-        # Snap down to the nearest grid line at or before rect's edges. Python's % on a
-        # negative left/top already returns a non-negative remainder (floor-division
-        # semantics), so this snaps correctly on the negative half of the scene too.
-        left = int(rect.left()) - (int(rect.left()) % spacing)
-        top = int(rect.top()) - (int(rect.top()) % spacing)
-
-        points = []
-        x = left
-        while x < rect.right():
-            y = top
-            while y < rect.bottom():
-                points.append(QtCore.QPointF(x, y))
-                y += spacing
-            x += spacing
-        return points
-
-    def _grid_spacing_for_view(self) -> int:
-        """Grid spacing in scene units, doubled until the dots are far enough apart on screen.
-
-        Kept separate from _grid_points_in_rect so that stays pure coverage math with no
-        view attached, and remains unit-testable on its own.
-        """
-        spacing = self._GRID_SPACING
-        scale = self.transform().m11()
-        if scale <= 0:
-            return spacing
-        for _ in range(self._GRID_MAX_DOUBLINGS):
-            if spacing * scale >= self._GRID_MIN_SCREEN_SPACING:
-                break
-            spacing *= 2
-        return spacing
-
-    def drawBackground(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
-        # super() fills with setBackgroundBrush's flat color; dots paint on top of that.
-        super().drawBackground(painter, rect)
-        # Only the exposed rect is ever painted here (never the full 100k-unit scene extent --
-        # Qt only calls drawBackground for the currently visible region).
-        points = self._grid_points_in_rect(rect, self._grid_spacing_for_view())
-        if not points:
-            return
-
-        # A single batched drawPoints call is far cheaper than one drawEllipse call per dot.
-        painter.save()
-        pen = QtGui.QPen(self._GRID_DOT_COLOR)
-        pen.setWidth(self._GRID_DOT_WIDTH)
-        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-        pen.setCosmetic(True)  # constant screen-space dot size regardless of view zoom/scale
-        painter.setPen(pen)
-        painter.drawPoints(points)
-        painter.restore()
 
     def _slot_badge(self) -> tuple[QtCore.QRect, str, QtGui.QColor]:
         """The Output / View badge in the bottom-right corner: where it sits, its text, its colour."""
@@ -5147,6 +5105,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         target, hint = self._drop_choice(scene_pos)
         self._set_snap_port(target)
         self._set_drop_hint(hint)
+        # A port wins over a wire: only with no port in reach does the wire under it light.
+        # (A Merge wire is for exec drags and a collapsed node's "+" for typed ones, so the
+        # two never light together.)
+        self._set_merge_wire(self._merge_wire_at(scene_pos) if target is None else None)
         if target is not None:
             end = target.scenePos()
         elif hint is not None and hint._plus_in:
@@ -5200,6 +5162,70 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     best, best_dist = port, dist
         return best
 
+    def _merge_wire_at(self, scene_pos: QtCore.QPointF) -> ChunkEdgeItem | None:
+        """The exec wire a fresh drag from an exec output is over, if any.
+
+        Only a new wire out of an exec output joins one: a picked-up input wire is being
+        moved or cut, and a data wire has no Merge to go through. Wires touching the dragged
+        node are left out, since it is already on them.
+        """
+        src = self._drag_src_port
+        graph_scene = self.scene()
+        if (src is None or src.is_input or src.port_type != _PORT_EXEC
+                or self._drag_detach_attr is not None or not isinstance(graph_scene, ChunkGraphScene)):
+            return None
+        reach = _PORT_SNAP_PIXELS / 3 / (self.transform().m11() or 1.0)
+        near = QtCore.QRectF(scene_pos.x() - reach, scene_pos.y() - reach, reach * 2, reach * 2)
+        own = src.parentItem()
+        for edge in graph_scene._edges:
+            if edge.src_port.port_type != _PORT_EXEC or own in (edge.src_port.parentItem(),
+                                                               edge.dst_port.parentItem()):
+                continue
+            try:
+                if edge.path().intersects(near):
+                    return edge
+            except RuntimeError:
+                continue
+        return None
+
+    def _set_merge_wire(self, edge: ChunkEdgeItem | None) -> None:
+        """Light up the wire a drop would join through a Merge, and only that one."""
+        previous = self._drag_merge_wire
+        if previous is edge:
+            return
+        if previous is not None:
+            try:
+                previous.setPen(self._drag_merge_pen)
+            except RuntimeError:
+                pass
+        self._drag_merge_wire, self._drag_merge_pen = edge, None
+        if edge is not None:
+            self._drag_merge_pen = QtGui.QPen(edge.pen())
+            edge.setPen(QtGui.QPen(edge.pen().color().lighter(150), 4.0))
+
+    def _merge_into_wire(self, edge: ChunkEdgeItem, branch: ChunkPortItem,
+                         scene_pos: QtCore.QPointF) -> None:
+        """Join branch's node into edge through a Merge at scene_pos, then redraw and recook."""
+        graph_scene = self.scene()
+        scene = _chunk.get_scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage or not scene:
+            return
+        wire = chunk_graph.EdgeRef(edge.src_port.attr_path, edge.dst_port.attr_path, is_exec=True)
+        # Centred on the drop: a new Merge has two branches and the empty trailer.
+        radius = _merge_radius(3)
+        corner = (scene_pos.x() - radius, -(scene_pos.y() - radius))
+        change, error = chunk_graph.merge_into_wire(
+            graph_scene._stage, scene, wire, str(Sdf.Path(branch.attr_path).GetPrimPath()),
+            corner, self._nest_target(self._graph_context()))
+        if change is None:
+            logger.warning("Not joined into the wire: %s", error)
+            return
+        graph_scene._build_edges()
+        # The Merge has no node yet (the create's rebuild is deferred), so map from the scene.
+        touched = {c for c in scene.get_chunks()
+                   if chunk_stage.get_chunk_prim_path(c) in change.touched_nodes}
+        self._recook_active_view(touched or None)
+
     def _finish_wire_drag(self, scene_pos: QtCore.QPointF) -> None:
         # The same port the live wire jumped to (_drop_target): a pixel-perfect drop on the
         # tiny dot is hard to land, so a drop near a valid port lands on it.
@@ -5211,7 +5237,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         if isinstance(item, ChunkPortItem)), None)
         graph_scene = self.scene()
         if hit is not None and self._drag_target_ok(hit):
-            if hit.is_input == self._drag_src_port.is_input:
+            if (hit.is_input and self._drag_src_port.is_input
+                    and hit.parentItem() is self._drag_src_port.parentItem()
+                    and self._swap_exec_slots(self._drag_src_port, hit)):
+                # Another occupied slot of the same node (a Merge): the two branches swap.
+                pass
+            elif hit.is_input == self._drag_src_port.is_input:
                 # Dropped on another input of the same type as the one we grabbed:
                 # move the connection there instead of rewiring in place.
                 self._author_connection(self._drag_detach_source_port, hit)
@@ -5230,6 +5261,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             global_pos = self.viewport().mapToGlobal(self.mapFromScene(scene_pos))
             self._cancel_wire_drag()
             QtCore.QTimer.singleShot(0, self, lambda: self._pick_port_on(node, src, global_pos))
+            return
+        elif hit is None and self._drag_merge_wire is not None:
+            wire, branch = self._drag_merge_wire, self._drag_src_port
+            self._cancel_wire_drag()
+            self._merge_into_wire(wire, branch, scene_pos)
             return
         elif hit is None and self._drag_detach_attr is None and self._drag_src_port is not None:
             # Fresh wire dragged out to empty space → open the chunk menu; whatever the user
@@ -5457,6 +5493,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_reused_edge = None
         self._set_snap_port(None)
         self._set_drop_hint(None)
+        self._set_merge_wire(None)
         graph_scene = self.scene()
         if isinstance(graph_scene, ChunkGraphScene):
             for node in graph_scene._nodes.values():
@@ -5580,6 +5617,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # is, or feeds, the view: wiring two nodes elsewhere cannot add anything reachable.
         touched = {chunks[path] for path in change.touched_nodes if path in chunks}
         self._recook_active_view(touched or None)
+
+    def _swap_exec_slots(self, a: ChunkPortItem, b: ChunkPortItem) -> bool:
+        """Swap two wired exec slots of one node, then redraw and recook. False if they aren't."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage:
+            return False
+        change = chunk_graph.swap_exec_slots(graph_scene._stage, self._as_port_ref(a), self._as_port_ref(b))
+        if change is None:
+            return False
+        _prims, chunks = self._engine_context(graph_scene)
+        graph_scene._build_edges()
+        touched = {chunks[path] for path in change.touched_nodes if path in chunks}
+        self._recook_active_view(touched or None)
+        return True
 
     def _disconnect_port(self, port: ChunkPortItem, attr: Usd.Attribute, graph_scene: ChunkGraphScene) -> None:
         """Cut the wire into a port, then redraw and recook.
