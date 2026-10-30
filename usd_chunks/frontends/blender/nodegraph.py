@@ -623,51 +623,40 @@ class USDCHUNKS_OT_search_menu(bpy.types.Operator):
         return {"FINISHED"}
 
 
-#: The last item list the "+" pick was handed, kept alive for Blender (see
-#: _search_items_alive).
-_pick_items_alive: list = []
-
-
-def _pick_items(_self, _context):
-    view = active_view()
-    pending = view.pending_pick if view is not None else None
-    if not pending:
-        items = [("", "", "")]
-    else:
-        items = [(str(index), chunk_graph.param_menu_label(ref.param, view.chunks.get(ref.node_path)), "")
-                 for index, ref in enumerate(pending[0])]
-    _pick_items_alive[:] = [items]
-    return items
-
-
 class USDCHUNKS_OT_pick_plus(bpy.types.Operator):
-    """Pick the param a wire to a collapsed node's "+" means."""
+    """Wire to this param."""
 
     bl_idname = "usd_chunks.pick_plus"
     bl_label = "Wire To"
     bl_options = {"REGISTER", "UNDO"}
-    bl_property = "item"
 
-    item: bpy.props.EnumProperty(items=_pick_items)
-
-    def invoke(self, context, _event):
-        context.window_manager.invoke_search_popup(self)
-        return {"RUNNING_MODAL"}
+    index: bpy.props.IntProperty(options={"HIDDEN"})
 
     def execute(self, _context):
         view = active_view()
-        if view is None or view.pending_pick is None or not self.item:
+        if view is None or view.pending_pick is None or not 0 <= self.index < len(view.pending_pick[0]):
             return {"CANCELLED"}
-        view.choose(view.pending_pick[0][int(self.item)])
+        view.choose(view.pending_pick[0][self.index])
         return {"FINISHED"}
+
+
+def _draw_pick_menu(menu, _context) -> None:
+    """One entry per param the pending "+" pick offers, labelled as Qt's menu is."""
+    view = active_view()
+    if view is None or view.pending_pick is None:
+        return
+    for index, ref in enumerate(view.pending_pick[0]):
+        label = chunk_graph.param_menu_label(ref.param, view.chunks.get(ref.node_path))
+        menu.layout.operator(USDCHUNKS_OT_pick_plus.bl_idname, text=label).index = index
 
 
 def _open_pick_popup() -> None:
     """Show the active view's pending "+" pick at the mouse, in the node editor.
 
-    Reached from a timer (see UsdChunksNodeTree.update), where there is no editor in the
-    context to invoke a popup from, so one is found and overridden in. Background
-    Blender has no window: the pick then waits in pending_pick for a script or test.
+    A popup menu rather than a search popup, which drew its list only after the next
+    mouse event. Reached from a timer (see UsdChunksNodeTree.update), where there is no
+    window in the context, so one is overridden in. Background Blender has no window: the
+    pick then waits in pending_pick for a script or test.
     """
     if bpy.app.background:
         return
@@ -677,7 +666,7 @@ def _open_pick_popup() -> None:
                 continue
             region = next((r for r in area.regions if r.type == "WINDOW"), None)
             with bpy.context.temp_override(window=window, area=area, region=region):
-                bpy.ops.usd_chunks.pick_plus("INVOKE_DEFAULT")
+                bpy.context.window_manager.popup_menu(_draw_pick_menu, title="Wire To")
             return
 
 
@@ -1210,9 +1199,13 @@ class BlenderGraphView:
                 sock.port_type = port.port_type
             chunk = self.chunks.get(path)
             if chunk is not None and chunk_graph.has_collapsible_body(chunk):
-                # Shown only while collapsed -- see sync_socket_visibility.
+                # Shown only while collapsed -- see sync_socket_visibility. A diamond, so
+                # it reads as something other than a param on a collapsed node, where
+                # Blender draws no socket names.
                 for collection in (node.inputs, node.outputs):
-                    collection.new(SOCKET_ID, _PLUS).port_type = _PLUS
+                    plus = collection.new(SOCKET_ID, _PLUS)
+                    plus.port_type = _PLUS
+                    plus.display_shape = "DIAMOND"
             sync_socket_visibility(node)
 
         for edge in self.edges:
