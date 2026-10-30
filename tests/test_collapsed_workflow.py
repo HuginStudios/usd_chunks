@@ -75,6 +75,51 @@ def test_start_collapsed_leaves_bodiless_chunks_open(session, module):
     assert not c.has_state(ChunkFlags.State.COLLAPSED)
 
 
+def test_start_collapsed_can_be_turned_off(session, monkeypatch):
+    _stage, scene, _reg = session
+    monkeypatch.setenv("USD_CHUNKS_START_COLLAPSED", "0")
+
+    c = _add(scene, "transform")
+
+    assert not c.has_state(ChunkFlags.State.COLLAPSED)
+
+
+def test_collapsed_ports_shows_only_the_wired_end_and_a_plus_per_side(session):
+    _stage, scene, _reg = session
+    c = _add(scene, "transform")
+
+    shown = chunk_graph.collapsed_ports(c, fed={"tx"}, feeding={"ty"})
+
+    assert [(p.name, i, o) for p, i, o in shown.rows] == [("tx", True, False), ("ty", False, True)]
+    assert shown.plus_in and shown.plus_out
+
+
+def test_collapsed_ports_offers_no_plus_on_a_bodiless_node(session):
+    _stage, scene, _reg = session
+    c = _add(scene, "merge")
+
+    shown = chunk_graph.collapsed_ports(c, fed=set(), feeding=set())
+
+    assert not shown.plus_in and not shown.plus_out
+
+
+def test_pick_candidates_and_output_choices_label_by_group(session):
+    _stage, scene, _reg = session
+    c = _add(scene, "transform")
+    path = get_chunk_prim_path(c)
+    src = chunk_graph.PortRef("/other", "/other.outputs:x", chunk_graph.PORT_FLOAT, False)
+
+    onto = chunk_graph.pick_candidates(c, path, src)
+    out = chunk_graph.output_choices(c, path)
+
+    assert f"{path}.inputs:tx" in [r.attr_path for r in onto]
+    assert all(r.is_input and r.port_type == src.port_type for r in onto)
+    assert f"{path}.outputs:tx" in [r.attr_path for r in out]
+    assert not any(r.port_type == chunk_graph.PORT_EXEC for r in out)
+    tx = next(r for r in out if r.attr_path.endswith(":tx"))
+    assert chunk_graph.param_menu_label(tx.param, c) == "Translate › X"
+
+
 def test_an_open_chunk_writes_no_expansion_state(session):
     stage, scene, _reg = session
 
@@ -152,6 +197,99 @@ def test_dropping_on_a_collapsed_node_wires_the_picked_param(graph, monkeypatch)
     assert [str(c) for c in attr.GetConnections()] == [f"{pa}.inputs:tx"]
     pump_until(QtWidgets.QApplication.instance(), lambda: node_b.get_port(f"{pb}.inputs:tx") is not None)
     assert b.has_state(ChunkFlags.State.COLLAPSED), "wiring it does not open it"
+    assert node_b.get_port(f"{pb}.outputs:tx") is None, "only the wired end shows"
+
+
+def test_a_collapsed_node_shows_a_plus_the_wire_snaps_to(graph):
+    gv, _stage, _chunks, (node_a, node_b) = graph
+    pa = str(node_a.prim.GetPath())
+    out = node_a.get_port(f"{pa}.outputs:tx")
+
+    assert node_a._plus_y is None, "an open node has a port per param"
+    assert node_b._plus_y is not None and node_b._plus_y < node_b._height
+    gv._start_wire_drag(out, out.scenePos())
+    gv._update_wire_drag(node_b.mapToScene(node_b.boundingRect().center()))
+
+    plus = node_b.mapToScene(QtCore.QPointF(0, node_b._plus_y))
+    assert gv._drag_edge.path().currentPosition() == plus
+    gv._cancel_wire_drag()
+
+
+def test_hovering_near_the_plus_outside_the_node_takes_the_wire(graph):
+    gv, _stage, _chunks, (node_a, node_b) = graph
+    pa = str(node_a.prim.GetPath())
+    out = node_a.get_port(f"{pa}.outputs:tx")
+    plus = node_b.mapToScene(QtCore.QPointF(0, node_b._plus_y))
+    beside = plus - QtCore.QPointF(10, 0)  # left of the node's edge, off its body
+
+    assert not node_b.sceneBoundingRect().adjusted(5, 0, 0, 0).contains(beside)
+    gv._start_wire_drag(out, out.scenePos())
+    gv._update_wire_drag(beside)
+
+    assert gv._drag_hint_node is node_b
+    assert gv._drag_edge.path().currentPosition() == plus
+    gv._cancel_wire_drag()
+
+
+def test_the_output_plus_picks_a_param_and_drags_a_wire_from_it(graph, monkeypatch):
+    gv, stage, (_a, b), (node_a, node_b) = graph
+    pa, pb = str(node_a.prim.GetPath()), str(node_b.prim.GetPath())
+    out_plus = node_b.mapToScene(QtCore.QPointF(node_b._width, node_b._plus_y))
+    assert node_b._plus_out and gv._out_plus_at(out_plus) is node_b
+
+    def pick(menu, _pos):
+        return next(action for action in menu.actions() if action.data() == f"{pb}.outputs:tx")
+
+    monkeypatch.setattr(gv, "_exec_menu", pick)
+    gv._pick_output_and_drag(node_b, QtCore.QPoint())
+    assert gv._drag_by_click and gv._drag_src_port.attr_path == f"{pb}.outputs:tx"
+    temp = gv._drag_temp_port
+
+    target = node_a.get_port(f"{pa}.inputs:tx").scenePos()
+    gv._update_wire_drag(target)
+    # Whichever of A's float inputs the drop snaps to: offscreen, A's body is never laid
+    # out, so its X, Y and Z ports sit within a couple of pixels of each other.
+    landed, _hint = gv._drop_choice(target)
+    assert landed is not None and landed.attr_path.startswith(f"{pa}.inputs:")
+    gv._finish_wire_drag(target)  # what the next click does
+
+    attr = stage.GetAttributeAtPath(Sdf.Path(landed.attr_path))
+    assert [str(c) for c in attr.GetConnections()] == [f"{pb}.inputs:tx"]
+    assert gv._drag_temp_port is None and temp.scene() is None, "the drag's own port goes with it"
+    assert not gv._drag_by_click
+    pump_until(QtWidgets.QApplication.instance(), lambda: node_b.get_port(f"{pb}.outputs:tx") is not None)
+    assert b.has_state(ChunkFlags.State.COLLAPSED)
+
+
+def test_plus_to_plus_draws_the_wire_and_cutting_it_drops_both_ports(graph, monkeypatch):
+    gv, stage, (a, _b), (node_a, node_b) = graph
+    app = QtWidgets.QApplication.instance()
+    a.set_state(ChunkFlags.State.COLLAPSED)
+    pump_until(app, lambda: node_a._plus_in)
+    pa, pb = str(node_a.prim.GetPath()), str(node_b.prim.GetPath())
+    picks = iter([f"{pb}.outputs:tx", f"{pa}.inputs:tx"])
+
+    def pick(menu, _pos):
+        want = next(picks)
+        return next(action for action in menu.actions() if action.data() == want)
+
+    monkeypatch.setattr(gv, "_exec_menu", pick)
+    gv._pick_output_and_drag(node_b, QtCore.QPoint())
+    in_plus = node_a.mapToScene(QtCore.QPointF(0, node_a._plus_y))
+    gv._update_wire_drag(in_plus)
+    assert gv._drag_hint_node is node_a
+    gv._finish_wire_drag(in_plus)  # the click; A's own menu is deferred past it
+    pump_until(app, lambda: node_a.get_port(f"{pa}.inputs:tx") is not None)
+
+    attr = stage.GetAttributeAtPath(Sdf.Path(f"{pa}.inputs:tx"))
+    assert [str(c) for c in attr.GetConnections()] == [f"{pb}.inputs:tx"]
+    src = node_b.get_port(f"{pb}.outputs:tx")
+    assert src is not None, "the node the wire left from shows its end too"
+    assert any(e.src_port is src for e in gv.scene()._edges), "and the wire is drawn"
+
+    gv._disconnect_port(node_a.get_port(f"{pa}.inputs:tx"), attr, gv.scene())
+    pump_until(app, lambda: node_b.get_port(f"{pb}.outputs:tx") is None)
+    assert node_a.get_port(f"{pa}.inputs:tx") is None
 
 
 def test_an_exec_wire_never_outlines_a_node(graph):
