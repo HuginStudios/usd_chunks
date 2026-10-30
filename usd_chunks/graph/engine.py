@@ -2231,6 +2231,106 @@ def output_choices(chunk, node_path: str) -> list[PortRef]:
     ]
 
 
+@dataclass(frozen=True)
+class PlusRef:
+    """A collapsed node's "+": the place a wire meets a node before a param is picked.
+
+    Stands where a PortRef would at one end of a wire, so a frontend can carry either
+    through the same drag and ask plus_menu what to offer when one end is a "+".
+    """
+
+    node_path: str
+    is_input: bool
+
+
+def is_collapsed(chunk) -> bool:
+    """Whether a chunk's node is drawn collapsed: COLLAPSED, and a body to fold away."""
+    return (chunk is not None and chunk.has_state(ChunkFlags.State.COLLAPSED)
+            and has_collapsible_body(chunk))
+
+
+def collapsed_node_ports(chunk, node_path: str, ports: list[PortRef],
+                         edges: list[EdgeRef]) -> tuple[list[PortRef], bool, bool]:
+    """A collapsed node's ports as read_graph gave them, cut down to what it shows.
+
+    Every exec port (the chain stays visible), and the wired end of each wired param
+    (collapsed_ports). For a frontend that holds read_graph's ports and edges rather than
+    its own record of which params are wired.
+
+    Returns:
+        (the ports to draw, a "+" on the input side, a "+" on the output side)
+    """
+    fed, feeding = set(), set()
+    for edge in edges:
+        if edge.is_exec:
+            continue
+        if edge.dst_node_path == node_path:
+            fed.add(edge.dst_attr_path.rsplit(":", 1)[-1])
+        if edge.src_node_path == node_path:
+            feeding.add(edge.src_attr_path.rsplit(":", 1)[-1])
+    shown = collapsed_ports(chunk, fed, feeding)
+    keep = set()
+    for param, show_in, show_out in shown.rows:
+        if show_in:
+            keep.add(f"{node_path}.inputs:{param.name}")
+        if show_out:
+            keep.add(f"{node_path}.outputs:{param.name}")
+    visible = [p for p in ports if p.port_type == PORT_EXEC or p.attr_path in keep]
+    return visible, shown.plus_in, shown.plus_out
+
+
+def plus_menu(chunk, plus: PlusRef, other: PortRef | None = None) -> list[PortRef]:
+    """What to offer when a wire meets a collapsed node's "+".
+
+    With the port at the wire's other end: the node's params that port can join
+    (pick_candidates -- an input "+" lists inputs, an output "+" lists outputs, both of the
+    other end's type). With none, because the other end is a "+" too: every param this
+    "+" could stand for, so the frontend asks this side first and the other one after.
+    """
+    if other is not None:
+        return pick_candidates(chunk, plus.node_path, other)
+    if not plus.is_input:
+        return output_choices(chunk, plus.node_path)
+    return [
+        PortRef(plus.node_path, f"{plus.node_path}.inputs:{param.name}", ptype, True, param=param)
+        for param in iter_connectable_params(chunk)
+        if (ptype := param_port_type(param)) is not None and ptype != PORT_EXEC
+    ]
+
+
+def plus_step(chunks: dict, a, b) -> tuple[list[PortRef], Any] | None:
+    """What to ask when a wire joins a and b and at least one end is a "+".
+
+    The answer is a list to pick from and what the pick then joins: pick one, and join it
+    to the second item the same way (which may ask again, when both ends were a "+").
+    With both ends a "+", the output side is asked first. An empty list means nothing on
+    that node can take the wire -- a "+" joined to a port of its own direction, or two
+    "+"s on one node.
+
+    Args:
+        chunks: {prim path: chunk}, to find each "+"'s chunk.
+        a, b: The wire's ends, each a PortRef or a PlusRef.
+
+    Returns:
+        (choices, the other end), or None when neither end is a "+" and the two can be
+        connected as they are.
+    """
+    a_plus, b_plus = isinstance(a, PlusRef), isinstance(b, PlusRef)
+    if not (a_plus or b_plus):
+        return None
+    if a_plus and b_plus:
+        if a.node_path == b.node_path or a.is_input == b.is_input:
+            return [], b
+        out, inp = (b, a) if a.is_input else (a, b)
+        chunk = chunks.get(out.node_path)
+        return (plus_menu(chunk, out) if chunk is not None else []), inp
+    plus, other = (a, b) if a_plus else (b, a)
+    if other.is_input == plus.is_input or other.node_path == plus.node_path:
+        return [], other
+    chunk = chunks.get(plus.node_path)
+    return (plus_menu(chunk, plus, other) if chunk is not None else []), other
+
+
 def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     """Create one menu entry's chunk(s) at a USD position.
 
