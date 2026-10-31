@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
-from usd_chunks import chunk_naming
+from usd_chunks import chunk_cook, chunk_naming
 from usd_chunks.layer_arcs import arc_edit_target, edit_target, is_editable  # noqa: F401
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
@@ -86,6 +86,16 @@ def strip_namespace(namespace: str, paths: str) -> str:
     return "".join(out)
 
 
+def in_change_block() -> bool:
+    """Whether a change_block is open: chunks made in it are wired and cooked when it ends.
+
+    So a layer a Layer chunk in the block will make is not there yet, and the chunk that
+    will make it is not wired yet either -- a menu checking a picked layer against the
+    stage cannot tell it from one that is gone.
+    """
+    return chunk_cook.is_batching()
+
+
 def arc_from_layer(node) -> bool:
     """Whether a Payload or Reference chunk brings in a layer the network made, not a file."""
     choice = node.get_param("from_layer")
@@ -140,26 +150,6 @@ def arc_source_changed(owner, notice, sender) -> None:
     node = owner.get_chunk()
     if node is not None:
         show_arc_source(node)
-
-
-@chunk_notice.without_edit_context
-def refresh_arc_layer_menu(owner, notice, sender) -> None:
-    """Keep a Payload or Reference chunk's Layer menu listing the network's arc layers.
-
-    Only the items: a picked layer that is not listed is kept, since the Layer chunk making
-    it may not have cooked yet -- the arc is simply not authored until it has.
-
-    Outside the owner's edit context: resolving it makes or moves the chunk's layer, a
-    sublayer edit, and this runs inside the stage's change notice. A cook stage of the same
-    layers heard that edit before the change it was answering, and USD refused it.
-    """
-    node = owner.get_chunk()
-    menu = node.get_param("layer") if node is not None else None
-    if menu is None:
-        return
-    items = arc_layer_items()
-    if list(getattr(menu, "menu_items", [])) != items:
-        menu.menu_items = items
 
 
 def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:

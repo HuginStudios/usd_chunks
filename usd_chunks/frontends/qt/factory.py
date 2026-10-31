@@ -11,6 +11,7 @@ from usd_chunks import chunk_core, chunk_scene
 from usd_chunks.chunk_flags import ChunkFlags
 
 from usd_chunks import chunk_stage
+from usd_chunks.graph import engine as chunk_graph
 
 from usd_chunks.frontends.qt.widgets import (
     ChunkWidget,
@@ -474,6 +475,9 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
             return
 
         chunks = entry.create()
+        # Its node in the graph starts collapsed like one made there -- in a fresh scene this
+        # menu is the only one, so it makes the first node of every graph.
+        chunk_graph.start_collapsed(chunks)
 
         # Flag the Params-tab origin so ChunkStageSync inserts the new chunk before the active
         # view (view-follows-tail) and lofts it, so it shows on the Params page it was made

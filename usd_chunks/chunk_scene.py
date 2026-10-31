@@ -1092,6 +1092,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             k: v for k, v in values.items()
             if k not in early or not chunk_utils.values_match(_scripted_param(new, k).value, v)
         }
+        if chunk_cook.is_batching():
+            # Inside a change_block: nothing else cooks, but each new chunk does once, now,
+            # before it is wired (as the cook add_chunk starts outside a block): one that
+            # builds params in its cook (Light's schema inputs) has them for the script to set,
+            # and a Layer chunk's layer is there for an Edit Target made after it to pick.
+            # The solves its making queued run before it, or they mark it again at the
+            # block's end; the ones its cook queued (a Transform setting its sliders' ranges)
+            # run after, before it is wired, or they reach the chunk above it through the wire.
+            chunk_cook.solve_batched()
+            new._cook()
+            chunk_cook.solve_batched()
         self.set(new, **late)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
@@ -1099,6 +1110,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         for i in inputs:
             new.add_dependency(i)
         self.set(new, **wires)
+        # And after the solves its wiring queued: left to the block's end, they marked the
+        # chunk above it again, and that cooked twice.
+        chunk_cook.solve_batched()
+        self._last_placed = weakref.ref(new)
         self._recook_active_view(new)
         return new
 
@@ -1119,6 +1134,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 param.connect_value(value)
             else:
                 param.value = value
+
+    def _rank_after_block(self) -> None:
+        """What the next chunk made would do, once a change_block has ended and cooked.
+
+        Rank the layers through the active View, or by wiring when there is none. An Edit
+        Target that cooked in the block's flush re-homed the chunks below it at a provisional
+        place, and a group behind it lost to its input.
+        """
+        last = self._last_placed() if getattr(self, "_last_placed", None) else None
+        if last is not None:
+            self._recook_active_view(last)
 
     def execute(self) -> None:
         """Run every chunk, upstream first: chunk.execute() for the whole scene.
@@ -1239,14 +1265,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         node made in the graph, so the viewport matches the graph. It is not blocked before
         that: a blocked chunk's fields miss the values the script sets.
         """
+        if chunk_cook.after_batch(("rank after block", id(self)), self._rank_after_block):
+            # Inside a change_block, once at its end, after its cooks. Sorted per chunk made,
+            # ranking every chunk each time, it was over a third of a 300-chunk build.
+            return
         _, context, _, view = self._active_view_of(target)
         if view is not None:
             chunk_stage.recook_for_view(self.get_stage(), self, context, view)
         elif (layers := chunk_registry.ChunkLayerManager()).initialized:
             # No View to put the layers in chain order, so each new chunk's layer would keep
             # the place it got when made -- before it was wired -- and an upstream chunk's
-            # opinions would win over it. Once per batch: sorting ranks every chunk, and a
-            # script building in a change_block placed hundreds before anything reads the order.
+            # opinions would win over it. Once per solve: sorting ranks every chunk.
             def sort():
                 chunk_stage.sort_chunk_layers(layers, self.get_chunks())
             if not chunk_cook.defer_to_batch_end(("sort_chunk_layers", id(self)), sort):

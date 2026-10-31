@@ -744,9 +744,19 @@ def change_block() -> Iterator[None]:
     and for a module whose execute() sets many params of its own (a Wedge writing a
     variant's ranges).
 
+    The same for a script building a network. Made outside a block, each chunk wired below
+    the last cooks the whole chain above it again: a 336-chunk network took 17-27 minutes to
+    build. Inside one, each chunk a script makes (scene.create) cooks once as it is made,
+    before it is wired -- a Light builds its params in its cook, for the script to set next,
+    and a Layer chunk makes its layer for an Edit Target made after it -- and what changed
+    cooks once at the end, upstream first: about two cooks a chunk in all. Readouts read
+    inside the block are from that first, unwired cook.
+
     Chunks created inside the block are placed in the stage's layer stack when it ends,
     once their wiring is known (ChunkLayerManager.defer_placement), rather than each one
-    as a graph of its own first and moved when wired.
+    as a graph of its own first and moved when wired. Once it has cooked, the layers are
+    ranked as the next chunk made would rank them, and the stage is looked over once for
+    chunk prims that arrived by USD (chunk_cook.after_batch).
     """
     with chunk_cook.batched_solve():
         lm = ChunkLayerManager()
