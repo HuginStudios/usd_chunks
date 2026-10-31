@@ -67,6 +67,7 @@ import hashlib
 import inspect
 import importlib.abc
 import logging
+import pickle
 import shutil
 import subprocess
 import textwrap
@@ -705,6 +706,9 @@ class _ConfigTransformer(ast.NodeTransformer):
         # reads (see _import_for), so discovering Bake Textures no longer imports numpy and
         # scipy, nor Display Modes Qt, for a scene that never uses either.
         self._framework_imports: list[ast.Import | ast.ImportFrom] = []
+        #: Whether config() needed module-level names (resolve_deferred_config), so its result
+        #: may depend on more than the file -- what is installed, say -- and is not cached.
+        self.deferred = False
 
     def _get_node_source(self, node):
         """The source text of node, as ast.get_source_segment returns it.
@@ -808,6 +812,7 @@ class _ConfigTransformer(ast.NodeTransformer):
                     # config() read a module-level name, which the walk has not executed.
                     # resolve_deferred_config retries once the whole tree is available.
                     self._deferred_config = func
+                    self.deferred = True
         if node.name == "main":
             self._module._has_main = True
         return node
@@ -857,13 +862,107 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
 
     @override
     def exec_module(self, module: types.ModuleType) -> None:
-        source_bytes = self.get_data(self.get_filename(self.fullname))
-        source = source_bytes.decode("utf-8")
         self._module.source_hash = pin.hash_file(self.path)
 
-        _pre_load_module(source, module.__dict__, self._module)
+        if not _CONFIG_CACHE.restore(self.path, self._module):
+            source_bytes = self.get_data(self.get_filename(self.fullname))
+            source = source_bytes.decode("utf-8")
+            transformer = _pre_load_module(source, module.__dict__, self._module)
+            if not transformer.deferred:
+                _CONFIG_CACHE.record(self.path, self._module)
 
         self._loader.exec_module(module)
+
+
+class _ConfigCache:
+    """config() results by chunk module file, kept between processes.
+
+    Discovery parses every chunk module and runs its config() -- a third of a second for the
+    97 in this repo, on every process start, for answers that change only when a file does.
+    An entry holds while its file's mtime and size and the framework's own files' mtimes are
+    unchanged, and is only made for a config() that read nothing but its own body: one that
+    reached module-level data (a constant built from what is installed, say) is evaluated
+    afresh every time. A config that cannot be pickled (one holding a function) is not kept.
+
+    One pickle per install in the user cache folder, written by this machine's own processes only.
+    Anything wrong with it -- unreadable, from another framework, half-written -- reads as
+    empty, and discovery parses as it always did.
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._entries: dict | None = None
+        self._dirty = False
+
+    @staticmethod
+    @functools.cache
+    def _framework_stamp() -> str:
+        # Every file of the package, subpackages too: 5 ms, for a config() whose helper lives
+        # anywhere in the framework.
+        package = Path(__file__).parent
+        files = sorted((str(p.relative_to(package)), p.stat().st_mtime_ns) for p in package.rglob("*.py"))
+        return repr((sys.version_info[:2], files))
+
+    @staticmethod
+    def _file_stamp(path: str):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def _load(self) -> dict:
+        if self._entries is None:
+            self._entries = {}
+            with contextlib.suppress(Exception):
+                with open(self._path, "rb") as f:
+                    stamp, entries = pickle.load(f)
+                if stamp == self._framework_stamp():
+                    self._entries = entries
+        return self._entries
+
+    def restore(self, path: str, module: ChunkModule) -> bool:
+        """Set module's config and main flag from the cache; False on a miss."""
+        entry = self._load().get(path)
+        if entry is None or entry[0] != self._file_stamp(path):
+            return False
+        try:
+            config = pickle.loads(entry[2])
+        except Exception:  # noqa: BLE001 - a stale class layout reads as a miss
+            return False
+        module.config, module._has_main = config, entry[1]
+        return True
+
+    def record(self, path: str, module: ChunkModule) -> None:
+        stamp = self._file_stamp(path)
+        if stamp is None:
+            return
+        try:
+            config = pickle.dumps(module.config)
+        except Exception:  # noqa: BLE001 - a config holding a function: evaluated each time
+            return
+        self._load()[path] = (stamp, module._has_main, config)
+        self._dirty = True
+
+    def save(self) -> None:
+        """Write what this process added; entries for files gone from disk are dropped."""
+        if not self._dirty:
+            return
+        self._dirty = False
+        entries = {p: e for p, e in self._load().items() if os.path.exists(p)}
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            # Written aside and swapped in, so a process reading it never sees half a file.
+            part = f"{self._path}.{os.getpid()}.part"
+            with open(part, "wb") as f:
+                pickle.dump((self._framework_stamp(), entries), f)
+            os.replace(part, self._path)
+
+
+# One file per install of the framework: two copies on one machine (a host's and a
+# checkout's) sharing one would each find the other's stamp and start from empty every time.
+_CONFIG_CACHE = _ConfigCache(chunk_cache.user_cache_dir(
+    "chunk_configs", hashlib.sha1(str(Path(__file__).parent).encode()).hexdigest()[:16] + ".pickle"))
 
 
 #: Import name -> distribution name, for the handful where they differ. A chunk declaring
@@ -1873,6 +1972,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
                 for mod in self._discover_module(module_path, module_name):
                     self.register_module(mod)
+        _CONFIG_CACHE.save()
 
     @staticmethod
     def _discover_module(module_path: Path, module_name: str) -> list[ChunkModule]:
