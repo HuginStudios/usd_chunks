@@ -781,14 +781,21 @@ class DagNode:
         return key
 
     def add_dependant(self, node: DagNode):
-        """Add a node that depends on this one (an output).
+        """Add a node that depends on this one (an output), which dirties that node.
+
+        Only the new dependant has something new to read. Dirtying this node instead re-ran
+        it and every other branch below it too.
 
         Args:
             node (DagNode): The dependant node
         """
         self._connections.outputs[self.next_key(self._connections.outputs)] = node
         chunk_scheduler.topology_changed(self, node)
-        self.dirty = True
+        # A reason, as propagate_dirty records one: with none, a display-only change reaching
+        # the node in the same solve would make it look like it had nothing to cook.
+        node._index += 1
+        node._changes[(ChunkNoticeAlias.INPUT_CHANGED, self)] = False
+        node.dirty = True
 
     def remove_dependency(self, node: DagNode, disconnect_reverse=True) -> bool:
         """Remove a dependency (an input) from this node, which dirties it.
@@ -1389,6 +1396,10 @@ class ChunkNoticePropagator:
             int: The dependency index
         """
         idx = self.get_dag_node().add_dependency(input.get_dag_node())
+        # What the input writes names what is wired below it (Transform's op order), so it
+        # cooks again too -- and, as it is dirtied, everything below it.
+        if getattr(getattr(input.get_chunk_module(), "config", None), "cooks_when_wired_below", False):
+            input.get_dag_node().dirty = True
         send_notice(ChunkNoticeAlias.DEPENDENCY_ADDED, self, data=input)
         return idx
 
