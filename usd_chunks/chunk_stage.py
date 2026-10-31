@@ -766,7 +766,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
             return
         self._stage = stage
+        if chunk_cook.is_building():
+            # A script building a network inside Scene.building(): the paths changed are
+            # gathered (_pending_resyncs keeps them until a scan) and walked once when the
+            # block ends, after its flush; a chunk found then loads and cooks as any chunk
+            # arriving by USD does. Scanned per change, a build of 300 chunks walked
+            # 740,000 prims in 1,500 scans to find the chunks the script had made itself --
+            # and each layer it inserted resynced the root, so each walk grew with the network.
+            chunk_cook.hold_back(("scan for new chunks", id(self)), self._scan_after_building)
+            return
         self._scan_for_new_chunks(stage)
+
+    def _scan_after_building(self) -> None:
+        """The scan _on_contents_changed held back while a script was building."""
+        if self._scene and not self._discarding and self._stage:
+            self._scan_for_new_chunks(self._stage)
 
     def _scan_for_new_chunks(self, stage: Usd.Stage) -> None:
         """Turn any chunk prim that has appeared since the last scan into a chunk.

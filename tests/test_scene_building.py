@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 from pxr import UsdGeom
 
-from usd_chunks import Scene, chunk_cook, chunk_registry
+from usd_chunks import Scene, chunk_cook, chunk_registry, chunk_stage
 
 
 @pytest.fixture
@@ -139,3 +139,44 @@ def _chunk_layer_order(scene):
     by_id = {lm.get_layer(c).identifier: c.name for c in scene.get_chunks() if lm.get_layer(c) is not None}
     stack = [layer.identifier for layer in scene.get_stage().GetLayerStack()]
     return [by_id[i] for i in stack if i in by_id]
+
+
+@pytest.fixture
+def scans(monkeypatch):
+    calls = []
+    real = chunk_stage.ChunkStageSync._scan_for_new_chunks
+
+    def counting(self, stage):
+        calls.append(chunk_cook.is_building())
+        return real(self, stage)
+
+    monkeypatch.setattr(chunk_stage.ChunkStageSync, "_scan_for_new_chunks", counting)
+    return calls
+
+
+def test_a_block_scans_for_new_chunks_once_at_its_end(scans) -> None:
+    # Scanned per stage change, a 300-chunk build walked 740,000 prims in 1,500 scans, all to
+    # find the chunks the script had made itself.
+    with Scene() as scene:
+        with scene.building():
+            _chain(scene, n=3)
+        assert scans == [False]
+
+
+def test_chunks_arriving_by_usd_in_a_block_join_at_its_end(tmp_path) -> None:
+    # The scan is what turns chunk prims arriving by plain USD into chunks -- here a saved
+    # network sublayered in by a script, not through a chunk. Held to the end of the block,
+    # it still finds them.
+    net = str(tmp_path / "net.usda")
+    with Scene() as scene:
+        scene.create.transform(name="Inner", primpath_location="/World/inner", ty=2.0)
+        scene.save(net)
+    with Scene() as plain:
+        plain.get_stage().GetRootLayer().subLayerPaths.append(net)
+        expected = sorted(c.name for c in plain.get_chunks())
+    with Scene() as scene:
+        with scene.building():
+            scene.get_stage().GetRootLayer().subLayerPaths.append(net)
+            assert "Inner" not in [c.name for c in scene.get_chunks()]
+        assert sorted(c.name for c in scene.get_chunks()) == expected
+        assert "Inner" in expected
