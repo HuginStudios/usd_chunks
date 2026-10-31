@@ -98,6 +98,9 @@ def test_the_network_saves_and_reopens(tmp_path) -> None:
         stage = scene.get_stage()
         assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
         assert _arcs(stage.GetPrimAtPath("/Bottle")) == (["ArcTypePayload"], ["ArcTypeReference"])
+        # Kept though the Layer menus list nothing until they are opened.
+        layers = {c.name: c.get_param("layer").value for c in scene.get_chunks() if c.name in ("payload", "geom_ref")}
+        assert layers == {"payload": "Bottle_payload", "geom_ref": "Bottle.geom.usda"}
         mesh = next(c for c in scene.get_chunks() if c.name == "bottle_mesh")
         _export(scene, mesh, tmp_path / "out")
     assert Sdf.Layer.FindOrOpen(str(tmp_path / "out" / "Bottle.geom.usda")).GetPrimAtPath("/Bottle/geo")
@@ -229,20 +232,6 @@ def test_existing_layer_shows_the_layer_menu_in_place_of_file_path(tmp_path) -> 
                 assert hidden(c, "file_path") and not hidden(c, "layer"), c.name
 
 
-def test_the_layer_menu_follows_the_arc_layers() -> None:
-    """Listed again only when the arc layers change, and then it must be."""
-    with Scene() as scene:
-        ref = scene.create.reference(name="ref", from_layer=True)
-        items = lambda: list(ref.get_param("layer").menu_items)  # noqa: E731
-        assert items() == []
-        scene.create.layer(layer_name="dept", sublayer=False, name="dept")
-        assert items() == ["dept"]
-        scene.create.layer(layer_name="look", sublayer=False, name="look")
-        assert items() == ["dept", "look"]
-        scene.create.cube(prim_path="/box")
-        assert items() == ["dept", "look"]
-
-
 def _wired_bottle(scene, driven: bool = False):
     """The Bottle with its arc layers wired in: the Layer chunks off the chain, each Layer Name
     wired into the Payload's or Reference's Layer."""
@@ -286,3 +275,54 @@ def test_a_wired_bottle_exports_the_kitchen_set_layout(tmp_path) -> None:
     assert [r.assetPath for r in payload.GetPrimAtPath("/Bottle").referenceList.GetAddedOrExplicitItems()] == ["Bottle.geom.usda"]
     stage = Usd.Stage.Open(str(tmp_path / "Bottle.usda"))
     assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
+
+
+def test_the_layer_menu_lists_the_arc_layers_as_it_opens() -> None:
+    """Filled when a frontend opens it (Menu.refresh_items), not kept current on every change."""
+    with Scene() as scene:
+        _bottle(scene)
+        for c in scene.get_chunks():
+            if c.name in ("payload", "geom_ref"):
+                menu = c.get_param("layer")
+                menu.refresh_items()
+                assert {"Bottle_payload", "Bottle.geom.usda"} <= set(menu.menu_items), c.name
+
+
+def test_references_and_payloads_do_not_each_hear_every_stage_change() -> None:
+    """Each one listened to every USD change to keep its Layer menu current: on a network with
+    106 References that was 397k calls, 12 s of opening it."""
+    from usd_chunks import chunk_notice
+
+    def listeners():
+        dispatch = chunk_notice._global_dispatches.get(chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED)
+        return len(dispatch.subscribers) if dispatch else 0
+
+    with Scene() as scene:
+        before = listeners()
+        for i in range(3):
+            scene.create.reference(name=f"ref{i}")
+            scene.create.payload(name=f"pay{i}")
+        assert listeners() == before
+
+
+def test_the_layer_menu_opens_on_an_arc_layer_renamed_sublayered_or_deleted() -> None:
+    """None of these is a change to the stage: the arc layer is in no layer stack. A menu
+    kept current by stage changes went on listing the old name; one filled as it opens can't."""
+    with Scene() as scene:
+        ref = scene.create.reference(name="ref", from_layer=True)
+        menu = ref.get_param("layer")
+
+        def items():
+            menu.refresh_items()
+            return list(menu.menu_items)
+
+        dept = scene.create.layer(layer_name="dept", sublayer=False, name="dept")
+        assert items() == ["dept"]
+        dept.get_param("layer_name").value = "look"
+        assert items() == ["look"]
+        dept.get_param("sublayer").value = True
+        assert items() == []
+        dept.get_param("sublayer").value = False
+        assert items() == ["look"]
+        dept.request_delete()
+        assert items() == []

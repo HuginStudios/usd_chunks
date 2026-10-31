@@ -2358,7 +2358,7 @@ class ContainerWidget(
     _GROUP_COLORS = ("#303030", "#333333")
     # Inside a node body, by how far below the body a group sits: the body itself is
     # see-through (the node paints its rounded frame behind it), groups a step darker.
-    _NODE_GROUP_COLORS = ("transparent", "#25262b", "#212226")
+    _NODE_GROUP_COLORS = ("transparent", "#323232", "#2e2e2e")
 
     def _update_group_depth(self):
         depth = len(self.group.get_identifier().split("."))

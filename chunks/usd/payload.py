@@ -82,6 +82,15 @@ def _source_params():
     return from_layer, menu
 
 
+def menu_items(node, param_name):
+    """The network's arc layers for the Layer menu, asked for as it opens (chunk.Menu.refresh_items).
+
+    Not kept current by a stage listener: every Reference and Payload heard every USD change
+    to do that, which on a network with a hundred of them was most of the time spent opening it.
+    """
+    return chunk_utils.arc_layer_items() if param_name == "layer" else None
+
+
 def main():
     PayloadChunk = chunk.Chunk("Payload")
 
@@ -107,13 +116,6 @@ def main():
         tooltip="Unchecked: the payload is unloaded, for a lighter stage. Checked loads back "
         "what this unloaded; it never loads a payload unloaded by hand.",
     ))
-
-    PayloadChunk.add_callback(
-        chunk_utils.refresh_arc_layer_menu,
-        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
-        listen_globally=True,
-        send_on_create=True,
-    )
 
     chunk_utils.show_arc_source(PayloadChunk)
     PayloadChunk.add_callback(chunk_utils.arc_source_changed, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)

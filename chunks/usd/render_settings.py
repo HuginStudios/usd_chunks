@@ -211,30 +211,44 @@ def _chunk_loaded(owner, notice, sender):
     if _chunk is None:
         return
 
-    entries = _authored_settings(_chunk)
+    # Cook again if the values were not back yet. execute() restores them itself before
+    # authoring, so on a load this finds nothing to do; only a cook that could not see the
+    # chunk prim leaves them for here -- and wrote nothing for params that did not exist.
+    if _restore_saved_settings(_chunk):
+        _chunk.execute()
+
+
+def _restore_saved_settings(node) -> bool:
+    """Build the groups holding saved settings and put the saved values back. True if any
+    value changed.
+
+    By leaf name, not by the stored path. A group's name is uniquified when the chunk
+    already has one by that name -- V-Ray has both a top-level Settings and a
+    viewport/Settings, so one of them is stored as "Settings1" -- while get_param resolves
+    paths by the original name, so the stored path can never be looked up. Leaf names
+    carry their renderer's namespace (vray_..., ri_...) and are unique on the chunk,
+    which is what makes them safe to resolve on their own.
+    """
+    # Renderer settings only: those are the params built lazily. Every other input is
+    # restored by the load itself -- and one holding an expression (a camera wired as
+    # @Camera.primpath_location@) never equals its saved text, so compared here it read as
+    # a change on every load, and was cooked again for it.
+    lazy = {prop.name for definition in render_defs.iter_render_settings_defs() for prop in definition.props}
+    entries = [entry for entry in _authored_settings(node) if entry[1] in lazy]
     if not entries:
-        return
+        return False
 
-    _populate_groups_holding(_chunk, {leaf for _path, leaf, _value in entries})
+    _populate_groups_holding(node, {leaf for _path, leaf, _value in entries})
 
-    # By leaf name, not by the stored path. A group's name is uniquified when the chunk
-    # already has one by that name -- V-Ray has both a top-level Settings and a
-    # viewport/Settings, so one of them is stored as "Settings1" -- while get_param resolves
-    # paths by the original name, so the stored path can never be looked up. Leaf names
-    # carry their renderer's namespace (vray_..., ri_...) and are unique on the chunk,
-    # which is what makes them safe to resolve on their own.
+    # values_match, not !=: a float setting reads back off its float attribute as its
+    # nearest float32, so compared exactly it never matched and every load cooked again.
     restored = False
     for _param_path, leaf, value in entries:
-        param = _chunk.get_param(leaf)
-        if param is not None and value is not None and param.value != value:
+        param = node.get_param(leaf)
+        if param is not None and value is not None and not chunk_utils.values_match(param.value, value):
             param.value = value
             restored = True
-
-    # Cook again now the values are back. The chunk has already executed by this point,
-    # and it authors a renderer setting by reading the param that holds it -- params
-    # that did not exist yet, so that pass wrote nothing for them.
-    if restored:
-        _chunk.execute()
+    return restored
 
 
 def _set_stage_settings_path(stage, prim_path):
@@ -438,6 +452,14 @@ def execute(node):
     raw_path = node.get_param("primpath_location").value
     if not raw_path:
         return
+
+    # A loaded chunk's renderer settings are params built lazily, so on the first cook
+    # after a load they do not exist yet and nothing would author them. Built and filled
+    # here, the first cook writes them -- otherwise CHUNK_LOADED restores them afterwards
+    # and cooks the chunk, and everything after it, a second time. During a load a value
+    # lands without notices, so this schedules no cook of its own.
+    if chunk_notice._loading_stage:
+        _restore_saved_settings(node)
 
     authored = None
     primpath_param = node.get_param("primpath_location")
