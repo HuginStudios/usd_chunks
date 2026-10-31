@@ -3201,7 +3201,7 @@ def reached_by_graph_driver(
         return True
     slot = None
     if context is not None and (prim := stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(context)))):
-        attr = prim.GetAttribute("chunk:activeView")
+        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR)
         slot = attr.Get() if attr and attr.IsValid() else None
     view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
     drivers = [view] if view is not None else outputs
@@ -4848,7 +4848,7 @@ def find_group_active_view(
     gp = stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(group)))
     slot = None
     if gp and gp.IsValid():
-        a = gp.GetAttribute("chunk:activeView")
+        a = gp.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR)
         if a and a.IsValid():
             slot = a.Get()
     if slot:
@@ -5940,24 +5940,8 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
         # only place the mute is still visible from.
         invalidate_edit_layer_memo()
 
-    if view_chunk is None:
-        cook_list: list[core.ChunkBase] = []
-        cook_set: set = set()
-    elif delivering:
-        # Every Output, weakest layer first; implied edges order them already, and a chunk
-        # two Outputs reach cooks in the earlier one's turn.
-        cook_list = []
-        cook_set = set()
-        for output in outputs:
-            for c in view_cook_list(output, stage, scene):
-                if c not in cook_set:
-                    cook_set.add(c)
-                    cook_list.append(c)
-    else:
-        cook_list = view_cook_list(view_chunk, stage, scene)
-        if _synthetic_tail:
-            cook_list.append(view_chunk)
-        cook_set = set(cook_list)
+    cook_list = _cook_list(stage, scene, view_chunk, outputs if delivering else None, _synthetic_tail)
+    cook_set = set(cook_list)
 
     def will_cook(c: core.ChunkBase) -> bool:
         # The execute loop's own test, below, read ahead of it.
@@ -6105,46 +6089,7 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
         return
 
     lm.follow_merged_graphs(scene.get_chunks())
-    # Layer-win order follows the exec traversal: the chunk nearest the view (last in
-    # cook_list) must win, so reorder each graph layer's sublayers to put the most
-    # downstream layer strongest (subLayerPaths[0]). This is what makes rewiring change
-    # who-wins for chunks that author to the same target. (Safe re: prim expiry -- this
-    # reorders the result layers under the graph root, not the chunk prims in the edit layer.)
-    rank = {id(c): i for i, c in enumerate(cook_list)}  # higher = more downstream = stronger
-    # Tuple ranks: (cook_list position, 0-for-the-chunk-itself-or-1-for-a-descendant).
-    # The second element only matters for ties on the first -- see the descendant loop
-    # below for why those ties exist and must break in the descendant's favor.
-    ident_rank: dict = {}
-    for c in cook_list:
-        layer = lm.get_layer(c)
-        if layer is not None:
-            ident_rank[layer.identifier] = (rank[id(c)], 0)
-    # A ranked group's own children are ranked by a completely separate, incomparable
-    # numbering scheme -- their own inner recook's cook_list -- so from THIS call's
-    # perspective they're simply invisible descendants, not competitors for a tier of
-    # their own. Left alone they would sit wherever they were first inserted instead of
-    # ranking anywhere near the group that actually produced them. Give every descendant of a ranked group the group's own
-    # rank tier, strictly above the group's own layer within that tier (a group's
-    # actual produced content should win over its own generic bookkeeping, and a plain
-    # equal rank would leave that ambiguous -- tie-broken arbitrarily by whatever the
-    # two happened to be in before this sort, not something to depend on). The stable
-    # sort in _reorder_graph_layers_by_rank then keeps whatever relative order the
-    # group's own inner recook already established among the descendants themselves
-    # (their own ranks tie 1-vs-1, so stay untouched relative to each other), while
-    # moving the whole cluster to sit where the group belongs among its outer siblings.
-    for c in cook_list:
-        if not is_group_chunk(c):
-            continue
-        prefix = get_chunk_prim_path(c) + "/"
-        for other in scene.get_chunks():
-            if id(other) in rank:
-                continue
-            if get_chunk_prim_path(other).startswith(prefix):
-                layer = lm.get_layer(other)
-                if layer is not None:
-                    ident_rank.setdefault(layer.identifier, (rank[id(c)], 1))
-    _reorder_graph_layers_by_rank(lm.graph_layers.values(), ident_rank)
-    _reorder_graph_layers_in_targets(lm, ident_rank)
+    _rank_layers_by_cook_list(lm, scene, cook_list)
 
 
 def _group_output_driver(stage: Usd.Stage, scene: chunk_scene.SceneSender, group: core.ChunkBase):
@@ -6189,6 +6134,130 @@ def _group_output_driver(stage: Usd.Stage, scene: chunk_scene.SceneSender, group
         inner_view = tails[0] if tails else None
         synthetic = inner_view is not None
     return inner_view, synthetic
+
+
+def _cook_list(stage, scene, view_chunk, outputs=None, synthetic_tail=False) -> list[core.ChunkBase]:
+    """What a recook for a view cooks, roots first: the chunks feeding the view, or with
+    *outputs* given (delivering a graph), every Output's, weakest layer first.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+        view_chunk: The view, or None for nothing.
+        outputs: The graph's Outputs when delivering it (graph_outputs), else None.
+        synthetic_tail: Append the view itself (recook_for_view's _synthetic_tail).
+
+    Returns:
+        The chunks, roots first.
+    """
+    if view_chunk is None:
+        return []
+    if outputs is not None:
+        # Every Output, weakest layer first; implied edges order them already, and a chunk
+        # two Outputs reach cooks in the earlier one's turn.
+        cook_list: list[core.ChunkBase] = []
+        seen: set = set()
+        for output in outputs:
+            for c in view_cook_list(output, stage, scene):
+                if c not in seen:
+                    seen.add(c)
+                    cook_list.append(c)
+        return cook_list
+    cook_list = view_cook_list(view_chunk, stage, scene)
+    if synthetic_tail:
+        cook_list.append(view_chunk)
+    return cook_list
+
+
+def _rank_layers_by_cook_list(lm: ChunkLayerManager, scene, cook_list) -> None:
+    """Make the chunk nearest the view win: rank the cook list's layers by their place in it.
+
+    Args:
+        lm: The layer manager.
+        scene: The scene.
+        cook_list: The chunks a recook for the view cooks, roots first (_cook_list).
+    """
+    if not cook_list:
+        return
+    # Layer-win order follows the exec traversal: the chunk nearest the view (last in
+    # cook_list) must win, so reorder each graph layer's sublayers to put the most
+    # downstream layer strongest (subLayerPaths[0]). This is what makes rewiring change
+    # who-wins for chunks that author to the same target. (Safe re: prim expiry -- this
+    # reorders the result layers under the graph root, not the chunk prims in the edit layer.)
+    rank = {id(c): i for i, c in enumerate(cook_list)}  # higher = more downstream = stronger
+    # Tuple ranks: (cook_list position, 0-for-the-chunk-itself-or-1-for-a-descendant).
+    # The second element only matters for ties on the first -- see the descendant loop
+    # below for why those ties exist and must break in the descendant's favor.
+    ident_rank: dict = {}
+    for c in cook_list:
+        layer = lm.get_layer(c)
+        if layer is not None:
+            ident_rank[layer.identifier] = (rank[id(c)], 0)
+    # A ranked group's own children are ranked by a completely separate, incomparable
+    # numbering scheme -- their own inner recook's cook_list -- so from THIS call's
+    # perspective they're simply invisible descendants, not competitors for a tier of
+    # their own. Left alone they would sit wherever they were first inserted instead of
+    # ranking anywhere near the group that actually produced them. Give every descendant of a ranked group the group's own
+    # rank tier, strictly above the group's own layer within that tier (a group's
+    # actual produced content should win over its own generic bookkeeping, and a plain
+    # equal rank would leave that ambiguous -- tie-broken arbitrarily by whatever the
+    # two happened to be in before this sort, not something to depend on). The stable
+    # sort in _reorder_graph_layers_by_rank then keeps whatever relative order the
+    # group's own inner recook already established among the descendants themselves
+    # (their own ranks tie 1-vs-1, so stay untouched relative to each other), while
+    # moving the whole cluster to sit where the group belongs among its outer siblings.
+    for c in cook_list:
+        if not is_group_chunk(c):
+            continue
+        prefix = get_chunk_prim_path(c) + "/"
+        for other in scene.get_chunks():
+            if id(other) in rank:
+                continue
+            if get_chunk_prim_path(other).startswith(prefix):
+                layer = lm.get_layer(other)
+                if layer is not None:
+                    ident_rank.setdefault(layer.identifier, (rank[id(c)], 1))
+    _reorder_graph_layers_by_rank(lm.graph_layers.values(), ident_rank)
+    _reorder_graph_layers_in_targets(lm, ident_rank)
+
+
+def order_layers_like_the_views(stage, scene, lm: ChunkLayerManager) -> None:
+    """Rank chunk layers as each graph's recook for its view will, without cooking anything.
+
+    A load first sorts by wiring depth (sort_chunk_layers), which mixes a Merge's branches by
+    length. A graph's recook for its active View, or its Output when none is active, keeps
+    each branch together with the Merge's first input strongest. Ranked the same way here, a
+    script opening the network gets the graph's result, and the graph's first recook moves
+    nothing -- so every chunk can still skip its next cook. Inner graphs first, as a recook
+    ranks a group's chunks in the group's own cook.
+
+    Args:
+        stage: The stage.
+        scene: The scene.
+        lm: The layer manager.
+    """
+    if not lm.initialized:
+        return
+    root = scene.peek_root_context()
+    contexts = sorted(scene.get_contexts(), key=lambda c: -get_chunk_prim_path(c).count("/"))
+    for context in contexts:
+        if context is root:
+            # The outermost graph: the View its saved slot names, else its Outputs.
+            prim = stage.GetPrimAtPath(get_chunk_prim_path(context))
+            attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim else None
+            slot = int(attr.Get() or 0) if attr and attr.IsValid() else 0
+            driver = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
+            synthetic = False
+        else:
+            # A group: what its parent's recook cooks it by -- its Output, then its inner View,
+            # then the end of its chain.
+            driver, synthetic = _group_output_driver(stage, scene, context)
+        if driver is not None and not is_output_chunk(driver):
+            cook_list = _cook_list(stage, scene, driver, None, synthetic)
+        else:
+            outputs = graph_outputs(stage, scene, context)
+            cook_list = _cook_list(stage, scene, outputs[-1] if outputs else None, outputs)
+        _rank_layers_by_cook_list(lm, scene, cook_list)
 
 
 def _reorder_graph_layers_by_rank(graph_layers: Iterable[Sdf.Layer], ident_rank: dict) -> None:
@@ -7213,7 +7282,7 @@ def _unseen_by_active_views(
         if any(path.startswith(p + "/") for p in paths):
             continue  # a group -- walked from the outermost context that holds it
         prim = stage.GetPrimAtPath(Sdf.Path(path))
-        attr = prim.GetAttribute("chunk:activeView") if prim and prim.IsValid() else None
+        attr = prim.GetAttribute(chunk_naming.ACTIVE_VIEW_ATTR) if prim and prim.IsValid() else None
         slot = attr.Get() if attr and attr.IsValid() else None
         view = find_view_chunk_for_slot(slot, stage, scene, context) if slot else None
         # No active view: the context cooks to its Outputs, as recook_for_view does.
@@ -7818,6 +7887,8 @@ def _load_chunks(
                 cook_keys = nested_cook_keys(every_chunk, stage)
                 if lm.initialized:
                     sort_chunk_layers(lm, every_chunk, cook_keys)
+                    # Before anything cooks, so each cook records the order the graph keeps.
+                    order_layers_like_the_views(stage, scene, lm)
 
                 # Home every chunk's bookkeeping now, while the exec chain is final (it came
                 # from the file and the dependency restore above only mirrored it) and before
@@ -7918,6 +7989,7 @@ def _load_chunks(
                 # own, and ranked apart from the chunk after the group they never moved past it.
                 if lm.initialized:
                     sort_chunk_layers(lm, every_chunk, cook_keys)
+                    order_layers_like_the_views(stage, scene, lm)
             finally:
                 chunk_notice._loading_stage = old_loading_stage
                 # A load that failed part-way still leaves its layers on the stage.

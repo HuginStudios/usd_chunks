@@ -2502,7 +2502,7 @@ def parent_context(context: str, available) -> str | None:
 VIEW_MODULE = "view"
 OUTPUT_MODULE = "output"
 VIEW_SLOT_ATTR = "view:slot"
-ACTIVE_VIEW_ATTR = "chunk:activeView"
+ACTIVE_VIEW_ATTR = chunk_naming.ACTIVE_VIEW_ATTR
 VIEW_SLOTS = (1, 2)
 
 #: The number a person picks the Output by (key 1, "Output [1]"). The view slots follow it,
