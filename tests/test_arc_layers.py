@@ -229,6 +229,20 @@ def test_existing_layer_shows_the_layer_menu_in_place_of_file_path(tmp_path) -> 
                 assert hidden(c, "file_path") and not hidden(c, "layer"), c.name
 
 
+def test_the_layer_menu_follows_the_arc_layers() -> None:
+    """Listed again only when the arc layers change, and then it must be."""
+    with Scene() as scene:
+        ref = scene.create.reference(name="ref", from_layer=True)
+        items = lambda: list(ref.get_param("layer").menu_items)  # noqa: E731
+        assert items() == []
+        scene.create.layer(layer_name="dept", sublayer=False, name="dept")
+        assert items() == ["dept"]
+        scene.create.layer(layer_name="look", sublayer=False, name="look")
+        assert items() == ["dept", "look"]
+        scene.create.cube(prim_path="/box")
+        assert items() == ["dept", "look"]
+
+
 def _wired_bottle(scene, driven: bool = False):
     """The Bottle with its arc layers wired in: the Layer chunks off the chain, each Layer Name
     wired into the Payload's or Reference's Layer."""

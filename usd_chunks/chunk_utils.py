@@ -13,6 +13,7 @@ import math
 import os
 import re
 import uuid
+import weakref
 from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
@@ -142,6 +143,12 @@ def arc_source_changed(owner, notice, sender) -> None:
         show_arc_source(node)
 
 
+# Per Payload or Reference chunk, by id(), the arc_generation its Layer menu was last listed
+# at and a weakref that drops the entry with the chunk. Not a WeakKeyDictionary: its get()
+# makes a weakref and hashes the chunk, on every stage change, for every one of them.
+_arc_menu_generation: dict[int, tuple[int, weakref.ref]] = {}
+
+
 @chunk_notice.without_edit_context
 def refresh_arc_layer_menu(owner, notice, sender) -> None:
     """Keep a Payload or Reference chunk's Layer menu listing the network's arc layers.
@@ -152,11 +159,23 @@ def refresh_arc_layer_menu(owner, notice, sender) -> None:
     Outside the owner's edit context: resolving it makes or moves the chunk's layer, a
     sublayer edit, and this runs inside the stage's change notice. A cook stage of the same
     layers heard that edit before the change it was answering, and USD refused it.
+
+    Looked at again only once the arc layers have changed (ChunkLayerManager.arc_generation):
+    it hears every change to the stage, and a 900-chunk build with 300 References called it
+    2.2 million times, a third of the build.
     """
     node = owner.get_chunk()
-    menu = node.get_param("layer") if node is not None else None
+    if node is None:
+        return
+    generation = chunk_registry.ChunkLayerManager().arc_generation
+    key = id(node)
+    seen = _arc_menu_generation.get(key)
+    if seen is not None and seen[0] == generation and seen[1]() is node:
+        return
+    menu = node.get_param("layer")
     if menu is None:
         return
+    _arc_menu_generation[key] = (generation, weakref.ref(node, lambda _ref: _arc_menu_generation.pop(key, None)))
     items = arc_layer_items()
     if list(getattr(menu, "menu_items", [])) != items:
         menu.menu_items = items

@@ -13,6 +13,7 @@ my_chunk = reg.scene.get_chunk("my_chunk")  # or chunk.get_chunk("my_chunk")
 from __future__ import annotations
 
 import contextlib
+import itertools
 import weakref
 import os
 import functools
@@ -2139,6 +2140,9 @@ def _without_sublayers(parent: Sdf.Layer, identifiers: set) -> list:
     ]
 
 
+_ARC_GENERATIONS = itertools.count(1)
+
+
 class ChunkLayerManager(metaclass=RegistrySingleton):
     """A singleton that creates, tracks and removes the layers chunks author into.
 
@@ -2151,6 +2155,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
     """
 
     initialized: bool = False
+    #: Moves whenever the arc layers do (add_arc_layer); see initialize.
+    arc_generation: int = 0
     #: Identifiers of every layer this manager created. Declared here, not only in
     #: initialize(), because is_chunk_internal_layer reads it and is reachable before this
     #: singleton has been initialized at all: ChunkStageSync.initialize ->
@@ -2228,6 +2234,9 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         # than sublayer; see add_arc_layer. Held here: nothing else keeps it alive until an
         # arc composes it.
         self._arc_layers: dict[core.ChunkHash, Sdf.Layer] = {}
+        # Moves whenever that list does, never back (not even on reset): what lists the arc
+        # layers compares it to know whether to look again.
+        self.arc_generation = next(_ARC_GENERATIONS)
         # Per chunk, a layer it put in a real layer's sublayers itself, outside its own
         # layer, with that parent; see add_outside_layer. Taken out when the chunk goes.
         self._outside_layers: dict[core.ChunkHash, tuple[Sdf.Layer, Sdf.Layer]] = {}
@@ -2272,6 +2281,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         self._cook_layers = {}
         self._placed = {}
         self._arc_layers = {}
+        self.arc_generation = next(_ARC_GENERATIONS)
         self._outside_layers = {}
         self.internal_layer_ids = set()
 
@@ -2343,10 +2353,14 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             c: The chunk that made the layer.
             layer: The layer, or None to drop the one c made.
         """
+        key = c.get_hash()
+        if self._arc_layers.get(key) is layer:
+            return
         if layer is None:
-            self._arc_layers.pop(c.get_hash(), None)
+            self._arc_layers.pop(key, None)
         else:
-            self._arc_layers[c.get_hash()] = layer
+            self._arc_layers[key] = layer
+        self.arc_generation = next(_ARC_GENERATIONS)
 
     def add_outside_layer(self, c: core.ChunkBase, layer: Sdf.Layer | None, parent: Sdf.Layer | None = None) -> None:
         """Record layer as one c sublayered into parent itself, outside its own layer -- or forget c's.
@@ -3173,7 +3187,8 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         if chunk_hash in self._retired_chunks:
             return
         self._retired_chunks.add(chunk_hash)
-        self._arc_layers.pop(chunk_hash, None)
+        if self._arc_layers.pop(chunk_hash, None) is not None:
+            self.arc_generation = next(_ARC_GENERATIONS)
         if outside := self._outside_layers.pop(chunk_hash, None):
             self._remove_outside_layer(*outside)
         self._chunk_target.pop(chunk_hash, None)
