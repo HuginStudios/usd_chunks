@@ -3488,6 +3488,10 @@ def suggest_location_from_file(param) -> None:
     location.value = _suggested_locations[chunk] = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
 
 
+#: The file formats a chunk network can be saved in: usd and the three it stands for.
+_USD_FORMAT_IDS = frozenset({"usd", "usda", "usdc", "usdz"})
+
+
 def network_target(asset_path: str, import_path: str = "") -> str | None:
     """The prim path of the chunkgroup a referenced file offers, or None for scene content.
 
@@ -3512,6 +3516,13 @@ def network_target(asset_path: str, import_path: str = "") -> str | None:
         The chunkgroup's prim path in the file, or None.
     """
     if not asset_path:
+        return None
+    # A network is a USD file. Opening anything else to ask -- a .mtlx a material Reference
+    # points at -- ran its plugin's conversion and hundreds of change notices, then dropped
+    # the layer for the reference to open it all again. A path whose format is unknown
+    # (no extension, a resolver's own scheme) is still opened, as before.
+    fmt = Sdf.FileFormat.FindByExtension(Sdf.FileFormat.GetFileExtension(asset_path))
+    if fmt is not None and fmt.formatId not in _USD_FORMAT_IDS:
         return None
     try:
         layer = Sdf.Layer.FindOrOpen(asset_path)

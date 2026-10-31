@@ -1742,12 +1742,41 @@ def _foreign(alias: ChunkNoticeAlias, source, here, quiet: set[DagNode]) -> bool
 _global_dispatches: dict[ChunkNoticeAlias, _GlobalDispatch] = {}
 
 
+class _NoticeOrigin:
+    """The stage a notice came from, its root layer and whether it is a cook stage.
+
+    Worked out once per notice for all of a global dispatch's listeners: asked by each one,
+    it was most of the 29,000 deliveries opening the car configurator made, nearly all to
+    listeners that then dropped a notice from some other stage.
+    """
+
+    __slots__ = ("stage", "root", "cook")
+
+    def __init__(self, notice):
+        # An on-create trigger passes the notice class, not a notice, and a class's GetStage
+        # is unbound.
+        get = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
+        self.stage = get() if get is not None else None
+        self.root = self.stage.GetRootLayer().identifier if self.stage is not None else None
+        self.cook = self.stage is not None and chunk_cook.is_cook_stage(self.stage)
+
+
 def _dispatch_global(alias: ChunkNoticeAlias, notice, sender):
     dispatch = _global_dispatches.get(alias)
     if not dispatch:
         return
+    origin = _NoticeOrigin(notice)
     for connection in list(dispatch.subscribers):
-        connection.handle_callback(notice, sender)
+        connection.handle_callback(notice, sender, origin=origin)
+
+
+@functools.lru_cache(maxsize=4096)
+def _takes_owner(func, bound: bool) -> bool:
+    """NoticeConnection._wants_owner for the function under a callback, remembered."""
+    code = getattr(inspect.unwrap(func), "__code__", None)
+    if code is None:
+        return False
+    return (code.co_argcount - 1 if bound else code.co_argcount) >= 3
 
 
 def _register_global(alias: ChunkNoticeAlias, notice_type, connection: NoticeConnection) -> _SharedGlobalListener:
@@ -1902,15 +1931,14 @@ class NoticeConnection:
         failed. ``functools.wraps`` records the original as ``__wrapped__``; without it
         there is nothing to read, and the wrapper's own signature decides.
         """
-        func = meth.__func__ if inspect.ismethod(meth) else meth
-        func = inspect.unwrap(func)
-        code = getattr(func, "__code__", None)
-        if code is None:
-            return False
-        count = code.co_argcount - 1 if inspect.ismethod(meth) else code.co_argcount
-        return count >= 3
+        if inspect.ismethod(meth):
+            return _takes_owner(meth.__func__, True)
+        try:
+            return _takes_owner(meth, False)
+        except TypeError:  # an unhashable callable object: read it each time
+            return _takes_owner.__wrapped__(meth, False)
 
-    def handle_callback(self, notice, sender=None, context=True):
+    def handle_callback(self, notice, sender=None, context=True, origin=None):
         """Forward a notice to the callback, if the method, sender and owner are still alive.
 
         If the owner is valid and implements get_stage() and get_edit_context(), the method is
@@ -1924,6 +1952,8 @@ class NoticeConnection:
             notice (Tf.Notice): The notice to forward
             sender (ChunkNoticePropagator, optional): The sender of the original notice. Defaults to None.
             context (bool, optional): Run inside the owner's edit context. Defaults to True.
+            origin (_NoticeOrigin, optional): Where the notice came from, when the caller has
+                already worked it out for several listeners. Defaults to working it out.
         """
         if not (meth := self.get_method()):
             return
@@ -1937,6 +1967,8 @@ class NoticeConnection:
 
         args = (owner, notice, sender) if self._wants_owner(meth) else (notice, sender)
         if owner:
+            if origin is None:
+                origin = _NoticeOrigin(notice)
             cooking = _executing_chunk
             if cooking is None or getattr(owner, "get_chunk", lambda: None)() is not cooking:
                 # Another chunk is cooking, and its stage is the cook's (skip_cook): only what
@@ -1948,19 +1980,18 @@ class NoticeConnection:
                 # chunk cooking, a cook stage is being opened: muting its hidden layers is
                 # nobody's change, and every Set Camera and Set Variant rebuilt its menus
                 # for it on every masked cook.
-                notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
-                if notice_stage is not None and chunk_cook.is_cook_stage(notice_stage()):
+                if origin.cook:
                     return
                 if cooking is not None:
                     with chunk_cook.outside_cook():
-                        self._call_for_owner(owner, meth, args, notice, context)
+                        self._call_for_owner(owner, meth, args, origin, context)
                     return
-            self._call_for_owner(owner, meth, args, notice, context)
+            self._call_for_owner(owner, meth, args, origin, context)
             return
 
         meth(*args)
 
-    def _call_for_owner(self, owner, meth, args, notice, context):
+    def _call_for_owner(self, owner, meth, args, origin, context):
         """Run meth for owner, inside owner's edit context when it has one (handle_callback)."""
         # Try running the callback function with the edit context to safely add any changes to the stage
         # to the correct layer
@@ -1972,10 +2003,9 @@ class NoticeConnection:
         # stage, and resolving the context for each cost more than the file itself.
         # Compared by root layer, since the Python wrapper of one stage is not unique.
         # An on-create trigger passes the notice class, not a notice, and a class's
-        # GetStage is unbound -- calling it raised for every Layer and Edit Target made.
-        notice_stage = None if isinstance(notice, type) else getattr(notice, "GetStage", None)
-        if stage and notice_stage is not None and (other := notice_stage()) is not None \
-                and other.GetRootLayer().identifier != stage.GetRootLayer().identifier:
+        # GetStage is unbound -- calling it raised for every Layer and Edit Target made
+        # (_NoticeOrigin leaves its root None).
+        if stage and origin.root is not None and origin.root != stage.GetRootLayer().identifier:
             return
         # Only for a callback that runs in it: asking makes the layer, and a layer made puts
         # it on the stage -- for nothing, when the callback runs without it.
