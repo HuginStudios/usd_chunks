@@ -1137,9 +1137,21 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         nothing else cooks; at the end what changed cooks once, upstream first, and the layers
         are ranked as the next chunk made would rank them. About two cooks a chunk in all.
         Readouts read inside the block are from that first, unwired cook.
+
+        The chunks' layers wait in one layer on the stage until the block ends, and are then
+        placed once, by their finished wiring (ChunkLayerManager.defer_placement), as in a
+        change_block: placed as made, each became a graph of its own and moved when wired,
+        five edits of the layer stack per chunk, each costing the size of the stack.
         """
         with chunk_cook.building():
-            yield
+            lm = chunk_registry.ChunkLayerManager()
+            placing = lm.initialized and lm.defer_placement()
+            try:
+                yield
+            finally:
+                # Before the block's flush: a cook needs its layer in its place.
+                if placing:
+                    lm.place_deferred_layers()
         # What the next chunk made would do: rank the layers through the active View, or by
         # wiring when there is none. An Edit Target that cooked in the flush above re-homed
         # the chunks below it at a provisional place, and a group behind it lost to its input.

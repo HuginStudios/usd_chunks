@@ -2505,7 +2505,19 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         Each graph layer's sublayer list is written once, for all its chunks: every write
         to a list on the stage recomposes the whole layer stack, so placing a layer per
         write made a network of n chunks cost n recomposes of up to n layers each.
+
+        Each chunk's Edit Target is resolved first, while every held layer is still on the
+        stage: an Edit Target names a layer, and counts only while that layer is composed.
+        Asked during placement, a layer a Layer chunk made was in no stack -- its loading
+        layer gone, the graph layer it moves to written only at the end -- so a chunk not
+        yet resolved fell back to the session layer: a group's child under an Edit Target
+        cooked outside the layer the target exports. The answers are kept: the memo holds
+        across this manager's own layer edits.
         """
+        if self.stage and self._deferred_placement:
+            for ref in self._deferred_placement.values():
+                if isinstance(c := ref(), core.ChunkBase) and not c.has_flag(ChunkFlags.GroupFlags.CONTEXT):
+                    chunk_utils.get_edit_layer(self.stage, c)
         held = self.end_deferral()
         with self.batched_placement():
             for c in held:

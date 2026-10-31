@@ -133,10 +133,29 @@ def test_an_edit_target_with_a_group_built_in_a_block_still_follows_edits() -> N
         assert _color(scene) == (0.0, 1.0, 1.0)
 
 
+def test_a_group_under_an_edit_target_built_in_a_block_cooks_into_its_layer() -> None:
+    # Layers placed at the block's end: the group's child was resolved while the Edit
+    # Target's layer was in no stack, fell back to the session layer, and still showed blue
+    # -- but exporting the layer would have left it out.
+    with Scene() as scene:
+        with scene.building():
+            _edit_target_with_a_group(scene)
+        lm = chunk_registry.ChunkLayerManager()
+        targets = {c.name: lm.get_chunk_target(c.get_hash()).GetDisplayName()
+                   for c in scene.get_chunks() if c.name in ("box_mesh", "red", "blue")}
+        assert targets == {"box_mesh": "look", "red": "look", "blue": "look"}
+
+
 def _chunk_layer_order(scene):
-    """The chunks' layers in stack order, by chunk name, strongest first."""
+    """The chunks' layers in stack order, by chunk name, strongest first.
+
+    Not a View's or an Output's: they never cook, so their layers are empty and where they
+    sit cannot change what composes. Placed at the end of a block, a View's lands below the
+    chunk it views rather than above it.
+    """
     lm = chunk_registry.ChunkLayerManager()
-    by_id = {lm.get_layer(c).identifier: c.name for c in scene.get_chunks() if lm.get_layer(c) is not None}
+    by_id = {lm.get_layer(c).identifier: c.name for c in scene.get_chunks()
+             if lm.get_layer(c) is not None and not chunk_stage.is_terminal_chunk(c)}
     stack = [layer.identifier for layer in scene.get_stage().GetLayerStack()]
     return [by_id[i] for i in stack if i in by_id]
 
