@@ -165,11 +165,6 @@ def is_held() -> bool:
     return bool(_held)
 
 
-def is_batching() -> bool:
-    """Whether a batched_solve (change_block) is open, so what it sets settles at its end."""
-    return _batched is not None
-
-
 def after_batch(key, fn) -> bool:
     """Inside a batch, keep fn to run once the outermost one has ended and cooked.
 
