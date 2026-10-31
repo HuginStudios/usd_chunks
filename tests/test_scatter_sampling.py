@@ -138,3 +138,58 @@ def test_the_spacing_grid_answers_as_before() -> None:
         if not old.too_close(pt):
             old.add(pt)
             new.add(pt)
+
+
+class _Proto:
+    """Just enough of a prototype for the Long Axis modes."""
+
+    def __init__(self, axis):
+        self.axis = axis
+
+    def long_axis_dir(self):
+        v = [0.0, 0.0, 0.0]
+        v[self.axis] = 1.0
+        return Gf.Vec3f(*v)
+
+
+def _loop_orientations(count, mode, normals, protos, assignment, up, axis, amount, rngs):
+    """The per-instance loop's orientations, written to half precision as the instancer stores them."""
+    out = []
+    for i in range(count):
+        rng = rngs[i] if isinstance(rngs, list) else rngs
+        q = sp._compute_orientation(mode, Gf.Vec3f(*normals[i]), rng, protos[assignment[i]], up)
+        q = sp._apply_random_rotation(q, axis, amount, rng)
+        h = sp._to_quath(q)
+        out.append((h.GetReal(), *h.GetImaginary()))
+    return np.asarray(out, dtype=np.float64)
+
+
+@pytest.mark.parametrize("up", [Gf.Vec3f(0, 0, 1), Gf.Vec3f(0, 1, 0)], ids=["z-up", "y-up"])
+@pytest.mark.parametrize("mode", ["Align to Normal", "Random", "Long Axis Up", "Long Axis to Normal", "Up"])
+@pytest.mark.parametrize("axis", ["Off", "Z", "All"])
+@pytest.mark.parametrize("per_point", [False, True], ids=["one-rng", "painted"])
+def test_array_orientations_match_the_loop(up, mode, axis, per_point) -> None:
+    """Each instance gets the turn the loop gave it, to within half-precision rounding, and the
+    generator is left where the loop left it."""
+    count = 600
+    gen = np.random.default_rng(2)
+    normals = gen.standard_normal((count, 3))
+    normals /= np.linalg.norm(normals, axis=1)[:, None]
+    normals[:4] = [[0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]  # along and against either up
+    normals = normals.astype(np.float32).astype(np.float64)
+    protos = [_Proto(0), _Proto(1), _Proto(2)]
+    assignment = gen.integers(0, 3, count)
+
+    def rngs():
+        return [random.Random(100 + i) for i in range(count)] if per_point else random.Random(5)
+
+    old_rngs, new_rngs = rngs(), rngs()
+    old = _loop_orientations(count, mode, normals, protos, assignment, up, axis, 40.0, old_rngs)
+    new = sp._orientations(count, mode, normals, protos, assignment, up, axis, 40.0, new_rngs)
+    new = new.astype(np.float32).astype(np.float16).astype(np.float64)
+
+    # One step of a half near 1 is about 0.0005.
+    assert np.abs(new - old).max() <= 0.001
+    assert np.mean(np.all(new == old, axis=1)) > 0.99
+    last = (lambda r: r[-1]) if per_point else (lambda r: r)
+    assert last(new_rngs).random() == last(old_rngs).random()
