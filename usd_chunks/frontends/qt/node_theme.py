@@ -14,13 +14,17 @@ from PySide6 import QtCore, QtGui, QtSvg
 from usd_chunks import chunk_icons, chunk_resources
 
 # Node frame.
-NODE_BG = QtGui.QColor("#2a2b30")
-NODE_HEADER_BG = QtGui.QColor("#1b1c20")
-NODE_BORDER = QtGui.QColor("#3d3f46")
+NODE_BG = QtGui.QColor("#3a3a3a")
+NODE_HEADER_BG = QtGui.QColor("#2a2a2a")
+NODE_BORDER = QtGui.QColor("#555555")
 NODE_SELECTED = QtGui.QColor("#f5c542")
 NODE_RADIUS = 10.0
 TEXT_PRIMARY = QtGui.QColor("#f2f3f5")
 TEXT_SECONDARY = QtGui.QColor("#8b8f98")
+
+# Built-in icon colours are blended this far toward this grey, so they sit quietly on the node.
+ICON_MUTE_TO = QtGui.QColor("#a0a0a0")
+ICON_MUTE = 0.6
 
 # Port colours, one per kind of value: the muted set the graph has always used.
 PORT_EXEC = QtGui.QColor("#999999")  # the flow wires between chunks: grey
@@ -35,8 +39,14 @@ _pixmaps: dict[tuple, QtGui.QPixmap | None] = {}
 
 
 def icon_color(icon: str) -> QtGui.QColor:
-    """The colour a built-in icon is drawn in by default (chunk_icons.icon_color)."""
-    return QtGui.QColor(chunk_icons.icon_color(icon))
+    """The colour a built-in icon is drawn in by default: chunk_icons.icon_color, toned down."""
+    own = QtGui.QColor(chunk_icons.icon_color(icon))
+    grey = ICON_MUTE_TO
+    t = ICON_MUTE
+    return QtGui.QColor(
+        round(own.red() + (grey.red() - own.red()) * t),
+        round(own.green() + (grey.green() - own.green()) * t),
+        round(own.blue() + (grey.blue() - own.blue()) * t))
 
 
 def node_icon(chunk, prim: Usd.Prim | None) -> tuple[str, QtGui.QColor]:

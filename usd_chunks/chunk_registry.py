@@ -67,6 +67,7 @@ import hashlib
 import inspect
 import importlib.abc
 import logging
+import pickle
 import shutil
 import subprocess
 import textwrap
@@ -701,6 +702,13 @@ class _ConfigTransformer(ast.NodeTransformer):
         self._globs = globs.copy()
         self._deferred_config: Callable | None = None
         self._lines: list[str] | None = None
+        # The module's usd_chunks imports, not run yet: config() gets only the names it
+        # reads (see _import_for), so discovering Bake Textures no longer imports numpy and
+        # scipy, nor Display Modes Qt, for a scene that never uses either.
+        self._framework_imports: list[ast.Import | ast.ImportFrom] = []
+        #: Whether config() needed module-level names (resolve_deferred_config), so its result
+        #: may depend on more than the file -- what is installed, say -- and is not cached.
+        self.deferred = False
 
     def _get_node_source(self, node):
         """The source text of node, as ast.get_source_segment returns it.
@@ -730,14 +738,32 @@ class _ConfigTransformer(ast.NodeTransformer):
         ])
 
     def _exec_node(self, node):
-        if not (src := self._get_node_source(node)):
-            return node
+        if src := self._get_node_source(node):
+            self._exec_source(src)
+        return node
+
+    def _exec_source(self, src):
         try:
             dat = compile(src, filename="<ast>", mode="exec")
             exec(dat, self._globs)
         except ModuleNotFoundError:
             pass
-        return node
+
+    def _import_for(self, func: ast.FunctionDef) -> None:
+        """Run the usd_chunks imports that bind a name func reads, those names only.
+
+        `from usd_chunks import chunk, texture_bake` with a config() that reads only
+        `chunk` runs `from usd_chunks import chunk`. A config() that needs more -- a
+        helper, a constant, a name it reaches some other way -- raises NameError, and
+        resolve_deferred_config runs every import before it retries.
+        """
+        read = {n.id for n in ast.walk(func) if isinstance(n, ast.Name)}
+        for node in self._framework_imports:
+            names = [a for a in node.names if (a.asname or a.name.split(".")[0]) in read]
+            if names:
+                kind = ast.ImportFrom(module=node.module, names=names, level=node.level) \
+                    if isinstance(node, ast.ImportFrom) else ast.Import(names=names)
+                self._exec_source(ast.unparse(kind))
 
     def resolve_deferred_config(self, tree: ast.Module) -> None:
         """Retry a config() that referenced module-level names, with those names available.
@@ -753,6 +779,10 @@ class _ConfigTransformer(ast.NodeTransformer):
         """
         if not self._deferred_config:
             return
+
+        # Every import config() did not get: what it reads may come in through any of them.
+        for node in self._framework_imports:
+            self._exec_node(node)
 
         # Source order, and defs as well as assignments: a config built from module data
         # usually reaches a helper too, and a helper defined after the constant it reads
@@ -773,6 +803,7 @@ class _ConfigTransformer(ast.NodeTransformer):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         if node.name == "config":
+            self._import_for(node)
             self._exec_node(node)
             if func := self._globs.get("config"):
                 try:
@@ -781,22 +812,23 @@ class _ConfigTransformer(ast.NodeTransformer):
                     # config() read a module-level name, which the walk has not executed.
                     # resolve_deferred_config retries once the whole tree is available.
                     self._deferred_config = func
+                    self.deferred = True
         if node.name == "main":
             self._module._has_main = True
         return node
 
     def visit_Import(self, node: ast.Import) -> Any:
-        # Makes sure that 'import usd_chunks ...' works
+        # Makes sure that 'import usd_chunks ...' works -- for config(), see _import_for
         mymod = self.__module__.split(".")[0]
         if any([mymod in x.name.split(".") for x in node.names]):
-            return self._exec_node(node)
+            self._framework_imports.append(node)
         return node
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
-        # Makes sure that 'from usd_chunks import ...' works
+        # Makes sure that 'from usd_chunks import ...' works -- for config(), see _import_for
         mymod = self.__module__.split(".")[0]
         if node.module and mymod in node.module.split("."):
-            return self._exec_node(node)
+            self._framework_imports.append(node)
         return node
 
 
@@ -830,13 +862,107 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
 
     @override
     def exec_module(self, module: types.ModuleType) -> None:
-        source_bytes = self.get_data(self.get_filename(self.fullname))
-        source = source_bytes.decode("utf-8")
         self._module.source_hash = pin.hash_file(self.path)
 
-        _pre_load_module(source, module.__dict__, self._module)
+        if not _CONFIG_CACHE.restore(self.path, self._module):
+            source_bytes = self.get_data(self.get_filename(self.fullname))
+            source = source_bytes.decode("utf-8")
+            transformer = _pre_load_module(source, module.__dict__, self._module)
+            if not transformer.deferred:
+                _CONFIG_CACHE.record(self.path, self._module)
 
         self._loader.exec_module(module)
+
+
+class _ConfigCache:
+    """config() results by chunk module file, kept between processes.
+
+    Discovery parses every chunk module and runs its config() -- a third of a second for the
+    97 in this repo, on every process start, for answers that change only when a file does.
+    An entry holds while its file's mtime and size and the framework's own files' mtimes are
+    unchanged, and is only made for a config() that read nothing but its own body: one that
+    reached module-level data (a constant built from what is installed, say) is evaluated
+    afresh every time. A config that cannot be pickled (one holding a function) is not kept.
+
+    One pickle per install in the user cache folder, written by this machine's own processes only.
+    Anything wrong with it -- unreadable, from another framework, half-written -- reads as
+    empty, and discovery parses as it always did.
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._entries: dict | None = None
+        self._dirty = False
+
+    @staticmethod
+    @functools.cache
+    def _framework_stamp() -> str:
+        # Every file of the package, subpackages too: 5 ms, for a config() whose helper lives
+        # anywhere in the framework.
+        package = Path(__file__).parent
+        files = sorted((str(p.relative_to(package)), p.stat().st_mtime_ns) for p in package.rglob("*.py"))
+        return repr((sys.version_info[:2], files))
+
+    @staticmethod
+    def _file_stamp(path: str):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def _load(self) -> dict:
+        if self._entries is None:
+            self._entries = {}
+            with contextlib.suppress(Exception):
+                with open(self._path, "rb") as f:
+                    stamp, entries = pickle.load(f)
+                if stamp == self._framework_stamp():
+                    self._entries = entries
+        return self._entries
+
+    def restore(self, path: str, module: ChunkModule) -> bool:
+        """Set module's config and main flag from the cache; False on a miss."""
+        entry = self._load().get(path)
+        if entry is None or entry[0] != self._file_stamp(path):
+            return False
+        try:
+            config = pickle.loads(entry[2])
+        except Exception:  # noqa: BLE001 - a stale class layout reads as a miss
+            return False
+        module.config, module._has_main = config, entry[1]
+        return True
+
+    def record(self, path: str, module: ChunkModule) -> None:
+        stamp = self._file_stamp(path)
+        if stamp is None:
+            return
+        try:
+            config = pickle.dumps(module.config)
+        except Exception:  # noqa: BLE001 - a config holding a function: evaluated each time
+            return
+        self._load()[path] = (stamp, module._has_main, config)
+        self._dirty = True
+
+    def save(self) -> None:
+        """Write what this process added; entries for files gone from disk are dropped."""
+        if not self._dirty:
+            return
+        self._dirty = False
+        entries = {p: e for p, e in self._load().items() if os.path.exists(p)}
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            # Written aside and swapped in, so a process reading it never sees half a file.
+            part = f"{self._path}.{os.getpid()}.part"
+            with open(part, "wb") as f:
+                pickle.dump((self._framework_stamp(), entries), f)
+            os.replace(part, self._path)
+
+
+# One file per install of the framework: two copies on one machine (a host's and a
+# checkout's) sharing one would each find the other's stamp and start from empty every time.
+_CONFIG_CACHE = _ConfigCache(chunk_cache.user_cache_dir(
+    "chunk_configs", hashlib.sha1(str(Path(__file__).parent).encode()).hexdigest()[:16] + ".pickle"))
 
 
 #: Import name -> distribution name, for the handful where they differ. A chunk declaring
@@ -1846,6 +1972,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
 
                 for mod in self._discover_module(module_path, module_name):
                     self.register_module(mod)
+        _CONFIG_CACHE.save()
 
     @staticmethod
     def _discover_module(module_path: Path, module_name: str) -> list[ChunkModule]:
@@ -2496,6 +2623,25 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
         with self.batched_placement():
             for c in held:
                 self.get_or_create_layer(c)
+
+    def follow_merged_graphs(self, chunks: Iterable[core.ChunkCommon]) -> None:
+        """Move each chunk's layer into its graph's layer when a wire merged its graph into another.
+
+        A layer moves on its chunk's next get_or_create_layer, which a cook asks for. The chunk
+        above a new wire doesn't cook again, so ranking calls this first, or that chunk's layer
+        stays in its old graph layer where the ranking can't place it.
+
+        Args:
+            chunks: The chunks about to be ranked.
+        """
+        moved = [c for c in chunks
+                 if (key := self._chunk_graph_key.get(c.get_hash())) is not None
+                 and key[0] != c.get_dag_node().get_graph_id()]
+        # One at a time, not batched_placement: that writes the old graph layer's list before
+        # the new one's, and a layer sublayered under the moving one (a Layer chunk's) leaves
+        # the stack in between, which resets an Edit Target on it.
+        for c in moved:
+            self.get_or_create_layer(c)
 
     @contextlib.contextmanager
     def batched_placement(self):

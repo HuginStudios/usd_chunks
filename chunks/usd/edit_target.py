@@ -171,6 +171,13 @@ def _refresh_edit_target(owner, notice, sender):
         # layer's own creation, resolve it correctly instead.
         if chunk_notice._loading_stage:
             return
+        # Likewise inside a change_block: the Layer chunk making the layer has not cooked
+        # and this chunk is not wired to it yet, so _made_upstream cannot see it. Reset, a
+        # script's Edit Target picked Session Layer and the whole chain below it cooked
+        # outside the layer it was to author into. A later refresh resets it if it never
+        # resolves.
+        if chunk_utils.in_change_block():
+            return
         if _made_upstream(_chunk, target_menu.value):
             # Not made yet: the Layer chunk upstream puts it in the stack when it cooks.
             return
