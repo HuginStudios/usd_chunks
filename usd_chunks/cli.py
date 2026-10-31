@@ -22,6 +22,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_batch, chunk_naming, configure_logging
 from usd_chunks.chunk_process import python_executable
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler, chunk_utils
+from usd_chunks import cook_timings
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene
@@ -486,9 +487,12 @@ def cmd_run(args):
     # Overrides go into the session layer before load wherever they can (see
     # _overrides_into_session), and a batch run's values come as one (cmd_batch): read at
     # load, the network cooks once with them.
+    if getattr(args, "timings", False):
+        cook_timings.enabled = True
     session = getattr(args, "session", None)
-    root = Sdf.Layer.FindOrOpen(args.usda)
-    stage = Usd.Stage.Open(root, Sdf.Layer.FindOrOpen(session)) if root and session else Usd.Stage.Open(args.usda)
+    with cook_timings.phase("open stage"):
+        root = Sdf.Layer.FindOrOpen(args.usda)
+        stage = Usd.Stage.Open(root, Sdf.Layer.FindOrOpen(session)) if root and session else Usd.Stage.Open(args.usda)
     if not stage:
         print(f"Failed to open: {args.usda}")
         sys.exit(1)
@@ -508,14 +512,16 @@ def cmd_run(args):
     # It also restores Edit Target selections, which a bare load_chunks skips -- so a
     # network whose chunks write into named layers now lands its edits where the file
     # says, rather than wherever the default target happened to be.
-    scene = Scene(stage, "cli")
+    with cook_timings.phase("load network"):
+        scene = Scene(stage, "cli")
 
     if args.params:
         # Each override solves what it reaches, as the same edit in the UI does -- no
         # re-cook of every root afterwards. That re-cook only ever papered over the first
         # change after a load reading its param's saved value back over the new one
         # (fixed in ChunkStageSync._sync_param_input), and cooked the network twice over.
-        _parse_param_overrides(scene, args.params)
+        with cook_timings.phase("param overrides"):
+            _parse_param_overrides(scene, args.params)
 
     # Establish the active view, exactly as the UI does on focus. load_chunks has already
     # executed every dependency-free chunk by this point -- in the UI the view recook then
@@ -526,7 +532,8 @@ def cmd_run(args):
     # set runs.
     view = None if getattr(args, "all", False) else _active_view(stage, scene)
     if view is not None:
-        recook_focus(stage, scene, None, view)
+        with cook_timings.phase("cook for the view"):
+            recook_focus(stage, scene, None, view)
 
     # Whatever a worker thread handed back during the cook (a download finishing) runs
     # here, on the main thread, before anything is written.
@@ -538,26 +545,32 @@ def cmd_run(args):
     # Ordered from the stage's own connections, not DagNode depth: a param port wired in
     # the node graph authors an expression rather than an add_dependency edge, so depth
     # cannot tell that an exporter feeds the chunk that reads what it wrote.
-    chunk_scheduler.commit_all(
-        scene.get_chunks(),
-        order=lambda cs: commit_order_from_stage(cs, stage),
-    )
+    with cook_timings.phase("commit outputs"):
+        chunk_scheduler.commit_all(
+            scene.get_chunks(),
+            order=lambda cs: commit_order_from_stage(cs, stage),
+        )
 
     if getattr(args, "bake", False):
         for path in chunk_registry.ChunkLayerManager().save_cook_layers():
             print(f"Baked: {path}")
 
     if args.export:
-        if args.procedural:
-            stage.Export(args.export)
-        else:
-            flatten_without_chunks(stage).Export(args.export)
-        if getattr(args, "relative", False):
-            chunk_utils.relative_asset_paths(args.export)
+        with cook_timings.phase("export"):
+            if args.procedural:
+                stage.Export(args.export)
+            else:
+                flatten_without_chunks(stage).Export(args.export)
+            if getattr(args, "relative", False):
+                chunk_utils.relative_asset_paths(args.export)
         print(f"Exported: {args.export}")
 
     if args.printout:
         print(flatten_without_chunks(stage).ExportToString())
+
+    # On stderr, so --printout's stdout stays a clean layer.
+    if cook_timings.enabled:
+        print(cook_timings.report(), file=sys.stderr)
 
 
 WEDGE_CHUNK_TYPE = "wedge"
@@ -1053,6 +1066,11 @@ def main():
         "--relative", action="store_true",
         help="Write --export's asset paths relative to the exported file, so it moves with what "
              "it references (paths on another drive stay absolute)",
+    )
+    run_parser.add_argument(
+        "--timings", action="store_true",
+        help="Print how long each phase and each chunk's cook took, slowest first, on stderr "
+             "(the same as USD_CHUNKS_TIMINGS=1)",
     )
 
     info_parser = sub.add_parser(
