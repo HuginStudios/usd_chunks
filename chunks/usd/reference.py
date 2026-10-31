@@ -17,6 +17,8 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
     import_path = node.get_param("import_primpath").value
+    # Opened once here, for the network check, the root lookup and the arc below.
+    chunk_stage.hold_asset_layers(node, [reference_path])
 
     # A file whose target is a chunkgroup is a network, not scene content: it goes onto
     # this chunk's own prim, and this node becomes the group -- dive in and the network
@@ -79,6 +81,15 @@ def _source_params():
     return from_layer, menu
 
 
+def menu_items(node, param_name):
+    """The network's arc layers for the Layer menu, asked for as it opens (chunk.Menu.refresh_items).
+
+    Not kept current by a stage listener: every Reference and Payload heard every USD change
+    to do that, which on a network with a hundred of them was most of the time spent opening it.
+    """
+    return chunk_utils.arc_layer_items() if param_name == "layer" else None
+
+
 def main():
     referenceChunk = chunk.Chunk("Reference")
 
@@ -98,13 +109,6 @@ def main():
     referenceChunk.add_param(import_primpath)
     referenceChunk.add_param(primpath)
     referenceChunk.add_param(prim_type)
-
-    referenceChunk.add_callback(
-        chunk_utils.refresh_arc_layer_menu,
-        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
-        listen_globally=True,
-        send_on_create=True,
-    )
 
     chunk_utils.show_arc_source(referenceChunk)
     referenceChunk.add_callback(chunk_utils.arc_source_changed, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)

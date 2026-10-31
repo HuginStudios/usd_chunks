@@ -26,11 +26,13 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSou
 
 from __future__ import annotations
 
-import itertools
 import logging
 import math
+import os
 import random
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from importlib.util import find_spec
 
@@ -363,14 +365,13 @@ class _AvoidSet:
             self._tree = kdtree(self._points)
         ext = np.maximum(extra, 0.0)
         reach = self._dist + ext
-        # A hair wider than reach, so the query's own rounding can't drop a point the exact
-        # test below would keep.
-        hits = self._tree.query_ball_point(pts, reach * (1.0 + 1e-9))
-        counts = np.fromiter(map(len, hits), dtype=np.int64, count=len(hits))
-        if not counts.sum():
+        # Every pair within the widest reach, as arrays (_within), then each point held to its
+        # own below: a ball query per point built a Python list each, 19 of GrassValley's 85 s
+        # on the woodland vista. A hair wider, so the query's own rounding can't drop a point
+        # the exact test keeps.
+        owner, flat = _within(self._tree, pts, float(reach.max()) * (1.0 + 1e-9))
+        if not len(owner):
             return out
-        flat = np.fromiter(itertools.chain.from_iterable(hits), dtype=np.int64, count=int(counts.sum()))
-        owner = np.repeat(np.arange(len(pts)), counts)
         q, e = pts[owner], self._points[flat]
         d2 = (q[:, 0] - e[:, 0]) ** 2 + (q[:, 1] - e[:, 1]) ** 2 + (q[:, 2] - e[:, 2]) ** 2
         lim = reach[owner] * reach[owner]
@@ -465,6 +466,26 @@ def _draw_scale(rng, lo, hi, bias):
     return lo + (hi - lo) * (u ** bias if bias != 1.0 else u)
 
 
+# The most candidates a spacing-free scatter draws in one round, over all its streams: about
+# 0.4 GB of arrays.
+_FREE_BATCH = 1 << 21
+# The streams a spacing-free scatter is split into. Changing it changes every such layout.
+_FREE_STREAMS = 8
+
+# Threads a KD-tree query may use: every core, unless the caller is one of several threads
+# already (_one_query_thread), where more would only wait on each other.
+_query_local = threading.local()
+
+
+def _workers():
+    return getattr(_query_local, "workers", -1)
+
+
+def _one_query_thread():
+    """A pool thread's initializer: its KD-tree queries run on it alone."""
+    _query_local.workers = 1
+
+
 def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi, bias,
                    mask=None, avoid=None, vary=True):
     """Like _scatter_on_triangles, but each candidate draws its scale first and keeps
@@ -492,9 +513,57 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
     # Radius per unit of scale -- or, with *vary* off, every instance keeps plain Spacing.
     unit = spacing / max(scale_hi, 1e-9) * 0.5 if vary else 0.0
     r_max = unit * scale_hi if vary else spacing * 0.5
-    gen = np.random.default_rng(rng.getrandbits(63))
-    sgen = np.random.default_rng(scale_rng.getrandbits(63))
+    seed, scale_seed = rng.getrandbits(63), scale_rng.getrandbits(63)
+    cell = max(2.0 * r_max, 1e-9)
+    if r_max > 0 or cKDTree is None:
+        positions, normals, scales = _sized_rounds(
+            np.random.default_rng(seed), np.random.default_rng(scale_seed), count, 8192,
+            cdf, v0s, v1s, v2s, normals_all, cKDTree, unit, r_max, vary, spacing, scale_lo,
+            scale_hi, bias, mask, avoid, cell)
+    else:
+        # No spacing, so no candidate depends on another: the count is split between
+        # _FREE_STREAMS streams, each with its own generators, run on threads -- numpy lets go
+        # of the interpreter for the array work, which is nearly all of it. A fixed number of
+        # streams, so the layout is the same on any machine; the meadow's 39 million blades
+        # were 36 s on one core.
+        _warm_lookups(mask, avoid, v0s[:1], cKDTree)
+        shares = np.diff(np.linspace(0, count, _FREE_STREAMS + 1).astype(np.int64))
+        seeds = zip(np.random.SeedSequence(seed).spawn(_FREE_STREAMS),
+                    np.random.SeedSequence(scale_seed).spawn(_FREE_STREAMS))
+        threads = min(_FREE_STREAMS, os.cpu_count() or 1)
+        with ThreadPoolExecutor(threads, initializer=_one_query_thread) as pool:
+            parts = list(pool.map(
+                lambda job: _sized_rounds(
+                    np.random.default_rng(job[1][0]), np.random.default_rng(job[1][1]),
+                    int(job[0]), _FREE_BATCH // _FREE_STREAMS, cdf, v0s, v1s, v2s, normals_all,
+                    cKDTree, unit, r_max, vary, spacing, scale_lo, scale_hi, bias, mask, avoid,
+                    cell),
+                zip(shares, seeds)))
+        positions, normals, scales = ([x for part in parts for x in part[k]] for k in range(3))
+    if not positions:
+        return [], [], []
+    # As arrays, converted to float32 once: a Gf.Vec3f built per instance was a second of a
+    # 130k-instance verge, and the caller turns them back into an array anyway.
+    return (Vt.Vec3fArray.FromNumpy(np.concatenate(positions).astype(np.float32)),
+            Vt.Vec3fArray.FromNumpy(np.concatenate(normals).astype(np.float32)),
+            np.concatenate(scales).tolist())
 
+
+def _warm_lookups(mask, avoid, pts, kdtree):
+    """Build the density and keep-away trees before the streams start, so they are built once
+    and not by every thread that finds them missing."""
+    many = getattr(getattr(mask, "__self__", None), "sample_many", None)
+    if many is not None:
+        many(pts)
+    if avoid is not None:
+        avoid.near_many(pts, np.zeros(len(pts)), kdtree)
+
+
+def _sized_rounds(gen, sgen, count, most, cdf, v0s, v1s, v2s, normals_all, cKDTree, unit, r_max,
+                  vary, spacing, scale_lo, scale_hi, bias, mask, avoid, cell):
+    """_scatter_sized's draw-and-test rounds for *count* instances from generators *gen* (points)
+    and *sgen* (scales), at most *most* candidates a round when spacing-free. Returns the kept
+    positions, normals and scales, as a list of arrays each."""
     # Placed instances by size class, each class searched only as far as its largest radius
     # reaches: searching every neighbour out to the biggest radius found hundreds of tiny
     # drops around every candidate once the surface filled up.
@@ -503,11 +572,28 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
     # Kept points per batch, as arrays; *n_kept* counts them.
     positions, normals, scales, n_kept = [], [], [], 0
     attempts, max_attempts = 0, count * 100
-    cell = max(2.0 * r_max, 1e-9)
+    # Each triangle's share of the area, for the spacing-free draw.
+    share = np.diff(cdf, prepend=0.0)
     while n_kept < count and attempts < max_attempts:
-        batch = int(min(8192, max(512, 3 * (count - n_kept))))
+        if r_max > 0:
+            # Spaced: small batches, as each candidate is held to every one kept before it and,
+            # once the surface fills, nearly all of a big batch would be drawn for nothing.
+            batch = int(min(most, max(512, 3 * (count - n_kept))))
+        else:
+            # No spacing, so no candidate depends on another: as many as the count still needs
+            # at the rate the density and keep-away let through so far, in rounds of up to
+            # *most*. A 39-million-blade meadow went round 5,000 times at 8,192, nearly all of
+            # its 90 s in the rounds themselves.
+            rate = n_kept / attempts if attempts else 1.0
+            batch = int(min(most, max(512, 1.1 * (count - n_kept) / max(rate, 1e-3))))
         attempts += batch
-        tri = np.minimum(np.searchsorted(cdf, gen.random(batch)), len(cdf) - 1)
+        if r_max > 0:
+            tri = np.minimum(np.searchsorted(cdf, gen.random(batch)), len(cdf) - 1)
+        else:
+            # How many land on each triangle, in one draw, rather than a search of the area
+            # table per candidate: 4.6 s of the meadow's 39 million, against 0.1 s. They come
+            # out grouped by triangle, which nothing spacing-free minds -- but see the trim.
+            tri = np.repeat(np.arange(len(share)), gen.multinomial(batch, share))
         uv = gen.random((batch, 2))
         flip = uv.sum(axis=1) > 1.0
         uv[flip] = 1.0 - uv[flip]
@@ -521,23 +607,21 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
         # nearly everything, and the density lookup below is per candidate.
         if r_max > 0:
             for cls, placed_set in enumerate(placed_sets):
-                cand_tree = None
+                first = True
                 for cp, cr, tree in placed_set.parts(cKDTree):
-                    if cand_tree is None:
+                    if first or tree is None:
+                        first = False
                         cand = np.flatnonzero(ok)
                         if not len(cand):
                             break
-                        if tree is not None:
-                            cand_tree = cKDTree(pts[cand])
                     if tree is not None:
-                        # Every candidate-placed pair as far apart as any clash can be, as one
-                        # array: a ball query per part built a Python list per candidate, and
-                        # that, not the search, was most of its cost.
-                        near = cand_tree.sparse_distance_matrix(
-                            tree, (r_max + bounds[cls]) * (1.0 + 1e-9), output_type="ndarray")
-                        if not len(near):
+                        # Every candidate-placed pair as far apart as any clash can be, as two
+                        # arrays (_within): a ball query per part built a Python list per
+                        # candidate, and that, not the search, was most of its cost.
+                        i, flat = _within(tree, pts[cand], (r_max + bounds[cls]) * (1.0 + 1e-9))
+                        if not len(i):
                             continue
-                        owner, flat = cand[near["i"]], near["j"]
+                        owner = cand[i]
                         d = np.linalg.norm(cp[flat] - pts[owner], axis=1)
                         ok[owner[d < rad[owner] + cr[flat]]] = False
                     else:
@@ -553,8 +637,9 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
             else:
                 for i in live:
                     ok[i] = roll[i] <= mask(Gf.Vec3f(*pts[i]), Gf.Vec3f(*normals_all[tri[i]]))
-        # Against each other, in draw order, and the keep-away set.
-        need = count - n_kept
+        # Against each other, in draw order, and the keep-away set. Spacing-free, every survivor
+        # is kept and the surplus trimmed below.
+        need = count - n_kept if r_max > 0 else batch
         if cKDTree is not None:
             keep = _settle_batch(cKDTree, pts, rad, np.flatnonzero(ok), avoid, r_max, need)
         else:
@@ -587,6 +672,10 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
                 if len(keep) >= need:
                     break
             keep = np.asarray(keep, dtype=np.int64)
+        if r_max <= 0 and len(keep) > count - n_kept:
+            # The round drew more than the count still needs. Grouped by triangle, the first
+            # ones would leave the mesh's last triangles bare: drop the surplus at random.
+            keep = np.delete(keep, gen.choice(len(keep), len(keep) - (count - n_kept), replace=False))
         before = n_kept
         if len(keep):
             n_kept += len(keep)
@@ -602,13 +691,35 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
         # taken what it can -- the last gap-fillers are not worth minutes of max_attempts.
         if n_kept - before < batch / 500.0:
             break
-    if not n_kept:
-        return [], [], []
-    # As arrays, converted to float32 once: a Gf.Vec3f built per instance was a second of a
-    # 130k-instance verge, and the caller turns them back into an array anyway.
-    return (Vt.Vec3fArray.FromNumpy(np.concatenate(positions).astype(np.float32)),
-            Vt.Vec3fArray.FromNumpy(np.concatenate(normals).astype(np.float32)),
-            np.concatenate(scales).tolist())
+    return positions, normals, scales
+
+
+def _within(tree, pts, reach):
+    """(i, j) for every pts[i] and tree point j closer than *reach*, as two index arrays.
+
+    What a tree of *pts* against *tree* gives with sparse_distance_matrix, which walked the two
+    trees against each other in one thread -- 40 of BushesValley's 49 s on the vista, for 800
+    pairs a call. This asks for each point's nearest k within *reach*, on every core, and asks
+    again with a larger k only for the points that filled all k: arrays throughout, and no
+    pair left out.
+    """
+    n = tree.n
+    rows, cols = [np.zeros(0, dtype=np.int64)], [np.zeros(0, dtype=np.int64)]
+    idx = np.arange(len(pts))
+    k = 8
+    while len(idx):
+        k = min(k, n)
+        d, j = tree.query(pts[idx], k=k, distance_upper_bound=reach, workers=_workers())
+        if k == 1:
+            d, j = d[:, None], j[:, None]
+        hit = np.isfinite(d)
+        more = hit[:, -1] if k < n else np.zeros(len(idx), dtype=bool)
+        r, c = np.nonzero(hit[~more])
+        rows.append(idx[~more][r])
+        cols.append(j[~more][r, c])
+        idx = idx[more]
+        k *= 4
+    return np.concatenate(rows), np.concatenate(cols)
 
 
 class _PlacedSet:
@@ -1055,7 +1166,8 @@ class _NearestWeight:
             else:
                 self._tree = cKDTree(self._points)
         if self._tree is not False:
-            _, nearest = self._tree.query(points, k=1, distance_upper_bound=2.0 * self._cell)
+            # On every core: one thread was 21 of GrassValley's 85 s on the woodland vista.
+            _, nearest = self._tree.query(points, k=1, distance_upper_bound=2.0 * self._cell, workers=_workers())
             found = nearest < len(self._points)
             out[found] = self._weights[nearest[found]]
             return out
