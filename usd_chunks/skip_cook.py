@@ -105,6 +105,8 @@ class CookRecord:
     was_disabled: bool = False
     #: (chunk_scheduler.shape_version(), the ids of the chunks above and below it): _related.
     related: tuple | None = None
+    #: (chunk_scheduler.shape_version(), weakrefs to it and the chunks wired to it): _chunk_prims.
+    wired: tuple | None = None
 
 
 # Weak, so a record goes with its chunk; chunks hash by an id no copy shares.
@@ -275,6 +277,10 @@ class _Watch:
         self.outside: set[Sdf.Path] = set()
         self.points: set[Sdf.Path] = set()
         self.children: set[Sdf.Path] = set()
+        #: The parents of the chunk prims in the mask (_chunk_prims), up to /chunks: there
+        #: with them, so looking one up by path -- its group's prim -- reads nothing outside.
+        #: Listing one's children still does.
+        self.parents: set[Sdf.Path] = set()
 
 
 # The watches of the masked cooks now running, innermost last.
@@ -326,7 +332,7 @@ def _install_watching() -> None:
             if _watches and (watch := _watch_for(stage)) is not None:
                 prim = Sdf.Path(str(path)).GetPrimPath().StripAllVariantSelections()
                 watch.points.add(prim)
-                if not _covered(prim, watch.mask):
+                if not _covered(prim, watch.mask) and prim not in watch.parents:
                     watch.outside.add(prim)
             return original(stage, path, *args, **kwargs)
         return lookup
@@ -526,6 +532,38 @@ def _related(chunk) -> set[int]:
                    if (c := _chunk_of(node)) is not None)
     rec.related = (version, related)
     return related
+
+
+def _chunk_prims(chunk) -> set[Sdf.Path]:
+    """The chunk prims a cook of chunk may read: its own, and those of the chunks wired to it.
+
+    Framework bookkeeping, read by the helpers a module calls (exec_dependencies, variant
+    contexts) for the chunks above it, and moved by an Edit Target's cook for the chunks
+    below it. All of /chunks when a chunk among them has no prim yet. Every chunk prim was
+    in every mask, and populating 900 of them was a third of opening a cook stage, for a
+    cook that reads a handful.
+
+    The chunks are walked once per shape of the graph; their paths are read every cook, as
+    a rename moves a prim without changing the graph.
+    """
+    rec = record(chunk)
+    version = chunk_scheduler.shape_version()
+    cached = rec.wired
+    if cached is None or cached[0] != version:
+        wired = upstream_chunks(chunk)
+        wired += [c for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+                  if (c := _chunk_of(node)) is not None]
+        cached = rec.wired = (version, tuple(weakref.ref(c) for c in wired))
+    paths = set()
+    for ref in cached[1]:
+        path = getattr(ref(), "_exec_prim_path", None)
+        if not path:
+            return {_CHUNKS_ROOT}
+        paths.add(Sdf.Path(path))
+    # A group's prim that holds others of them is populated as their parent: masked, it
+    # would bring every chunk in the group along.
+    parents = {parent for path in paths for parent in path.GetParentPath().GetAncestorsRange()}
+    return paths - parents
 
 
 def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable) -> dict[str, tuple]:
@@ -967,9 +1005,11 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     # longer makes -- its material param pointed elsewhere -- leaves the mask with it.
     rec.reads = frozenset()
     if not _whole(mask) and watches:
-        base = inputs | rec.outputs | {_CHUNKS_ROOT}
+        # A chunk prim beyond its own and its upstream's is a read like any other, and kept.
+        base = inputs | rec.outputs | _chunk_prims(chunk)
+        watch = watches[0]
         rec.reads = frozenset(
-            path for path in watches[0].points | watches[0].children if not _covered(path, base))
+            path for path in (watch.points - watch.parents) | watch.children if not _covered(path, base))
     rec.scene = scene_state(main)
     rec.layer = layer.identifier
     # What changed is handed down by finish(), once the cook is wholly done.
@@ -1036,7 +1076,9 @@ def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | Non
     The whole stage is main: composing all of it a second time on the cook stage would cost
     the scene's composition, every cook, for no mask. The chunk prims under /chunks are
     framework bookkeeping, read by the helpers a module calls (exec_dependencies, variant
-    contexts); every mask carries them, and no cook's output is ever under them.
+    contexts); every mask carries them, and no cook's output is ever under them. Only the
+    chunk's own and its upstream's (_chunk_prims): a helper reading another is caught by the
+    watch like any read outside the mask.
 
     The cook's watch, which collects what it looked up, is appended to watches before it
     runs, so it is there also when the cook raises.
@@ -1044,7 +1086,10 @@ def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | Non
     if _whole(mask):
         execute(chunk)  # on main: the cook's unmasked() scope is the innermost
         return
-    with cook_stage(main, layer, mask | {_CHUNKS_ROOT}, hidden) as watch:
+    prims = _chunk_prims(chunk)
+    with cook_stage(main, layer, mask | prims, hidden) as watch:
+        watch.parents = {parent for path in prims for parent in path.GetAncestorsRange()
+                         if parent.HasPrefix(_CHUNKS_ROOT) and parent not in prims}
         watches.append(watch)
         try:
             execute(chunk)
