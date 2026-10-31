@@ -2715,6 +2715,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         ui_api.CreatePosAttr(Gf.Vec2f(*_create_node_pos))
                     else:
                         ui_api.CreatePosAttr(Gf.Vec2f(index() * _NODE_STEP, 0.0))
+                # Collapsed before it was added (chunk_graph.start_collapsed): saved closed
+                # with the prim, as _write_expansion_state would for a later collapse.
+                if (chunk.has_state(ChunkFlags.State.COLLAPSED)
+                        and not ui_api.GetExpansionStateAttr().HasAuthoredValue()):
+                    ui_api.CreateExpansionStateAttr(UsdUI.Tokens.closed)
 
                 config = chunk.get_config()
                 # A chunk built in the interpreter has no module, and info:chunkType is how a
@@ -3471,6 +3476,8 @@ def suggest_location_from_file(param) -> None:
         return
 
     import_param = chunk.get_param("import_primpath")
+    # The chunk holds the file from here: its cook, straight after, reads the same one.
+    hold_asset_layers(chunk, [path])
     if network_target(path, import_param.value if import_param else ""):
         if location.raw_value:
             location.value = ""
@@ -3481,6 +3488,34 @@ def suggest_location_from_file(param) -> None:
         return
     name = Tf.MakeValidIdentifier(Path(path).stem)
     location.value = _suggested_locations[chunk] = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
+
+
+def hold_asset_layers(node, paths: Iterable[str]) -> None:
+    """Open the files a chunk brings in and keep them open on it, until it brings in others.
+
+    network_target opens a file to ask whether it holds a network, and lets it go; the
+    arc the chunk then authors opened it all over again -- every asset read twice on each
+    cook, half a second of the bathroom scene's five-second open. Held here, the question
+    and the arc share one read. The layers go when the chunk's files change, or with it.
+
+    Args:
+        node: The Reference, Payload or Sublayer chunk.
+        paths: The files it brings in.
+    """
+    held = []
+    for path in paths:
+        try:
+            layer = Sdf.Layer.FindOrOpen(path) if path else None
+        except Tf.ErrorException:
+            # No format plugin for it: the arc reports that, as it always has.
+            layer = None
+        if layer is not None:
+            held.append(layer)
+    node._held_asset_layers = tuple(held)
+
+
+#: The file formats a chunk network can be saved in: usd and the three it stands for.
+_USD_FORMAT_IDS = frozenset({"usd", "usda", "usdc", "usdz"})
 
 
 def network_target(asset_path: str, import_path: str = "") -> str | None:
@@ -3507,6 +3542,13 @@ def network_target(asset_path: str, import_path: str = "") -> str | None:
         The chunkgroup's prim path in the file, or None.
     """
     if not asset_path:
+        return None
+    # A network is a USD file. Opening anything else to ask -- a .mtlx a material Reference
+    # points at -- ran its plugin's conversion and hundreds of change notices, then dropped
+    # the layer for the reference to open it all again. A path whose format is unknown
+    # (no extension, a resolver's own scheme) is still opened, as before.
+    fmt = Sdf.FileFormat.FindByExtension(Sdf.FileFormat.GetFileExtension(asset_path))
+    if fmt is not None and fmt.formatId not in _USD_FORMAT_IDS:
         return None
     try:
         layer = Sdf.Layer.FindOrOpen(asset_path)
@@ -6047,6 +6089,7 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
     if not cook_list:
         return
 
+    lm.follow_merged_graphs(scene.get_chunks())
     # Layer-win order follows the exec traversal: the chunk nearest the view (last in
     # cook_list) must win, so reorder each graph layer's sublayers to put the most
     # downstream layer strongest (subLayerPaths[0]). This is what makes rewiring change
@@ -6176,6 +6219,7 @@ def sort_chunk_layers(lm: ChunkLayerManager, chunks: Iterable[core.ChunkBase], k
             script makes, and reading every chunk prim's wires each time was quadratic.
     """
     chunks = list(chunks)
+    lm.follow_merged_graphs(chunks)
     if keys is None:
         keys = nested_cook_keys(chunks, lm.stage, from_dag=True)
     rank = {
@@ -7066,23 +7110,34 @@ def _iter_scoped_prims(
     Paths may be property paths, and may name a prim that has since gone (a resync reports
     a deletion the same way it reports an arrival); both resolve to the owning prim or to
     nothing. Overlapping subtrees are normal, so prims are de-duplicated.
+
+    Roots are walked ancestors first, and a root an earlier walk already reached is not
+    walked again: that walk went through its whole subtree too. Cooks that author a
+    scatter's prototypes resync hundreds of roots nested in each other, and walking each
+    one's subtree only to find every prim seen was nearly all of a scan's time (0.36 s of
+    a load, for nothing). A root the earlier walk did not reach is still walked from
+    itself, so the prims found are exactly those of walking every root.
     """
-    seen: set[str] = set()
+    # Sdf.Path, not str: hashed without building a string for every prim walked.
+    seen: set[Sdf.Path] = set()
 
     def _emit(prim):
-        key = str(prim.GetPath())
+        key = prim.GetPath()
         if key in seen:
             return False
         seen.add(key)
         return True
 
-    for path in resynced:
+    # Sdf.Path orders an ancestor before its descendants, and "/" before everything.
+    for path in sorted({p.GetPrimPath() for p in resynced}):
         if path == Sdf.Path.absoluteRootPath:
             for prim in stage.Traverse():
                 if _emit(prim):
                     yield prim
             continue
-        prim = stage.GetPrimAtPath(path.GetPrimPath())
+        if path in seen:
+            continue
+        prim = stage.GetPrimAtPath(path)
         if not (prim and prim.IsValid()):
             continue
         for descendant in Usd.PrimRange(prim):
@@ -7311,11 +7366,14 @@ def _load_chunks(
         # container unrecognised every chunk would fall through to the root-layer branch
         # and be rehomed under a fresh tab named after the file, moving prim paths on every
         # reload and breaking anything that addresses a path (a binding, a sublayer target).
+        # The type first: a scan can hand over tens of thousands of prims, nearly all of
+        # them geometry and shaders, and their paths need not be made into strings.
+        type_name = prim.GetTypeName()
         is_chunks_scope = (
-            str(prim.GetPath()) == _CHUNKS_ROOT
-            and prim.GetTypeName() == _CHUNKS_ROOT_TYPENAME
+            type_name == _CHUNKS_ROOT_TYPENAME
+            and str(prim.GetPath()) == _CHUNKS_ROOT
         )
-        if prim.GetTypeName() != _CHUNK_PRIM_TYPENAME and not is_chunks_scope:
+        if type_name != _CHUNK_PRIM_TYPENAME and not is_chunks_scope:
             continue
         if loaded_prim_paths is not None and str(prim.GetPath()) in loaded_prim_paths:
             continue

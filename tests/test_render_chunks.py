@@ -16,7 +16,7 @@ import sys
 import pytest
 from pxr import Usd, UsdGeom, UsdRender, Sdf
 
-from usd_chunks import chunk_registry, chunk, chunk_utils, render_defs
+from usd_chunks import chunk_cook, chunk_registry, chunk, chunk_utils, render_defs
 from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
@@ -446,6 +446,43 @@ class TestDelegateSettings:
         restored = reloaded.get_param(target.name)
         assert restored is not None, "the param holding a saved value must exist after load"
         assert restored.value is True
+
+    @requires_renderer
+    def test_a_loaded_chunk_authors_its_saved_settings_in_one_cook(self, monkeypatch):
+        """The first cook after a load writes the saved renderer settings itself. Left to
+        CHUNK_LOADED, the restore cooked the chunk -- and everything wired after it -- a
+        second time."""
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        definition = _schema_delegates()[0]
+        target = next(p for p in definition.props if p.sdf_type == "bool" and p.default is False)
+        _populate_containing(settings, target.name)
+        settings.get_param(target.name).value = True
+        settings.execute()
+        prim_path = settings.get_param("primpath_location").value
+
+        net = __import__("tempfile").mkdtemp() + "/net.usda"
+        export_chunks(scene, net)
+        chunk_registry.ChunkLayerManager().reset()
+
+        cooks = []
+        real = chunk_cook.cook
+
+        def counting(chunk, *args, **kwargs):
+            if chunk.name.startswith("RenderSettings"):
+                cooks.append(chunk.name)
+            return real(chunk, *args, **kwargs)
+
+        monkeypatch.setattr(chunk_cook, "cook", counting)
+        stage2 = Usd.Stage.Open(net)
+        scene2 = _DummyScene()
+        chunk_registry.ChunkRegistry().initialize(scene2, "pytest")
+        scene2._stage = stage2
+        init_chunk_usd(stage2, scene2)   # loads the network
+
+        assert len(cooks) == 1, cooks
+        attr = stage2.GetPrimAtPath(prim_path).GetAttribute(target.attr_name)
+        assert attr and attr.Get() is True
 
     @requires_renderer
     def test_api_schema_is_applied_once_a_setting_is_used(self):
@@ -1422,3 +1459,28 @@ class TestUnpatchedUsdBuild:
 
         assert not [r for r in caplog.records if "will not be in the output" in r.message], \
             "a build with the support must not be warned about"
+
+    @pytest.mark.parametrize("on", [True, False])
+    def test_camera_light_reaches_the_recorder(self, monkeypatch, on):
+        """FrameRecorder lights from the camera unless told not to; Camera Light says which."""
+        scene, stage = _setup_stage()
+        make_recorder = importlib.import_module("chunks.usd.render")._make_recorder  # before the helper stubs it
+        mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
+        calls = []
+
+        class Recorder:
+            def __init__(self, *args):
+                pass
+
+            def __getattr__(self, name):
+                return lambda *a: calls.append((name, a))
+
+        monkeypatch.setattr(mod, "UsdAppUtils", types.SimpleNamespace(FrameRecorder=Recorder))
+        node.get_param("camera_light").value = on
+        assert make_recorder(node) is not None
+        assert ("SetCameraLightEnabled", (on,)) in calls
+
+    def test_camera_light_is_on_by_default_as_in_usdrecord(self, monkeypatch):
+        scene, stage = _setup_stage()
+        _mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
+        assert node.get_param("camera_light").value is True

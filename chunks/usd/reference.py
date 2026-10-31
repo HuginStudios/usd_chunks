@@ -17,6 +17,8 @@ def execute(node):
 
     raw_path = node.get_param("primpath_location").value
     import_path = node.get_param("import_primpath").value
+    # Opened once here, for the network check, the root lookup and the arc below.
+    chunk_stage.hold_asset_layers(node, [reference_path])
 
     # A file whose target is a chunkgroup is a network, not scene content: it goes onto
     # this chunk's own prim, and this node becomes the group -- dive in and the network

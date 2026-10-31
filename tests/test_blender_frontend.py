@@ -529,6 +529,48 @@ def test_collapse_is_the_state_bit_shown_as_blenders_hide(view):
     assert not _node(view, "Move").hide
 
 
+def _shown(sockets):
+    return [s for s in sockets if not s.hide and s.port_type != chunk_graph.PORT_EXEC]
+
+
+def test_a_collapsed_node_shows_its_wired_sockets_and_a_plus_each_side(view):
+    """As in every frontend (chunk_graph.collapsed_ports): Blender would otherwise draw
+    every unlinked socket down the collapsed node's ends."""
+    move = _node(view, "Move")
+    assert move.inputs[bg._PLUS].hide and move.outputs[bg._PLUS].hide, "open: no +"
+
+    view.set_selection({move.name})
+    view.collapse_selected_or_all()
+    move = _node(view, "Move")
+
+    assert [s.name for s in _shown(move.inputs)] == [bg._PLUS]
+    assert [s.name for s in _shown(move.outputs)] == [bg._PLUS]
+    view.collapse_selected_or_all()
+    assert len(_shown(_node(view, "Move").inputs)) > 1, "open again: every param's socket"
+
+
+def test_a_link_to_a_plus_is_taken_out_and_picked_as_a_param(view):
+    """The link is not a wire until a param is picked: update() removes it, and join()
+    asks (headless, the pick waits in pending_pick; Blender proper shows a search)."""
+    ref, move = _node(view, "Ref"), _node(view, "Move")
+    view.set_selection({move.name})
+    view.collapse_selected_or_all()
+    ref, move = _node(view, "Ref"), _node(view, "Move")
+    ref_path = ref.name  # read now: the reload after connecting makes new node objects
+    out = next(s for s in ref.outputs if s.port_type == chunk_graph.PORT_STRING)
+
+    view.tree.links.new(out, move.inputs[bg._PLUS])
+    view.tree.update()
+    assert not any(link.to_socket.name == bg._PLUS for link in view.tree.links)
+
+    view.join(bg._plus_or_port(view, ref, out, is_input=False), chunk_graph.PlusRef(move.name, True))
+    choices, _other = view.pending_pick
+    assert choices and all(r.is_input and r.port_type == chunk_graph.PORT_STRING for r in choices)
+    view.choose(choices[0])
+    attr = view.stage.GetAttributeAtPath(Sdf.Path(choices[0].attr_path))
+    assert [str(c.GetPrimPath()) for c in attr.GetConnections()] == [ref_path]
+
+
 def test_a_chunk_deleted_behind_the_frontends_back_leaves_the_tree(view):
     """The CLI, another frontend, undo: none of them go through delete_selected. The
     CHUNK_DELETED notice schedules the rebuild instead."""

@@ -40,7 +40,7 @@ from contextlib import contextmanager
 
 from pxr import Sdf, Tf, Usd
 
-from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, layer_arcs, skip_cook
+from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, cook_timings, layer_arcs, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.cook_errors import CookCancelled
 
@@ -136,6 +136,11 @@ def defer_to_batch_end(key, fn) -> bool:
         _solve_deferred[key] = fn
         return True
     return False
+
+
+def is_batching() -> bool:
+    """Whether a batched_solve (change_block) is open, so what it sets settles at its end."""
+    return _batched is not None
 
 
 def is_held() -> bool:
@@ -500,7 +505,7 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
 
 def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
     """cook()'s cook, once it has decided the chunk may run."""
-    with executing(chunk), skip_cook.unmasked():
+    with executing(chunk), skip_cook.unmasked(), cook_timings.timed(chunk):
         if ctx:
             try:
                 with Usd.EditContext(stage, layer_arcs.edit_target(stage, ctx)):

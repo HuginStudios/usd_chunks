@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -780,6 +781,120 @@ def disconnect(stage: Usd.Stage, port: PortRef, prims: dict, chunks: dict | None
         _unwire_param(port, chunks, always=True)
 
     return GraphChange(touched_nodes=touched, exec_changed=port.port_type == PORT_EXEC)
+
+
+MERGE_MODULE = "merge"
+
+
+def _feeds(stage: Usd.Stage, upstream: str, node: str) -> bool:
+    """Whether upstream reaches node through any wire, exec or data."""
+    seen, todo = set(), [node]
+    while todo:
+        path = todo.pop()
+        if path == upstream:
+            return True
+        if path in seen:
+            continue
+        seen.add(path)
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim.IsValid():
+            continue
+        for attr in prim.GetAttributes():
+            if attr.GetName().startswith(INPUTS_PREFIX):
+                todo.extend(str(conn.GetPrimPath()) for conn in attr.GetConnections())
+    return False
+
+
+def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos,
+                    nest=None) -> tuple[GraphChange | None, str]:
+    """Join a branch into an exec wire A -> B through a Merge: A and branch -> Merge -> B.
+
+    What dropping a node's exec output onto a wire means. A keeps slot 0, so the flow
+    that was already there keeps its strength and the branch can only add to it. A wire
+    that already enters a Merge gets the branch in the Merge's next slot instead of a
+    second Merge in front of it.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the Merge is created in.
+        wire: The exec wire dropped onto.
+        branch: Prim path of the chunk whose exec output was dropped.
+        usd_pos: Where a new Merge goes, in USD coordinates.
+        nest: The context to create it in, from `nest_target`.
+
+    Returns:
+        (what changed, error message); the change is None and the message says why when
+        nothing was wired.
+    """
+    src, dst = wire.src_node_path, wire.dst_node_path
+    if not wire.is_exec:
+        return None, "only an exec wire takes a Merge"
+    if branch in (src, dst):
+        return None, "the chunk is already on that wire"
+    if _feeds(stage, dst, branch):
+        return None, "the chunk is downstream of that wire; joining it in would make a loop"
+
+    dst_prim = stage.GetPrimAtPath(Sdf.Path(dst))
+    if chunk_stage.is_merge_prim(dst_prim):
+        slots = [a for a in chunk_naming.iter_exec_inputs(dst_prim) if a.GetConnections()]
+        if any(str(c.GetPrimPath()) == branch for a in slots for c in a.GetConnections()):
+            return None, "the chunk already feeds that Merge"
+        chunk_stage.connect_exec(stage, scene, branch, dst,
+                                 input_name=chunk_naming.exec_input_name(len(slots)))
+        return GraphChange(touched_nodes={dst, branch}, exec_changed=True), ""
+
+    module = chunk_registry.ChunkRegistry().get_chunk_module(MERGE_MODULE)
+    if module is None:
+        return None, "no Merge chunk is registered"
+    created, error = create_from_entry(
+        scene, chunk_registry.MenuEntry(module=module, namespace=("Merge",)), usd_pos, nest)
+    if error or not created:
+        return None, error or "the Merge was not created"
+    merge = chunk_stage.get_chunk_prim_path(created[0])
+
+    chunk_stage.connect_exec(stage, scene, src, merge, input_name=chunk_naming.exec_input_name(0))
+    chunk_stage.connect_exec(stage, scene, branch, merge, input_name=chunk_naming.exec_input_name(1))
+    # Swap A for the Merge in B's slot, leaving any other wire stacked on it in place.
+    dst_attr = stage.GetAttributeAtPath(Sdf.Path(wire.dst_attr_path))
+    src_conn = Sdf.Path(wire.src_attr_path)
+    wanted = [Sdf.Path(f"{merge}.{EXEC_OUTPUT}") if c == src_conn else c
+              for c in dst_attr.GetConnections()]
+    home = chunk_utils.get_attr_home_layer(dst_attr)
+    target = home or chunk_utils.get_bookkeeping_layer(stage, None)
+    with Usd.EditContext(stage, target):
+        dst_attr.SetConnections(wanted)
+    chunk_stage.reconcile_edit_targets(stage, scene)
+    return GraphChange(touched_nodes={merge, dst, branch}, exec_changed=True), ""
+
+
+def swap_exec_slots(stage: Usd.Stage, a: PortRef, b: PortRef) -> GraphChange | None:
+    """Swap what two exec input slots of one node are wired to.
+
+    How a Merge's branches are reordered: slot order is what decides whose opinion wins.
+    A wire dragged from one occupied slot to another lands as a swap, not a replace, which
+    would drop the branch that was there.
+
+    Args:
+        stage: The stage to author on.
+        a: One exec input slot.
+        b: Another exec input slot of the same node.
+
+    Returns:
+        What changed, or None when the two are not both wired exec inputs of one node.
+    """
+    if a.node_path != b.node_path or a.attr_path == b.attr_path or not (a.is_exec and b.is_exec
+                                                                        and a.is_input and b.is_input):
+        return None
+    attrs = [stage.GetAttributeAtPath(Sdf.Path(p.attr_path)) for p in (a, b)]
+    if not all(attr and attr.IsValid() and attr.GetConnections() for attr in attrs):
+        return None
+    conns = [list(attr.GetConnections()) for attr in attrs]
+    # Each slot keeps the layer it lives in; only what it points at changes.
+    for attr, wanted in zip(attrs, reversed(conns)):
+        home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, None)
+        with Usd.EditContext(stage, home):
+            attr.SetConnections(wanted)
+    return GraphChange(touched_nodes={a.node_path}, exec_changed=True)
 
 
 def _unwire_param(port: PortRef, chunks: dict, always: bool = False) -> bool:
@@ -2001,6 +2116,221 @@ def hold_until_wired(scene, context, chunks) -> None:
             chunk.set_blocked(True)
 
 
+#: Chunk types drawn without a body, so there is nothing for them to collapse.
+_BODILESS = frozenset({"merge", "dot"})
+
+
+def start_collapsed(chunks) -> None:
+    """Collapse new chunks before they are added, so their nodes start as a header.
+
+    A graph that branches stacks its nodes under each other, and full bodies make that
+    stack tall: a node shows its header, exec ports and wired ports until it is opened.
+    Set before the add, so the prim is written collapsed and the node is built that way
+    rather than drawn open and then shut. Views, Outputs and groups are left as they are:
+    the first two have no body, and a group's double-click is its dive.
+    USD_CHUNKS_START_COLLAPSED=0 starts every node open instead. It is read on each call,
+    so a script can flip it mid-session.
+
+    Args:
+        chunks: The chunks about to be added.
+    """
+    if os.environ.get("USD_CHUNKS_START_COLLAPSED", "").strip().lower() in ("0", "false", "no", "off"):
+        return
+    for chunk in chunks:
+        if has_collapsible_body(chunk):
+            chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+
+def has_collapsible_body(chunk) -> bool:
+    """Whether a chunk's node has a body of params to fold away.
+
+    Not a View or Output, nor a Merge or Dot (no body), nor a group (its double-click is
+    its dive).
+    """
+    cfg = chunk.get_config()
+    return not (chunk_stage.is_terminal_chunk(chunk) or chunk_stage.is_group_chunk(chunk)
+                or chunk_stage.is_subnet(chunk) or (cfg and cfg.module in _BODILESS))
+
+
+@dataclass
+class CollapsedPorts:
+    """What a collapsed node shows of its params: see collapsed_ports."""
+
+    #: (param, show its input end, show its output end), in param order, one per wired param.
+    rows: list = field(default_factory=list)
+    #: A "+" on the input side: a wire dropped there picks one of pick_candidates.
+    plus_in: bool = False
+    #: A "+" on the output side: clicked, it picks one of output_choices to drag a wire from.
+    plus_out: bool = False
+
+
+def collapsed_ports(chunk, fed: set[str], feeding: set[str]) -> CollapsedPorts:
+    """Which ports a collapsed node shows, for any frontend to draw.
+
+    Only the wired end of a wired param: a param that feeds something downstream has no
+    use for its input dot there. The rest stay reachable through a "+" on each side that
+    has any left -- so nothing needs opening to wire it.
+
+    Args:
+        chunk: The collapsed chunk.
+        fed: Names of its params with a wire coming in.
+        feeding: Names of its params with a wire going out.
+    """
+    result = CollapsedPorts()
+    unfed = unfeeding = False
+    for param in iter_connectable_params(chunk):
+        name = param.name
+        unfed |= name not in fed
+        unfeeding |= name not in feeding
+        if name in fed or name in feeding:
+            result.rows.append((param, name in fed, name in feeding))
+    if has_collapsible_body(chunk):
+        result.plus_in, result.plus_out = unfed, unfeeding
+    return result
+
+
+def param_menu_label(param, chunk) -> str:
+    """A param's name under the groups it sits in, for a menu that lists a node's params.
+
+    A Transform's tx, ty and rx are all labelled "X"; this gives "Translate › X".
+    """
+    parts, owner = [param.get_label()], param.get_owner()
+    while owner is not None and owner is not chunk and not isinstance(owner, core.ChunkBase):
+        if hasattr(owner, "get_label"):  # a group; the containers between have no label
+            parts.insert(0, owner.get_label())
+        owner = owner.get_owner() if hasattr(owner, "get_owner") else None
+    return " › ".join(parts)
+
+
+def pick_candidates(chunk, node_path: str, src: PortRef) -> list[PortRef]:
+    """The params of a node a wire from src could land on: same type, opposite direction.
+
+    What a wire dropped on a collapsed node (or its input "+") offers. Exec wires are not
+    offered: a node's exec ports always show, collapsed or not.
+    """
+    if src.port_type == PORT_EXEC:
+        return []
+    prefix = "outputs:" if src.is_input else "inputs:"
+    refs = []
+    for param in iter_connectable_params(chunk):
+        if param_port_type(param) != src.port_type:
+            continue
+        ref = PortRef(node_path, f"{node_path}.{prefix}{param.name}", src.port_type,
+                      not src.is_input, param=param)
+        if can_connect(src, ref):
+            refs.append(ref)
+    return refs
+
+
+def output_choices(chunk, node_path: str) -> list[PortRef]:
+    """Every param of a node a wire could start from: what its output "+" offers."""
+    return [
+        PortRef(node_path, f"{node_path}.outputs:{param.name}", ptype, False, param=param)
+        for param in iter_connectable_params(chunk)
+        if (ptype := param_port_type(param)) is not None and ptype != PORT_EXEC
+    ]
+
+
+@dataclass(frozen=True)
+class PlusRef:
+    """A collapsed node's "+": the place a wire meets a node before a param is picked.
+
+    Stands where a PortRef would at one end of a wire, so a frontend can carry either
+    through the same drag and ask plus_menu what to offer when one end is a "+".
+    """
+
+    node_path: str
+    is_input: bool
+
+
+def is_collapsed(chunk) -> bool:
+    """Whether a chunk's node is drawn collapsed: COLLAPSED, and a body to fold away."""
+    return (chunk is not None and chunk.has_state(ChunkFlags.State.COLLAPSED)
+            and has_collapsible_body(chunk))
+
+
+def collapsed_node_ports(chunk, node_path: str, ports: list[PortRef],
+                         edges: list[EdgeRef]) -> tuple[list[PortRef], bool, bool]:
+    """A collapsed node's ports as read_graph gave them, cut down to what it shows.
+
+    Every exec port (the chain stays visible), and the wired end of each wired param
+    (collapsed_ports). For a frontend that holds read_graph's ports and edges rather than
+    its own record of which params are wired.
+
+    Returns:
+        (the ports to draw, a "+" on the input side, a "+" on the output side)
+    """
+    fed, feeding = set(), set()
+    for edge in edges:
+        if edge.is_exec:
+            continue
+        if edge.dst_node_path == node_path:
+            fed.add(edge.dst_attr_path.rsplit(":", 1)[-1])
+        if edge.src_node_path == node_path:
+            feeding.add(edge.src_attr_path.rsplit(":", 1)[-1])
+    shown = collapsed_ports(chunk, fed, feeding)
+    keep = set()
+    for param, show_in, show_out in shown.rows:
+        if show_in:
+            keep.add(f"{node_path}.inputs:{param.name}")
+        if show_out:
+            keep.add(f"{node_path}.outputs:{param.name}")
+    visible = [p for p in ports if p.port_type == PORT_EXEC or p.attr_path in keep]
+    return visible, shown.plus_in, shown.plus_out
+
+
+def plus_menu(chunk, plus: PlusRef, other: PortRef | None = None) -> list[PortRef]:
+    """What to offer when a wire meets a collapsed node's "+".
+
+    With the port at the wire's other end: the node's params that port can join
+    (pick_candidates -- an input "+" lists inputs, an output "+" lists outputs, both of the
+    other end's type). With none, because the other end is a "+" too: every param this
+    "+" could stand for, so the frontend asks this side first and the other one after.
+    """
+    if other is not None:
+        return pick_candidates(chunk, plus.node_path, other)
+    if not plus.is_input:
+        return output_choices(chunk, plus.node_path)
+    return [
+        PortRef(plus.node_path, f"{plus.node_path}.inputs:{param.name}", ptype, True, param=param)
+        for param in iter_connectable_params(chunk)
+        if (ptype := param_port_type(param)) is not None and ptype != PORT_EXEC
+    ]
+
+
+def plus_step(chunks: dict, a, b) -> tuple[list[PortRef], Any] | None:
+    """What to ask when a wire joins a and b and at least one end is a "+".
+
+    The answer is a list to pick from and what the pick then joins: pick one, and join it
+    to the second item the same way (which may ask again, when both ends were a "+").
+    With both ends a "+", the output side is asked first. An empty list means nothing on
+    that node can take the wire -- a "+" joined to a port of its own direction, or two
+    "+"s on one node.
+
+    Args:
+        chunks: {prim path: chunk}, to find each "+"'s chunk.
+        a, b: The wire's ends, each a PortRef or a PlusRef.
+
+    Returns:
+        (choices, the other end), or None when neither end is a "+" and the two can be
+        connected as they are.
+    """
+    a_plus, b_plus = isinstance(a, PlusRef), isinstance(b, PlusRef)
+    if not (a_plus or b_plus):
+        return None
+    if a_plus and b_plus:
+        if a.node_path == b.node_path or a.is_input == b.is_input:
+            return [], b
+        out, inp = (b, a) if a.is_input else (a, b)
+        chunk = chunks.get(out.node_path)
+        return (plus_menu(chunk, out) if chunk is not None else []), inp
+    plus, other = (a, b) if a_plus else (b, a)
+    if other.is_input == plus.is_input or other.node_path == plus.node_path:
+        return [], other
+    chunk = chunks.get(plus.node_path)
+    return (plus_menu(chunk, plus, other) if chunk is not None else []), other
+
+
 def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
     """Create one menu entry's chunk(s) at a USD position.
 
@@ -2028,6 +2358,7 @@ def create_from_entry(scene, entry, usd_pos, nest=None) -> tuple[list, str]:
         with chunk_stage.creating_at(usd_pos, loft=False), scene.creating_in(nest):
             created = entry.create()
             hold_until_wired(scene, nest, created)
+            start_collapsed(created)
             for chunk in created:
                 scene.add_chunk(chunk)
     except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:
