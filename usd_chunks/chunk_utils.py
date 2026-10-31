@@ -168,13 +168,31 @@ def refresh_arc_layer_menu(owner, notice, sender) -> None:
     if node is None:
         return
     generation = chunk_registry.ChunkLayerManager().arc_generation
-    key = id(node)
-    seen = _arc_menu_generation.get(key)
+    seen = _arc_menu_generation.get(id(node))
     if seen is not None and seen[0] == generation and seen[1]() is node:
         return
+    _list_arc_layers(node, generation)
+
+
+def refresh_arc_layer_menus() -> None:
+    """List the arc layers again in every Payload's and Reference's Layer menu.
+
+    For the layer manager, when its arc layers change. The callback above hears only stage
+    changes, and an arc layer is in no layer stack: one renamed, sublayered after all, or
+    deleted changed nothing it heard, and the menus kept listing it.
+    """
+    generation = chunk_registry.ChunkLayerManager().arc_generation
+    for _seen, ref in list(_arc_menu_generation.values()):
+        if (node := ref()) is not None:
+            _list_arc_layers(node, generation)
+
+
+def _list_arc_layers(node, generation: int) -> None:
+    """Put the arc layers in node's Layer menu, and note the generation they are from."""
     menu = node.get_param("layer")
     if menu is None:
         return
+    key = id(node)
     _arc_menu_generation[key] = (generation, weakref.ref(node, lambda _ref: _arc_menu_generation.pop(key, None)))
     items = arc_layer_items()
     if list(getattr(menu, "menu_items", [])) != items:

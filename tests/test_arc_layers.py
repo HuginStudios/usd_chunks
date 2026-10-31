@@ -243,6 +243,24 @@ def test_the_layer_menu_follows_the_arc_layers() -> None:
         assert items() == ["dept", "look"]
 
 
+def test_the_layer_menu_follows_an_arc_layer_renamed_sublayered_or_deleted() -> None:
+    # None of these is a change to the stage, which is all the menu used to hear: the arc
+    # layer is in no layer stack. The menu went on listing the old name.
+    with Scene() as scene:
+        ref = scene.create.reference(name="ref", from_layer=True)
+        items = lambda: list(ref.get_param("layer").menu_items)  # noqa: E731
+        dept = scene.create.layer(layer_name="dept", sublayer=False, name="dept")
+        assert items() == ["dept"]
+        dept.get_param("layer_name").value = "look"
+        assert items() == ["look"]
+        dept.get_param("sublayer").value = True
+        assert items() == []
+        dept.get_param("sublayer").value = False
+        assert items() == ["look"]
+        dept.request_delete()
+        assert items() == []
+
+
 def _wired_bottle(scene, driven: bool = False):
     """The Bottle with its arc layers wired in: the Layer chunks off the chain, each Layer Name
     wired into the Payload's or Reference's Layer."""

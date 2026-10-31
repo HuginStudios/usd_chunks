@@ -2360,7 +2360,12 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             self._arc_layers.pop(key, None)
         else:
             self._arc_layers[key] = layer
+        self._arc_layers_changed()
+
+    def _arc_layers_changed(self) -> None:
+        """Move arc_generation, and have the Layer menus listing the arc layers list them again."""
         self.arc_generation = next(_ARC_GENERATIONS)
+        chunk_utils.refresh_arc_layer_menus()
 
     def add_outside_layer(self, c: core.ChunkBase, layer: Sdf.Layer | None, parent: Sdf.Layer | None = None) -> None:
         """Record layer as one c sublayered into parent itself, outside its own layer -- or forget c's.
@@ -3200,7 +3205,7 @@ class ChunkLayerManager(metaclass=RegistrySingleton):
             return
         self._retired_chunks.add(chunk_hash)
         if self._arc_layers.pop(chunk_hash, None) is not None:
-            self.arc_generation = next(_ARC_GENERATIONS)
+            self._arc_layers_changed()
         if outside := self._outside_layers.pop(chunk_hash, None):
             self._remove_outside_layer(*outside)
         self._chunk_target.pop(chunk_hash, None)
