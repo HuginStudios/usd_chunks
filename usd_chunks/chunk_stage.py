@@ -766,19 +766,18 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         if not scene_stage or stage.GetRootLayer().identifier != scene_stage.GetRootLayer().identifier:
             return
         self._stage = stage
-        if chunk_cook.is_building():
-            # A script building a network inside Scene.building(): the paths changed are
-            # gathered (_pending_resyncs keeps them until a scan) and walked once when the
-            # block ends, after its flush; a chunk found then loads and cooks as any chunk
-            # arriving by USD does. Scanned per change, a build of 300 chunks walked
-            # 740,000 prims in 1,500 scans to find the chunks the script had made itself --
-            # and each layer it inserted resynced the root, so each walk grew with the network.
-            chunk_cook.hold_back(("scan for new chunks", id(self)), self._scan_after_building)
+        # Inside a change_block -- a script building a network: the paths changed are gathered
+        # (_pending_resyncs keeps them until a scan) and walked once when the block has ended
+        # and cooked; a chunk found then loads and cooks as any chunk arriving by USD does.
+        # Scanned per change, a build of 300 chunks walked 740,000 prims in 1,500 scans to
+        # find the chunks the script had made itself -- and each layer it inserted resynced
+        # the root, so each walk grew with the network.
+        if chunk_cook.after_batch(("scan for new chunks", id(self)), self._scan_after_block):
             return
         self._scan_for_new_chunks(stage)
 
-    def _scan_after_building(self) -> None:
-        """The scan _on_contents_changed held back while a script was building."""
+    def _scan_after_block(self) -> None:
+        """The scan _on_contents_changed held back while a change_block was open."""
         if self._scene and not self._discarding and self._stage:
             self._scan_for_new_chunks(self._stage)
 
@@ -5886,12 +5885,14 @@ def recook_for_view(
     A chunk whose cook fails does not stop the pass halfway, with the chunks below it
     still muted: nothing below it cooks (chunk_cook.cook_pass), the rest of the pass runs
     and shows their last results, and the first error is raised once it is done. While a
-    chunk waits on a long job (chunk_cook.hold) the recook waits too, and runs after it.
+    chunk waits on a long job (chunk_cook.hold) the recook waits too, and runs after it;
+    inside a change_block, once the block has ended and cooked.
     """
-    if chunk_cook.hold_back(
-        ("recook_for_view", id(context), _hidden),
-        lambda: recook_for_view(stage, scene, context, view_chunk, _synthetic_tail, _force, _hidden),
-    ):
+    key = ("recook_for_view", id(context), _hidden)
+
+    def later():
+        recook_for_view(stage, scene, context, view_chunk, _synthetic_tail, _force, _hidden)
+    if chunk_cook.hold_back(key, later) or chunk_cook.after_batch(key, later):
         return
     errors: list = []
     with chunk_cook.cook_pass():

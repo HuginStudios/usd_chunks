@@ -243,10 +243,10 @@ Edit Target is what sends edits to it.
 ## Build a big network fast
 
 Each chunk you make cooks what it affects straight away. In a long network that is often the
-whole chain above it, again and again. Make the chunks inside `scene.building()` instead:
+whole chain above it, again and again. Make the chunks inside `chunk.change_block()` instead:
 
 ``` py
-with scene.building():
+with chunk.change_block():
     ...  # make and wire hundreds of chunks
 # here everything has cooked, once
 ```
