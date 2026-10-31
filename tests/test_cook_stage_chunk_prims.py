@@ -18,9 +18,9 @@ def masks(monkeypatch):
     seen = []
     real = skip_cook._open_cook_stage
 
-    def recording(main, mask, hidden=(), opened=None):
+    def recording(main, mask, *args, **kwargs):
         seen.append(set(mask))
-        return real(main, mask, hidden, opened)
+        return real(main, mask, *args, **kwargs)
 
     monkeypatch.setattr(skip_cook, "_open_cook_stage", recording)
     return seen

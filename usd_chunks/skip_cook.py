@@ -232,25 +232,183 @@ def is_cook_stage(stage: Usd.Stage | None) -> bool:
 
 
 def _open_cook_stage(main: Usd.Stage, mask: set[Sdf.Path], hidden: Iterable[str] = (),
-                     opened: list | None = None) -> Usd.Stage:
+                     opened: list | None = None, stand_in: _StandIn | None = None) -> Usd.Stage:
     """A stage of main's layers populated at mask, muted as main is and at hidden too.
 
     Appended to opened, when given, before it is muted: muting sends a change notice from
     it, and a listener that cannot yet tell it for a cook stage (is_cook_stage) takes it
     for the scene's -- the edit layer memo was dropped on every masked cook.
+
+    Given stand_in, opened on its session layer instead, and muted only at what it could
+    not leave out.
     """
     stage = Usd.Stage.OpenMasked(
         main.GetRootLayer(),
-        main.GetSessionLayer(),
+        stand_in.layer if stand_in is not None else main.GetSessionLayer(),
         main.GetPathResolverContext(),
         _population_mask(mask),
         Usd.Stage.LoadAll,
     )
     if opened is not None:
         opened.append(stage)
-    if muted := {*main.GetMutedLayers(), *hidden}:
+    muted = {*main.GetMutedLayers(), *hidden}
+    if stand_in is not None:
+        muted -= stand_in.dropped
+    if muted:
         stage.MuteAndUnmuteLayers(sorted(muted), [])
     return stage
+
+
+#: Layer metadata a stand-in has of its own: its sublayers are the point of it.
+_SUBLAYER_INFO = frozenset({"subLayers", "subLayerOffsets"})
+
+
+def _own_info(layer: Sdf.Layer) -> dict:
+    return {key: value for key, value in _info(layer.pseudoRoot).items() if key not in _SUBLAYER_INFO}
+
+
+def _has_content(layer: Sdf.Layer) -> bool:
+    """Whether layer holds anything but its sublayers."""
+    return bool(layer.rootPrims) or bool(_own_info(layer))
+
+
+class _StandIn:
+    """The session layer a cook stage opens with: the scene's, less the layers it hides.
+
+    Taking a layer out of a stage costs as much as the layers it takes out: muting the 908
+    a cook hid in a 913-chunk scene was most of opening its stage, and muting the one graph
+    layer holding them all cost the same. A stage opened on only the layers it needs costs
+    next to nothing, but the session layer holds the graph layer, and the graph layer every
+    chunk's. So the stage opens on a stand-in: the session layer's own content, copied,
+    sublayering what it does, less the hidden layers -- and any layer on the way to them
+    that holds nothing of its own (the graph layer, a group's) stood in for the same way.
+    One that holds something keeps its hidden layers, muted.
+
+    A cook may author into the session layer (variant selections with no Edit Target above
+    it: chunk_utils.get_edit_layer), so what it changed in the stand-in is copied back once
+    it is done.
+    """
+
+    def __init__(self, session: Sdf.Layer, layer: Sdf.Layer, before: Sdf.Layer | None,
+                 held: list[Sdf.Layer], dropped: set[str]):
+        self.session = session
+        self.layer = layer
+        #: The stand-in as the cook found it, when the session layer had content to copy.
+        self.before = before
+        #: The stand-ins below it: nothing else holds an anonymous layer named only as a
+        #: sublayer, so they live as long as this does.
+        self.held = held
+        #: The hidden layers it leaves out, so not muted.
+        self.dropped = dropped
+
+    def copy_back(self) -> None:
+        """Copy what the cook authored into the stand-in to the scene's session layer.
+
+        Each prim it changed is copied whole, its children with it, and each it removed is
+        removed; its own metadata, but for the sublayers, is set where it changed.
+        """
+        after = self.layer
+        if self.before is None and not _has_content(after):
+            return
+        before = self.before if self.before is not None else Sdf.Layer.CreateAnonymous("cook_session_before")
+        session = self.session
+        with Sdf.ChangeBlock():
+            old_info, new_info = _own_info(before), _own_info(after)
+            for key in old_info.keys() - new_info.keys():
+                session.pseudoRoot.ClearInfo(key)
+            for key, value in new_info.items():
+                if old_info.get(key) != value:
+                    session.pseudoRoot.SetInfo(key, value)
+            changed = {path if path.IsPrimOrPrimVariantSelectionPath() else path.GetPrimOrPrimVariantSelectionPath()
+                       for path in _spec_paths(before) | _spec_paths(after)
+                       if not _same_spec(before, after, path)}
+            copied: list[Sdf.Path] = []
+            for path in sorted(changed):
+                if any(path.HasPrefix(done) for done in copied):
+                    continue
+                if after.GetObjectAtPath(path) is not None:
+                    Sdf.CreatePrimInLayer(session, path)
+                    Sdf.CopySpec(after, path, session, path)
+                    copied.append(path)
+                elif path.IsPrimPath() and (spec := session.GetPrimAtPath(path)) is not None:
+                    parent = session.GetPrimAtPath(path.GetParentPath())
+                    if parent is not None:
+                        parent.RemoveNameChild(spec)
+
+
+def _stand_in(main: Usd.Stage, hidden: Iterable[str]) -> _StandIn | None:
+    """A stand-in session layer for a cook stage that hides hidden, or None to mute instead.
+
+    None when it would leave out no more layers than it keeps: past that, muting costs no
+    more than reading the offsets of the layers kept (_stood_in).
+    """
+    removed = {*main.GetMutedLayers(), *hidden}
+    session = main.GetSessionLayer()
+    if not removed or session is None:
+        return None
+    held: list[Sdf.Layer] = []
+    dropped: set[str] = set()
+    kept = [0]
+    subs = _stood_in(session, removed, dropped, held, kept)
+    if subs is None or len(dropped) <= kept[0]:
+        return None
+    layer = Sdf.Layer.CreateAnonymous("cook_session")
+    before = None
+    if _has_content(session):
+        layer.TransferContent(session)
+    _set_sublayers(layer, subs)
+    if _has_content(session):
+        before = snapshot(layer)
+    return _StandIn(session, layer, before, held, dropped)
+
+
+def _stood_in(layer: Sdf.Layer, removed: set[str], dropped: set[str], held: list[Sdf.Layer],
+              kept: list[int]) -> list[tuple[str, Sdf.LayerOffset]] | None:
+    """layer's sublayers less removed, with a stand-in for each that holds removed ones.
+
+    None when nothing below layer is removed, or a layer holding removed ones has content of
+    its own. Adds what it leaves out to dropped, and what it keeps to kept[0], only then.
+    """
+    paths = list(layer.subLayerPaths)
+    if not paths:
+        return None
+    # By index: the whole list of a 900-sublayer layer's offsets took 50 ms to read.
+    offsets = layer.subLayerOffsets
+    subs: list[tuple[str, Sdf.LayerOffset]] = []
+    left_out: set[str] = set()
+    for i, path in enumerate(paths):
+        if path in removed:
+            left_out.add(path)
+            continue
+        sub = Sdf.Layer.FindRelativeToLayer(layer, path)
+        if sub is None:
+            # Not open, so nothing hidden is under it: named so the stand-in finds it too.
+            subs.append((Sdf.ComputeAssetPathRelativeToLayer(layer, path), offsets[i]))
+            continue
+        if sub.identifier in removed:
+            left_out.add(sub.identifier)
+            continue
+        identifier = sub.identifier
+        if sub.subLayerPaths and not _has_content(sub):
+            inner = _stood_in(sub, removed, left_out, held, kept)
+            if inner is not None:
+                stand = Sdf.Layer.CreateAnonymous("cook_stand_in")
+                _set_sublayers(stand, inner)
+                held.append(stand)
+                identifier = stand.identifier
+        subs.append((identifier, offsets[i]))
+    if not left_out:
+        return None
+    dropped |= left_out
+    kept[0] += len(subs)
+    return subs
+
+
+def _set_sublayers(layer: Sdf.Layer, subs: list[tuple[str, Sdf.LayerOffset]]) -> None:
+    layer.subLayerPaths = [identifier for identifier, _offset in subs]
+    for i, (_identifier, offset) in enumerate(subs):
+        if offset != Sdf.LayerOffset():
+            layer.subLayerOffsets[i] = offset
 
 
 def _population_mask(paths: Iterable[Sdf.Path] | None) -> Usd.StagePopulationMask:
@@ -371,17 +529,23 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     Muted as main is, so a disabled chunk's layer is as absent here as there, and muted at
     hidden -- the layers of chunks not upstream of this one (hidden_layers). Yields the
     watch that collects what the cook looked up.
+
+    Opened on a stand-in session layer that leaves the hidden layers out, when it leaves out
+    more than it keeps (_StandIn): its own stage for the one cook, which costs less than
+    re-masking the shared one. What the cook authored into the session layer is copied
+    back as it ends.
     """
     global _kept
     _install_watching()
+    stand_in = _stand_in(main, hidden)
     # A cook inside another's cannot share its stage: they want different masks at once.
-    shared = _sharing > 0 and not _watches
+    shared = _sharing > 0 and not _watches and stand_in is None
     stage = _kept_for(main) if shared else None
     if stage is not None:
         _remask(stage, main, mask, hidden)
     else:
         try:
-            stage = _open_cook_stage(main, mask, hidden, _opening)
+            stage = _open_cook_stage(main, mask, hidden, _opening, stand_in)
         finally:
             _opening.clear()
         if shared:
@@ -396,6 +560,8 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     finally:
         _watches.pop()
         _active.pop()
+        if stand_in is not None:
+            stand_in.copy_back()
         if shared and _kept is not None and _kept[1] is stage:
             # Nothing populated while no cook runs on it, so it composes -- and reports --
             # next to nothing as the scene changes in the meantime.
