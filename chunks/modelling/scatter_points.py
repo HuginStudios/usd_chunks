@@ -26,7 +26,6 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSou
 
 from __future__ import annotations
 
-import bisect
 import logging
 import math
 import os
@@ -292,6 +291,16 @@ def _ray_triangles(origin, direction, v0, v1, v2):
     return np.where(hit, t, np.nan)
 
 
+# _PoissonGrid's cell key is (x * _GRID_STRIDE + y) * _GRID_STRIDE + z, so a neighbour is the
+# key plus a fixed offset: no tuple built per neighbour. Two far-apart cells can share a key,
+# which only adds points to check; a neighbour is never missed, since the sum is exact.
+_GRID_STRIDE = 1 << 32
+_GRID_NEIGHBOURS = tuple(
+    (dx * _GRID_STRIDE + dy) * _GRID_STRIDE + dz
+    for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+)
+
+
 class _PoissonGrid:
     """Spatial hash for O(1) min-distance rejection during sampling."""
 
@@ -302,23 +311,25 @@ class _PoissonGrid:
 
     def _key(self, pt):
         c = self._cell
-        return (math.floor(pt[0] / c), math.floor(pt[1] / c), math.floor(pt[2] / c))
+        return (math.floor(pt[0] / c) * _GRID_STRIDE + math.floor(pt[1] / c)) * _GRID_STRIDE + math.floor(pt[2] / c)
 
     def too_close(self, pt):
-        if self._min_sq <= 0:
+        min_sq = self._min_sq
+        if min_sq <= 0:
             return False
-        kx, ky, kz = self._key(pt)
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    for ex in self._grid.get((kx + dx, ky + dy, kz + dz), ()):
-                        d = (pt[0] - ex[0]) ** 2 + (pt[1] - ex[1]) ** 2 + (pt[2] - ex[2]) ** 2
-                        if d < self._min_sq:
-                            return True
+        x, y, z = pt[0], pt[1], pt[2]
+        key = self._key(pt)
+        get = self._grid.get
+        for offset in _GRID_NEIGHBOURS:
+            cell = get(key + offset)
+            if cell is not None:
+                for ex, ey, ez in cell:
+                    if (x - ex) ** 2 + (y - ey) ** 2 + (z - ez) ** 2 < min_sq:
+                        return True
         return False
 
     def add(self, pt):
-        self._grid.setdefault(self._key(pt), []).append(pt)
+        self._grid.setdefault(self._key(pt), []).append((pt[0], pt[1], pt[2]))
 
 
 class _AvoidSet:
@@ -1244,6 +1255,18 @@ def _combine_masks(*hooks):
     return mask
 
 
+def _batched(mask):
+    """A mask hook's array form: the `sample_many` of the object whose bound `sample` the hook
+    is, or None when it has none."""
+    return getattr(getattr(mask, "__self__", None), "sample_many", None)
+
+
+#: How many random numbers _scatter_on_triangles draws ahead at a time, and how many candidates
+#: it asks a batched mask about at once.
+_DRAW_BLOCK = 16384
+_MASK_BLOCK = 2048
+
+
 def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     """Area-weighted point sampling with min-distance rejection.
 
@@ -1251,11 +1274,14 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     gizmo will pass a weight function here; a candidate is kept with that
     probability. None means accept everything that passes spacing.
 
-    The area table and its cumulative distribution are built in one array pass -- adding up
-    679,936 triangle areas a Gf.Vec3f cross product at a time took twenty seconds, which was
-    most of a cook on a photogrammetry mesh. The draw loop itself is deliberately unchanged:
-    it consumes the generator in exactly the same order (triangle, u, v, then the mask's
-    roll), so a given seed still produces the scatter it always did.
+    The draw is unchanged since it was written: a candidate takes three numbers from *rng*
+    (triangle, u, v), and one more for the mask's roll if it passes spacing, so a given seed
+    still produces the scatter it always did. Only the work around each draw is in arrays:
+    the numbers are drawn ahead in blocks, every block's candidates are built at once, and a
+    mask with a `sample_many` is asked about candidates a block at a time. One at a time, the
+    triangle search, the point and the mask lookup were most of a wall-ivy cook. The spacing
+    test stays one candidate at a time, as it depends on the points already kept. Numbers
+    drawn ahead but not used are given back, so *rng* ends where the old loop left it.
     """
     if not len(triangles):
         return [], []
@@ -1264,40 +1290,69 @@ def _scatter_on_triangles(triangles, count, rng, min_dist=0, mask=None):
     total_area = float(areas.sum())
     if total_area < 1e-10:
         return [], []
-    # Back to a plain list for the draw: bisect over one is faster per call than
-    # np.searchsorted, which pays array-protocol overhead on a single scalar.
-    cdf = (np.cumsum(areas) / total_area).tolist()
+    cdf = np.cumsum(areas) / total_area
+    last_tri = len(triangles) - 1
 
     v0s, v1s, v2s, normals_all = triangles.v0, triangles.v1, triangles.v2, triangles.n
+    many = _batched(mask) if mask is not None else None
     positions, normals = [], []
     grid = _PoissonGrid(min_dist)
     max_attempts = count * 100
     attempts = 0
-    while len(positions) < count and attempts < max_attempts:
-        attempts += 1
-        tri_idx = min(bisect.bisect_left(cdf, rng.random()), len(triangles) - 1)
 
-        u, v = rng.random(), rng.random()
-        if u + v > 1.0:
-            u, v = 1.0 - u, 1.0 - v
+    start_state = rng.getstate()
+    draw = rng.random
+    numbers = np.empty(0)  # drawn, from the global draw index `base` on
+    base = 0
+    used = 0  # global index of the next number to use
+    tri = points = coords = weights = None
+
+    def refill():
+        """Keep the unused numbers, draw a block more, and build a candidate at each index."""
+        nonlocal numbers, base, tri, points, coords, weights
+        numbers = np.concatenate([numbers[used - base:], np.fromiter(
+            (draw() for _ in range(_DRAW_BLOCK)), dtype=np.float64, count=_DRAW_BLOCK)])
+        base = used
+        r, u, v = numbers[:-2], numbers[1:-1].copy(), numbers[2:].copy()
+        tri = np.minimum(np.searchsorted(cdf, r, side="left"), last_tri)
+        flip = u + v > 1.0
+        u[flip], v[flip] = 1.0 - u[flip], 1.0 - v[flip]
         w = 1.0 - u - v
-        v0, v1, v2 = v0s[tri_idx], v1s[tri_idx], v2s[tri_idx]
-        pt = Gf.Vec3f(
-            w * v0[0] + u * v1[0] + v * v2[0],
-            w * v0[1] + u * v1[1] + v * v2[1],
-            w * v0[2] + u * v1[2] + v * v2[2],
-        )
-        n = Gf.Vec3f(*normals_all[tri_idx])
+        # The old loop's arithmetic, in its order, then to float32 as Gf.Vec3f did.
+        points = (w[:, None] * v0s[tri] + u[:, None] * v1s[tri] + v[:, None] * v2s[tri]).astype(np.float32)
+        coords = points.tolist()
+        weights = np.full(len(points), np.nan) if many is not None else None
 
+    while len(positions) < count and attempts < max_attempts:
+        if used - base + 4 > len(numbers):
+            refill()
+        at = used - base
+        attempts += 1
+        used += 3
+        pt = coords[at]
         if grid.too_close(pt):
             continue
-        if mask is not None and rng.random() > mask(pt, n):
-            continue
-
-        positions.append(pt)
-        normals.append(n)
+        if mask is not None:
+            if many is not None:
+                weight = weights[at]
+                if weight != weight:  # not asked yet: ask about this block of candidates
+                    stop = min(at + _MASK_BLOCK, len(points))
+                    weights[at:stop] = many(points[at:stop].astype(np.float64))
+                    weight = weights[at]
+            else:
+                weight = mask(Gf.Vec3f(*pt), Gf.Vec3f(*normals_all[tri[at]]))
+            roll = numbers[used - base]
+            used += 1
+            if roll > weight:
+                continue
+        positions.append(Gf.Vec3f(*pt))
+        normals.append(Gf.Vec3f(*normals_all[tri[at]]))
         grid.add(pt)
 
+    # Give back what was drawn ahead: rng moves on by exactly the numbers used.
+    rng.setstate(start_state)
+    for _ in range(used):
+        draw()
     return positions, normals
 
 
