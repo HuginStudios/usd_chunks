@@ -3476,6 +3476,8 @@ def suggest_location_from_file(param) -> None:
         return
 
     import_param = chunk.get_param("import_primpath")
+    # The chunk holds the file from here: its cook, straight after, reads the same one.
+    hold_asset_layers(chunk, [path])
     if network_target(path, import_param.value if import_param else ""):
         if location.raw_value:
             location.value = ""
@@ -3486,6 +3488,30 @@ def suggest_location_from_file(param) -> None:
         return
     name = Tf.MakeValidIdentifier(Path(path).stem)
     location.value = _suggested_locations[chunk] = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
+
+
+def hold_asset_layers(node, paths: Iterable[str]) -> None:
+    """Open the files a chunk brings in and keep them open on it, until it brings in others.
+
+    network_target opens a file to ask whether it holds a network, and lets it go; the
+    arc the chunk then authors opened it all over again -- every asset read twice on each
+    cook, half a second of the bathroom scene's five-second open. Held here, the question
+    and the arc share one read. The layers go when the chunk's files change, or with it.
+
+    Args:
+        node: The Reference, Payload or Sublayer chunk.
+        paths: The files it brings in.
+    """
+    held = []
+    for path in paths:
+        try:
+            layer = Sdf.Layer.FindOrOpen(path) if path else None
+        except Tf.ErrorException:
+            # No format plugin for it: the arc reports that, as it always has.
+            layer = None
+        if layer is not None:
+            held.append(layer)
+    node._held_asset_layers = tuple(held)
 
 
 def network_target(asset_path: str, import_path: str = "") -> str | None:
