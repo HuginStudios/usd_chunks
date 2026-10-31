@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 from pxr import UsdGeom
 
-from usd_chunks import Scene, chunk_cook, chunk_registry
+from usd_chunks import Scene, chunk_cook, chunk_registry, chunk_stage
 
 
 @pytest.fixture
@@ -133,9 +133,70 @@ def test_an_edit_target_with_a_group_built_in_a_block_still_follows_edits() -> N
         assert _color(scene) == (0.0, 1.0, 1.0)
 
 
+def test_a_group_under_an_edit_target_built_in_a_block_cooks_into_its_layer() -> None:
+    # Layers placed at the block's end: the group's child was resolved while the Edit
+    # Target's layer was in no stack, fell back to the session layer, and still showed blue
+    # -- but exporting the layer would have left it out.
+    with Scene() as scene:
+        with scene.building():
+            _edit_target_with_a_group(scene)
+        lm = chunk_registry.ChunkLayerManager()
+        targets = {c.name: lm.get_chunk_target(c.get_hash()).GetDisplayName()
+                   for c in scene.get_chunks() if c.name in ("box_mesh", "red", "blue")}
+        assert targets == {"box_mesh": "look", "red": "look", "blue": "look"}
+
+
 def _chunk_layer_order(scene):
-    """The chunks' layers in stack order, by chunk name, strongest first."""
+    """The chunks' layers in stack order, by chunk name, strongest first.
+
+    Not a View's or an Output's: they never cook, so their layers are empty and where they
+    sit cannot change what composes. Placed at the end of a block, a View's lands below the
+    chunk it views rather than above it.
+    """
     lm = chunk_registry.ChunkLayerManager()
-    by_id = {lm.get_layer(c).identifier: c.name for c in scene.get_chunks() if lm.get_layer(c) is not None}
+    by_id = {lm.get_layer(c).identifier: c.name for c in scene.get_chunks()
+             if lm.get_layer(c) is not None and not chunk_stage.is_terminal_chunk(c)}
     stack = [layer.identifier for layer in scene.get_stage().GetLayerStack()]
     return [by_id[i] for i in stack if i in by_id]
+
+
+@pytest.fixture
+def scans(monkeypatch):
+    calls = []
+    real = chunk_stage.ChunkStageSync._scan_for_new_chunks
+
+    def counting(self, stage):
+        calls.append(chunk_cook.is_building())
+        return real(self, stage)
+
+    monkeypatch.setattr(chunk_stage.ChunkStageSync, "_scan_for_new_chunks", counting)
+    return calls
+
+
+def test_a_block_scans_for_new_chunks_only_at_its_end(scans) -> None:
+    # Scanned per stage change, a 300-chunk build walked 740,000 prims in 1,500 scans, all to
+    # find the chunks the script had made itself. At the end: the held scan, and one more for
+    # the layers being ranked.
+    with Scene() as scene:
+        with scene.building():
+            _chain(scene, n=3)
+        assert scans and len(scans) <= 2 and not any(scans), scans
+
+
+def test_chunks_arriving_by_usd_in_a_block_join_at_its_end(tmp_path) -> None:
+    # The scan is what turns chunk prims arriving by plain USD into chunks -- here a saved
+    # network sublayered in by a script, not through a chunk. Held to the end of the block,
+    # it still finds them.
+    net = str(tmp_path / "net.usda")
+    with Scene() as scene:
+        scene.create.transform(name="Inner", primpath_location="/World/inner", ty=2.0)
+        scene.save(net)
+    with Scene() as plain:
+        plain.get_stage().GetRootLayer().subLayerPaths.append(net)
+        expected = sorted(c.name for c in plain.get_chunks())
+    with Scene() as scene:
+        with scene.building():
+            scene.get_stage().GetRootLayer().subLayerPaths.append(net)
+            assert "Inner" not in [c.name for c in scene.get_chunks()]
+        assert sorted(c.name for c in scene.get_chunks()) == expected
+        assert "Inner" in expected
