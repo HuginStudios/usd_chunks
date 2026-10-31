@@ -701,6 +701,10 @@ class _ConfigTransformer(ast.NodeTransformer):
         self._globs = globs.copy()
         self._deferred_config: Callable | None = None
         self._lines: list[str] | None = None
+        # The module's usd_chunks imports, not run yet: config() gets only the names it
+        # reads (see _import_for), so discovering Bake Textures no longer imports numpy and
+        # scipy, nor Display Modes Qt, for a scene that never uses either.
+        self._framework_imports: list[ast.Import | ast.ImportFrom] = []
 
     def _get_node_source(self, node):
         """The source text of node, as ast.get_source_segment returns it.
@@ -730,14 +734,32 @@ class _ConfigTransformer(ast.NodeTransformer):
         ])
 
     def _exec_node(self, node):
-        if not (src := self._get_node_source(node)):
-            return node
+        if src := self._get_node_source(node):
+            self._exec_source(src)
+        return node
+
+    def _exec_source(self, src):
         try:
             dat = compile(src, filename="<ast>", mode="exec")
             exec(dat, self._globs)
         except ModuleNotFoundError:
             pass
-        return node
+
+    def _import_for(self, func: ast.FunctionDef) -> None:
+        """Run the usd_chunks imports that bind a name func reads, those names only.
+
+        `from usd_chunks import chunk, texture_bake` with a config() that reads only
+        `chunk` runs `from usd_chunks import chunk`. A config() that needs more -- a
+        helper, a constant, a name it reaches some other way -- raises NameError, and
+        resolve_deferred_config runs every import before it retries.
+        """
+        read = {n.id for n in ast.walk(func) if isinstance(n, ast.Name)}
+        for node in self._framework_imports:
+            names = [a for a in node.names if (a.asname or a.name.split(".")[0]) in read]
+            if names:
+                kind = ast.ImportFrom(module=node.module, names=names, level=node.level) \
+                    if isinstance(node, ast.ImportFrom) else ast.Import(names=names)
+                self._exec_source(ast.unparse(kind))
 
     def resolve_deferred_config(self, tree: ast.Module) -> None:
         """Retry a config() that referenced module-level names, with those names available.
@@ -753,6 +775,10 @@ class _ConfigTransformer(ast.NodeTransformer):
         """
         if not self._deferred_config:
             return
+
+        # Every import config() did not get: what it reads may come in through any of them.
+        for node in self._framework_imports:
+            self._exec_node(node)
 
         # Source order, and defs as well as assignments: a config built from module data
         # usually reaches a helper too, and a helper defined after the constant it reads
@@ -773,6 +799,7 @@ class _ConfigTransformer(ast.NodeTransformer):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         if node.name == "config":
+            self._import_for(node)
             self._exec_node(node)
             if func := self._globs.get("config"):
                 try:
@@ -786,17 +813,17 @@ class _ConfigTransformer(ast.NodeTransformer):
         return node
 
     def visit_Import(self, node: ast.Import) -> Any:
-        # Makes sure that 'import usd_chunks ...' works
+        # Makes sure that 'import usd_chunks ...' works -- for config(), see _import_for
         mymod = self.__module__.split(".")[0]
         if any([mymod in x.name.split(".") for x in node.names]):
-            return self._exec_node(node)
+            self._framework_imports.append(node)
         return node
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
-        # Makes sure that 'from usd_chunks import ...' works
+        # Makes sure that 'from usd_chunks import ...' works -- for config(), see _import_for
         mymod = self.__module__.split(".")[0]
         if node.module and mymod in node.module.split("."):
-            return self._exec_node(node)
+            self._framework_imports.append(node)
         return node
 
 
