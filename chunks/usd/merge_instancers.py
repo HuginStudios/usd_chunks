@@ -34,7 +34,7 @@ from collections import defaultdict
 import numpy as np
 from pxr import Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from usd_chunks import chunk
+from usd_chunks import chunk, sdf_authoring
 
 _MERGED_KEY = "usd_chunks:merged_into"
 _TIME = Usd.TimeCode.Default()
@@ -71,15 +71,18 @@ def _opinions(proto: Usd.Prim, local: set) -> list[tuple]:
                 if (rel, prop.name) in seen:
                     continue
                 seen.add((rel, prop.name))
+                # Its variability and custom flag after the value, to author it the same
+                # (_replay); not part of what makes two prototypes one asset (_asset).
                 if isinstance(prop, Sdf.AttributeSpec):
                     if prop.HasInfo("timeSamples"):
                         out.append((rel, "animated", prop.name, None))
                     else:
-                        out.append((rel, "attr", prop.name, prop.default, str(prop.typeName)))
+                        out.append((rel, "attr", prop.name, prop.default, str(prop.typeName),
+                                    prop.variability, prop.custom))
                 else:
                     targets = tuple(t.MakeRelativePath(root) if t.HasPrefix(root) else t
                                     for t in prop.targetPathList.GetAddedOrExplicitItems())
-                    out.append((rel, "rel", prop.name, targets))
+                    out.append((rel, "rel", prop.name, targets, prop.custom))
     return out
 
 
@@ -94,24 +97,41 @@ def _asset(proto: Usd.Prim, local: set) -> tuple:
         return ("own", str(proto.GetPath()))
     last = direct[-1]
     layer = last.GetTargetLayer()
-    signature = tuple(sorted((str(o[0]), o[1], o[2], repr(o[3:])) for o in opinions))
+    # The value and type name: what an opinion says, not how it was authored.
+    signature = tuple(sorted((str(o[0]), o[1], o[2], repr(o[3:5] if o[1] == "attr" else o[3:4])) for o in opinions))
     return ("asset", layer.realPath or layer.identifier, str(last.GetTargetPrimPath()), signature, tuple(opinions))
 
 
-def _replay(stage: Usd.Stage, proto_path: Sdf.Path, opinions) -> None:
+def _replay(writer: sdf_authoring.Writer, proto_path: Sdf.Path, opinions) -> None:
     """Author a prototype's own opinions again, on the merged prototype that references its
-    asset directly."""
+    asset directly -- each property as its source authored it."""
     for rel, kind, name, *value in opinions:
-        prim = stage.OverridePrim(proto_path.AppendPath(rel)) if rel != Sdf.Path(".") else stage.GetPrimAtPath(proto_path)
+        spec = writer.over(proto_path.AppendPath(rel) if rel != Sdf.Path(".") else proto_path)
         if kind == "info":
-            prim.SetMetadata(name, value[0])
+            spec.SetInfo(name, value[0])
         elif kind == "attr":
-            attr = prim.CreateAttribute(name, Sdf.ValueTypeNames.Find(value[1]))
-            if value[0] is not None:
-                attr.Set(value[0])
+            default, type_name, variability, custom = value
+            sdf_authoring.attribute(spec, name, Sdf.ValueTypeNames.Find(type_name), default,
+                                    uniform=variability == Sdf.VariabilityUniform, custom=custom)
         elif kind == "rel":
-            prim.CreateRelationship(name).SetTargets(
-                [proto_path.AppendPath(t) if not t.IsAbsolutePath() else t for t in value[0]])
+            targets, custom = value
+            _relationship(writer, spec, name, [proto_path.AppendPath(t) if not t.IsAbsolutePath() else t
+                                               for t in targets], custom=custom)
+
+
+def _relationship(writer: sdf_authoring.Writer, spec: Sdf.PrimSpec, name: str, targets,
+                  custom: bool = False) -> None:
+    """The relationship name on spec, targeting targets -- Relationship.SetTargets."""
+    prop = spec.relationships[name] if name in spec.relationships else Sdf.RelationshipSpec(spec, name, custom)
+    prop.targetPathList.explicitItems = [writer.target_path(t) for t in targets]
+
+
+def _undefined_parents(stage: Usd.Stage, path: Sdf.Path) -> list[Sdf.Path]:
+    """path's ancestors not defined on stage, outermost first -- what Stage.DefinePrim of path
+    defines along with it."""
+    return [parent for parent in reversed(list(path.GetParentPath().GetAncestorsRange()))
+            if parent != Sdf.Path.absoluteRootPath
+            and not ((prim := stage.GetPrimAtPath(parent)) and prim.IsDefined())]
 
 
 def _reason_not_mergeable(pi: UsdGeom.PointInstancer) -> str | None:
@@ -175,7 +195,9 @@ def _world_instances(pi: UsdGeom.PointInstancer):
     idx = np.asarray(pi.GetProtoIndicesAttr().Get(_TIME) or [], dtype=np.int64)
     n = len(pos)
     orient = pi.GetOrientationsAttr().Get(_TIME)
-    q = (np.asarray([(o.GetImaginary()[0], o.GetImaginary()[1], o.GetImaginary()[2], o.GetReal()) for o in orient])
+    # A quaternion array converts as (i, j, k, real) rows. Read one by one, it was most of a
+    # merge: a third of a second for the bathroom's instances.
+    q = (np.asarray(orient, dtype=np.float64).reshape(-1, 4)
          if orient else np.tile([0.0, 0.0, 0.0, 1.0], (n, 1)))
     sc = np.asarray(pi.GetScalesAttr().Get(_TIME) or [(1.0, 1.0, 1.0)] * n, dtype=np.float64).reshape(-1, 3)
     mask = pi.ComputeMaskAtTime(_TIME)
@@ -230,7 +252,9 @@ def execute(node):
             members[prim.GetPath()] = (_instancer_key(prim, final_render), [a[:4] for a in assets], targets, assets)
 
     groups = _groups(members)
-    made = []
+    made, merges = [], []
+    # Everything is read first and written after, in one change block: through the Usd API,
+    # each define, reference and opinion replayed recomposed the stage on its own.
     for n, group in enumerate(groups):
         key = members[group[0]][0]
         # One prototype per asset, in first-seen order; each source index remapped onto it.
@@ -252,33 +276,54 @@ def execute(node):
         name = f"{group[0].name}_merged" if n == 0 or group[0].name not in {g[0].name for g in groups[:n]} \
             else f"{group[0].name}_merged_{n}"
         out_path = target_root.AppendChild(name)
-        UsdGeom.Scope.Define(stage, target_root) if not stage.GetPrimAtPath(target_root) else None
-        out = UsdGeom.PointInstancer.Define(stage, out_path)
-        rel_targets = []
-        for k, (asset, _) in enumerate(protos):
-            proto_path = out_path.AppendChild("Prototypes").AppendChild(f"proto_{k}")
-            stage.DefinePrim(proto_path, "Xform").GetReferences().AddReference(asset[1], asset[2])
-            _replay(stage, proto_path, asset[4])
-            rel_targets.append(proto_path)
-        out.CreatePrototypesRel().SetTargets(rel_targets)
-        out.CreatePositionsAttr(Vt.Vec3fArray.FromNumpy(np.concatenate(positions).astype(np.float32)))
-        quats = np.concatenate(orientations).astype(np.float16)
-        out.CreateOrientationsAttr(Vt.QuathArray.FromNumpy(quats))
-        out.CreateScalesAttr(Vt.Vec3fArray.FromNumpy(np.concatenate(scales).astype(np.float32)))
-        out.CreateProtoIndicesAttr(Vt.IntArray.FromNumpy(np.concatenate(indices).astype(np.int32)))
-        purpose, visibility, material = key
-        out.CreatePurposeAttr(purpose)
-        if visibility == UsdGeom.Tokens.invisible:
-            out.CreateVisibilityAttr(visibility)
-        if material:
-            UsdShade.MaterialBindingAPI.Apply(out.GetPrim()).Bind(UsdShade.Material(stage.GetPrimAtPath(material)))
+        sources = []
         for path in group:
-            src = stage.GetPrimAtPath(path)
-            src.SetActive(False)
-            data = dict(src.GetMetadata("customData") or {})
+            data = dict(stage.GetPrimAtPath(path).GetMetadata("customData") or {})
             data[_MERGED_KEY] = str(out_path)
-            src.SetMetadata("customData", data)
+            sources.append((path, data))
+        merges.append((out_path, protos, positions, orientations, scales, indices, key, sources))
         made.append((len(group), len(protos), sum(len(m[2]) for p, m in members.items() if p in group)))
+
+    writer = sdf_authoring.Writer(stage)
+    root_parents = _undefined_parents(stage, target_root) if merges and not stage.GetPrimAtPath(target_root) else None
+    with Sdf.ChangeBlock():
+        if root_parents is not None:
+            for parent in root_parents:
+                writer.define(parent)
+            writer.define(target_root, "Scope")
+        for out_path, protos, positions, orientations, scales, indices, key, sources in merges:
+            out = writer.define(out_path, "PointInstancer")
+            rel_targets = []
+            for k, (asset, _) in enumerate(protos):
+                proto_path = out_path.AppendChild("Prototypes").AppendChild(f"proto_{k}")
+                writer.define(proto_path.GetParentPath())
+                writer.define(proto_path, "Xform").referenceList.Prepend(Sdf.Reference(asset[1], asset[2]))
+                _replay(writer, proto_path, asset[4])
+                rel_targets.append(proto_path)
+            _relationship(writer, out, "prototypes", rel_targets)
+            names = Sdf.ValueTypeNames
+            sdf_authoring.attribute(out, "positions", names.Point3fArray,
+                                    Vt.Vec3fArray.FromNumpy(np.concatenate(positions).astype(np.float32)))
+            quats = np.concatenate(orientations).astype(np.float16)
+            sdf_authoring.attribute(out, "orientations", names.QuathArray, Vt.QuathArray.FromNumpy(quats))
+            sdf_authoring.attribute(out, "scales", names.Float3Array,
+                                    Vt.Vec3fArray.FromNumpy(np.concatenate(scales).astype(np.float32)))
+            sdf_authoring.attribute(out, "protoIndices", names.IntArray,
+                                    Vt.IntArray.FromNumpy(np.concatenate(indices).astype(np.int32)))
+            purpose, visibility, material = key
+            sdf_authoring.attribute(out, "purpose", names.Token, purpose, uniform=True)
+            if visibility == UsdGeom.Tokens.invisible:
+                sdf_authoring.attribute(out, "visibility", names.Token, visibility)
+            if material:
+                schemas = Sdf.TokenListOp()
+                schemas.prependedItems = ["MaterialBindingAPI"]
+                out.SetInfo("apiSchemas", schemas)
+                _relationship(writer, out, "material:binding", [Sdf.Path(material)])
+            for path, data in sources:
+                src = writer.over(path)
+                src.active = False
+                # Not .customData: its edit proxy refuses a namespaced key like _MERGED_KEY.
+                src.SetInfo("customData", data)
 
     if readout:
         merged = sum(g for g, _, _ in made)

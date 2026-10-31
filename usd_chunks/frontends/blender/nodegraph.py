@@ -87,6 +87,12 @@ _PORT_COLOURS = {
 }
 _DEFAULT_COLOUR = (0.7, 0.7, 0.7, 1.0)
 
+#: The name (and port type) of a collapsed node's "+" sockets, one on each side: a link
+#: made to one is taken back out and becomes a pick of which param it means -- see
+#: UsdChunksNodeTree.update and BlenderGraphView.join. Not a param name, so nothing
+#: resolves it as a port.
+_PLUS = "+"
+
 #: Header colour every chunk node gets. Without it Blender falls back to its default
 #: colour for a custom Node subclass with no bl_color/use_custom_color, which reads as an
 #: unclassified pink -- distracting across a graph that is entirely chunk nodes.
@@ -197,6 +203,15 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
         view = active_view()
         if view is None or view.tree is not self:
             return
+        # A link to or from a collapsed node's "+" is not a wire yet: which param it means
+        # is picked first. Taken out of the tree here, and joined one tick later, off
+        # Blender's own call stack (as _reload_after_connect is).
+        for link in [l for l in self.links if _PLUS in (l.from_socket.name, l.to_socket.name)]:
+            a = _plus_or_port(view, link.from_node, link.from_socket, is_input=False)
+            b = _plus_or_port(view, link.to_node, link.to_socket, is_input=True)
+            self.links.remove(link)
+            if a is not None and b is not None:
+                bpy.app.timers.register(lambda a=a, b=b: _join_later(view, a, b), first_interval=0.0)
         changed = False
         present = {(link.from_node.name, link.from_socket.name,
                     link.to_node.name, link.to_socket.name) for link in self.links}
@@ -316,15 +331,28 @@ def sync_socket_visibility(node) -> None:
     node (a linked one stays, as Blender always keeps a wired socket visible). Without
     this a chunk that shows one of several groups -- mesh's cube/tube/grid -- drew
     every group's rows at once and the menu that picks one visibly did nothing.
+
+    A collapsed node (node.hide) also hides every unlinked param socket, which Blender
+    would otherwise still draw down the collapsed node's ends: it shows only the wired end
+    of each wired param, as chunk_graph.collapsed_ports has every frontend do, and a "+"
+    on each side that has something left to wire.
     """
+    collapsed = node.hide
     for collection in (node.inputs, node.outputs):
+        spare = False  # a param on this side that is shown open but not wired
         for socket in collection:
-            if socket.port_type == chunk_graph.PORT_EXEC:
+            if socket.port_type == chunk_graph.PORT_EXEC or socket.name == _PLUS:
                 continue
             param = socket_param(socket, node)
             hidden = param is not None and chunk_blender.is_hidden(param)
+            if collapsed and not socket.is_linked:
+                spare |= not hidden
+                hidden = True
             if socket.hide != hidden:
                 socket.hide = hidden
+        plus = collection.get(_PLUS)
+        if plus is not None and plus.hide != (not (collapsed and spare)):
+            plus.hide = not (collapsed and spare)
 
 
 class UsdChunksSocket(bpy.types.NodeSocket):
@@ -595,6 +623,53 @@ class USDCHUNKS_OT_search_menu(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class USDCHUNKS_OT_pick_plus(bpy.types.Operator):
+    """Wire to this param."""
+
+    bl_idname = "usd_chunks.pick_plus"
+    bl_label = "Wire To"
+    bl_options = {"REGISTER", "UNDO"}
+
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    def execute(self, _context):
+        view = active_view()
+        if view is None or view.pending_pick is None or not 0 <= self.index < len(view.pending_pick[0]):
+            return {"CANCELLED"}
+        view.choose(view.pending_pick[0][self.index])
+        return {"FINISHED"}
+
+
+def _draw_pick_menu(menu, _context) -> None:
+    """One entry per param the pending "+" pick offers, labelled as Qt's menu is."""
+    view = active_view()
+    if view is None or view.pending_pick is None:
+        return
+    for index, ref in enumerate(view.pending_pick[0]):
+        label = chunk_graph.param_menu_label(ref.param, view.chunks.get(ref.node_path))
+        menu.layout.operator(USDCHUNKS_OT_pick_plus.bl_idname, text=label).index = index
+
+
+def _open_pick_popup() -> None:
+    """Show the active view's pending "+" pick at the mouse, in the node editor.
+
+    A popup menu rather than a search popup, which drew its list only after the next
+    mouse event. Reached from a timer (see UsdChunksNodeTree.update), where there is no
+    window in the context, so one is overridden in. Background Blender has no window: the
+    pick then waits in pending_pick for a script or test.
+    """
+    if bpy.app.background:
+        return
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != "NODE_EDITOR":
+                continue
+            region = next((r for r in area.regions if r.type == "WINDOW"), None)
+            with bpy.context.temp_override(window=window, area=area, region=region):
+                bpy.context.window_manager.popup_menu(_draw_pick_menu, title="Wire To")
+            return
+
+
 class USDCHUNKS_OT_revert_override(bpy.types.Operator):
     """Put back the value a hosted network's file has for this param.
 
@@ -810,6 +885,23 @@ def _link_port_ref(view, node, socket, is_input: bool):
     return _port_ref_named(view, path, socket.name, is_input) if path else None
 
 
+def _plus_or_port(view, node, socket, is_input: bool):
+    """A link end as the engine names it: a PlusRef for a "+" socket, else its PortRef."""
+    path = getattr(node, "chunk_path", None)
+    if not path:
+        return None
+    if socket.name == _PLUS:
+        return chunk_graph.PlusRef(path, is_input)
+    return _port_ref_named(view, path, socket.name, is_input)
+
+
+def _join_later(view, a, b) -> None:
+    """Timer callback for a link made to a "+" -- see UsdChunksNodeTree.update."""
+    if active_view() is view:
+        view.join(a, b)
+    return None
+
+
 def _port_ref_named(view, path: str, name: str, is_input: bool):
     """The PortRef for socket `name` on the node at prim path `path`, or None.
 
@@ -903,6 +995,9 @@ class BlenderGraphView:
         #: they stay put and are routed around.
         self.locked: set = set()
         self.status = ""
+        #: A link that met a collapsed node's "+", waiting on a param to be picked:
+        #: (the choices, what the pick joins). See join and choose; the popup only shows it.
+        self.pending_pick: tuple[list, object] | None = None
         #: Guards ensure_view against the reload it can trigger through itself.
         self._ensuring_view = False
         #: What changed since the last flush -- node paths whose values or state moved,
@@ -1102,6 +1197,15 @@ class BlenderGraphView:
                     continue
                 sock = collection.new(SOCKET_ID, port.name)
                 sock.port_type = port.port_type
+            chunk = self.chunks.get(path)
+            if chunk is not None and chunk_graph.has_collapsible_body(chunk):
+                # Shown only while collapsed -- see sync_socket_visibility. A diamond, so
+                # it reads as something other than a param on a collapsed node, where
+                # Blender draws no socket names.
+                for collection in (node.inputs, node.outputs):
+                    plus = collection.new(SOCKET_ID, _PLUS)
+                    plus.port_type = _PLUS
+                    plus.display_shape = "DIAMOND"
             sync_socket_visibility(node)
 
         for edge in self.edges:
@@ -1338,6 +1442,33 @@ class BlenderGraphView:
             else:
                 chunk.unset_state(ChunkFlags.State.COLLAPSED)
         self.flush()
+
+    def join(self, a, b) -> None:
+        """Wire a to b -- through a param picked from a list when an end is a "+".
+
+        With a "+" at either end the engine says what to offer (plus_step); the choice
+        waits in pending_pick for choose(), which joins it on and may ask again when both
+        ends were a "+". The search popup only shows it.
+        """
+        step = chunk_graph.plus_step(self.chunks, a, b)
+        if step is None:
+            if chunk_graph.connect(self.stage, a, b, self.chunks) is not None:
+                _reload_after_connect(self)
+            return
+        choices, other = step
+        if not choices:
+            self.status = "nothing there takes that wire"
+            return
+        self.pending_pick = (choices, other)
+        _open_pick_popup()
+
+    def choose(self, ref) -> None:
+        """Join the picked param to whatever waited on it (see join)."""
+        if self.pending_pick is None:
+            return
+        _choices, other = self.pending_pick
+        self.pending_pick = None
+        self.join(ref, other)
 
     def snapshot_selection(self):
         return chunk_graph.snapshot_selection(
@@ -1790,7 +1921,7 @@ def _draw_add_menu(self, context) -> None:
 
 _CLASSES = (UsdChunksNodeTree, UsdChunksSocket, USDCHUNKS_OT_param_button,
             USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_search_menu, USDCHUNKS_OT_pick_menu_item,
-            USDCHUNKS_OT_revert_override,
+            USDCHUNKS_OT_pick_plus, USDCHUNKS_OT_revert_override,
             USDCHUNKS_OT_list_resize, USDCHUNKS_OT_add_node)
 
 

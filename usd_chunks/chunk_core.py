@@ -4275,6 +4275,9 @@ class ChunkConfig(AttributesBase):
     # stacked on one. Distinct from exec_inputs, which is a fixed, positional count set at
     # config time; here the count is not known until the graph is wired.
     dynamic_exec_inputs: bool = attrs.field(default=False)
+    # Cooks again when a chunk is wired below it, because what it writes names what is below
+    # (Transform's op order). Any other chunk's result doesn't change when it gains one.
+    cooks_when_wired_below: bool = attrs.field(default=False)
     outputs: list[tuple[str, str]] = attrs.field(factory=list)  # extra typed output ports: [(name, SdfTypeName), ...]
     # Extra menu entries: [(label, {param: value}), ...], or a callable returning them.
     #

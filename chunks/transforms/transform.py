@@ -415,6 +415,8 @@ def config():
         # No gizmos block: the handles are declared as gizmo= on the three groups in main().
         category=chunk.StandardCategory.TRANSFORM,
         icon="move",
+        # Its xformOpOrder names every Transform below it on the prim (xform_op_order).
+        cooks_when_wired_below=True,
         description="""
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and
         scale xform ops to one or more existing prims.
