@@ -47,6 +47,24 @@ Everything in this list already works and must not be reimplemented.
   delete, make the group, paste inside, wire it back into the chain.
 - `delete_chunks`, `toggle_disabled`, `collapse_or_expand`, `apply_selection`, `chunks_for`.
 
+**Collapsed nodes**
+
+New nodes start collapsed (`start_collapsed`, which `create_from_entry` already calls), so
+a collapsed node has to be wireable without opening it:
+
+- `is_collapsed(chunk)` says whether to draw a node collapsed.
+- `collapsed_node_ports(chunk, path, ports, edges)` cuts a node's `read_graph` ports down
+  to what it shows: its exec ports and the wired end of each wired param. It also says
+  whether each side gets a "+".
+- A wire that ends on a "+" carries a `PlusRef` where a `PortRef` would be.
+- `plus_step(chunks, a, b)` says what to ask when either end of a wire is a "+": a list of
+  params, and what the picked one then joins to.
+- `param_menu_label` labels each param in that list, e.g. "Translate › X".
+
+Keep the pending pick in the view, and have a `choose()` that joins it. The menu should
+only show the pending pick; that way a test can drive the whole join without a window.
+Flet, ImGui and Blender all do it this way.
+
 **Clipboard**
 
 `ClipboardNode`, `ClipboardEdge`, and the module-level `node_clipboard` / `edge_clipboard`,

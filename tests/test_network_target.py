@@ -8,6 +8,7 @@ network loses its location.
 from __future__ import annotations
 
 import pytest
+from pxr import Sdf
 
 from usd_chunks import chunk_stage
 
@@ -76,3 +77,38 @@ def test_a_network_held_only_through_a_sublayer_is_found(tmp_path):
 @pytest.mark.parametrize("path", ["", "Z:/no/such/file.usda"])
 def test_no_file_is_not_a_network(path):
     assert chunk_stage.network_target(path) is None
+
+
+class _OpenSpy:
+    """chunk_stage's Sdf, with Layer.FindOrOpen recording what it is asked to open."""
+
+    def __init__(self):
+        self.opened = []
+        spy = self
+
+        class Layer:
+            @staticmethod
+            def FindOrOpen(path):
+                spy.opened.append(path)
+                return Sdf.Layer.FindOrOpen(path)
+
+        self.Layer = Layer
+
+    def __getattr__(self, name):
+        return getattr(Sdf, name)
+
+
+def test_a_file_in_another_format_is_not_opened_to_ask(tmp_path, monkeypatch):
+    # A material Reference points at a .mtlx: opening it ran the MaterialX plugin's
+    # conversion and hundreds of change notices, only for the reference to open it again.
+    # Only a USD file can hold a network.
+    mtlx = tmp_path / "Metal.mtlx"
+    mtlx.write_text('<?xml version="1.0"?>\n<materialx version="1.38"/>\n', encoding="utf-8")
+    usda = _write(tmp_path, "net.usda", _GROUP.format(name="Net"), '(\n    defaultPrim = "Net"\n)')
+    spy = _OpenSpy()
+    monkeypatch.setattr(chunk_stage, "Sdf", spy)
+
+    assert chunk_stage.network_target(str(mtlx)) is None
+    assert spy.opened == []
+    assert chunk_stage.network_target(usda) == "/Net"
+    assert spy.opened == [usda]

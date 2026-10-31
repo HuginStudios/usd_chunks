@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING
 # time this line runs chunk_notice may still be halfway through its own import and have
 # no attributes yet. Binding the module and reaching into it at call time is what makes
 # the cycle work.
-from usd_chunks import chunk_notice
+from usd_chunks import chunk_notice, cook_timings
 
 if TYPE_CHECKING:
     from usd_chunks.chunk_core import ChunkBase
@@ -687,7 +687,9 @@ def commit_all(
         if hook is None:
             continue
 
-        hook(c)
+        # A Render chunk renders here, not in its cook.
+        with cook_timings.timed(c, step="commit"):
+            hook(c)
         committed.append(c)
 
     return committed

@@ -27,6 +27,8 @@ def _apply_sublayers(owner: chunk.Chunk) -> None:
         if p and p.value:
             paths.append(p.value)
 
+    # Opened once here, for the network check and the sublayering below.
+    chunk_stage.hold_asset_layers(owner, paths)
     networks = [(p, target) for p in paths if (target := chunk_stage.network_target(p))]
     hosted = {p for p, _ in networks}
     paths = [p for p in paths if p not in hosted]
