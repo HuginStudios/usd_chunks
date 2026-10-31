@@ -138,6 +138,11 @@ def defer_to_batch_end(key, fn) -> bool:
     return False
 
 
+def is_batching() -> bool:
+    """Whether a batched_solve (change_block) is open, so what it sets settles at its end."""
+    return _batched is not None
+
+
 def is_held() -> bool:
     """Whether a chunk is waiting on a long job, so nothing else may cook (hold)."""
     return bool(_held)
