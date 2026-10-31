@@ -73,6 +73,9 @@ _after_cook_hooks: list[Callable] = []
 # How many holds are open (hold()): while any is, nothing else cooks.
 _held = 0
 
+# How many building() blocks are open: while any is, nothing cooks but each new chunk once.
+_building = 0
+
 # What asked to run while a hold was open, by key, to run once it has ended (hold_back).
 _held_back: dict = {}
 
@@ -148,6 +151,11 @@ def is_held() -> bool:
     return bool(_held)
 
 
+def is_building() -> bool:
+    """Whether a script is building a network inside building(), so cooks wait for its end."""
+    return bool(_building)
+
+
 def hold_back(key, fn) -> bool:
     """While a hold is open, keep fn to run once it has ended, instead of now.
 
@@ -161,7 +169,7 @@ def hold_back(key, fn) -> bool:
     Returns:
         False when no hold is open: the caller runs it now.
     """
-    if not _held:
+    if not (_held or _building):
         return False
     _held_back[key] = fn
     return True
@@ -192,9 +200,27 @@ def hold(later: Callable[[Callable], None]):
             later(_release)
 
 
+@contextmanager
+def building():
+    """Cook nothing until the block ends, then what is pending in one flush (Scene.building).
+
+    Its own count, not hold()'s: a long-job hold in a host must not start the cooks a script
+    building a network asks for, and the reverse. Released here, not from an event loop: a
+    script has none, and what follows the block reads the result.
+    """
+    global _building
+    _building += 1
+    try:
+        yield
+    finally:
+        _building -= 1
+        if not _building:
+            _release()
+
+
 def _release() -> None:
     """Run what hold_back() kept, and cook what the held solves left pending."""
-    if _held:
+    if _held or _building:
         return  # held again before this ran; that hold's own release runs it
     flush()
     while _held_back:
@@ -266,7 +292,7 @@ def flush(force: bool = False) -> None:
             cook (a Wedge setting its ranges), which reads the result straight after.
             A plain solve inside a cook waits for the outer flush instead.
     """
-    if _held or (_flushing and not force):
+    if _held or _building or (_flushing and not force):
         return
     with cook_pass():
         _flush()

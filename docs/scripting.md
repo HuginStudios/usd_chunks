@@ -240,6 +240,22 @@ Edit Target is what sends edits to it.
 | `scene.execute()` | Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes. |
 | `scene.commit()` | Runs the chunks that write files, such as Export USD. |
 
+## Build a big network fast
+
+Each chunk you make cooks what it affects straight away. In a long network that is often the
+whole chain above it, again and again. Make the chunks inside `scene.building()` instead:
+
+``` py
+with scene.building():
+    ...  # make and wire hundreds of chunks
+# here everything has cooked, once
+```
+
+Inside the block each chunk cooks once as it is made, before it is wired, and nothing else
+cooks. When the block ends, what changed since then cooks once, upstream first: about two cooks
+per chunk. A readout you read inside the block is from that first, unwired cook. A 336-chunk
+network took 250 s this way, against 17-27 minutes.
+
 ## Inside usdview
 
 `Scene.current()` gives you the scene usdview is running. What you make goes into it:
