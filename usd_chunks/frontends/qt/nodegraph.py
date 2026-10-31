@@ -6000,7 +6000,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if context is not None:
             gp = stage.GetPrimAtPath(Sdf.Path(chunk_stage.get_chunk_prim_path(context)))
             if gp and gp.IsValid():
-                a = gp.GetAttribute("chunk:activeView")
+                a = gp.GetAttribute(chunk_graph.ACTIVE_VIEW_ATTR)
                 if a and a.IsValid():
                     slot = a.Get()
         if not slot or not chunk_stage.find_view_chunk_for_slot(slot, stage, registry.scene, context):
@@ -6101,14 +6101,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     # Target, rather than relying on the stage's ambient one (see
                     # set_chunk_lofted for the same "second mutation doesn't propagate"
                     # class of bug this avoids).
-                    active_view_attr = gp.GetAttribute("chunk:activeView")
+                    active_view_attr = gp.GetAttribute(chunk_graph.ACTIVE_VIEW_ATTR)
                     home = (
                         chunk_utils.get_attr_home_layer(active_view_attr)
                         if active_view_attr and active_view_attr.IsValid() else None
                     )
                     target = home or chunk_utils.get_bookkeeping_layer(stage, context)
                     with Usd.EditContext(stage, target):
-                        gp.CreateAttribute("chunk:activeView", Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
+                        gp.CreateAttribute(chunk_graph.ACTIVE_VIEW_ATTR, Sdf.ValueTypeNames.Int, custom=True).Set(int(slot))
                 finally:
                     chunk_stage.chunk_notice._usd_write_active = prev_w
         if view_chunk is not None and select_view:
