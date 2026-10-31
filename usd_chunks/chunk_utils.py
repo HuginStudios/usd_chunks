@@ -152,26 +152,6 @@ def arc_source_changed(owner, notice, sender) -> None:
         show_arc_source(node)
 
 
-@chunk_notice.without_edit_context
-def refresh_arc_layer_menu(owner, notice, sender) -> None:
-    """Keep a Payload or Reference chunk's Layer menu listing the network's arc layers.
-
-    Only the items: a picked layer that is not listed is kept, since the Layer chunk making
-    it may not have cooked yet -- the arc is simply not authored until it has.
-
-    Outside the owner's edit context: resolving it makes or moves the chunk's layer, a
-    sublayer edit, and this runs inside the stage's change notice. A cook stage of the same
-    layers heard that edit before the change it was answering, and USD refused it.
-    """
-    node = owner.get_chunk()
-    menu = node.get_param("layer") if node is not None else None
-    if menu is None:
-        return
-    items = arc_layer_items()
-    if list(getattr(menu, "menu_items", [])) != items:
-        menu.menu_items = items
-
-
 def get_edit_layer(stage: Usd.Stage, owner=None) -> Sdf.Layer:
     """The layer a chunk should author into for its exec-chain position.
 
