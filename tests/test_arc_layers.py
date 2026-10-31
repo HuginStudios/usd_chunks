@@ -98,6 +98,9 @@ def test_the_network_saves_and_reopens(tmp_path) -> None:
         stage = scene.get_stage()
         assert stage.GetPrimAtPath("/Bottle/geo").GetTypeName() == "Mesh"
         assert _arcs(stage.GetPrimAtPath("/Bottle")) == (["ArcTypePayload"], ["ArcTypeReference"])
+        # Kept though the Layer menus list nothing until they are opened.
+        layers = {c.name: c.get_param("layer").value for c in scene.get_chunks() if c.name in ("payload", "geom_ref")}
+        assert layers == {"payload": "Bottle_payload", "geom_ref": "Bottle.geom.usda"}
         mesh = next(c for c in scene.get_chunks() if c.name == "bottle_mesh")
         _export(scene, mesh, tmp_path / "out")
     assert Sdf.Layer.FindOrOpen(str(tmp_path / "out" / "Bottle.geom.usda")).GetPrimAtPath("/Bottle/geo")
@@ -300,3 +303,26 @@ def test_references_and_payloads_do_not_each_hear_every_stage_change() -> None:
             scene.create.reference(name=f"ref{i}")
             scene.create.payload(name=f"pay{i}")
         assert listeners() == before
+
+
+def test_the_layer_menu_opens_on_an_arc_layer_renamed_sublayered_or_deleted() -> None:
+    """None of these is a change to the stage: the arc layer is in no layer stack. A menu
+    kept current by stage changes went on listing the old name; one filled as it opens can't."""
+    with Scene() as scene:
+        ref = scene.create.reference(name="ref", from_layer=True)
+        menu = ref.get_param("layer")
+
+        def items():
+            menu.refresh_items()
+            return list(menu.menu_items)
+
+        dept = scene.create.layer(layer_name="dept", sublayer=False, name="dept")
+        assert items() == ["dept"]
+        dept.get_param("layer_name").value = "look"
+        assert items() == ["look"]
+        dept.get_param("sublayer").value = True
+        assert items() == []
+        dept.get_param("sublayer").value = False
+        assert items() == ["look"]
+        dept.request_delete()
+        assert items() == []
