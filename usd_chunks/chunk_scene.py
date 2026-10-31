@@ -1269,6 +1269,10 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         _, context, _, view = self._active_view_of(target)
         if view is not None:
             chunk_stage.recook_for_view(self.get_stage(), self, context, view)
+        elif chunk_cook.is_building():
+            # building() ranks them once at its end. Sorted per chunk made, ranking every
+            # chunk each time, it was over a third of a 300-chunk build.
+            return
         elif (layers := chunk_registry.ChunkLayerManager()).initialized:
             # No View to put the layers in chain order, so each new chunk's layer would keep
             # the place it got when made -- before it was wired -- and an upstream chunk's

@@ -154,13 +154,14 @@ def scans(monkeypatch):
     return calls
 
 
-def test_a_block_scans_for_new_chunks_once_at_its_end(scans) -> None:
+def test_a_block_scans_for_new_chunks_only_at_its_end(scans) -> None:
     # Scanned per stage change, a 300-chunk build walked 740,000 prims in 1,500 scans, all to
-    # find the chunks the script had made itself.
+    # find the chunks the script had made itself. At the end: the held scan, and one more for
+    # the layers being ranked.
     with Scene() as scene:
         with scene.building():
             _chain(scene, n=3)
-        assert scans == [False]
+        assert scans and len(scans) <= 2 and not any(scans), scans
 
 
 def test_chunks_arriving_by_usd_in_a_block_join_at_its_end(tmp_path) -> None:
