@@ -161,8 +161,13 @@ def refresh_arc_layer_menu(owner, notice, sender) -> None:
     layers heard that edit before the change it was answering, and USD refused it.
 
     Looked at again only once the arc layers have changed (ChunkLayerManager.arc_generation):
-    it hears every change to the stage, and a 900-chunk build with 300 References called it
+    it heard every change to the stage, and a 900-chunk build with 300 References called it
     2.2 million times, a third of the build.
+
+    Now only when the chunk is made or loaded: that also enters it in the list
+    refresh_arc_layer_menus goes through when the arc layers change, which is all the
+    menu follows. Heard on every stage change, it was still called 300 times per notice
+    in a 300-Reference set, about a third of moving one prop.
     """
     node = owner.get_chunk()
     if node is None:
@@ -179,7 +184,8 @@ def refresh_arc_layer_menus() -> None:
 
     For the layer manager, when its arc layers change. The callback above hears only stage
     changes, and an arc layer is in no layer stack: one renamed, sublayered after all, or
-    deleted changed nothing it heard, and the menus kept listing it.
+    deleted changed nothing it heard, and the menus kept listing it. This is now the only
+    way a listed menu follows them.
     """
     generation = chunk_registry.ChunkLayerManager().arc_generation
     for _seen, ref in list(_arc_menu_generation.values()):

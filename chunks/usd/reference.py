@@ -99,10 +99,11 @@ def main():
     referenceChunk.add_param(primpath)
     referenceChunk.add_param(prim_type)
 
+    # Listed once made or loaded; after that the layer manager lists them again when they
+    # change (chunk_utils.refresh_arc_layer_menus).
     referenceChunk.add_callback(
         chunk_utils.refresh_arc_layer_menu,
-        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
-        listen_globally=True,
+        notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED,
         send_on_create=True,
     )
 

@@ -108,10 +108,11 @@ def main():
         "what this unloaded; it never loads a payload unloaded by hand.",
     ))
 
+    # Listed once made or loaded; after that the layer manager lists them again when they
+    # change (chunk_utils.refresh_arc_layer_menus).
     PayloadChunk.add_callback(
         chunk_utils.refresh_arc_layer_menu,
-        notice_alias=chunk.ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,
-        listen_globally=True,
+        notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED,
         send_on_create=True,
     )
 
