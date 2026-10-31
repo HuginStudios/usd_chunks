@@ -582,6 +582,31 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         object.__setattr__(self, "_chunks_cache", (key, res))
         return res
 
+    def chunks_in_order(self) -> list[ChunkBase]:
+        """Every chunk get_chunks() lists, in the order it was made, a group before its insides.
+
+        get_chunks() is a walk the engine depends on, and it lists the newest chunk first: a
+        script laying nodes out in a row from it got the row backwards.
+
+        Returns:
+            The chunks.
+        """
+        members = set(map(id, self.get_chunks()))
+        order: list[ChunkBase] = []
+        seen: set[int] = set()
+
+        def walk(container) -> None:
+            for item in container.get_my_params():
+                if not isinstance(item, ChunkBase) or id(item) in seen:
+                    continue
+                seen.add(id(item))
+                if id(item) in members:
+                    order.append(item)
+                walk(item)
+
+        walk(self.chunks)
+        return order
+
     def surely_holds(self, c: ChunkBase) -> bool:
         """Whether c is one of get_chunks(), told from c's owners instead of a walk.
 
