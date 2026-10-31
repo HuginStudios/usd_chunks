@@ -64,6 +64,10 @@ _batched: collections.deque | None = None
 # Follow-up work held until an enclosing batch has drained, by key; None outside a batch.
 _batch_deferred: dict | None = None
 
+# Work held until the outermost batch has ended and cooked, by key; None outside a batch.
+# See after_batch().
+_after_batch: dict | None = None
+
 # Follow-up work held until the outermost flush has cooked, by key, outside a batch.
 _solve_deferred: dict = {}
 
@@ -72,9 +76,6 @@ _after_cook_hooks: list[Callable] = []
 
 # How many holds are open (hold()): while any is, nothing else cooks.
 _held = 0
-
-# How many building() blocks are open: while any is, nothing cooks but each new chunk once.
-_building = 0
 
 # What asked to run while a hold was open, by key, to run once it has ended (hold_back).
 _held_back: dict = {}
@@ -112,6 +113,19 @@ def queue(prop) -> bool:
     return True
 
 
+def solve_batched() -> None:
+    """Run the solves the enclosing batch has held back so far, cooking nothing.
+
+    For a cook inside the block that must take them in: a chunk a script makes cooks once
+    as it is made, and the solves its making queued -- each param it added, each value set
+    -- marked it again when the block ended, after that cook, so every chunk cooked twice.
+    """
+    while _batched:
+        prop = _batched.popleft()
+        if prop.get_dag_node().dirty:
+            prop._solve_downstream()
+
+
 def defer_to_batch_end(key, fn) -> bool:
     """Run fn once when the enclosing batch has drained -- or the solve has cooked -- instead of now.
 
@@ -146,9 +160,31 @@ def is_held() -> bool:
     return bool(_held)
 
 
-def is_building() -> bool:
-    """Whether a script is building a network inside building(), so cooks wait for its end."""
-    return bool(_building)
+def is_batching() -> bool:
+    """Whether a batched_solve (change_block) is open, so what it sets settles at its end."""
+    return _batched is not None
+
+
+def after_batch(key, fn) -> bool:
+    """Inside a batch, keep fn to run once the outermost one has ended and cooked.
+
+    Later than defer_to_batch_end, which runs before the batch's final flush: for work that
+    must see that flush's result -- ranking the chunk layers after an Edit Target that cooked
+    in it re-homed the chunks below -- or that need only be done once for the whole block,
+    such as looking for chunk prims that arrived by USD. Kept under the same key, it runs
+    once, the last one asked for.
+
+    Args:
+        key: Identifies the work.
+        fn: What to run.
+
+    Returns:
+        False outside a batch: the caller runs it now.
+    """
+    if _after_batch is None:
+        return False
+    _after_batch[key] = fn
+    return True
 
 
 def hold_back(key, fn) -> bool:
@@ -164,7 +200,7 @@ def hold_back(key, fn) -> bool:
     Returns:
         False when no hold is open: the caller runs it now.
     """
-    if not (_held or _building):
+    if not _held:
         return False
     _held_back[key] = fn
     return True
@@ -195,27 +231,9 @@ def hold(later: Callable[[Callable], None]):
             later(_release)
 
 
-@contextmanager
-def building():
-    """Cook nothing until the block ends, then what is pending in one flush (Scene.building).
-
-    Its own count, not hold()'s: a long-job hold in a host must not start the cooks a script
-    building a network asks for, and the reverse. Released here, not from an event loop: a
-    script has none, and what follows the block reads the result.
-    """
-    global _building
-    _building += 1
-    try:
-        yield
-    finally:
-        _building -= 1
-        if not _building:
-            _release()
-
-
 def _release() -> None:
     """Run what hold_back() kept, and cook what the held solves left pending."""
-    if _held or _building:
+    if _held:
         return  # held again before this ran; that hold's own release runs it
     flush()
     while _held_back:
@@ -287,7 +305,7 @@ def flush(force: bool = False) -> None:
             cook (a Wedge setting its ranges), which reads the result straight after.
             A plain solve inside a cook waits for the outer flush instead.
     """
-    if _held or _building or (_flushing and not force):
+    if _held or (_flushing and not force):
         return
     with cook_pass():
         _flush()
@@ -381,14 +399,16 @@ def batched_solve():
     run inside it. Run inside, each one nested a whole solve in the one before, and a batch
     of dozens of changes nested deep enough to exhaust the stack.
 
-    Nested blocks join the outermost one.
+    Nested blocks join the outermost one. What after_batch() kept runs once it has ended
+    and cooked, outside it.
     """
-    global _batched, _batch_deferred
+    global _batched, _batch_deferred, _after_batch
     if _batched is not None:
         yield
         return
     _batched = collections.deque()
     _batch_deferred = {}
+    _after_batch = {}
     try:
         yield
         while _batched or _batch_deferred or any(not getattr(c, "_executing", False) for c in _pending):
@@ -408,8 +428,13 @@ def batched_solve():
             # result straight after. Cooks that set params queue another round above.
             flush(force=True)
     finally:
+        after, _after_batch = _after_batch, None
         _batched = None
         _batch_deferred = None
+    # Not on a raise -- the with-block's exception skips this. Outside the batch now, so what
+    # each one changes solves and cooks as any change does.
+    for fn in after.values():
+        fn()
 
 
 def is_cook_stale(chunk) -> bool:

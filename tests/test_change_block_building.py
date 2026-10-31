@@ -1,4 +1,4 @@
-"""scene.building(): a script makes many chunks, and each cooks about once instead of again and again."""
+"""change_block(): a script makes many chunks, and each cooks about once instead of again and again."""
 from __future__ import annotations
 
 from collections import Counter
@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 from pxr import UsdGeom
 
-from usd_chunks import Scene, chunk_cook, chunk_registry, chunk_stage
+from usd_chunks import Scene, chunk, chunk_cook, chunk_registry, chunk_stage
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def _positions(scene, n=8):
 
 def test_a_chain_built_in_a_block_cooks_each_chunk_at_most_twice(cooks) -> None:
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             _chain(scene)
         assert max(cooks.values()) <= 2, cooks
 
@@ -53,7 +53,7 @@ def test_a_block_builds_the_same_scene(cooks) -> None:
         plain_cooks = sum(cooks.values())
     cooks.clear()
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             _chain(scene)
         assert _positions(scene) == plain
         assert sum(cooks.values()) < plain_cooks
@@ -62,7 +62,7 @@ def test_a_block_builds_the_same_scene(cooks) -> None:
 def test_a_light_made_in_a_block_takes_its_settings() -> None:
     """A Light builds its schema params in its cook, so it has to cook as it is made."""
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             light = scene.create.light(light_type="DistantLight", primpath_location="/World/sun")
             intensity = next(p for p in light.get_params() if p.name == "intensity" or p.name.endswith(":intensity"))
             intensity.value = 3.0
@@ -108,7 +108,7 @@ def test_a_block_gives_the_same_layer_order_and_result(make) -> None:
         make(scene)
         plain = (_color(scene), _chunk_layer_order(scene))
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             make(scene)
         assert (_color(scene), _chunk_layer_order(scene)) == plain
 
@@ -118,7 +118,7 @@ def test_a_block_with_an_active_view_gives_the_same_result() -> None:
         scene.set_view(_merge_with_unequal_branches(scene))
         plain = (_color(scene), _chunk_layer_order(scene))
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             scene.set_view(_merge_with_unequal_branches(scene))
         assert (_color(scene), _chunk_layer_order(scene)) == plain
 
@@ -126,7 +126,7 @@ def test_a_block_with_an_active_view_gives_the_same_result() -> None:
 def test_an_edit_target_with_a_group_built_in_a_block_still_follows_edits() -> None:
     """The reviewer's case: built in the block it came out red and stayed red after an edit."""
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             blue = _edit_target_with_a_group(scene)
         assert _color(scene) == (0.0, 0.0, 1.0)
         blue.get_param("color_g").value = 1.0
@@ -138,7 +138,7 @@ def test_a_group_under_an_edit_target_built_in_a_block_cooks_into_its_layer() ->
     # Target's layer was in no stack, fell back to the session layer, and still showed blue
     # -- but exporting the layer would have left it out.
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             _edit_target_with_a_group(scene)
         lm = chunk_registry.ChunkLayerManager()
         targets = {c.name: lm.get_chunk_target(c.get_hash()).GetDisplayName()
@@ -166,7 +166,7 @@ def scans(monkeypatch):
     real = chunk_stage.ChunkStageSync._scan_for_new_chunks
 
     def counting(self, stage):
-        calls.append(chunk_cook.is_building())
+        calls.append(chunk_cook.is_batching())
         return real(self, stage)
 
     monkeypatch.setattr(chunk_stage.ChunkStageSync, "_scan_for_new_chunks", counting)
@@ -178,7 +178,7 @@ def test_a_block_scans_for_new_chunks_only_at_its_end(scans) -> None:
     # find the chunks the script had made itself. At the end: the held scan, and one more for
     # the layers being ranked.
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             _chain(scene, n=3)
         assert scans and len(scans) <= 2 and not any(scans), scans
 
@@ -195,7 +195,7 @@ def test_chunks_arriving_by_usd_in_a_block_join_at_its_end(tmp_path) -> None:
         plain.get_stage().GetRootLayer().subLayerPaths.append(net)
         expected = sorted(c.name for c in plain.get_chunks())
     with Scene() as scene:
-        with scene.building():
+        with chunk.change_block():
             scene.get_stage().GetRootLayer().subLayerPaths.append(net)
             assert "Inner" not in [c.name for c in scene.get_chunks()]
         assert sorted(c.name for c in scene.get_chunks()) == expected
