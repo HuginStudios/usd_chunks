@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
-from usd_chunks import chunk_naming
+from usd_chunks import chunk_cook, chunk_naming
 from usd_chunks.layer_arcs import arc_edit_target, edit_target, is_editable  # noqa: F401
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
@@ -84,6 +84,16 @@ def strip_namespace(namespace: str, paths: str) -> str:
             token = token[len(root):]
         out.append(token)
     return "".join(out)
+
+
+def in_change_block() -> bool:
+    """Whether a change_block is open: chunks made in it are wired and cooked when it ends.
+
+    So a layer a Layer chunk in the block will make is not there yet, and the chunk that
+    will make it is not wired yet either -- a menu checking a picked layer against the
+    stage cannot tell it from one that is gone.
+    """
+    return chunk_cook.is_batching()
 
 
 def arc_from_layer(node) -> bool:
