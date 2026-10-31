@@ -72,6 +72,7 @@ PORT_R = 5.0
 #: so the two frontends read identically.
 EXP_R = 12.0
 GRAB_R = 11.0  # click tolerance, wider than the dot so a port is not fiddly to hit
+PLUS_INSET = 11.0  # a collapsed node's "+" sits this far inside its edge
 MARGIN = 120.0
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 3.0, 1.1
 
@@ -113,6 +114,21 @@ contexts = chunk_graph.contexts
 default_context = chunk_graph.default_context
 
 
+def _collapsed_row_y(row: int) -> float:
+    """A collapsed node's row, down from its top: the exec row on the header's centre,
+    and every row after it below the header rather than across its edge."""
+    if row == 0:
+        return HEADER_H / 2.0
+    return HEADER_H + ROW_H * (row - 1) + ROW_H / 2.0 + 2.0
+
+
+def _end_name(end) -> str:
+    """A wire end for the status line: a port's name and type, or which node's "+"."""
+    if isinstance(end, chunk_graph.PlusRef):
+        return f"{end.node_path.rsplit('/', 1)[-1]}'s {'input' if end.is_input else 'output'} +"
+    return f"{end.name} ({end.port_type})"
+
+
 class GraphView:
     """Pixels and pointer events. Every decision belongs to chunk_graph."""
 
@@ -148,10 +164,22 @@ class GraphView:
 
         self.available = contexts(self.stage)
         self.context = context or default_context(self.stage)
-        self.selected: chunk_graph.PortRef | None = None
+        #: The first end of a tap-to-connect, and the end a dragged wire started from: a
+        #: port, or a collapsed node's "+" (a chunk_graph.PlusRef).
+        self.selected: chunk_graph.PortRef | chunk_graph.PlusRef | None = None
         self.status = ""
         self.dragging: str | None = None
-        self.wiring: chunk_graph.PortRef | None = None
+        self.wiring: chunk_graph.PortRef | chunk_graph.PlusRef | None = None
+        #: A wire that met a "+", waiting on a param to be picked: (the choices, what the
+        #: pick joins). See join and choose; the dialog only shows it.
+        self.pending_pick: tuple[list, object] | None = None
+        #: {node path: (ports shown, "+" in, "+" out)} for each collapsed node -- see reload.
+        self.collapsed: dict = {}
+        #: Every attr path a wire touches, for which folded ports still show -- see reload.
+        self.wired: set = set()
+        #: {node path: {param name: y of the folded group's header}} -- filled with
+        #: param_offsets by node_controls, for the params a folded group hides.
+        self.folded_offsets: dict = {}
         self.wire_to = (0.0, 0.0)
         self.canvas: cv.Canvas | None = None
         self.stack: ft.Stack | None = None
@@ -206,9 +234,45 @@ class GraphView:
                        min((y for _, y in flipped.values()), default=0.0) - MARGIN)
         self.positions = {p: (x - self.origin[0], y - self.origin[1])
                           for p, (x, y) in flipped.items()}
+        # Which ports a collapsed node shows is the engine's call. Worked out once per
+        # reload: hit-testing asks for a node's ports on every pointer move.
+        self.wired = {end for edge in self.edges for end in (edge.src_attr_path, edge.dst_attr_path)}
+        self.collapsed = {}
+        for path in self.prims:
+            chunk_obj = self.chunks.get(path)
+            if chunk_graph.is_collapsed(chunk_obj):
+                self.collapsed[path] = chunk_graph.collapsed_node_ports(
+                    chunk_obj, path, self.ports[path], self.edges)
+
+    def shown_ports(self, path: str) -> list:
+        """The ports a node draws.
+
+        Collapsed: the engine's cut (see reload). Open, once its body is built: the exec
+        ports, each port whose control is on show, and a wired port whose param a folded
+        group hides -- at that group's header, as Qt does. An unwired one in a fold has
+        nothing to sit beside, and drawn on the fallback grid they piled up under the
+        header. Before the body exists (headless), every port.
+        """
+        if path in self.collapsed:
+            return self.collapsed[path][0]
+        offsets = self.param_offsets.get(path)
+        if offsets is None:
+            return self.ports[path]
+        folded = self.folded_offsets.get(path, {})
+        return [p for p in self.ports[path]
+                if p.port_type == chunk_graph.PORT_EXEC or p.name in offsets
+                or (p.name in folded and p.attr_path in self.wired)]
+
+    def pluses(self, path: str) -> list:
+        """A collapsed node's "+"s, as the PlusRefs a wire can start or end on."""
+        if path not in self.collapsed:
+            return []
+        _shown, plus_in, plus_out = self.collapsed[path]
+        return ([chunk_graph.PlusRef(path, True)] if plus_in else []) + (
+            [chunk_graph.PlusRef(path, False)] if plus_out else [])
 
     def rows(self, path: str):
-        node_ports = self.ports[path]
+        node_ports = self.shown_ports(path)
         ins = [p for p in node_ports if p.is_input]
         outs = [p for p in node_ports if not p.is_input]
         key = lambda p: (0 if p.port_type == chunk_graph.PORT_EXEC else 1, p.name)  # noqa: E731
@@ -218,6 +282,10 @@ class GraphView:
         """Tall enough for the ports AND for the param body sitting beside them."""
         ins, outs = self.rows(path)
         ports = HEADER_H + ROW_H * max(len(ins), len(outs), 1) + 8
+        if path in self.collapsed:
+            # Header and port rows only, plus a row for the "+"s when there are any.
+            rows = max(len(ins), len(outs), 1) + (1 if self.pluses(path) else 0)
+            return _collapsed_row_y(rows - 1) + ROW_H / 2.0 + 4.0
         chunk_obj = self.chunks.get(path)
         body = 0.0
         if chunk_obj is not None:
@@ -277,14 +345,32 @@ class GraphView:
         # put each row and this places the dot against it. Without that the ports march
         # down a fixed grid while the params sit wherever their controls landed, and the
         # two only agree by accident.
+        ins, outs = self.rows(port.node_path)
+        row = (ins if port.is_input else outs).index(port)
+        if port.node_path in self.collapsed:
+            return x, y0 + _collapsed_row_y(row)
         offsets = self.param_offsets.get(port.node_path) or {}
         if port.name in offsets:
             return x, y0 + HEADER_H + BODY_PAD + offsets[port.name]
+        folded = self.folded_offsets.get(port.node_path) or {}
+        if port.name in folded:
+            return x, y0 + HEADER_H + BODY_PAD + folded[port.name]
 
-        # Exec ports, and anything with no control of its own, fall back to the header.
-        ins, outs = self.rows(port.node_path)
-        row = (ins if port.is_input else outs).index(port)
+        # Exec ports, and anything with no control of its own, fall back to rows down
+        # from the header.
         return x, y0 + HEADER_H / 2.0 + ROW_H * row
+
+    def plus_xy(self, plus: chunk_graph.PlusRef):
+        """Where a collapsed node's "+" sits: one row below its last port, just inside the
+        edge -- it is drawn in the node's body (node_controls), which covers the edge."""
+        x0, y0 = self.positions[plus.node_path]
+        ins, outs = self.rows(plus.node_path)
+        return (x0 + PLUS_INSET if plus.is_input else x0 + NODE_W - PLUS_INSET,
+                y0 + _collapsed_row_y(max(len(ins), len(outs))))
+
+    def end_xy(self, end):
+        """Where a wire end sits, a port or a "+"."""
+        return self.plus_xy(end) if isinstance(end, chunk_graph.PlusRef) else self.port_xy(end)
 
     # -- hit testing -------------------------------------------------------
 
@@ -301,12 +387,25 @@ class GraphView:
                 continue
             if not (ny - GRAB_R <= y <= ny + self.node_height(path) + GRAB_R):
                 continue
-            for port in self.ports[path]:
+            for port in self.shown_ports(path):
                 px, py = self.port_xy(port)
                 distance = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
                 if distance <= best_distance:
                     best, best_distance = port, distance
         return best
+
+    def plus_at(self, x: float, y: float):
+        """The collapsed node's "+" within the grab radius, if any."""
+        for path in self.collapsed:
+            for plus in self.pluses(path):
+                px, py = self.plus_xy(plus)
+                if ((px - x) ** 2 + (py - y) ** 2) ** 0.5 <= GRAB_R:
+                    return plus
+        return None
+
+    def end_at(self, x: float, y: float):
+        """A wire end under the pointer: a port, else a "+"."""
+        return self.port_at(x, y) or self.plus_at(x, y)
 
     def node_at(self, x: float, y: float):
         for path in self.prims:
@@ -319,7 +418,7 @@ class GraphView:
 
     def on_tap(self, event):
         x, y = self._xy(event)
-        port = self.port_at(x, y)
+        port = self.end_at(x, y)
         if port is None:
             node = self.node_at(x, y)
             self.selected = None
@@ -333,29 +432,83 @@ class GraphView:
                 self.status = ""
             return self.refresh()
 
+        # A "+" shows its selection in the node body, which only a body rebuild redraws.
+        plus = isinstance(port, chunk_graph.PlusRef) or isinstance(self.selected, chunk_graph.PlusRef)
         if self.selected is None:
             self.selected = port
-            self.status = f"selected {port.name} ({port.port_type})"
-            return self.refresh()
+            self.status = f"selected {_end_name(port)}"
+            return self.refresh(bodies=plus)
 
-        if port.attr_path == self.selected.attr_path:
+        if port == self.selected:
             self.selected, self.status = None, ""
-            return self.refresh()
+            return self.refresh(bodies=plus)
 
-        change = chunk_graph.connect(self.stage, self.selected, port, self.chunks)
+        first, self.selected = self.selected, None
+        self.join(first, port)
+
+    def join(self, a, b):
+        """Wire a to b -- through a param picked from a list when an end is a "+".
+
+        With a "+" at either end the engine says what to offer (plus_step); the choice
+        waits in pending_pick for choose(), which joins it on and may ask again when both
+        ends were a "+". The dialog only shows it.
+        """
+        step = chunk_graph.plus_step(self.chunks, a, b)
+        if step is not None:
+            choices, other = step
+            if not choices:
+                self.status = f"nothing on {_end_name(a)} or {_end_name(b)} takes that wire"
+                return self.refresh()
+            self.pending_pick = (choices, other)
+            return self.open_pick_menu()
+        change = chunk_graph.connect(self.stage, a, b, self.chunks)
         if change is None:
             # The engine's rule, reported rather than re-derived here.
-            self.status = (f"cannot connect {self.selected.name} "
-                           f"({self.selected.port_type}) to {port.name} ({port.port_type})")
+            self.status = (f"cannot connect {a.name} ({a.port_type}) "
+                           f"to {b.name} ({b.port_type})")
         else:
             self._recook()
             self.stage.GetRootLayer().Save()
-            self.status = (f"connected {self.selected.name} -> {port.name}"
+            src, dst = (b, a) if a.is_input and not b.is_input else (a, b)  # a picked input comes first
+            self.status = (f"connected {src.name} -> {dst.name}"
                            + (f" (expression refused: {change.expression_error})"
                               if change.expression_error else ""))
             self.reload()
-        self.selected = None
         self.refresh(bodies=True)
+
+    def choose(self, ref):
+        """Join the picked param to whatever waited on it (see join)."""
+        if self.pending_pick is None:
+            return
+        _choices, other = self.pending_pick
+        self.pending_pick = None
+        self.join(ref, other)
+
+    def open_pick_menu(self):
+        """The list pending_pick asks from, as a dialog -- Flet has no menu that pops at a
+        point (see open_create_menu). Headless, the choice just waits in pending_pick."""
+        if self.pending_pick is None or self.page is None:
+            return self.refresh()
+        choices, _other = self.pending_pick
+
+        def pick(ref):
+            self.page.close(dialog)
+            self.choose(ref)
+
+        def cancel(_ev):
+            self.pending_pick = None
+            self.page.close(dialog)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Wire to", size=14),
+            content=ft.Column(
+                [ft.TextButton(chunk_graph.param_menu_label(ref.param, self.chunks.get(ref.node_path)),
+                               on_click=lambda _ev, ref=ref: pick(ref))
+                 for ref in choices],
+                width=320, height=min(420, 40 * len(choices)), scroll=ft.ScrollMode.AUTO, tight=True),
+            actions=[ft.TextButton("Cancel", on_click=cancel)],
+        )
+        self.page.open(dialog)
 
     def on_secondary_tap(self, event):
         x, y = self._xy(event)
@@ -378,9 +531,9 @@ class GraphView:
         self._shake_samples = []
         self._shook = False
         self._moved_far_enough = False
-        # A grab on a port starts a wire; anywhere else on a node moves it.
+        # A grab on a port (or a "+") starts a wire; anywhere else on a node moves it.
         x, y = self._xy(event)
-        port = self.port_at(x, y)
+        port = self.end_at(x, y)
         if port is not None:
             self.wiring = port
             self.wire_to = (x, y)
@@ -850,6 +1003,8 @@ class GraphView:
             return self.auto_layout()
         if key == "c" and event.ctrl:
             return self.copy_selection()
+        if key == "c":
+            return self.collapse_selected_or_all()
         if key == "x" and event.ctrl:
             return self.cut_selection()
         if key == "v" and event.ctrl:
@@ -1039,25 +1194,12 @@ class GraphView:
             return
         if self.wiring is not None:
             source, self.wiring = self.wiring, None
-            target = self.port_at(*self.wire_to)
-            if target is None:
-                self.status = ""
-            elif target.attr_path == source.attr_path:
-                self.status = ""
-            else:
-                change = chunk_graph.connect(self.stage, source, target, self.chunks)
-                if change is None:
-                    self.status = (f"cannot connect {source.name} ({source.port_type}) "
-                                   f"to {target.name} ({target.port_type})")
-                else:
-                    self._recook()
-                    self.stage.GetRootLayer().Save()
-                    self.status = (f"connected {source.name} -> {target.name}"
-                                   + (f" (expression refused: {change.expression_error})"
-                                      if change.expression_error else ""))
-                    self.reload()
+            target = self.end_at(*self.wire_to)
             self.selected = None
-            return self.refresh()
+            if target is None or target == source:
+                self.status = ""
+                return self.refresh()
+            return self.join(source, target)
         if not self.dragging:
             return
         dropped = self.dragging
@@ -1079,7 +1221,7 @@ class GraphView:
     def shapes(self):
         out = []
         if self.wiring is not None:
-            x1, y1 = self.port_xy(self.wiring)
+            x1, y1 = self.end_xy(self.wiring)
             x2, y2 = self.wire_to
             reach = max(40.0, abs(x2 - x1) * 0.5)
             out.append(cv.Path(
@@ -1091,9 +1233,9 @@ class GraphView:
             src_node, dst_node = edge.src_node_path, edge.dst_node_path
             if src_node not in self.positions or dst_node not in self.positions:
                 continue
-            src = next((p for p in self.ports[src_node]
+            src = next((p for p in self.shown_ports(src_node)
                         if p.attr_path == edge.src_attr_path), None)
-            dst = next((p for p in self.ports[dst_node]
+            dst = next((p for p in self.shown_ports(dst_node)
                         if p.attr_path == edge.dst_attr_path), None)
             if src is None or dst is None:
                 continue
@@ -1124,9 +1266,9 @@ class GraphView:
             # The body is a real control now (see node_controls); the canvas keeps the
             # wires and the ports, which have to sit on the same surface as the curves
             # that meet them.
-            for port in self.ports[path]:
+            for port in self.shown_ports(path):
                 px, py = self.port_xy(port)
-                if self.selected is not None and port.attr_path == self.selected.attr_path:
+                if self.selected is not None and port == self.selected:
                     out.append(cv.Circle(px, py, PORT_R + 3, paint=ft.Paint(color=COL_ACCENT)))
                 out.append(cv.Circle(px, py, PORT_R,
                                      paint=ft.Paint(color=PORT_COLOUR.get(port.port_type,
@@ -1183,11 +1325,31 @@ class GraphView:
                 border_radius=ft.BorderRadius.only(top_left=6, top_right=6),
                 width=NODE_W)]
 
-            if chunk_obj is not None:
+            if path in self.collapsed:
+                # Collapsed: the header alone. Its ports run in rows below it (port_xy),
+                # so the body has to stand as tall as they need -- and it carries the
+                # "+"s, a ring with a cross that a wire starts from or drops on. In the
+                # body rather than on the canvas, which the body would cover.
+                self.param_offsets.pop(path, None)
+                self.folded_offsets.pop(path, None)
+                glyphs = []
+                for plus in self.pluses(path):
+                    px, py = self.plus_xy(plus)
+                    glyphs.append(ft.Container(
+                        ft.Icon(ft.Icons.ADD, size=12, color=COL_TEXT),
+                        left=px - x - 8, top=py - y - HEADER_H - 8, width=16, height=16,
+                        alignment=ft.Alignment.CENTER, border_radius=8,
+                        border=ft.Border.all(1.5, COL_ACCENT if plus == self.selected else "#9a9a9a")))
+                body.append(ft.Container(ft.Stack(glyphs), width=NODE_W,
+                                         height=self.node_height(path) - HEADER_H))
+            elif chunk_obj is not None:
+                folded: dict = {}
                 param_controls, widgets, offsets = chunk_flet.build_chunk_controls(
-                    chunk_obj, focus=self.focus)
-                # Where each param's control ended up, so a port lands level with it.
+                    chunk_obj, focus=self.focus, folded=folded)
+                # Where each param's control ended up, so a port lands level with it, and
+                # the folded group's header for a param that has none (see shown_ports).
                 self.param_offsets[path] = offsets
+                self.folded_offsets[path] = folded
                 if self.live:
                     chunk_flet.mark_live(widgets)
                 self.param_widgets += widgets

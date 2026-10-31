@@ -103,6 +103,38 @@ def test_collapsed_ports_offers_no_plus_on_a_bodiless_node(session):
     assert not shown.plus_in and not shown.plus_out
 
 
+def test_collapsed_node_ports_keeps_exec_ports_and_the_wired_ends(session):
+    stage, scene, _reg = session
+    a, b = _add(scene, "transform"), _add(scene, "transform")
+    pa, pb = get_chunk_prim_path(a), get_chunk_prim_path(b)
+    ports = chunk_graph.iter_ports(stage.GetPrimAtPath(pb), b)
+    edges = [chunk_graph.EdgeRef(f"{pa}.outputs:tx", f"{pb}.inputs:ty", False)]
+
+    shown, plus_in, plus_out = chunk_graph.collapsed_node_ports(b, pb, ports, edges)
+
+    typed = [p.attr_path for p in shown if p.port_type != chunk_graph.PORT_EXEC]
+    assert typed == [f"{pb}.inputs:ty"]
+    assert any(p.port_type == chunk_graph.PORT_EXEC for p in shown)
+    assert plus_in and plus_out
+
+
+def test_plus_step_says_what_to_ask_for_each_pair_of_ends(session):
+    _stage, scene, _reg = session
+    a, b = _add(scene, "transform"), _add(scene, "transform")
+    pa, pb = get_chunk_prim_path(a), get_chunk_prim_path(b)
+    chunks = {pa: a, pb: b}
+    out = chunk_graph.PortRef(pa, f"{pa}.outputs:tx", chunk_graph.PORT_FLOAT, False)
+    in_plus, out_plus = chunk_graph.PlusRef(pb, True), chunk_graph.PlusRef(pa, False)
+
+    assert chunk_graph.plus_step(chunks, out, out) is None, "no + at either end"
+    choices, other = chunk_graph.plus_step(chunks, out, in_plus)
+    assert other == out and f"{pb}.inputs:tx" in [r.attr_path for r in choices]
+    choices, other = chunk_graph.plus_step(chunks, in_plus, out_plus)
+    assert other == in_plus and all(not r.is_input and r.node_path == pa for r in choices)
+    assert chunk_graph.plus_step(chunks, out_plus, chunk_graph.PlusRef(pa, True))[0] == [], "one node"
+    assert chunk_graph.plus_step(chunks, out, out_plus)[0] == [], "same direction"
+
+
 def test_pick_candidates_and_output_choices_label_by_group(session):
     _stage, scene, _reg = session
     c = _add(scene, "transform")

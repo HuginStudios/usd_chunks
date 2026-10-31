@@ -79,6 +79,23 @@ def _socket(port_type: str, connected: bool) -> None:
         draw.add_circle(centre, SOCKET_R, colour, 0, 1.6)
 
 
+def _plus_socket() -> None:
+    """Draw a collapsed node's "+" and reserve its space: a ring with a cross in it."""
+    colour = imgui.IM_COL32(150, 150, 150, 255)
+    origin = imgui.get_cursor_screen_pos()
+    imgui.dummy(imgui.ImVec2(SOCKET_BOX, SOCKET_BOX))
+    centre = imgui.ImVec2(origin.x + SOCKET_BOX * 0.5, origin.y + SOCKET_BOX * 0.5)
+    draw = imgui.get_window_draw_list()
+    radius, arm = SOCKET_R + 1.0, SOCKET_R - 1.5
+    draw.add_circle(centre, radius, colour, 0, 1.5)
+    draw.add_line(imgui.ImVec2(centre.x - arm, centre.y), imgui.ImVec2(centre.x + arm, centre.y), colour, 1.5)
+    draw.add_line(imgui.ImVec2(centre.x, centre.y - arm), imgui.ImVec2(centre.x, centre.y + arm), colour, 1.5)
+
+
+#: Pin keys for a collapsed node's "+", followed by the node's prim path.
+_PLUS_IN, _PLUS_OUT = "plus-in:", "plus-out:"
+
+
 class _Scene(SceneSender):
     """Enough of a host for the registry to load chunks against a stage."""
 
@@ -158,6 +175,10 @@ class ImGuiGraphView:
         #: the node twenty-four rows taller than its own body. Qt draws the equivalent
         #: line with its "Show param connections" toggle.
         self.show_all_pins = False
+        #: A wire that met a collapsed node's "+", waiting on a param to be picked:
+        #: (the choices, what the pick joins). See join and choose; the popup only shows it.
+        self.pending_pick: tuple[list, object] | None = None
+        self._pick_shown = False
         self._editor = None
         self.reload()
         self._ensure_view()
@@ -223,6 +244,7 @@ class ImGuiGraphView:
         self._handle_creation()
         self._handle_deletion()
         ed.end()
+        self._draw_pick_popup()
 
         self.selected_nodes = {
             key for key in (self.ids.key(n) for n in ed.get_selected_nodes()) if key
@@ -250,9 +272,19 @@ class ImGuiGraphView:
         imgui.dummy(imgui.ImVec2(BODY_W - SIDE_PAD * 2, 1.0))
         imgui.unindent(SIDE_PAD)
 
+        chunk = self.chunks.get(path)
+        collapsed = chunk_graph.is_collapsed(chunk)
         wired = self._wired_attr_paths()
-        shown = [p for p in self.ports[path] if self._pin_visible(p, wired)]
-        hidden = len(self.ports[path]) - len(shown)
+        plus_in = plus_out = False
+        if collapsed:
+            # The engine's cut, the same as every frontend's: exec pins, the wired end of
+            # each wired param, and a "+" on each side with something left to wire.
+            shown, plus_in, plus_out = chunk_graph.collapsed_node_ports(
+                chunk, path, self.ports[path], self.edges)
+            hidden = 0
+        else:
+            shown = [p for p in self.ports[path] if self._pin_visible(p, wired)]
+            hidden = len(self.ports[path]) - len(shown)
         ins = [p for p in shown if p.is_input]
         outs = [p for p in shown if not p.is_input]
 
@@ -287,12 +319,25 @@ class ImGuiGraphView:
                 ed.end_pin()
             _ = start_y
 
+        if plus_in or plus_out:
+            # Drag a wire onto either "+" (or from one) and pick the param it stands for.
+            if plus_in:
+                ed.begin_pin(ed.PinId(self.ids.get(_PLUS_IN + path)), ed.PinKind.input)
+                _plus_socket()
+                ed.end_pin()
+            else:
+                imgui.dummy(imgui.ImVec2(SOCKET_BOX, SOCKET_BOX))
+            if plus_out:
+                imgui.same_line(BODY_W - SOCKET_BOX)
+                ed.begin_pin(ed.PinId(self.ids.get(_PLUS_OUT + path)), ed.PinKind.output)
+                _plus_socket()
+                ed.end_pin()
+
         imgui.indent(SIDE_PAD)
         if hidden:
             imgui.text_disabled(f"+{hidden} unwired ports  (P)")
 
-        chunk = self.chunks.get(path)
-        if chunk is not None:
+        if chunk is not None and not collapsed:
             imgui.separator()
             # draw_params, not a flattened walk: a group of plain numbers becomes one
             # inline row, which is what keeps a Transform node a readable height.
@@ -342,10 +387,14 @@ class ImGuiGraphView:
     # -- input -------------------------------------------------------------
 
     def _port_for(self, pin_id):
-        """The PortRef behind an editor pin id."""
+        """The PortRef behind an editor pin id, or the PlusRef behind a "+" pin."""
         attr_path = self.ids.key(pin_id)
         if not attr_path:
             return None
+        if attr_path.startswith(_PLUS_IN):
+            return chunk_graph.PlusRef(attr_path[len(_PLUS_IN):], True)
+        if attr_path.startswith(_PLUS_OUT):
+            return chunk_graph.PlusRef(attr_path[len(_PLUS_OUT):], False)
         node_path = attr_path.split(".", 1)[0]
         return next((p for p in self.ports.get(node_path, [])
                      if p.attr_path == attr_path), None)
@@ -361,14 +410,65 @@ class ImGuiGraphView:
         if ed.query_new_link(start_pin, end_pin):
             source, target = self._port_for(start_pin), self._port_for(end_pin)
             if source is not None and target is not None:
-                if chunk_graph.can_connect(source, target) and ed.accept_new_item():
-                    change = chunk_graph.connect(self.stage, source, target, self.chunks)
-                    if change is not None:
-                        self._recook()
-                        self.stage.GetRootLayer().Save()
-                        self.status = f"connected {source.name} -> {target.name}"
-                        self.reload()
+                # A "+" end is acceptable when the engine has something to offer for it.
+                step = chunk_graph.plus_step(self.chunks, source, target)
+                legal = bool(step[0]) if step is not None else chunk_graph.can_connect(source, target)
+                if legal and ed.accept_new_item():
+                    self.join(source, target)
         ed.end_create()
+
+    def join(self, a, b) -> None:
+        """Wire a to b -- through a param picked from a list when an end is a "+".
+
+        With a "+" at either end, the engine says what to offer (plus_step); the choice
+        waits in pending_pick for choose(), which joins it on and may ask again when both
+        ends were a "+".
+        """
+        step = chunk_graph.plus_step(self.chunks, a, b)
+        if step is None:
+            change = chunk_graph.connect(self.stage, a, b, self.chunks)
+            if change is not None:
+                self._recook()
+                self.stage.GetRootLayer().Save()
+                src, dst = (b, a) if a.is_input else (a, b)  # a picked input comes first
+                self.status = f"connected {src.name} -> {dst.name}"
+                self.reload()
+            return
+        choices, other = step
+        if not choices:
+            self.status = "nothing there takes that wire"
+            return
+        self.pending_pick = (choices, other)
+
+    def choose(self, ref) -> None:
+        """Join the picked param to whatever waited on it (see join)."""
+        if self.pending_pick is None:
+            return
+        _choices, other = self.pending_pick
+        self.pending_pick = None
+        self.join(ref, other)
+
+    def _draw_pick_popup(self) -> None:
+        """The list pending_pick asks from, at the mouse; clicking away drops the wire."""
+        if self.pending_pick is None:
+            return
+        if not imgui.is_popup_open("pick-param"):
+            if self._pick_shown:  # closed without a pick
+                self.pending_pick, self._pick_shown = None, False
+                return
+            imgui.open_popup("pick-param")
+            self._pick_shown = True
+        picked = None
+        if imgui.begin_popup("pick-param"):
+            choices, _other = self.pending_pick
+            for index, ref in enumerate(choices):
+                label = chunk_graph.param_menu_label(ref.param, self.chunks.get(ref.node_path))
+                if imgui.selectable(f"{label}##{index}", False)[0]:
+                    picked = ref
+            imgui.end_popup()
+        if picked is not None:
+            self._pick_shown = False
+            self.choose(picked)
 
     def _handle_deletion(self):
         if not ed.begin_delete():
@@ -411,7 +511,10 @@ class ImGuiGraphView:
             (imgui.Key.g, self.group_selection),
             (imgui.Key.p, self.toggle_all_pins),
             (imgui.Key.v, self.create_view),
+            (imgui.Key.c, self.collapse_selected_or_all),
         ):
+            if key == imgui.Key.c and imgui.get_io().key_ctrl:
+                continue  # Ctrl+C is copy, not collapse
             if imgui.is_key_pressed(key):
                 action()
                 return
