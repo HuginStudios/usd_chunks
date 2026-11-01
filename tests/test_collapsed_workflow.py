@@ -239,8 +239,9 @@ def test_a_collapsed_node_shows_the_wired_list_row_and_only_that_one(qapp, sessi
 
 
 def test_a_folded_list_keeps_the_port_of_its_wired_row(qapp, session):
-    """On an open node, a folded list anchors its wired rows at its header. A row's wire is
-    only its expression, so by name it never counted as connected and its port was dropped."""
+    """On an open node, a folded list draws its wired rows into one port on its header. A
+    row's wire is only its expression, so by name it never counted as connected and its port
+    was dropped."""
     _stage, scene, _reg = session
     docker = ChunkWidgetDocker()
     docker.resize(700, 600)
@@ -249,18 +250,21 @@ def test_a_folded_list_keeps_the_port_of_its_wired_row(qapp, session):
         src = _add(scene, "reference", collapsed=False)
         dst = _add(scene, "sublayer", collapsed=False)
         rows = dst.get_param("imports")
-        rows.size = 2
+        rows.size = 3
         qapp.processEvents()
         gv = docker.tab_widget.get_current_graph_view()
         node = gv.scene()._nodes[get_chunk_prim_path(dst)]
-        wired = rows.get_indexed_param("sublayer_path", 1)
-        wired.value = f"@{src.name}.primpath_location@"
+        wired = [rows.get_indexed_param("sublayer_path", i) for i in (1, 2)]
+        for row in wired:
+            row.value = f"@{src.name}.primpath_location@"
         rows.set_state(ChunkFlags.State.COLLAPSED)
         node._rebuild_typed_ports()
 
         row_ports = [p for p in node._typed_ports if p.is_input and chunk_graph.is_list_row(p.param)]
-        assert [p.param for p in row_ports] == [wired], "only the wired row keeps a port"
-        pump_until(qapp, lambda: any(edge.dst_port is row_ports[0] for edge in gv.scene()._edges))
+        assert [p.param for p in row_ports] == wired, "only the wired rows keep a port"
+        assert len({p.pos().y() for p in row_ports}) == 1, "the rows share one port on the list"
+        pump_until(qapp, lambda: all(
+            any(edge.dst_port is port for edge in gv.scene()._edges) for port in row_ports))
     finally:
         docker.close()
 

@@ -1590,10 +1590,17 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 anchor = containers_by_group.get(collapsed_group)
                 if anchor is None:
                     continue
-                local = anchor.mapTo(chunk_widget, QtCore.QPoint(0, anchor.height() // 2))
-                offset = collapsed_anchor_counts.get(id(anchor), 0)
-                collapsed_anchor_counts[id(anchor)] = offset + 1
-                local += QtCore.QPoint(0, offset * _STEP)
+                if chunk_graph.is_list_row(param):
+                    # Every wired row of a folded list shares one port on its header: the
+                    # rows are copies of one template, so the wires read as going into the
+                    # list. A list's "+" sits below its header, so the header is the anchor.
+                    hdr = anchor.minimize_button
+                    local = hdr.mapTo(chunk_widget, QtCore.QPoint(0, hdr.height() // 2))
+                else:
+                    local = anchor.mapTo(chunk_widget, QtCore.QPoint(0, anchor.height() // 2))
+                    offset = collapsed_anchor_counts.get(id(anchor), 0)
+                    collapsed_anchor_counts[id(anchor)] = offset + 1
+                    local += QtCore.QPoint(0, offset * _STEP)
             elif widget.isVisible():
                 if isinstance(param, core.ChunkVectorBase):
                     hdr = widget.minimize_button
