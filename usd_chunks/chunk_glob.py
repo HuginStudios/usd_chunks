@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Iterator, List, Tuple
+from collections.abc import Iterator
 
 WILDCARD_CHARS = "*?["
 
@@ -46,8 +46,8 @@ REF = "ref"
 # A sink's numbered placeholder: {1} is the first capture.
 _REF_RE = re.compile(r"\{(\d+)\}")
 
-Token = Tuple[str, str]
-Captures = Tuple[str, ...]
+Token = tuple[str, str]
+Captures = tuple[str, ...]
 
 
 class GlobError(Exception):
@@ -64,10 +64,10 @@ def normalize(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def tokenize(pattern: str) -> List[Token]:
+def tokenize(pattern: str) -> list[Token]:
     """Split a pattern into literal runs and wildcard tokens, in order."""
-    tokens: List[Token] = []
-    buf: List[str] = []
+    tokens: list[Token] = []
+    buf: list[str] = []
     i = 0
     n = len(pattern)
 
@@ -172,7 +172,7 @@ def substitute(pattern: str, captures: Captures) -> str:
                 f"pattern {pattern!r} names capture {{{text}}} but there are {len(captures)}"
             )
 
-    out: List[str] = []
+    out: list[str] = []
     it = iter(captures)
     for kind, text in tokens:
         if kind == LITERAL:
@@ -208,7 +208,7 @@ def iter_files(root: str, start: str = "") -> Iterator[str]:
             yield prefix + name
 
 
-def strip_dot_slash(pattern: str) -> Tuple[str, str]:
+def strip_dot_slash(pattern: str) -> tuple[str, str]:
     """Split a leading ``./`` off a pattern, returning (prefix, remainder).
 
     Networks author paths in that form already (``"./assets/asset_A.usd"``), and the walk
@@ -224,7 +224,7 @@ def strip_dot_slash(pattern: str) -> Tuple[str, str]:
     return prefix, body
 
 
-def expand(pattern: str, root: str) -> List[Tuple[str, Captures]]:
+def expand(pattern: str, root: str) -> list[tuple[str, Captures]]:
     """Existing files matching the pattern, as (path, captures).
 
     A relative pattern is resolved under ``root`` and reported relative to it; an absolute one

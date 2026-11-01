@@ -207,7 +207,7 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
         # A link to or from a collapsed node's "+" is not a wire yet: which param it means
         # is picked first. Taken out of the tree here, and joined one tick later, off
         # Blender's own call stack (as _reload_after_connect is).
-        for link in [l for l in self.links if _PLUS in (l.from_socket.name, l.to_socket.name)]:
+        for link in [lk for lk in self.links if _PLUS in (lk.from_socket.name, lk.to_socket.name)]:
             a = _plus_or_port(view, link.from_node, link.from_socket, is_input=False)
             b = _plus_or_port(view, link.to_node, link.to_socket, is_input=True)
             self.links.remove(link)
