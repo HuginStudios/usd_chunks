@@ -593,12 +593,17 @@ class FileBrowser(ChunkParamBase[str | Sdf.AssetPath]):
     Attributes:
         extensions: A list of supported file extensions
         pattern: A glob pattern for filtering file names. Defaults to "\*"
+        reads: The file is read, not written, so the browser opens one rather than saving
+            one -- without FILE_EXISTING's check that the value names a file on disk. An
+            asset path read off a prim (a Dome Light's texture) is often relative to its
+            layer or left to a resolver, and refusing it would refuse a working scene.
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
 
     extensions: list[str] = field(factory=list)
     pattern: str = field(default="*")
+    reads: bool = field(default=False)
 
     @classmethod
     @override
@@ -775,7 +780,9 @@ usd_type_map = {
     "token": Menu,
     "bool": Checkbox,
     "string": LineEdit,
-    "asset": FileBrowser,
+    # An asset attribute names something the prim reads -- a texture, a layer -- so its
+    # browser opens a file rather than saving one.
+    "asset": (FileBrowser, {"reads": True}),
     "path": FileBrowser,
     "float2": (Vector, {"param": Slider(), "suffixes": "xy", "length": 2}),
     "float3": (Vector, {"param": Slider(), "suffixes": "xyz", "length": 3}),

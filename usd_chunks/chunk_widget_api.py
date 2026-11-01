@@ -338,6 +338,8 @@ def file_dialog_spec(param) -> FileDialogSpec:
         label = getattr(param, "name", "File")
     directory = bool(param.has_flag(ChunkFlags.ParamFlags.DIRECTORY))
     # FILE_EXISTING unset (the default) means the file need not exist yet -- a destination
-    # like Export ChunkGroup's Output File.
-    must_exist = bool(param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING))
+    # like Export ChunkGroup's Output File. `reads` asks for the same open dialog without
+    # FILE_EXISTING's check on the value (see FileBrowser).
+    must_exist = bool(param.has_flag(ChunkFlags.ParamFlags.FILE_EXISTING)
+                      or getattr(param, "reads", False))
     return FileDialogSpec(patterns, directory, must_exist, label)
