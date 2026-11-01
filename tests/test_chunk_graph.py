@@ -15,6 +15,7 @@ import pytest
 from pxr import Sdf, Usd
 
 from usd_chunks import chunk
+from usd_chunks import chunk_core as core
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.graph import engine as chunk_graph
 
@@ -653,3 +654,38 @@ class TestPasteKeepsDisabled:
         prim = stage.GetPrimAtPath(chunk_graph.chunk_stage.get_chunk_prim_path(pasted))
         assert pasted.has_state(ChunkFlags.State.DISABLED)
         assert chunk_graph.is_disabled(prim)
+
+
+class _Configured:
+    """Just enough of a chunk for node_help: the config its module declared."""
+
+    def __init__(self, config):
+        self._config = config
+
+    def get_config(self):
+        return self._config
+
+
+def test_node_help_gives_description_requirements_and_source():
+    help_ = chunk_graph.node_help(_Configured(core.ChunkConfig(
+        description="\n    Bends a field.\n    ", requirements=["numpy>=2,<3"],
+        category="Modelling", module="noise_field")))
+
+    assert help_.description == "Bends a field."
+    assert help_.needs == (("Requirements", "numpy>=2,<3"),)
+    assert help_.source == "Modelling / noise_field"
+    assert help_.text == "Bends a field.\n\nRequirements: numpy>=2,<3\n\nModelling / noise_field"
+
+
+def test_node_help_shows_requirements_only_when_the_module_has_some():
+    help_ = chunk_graph.node_help(_Configured(core.ChunkConfig(description="Bends a field.")))
+
+    assert help_.needs == ()
+    assert "Requirements" not in help_.text
+
+
+def test_node_help_is_none_for_an_undocumented_module_with_no_requirements():
+    assert chunk_graph.node_help(_Configured(core.ChunkConfig())) is None
+    assert chunk_graph.node_help(_Configured(None)) is None
+    # Requirements alone are still worth a badge.
+    assert chunk_graph.node_help(_Configured(core.ChunkConfig(required_modules=["scatter"]))) is not None

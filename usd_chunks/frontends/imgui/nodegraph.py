@@ -179,6 +179,10 @@ class ImGuiGraphView:
         #: (the choices, what the pick joins). See join and choose; the popup only shows it.
         self.pending_pick: tuple[list, object] | None = None
         self._pick_shown = False
+        #: The node help (chunk_graph.node_help) under the mouse this frame, and the one
+        #: whose "?" was clicked -- drawn after the editor ends, see _draw_help.
+        self._help_hovered: chunk_graph.NodeHelp | None = None
+        self.help_open: chunk_graph.NodeHelp | None = None
         self._editor = None
         self.reload()
         self._ensure_view()
@@ -245,6 +249,7 @@ class ImGuiGraphView:
         self._handle_deletion()
         ed.end()
         self._draw_pick_popup()
+        self._draw_help()
 
         self.selected_nodes = {
             key for key in (self.ids.key(n) for n in ed.get_selected_nodes()) if key
@@ -269,10 +274,20 @@ class ImGuiGraphView:
             imgui.text_disabled(label + "  (disabled)")
         else:
             imgui.text_colored(imgui.ImVec4(0.79, 0.71, 0.42, 1.0), label)
+        chunk = self.chunks.get(path)
+        help_ = chunk_graph.node_help(chunk) if chunk is not None else None
+        if help_ is not None:
+            # Qt's "?": hover for the module's description and requirements, click to keep
+            # it open. Only noted here -- a tooltip or popup drawn inside the editor lands
+            # in canvas space.
+            imgui.same_line()
+            if imgui.small_button(f"?##help:{path}"):
+                self.help_open = help_
+            if imgui.is_item_hovered():
+                self._help_hovered = help_
         imgui.dummy(imgui.ImVec2(BODY_W - SIDE_PAD * 2, 1.0))
         imgui.unindent(SIDE_PAD)
 
-        chunk = self.chunks.get(path)
         collapsed = chunk_graph.is_collapsed(chunk)
         wired = self._wired_attr_paths()
         plus_in = plus_out = False
@@ -469,6 +484,35 @@ class ImGuiGraphView:
         if picked is not None:
             self._pick_shown = False
             self.choose(picked)
+
+    def _draw_help(self) -> None:
+        """The hovered "?"'s help as a tooltip; a clicked one's as a popup that stays until
+        a click outside it or Escape, scrolling past 400 high."""
+        if self._help_hovered is not None and self.help_open is None:
+            imgui.begin_tooltip()
+            imgui.push_text_wrap_pos(420.0)
+            imgui.text_unformatted(self._help_hovered.text)
+            imgui.pop_text_wrap_pos()
+            imgui.end_tooltip()
+        self._help_hovered = None
+        if self.help_open is None:
+            return
+        if not imgui.is_popup_open("node-help"):
+            imgui.open_popup("node-help")
+        if imgui.begin_popup("node-help"):
+            # As tall as the text, up to 400; past that the child scrolls.
+            imgui.set_next_window_size_constraints(imgui.ImVec2(440.0, 0.0), imgui.ImVec2(440.0, 400.0))
+            imgui.begin_child("node-help-text", imgui.ImVec2(440.0, 0.0),
+                              imgui.ChildFlags_.auto_resize_y)
+            imgui.push_text_wrap_pos(0.0)
+            imgui.text_unformatted(self.help_open.text)
+            imgui.pop_text_wrap_pos()
+            imgui.end_child()
+            if imgui.is_key_pressed(imgui.Key.escape):
+                imgui.close_current_popup()
+            imgui.end_popup()
+        if not imgui.is_popup_open("node-help"):
+            self.help_open = None
 
     def _handle_deletion(self):
         if not ed.begin_delete():

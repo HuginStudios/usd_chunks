@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import re
+import textwrap
 import time
 import uuid
 
@@ -449,6 +450,13 @@ class UsdChunksNodeBase(bpy.types.Node):
             # Qt draws an amber badge with this as its tooltip. The header is amber here
             # too (see apply_node_state), but a colour alone does not say what to do.
             layout.label(text="Needs recook", icon="ERROR")
+        if chunk is not None and chunk_graph.node_help(chunk) is not None:
+            # Qt's "?": hover for the module's description and requirements, click for
+            # the same in a popup.
+            row = layout.row()
+            row.alignment = "RIGHT"
+            row.operator(USDCHUNKS_OT_node_help.bl_idname, text="", icon="QUESTION",
+                         emboss=False).node_path = self.name
         # Params with an input socket are drawn by that socket instead, beside their port.
         chunk_blender.draw_params(self, layout, chunk, skip=socket_drawn_params(self))
 
@@ -476,6 +484,46 @@ class USDCHUNKS_OT_param_button(bpy.types.Operator):
             self.report({"WARNING"}, f"no such param: {self.param_name}")
             return {"CANCELLED"}
         param.click()
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_node_help(bpy.types.Operator):
+    """Show what this chunk does and what it requires"""
+
+    bl_idname = "usd_chunks.node_help"
+    bl_label = "Chunk Help"
+
+    node_path: bpy.props.StringProperty()
+
+    @staticmethod
+    def _help(context, node_path: str) -> chunk_graph.NodeHelp | None:
+        tree = getattr(context.space_data, "edit_tree", None)
+        node = tree.nodes.get(node_path) if tree else None
+        chunk = node.get_chunk() if node else None
+        return chunk_graph.node_help(chunk) if chunk is not None else None
+
+    @classmethod
+    def description(cls, context, properties):
+        # The hover tooltip: the help itself rather than the docstring above.
+        help_ = cls._help(context, properties.node_path)
+        return help_.text if help_ is not None else cls.__doc__
+
+    def execute(self, context):
+        help_ = self._help(context, self.node_path)
+        if help_ is None:
+            return {"CANCELLED"}
+        # Blender's popups do not wrap or scroll: wrap by hand, and stop at about the 400
+        # pixels Qt's scrolls past.
+        lines = [wrapped for para in help_.text.split("\n")
+                 for wrapped in (textwrap.wrap(para, 70) or [""])]
+        if len(lines) > 20:
+            lines = lines[:19] + ["..."]
+
+        def draw(menu, _context):
+            for line in lines:
+                menu.layout.label(text=line)
+
+        context.window_manager.popup_menu(draw, title=self.node_path, icon="QUESTION")
         return {"FINISHED"}
 
 
@@ -1920,7 +1968,7 @@ def _draw_add_menu(self, context) -> None:
 # ---------------------------------------------------------------------------
 
 _CLASSES = (UsdChunksNodeTree, UsdChunksSocket, USDCHUNKS_OT_param_button,
-            USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_search_menu, USDCHUNKS_OT_pick_menu_item,
+            USDCHUNKS_OT_node_help, USDCHUNKS_OT_pin_prim, USDCHUNKS_OT_search_menu, USDCHUNKS_OT_pick_menu_item,
             USDCHUNKS_OT_pick_plus, USDCHUNKS_OT_revert_override,
             USDCHUNKS_OT_list_resize, USDCHUNKS_OT_add_node)
 

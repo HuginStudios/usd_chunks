@@ -24,6 +24,7 @@ connects but does not yet write the expression.
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 
@@ -507,6 +508,22 @@ class GraphView:
                  for ref in choices],
                 width=320, height=min(420, 40 * len(choices)), scroll=ft.ScrollMode.AUTO, tight=True),
             actions=[ft.TextButton("Cancel", on_click=cancel)],
+        )
+        self.page.open(dialog)
+
+    def open_node_help(self, path: str, help_: chunk_graph.NodeHelp):
+        """A node's help (chunk_graph.node_help) in a dialog, scrolling once it is long."""
+        if self.page is None:
+            return
+        # A scrolling Column needs a height: guess it from the lines the text wraps to at
+        # ~60 characters, up to 400 as in Qt.
+        rows = sum(max(1, math.ceil(len(line) / 60)) for line in help_.text.split("\n"))
+        dialog = ft.AlertDialog(
+            title=ft.Text(chunk_graph.node_label(self.prims[path]), size=14),
+            content=ft.Column([ft.Text(help_.text, size=13, selectable=True)],
+                              width=420, height=min(400, 20 * rows + 8),
+                              scroll=ft.ScrollMode.AUTO, tight=True),
+            actions=[ft.TextButton("Close", on_click=lambda _ev: self.page.close(dialog))],
         )
         self.page.open(dialog)
 
@@ -1317,9 +1334,19 @@ class GraphView:
         for path, prim in self.prims.items():
             x, y = self.positions[path]
             chunk_obj = self.chunks.get(path)
+            title = ft.Text(chunk_graph.node_label(prim), size=12, color=COL_TEXT,
+                            weight=ft.FontWeight.W_500)
+            help_ = chunk_graph.node_help(chunk_obj) if chunk_obj is not None else None
+            if help_ is not None:
+                # Qt's "?": hover for the module's description and requirements, click for
+                # the same in a dialog.
+                title = ft.Row([title, ft.IconButton(
+                    icon=ft.Icons.HELP_OUTLINE, icon_size=14, icon_color="#9a9a9a",
+                    tooltip=help_.text, width=20, height=20, padding=0,
+                    on_click=lambda _ev, path=path, help_=help_: self.open_node_help(path, help_))],
+                    spacing=4, tight=True)
             body = [ft.Container(
-                ft.Text(chunk_graph.node_label(prim), size=12, color=COL_TEXT,
-                        weight=ft.FontWeight.W_500),
+                title,
                 bgcolor=self._header_colour(path, prim),
                 padding=ft.Padding.symmetric(vertical=5, horizontal=10),
                 border_radius=ft.BorderRadius.only(top_left=6, top_right=6),

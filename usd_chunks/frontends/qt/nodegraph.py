@@ -8,6 +8,7 @@ Edges follow inputs:chunk connections between prims.
 from __future__ import annotations
 
 import logging
+import html
 import math
 import os
 import time
@@ -911,6 +912,177 @@ class _NodeResizeHandle(QtWidgets.QGraphicsItem):
         event.accept()
 
 
+def _config_help_text(chunk: core.ChunkBase) -> str:
+    """chunk_graph.node_help as the rich text a node's "?" badge shows.
+
+    Args:
+        chunk: The chunk the node draws.
+
+    Returns:
+        The text, or "" when the module documents and requires nothing (no badge then).
+    """
+    help_ = chunk_graph.node_help(chunk)
+    if help_ is None:
+        return ""
+    dim = _COL_TEXT_SECONDARY.name()
+    parts = [html.escape(help_.description).replace("\n", "<br>")] if help_.description else []
+    if help_.needs:
+        parts.append("<br>".join(f"<span style='color:{dim}'>{label}:</span> {html.escape(text)}"
+                                 for label, text in help_.needs))
+    if help_.source:
+        parts.append(f"<span style='color:{dim}'>{html.escape(help_.source)}</span>")
+    # Rich text, at a size meant for reading: a plain tooltip came out in the tiny default.
+    return f"<div style='font-size:11pt'>{'<br><br>'.join(parts)}</div>"
+
+
+class _NodeHelpBadge(QtWidgets.QGraphicsItem):
+    """The "?" beside a node's type label: hover or click it for the chunk's config description.
+
+    Its own item rather than a region of the node, so its tooltip wins over the node's
+    (the stale/failed one) only where the badge is.
+    """
+
+    SIZE = 13.0
+
+    def __init__(self, node: ChunkNodeItem, text: str) -> None:
+        super().__init__(node)
+        self._node = node
+        self._hovered = False
+        self.setToolTip(text)
+        self.setZValue(1)
+        self.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
+        self.setAcceptHoverEvents(True)
+        # The "?" as an outline centred on its ink, not its line box: AlignCenter put the
+        # glyph visibly off-centre in so small a circle.
+        glyph = QtGui.QPainterPath()
+        glyph.addText(0, 0, _header_font(7, bold=True), "?")
+        self._glyph = glyph.translated(QtCore.QRectF(0, 0, self.SIZE, self.SIZE).center()
+                                       - glyph.boundingRect().center())
+        self.place()
+
+    def place(self) -> None:
+        """Sit just after the type label under the name, kept clear of the menu button."""
+        node = self._node
+        header_h = min(_NODE_HEADER_H, node._height)
+        metrics = QtGui.QFontMetricsF(_header_font(8))
+        # Mirrors paint()'s layout: the label starts after the icon, if there is one, and is
+        # centred in a 14-high row from header_h / 2 + 1.
+        text_x = 12 + 24 + 10 if node._icon else 12
+        x = min(text_x + metrics.horizontalAdvance(node._chunk_type_label) + 6, node._width - 58)
+        baseline = header_h / 2 + 1 + (14 - metrics.height()) / 2 + metrics.ascent()
+        # Level with the label's lower-case letters, which is what the eye lines it up with.
+        self.setPos(x, baseline - metrics.xHeight() / 2 - self.SIZE / 2)
+
+    def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
+        return QtCore.QRectF(0, 0, self.SIZE, self.SIZE)
+
+    def paint(self, painter, option, widget=None) -> None:
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        color = _COL_TEXT_PRIMARY if self._hovered else _COL_TEXT_SECONDARY
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(QtGui.QPen(color, 1.1))
+        painter.drawEllipse(self.boundingRect().adjusted(0.75, 0.75, -0.75, -0.75))
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawPath(self._glyph)
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self.update()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        # A click opens it as a popup that stays until the next click elsewhere -- a
+        # tooltip went away as soon as the button came up. The press goes no further, so it
+        # neither selects nor starts a drag.
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+        QtWidgets.QToolTip.hideText()
+        pos, parent = event.screenPos(), event.widget()
+        # Opened after the press has finished, as the node menu is (#86).
+        QtCore.QTimer.singleShot(0, parent, lambda: _HelpPopup(self.toolTip(), parent).open_at(pos))
+        event.accept()
+
+
+class _HelpPopup(QtWidgets.QScrollArea):
+    """A node's config description, open until a click outside it or Escape.
+
+    Not a Qt.Popup: inside usdview a click in its own window did not close one, only a click
+    outside the application did. An application event filter closes this instead, which
+    sees every press and key whichever widget usdview has given focus to.
+    """
+
+    MAX_WIDTH = 460
+    MAX_HEIGHT = 400
+
+    def __init__(self, text: str, parent: QtWidgets.QWidget | None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWidgetResizable(True)
+        self.setStyleSheet(
+            f"QScrollArea {{ background: {_COL_NODE_HEADER.name()};"
+            f" border: 1px solid {_COL_NODE_BORDER.name()}; }}")
+        label = QtWidgets.QLabel(text)
+        # On the label itself: a rule inherited from this area is applied too late for the
+        # height measured below, which then came up a padding short and scrolled.
+        label.setStyleSheet(
+            f"QLabel {{ background: {_COL_NODE_HEADER.name()}; color: {_COL_TEXT_PRIMARY.name()};"
+            f" padding: 10px; }}")
+        label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        label.setWordWrap(True)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
+        label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setWidget(label)
+        label.ensurePolished()
+        # As wide as the text needs, up to MAX_WIDTH; as tall as that wraps to, up to
+        # MAX_HEIGHT, past which it scrolls.
+        doc = QtGui.QTextDocument()
+        doc.setDefaultFont(label.font())
+        doc.setHtml(text)
+        width = int(min(doc.idealWidth() + 24, self.MAX_WIDTH))
+        frame = 2 * self.frameWidth()
+        height = label.heightForWidth(width) + frame
+        # The bar's policy is set outright: left to "as needed" it judged by a wrapping
+        # label's sizeHint, too tall, and scrolled text that fitted.
+        scrolls = height > self.MAX_HEIGHT
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOn if scrolls
+                                        else QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        if scrolls:
+            width += self.verticalScrollBar().sizeHint().width()
+            height = self.MAX_HEIGHT
+        self.setFixedSize(width + frame, height)
+        QtWidgets.QApplication.instance().installEventFilter(self)
+
+    def open_at(self, pos: QtCore.QPoint) -> None:
+        """Show it just below and right of `pos`, a global position."""
+        self.move(pos + QtCore.QPoint(12, 12))
+        self.show()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        kind = event.type()
+        if kind in (QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.NonClientAreaMouseButtonPress):
+            # Let the click through: it closes this and still does whatever it was for.
+            if not self.frameGeometry().contains(event.globalPosition().toPoint()):
+                self.close()
+        elif kind == QtCore.QEvent.Type.KeyPress and event.key() == QtCore.Qt.Key.Key_Escape:
+            self.close()
+            return True
+        return False
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        QtWidgets.QApplication.instance().removeEventFilter(self)
+        super().closeEvent(event)
+
+
 class ChunkNodeItem(QtWidgets.QGraphicsItem):
     """Represents a single Chunk prim as a compact draggable node.
 
@@ -998,9 +1170,13 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._width = (_merge_radius(1) * 2 if self._is_merge else float(_NODE_WIDTH) if self._is_dot
                        else _saved_node_width(prim))
         self._resize_handle: _NodeResizeHandle | None = None
+        self._help_badge: _NodeHelpBadge | None = None
         self._height = _NODE_HEADER_H
         self._full_height = _NODE_HEADER_H
         self._outputs_start_y: float = 0.0  # >0 when typed output ports are present
+        # A dot or merge has no header to put it in; their modules' text is in the menu.
+        if not (self._is_dot or self._is_merge) and (help_text := _config_help_text(chunk)):
+            self._help_badge = _NodeHelpBadge(self, help_text)
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, False)  # handled manually -- header only
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -1746,6 +1922,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if not self.prim.IsValid():
             return
         self._icon, self._icon_color = node_theme.node_icon(self.chunk, self.prim)
+        if self._help_badge is not None:
+            self._help_badge.place()  # the type label moved with the icon
         self.update()
 
     def _is_active_output(self) -> bool:
@@ -2287,6 +2465,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._chunk_widget.setFixedWidth(int(width))
         if self._resize_handle is not None:
             self._resize_handle.setPos(width, 0)
+        if self._help_badge is not None:
+            self._help_badge.place()
         # Right away, so wires follow the edge while it is dragged; the rebuild below puts
         # them on their rows once the body has reflowed.
         for port in self._ports:
@@ -2425,6 +2605,8 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                 proxy.setVisible(widget_visible)
             for port in self._ports:
                 port.setVisible(visible)
+            if self._help_badge is not None:
+                self._help_badge.setVisible(visible)
             self._apply_dim()
             self.update()
         except RuntimeError:
