@@ -549,12 +549,63 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
     return True
 
 
+# Prim metadata that, set by a chunk below on a prim a chunk above writes under, makes USD
+# refuse the write: an inactive prim has no children to author, an instance only proxies.
+_BLOCKING = (("active", False), ("instanceable", True))
+
+
+@contextmanager
+def _lifted_from_below(chunk, layer, layer_of):
+    """For chunk's cook, lift what the chunks below it set that blocks writing its own prims.
+
+    Merge Instancers deactivates the instancers it merged, in its own layer. A fresh run
+    cooks a Scatter before that layer holds anything; cooking the Scatter again found the
+    deactivation there, and it could not define the Prototypes under its own instancer
+    ("Failed to define UsdPrim"). Lifted only on the prims this chunk last wrote below, so
+    it sees them as a fresh run does, and put back after: a chunk below that skips its cook
+    keeps its result whole, and one that cooks clears them itself.
+    """
+    lifted = []
+    if layer.anonymous:
+        parents = set()
+
+        def visit(path):
+            if path.IsPrimPath():
+                parents.update(path.GetParentPath().GetAncestorsRange())
+
+        layer.Traverse(Sdf.Path.absoluteRootPath, visit)
+        parents.discard(Sdf.Path.absoluteRootPath)
+        if parents:
+            for node in chunk_scheduler.downstream_closure(chunk.get_dag_node()):
+                below = layer_of(node.propagator) if node.propagator is not chunk else None
+                if below is None or below is layer:
+                    continue
+                for path in parents:
+                    spec = below.GetPrimAtPath(path)
+                    for key, blocking in _BLOCKING:
+                        if spec is not None and spec.HasInfo(key) and spec.GetInfo(key) == blocking:
+                            lifted.append((spec, key, blocking))
+    if lifted:
+        with Sdf.ChangeBlock():
+            for spec, key, _ in lifted:
+                spec.ClearInfo(key)
+    try:
+        yield
+    finally:
+        if lifted:
+            with Sdf.ChangeBlock():
+                for spec, key, value in lifted:
+                    if spec:  # cleared away by a cook of the chunk below, made inside this one
+                        spec.SetInfo(key, value)
+
+
 def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
     """cook()'s cook, once it has decided the chunk may run."""
     with executing(chunk), skip_cook.unmasked(), cook_timings.timed(chunk):
         if ctx:
             try:
-                with Usd.EditContext(stage, layer_arcs.edit_target(stage, ctx)):
+                with Usd.EditContext(stage, layer_arcs.edit_target(stage, ctx)), \
+                        _lifted_from_below(chunk, ctx, layer_of):
                     # What the chunks below saw, to tell them what this cook
                     # changed (skip_cook). Anonymous only, like the Clear.
                     skipping = ctx.anonymous
