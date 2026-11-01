@@ -614,8 +614,8 @@ def test_merge_into_wire_puts_a_merge_between_the_wire_ends(graph):
     assert error == ""
     (merge,) = [p for p in change.touched_nodes if p not in {graph.path(b), graph.path(c)}]
     assert chunk_stage.is_merge_prim(graph.stage.GetPrimAtPath(merge))
-    # The existing flow keeps slot 0, so it keeps its strength; the branch comes after it.
-    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]
+    # The branch goes above A: it wins over A, as a node chained after A would.
+    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(a)]]
     assert graph.exec_sources(b) == [merge]
     assert change.exec_changed
     assert chunk_graph.node_position(graph.stage.GetPrimAtPath(merge)) == pytest.approx((100.0, -50.0))
@@ -642,12 +642,13 @@ def test_merge_into_a_wire_entering_a_merge_adds_a_slot(graph):
     merges_before = sum(chunk_stage.is_merge_prim(p) for p in graph.stage.Traverse())
 
     wire = chunk_graph.EdgeRef(f"{graph.path(a)}.{chunk_graph.EXEC_OUTPUT}",
-                               f"{merge}.{chunk_graph.EXEC_INPUT}", is_exec=True)
+                               f"{merge}.{chunk_naming.exec_input_name(1)}", is_exec=True)
     change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(d), (0.0, 0.0))
 
     assert error == ""
     assert change.touched_nodes == {merge, graph.path(d)}
-    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)], [graph.path(d)]]
+    # D takes A's slot and A moves down one; C, above them, keeps its rank.
+    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(d)], [graph.path(a)]]
     assert sum(chunk_stage.is_merge_prim(p) for p in graph.stage.Traverse()) == merges_before
 
 
@@ -688,7 +689,7 @@ def test_merge_into_wire_refuses_a_branch_already_in_the_merge(graph):
     change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(c), (0.0, 0.0))
 
     assert change is None and error
-    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]
+    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(a)]]
 
 
 def test_merge_into_a_data_wire_is_refused(graph):
@@ -699,6 +700,43 @@ def test_merge_into_a_data_wire_is_refused(graph):
     change, error = chunk_graph.merge_into_wire(graph.stage, graph.scene, wire, graph.path(c), (0.0, 0.0))
 
     assert change is None and error
+
+
+def test_merge_into_wire_joins_several_branches_in_order(graph):
+    a, b, c, d, e = (graph.make(n) for n in "abcde")
+    graph.wire_exec(a, b)
+
+    change, error = chunk_graph.merge_into_wire(
+        graph.stage, graph.scene, _exec_wire(graph, a, b),
+        [graph.path(e), graph.path(a), graph.path(c), graph.path(d)], (0.0, 0.0))
+
+    assert error == ""
+    (merge,) = [p for p in change.touched_nodes if p not in {graph.path(x) for x in (b, c, d, e)}]
+    # The branches above A, in the order given; the wire's own source in the list is left out.
+    assert _slots(graph, merge) == [[graph.path(e)], [graph.path(c)], [graph.path(d)], [graph.path(a)]]
+    assert graph.exec_sources(b) == [merge]
+
+
+def test_join_merge_appends_and_skips_what_it_cannot_take(graph):
+    a, b, c, d, e = (graph.make(n) for n in "abcde")
+    merge = _merge_of(graph, a, b, c)
+    graph.wire_param(b, e)  # e reads b, which the Merge feeds: joining e would loop
+
+    change, error = chunk_graph.join_merge(
+        graph.stage, graph.scene, merge, [graph.path(c), graph.path(e), graph.path(d), merge])
+
+    assert error == ""
+    assert change.touched_nodes == {merge, graph.path(d)}
+    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(a)], [graph.path(d)]]
+
+
+def test_join_merge_refuses_a_chunk_that_is_not_a_merge(graph):
+    a, b = graph.make("a"), graph.make("b")
+
+    change, error = chunk_graph.join_merge(graph.stage, graph.scene, graph.path(b), [graph.path(a)])
+
+    assert change is None and error
+    assert graph.exec_sources(b) == []
 
 
 def _merge_of(graph, a, b, c):
@@ -721,7 +759,7 @@ def test_swap_exec_slots_reorders_a_merges_branches(graph):
     change = chunk_graph.swap_exec_slots(graph.stage, _slot_port(merge, 0), _slot_port(merge, 1))
 
     assert change.touched_nodes == {merge} and change.exec_changed
-    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(a)]]
+    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]
 
 
 def test_swap_exec_slots_refuses_an_empty_slot(graph):
@@ -729,4 +767,4 @@ def test_swap_exec_slots_refuses_an_empty_slot(graph):
     merge = _merge_of(graph, a, b, c)
 
     assert chunk_graph.swap_exec_slots(graph.stage, _slot_port(merge, 0), _slot_port(merge, 2)) is None
-    assert _slots(graph, merge) == [[graph.path(a)], [graph.path(c)]]
+    assert _slots(graph, merge) == [[graph.path(c)], [graph.path(a)]]

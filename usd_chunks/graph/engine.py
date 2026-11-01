@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -805,20 +804,68 @@ def _feeds(stage: Usd.Stage, upstream: str, node: str) -> bool:
     return False
 
 
-def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos,
+def join_merge(stage: Usd.Stage, scene, merge: str, branches,
+               at: int | None = None) -> tuple[GraphChange | None, str]:
+    """Wire branches into a Merge, in the order given.
+
+    What dropping exec wires on a Merge means -- one, or one from each selected node. By
+    default they go in after the slots already wired, so the branches that were there keep
+    their strength. A branch that is the Merge, already feeds it, or is fed by it (a loop)
+    is left out and the rest still go in.
+
+    Args:
+        stage: The stage to author on.
+        scene: The scene the chunks live in.
+        merge: Prim path of the Merge.
+        branches: Prim paths of the chunks to join, strongest first.
+        at: The slot the first of them takes instead, the branches from there on each
+            moving down to make room: they outrank what was in that slot and below.
+
+    Returns:
+        (what changed, error message); the change is None and the message says why when
+        not one branch was wired.
+    """
+    prim = stage.GetPrimAtPath(Sdf.Path(merge))
+    if not chunk_stage.is_merge_prim(prim):
+        return None, "that is not a Merge"
+    slots = [[str(c.GetPrimPath()) for c in a.GetConnections()]
+             for a in chunk_naming.iter_exec_inputs(prim) if a.GetConnections()]
+    fed = {path for slot in slots for path in slot}
+    joined, error = [], "nothing to join"
+    for branch in dict.fromkeys(branches):
+        if branch == merge or branch in fed:
+            error = "the chunk already feeds that Merge"
+        elif _feeds(stage, merge, branch):
+            error = "the chunk is downstream of that Merge; joining it in would make a loop"
+        else:
+            joined.append(branch)
+    if not joined:
+        return None, error
+    start = len(slots) if at is None else max(0, min(at, len(slots)))
+    # Rewritten from start down: the joined branches, then whatever they pushed down.
+    for index, sources in enumerate([[b] for b in joined] + slots[start:], start):
+        for n, source in enumerate(sources):
+            chunk_stage.connect_exec(stage, scene, source, merge,
+                                     input_name=chunk_naming.exec_input_name(index), append=n > 0)
+    return GraphChange(touched_nodes={merge, *joined}, exec_changed=True), ""
+
+
+def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch, usd_pos,
                     nest=None) -> tuple[GraphChange | None, str]:
     """Join a branch into an exec wire A -> B through a Merge: A and branch -> Merge -> B.
 
-    What dropping a node's exec output onto a wire means. A keeps slot 0, so the flow
-    that was already there keeps its strength and the branch can only add to it. A wire
-    that already enters a Merge gets the branch in the Merge's next slot instead of a
-    second Merge in front of it.
+    What dropping a node's exec output onto a wire means. The branch goes in above A, so
+    it wins over A the way a node chained after A would: in a Merge the top slot is the
+    strongest. A wire that already enters a Merge gets the branch in A's slot instead of a
+    second Merge in front of it, A and the slots under it moving down one.
 
     Args:
         stage: The stage to author on.
         scene: The scene the Merge is created in.
         wire: The exec wire dropped onto.
-        branch: Prim path of the chunk whose exec output was dropped.
+        branch: Prim path of the chunk whose exec output was dropped, or a list of them
+            (strongest first) for wires dropped from several selected nodes at once. A
+            chunk on the wire or downstream of it is left out.
         usd_pos: Where a new Merge goes, in USD coordinates.
         nest: The context to create it in, from `nest_target`.
 
@@ -829,19 +876,23 @@ def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos
     src, dst = wire.src_node_path, wire.dst_node_path
     if not wire.is_exec:
         return None, "only an exec wire takes a Merge"
-    if branch in (src, dst):
-        return None, "the chunk is already on that wire"
-    if _feeds(stage, dst, branch):
-        return None, "the chunk is downstream of that wire; joining it in would make a loop"
+    wanted, error = [], ""
+    for path in ([branch] if isinstance(branch, str) else branch):
+        if path in (src, dst):
+            error = "the chunk is already on that wire"
+        elif _feeds(stage, dst, path):
+            error = "the chunk is downstream of that wire; joining it in would make a loop"
+        else:
+            wanted.append(path)
+    if not wanted:
+        return None, error or "nothing to join"
 
     dst_prim = stage.GetPrimAtPath(Sdf.Path(dst))
     if chunk_stage.is_merge_prim(dst_prim):
-        slots = [a for a in chunk_naming.iter_exec_inputs(dst_prim) if a.GetConnections()]
-        if any(str(c.GetPrimPath()) == branch for a in slots for c in a.GetConnections()):
-            return None, "the chunk already feeds that Merge"
-        chunk_stage.connect_exec(stage, scene, branch, dst,
-                                 input_name=chunk_naming.exec_input_name(len(slots)))
-        return GraphChange(touched_nodes={dst, branch}, exec_changed=True), ""
+        slot_names = [a.GetName() for a in chunk_naming.iter_exec_inputs(dst_prim) if a.GetConnections()]
+        name = Sdf.Path(wire.dst_attr_path).name
+        return join_merge(stage, scene, dst, wanted,
+                          at=slot_names.index(name) if name in slot_names else None)
 
     module = chunk_registry.ChunkRegistry().get_chunk_module(MERGE_MODULE)
     if module is None:
@@ -853,7 +904,7 @@ def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos
     merge = chunk_stage.get_chunk_prim_path(created[0])
 
     chunk_stage.connect_exec(stage, scene, src, merge, input_name=chunk_naming.exec_input_name(0))
-    chunk_stage.connect_exec(stage, scene, branch, merge, input_name=chunk_naming.exec_input_name(1))
+    joined, _ = join_merge(stage, scene, merge, wanted, at=0)
     # Swap A for the Merge in B's slot, leaving any other wire stacked on it in place.
     dst_attr = stage.GetAttributeAtPath(Sdf.Path(wire.dst_attr_path))
     src_conn = Sdf.Path(wire.src_attr_path)
@@ -864,7 +915,7 @@ def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch: str, usd_pos
     with Usd.EditContext(stage, target):
         dst_attr.SetConnections(wanted)
     chunk_stage.reconcile_edit_targets(stage, scene)
-    return GraphChange(touched_nodes={merge, dst, branch}, exec_changed=True), ""
+    return GraphChange(touched_nodes={merge, dst, *joined.touched_nodes}, exec_changed=True), ""
 
 
 def swap_exec_slots(stage: Usd.Stage, a: PortRef, b: PortRef) -> GraphChange | None:
@@ -2116,40 +2167,10 @@ def hold_until_wired(scene, context, chunks) -> None:
             chunk.set_blocked(True)
 
 
-#: Chunk types drawn without a body, so there is nothing for them to collapse.
-_BODILESS = frozenset({"merge", "dot"})
-
-
-def start_collapsed(chunks) -> None:
-    """Collapse new chunks before they are added, so their nodes start as a header.
-
-    A graph that branches stacks its nodes under each other, and full bodies make that
-    stack tall: a node shows its header, exec ports and wired ports until it is opened.
-    Set before the add, so the prim is written collapsed and the node is built that way
-    rather than drawn open and then shut. Views, Outputs and groups are left as they are:
-    the first two have no body, and a group's double-click is its dive.
-    USD_CHUNKS_START_COLLAPSED=0 starts every node open instead. It is read on each call,
-    so a script can flip it mid-session.
-
-    Args:
-        chunks: The chunks about to be added.
-    """
-    if os.environ.get("USD_CHUNKS_START_COLLAPSED", "").strip().lower() in ("0", "false", "no", "off"):
-        return
-    for chunk in chunks:
-        if has_collapsible_body(chunk):
-            chunk.set_state(ChunkFlags.State.COLLAPSED)
-
-
-def has_collapsible_body(chunk) -> bool:
-    """Whether a chunk's node has a body of params to fold away.
-
-    Not a View or Output, nor a Merge or Dot (no body), nor a group (its double-click is
-    its dive).
-    """
-    cfg = chunk.get_config()
-    return not (chunk_stage.is_terminal_chunk(chunk) or chunk_stage.is_group_chunk(chunk)
-                or chunk_stage.is_subnet(chunk) or (cfg and cfg.module in _BODILESS))
+# Lives in chunk_stage, where the gizmo's auto-created Transform can reach it too; the
+# graph's callers keep these names.
+start_collapsed = chunk_stage.start_collapsed
+has_collapsible_body = chunk_stage.has_collapsible_body
 
 
 @dataclass
