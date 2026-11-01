@@ -273,6 +273,72 @@ network took 250 s this way, against 17-27 minutes.
   at it. In the graph, you can instead select that node and press **V**, which makes a
   View. Press **2** or **3** to switch between Views, and **1** to go back to the Output.
 
+## Live sessions
+
+A live session keeps a network open, and you change its params from another terminal or
+a script. Each change cooks only what it reaches, then commits again, so a Render chunk
+renders again. Opening the file and the first cook happen once, not on every change.
+
+Start one:
+
+``` sh
+usdchunks run shot.usda --live
+```
+
+It cooks the network as `run` does, then waits. Ctrl+C ends it. From another terminal:
+
+``` sh
+usdchunks send shot.usda Fill.intensity=8 Sky.intensity=2 --wait
+usdchunks send shot.usda --list     # every param you can set, with its type
+usdchunks send shot.usda --reset    # clear every value sent so far
+```
+
+`--wait` returns once the session has cooked the change, and rendered it if the network
+renders. Without it, `send` returns as soon as the values are written.
+
+The same from Python, for a script that tries values one after another:
+
+``` py
+from usd_chunks import live
+
+for strength in (2, 4, 8):
+    live.send("shot.usda", {"Fill.intensity": strength}, wait=True)
+    ...  # look at the render
+```
+
+Name a param as `run` takes it: `Chunk.param`. The last part is enough when only one of the
+chunk's params ends with it, so `Fill.intensity` finds the Light's `attr_grp.inputs:intensity`.
+When two chunks in different groups share a name, `--list` shows their params under the
+prim path instead, such as `/chunks/Group/Fill.attr_grp.inputs:intensity`, and
+`/chunks/Group/Fill.intensity` finds it. A name `send` cannot find gets the closest
+matches in the error.
+
+The session and `send` share two files beside the network:
+
+| File | Written by | Holds |
+| --- | --- | --- |
+| `shot.live.usda` | `send` | The values, as USD overs on the Chunk prims. |
+| `shot.live.json` | the session | Every param it can set, and which change it has finished. |
+
+The session holds `shot.live.usda` as a sublayer of its session layer and reloads it when
+the file changes. A value arrives as an edit on the stage, the same as one made in the
+graph. The network file itself is never written.
+
+The values stay in `shot.live.usda` after the session ends, and the next session opens with
+them. `--reset` clears them. To keep them, set them in the network.
+
+While a session runs, the Render chunk keeps its renderer between renders. The renderer
+builds its scene once and then updates only what a change touched. The renderer's whole
+scene stays in memory for as long as the session runs.
+
+Two limits:
+
+- `send` sets only the params the session lists. A chunk can build some params only when
+  their group is opened (Render Settings does, for each renderer's settings). Such a param
+  is listed once the network has a value for it.
+- A value in `shot.live.usda` is stronger than a change to the same param in the graph.
+  Clear it with `--reset` to edit that param in the graph again.
+
 ## Examples
 
 ### Five boxes in a row

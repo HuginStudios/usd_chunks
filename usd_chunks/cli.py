@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from argparse import SUPPRESS, ArgumentParser, RawDescriptionHelpFormatter
 from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
@@ -22,7 +23,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_batch, chunk_naming, configure_logging
 from usd_chunks.chunk_process import python_executable
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler, chunk_utils
-from usd_chunks import cook_timings
+from usd_chunks import cook_timings, live
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene
@@ -498,6 +499,9 @@ def cmd_run(args):
         sys.exit(1)
     if args.params:
         args.params = _overrides_into_session(stage, args.params)
+    # Before the load, so what an earlier session left in the overrides file is in the
+    # first cook rather than an edit after it.
+    session_live = live.LiveSession(stage, args.usda) if getattr(args, "live", False) else None
 
     # The scene's stage sync replaces a bare load_chunks: initialize loads the network
     # itself and, unlike a bare call, leaves the sync listening while it does.
@@ -571,6 +575,64 @@ def cmd_run(args):
     # On stderr, so --printout's stdout stays a clean layer.
     if cook_timings.enabled:
         print(cook_timings.report(), file=sys.stderr)
+
+    if session_live is not None:
+        _serve_live(stage, scene, session_live, args.usda)
+
+
+def _serve_live(stage, scene, session, usda):
+    """Keep the network up, cooking and committing again whenever a client sends values.
+
+    The reload is all it takes to cook: the values arrive as stage edits, which the sync
+    adopts and the solve recooks as far as they reach. What is left is what `run` does
+    after its cook -- hand-offs from worker threads, then the outputs (a render) -- and
+    the manifest, which also tells a waiting client its request is done.
+    """
+    session.publish(scene)
+    print(f"Live: change params with `usdchunks send {usda} Chunk.param=value`. Ctrl+C ends.", flush=True)
+    try:
+        while True:
+            time.sleep(live.POLL_SECONDS)
+            error = None
+            # The reload cooks: the sync recooks as the reloaded layer's edits arrive, so a
+            # chunk failing on a value fails inside poll(), not only in the commit after it.
+            try:
+                if not session.poll():
+                    continue
+                chunk_scene.run_pending()
+                chunk_scheduler.commit_all(
+                    scene.get_chunks(),
+                    order=lambda cs: commit_order_from_stage(cs, stage),
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad edit must not end the session
+                traceback.print_exc()
+                error = str(exc)
+            session.publish(scene, error=error)
+            print(f"Live: request {session.request()} done.", flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        session.close(scene)
+
+
+def cmd_send(args):
+    values = {}
+    for item in args.params:
+        name, sep, value = item.partition("=")
+        if not sep:
+            print(f"Invalid argument format: {item!r} — expected Chunk.param=value")
+            sys.exit(1)
+        values[name] = value
+    try:
+        if args.list:
+            for name, entry in sorted(live.read_manifest(args.usda)["params"].items()):
+                print(f"{name}  ({entry['type']})")
+            return
+        request = live.send(args.usda, values, reset=args.reset, wait=args.wait, timeout=args.timeout)
+    except live.LiveError as exc:
+        print(exc)
+        sys.exit(1)
+    print(f"Sent request {request}{' (done)' if args.wait else ''}.")
 
 
 WEDGE_CHUNK_TYPE = "wedge"
@@ -1002,6 +1064,8 @@ def main():
             "  usdchunks run setup.usda -o result.usda\n"
             "  usdchunks run setup.usda -p\n"
             "  usdchunks run setup.usda MyChunk.primpath_location=/geo\n"
+            "  usdchunks run setup.usda --live\n"
+            "  usdchunks send setup.usda MyChunk.size=2 --wait\n"
             "  usdchunks batch setup.usda -o 'out/*.usda'\n"
             "  usdchunks info setup.usda\n"
             "  usdchunks validate setup.usda -v\n"
@@ -1072,6 +1136,34 @@ def main():
         help="Print how long each phase and each chunk's cook took, slowest first, on stderr "
              "(the same as USD_CHUNKS_TIMINGS=1)",
     )
+    run_parser.add_argument(
+        "--live", action="store_true",
+        help="Stay up after the run and cook (and render) again whenever `usdchunks send` "
+             "changes a param",
+    )
+
+    send_parser = sub.add_parser(
+        "send",
+        help="Change params on a network running with `run --live`",
+        description=(
+            "Write param values into the live session's overrides file (NET.live.usda beside\n"
+            "the network). The session reloads it and cooks what the values reach, as an\n"
+            "edit in the UI would. Values stay in the file until --reset."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  usdchunks send setup.usda Fill.intensity=8\n"
+            "  usdchunks send setup.usda Fill.intensity=8 Sky.intensity=2 --wait\n"
+            "  usdchunks send setup.usda --list\n"
+        ),
+        formatter_class=RawDescriptionHelpFormatter,
+    )
+    send_parser.add_argument("usda", help="Path to the .usda chunk network the session runs")
+    send_parser.add_argument("params", nargs="*", help="Values: ChunkName.param=value")
+    send_parser.add_argument("--reset", action="store_true", help="Clear earlier values first")
+    send_parser.add_argument("--wait", action="store_true", help="Return once the session has cooked them")
+    send_parser.add_argument("--timeout", type=float, default=None, help="Seconds --wait waits at most")
+    send_parser.add_argument("--list", action="store_true", help="List the params the session can set")
 
     info_parser = sub.add_parser(
         "info",
@@ -1297,6 +1389,8 @@ def main():
 
     if args.command == "run":
         cmd_run(args)
+    elif args.command == "send":
+        cmd_send(args)
     elif args.command == "info":
         cmd_info(args)
     elif args.command == "validate":
