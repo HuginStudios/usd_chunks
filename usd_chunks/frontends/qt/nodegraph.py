@@ -6387,33 +6387,50 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         event.acceptProposedAction()
         scene_pos = self.mapToScene(event.pos())
         global_pos = self.viewport().mapToGlobal(event.pos())
-        offset = QtCore.QPointF(0, 0)
-        for path in paths:
-            self._handle_dropped_file(path, scene_pos + offset, global_pos)
-            offset += QtCore.QPointF(40, 40)  # stagger multi-file drops so nodes don't stack exactly
+        self._handle_dropped_files(paths, scene_pos, global_pos)
 
     def _handle_dropped_file(
         self, path: str, scene_pos: QtCore.QPointF, global_pos: QtCore.QPoint
     ) -> None:
-        if os.path.splitext(path)[1].lower() == _SCRIPT_EXT:
-            self._import_as_script(path, scene_pos)
-            return
-        kind = _detect_dropped_usd_kind(path)
-        if kind is None:
+        self._handle_dropped_files([path], scene_pos, global_pos)
+
+    def _handle_dropped_files(
+        self, paths: list[str], scene_pos: QtCore.QPointF, global_pos: QtCore.QPoint
+    ) -> None:
+        """Import every dropped file, asking how to import the USD ones once for the lot."""
+        usd_paths = []
+        kinds = []
+        offset = QtCore.QPointF(0, 0)
+        positions = {}
+        for path in paths:
+            positions[path] = scene_pos + offset
+            offset += QtCore.QPointF(40, 40)  # stagger multi-file drops so nodes don't stack exactly
+            if os.path.splitext(path)[1].lower() == _SCRIPT_EXT:
+                self._import_as_script(path, positions[path])
+                continue
+            kind = _detect_dropped_usd_kind(path)
+            if kind is not None:
+                usd_paths.append(path)
+                kinds.append(kind)
+        if not usd_paths:
             return
         # "Import as Chunks" only makes sense for a file that actually carries chunk prims
-        # (a chunkgroup export) -- offering it for a plain scene would be a dead choice.
+        # (a chunkgroup export) -- offering it for a plain scene would be a dead choice, so
+        # it shows only when every dropped file carries some.
         # Sublayer and Reference apply either way, so the popup always shows at least those
         # two. A plain scene file does not silently default to Sublayer: that would make
         # Reference unreachable for the single most common drop (a plain USD asset with no
         # chunk prims).
-        chosen = self._prompt_import_kind(global_pos, offer_chunks=(kind != "scene"))
-        if chosen == "chunks":
-            self._import_as_chunks(path, scene_pos)
-        elif chosen == "scene":
-            self._import_as_sublayer(path, scene_pos)
-        elif chosen == "reference":
-            self._import_as_reference(path, scene_pos)
+        chosen = self._prompt_import_kind(
+            global_pos, offer_chunks=all(kind != "scene" for kind in kinds)
+        )
+        for path in usd_paths:
+            if chosen == "chunks":
+                self._import_as_chunks(path, positions[path])
+            elif chosen == "scene":
+                self._import_as_sublayer(path, positions[path])
+            elif chosen == "reference":
+                self._import_as_reference(path, positions[path])
 
     def _prompt_import_kind(self, global_pos: QtCore.QPoint, offer_chunks: bool) -> str | None:
         menu = QtWidgets.QMenu()

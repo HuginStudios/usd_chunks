@@ -419,10 +419,7 @@ class ChunkTabWidget(QtWidgets.QTabWidget):
         # that was just made -- it is empty, so anywhere is as good, and the stagger keeps a
         # multi-file drop from stacking every node on the same point.
         global_pos = self.mapToGlobal(event.position().toPoint())
-        offset = QtCore.QPointF(0, 0)
-        for path in paths:
-            gv._handle_dropped_file(path, offset, global_pos)
-            offset += QtCore.QPointF(40, 40)
+        gv._handle_dropped_files(paths, QtCore.QPointF(0, 0), global_pos)
 
     def add_new_tab(self):
         """Create a context chunk and show it as the current tab.
