@@ -183,6 +183,61 @@ def graph(qapp, session):
     docker.close()  # held until here: the view dies with it
 
 
+def test_a_collapsed_node_feeding_a_list_row_keeps_its_wire(qapp, session):
+    """A wire into a list row is only the row's expression, not a USD connection, so a
+    collapsed source never learned it fed anything and showed no port to draw it from."""
+    _stage, scene, _reg = session
+    docker = ChunkWidgetDocker()
+    docker.resize(700, 600)
+    docker.show()
+    try:
+        src = _add(scene, "reference")
+        dst = _add(scene, "sublayer", collapsed=False)
+        rows = dst.get_param("imports")
+        rows.size = 1
+        rows.get_indexed_param("sublayer_path", 0).value = f"@{src.name}.primpath_location@"
+        qapp.processEvents()
+        gv = docker.tab_widget.get_current_graph_view()
+        gv.scene()._build_edges()
+        node = gv.scene()._nodes[get_chunk_prim_path(src)]
+        out = f"{node.prim.GetPath()}.outputs:primpath_location"
+
+        assert src.has_state(ChunkFlags.State.COLLAPSED)
+        port = node.get_port(out)
+        assert port is not None, "the collapsed source shows the end of its wire"
+        assert any(edge.src_port is port for edge in gv.scene()._edges)
+    finally:
+        docker.close()
+
+
+def test_a_collapsed_node_shows_the_wired_list_row_and_only_that_one(qapp, session):
+    """The other end: a collapsed node fed through a list row lost the wire, and by name
+    every row shares its template's, so one wired row would show a port on all of them."""
+    _stage, scene, _reg = session
+    docker = ChunkWidgetDocker()
+    docker.resize(700, 600)
+    docker.show()
+    try:
+        src = _add(scene, "reference", collapsed=False)
+        dst = _add(scene, "sublayer")
+        rows = dst.get_param("imports")
+        rows.size = 2
+        qapp.processEvents()
+        gv = docker.tab_widget.get_current_graph_view()
+        node = gv.scene()._nodes[get_chunk_prim_path(dst)]
+        wired = rows.get_indexed_param("sublayer_path", 1)
+
+        wired.value = f"@{src.name}.primpath_location@"
+        pump_until(qapp, lambda: any(p.param is wired for p in node._typed_ports))
+
+        assert dst.has_state(ChunkFlags.State.COLLAPSED)
+        row_ports = [p for p in node._typed_ports if chunk_graph.is_list_row(p.param)]
+        assert [p.param for p in row_ports] == [wired], "only the wired row shows a port"
+        pump_until(qapp, lambda: any(edge.dst_port is row_ports[0] for edge in gv.scene()._edges))
+    finally:
+        docker.close()
+
+
 def test_open_nodes_draw_above_collapsed_and_selected_above_both(graph):
     gv, _stage, (a, b), (node_a, node_b) = graph
 
