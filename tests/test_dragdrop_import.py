@@ -512,6 +512,37 @@ def test_handle_dropped_file_prompts_for_plain_scene_without_a_chunks_option(gra
     )
 
 
+def test_dropping_several_files_prompts_once_for_all(graph, tmp_path, monkeypatch) -> None:
+    """One drop of several USD files asks once and imports every file the chosen way."""
+    qapp, reg, scene, docker = graph
+    _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
+
+    seen_menus: list = []
+
+    def _exec(menu, _pos):
+        seen_menus.append([act.text() for act in menu.actions()])
+        return next((act for act in menu.actions() if act.text() == "Import as Sublayer"), None)
+    monkeypatch.setattr(gv, "_exec_menu", _exec)
+
+    paths = []
+    for name in ("multi_a.usda", "multi_b.usda", "multi_c.usda"):
+        path = tmp_path / name
+        stage = Usd.Stage.CreateNew(str(path))
+        stage.DefinePrim("/geo", "Xform")
+        stage.GetRootLayer().Save()
+        paths.append(str(path))
+
+    gv._handle_dropped_files(paths, QtCore.QPointF(11500, 11500), QtCore.QPoint(0, 0))
+    _pump(qapp, 0.3)
+
+    assert len(seen_menus) == 1, "a multi-file drop must ask once, not once per file"
+    sublayer_paths = {
+        c.get_param("imports").get_indexed_param("sublayer_path", 0).value
+        for c in scene.get_chunks() if c.get_config() and c.get_config().module == "sublayer"
+    }
+    assert set(paths) <= sublayer_paths
+
+
 def test_import_as_reference_creates_prefilled_node(graph, tmp_path) -> None:
     qapp, reg, scene, docker = graph
     _, gv, _, _ = _make_nodes(graph)  # forces a tab (and its graph view) to exist
