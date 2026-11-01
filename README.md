@@ -31,7 +31,7 @@ Built for anyone whose pipeline runs on USD:
 
 - **One network, every host.** The same network opens as a node graph in usdview, Houdini
   or Blender, and cooks from the terminal with no UI at all.
-- **Native USD, no sidecar format.** A node is a prim, a wire is a USD connection, and each
+- **Native USD, no proprietary format.** A node is a prim, a wire is a USD connection, and each
   node writes into its own layer, so the source scene isn't touched. Saving the stage
   saves the graph, and any USD tool can read it. A network is a text `.usda` and a chunk
   is a `.py`, so both diff in git and a chunk is unit-tested like any module.
