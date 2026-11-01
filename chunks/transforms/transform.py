@@ -123,6 +123,7 @@ def execute(node):
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param):
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():
+            chunk_utils.warn_if_missing(node, target_path, "it is not moved", primpath_param)
             continue
 
         over = stage.OverridePrim(target_path)

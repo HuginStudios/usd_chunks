@@ -47,6 +47,9 @@ def execute(node):
             prim = stage.GetPrimAtPath(target_path)
             if prim and prim.IsValid():
                 UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+            else:
+                chunk_utils.warn_if_missing(
+                    node, target_path, f"{mat_path} is not bound to it", primpath_param)
 
 
 def main():

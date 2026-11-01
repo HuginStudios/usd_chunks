@@ -45,6 +45,43 @@ def test_mesh_builds_a_cone_standing_on_its_base(scene):
     assert np.hypot(points[:, 0], points[:, 2]).max() == pytest.approx(1.5)
 
 
+def test_mesh_builds_a_cube_standing_on_its_base(scene):
+    # Its corner used to sit on the origin, so anything set on its middle was off by half.
+    node = scene.create.mesh(prim_path="/World/box", mesh_type="cube", width=2.0, height=3.0, depth=4.0)
+    points = _points(node, "/World/box")
+    assert points.min(axis=0) == pytest.approx((-1.0, 0.0, -2.0))
+    assert points.max(axis=0) == pytest.approx((1.0, 3.0, 2.0))
+
+
+def test_the_sphere_has_its_poles_on_y(scene):
+    # On Z, a coarse sphere fell short of its radius top and bottom, so one set `radius`
+    # above a surface hovered over it.
+    node = scene.create.mesh(prim_path="/World/ball", mesh_type="sphere", radius1=2.0, dimx2=6, dimy2=6)
+    points = _points(node, "/World/ball")
+    assert points[:, 1].min() == pytest.approx(-2.0) and points[:, 1].max() == pytest.approx(2.0)
+
+
+def _signed_volume(mesh):
+    points = np.array(mesh.GetPointsAttr().Get())
+    indices = list(mesh.GetFaceVertexIndicesAttr().Get())
+    volume, start = 0.0, 0
+    for count in mesh.GetFaceVertexCountsAttr().Get():
+        face = [points[i] for i in indices[start:start + count]]
+        start += count
+        for k in range(1, count - 1):
+            volume += np.dot(face[0], np.cross(face[k], face[k + 1])) / 6
+    return volume
+
+
+@pytest.mark.parametrize("mesh_type", ["cube", "sphere", "cone"])
+def test_closed_meshes_face_outward(scene, mesh_type):
+    # The sphere went onto Y by a rotation: swapping two axes would have turned it inside out.
+    node = scene.create.mesh(prim_path=f"/World/{mesh_type}", mesh_type=mesh_type, dimz=2)
+    mesh = UsdGeom.Mesh(node.get_stage().GetPrimAtPath(f"/World/{mesh_type}"))
+    assert mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.rightHanded
+    assert _signed_volume(mesh) > 0
+
+
 @pytest.mark.parametrize("mesh_type", ["cube", "sphere", "torus", "cone", "tube", "grid"])
 def test_every_mesh_is_polygons_not_a_subdivision_cage(scene, mesh_type):
     # catmullClark, USD's default, is drawn subdivided by V-Ray: a cube became a blob.

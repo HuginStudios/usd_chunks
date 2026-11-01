@@ -168,6 +168,12 @@ def build_cube(
     depth=1.0,
     pos=(0, 0, 0),
 ):
+    """A box standing on its base: the base centred on the origin, the top at +Y `height`.
+
+    The same footing as the cone and tube, so a shape made on the ground stands on it and
+    one stacked on top sits at `height`. It used to span 0..width and 0..depth from a
+    corner, so placing anything on its middle meant offsetting by half its size.
+    """
     xseg = max(int(xseg), 1)
     yseg = max(int(yseg), 1)
     zseg = max(int(zseg), 1)
@@ -189,7 +195,11 @@ def build_cube(
         if not add_xy and not add_yz and not add_zx:
             continue
 
-        p = np.array((x / max(xseg - 1, 1) * width, y / max(yseg - 1, 1) * height, z / max(zseg - 1, 1) * depth))
+        p = np.array((
+            (x / max(xseg - 1, 1) - 0.5) * width,
+            y / max(yseg - 1, 1) * height,
+            (z / max(zseg - 1, 1) - 0.5) * depth,
+        ))
         n = Node((x, y, z), (xseg, yseg, zseg))
         pts[n.v] = p
 
@@ -375,6 +385,12 @@ def build_tube(stage, name="/tube", rows=5, columns=5, radius=1.0, height=2.0, c
 
 
 def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
+    """A UV sphere centred on the origin, its poles on Y like the torus and cone's axis.
+
+    The poles used to lie on Z, so in a Y-up scene the sphere reached its full `radius` only
+    sideways: at the default resolution its top and bottom fell short of it, and a sphere
+    placed `radius` above a surface hovered over it.
+    """
     dimx = max(int(dimx), 3)
     dimy = max(int(dimy), 3)
     rc = dimx * dimy - (dimx - 1) * 2
@@ -411,10 +427,12 @@ def build_sphere(stage, name, dimx, dimy, radius, pos=(0, 0, 0)):
             if (j == 0 or j == dimy - 1) and i > 0:
                 continue
 
+            # Turned a quarter about X from the Z-pole layout, (x, y, z) -> (x, z, -y): a
+            # rotation, not a swap of two axes, so every face keeps its outward winding.
             theta = (j % dimy) / (dimy - 1) * np.pi
-            y = pos[1] + radius * np.sin(theta) * np.sin(row)
             x = pos[0] + radius * np.sin(theta) * np.cos(row)
-            z = pos[2] + radius * np.cos(theta)
+            y = pos[1] + radius * np.cos(theta)
+            z = pos[2] - radius * np.sin(theta) * np.sin(row)
             pts[idx] = (x, y, z)
 
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(name))
