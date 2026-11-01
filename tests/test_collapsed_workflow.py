@@ -349,6 +349,20 @@ def test_hovering_near_the_plus_outside_the_node_takes_the_wire(graph):
     gv._cancel_wire_drag()
 
 
+def test_zoomed_out_the_exec_port_above_the_output_plus_keeps_its_press(graph):
+    """The "+" reaches a fixed number of screen pixels, so zoomed out it spans the exec port
+    above it. A press nearer the port is the port's, not the "+" menu's."""
+    gv, _stage, _chunks, (_node_a, node_b) = graph
+    gv.resetTransform()
+    gv.scale(0.25, 0.25)
+    exec_out = node_b._exec_out_port
+    plus = node_b.mapToScene(QtCore.QPointF(node_b._width, node_b._plus_y))
+    press = exec_out.scenePos() + (plus - exec_out.scenePos()) * 0.3  # just below the port
+
+    assert gv._out_plus_at(press) is exec_out
+    assert gv._out_plus_at(plus) is node_b
+
+
 def test_the_output_plus_picks_a_param_and_drags_a_wire_from_it(graph, monkeypatch):
     gv, stage, (_a, b), (node_a, node_b) = graph
     pa, pb = str(node_a.prim.GetPath()), str(node_b.prim.GetPath())

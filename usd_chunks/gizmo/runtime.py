@@ -30,6 +30,7 @@ import attrs
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 
 from usd_chunks import chunk_core as core
+from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_stage
 from usd_chunks import chunk_utils
@@ -1514,6 +1515,8 @@ def _create_chunk_at_tail(module_name: str):
     # ends up stacked behind the view instead of after the chunk it was wired onto.
     tail = _tail_for_new_chunk(scene)
     chunk_stage._create_node_pos = _position_after(tail)
+    # A header, like a node made from the menu: a run of drags stacks them under a Merge.
+    chunk_stage.start_collapsed([chunk])
     try:
         scene.add_chunk(chunk)
     finally:
@@ -1526,9 +1529,131 @@ def _create_chunk_at_tail(module_name: str):
     # dangled after it, delivering nothing. It goes between the tail and the Output.
     if tail is not None and _chained_onto(chunk, tail):
         chunk_stage.ChunkStageSync()._rewire_views_from_source(tail, chunk, outputs=True)
+        merge = _gather_into_merge(scene, chunk, tail)
+        if merge is not None:
+            _nudge_downstream_views(merge)
+            return chunk
 
     _nudge_downstream_views(chunk)
     return chunk
+
+
+#: Module the Transforms a run of viewport drags makes are gathered into.
+GATHER_MODULE = "merge"
+
+#: How far above the last branch a Transform gathered into a Merge is placed: open, and as
+#: a collapsed header (48 tall, plus the gap a multi-file drop leaves).
+_BRANCH_STEP = 160
+_COLLAPSED_BRANCH_STEP = 64
+
+
+def _is_module_prim(prim: Usd.Prim | None, module_name: str) -> bool:
+    """Whether a chunk prim was made from module_name, read off the prim (is_merge_prim's way)."""
+    if prim is None or not prim.IsValid():
+        return False
+    attr = prim.GetAttribute(chunk_naming.CHUNK_TYPE_ATTR)
+    return bool(attr and attr.IsValid() and attr.Get() == module_name)
+
+
+def _set_exec_sources(stage: Usd.Stage, prim: Usd.Prim, sources: list) -> None:
+    """Point prim's exec input at sources, where its spec already lives."""
+    attr = prim.GetAttribute(chunk_stage._EXEC_INPUT)
+    if not (attr and attr.IsValid()):
+        return
+    target = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, None)
+    with Usd.EditContext(stage, target):
+        attr.SetConnections(list(sources))
+
+
+def _set_node_pos(stage: Usd.Stage, chunk: core.ChunkBase, prim: Usd.Prim, pos) -> None:
+    with Usd.EditContext(stage, chunk_utils.get_bookkeeping_layer(stage, chunk)):
+        UsdUI.NodeGraphNodeAPI.Apply(prim).CreatePosAttr().Set(Gf.Vec2f(*pos))
+
+
+def _gather_into_merge(scene, chunk: core.ChunkBase, tail: core.ChunkBase):
+    """Make the Transform just chained onto tail a branch of a Merge instead.
+
+    Each drag of a prim nothing owns makes a Transform, and chained one after another a
+    dozen drags make a dozen nodes in a row. They move different prims, so their order means
+    nothing: stacked under one Merge they read as the set of edits they are. So the second
+    Transform in a row makes a Merge, and every one after that joins it. What fed the first
+    goes in the bottom slot and the Transforms, which need no input of their own, above it,
+    the newest on top: in a Merge the top slot wins, so each outranks what came before it,
+    as it would chained after it. Anything else at the tail keeps the plain chain.
+
+    Args:
+        scene: The scene the chunks live in.
+        chunk: The new Transform, already wired after tail and feeding what tail fed.
+        tail: The chunk it was chained onto.
+
+    Returns:
+        The Merge the Transform went into, or None when it stays chained.
+    """
+    sync = chunk_stage.ChunkStageSync()
+    stage = getattr(sync, "_stage", None)
+    new_prim = _chunk_prim(stage, chunk) if stage is not None else None
+    tail_prim = _chunk_prim(stage, tail) if stage is not None else None
+    if new_prim is None or tail_prim is None or not _is_module_prim(new_prim, AUTO_TRANSFORM_MODULE):
+        return None
+
+    if chunk_stage.is_merge_prim(tail_prim):
+        branches = [stage.GetPrimAtPath(c.GetPrimPath())
+                    for c in chunk_stage.exec_input_connections(tail_prim)]
+        gathered = [b for b in branches if _is_gathered(b)]
+        # At most one other branch, what came before: at the bottom, or on top in a Merge
+        # gathered before the upstream moved down -- which this puts right.
+        rest = [b for b in branches if not _is_gathered(b)]
+        if not gathered or len(rest) > 1 or (rest and rest[0] not in (branches[0], branches[-1])):
+            return None
+        merge, merge_prim = tail, tail_prim
+        upstream = [str(b.GetPath()) for b in rest]
+    elif _is_module_prim(tail_prim, AUTO_TRANSFORM_MODULE):
+        entry = getattr(ChunkRegistry(), "registered_modules", {}).get(GATHER_MODULE)
+        if entry is None:
+            return None
+        tail_pos = _node_pos(tail_prim)
+        prev_pos = chunk_stage._create_node_pos
+        chunk_stage._create_node_pos = (
+            None if tail_pos is None else (tail_pos[0] + chunk_stage._NODE_STEP, tail_pos[1]))
+        try:
+            created = entry.create() if entry.loaded else entry.load()
+            if not created:
+                return None
+            merge = created[0]
+            scene.add_chunk(merge)
+        finally:
+            chunk_stage._create_node_pos = prev_pos
+        merge_prim = _chunk_prim(stage, merge)
+        if merge_prim is None:
+            return None
+        upstream = [str(c.GetPrimPath()) for c in chunk_stage.exec_input_connections(tail_prim)]
+        _set_exec_sources(stage, tail_prim, [])
+        gathered = [tail_prim]
+    else:
+        return None
+
+    _set_exec_sources(stage, new_prim, [])
+    merge_path = str(merge_prim.GetPath())
+    order = [str(new_prim.GetPath()), *(str(b.GetPath()) for b in gathered), *upstream]
+    for slot, source in enumerate(order):
+        chunk_stage.connect_exec(stage, scene, source, merge_path,
+                                 input_name=chunk_naming.exec_input_name(slot))
+    sync._rewire_views_from_source(chunk, merge, outputs=True)
+    chunk_stage.reconcile_edit_targets(stage, scene)
+
+    # Above the Transforms already there, the way the Merge's slots stack (USD is Y-up).
+    placed = [p for p in (_node_pos(b) for b in gathered) if p is not None]
+    if placed:
+        step = (_COLLAPSED_BRANCH_STEP if chunk.has_state(core.ChunkFlags.State.COLLAPSED)
+                else _BRANCH_STEP)
+        _set_node_pos(stage, chunk, new_prim, (placed[0][0], max(p[1] for p in placed) + step))
+    return merge
+
+
+def _is_gathered(prim: Usd.Prim) -> bool:
+    """A Transform standing in a Merge with no input of its own, as _gather_into_merge leaves it."""
+    return (_is_module_prim(prim, AUTO_TRANSFORM_MODULE)
+            and not chunk_stage.exec_input_connections(prim))
 
 
 def _chained_onto(chunk: core.ChunkBase, upstream: core.ChunkBase) -> bool:

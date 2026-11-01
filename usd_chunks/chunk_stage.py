@@ -7,6 +7,7 @@ import difflib
 import functools
 import logging
 import math
+import os
 import weakref
 from pathlib import Path
 from collections.abc import Callable, Generator, Iterable
@@ -3445,6 +3446,42 @@ def is_subnet(chunk: core.ChunkBase) -> bool:
         True for a subnet.
     """
     return is_chunkgroup(chunk) or is_network_host(chunk)
+
+
+#: Chunk types drawn without a body, so there is nothing for them to collapse.
+_BODILESS = frozenset({"merge", "dot"})
+
+
+def start_collapsed(chunks) -> None:
+    """Collapse new chunks before they are added, so their nodes start as a header.
+
+    A graph that branches stacks its nodes under each other, and full bodies make that
+    stack tall: a node shows its header, exec ports and wired ports until it is opened.
+    Set before the add, so the prim is written collapsed and the node is built that way
+    rather than drawn open and then shut. Views, Outputs and groups are left as they are:
+    the first two have no body, and a group's double-click is its dive.
+    USD_CHUNKS_START_COLLAPSED=0 starts every node open instead. It is read on each call,
+    so a script can flip it mid-session.
+
+    Args:
+        chunks: The chunks about to be added.
+    """
+    if os.environ.get("USD_CHUNKS_START_COLLAPSED", "").strip().lower() in ("0", "false", "no", "off"):
+        return
+    for chunk in chunks:
+        if has_collapsible_body(chunk):
+            chunk.set_state(ChunkFlags.State.COLLAPSED)
+
+
+def has_collapsible_body(chunk) -> bool:
+    """Whether a chunk's node has a body of params to fold away.
+
+    Not a View or Output, nor a Merge or Dot (no body), nor a group (its double-click is
+    its dive).
+    """
+    cfg = chunk.get_config()
+    return not (is_terminal_chunk(chunk) or is_group_chunk(chunk)
+                or is_subnet(chunk) or (cfg and cfg.module in _BODILESS))
 
 
 #: The location suggest_location_from_file last put on each chunk -- so it knows whether the

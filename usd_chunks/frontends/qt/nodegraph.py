@@ -122,8 +122,9 @@ _PROXY_BUSY_RETRY_MS = 50
 _PROXY_BUSY_WAIT_MAX_S = 15.0
 
 # A Merge is a circle, not a node box: it has no params, so a full-width node was length
-# spent on nothing. Its exec inputs sit on the left of the circle across _MERGE_ARC,
-# top (slot 0, strongest) to bottom; the circle grows only when they would crowd.
+# spent on nothing. Its exec inputs sit on the left of the circle across _MERGE_ARC: the
+# empty slot on top, then slot 0 (strongest) down to the weakest; the circle grows only
+# when they would crowd.
 _MERGE_MIN_R = 13
 _MERGE_ARC = math.radians(150)
 _MERGE_PORT_GAP = 15  # along the arc, between neighbouring slot ports
@@ -285,6 +286,7 @@ _BREADCRUMB_MARGIN = 6
 _AUTO_CONNECT_KEY = "graph/autoConnect"
 #: Space between the Auto-connect checkbox and the Output badge beside it.
 _AUTO_CONNECT_GAP = 8
+_DROP_ROW_GAP = 16  # between the nodes a multi-file drop stacks
 #: Every live graph view, so ticking Auto-connect in one ticks it in all.
 _graph_views: weakref.WeakSet = weakref.WeakSet()
 
@@ -808,6 +810,13 @@ def _wire_handle(x1: float, x2: float) -> float:
     return min(abs(x2 - x1) * 0.5, _WIRE_BEND)
 
 
+def _is_merge_trailer(port) -> bool:
+    """Whether port is a Merge's empty slot: last in its _exec_in_ports, drawn on top."""
+    node = port.parentItem()
+    return (getattr(node, "_is_merge", False) and bool(node._exec_in_ports)
+            and port is node._exec_in_ports[-1])
+
+
 def _drag_wire_path(start: QtCore.QPointF, end: QtCore.QPointF, from_input: bool) -> QtGui.QPainterPath:
     """The curve of a wire being dragged out of a port.
 
@@ -1080,14 +1089,16 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # _author_connection creates the attribute on demand from the port's own
             # attr_path, so an unconnected inputs:chunkN never has to be authored -- and then
             # serialized into every saved file forever -- just to give a wire somewhere to
-            # land. Ports read top-to-bottom as strongest-to-weakest.
+            # land. Ports read top-to-bottom as strongest-to-weakest, with the empty one on
+            # top: a branch dropped there goes in as slot 0 and wins, as a node chained after
+            # the rest would (see _drop_on_merge_top). It is still last in _exec_in_ports.
             slots = len(chunk_stage.exec_input_connections(prim)) + 1
             radius = _merge_radius(slots)
             for i in range(slots):
                 port = ChunkPortItem(
                     f"{prim.GetPath()}.{chunk_stage.exec_input_name(i)}", _PORT_EXEC, parent=self
                 )
-                port.setPos(_merge_port_pos(i, slots, radius))
+                port.setPos(_merge_port_pos(0 if i == slots - 1 else i + 1, slots, radius))
                 self._ports.append(port)
             # Everything that asks a node for "its" exec input (splice-on-drop, wire-drop
             # targeting) should get the primary one, which is slot 0 -- the strongest.
@@ -3857,6 +3868,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # under the cursor, with the pen to give back when it is not.
         self._drag_merge_wire: ChunkEdgeItem | None = None
         self._drag_merge_pen: QtGui.QPen | None = None
+        # An exec output dragged from one of several selected nodes brings the others' along
+        # (_start_fan): their ports, each with its own loose wire. On a Merge or a wire they
+        # all land; anywhere else only the grabbed one does.
+        self._drag_fan: list[tuple[ChunkPortItem, QtWidgets.QGraphicsPathItem]] = []
         # Suppresses build()'s generic _ensure_default_view while a drag-and-drop chunk
         # import is in flight -- see _import_as_chunks/_ensure_view_for_imported.
         self._suppress_default_view = False
@@ -4751,6 +4766,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         scene_pos = self.mapToScene(event.pos())
+        if self._drag_src_port is not None and event.button() == QtCore.Qt.MiddleButton:
+            # Panning mid-drag, to reach a port off screen: the wire stays in hand.
+            self._start_pan(event.pos())
+            event.accept()
+            return
         if self._drag_by_click and self._drag_src_port is not None:
             # A wire picked from an output "+" drops on this click; any other button lets go.
             if event.button() == QtCore.Qt.LeftButton:
@@ -4761,6 +4781,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
         plus_node = self._out_plus_at(scene_pos) if event.button() == QtCore.Qt.LeftButton else None
+        if isinstance(plus_node, ChunkPortItem):
+            # Nearer a port than the "+" below it: the port's press.
+            self._start_wire_drag(plus_node, scene_pos)
+            return
         if plus_node is not None:
             # After this press has finished: a menu run from inside a mouse handler has
             # crashed the graph (#86).
@@ -4836,14 +4860,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
-        if self._drag_src_port is not None:
-            self._update_wire_drag(self.mapToScene(event.pos()))
-            return
         if self._pan_active:
             delta = event.pos() - self._pan_start
             self._pan_start = event.pos()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+        if self._drag_src_port is not None:
+            # After the pan, so the wire's loose end stays under the cursor as the canvas moves.
+            self._update_wire_drag(self.mapToScene(event.pos()))
+        elif self._pan_active:
+            return
         elif self._rubber_band_active:
             rect = QtCore.QRect(self._rubber_band_origin, event.pos()).normalized()
             self._rubber_band.setGeometry(rect)
@@ -4851,8 +4877,16 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent):
-        if self._swallow_release:
-            # The press was an output "+" click, or the click that dropped its wire.
+        if self._pan_active and event.button() == QtCore.Qt.MiddleButton:
+            # First: a pan can start mid-wire-drag, and must end on its own button whatever
+            # else is pending.
+            self._stop_pan()
+            event.accept()
+            return
+        if self._swallow_release and event.button() == QtCore.Qt.LeftButton:
+            # The press was an output "+" click, or the click that dropped its wire. Only a
+            # left release: the "+" menu can take that one itself, leaving this set, and a
+            # middle release swallowed here left the pan stuck on.
             self._swallow_release = False
             event.accept()
             return
@@ -5095,9 +5129,51 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_edge.setPen(pen)
             self._drag_edge.setZValue(10)
             self.scene().addItem(self._drag_edge)
+            self._start_fan(port)
         else:
             self._drag_edge = None
         self._update_wire_drag(scene_pos)
+
+    def _start_fan(self, port: ChunkPortItem) -> None:
+        """Pull a wire out of every other selected node's exec output along with port's.
+
+        Only for a fresh exec output on a selected node: ten references selected and one
+        dragged onto a Merge or a wire join all ten.
+        """
+        own = port.parentItem()
+        graph_scene = self.scene()
+        if (port.is_input or port.port_type != _PORT_EXEC or not isinstance(own, ChunkNodeItem)
+                or not own.chunk.has_state(ChunkFlags.State.SELECTED)
+                or not isinstance(graph_scene, ChunkGraphScene)):
+            return
+        for node in graph_scene._nodes.values():
+            out = getattr(node, "_exec_out_port", None)
+            if node is own or out is None or not node.chunk.has_state(ChunkFlags.State.SELECTED):
+                continue
+            wire = QtWidgets.QGraphicsPathItem()
+            wire.setPen(QtGui.QPen(out.brush().color(), 1.5, QtCore.Qt.DashLine))
+            wire.setZValue(10)
+            graph_scene.addItem(wire)
+            self._drag_fan.append((out, wire))
+
+    def _fan_branches(self) -> list[str]:
+        """Prim paths of the grabbed node and every node in its fan, top to bottom.
+
+        The order a Merge gets them in: its slots stack the same way, so the wires do not
+        cross, and the topmost node is the strongest.
+        """
+        ports = [self._drag_src_port] + [port for port, _wire in self._drag_fan]
+        ports.sort(key=lambda port: (port.scenePos().y(), port.scenePos().x()))
+        return [str(Sdf.Path(port.attr_path).GetPrimPath()) for port in ports]
+
+    def _fan_lands_on(self, port: ChunkPortItem | None) -> bool:
+        """Whether the whole fan lands at a drop: on a Merge's slot, a wire, or empty space
+        (a Merge picked there takes them all). A plain input takes the grabbed wire alone."""
+        if port is None:
+            return True
+        node = port.parentItem()
+        return (port.is_input and port.port_type == _PORT_EXEC and isinstance(node, ChunkNodeItem)
+                and chunk_stage.is_merge_prim(node.prim))
 
     def _drop_target(self, scene_pos: QtCore.QPointF) -> ChunkPortItem | None:
         """The port a dragged wire would connect to if dropped at scene_pos, or None.
@@ -5163,6 +5239,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 _drag_wire_path(self._drag_src_port.scenePos(), end, self._drag_src_port.is_input))
         else:
             return
+        fan_shown = self._fan_lands_on(target)
+        for port, wire in self._drag_fan:
+            # Hidden over a port that takes the grabbed wire alone, so what shows is what lands.
+            wire.setVisible(fan_shown)
+            wire.setPen(QtGui.QPen(wire.pen().color(), 2.0, style))
+            wire.setPath(_drag_wire_path(port.scenePos(), end, False))
 
         # Highlight compatible destination ports.
         graph_scene = self.scene()
@@ -5232,19 +5314,20 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_merge_pen = QtGui.QPen(edge.pen())
             edge.setPen(QtGui.QPen(edge.pen().color().lighter(150), 4.0))
 
-    def _merge_into_wire(self, edge: ChunkEdgeItem, branch: ChunkPortItem,
+    def _merge_into_wire(self, edge: ChunkEdgeItem, branches: list[str],
                          scene_pos: QtCore.QPointF) -> None:
-        """Join branch's node into edge through a Merge at scene_pos, then redraw and recook."""
+        """Join the branches' nodes into edge through a Merge at scene_pos, then redraw and recook."""
         graph_scene = self.scene()
         scene = _chunk.get_scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage or not scene:
             return
         wire = chunk_graph.EdgeRef(edge.src_port.attr_path, edge.dst_port.attr_path, is_exec=True)
-        # Centred on the drop: a new Merge has two branches and the empty trailer.
-        radius = _merge_radius(3)
+        # Centred on the drop: a new Merge has the wire's source, the branches and the empty
+        # trailer.
+        radius = _merge_radius(len(branches) + 2)
         corner = (scene_pos.x() - radius, -(scene_pos.y() - radius))
         change, error = chunk_graph.merge_into_wire(
-            graph_scene._stage, scene, wire, str(Sdf.Path(branch.attr_path).GetPrimPath()),
+            graph_scene._stage, scene, wire, branches,
             corner, self._nest_target(self._graph_context()))
         if change is None:
             logger.warning("Not joined into the wire: %s", error)
@@ -5265,6 +5348,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             hit = next((item for item in self.scene().items(scene_pos)
                         if isinstance(item, ChunkPortItem)), None)
         graph_scene = self.scene()
+        if hit is not None and self._drag_target_ok(hit) and _is_merge_trailer(hit):
+            self._drop_on_merge_top(hit)
+            return
+        if self._drag_fan and hit is not None and self._drag_target_ok(hit) and self._fan_lands_on(hit):
+            # Wires from several selected nodes, dropped on a Merge's slot: they go in there,
+            # above what was in it, each taking a slot.
+            node = hit.parentItem()
+            merge, branches = str(Sdf.Path(hit.attr_path).GetPrimPath()), self._fan_branches()
+            at = node._exec_in_ports.index(hit) if hit in node._exec_in_ports else None
+            self._cancel_wire_drag()
+            self._join_merge(merge, branches, at)
+            return
         if hit is not None and self._drag_target_ok(hit):
             if (hit.is_input and self._drag_src_port.is_input
                     and hit.parentItem() is self._drag_src_port.parentItem()
@@ -5292,19 +5387,57 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             QtCore.QTimer.singleShot(0, self, lambda: self._pick_port_on(node, src, global_pos))
             return
         elif hit is None and self._drag_merge_wire is not None:
-            wire, branch = self._drag_merge_wire, self._drag_src_port
+            wire, branches = self._drag_merge_wire, self._fan_branches()
             self._cancel_wire_drag()
-            self._merge_into_wire(wire, branch, scene_pos)
+            self._merge_into_wire(wire, branches, scene_pos)
             return
         elif hit is None and self._drag_detach_attr is None and self._drag_src_port is not None:
             # Fresh wire dragged out to empty space → open the chunk menu; whatever the user
-            # picks is created and wired to the dragged port.
+            # picks is created and wired to the dragged port (a Merge, to the whole fan).
             src_attr = self._drag_src_port.attr_path
             src_is_input = self._drag_src_port.is_input
+            fan = self._fan_branches() if self._drag_fan else []
             self._cancel_wire_drag()
-            self._create_and_connect_from_menu(src_attr, src_is_input, scene_pos)
+            self._create_and_connect_from_menu(src_attr, src_is_input, scene_pos, fan)
             return
         self._cancel_wire_drag()
+
+    def _drop_on_merge_top(self, trailer: ChunkPortItem) -> None:
+        """A wire let go on a Merge's empty slot, which sits on top: in as slot 0, the strongest.
+
+        A fresh wire, or the fan of them, goes in above every branch already there. A wire
+        picked up off an input moves: off that input, onto the top of the Merge.
+        """
+        merge = str(Sdf.Path(trailer.attr_path).GetPrimPath())
+        src = self._drag_src_port
+        graph_scene = self.scene()
+        if not src.is_input:
+            branches = self._fan_branches()
+            self._cancel_wire_drag()
+            self._join_merge(merge, branches, at=0)
+            return
+        source, attr = self._drag_detach_source_port, self._drag_detach_attr
+        self._cancel_wire_drag()
+        if source is None or attr is None or not isinstance(graph_scene, ChunkGraphScene):
+            return
+        self._disconnect_port(src, attr, graph_scene)
+        self._join_merge(merge, [str(Sdf.Path(source.attr_path).GetPrimPath())], at=0)
+
+    def _join_merge(self, merge: str, branches: list[str], at: int | None = None) -> None:
+        """Wire branches into the Merge at merge (chunk_graph.join_merge), then redraw and recook."""
+        graph_scene = self.scene()
+        scene = _chunk.get_scene()
+        if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._stage or not scene:
+            return
+        change, error = chunk_graph.join_merge(graph_scene._stage, scene, merge, branches, at)
+        if change is None:
+            logger.warning("Not joined into the Merge: %s", error)
+            return
+        chunk_stage.reconcile_edit_targets(graph_scene._stage, scene)
+        graph_scene._build_edges()
+        _prims, chunks = self._engine_context(graph_scene)
+        touched = {chunks[path] for path in change.touched_nodes if path in chunks}
+        self._recook_active_view(touched or None)
 
     def _pick_candidates(self, node: ChunkNodeItem, src: chunk_graph.PortRef) -> list[chunk_graph.PortRef]:
         """The params of node a wire from src could land on: chunk_graph.pick_candidates."""
@@ -5399,16 +5532,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         # A collapsed node shows only wired ports: rebuild them so the new wire has an end.
         node._kick_port_rebuild()
 
-    def _out_plus_at(self, scene_pos: QtCore.QPointF) -> ChunkNodeItem | None:
-        """The collapsed node whose output "+" a press at scene_pos is on, if any."""
+    def _out_plus_at(self, scene_pos: QtCore.QPointF) -> ChunkNodeItem | ChunkPortItem | None:
+        """The collapsed node whose output "+" a press at scene_pos is on, if any.
+
+        A port of that node nearer the press wins, and is returned instead. The reach is in
+        screen pixels, so zoomed out it spans the exec port just above the "+", and
+        grabbing that port opened the menu.
+        """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return None
         reach = max(_PORT_RADIUS + 2, _PORT_PRESS_PIXELS / (self.transform().m11() or 1.0))
         for node in graph_scene._nodes.values():
-            if node._plus_out and node.isVisible() and QtCore.QLineF(
-                    node.mapToScene(QtCore.QPointF(node._width, node._plus_y)), scene_pos).length() <= reach:
-                return node
+            if not (node._plus_out and node.isVisible()):
+                continue
+            dist = QtCore.QLineF(node.mapToScene(QtCore.QPointF(node._width, node._plus_y)), scene_pos).length()
+            if dist > reach:
+                continue
+            nearest = min(node._ports, default=None,
+                          key=lambda port: QtCore.QLineF(port.scenePos(), scene_pos).length())
+            if nearest is not None and QtCore.QLineF(nearest.scenePos(), scene_pos).length() < dist:
+                return nearest
+            return node
         return None
 
     def _pick_output_and_drag(self, node: ChunkNodeItem, global_pos: QtCore.QPoint) -> None:
@@ -5444,11 +5589,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_by_click = True
 
     def _create_and_connect_from_menu(
-        self, src_attr_path: str, src_is_input: bool, scene_pos: QtCore.QPointF
+        self, src_attr_path: str, src_is_input: bool, scene_pos: QtCore.QPointF,
+        fan: list[str] | None = None,
     ) -> None:
         """Pop the chunk menu at the wire release point; create the chosen chunk and wire it
         to the dragged port. The connect is deferred until the create's rebuild has run (the
         new node's ports don't exist yet).
+
+        fan is the prim paths a drag from several selected nodes brought along (_fan_branches):
+        a Merge picked here takes them all, anything else just the dragged port.
         """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
@@ -5477,6 +5626,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if new_chunk is None:
             return
         new_prim = chunk_stage.get_chunk_prim_path(new_chunk)
+        stage = graph_scene._stage
+        if fan and stage and chunk_stage.is_merge_prim(stage.GetPrimAtPath(Sdf.Path(new_prim))):
+            QtCore.QTimer.singleShot(80, self, lambda: self._join_merge(new_prim, fan))
+            return
         QtCore.QTimer.singleShot(
             80, self,
             lambda: self._connect_ports_by_path(src_attr_path, src_is_input, new_prim),
@@ -5520,6 +5673,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             except RuntimeError:
                 pass
             self._drag_reused_edge = None
+        for _port, wire in self._drag_fan:
+            try:
+                if wire.scene() is not None:
+                    wire.scene().removeItem(wire)
+            except RuntimeError:
+                pass
+        self._drag_fan = []
         self._set_snap_port(None)
         self._set_drop_hint(None)
         self._set_merge_wire(None)
@@ -6433,7 +6593,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         positions = {}
         for path in paths:
             positions[path] = scene_pos + offset
-            offset += QtCore.QPointF(40, 40)  # stagger multi-file drops so nodes don't stack exactly
+            # A multi-file drop lands as a column, one collapsed node under the next.
+            offset += QtCore.QPointF(0, _NODE_HEADER_H + _DROP_ROW_GAP)
             if os.path.splitext(path)[1].lower() == _SCRIPT_EXT:
                 self._import_as_script(path, positions[path])
                 continue
