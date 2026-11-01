@@ -1582,7 +1582,10 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             ptype = _param_port_type(param)
 
             if collapsed_group is not None:
-                if param.name not in connected:
+                # A wire into a list row is only its expression, recorded by row ("item[1]")
+                # rather than by name -- as chunk_graph.collapsed_ports counts it.
+                wired_row = chunk_graph.is_list_row(param) and chunk_utils.is_expression_text(param.raw_value)
+                if param.name not in connected and not wired_row:
                     continue
                 anchor = containers_by_group.get(collapsed_group)
                 if anchor is None:
