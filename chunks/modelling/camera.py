@@ -260,6 +260,50 @@ def _refocus(node) -> None:
         param.value = distance
 
 
+def _aim(node, stage) -> None:
+    """With Aim At set, turn the camera to face that prim's centre from where it stands.
+
+    Into the rotate params, as _refocus writes Focus Distance, so the sliders, the transform
+    handle and a saved file all read the rotation the camera really has -- and clearing Aim
+    At leaves the camera facing where it last aimed. The view is levelled to the stage's up
+    axis. Writes only on a change: each write re-cooks the chunk, and the re-cook lands here.
+    """
+    aim_param = node.get_param("aim_at")
+    aim_path = aim_param.value
+    if not aim_path:
+        return
+    target = stage.GetPrimAtPath(chunk_utils.split_variant_path(aim_path)[1])
+    if not target:
+        chunk_utils.warn_if_missing(node, aim_path, "the camera is not aimed", aim_param)
+        return
+    scene = node.get_scene()
+    time = _time(scene) if scene is not None else Usd.TimeCode.Default()
+    centre = chunk_utils.focus_point_of(stage, [target], time)
+    if centre is None:
+        return
+    up = Gf.Vec3d(0, 0, 1) if UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z else Gf.Vec3d(0, 1, 0)
+    # The params are in the parent's space, so the aim is worked out there.
+    camera = stage.GetPrimAtPath(chunk_utils.split_variant_path(node.get_param("primpath_location").value)[1])
+    parent = camera.GetParent() if camera else None
+    if parent and parent.IsA(UsdGeom.Xformable):
+        to_parent = UsdGeom.Xformable(parent).ComputeLocalToWorldTransform(time).GetInverse()
+        centre, up = to_parent.Transform(centre), to_parent.TransformDir(up)
+    eye = Gf.Vec3d(*(float(node.get_param(n).value) for n in ("tx", "ty", "tz")))
+    if (centre - eye).GetLength() < 1e-9 or Gf.Cross(centre - eye, up).GetLength() < 1e-9:
+        return  # on the target, or straight above or below it: no one way to face it
+    look = Gf.Matrix4d().SetLookAt(eye, centre, up).GetInverse()
+    # decompose is the inverse of _camera_matrix, so these recompose to exactly this facing.
+    rotate = chunk_gizmo.decompose(look)["rotate"]
+    changed = {
+        name: float(value) for name, value in zip(("rx", "ry", "rz"), rotate)
+        if abs(float(node.get_param(name).value) - float(value)) > _FLOWN_TOLERANCE
+    }
+    if changed:
+        with chunk.change_block():
+            for name, value in changed.items():
+                node.get_param(name).value = value
+
+
 def _set_as_viewport_camera(owner, notice, sender):
     _chunk = owner.get_chunk()
     scene = _chunk.get_scene()
@@ -492,6 +536,13 @@ def main():
             ))
         chunk_api.add_param(grp)
 
+    chunk_api.add_param(chunk.LineEdit(
+        "aim_at", "Aim At",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="A prim to keep the camera pointed at, from wherever it is moved to. Sets "
+        "Rotate on every cook; clear it to rotate by hand again.",
+    ))
+
     lock_cam = chunk.Checkbox("lock_to_freecam", "Lock to Free Camera")
     lock_cam.add_callback(_apply_freecam_transform)
     chunk_api.add_param(lock_cam)
@@ -525,7 +576,8 @@ def execute(node):
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
 
-    # After the prim exists: the transform is authored onto it.
+    # After the prim exists: the transform is authored onto it, facing Aim At if set.
+    _aim(node, stage)
     _author_camera_transform(node, stage)
     _refocus(node)
 
@@ -580,6 +632,9 @@ def config():
             slider changes write directly to the prim attribute.
           - Clipping Range: Near and Far sliders driving the camera's float2
             `clippingRange` attribute, wired the same way.
+          - Aim At: a prim to keep the camera pointed at. Each cook turns the
+            Rotate params to face its centre from the camera's position, level to
+            the stage's up axis, so moving the camera or the prim keeps it framed.
           - Lock to Free Camera: when checked, the chunk subscribes to the
             scene's active-camera-changed signal and continuously syncs the
             prim's transform and focus distance from the DCC freecam. The
