@@ -28,6 +28,25 @@ def _report(node, text: str) -> None:
         readout.value = text
 
 
+#: Scatter Brush's paint colour: blue, since usdview highlights the selection in yellow.
+_COLOUR = (0.15, 0.55, 1.0)
+
+
+def _write_tint(out, mesh, values, colour):
+    """Show the field: the surface's own colour moved toward *colour* by the field, and no
+    material, since displayColor loses to any shader. Scatter Brush's Show Paint, for a field
+    nothing paints. The layer is cleared on every cook, so unticking puts the look back.
+    """
+    base = mesh.GetDisplayColorAttr().Get()
+    under = np.asarray(base, dtype=np.float64).reshape(-1, 3) if base else np.full((1, 3), 0.5)
+    if len(under) != len(values):
+        under = np.repeat(under[-1:], len(values), axis=0)
+    tint = under + (colour - under) * np.clip(values, 0.0, 1.0)[:, None]
+    display = UsdGeom.Gprim(out.GetPrim()).CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex)
+    display.Set(Vt.Vec3fArray.FromNumpy(tint.astype(np.float32)))
+    out.GetPrim().CreateRelationship("material:binding", False).SetTargets([])
+
+
 def _hash(ix, iy, iz, seed):
     h = (ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791) ^ (seed * 2654435761)
     h = (h ^ (h >> 13)) * 1274126177
@@ -89,6 +108,8 @@ def execute(node) -> None:
                     threshold=node.get_param("threshold", is_f).value,
                     softness=max(0.0, node.get_param("softness", is_f).value),
                     seed=node.get_param("seed", is_i).value)
+    show = node.get_param("show_field", chunk.is_param_t(bool)).value
+    colour = np.asarray(node.get_param("field_color").value or _COLOUR, dtype=np.float64) if show else None
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     painted, total, lit = 0, 0, 0.0
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
@@ -120,6 +141,8 @@ def execute(node) -> None:
                 out = UsdGeom.PrimvarsAPI(stage.OverridePrim(prim.GetPath()))
                 pv = out.CreatePrimvar(name, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex)
                 pv.Set(Vt.FloatArray.FromNumpy(values.astype(np.float32)))
+                if colour is not None:
+                    _write_tint(out, mesh, values, colour)
                 painted += 1
                 total += len(values)
                 lit += float(values.sum())
@@ -153,6 +176,17 @@ def main() -> chunk.Chunk:
     chunk_api.add_param(chunk.Slider("softness", "Softness", min_value=0.0, max_value=1.0, default_value=0.2,
                                      tooltip="How gradually the field fades out around the threshold."))
     chunk_api.add_param(chunk.Spinbox("seed", "Seed", default_value=0, is_int=True))
+    display = chunk.Group("display_grp", "Display", icon="eye")
+    display.add_param(chunk.ColorPicker(
+        "field_color", "Field Color", default_value=_COLOUR,
+        tooltip="What the field tints the surface toward, as Scatter Brush's Paint Color.",
+    ))
+    display.add_param(chunk.Checkbox(
+        "show_field", "Show Field", default_value=False, flags=labeled,
+        tooltip="Tint the surface by the field, as Scatter Brush's Show Paint does: its material is "
+        "set aside so the tint is visible. Off for a render -- this chunk's layer keeps both.",
+    ))
+    chunk_api.add_param(display)
     chunk_api.add_param(chunk.Label("readout", "nothing painted yet", default_value="nothing painted yet"))
     return chunk_api
 
