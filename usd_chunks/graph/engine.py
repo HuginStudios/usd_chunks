@@ -215,6 +215,28 @@ class EdgeRef:
         return self.dst_attr_path.split(".", 1)[0]
 
 
+@dataclass(frozen=True)
+class NodeHelp:
+    """What a node's "?" shows about the module it was made from -- see node_help.
+
+    Data, not markup: each frontend lays it out its own way. `text` is for one that only
+    has plain text.
+    """
+
+    description: str
+    # (label, comma-joined items), only for the lists the module fills in.
+    needs: tuple[tuple[str, str], ...]
+    # "category / module", "" when neither is set.
+    source: str
+
+    @property
+    def text(self) -> str:
+        """All of it as plain text, a blank line between the parts."""
+        parts = [self.description, "\n".join(f"{label}: {items}" for label, items in self.needs),
+                 self.source]
+        return "\n\n".join(p for p in parts if p)
+
+
 def resolve_graph_nodes(stage: Usd.Stage, root_path: str = CHUNKS_ROOT) -> list[Usd.Prim]:
     """The chunk prims that are nodes of the graph rooted at `root_path`.
 
@@ -401,6 +423,28 @@ def node_kind(prim: Usd.Prim) -> str:
     """The chunk module a node was made from, or "" if the prim does not say."""
     attr = prim.GetAttribute("info:chunkType")
     return str(attr.Get()) if attr and attr.Get() else ""
+
+
+def node_help(chunk) -> NodeHelp | None:
+    """What a node's "?" badge shows: its module's description, what it requires (only the
+    lists it fills in), then its category and module.
+
+    Args:
+        chunk: The chunk the node draws.
+
+    Returns:
+        The help, or None when the module documents and requires nothing (no badge then).
+    """
+    cfg = chunk.get_config() if hasattr(chunk, "get_config") else None
+    if cfg is None:
+        return None
+    description = chunk_registry.clean_description(cfg.description)
+    needs = tuple((label, ", ".join(items)) for label, items in (
+        ("Requirements", cfg.requirements), ("Required modules", cfg.required_modules)) if items)
+    if not description and not needs:
+        return None
+    source = " / ".join(s for s in (cfg.category, cfg.module) if s)
+    return NodeHelp(description, needs, source)
 
 
 def search_nodes(prims: dict[str, Usd.Prim], query: str, names: bool = True, types: bool = True) -> list[str]:

@@ -913,8 +913,7 @@ class _NodeResizeHandle(QtWidgets.QGraphicsItem):
 
 
 def _config_help_text(chunk: core.ChunkBase) -> str:
-    """What a node's "?" badge shows: its module's description, what it requires, then where
-    it comes from.
+    """chunk_graph.node_help as the rich text a node's "?" badge shows.
 
     Args:
         chunk: The chunk the node draws.
@@ -922,21 +921,16 @@ def _config_help_text(chunk: core.ChunkBase) -> str:
     Returns:
         The text, or "" when the module documents and requires nothing (no badge then).
     """
-    cfg = chunk.get_config() if hasattr(chunk, "get_config") else None
-    if cfg is None:
-        return ""
-    desc = chunk_registry.clean_description(cfg.description)
-    needs = [(label, ", ".join(items)) for label, items in (
-        ("Requirements", cfg.requirements), ("Required modules", cfg.required_modules)) if items]
-    if not desc and not needs:
+    help_ = chunk_graph.node_help(chunk)
+    if help_ is None:
         return ""
     dim = _COL_TEXT_SECONDARY.name()
-    parts = [html.escape(desc).replace("\n", "<br>")] if desc else []
-    if needs:
+    parts = [html.escape(help_.description).replace("\n", "<br>")] if help_.description else []
+    if help_.needs:
         parts.append("<br>".join(f"<span style='color:{dim}'>{label}:</span> {html.escape(text)}"
-                                 for label, text in needs))
-    if source := " / ".join(s for s in (cfg.category, cfg.module) if s):
-        parts.append(f"<span style='color:{dim}'>{html.escape(source)}</span>")
+                                 for label, text in help_.needs))
+    if help_.source:
+        parts.append(f"<span style='color:{dim}'>{html.escape(help_.source)}</span>")
     # Rich text, at a size meant for reading: a plain tooltip came out in the tiny default.
     return f"<div style='font-size:11pt'>{'<br><br>'.join(parts)}</div>"
 
