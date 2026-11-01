@@ -337,6 +337,31 @@ def propagate_presentation(seed: DagNode):
         node = owner_node
 
 
+#: How many presentation_changes() blocks are open; inside one every dirty is presentation.
+_presentation_depth = 0
+
+
+@contextmanager
+def presentation_changes():
+    """Treat every change made inside the block as presentation only.
+
+    For building what the UI asked to see and nothing computes from: params a collapsed
+    group held back until it was first expanded, added at the defaults the last cook
+    already authored as nothing. Adding a param is otherwise new data for its owner, so
+    the chunk and everything after it cooked again for a section being folded open.
+
+    The changes still solve up the ownership chain and send their notices, so the widgets
+    and the chunk prim hear about the new params as usual. Only cooking is skipped -- so a
+    value set inside the block is not cooked either, and does not belong in one.
+    """
+    global _presentation_depth
+    _presentation_depth += 1
+    try:
+        yield
+    finally:
+        _presentation_depth -= 1
+
+
 #: The seeds whose downstream walk an enclosing deferred_dirty() is holding back; None
 #: outside one.
 _deferred_seeds: dict[DagNode, None] | None = None
@@ -401,7 +426,7 @@ def propagate_dirty(seed: DagNode):
     if not conns.outputs and conns.owner is None:
         return
 
-    if (prop := seed.propagator) is not None and prop.is_presentation_change():
+    if _presentation_depth or ((prop := seed.propagator) is not None and prop.is_presentation_change()):
         propagate_presentation(seed)
         return
 
