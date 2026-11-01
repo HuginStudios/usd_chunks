@@ -28,7 +28,7 @@ from typing import Any
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_cook, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
+from usd_chunks import chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
 from usd_chunks.graph import engine
@@ -1184,7 +1184,30 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # usdview's scene too (Scene.current()).
 
     def save(self, path: str) -> None:
-        """Write the network itself -- Chunk prims and wires -- so it reopens as a graph."""
+        """Write the network itself -- Chunk prims and wires -- so it reopens as a graph.
+
+        Only the network is written, with the root layer's sublayers: prims the stage's
+        root layer holds that no chunk made (a camera already in a shot the scene was
+        opened on) are not. Writing over that root layer would delete them, so that
+        refuses; writing elsewhere warns, naming them.
+
+        Raises:
+            ValueError: If path is the root layer's own file and it holds such prims.
+        """
+        root = self.get_stage().GetRootLayer()
+        chunks_root = Sdf.Path(chunk_naming.CHUNKS_ROOT)
+        left_out = [str(spec.path) for spec in root.rootPrims if spec.path != chunks_root]
+        if left_out:
+            names = ", ".join(left_out)
+            if root.realPath and Path(path).resolve() == Path(root.realPath).resolve():
+                raise ValueError(
+                    f"Saving the network over {path} would delete what it holds besides the "
+                    f"network ({names}). Save the network to its own file."
+                )
+            logger.warning(
+                "The network saved to %s leaves out what %s holds besides it (%s).",
+                path, root.identifier, names,
+            )
         chunk_stage.export_chunks(self, path)
 
     def export(self, path: str) -> None:

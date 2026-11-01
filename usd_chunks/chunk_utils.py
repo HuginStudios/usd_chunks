@@ -1388,6 +1388,11 @@ def split_variant_path(path_str: str) -> tuple[str, str, list[tuple[str, str, st
         /myprim
             -> ('/myprim', '/myprim', [])
 
+    USD's own spelling, with no slash after the selection (`Sdf.Path` writes
+    `/myprim{LOD=high}geom`), means the same as the one with it. Read as written it would
+    join into a prim called `myprimgeom`, which does not exist, and every chunk targeting it
+    would author nothing without a word.
+
     Args:
         path_str: A prim path, optionally with {set=variant} selections at any level.
 
@@ -1395,6 +1400,9 @@ def split_variant_path(path_str: str) -> tuple[str, str, list[tuple[str, str, st
         (anchor_path, target_path, selections): the first prim before any {} (the outermost
         anchor); the full prim path with all variant selections stripped; and one
         (anchor prim, variant set, variant) tuple per selection.
+
+    Raises:
+        ValueError: If a `{` does not open a `{set=variant}` selection.
     """
     selections = []
     accumulated = ''
@@ -1406,15 +1414,93 @@ def split_variant_path(path_str: str) -> tuple[str, str, list[tuple[str, str, st
         accumulated += path_part
         remaining = remaining[len(path_part):]
 
-        var_match = re.match(r'^\{(\w+)=(\w+)\}', remaining)
-        if var_match:
-            anchor = accumulated.rstrip('/') or '/'
-            selections.append((anchor, var_match.group(1), var_match.group(2)))
-            remaining = remaining[var_match.end():]
+        if not remaining:
+            break
+        # Variant names may hold '-', '|' and '.' as well as word characters (Sdf allows
+        # them). A `{` this cannot read used to leave the loop on the same text forever.
+        var_match = re.match(r'^\{([\w\-|.]+)=([\w\-|.]+)\}', remaining)
+        if not var_match:
+            raise ValueError(f"Can't read the variant selection in {path_str!r}")
+        anchor = accumulated.rstrip('/') or '/'
+        selections.append((anchor, var_match.group(1), var_match.group(2)))
+        remaining = remaining[var_match.end():]
+        if remaining and not remaining.startswith('/'):
+            accumulated = anchor.rstrip('/') + '/'
 
     target = accumulated.rstrip('/') or '/'
     anchor = selections[0][0] if selections else target
     return anchor, target, selections
+
+
+def _composes_children(spec: Sdf.PrimSpec) -> bool:
+    """Whether a prim spec composes in children from another namespace: an arc."""
+    return bool(
+        spec.hasReferences or spec.hasPayloads
+        or spec.inheritPathList.GetAddedOrExplicitItems()
+        or spec.specializesList.GetAddedOrExplicitItems()
+    )
+
+
+def missing_for_good(stage: Usd.Stage, path: str | Sdf.Path) -> bool:
+    """Whether no prim is at path, and nothing merely switched off right now would add one.
+
+    A cook routinely meets a target that is absent only for the moment: a view-driven recook
+    mutes the layers outside it, a masked cook stage hides siblings that are not upstream,
+    and a prim in another variant is absent until that variant is selected. Authoring
+    nothing then is right, and saying so would be noise. A path nothing holds at all -- a
+    typo, a renamed prim -- looks the same from inside the cook, so it is told apart here.
+    The prim can come back from:
+
+    - a spec at the path in any loaded layer, muted or not;
+    - a variant set on an ancestor, in any layer (its other variants hold their own prims);
+    - an arc on an ancestor in a muted layer (a reference unmuting brings its prims).
+
+    Arcs in live layers are not counted: what they bring is already composed, so a path
+    below one that is absent is as missing as any other.
+    """
+    path = Sdf.Path(str(path))
+    if stage.GetPrimAtPath(path):
+        return False
+    loaded = Sdf.Layer.GetLoadedLayers()
+    if any(layer.GetPrimAtPath(path) for layer in loaded):
+        return False
+    muted = set(stage.GetMutedLayers())
+    ancestors = list(path.GetParentPath().GetAncestorsRange())
+    for layer in loaded:
+        for ancestor in ancestors:
+            spec = layer.GetPrimAtPath(ancestor)
+            if not spec:
+                continue
+            if spec.variantSets or (layer.identifier in muted and _composes_children(spec)):
+                return False
+    return True
+
+
+#: Where a chunk remembers the missing paths it has already warned about.
+_WARNED_MISSING = "_warned_missing"
+
+
+def warn_if_missing(node, path: str | Sdf.Path, what: str, param=None) -> bool:
+    """Log that node has nothing to author on, when path is missing for good.
+
+    For the chunks that author nothing on a missing target rather than fail: without this a
+    mistyped path in one of them gives no sign at all. Once per path per chunk, since every
+    cook meets it again. Not while `param`, the param the path came from, is still at its
+    default -- a chunk just dropped in has not been pointed at anything yet.
+
+    Returns:
+        Whether path is missing for good.
+    """
+    if param is not None and param.value == param.default_value:
+        return False
+    stage = node.get_stage()
+    if stage is None or not missing_for_good(stage, path):
+        return False
+    warned = node.__dict__.setdefault(_WARNED_MISSING, set())
+    if str(path) not in warned:
+        warned.add(str(path))
+        logger.warning("%s: no prim at %s, so %s.", getattr(node, "name", "A chunk"), path, what)
+    return True
 
 
 def wire_shader_input(

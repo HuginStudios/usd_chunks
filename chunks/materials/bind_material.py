@@ -25,6 +25,10 @@ def execute(node):
     # say) still reads as a valid prim once the layer that actually defines the mesh is
     # muted.
     if not UsdShade.Material(stage.GetPrimAtPath(mat_path)):
+        # Absent for the moment is the delicate case above; absent for good is a typo or a
+        # renamed material, which would otherwise look exactly like it.
+        chunk_utils.warn_if_missing(
+            node, mat_path, "there is no material to bind", node.get_param("material_path"))
         return
     # The path STRINGS, variant selections and all -- not the stripped target paths
     # author_in_variant_contexts yields. That generator yields from inside the variant
@@ -35,11 +39,14 @@ def execute(node):
     #
     # Definedness is checked inside the context too: a prim that only exists in the
     # selected variant is not defined until that variant is selected.
-    path_strs = [
-        path_str
-        for path_str in prim_path_param.resolve_paths()
-        if _target_defined(stage, path_str)
-    ]
+    path_strs = []
+    for path_str in prim_path_param.resolve_paths():
+        if _target_defined(stage, path_str):
+            path_strs.append(path_str)
+        else:
+            chunk_utils.warn_if_missing(
+                node, chunk_utils.split_variant_path(path_str)[1], f"{mat_path} is not bound to it",
+                prim_path_param)
     if not path_strs:
         return
 
