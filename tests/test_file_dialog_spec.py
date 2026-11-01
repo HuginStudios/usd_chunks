@@ -8,6 +8,7 @@ them -- these tests pin the rules so a frontend cannot quietly disagree.
 from __future__ import annotations
 
 import pytest
+from pxr import Usd, UsdLux
 
 from usd_chunks import chunk, chunk_widget_api
 from usd_chunks.chunk_flags import ChunkFlags
@@ -76,6 +77,23 @@ class TestFlags:
     def test_file_existing_requires_an_existing_file(self):
         param = browser()
         param.flags |= ChunkFlags.ParamFlags.FILE_EXISTING
+        assert chunk_widget_api.file_dialog_spec(param).must_exist
+
+    def test_a_browser_that_reads_opens_a_file(self):
+        """`reads` asks for the open dialog FILE_EXISTING gives, without its check on the value."""
+        param = browser(reads=True)
+        assert chunk_widget_api.file_dialog_spec(param).must_exist
+        param.value = "./textures/not_here_yet.exr"  # refused under FILE_EXISTING
+        assert param.value == "./textures/not_here_yet.exr"
+
+    def test_a_prims_asset_attribute_opens_a_file(self):
+        """A Dome Light's texture is read by the light: its browser is Open, not Save."""
+        stage = Usd.Stage.CreateInMemory()
+        light = UsdLux.DomeLight.Define(stage, "/Dome")
+        light.CreateTextureFileAttr("./sky.exr")
+
+        param = chunk.param_from_attr(light.GetTextureFileAttr())
+
         assert chunk_widget_api.file_dialog_spec(param).must_exist
 
     def test_directory_picks_a_folder(self):
