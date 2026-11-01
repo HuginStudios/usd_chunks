@@ -410,6 +410,36 @@ class TestDelegateSettings:
         group.unset_state(ChunkFlags.State.COLLAPSED)
         assert len(group.get_my_params()) > 0
 
+    def test_expanding_a_group_does_not_cook(self, monkeypatch):
+        """Opening a group builds its params at their defaults, which the last cook
+        already authored as nothing -- cooking for it restarted the viewport render."""
+        # A renderer of its own, so this runs whether or not one is installed here.
+        props = [
+            render_defs.RenderSettingProp(name=f"fake_Settings_{n}", attr_name=f"fake:Settings_{n}",
+                                          sdf_type="bool", default=False)
+            for n in ("a", "b", "c", "d")
+        ]
+        definition = render_defs.RenderSettingsDef(key="fake", label="Fake", namespace="fake", props=props)
+        monkeypatch.setattr(render_defs, "iter_render_settings_defs", lambda: iter([definition]))
+
+        scene, _stage = _setup_stage()
+        _mod, settings = self._settings_chunk(scene)
+        settings.execute()
+        target = props[0]
+
+        cooks = []
+        real = chunk_cook.cook
+
+        def counting(chunk, *args, **kwargs):
+            cooks.append(chunk.name)
+            return real(chunk, *args, **kwargs)
+
+        monkeypatch.setattr(chunk_cook, "cook", counting)
+        assert _populate_containing(settings, target.name)
+
+        assert settings.get_param(target.name) is not None
+        assert cooks == []
+
     @requires_renderer
     def test_a_saved_setting_survives_a_round_trip(self):
         """The values live on the chunk prim, but the params that hold them are built

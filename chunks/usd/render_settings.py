@@ -10,7 +10,7 @@ import logging
 
 from pxr import Gf, Sdf, Usd, UsdRender
 
-from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, render_defs
+from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_scheduler, chunk_utils, render_defs
 from usd_chunks import chunk_stage
 
 # Parented under "usd_chunks" so this module's messages reach the package handler and
@@ -100,13 +100,16 @@ def _populate(group):
         return
     setattr(group, _PENDING, None)
 
-    for prop in pending:
-        param = render_defs.param_for_setting(prop)
-        if param is None:
-            continue
-        if prop.help:
-            param.description = prop.help
-        group.add_param(param)
+    # Presentation only: every param arrives at the default the last cook already authored
+    # as nothing, so cooking for them would only restart the viewport render.
+    with chunk_scheduler.presentation_changes():
+        for prop in pending:
+            param = render_defs.param_for_setting(prop)
+            if param is None:
+                continue
+            if prop.help:
+                param.description = prop.help
+            group.add_param(param)
 
 
 def _group_expanded(owner, notice, sender):
