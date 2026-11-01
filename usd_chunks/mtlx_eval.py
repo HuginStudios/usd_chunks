@@ -20,7 +20,8 @@ Values are numpy arrays of shape (n, k) -- k = 1 for float, 2/3/4 for vectors an
 from __future__ import annotations
 
 import logging
-from typing import Callable, NamedTuple
+from typing import NamedTuple
+from collections.abc import Callable
 
 import numpy as np
 from pxr import Sdf, UsdShade

@@ -1808,7 +1808,7 @@ def author_in_variant_selections(stage, var_selections, layer=None):
     # author_in_variant_* call chose its layer, and resetting the target to a plain one
     # here would drop that enclosing variant.
     base_layer = layer if not any(key[0] == id(stage) for key in _ACTIVE_VARIANT_SCOPES) else None
-    edit_target = Usd.EditTarget(edit_layer)
+    layer_target = Usd.EditTarget(edit_layer)
 
     with ExitStack() as stack:
         for anchor_prim_path, vs_name, variant in var_selections:
@@ -1837,14 +1837,14 @@ def author_in_variant_selections(stage, var_selections, layer=None):
             spec = edit_layer.GetPrimAtPath(anchor_prim_path)
             prev_session = dict(spec.variantSelections).get(vs_name, "") if spec else ""
 
-            with Usd.EditContext(stage, edit_target):
+            with Usd.EditContext(stage, layer_target):
                 vset.SetVariantSelection(variant)
 
             # On exit, restore only what was already in the edit layer.
             # If the edit layer had no prior opinion, clear it so the
             # edit layer stays free of composed (chunk-layer) opinions.
             def _restore(v=vset, p=prev_session):
-                with Usd.EditContext(stage, edit_target):
+                with Usd.EditContext(stage, layer_target):
                     if p:
                         v.SetVariantSelection(p)
                     else:

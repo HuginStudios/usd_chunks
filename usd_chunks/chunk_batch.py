@@ -29,7 +29,6 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
 
 from pxr import Sdf, Usd, Vt
 
@@ -77,11 +76,11 @@ class BatchRun:
     """One work item: the driver file it cooks, and every concrete value that follows from it."""
 
     source: str
-    captures: Tuple[str, ...]
-    sink_values: Tuple[Tuple[PatternSite, str], ...] = ()
+    captures: tuple[str, ...]
+    sink_values: tuple[tuple[PatternSite, str], ...] = ()
     output: str | None = None
 
-    def values(self, driver: PatternSite, anchor: Path | None = None) -> List[Tuple[PatternSite, str]]:
+    def values(self, driver: PatternSite, anchor: Path | None = None) -> list[tuple[PatternSite, str]]:
         """This run's concrete values: the driver's file, then every sink.
 
         Given the anchor, a relative value is handed over absolute. A chunk authors a path
@@ -98,7 +97,7 @@ class BatchRun:
         return [(driver, value_of(self.source))] + [(site, value_of(value)) for site, value in self.sink_values]
 
 
-def write_session(stage: Usd.Stage, values: List[Tuple[PatternSite, str]], path: str) -> None:
+def write_session(stage: Usd.Stage, values: list[tuple[PatternSite, str]], path: str) -> None:
     """Write a run's values as a layer of opinions on the network's chunk prims.
 
     ``run --session`` opens the network with it as the session layer, the strongest opinion
@@ -126,8 +125,8 @@ def write_session(stage: Usd.Stage, values: List[Tuple[PatternSite, str]], path:
 class BatchPlan:
     anchor: Path
     driver: PatternSite
-    sinks: List[PatternSite] = field(default_factory=list)
-    runs: List[BatchRun] = field(default_factory=list)
+    sinks: list[PatternSite] = field(default_factory=list)
+    runs: list[BatchRun] = field(default_factory=list)
     output_pattern: str | None = None
 
 
@@ -163,13 +162,13 @@ def _input_attrs(prim: Usd.Prim):
             yield attr
 
 
-def find_pattern_sites(stage: Usd.Stage) -> List[PatternSite]:
+def find_pattern_sites(stage: Usd.Stage) -> list[PatternSite]:
     """Every glob held by an ``inputs:`` attribute on a Chunk prim, in traversal order.
 
     Entries of a list param (``string[] inputs:imports:sublayer_path``) are found too, so
     that build_plan can refuse them by name rather than leave them as literal globs.
     """
-    sites: List[PatternSite] = []
+    sites: list[PatternSite] = []
     for prim in stage.Traverse():
         if not _is_chunk_prim(prim):
             continue
@@ -189,7 +188,7 @@ def find_pattern_sites(stage: Usd.Stage) -> List[PatternSite]:
 _OVERRIDE_RE = re.compile(r"\A(?:(?P<chunk>[^.=\[\]]+)\.)?(?P<param>[^=\[\]]+)\Z")
 
 
-def split_overrides(overrides: List[str]) -> Tuple[List[str], List[str]]:
+def split_overrides(overrides: list[str]) -> tuple[list[str], list[str]]:
     """Separate overrides that supply a glob from the rest.
 
     A glob has to be on the stage *before* planning, because it may be the pattern that
@@ -209,7 +208,7 @@ def split_overrides(overrides: List[str]) -> Tuple[List[str], List[str]]:
     return patterns, plain
 
 
-def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
+def apply_overrides(stage: Usd.Stage, overrides: list[str]) -> list[str]:
     """Author glob-valued ``CHUNK.param=value`` overrides into the session layer for planning.
 
     A network is worth reusing across asset folders without editing it, and the planner
@@ -232,7 +231,7 @@ def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
     Raises:
         BatchError: A malformed override, or one naming no chunk
     """
-    applied: List[str] = []
+    applied: list[str] = []
     chunks = [p for p in stage.Traverse() if _is_chunk_prim(p)]
     known = ", ".join(sorted(p.GetName() for p in chunks)) or "none"
     with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -272,7 +271,7 @@ def apply_overrides(stage: Usd.Stage, overrides: List[str]) -> List[str]:
     return applied
 
 
-def _find_site(sites: List[PatternSite], label: str) -> PatternSite:
+def _find_site(sites: list[PatternSite], label: str) -> PatternSite:
     for site in sites:
         if site.label == label:
             return site
@@ -281,8 +280,8 @@ def _find_site(sites: List[PatternSite], label: str) -> PatternSite:
 
 
 def select_driver(
-    sites: List[PatternSite], anchor: Path, driver: str | None = None
-) -> Tuple[PatternSite, List[Tuple[str, Tuple[str, ...]]]]:
+    sites: list[PatternSite], anchor: Path, driver: str | None = None
+) -> tuple[PatternSite, list[tuple[str, tuple[str, ...]]]]:
     """Pick the one pattern that drives the batch, and return it with its expansion.
 
     Without ``--driver`` this is decided by the filesystem: whichever pattern actually
@@ -318,7 +317,7 @@ def select_driver(
     return candidates[0]
 
 
-def _check_addressable(stage: Usd.Stage, sites: List[PatternSite]) -> None:
+def _check_addressable(stage: Usd.Stage, sites: list[PatternSite]) -> None:
     """Every pattern must be one ``run`` can set by ``CHUNK.param=value``.
 
     A list entry cannot be (``run`` sets whole params), and a chunk name shared by two chunk
@@ -372,7 +371,7 @@ def build_plan(
     return plan
 
 
-def committing_chunk_names(stage: Usd.Stage, registry) -> List[str]:
+def committing_chunk_names(stage: Usd.Stage, registry) -> list[str]:
     """Names of the Chunk prims whose module defines a ``commit`` hook.
 
     These write to disk once a run's solve settles -- the ones a batch without ``-o`` is run
@@ -397,7 +396,7 @@ def committing_chunk_names(stage: Usd.Stage, registry) -> List[str]:
     return names
 
 
-def check_commit_targets(committing: List[str], plan: BatchPlan) -> None:
+def check_commit_targets(committing: list[str], plan: BatchPlan) -> None:
     """Verify every chunk that writes on each run writes somewhere *different* each run.
 
     A committing chunk holding a fixed output path is the one way a batch quietly does the
