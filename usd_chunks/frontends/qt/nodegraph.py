@@ -3904,11 +3904,22 @@ class GraphSearchPopup(QtWidgets.QFrame):
         return super().eventFilter(obj, event)
 
     def popup(self) -> None:
-        """Show it along the top of the view, ready to type into."""
+        """Show it at the cursor, like the Tab menu, ready to type into -- along the top of
+        the view when the cursor is off it. Kept on screen either way."""
         width = min(self.WIDTH, max(self._view.width() - 20, 120))
         self.setFixedWidth(width)
-        self.move(self._view.mapToGlobal(QtCore.QPoint((self._view.width() - width) // 2, 8)))
         self._show_status()
+        self.adjustSize()
+        cursor = QtGui.QCursor.pos()
+        if self._view.rect().contains(self._view.mapFromGlobal(cursor)):
+            pos = cursor - QtCore.QPoint(width // 2, self.field.sizeHint().height() // 2)
+        else:
+            pos = self._view.mapToGlobal(QtCore.QPoint((self._view.width() - width) // 2, 8))
+        if screen := QtGui.QGuiApplication.screenAt(cursor):
+            area = screen.availableGeometry()
+            pos.setX(max(area.left(), min(pos.x(), area.right() - self.width())))
+            pos.setY(max(area.top(), min(pos.y(), area.bottom() - self.height())))
+        self.move(pos)
         self.show()
         self.field.setFocus()
 
@@ -6582,7 +6593,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # Search
 
     def _open_search(self) -> GraphSearchPopup:
-        """Ctrl+F: the node search popup, along the top of the view."""
+        """Ctrl+F: the node search popup, at the cursor."""
         self._search_popup = GraphSearchPopup(self)
         self._search_popup.popup()
         return self._search_popup
