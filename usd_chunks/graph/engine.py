@@ -2180,10 +2180,15 @@ def collapsed_ports(chunk, fed: set[str], feeding: set[str]) -> CollapsedPorts:
     unfed = unfeeding = False
     for param in iter_connectable_params(chunk):
         name = param.name
-        unfed |= name not in fed
+        is_fed = name in fed
+        if is_list_row(param):
+            # A row's wire is only its expression (see connect), and every row shares its
+            # template's name: by name, one wired row would show a port on all of them.
+            is_fed = chunk_utils.is_expression_text(getattr(param, "raw_value", None))
+        unfed |= not is_fed
         unfeeding |= name not in feeding
-        if name in fed or name in feeding:
-            result.rows.append((param, name in fed, name in feeding))
+        if is_fed or name in feeding:
+            result.rows.append((param, is_fed, name in feeding))
     if has_collapsible_body(chunk):
         result.plus_in, result.plus_out = unfed, unfeeding
     return result

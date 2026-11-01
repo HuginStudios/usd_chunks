@@ -1453,6 +1453,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if ":" in name and (param := self.input_param(attr_name)) is not None:
                 name = param.name
             fed.add(name)
+        # A wire into a list row is only its expression: "item[1]", so that wiring or
+        # cutting a row changes these sides and sync_collapsed_ports re-places the ports.
+        for param in chunk_graph.iter_connectable_params(self.chunk):
+            if chunk_graph.is_list_row(param) and chunk_utils.is_expression_text(param.raw_value):
+                fed.add(core.list_row_ref(param))
         scene = self.scene()
         feeding = scene.fed_outputs(str(self.prim.GetPath())) if isinstance(scene, ChunkGraphScene) else set()
         return fed, set(feeding)
@@ -2596,13 +2601,27 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         node times every placement -- 84k connection scans and over a second to dive into
         an 86-node group. Read once here instead, and dropped by _on_objects_changed when a
         wire can have moved and by _rebuild_nodes when the node set does.
+
+        A wire into a list row is only that row's expression (see _build_list_row_edges),
+        so those are read too -- or a collapsed node feeding a row shows no port to draw it from.
         """
         if self._fed_outputs_index is None:
             index: dict[str, set[str]] = {}
+            by_name = {}
+            for node in self._nodes.values():
+                if node.prim.IsValid():
+                    by_name[node.prim.GetName()] = str(node.prim.GetPath())
             for node in self._nodes.values():
                 for _, src_prim_path, src_attr_suffix in _iter_prim_connections(node.prim):
                     if src_attr_suffix.startswith("outputs:"):
                         index.setdefault(src_prim_path, set()).add(src_attr_suffix[len("outputs:"):])
+                for param in chunk_graph.iter_connectable_params(node.chunk):
+                    raw = getattr(param, "raw_value", None)
+                    if not (chunk_graph.is_list_row(param) and chunk_utils.is_expression_text(raw)):
+                        continue
+                    for src_name, src_attr in chunk_utils.parse_expression_attrs(raw):
+                        if src_name in by_name:
+                            index.setdefault(by_name[src_name], set()).add(src_attr)
             self._fed_outputs_index = index
         return self._fed_outputs_index.get(prim_path, set())
 
