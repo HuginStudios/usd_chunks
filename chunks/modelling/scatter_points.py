@@ -2771,27 +2771,29 @@ def _report(node, protos, quota, count, mode, levels, missing=()):
     is being drawn, since a readout of "7000 instances" alone looks like success.
     """
     if count and protos:
-        mix = "  ".join(
+        mix = "\n".join(
             f"{p.label} {q * 100.0 / count:.0f}% ({q})" for p, q in zip(protos, quota) if q
         )
     else:
-        mix = "nothing placed — check the surface mesh and prototype paths"
+        mix = ""
     suffix = f", {levels} levels" if mode == "Stack" and levels > 1 else ""
     fallback = len(protos) == 1 and protos[0].label == _FALLBACK_LABEL
     head = f"{count} instances · {mode}{suffix}" + (" · no prototype found, drawing the default cube" if fallback else "")
-    text = f"{head}\n{mix}"
+    text = head if mix else f"{head}\nnothing placed — check the surface mesh and prototype paths"
     if missing:
         text += "\nnot found: " + ", ".join(missing)
         logger.warning("%s: prototype path(s) not found: %s", node.name, ", ".join(missing))
 
     if readout := node.get_param("readout"):
         readout.value = text
+    if mix_readout := node.get_param("mix_readout"):
+        mix_readout.value = mix
     if out_count := node.get_param("out_count"):
         out_count.value = count
     if out_protos := node.get_param("out_prototypes"):
         out_protos.value = len(protos)
 
-    logger.debug("%s", text.replace(chr(10), " | "))
+    logger.debug("%s | %s", text.replace(chr(10), " | "), mix.replace(chr(10), "  "))
 
 
 # ---------------------------------------------------------------------------
@@ -2857,6 +2859,7 @@ def main():
     protos = chunk.ListGroup(
         "prototypes",
         "Prototypes",
+        flags=_GF | chunk.ChunkFlags.GroupFlags.LIST,  # foldable, open by default
         tooltip="One row per prototype. Mix % is relative — the rows are normalised, so "
         "75/25 and 3/1 mean the same thing.",
     )
@@ -2925,9 +2928,20 @@ def main():
         chunk.Label(
             "readout",
             default_value="no scatter yet",
-            tooltip="What the last cook produced, and how the mix actually landed.",
+            tooltip="What the last cook produced.",
         )
     )
+    # How the mix landed, one line per prototype: a glob row expands into dozens, which ran
+    # the full height of the node, so it folds away and starts folded.
+    mix_grp = chunk.Group("Mix", flags=_GF)
+    mix_grp.add_param(
+        chunk.Label(
+            "mix_readout",
+            default_value="",
+            tooltip="Each prototype's share of the last cook, and its instance count.",
+        )
+    )
+    chunk_api.add_param(_collapsed(mix_grp))
 
     # --- Distribution ---
     dist_grp = chunk.Group("Distribution", icon="scatter", flags=_GF)
