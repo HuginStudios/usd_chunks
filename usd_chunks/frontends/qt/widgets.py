@@ -3289,7 +3289,7 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
         children = self._sync_lofted_chunks(gone)
         query = chunk_stage.get_search_query(self.group)
         scope = chunk_stage.get_search_scope(self.group)
-        matches = [c for c in children if query and chunk_stage.chunk_matches_search(c, query, scope)]
+        matches = chunk_stage.search_chunks(children, query, scope) if query else []
         found = [c for c in matches if not chunk_stage.is_chunk_lofted(c)]
         self._search_panel.show_results(query, found, len(matches) - len(found))
 

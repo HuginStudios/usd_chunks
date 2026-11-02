@@ -4801,7 +4801,7 @@ def set_search_scope(context: core.ChunkBase, scope: str) -> None:
 _TYPO_SLACK = 2
 
 
-def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
+def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6, typos: bool = True) -> bool:
     """Whether term matches candidate, tolerating small typos.
 
     An exact case-insensitive substring always matches (the common case: the user typed the
@@ -4812,6 +4812,7 @@ def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
         term: What the user typed; blank matches everything.
         candidate: The text to match against.
         threshold: The minimum similarity ratio for a non-substring match.
+        typos: False to match a substring only.
 
     Returns:
         True on a match.
@@ -4822,6 +4823,8 @@ def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
     candidate = candidate.lower()
     if term in candidate:
         return True
+    if not typos:
+        return False
     # SequenceMatcher's ratio is normalised by combined length, so two short names sharing
     # a prefix score on the overlap alone: "haha" comes out 0.73 similar to "haha222" and
     # was being returned by a search for "haha222". Length is what separates the two cases
@@ -4833,13 +4836,14 @@ def fuzzy_matches(term: str, candidate: str, threshold: float = 0.6) -> bool:
     return difflib.SequenceMatcher(None, term, candidate).ratio() >= threshold
 
 
-def chunk_matches_search(chunk: core.ChunkBase, query: str, scope: str = "both") -> bool:
+def chunk_matches_search(chunk: core.ChunkBase, query: str, scope: str = "both", typos: bool = True) -> bool:
     """Whether chunk's name and/or type (per scope) fuzzy-matches query.
 
     Args:
         chunk: The chunk.
         query: The search text; an empty query always matches.
         scope: "both", "name" or "type".
+        typos: False to match a substring only.
 
     Returns:
         True on a match.
@@ -4853,7 +4857,24 @@ def chunk_matches_search(chunk: core.ChunkBase, query: str, scope: str = "both")
         cfg = chunk.get_config()
         if cfg and cfg.module:
             candidates.append(cfg.module)
-    return any(fuzzy_matches(query, c) for c in candidates)
+    return any(fuzzy_matches(query, c, typos=typos) for c in candidates)
+
+
+def search_chunks(chunks: list, query: str, scope: str = "both") -> list:
+    """The chunks a search finds: the ones whose text holds query, else the ones a typo away.
+
+    Typos only count when nothing holds the text, so "Mesh1" finds Mesh1 and not Mesh.
+
+    Args:
+        chunks: The chunks to search.
+        query: The search text; an empty query matches every chunk.
+        scope: "both", "name" or "type".
+
+    Returns:
+        The matching chunks, in their order.
+    """
+    exact = [c for c in chunks if chunk_matches_search(c, query, scope, typos=False)]
+    return exact or [c for c in chunks if chunk_matches_search(c, query, scope)]
 
 
 def find_group_active_view(
