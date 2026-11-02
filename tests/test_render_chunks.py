@@ -1091,6 +1091,55 @@ class TestHydraMode:
         assert fake.deleted
         assert not rop.get_param("output").value
 
+    def test_a_live_session_keeps_the_recorder_between_renders(self, monkeypatch, tmp_path):
+        """Kept, the delegate keeps the scene it translated instead of building it again."""
+        mod, rop, _fake, _stage = self._hydra_rop(monkeypatch)
+        made = []
+        monkeypatch.setattr(mod, "_make_recorder", lambda *a, **k: made.append(_FakeRecorder()) or made[-1])
+        monkeypatch.setattr(mod.live, "is_serving", lambda: True)
+        monkeypatch.setattr(mod, "_kept_recorders", {})
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        mod.commit(rop)
+        mod.commit(rop)
+
+        assert len(made) == 1
+        assert len(made[0].calls) == 2
+        assert not made[0].deleted
+
+    def test_a_kept_recorder_that_fails_is_replaced_and_the_render_retried(self, monkeypatch, tmp_path):
+        """A recook can remake prims the kept delegate still holds: it then throws every render."""
+        mod, rop, _fake, _stage = self._hydra_rop(monkeypatch)
+        made = []
+        monkeypatch.setattr(mod, "_make_recorder", lambda *a, **k: made.append(_FakeRecorder()) or made[-1])
+        monkeypatch.setattr(mod.live, "is_serving", lambda: True)
+        monkeypatch.setattr(mod, "_kept_recorders", {})
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+        mod.commit(rop)
+
+        def expired(*_args):
+            raise RuntimeError("Used expired prim")
+
+        made[0].Record = expired
+        mod.commit(rop)
+
+        assert len(made) == 2
+        assert made[0].deleted
+        assert len(made[1].calls) == 1
+        assert rop.get_param("output").value
+
+    def test_without_a_live_session_each_render_has_its_own_recorder(self, monkeypatch, tmp_path):
+        mod, rop, _fake, _stage = self._hydra_rop(monkeypatch)
+        made = []
+        monkeypatch.setattr(mod, "_make_recorder", lambda *a, **k: made.append(_FakeRecorder()) or made[-1])
+        rop.get_param("output_image").value = str(tmp_path / "beauty.png")
+
+        mod.commit(rop)
+        mod.commit(rop)
+
+        assert len(made) == 2
+        assert all(r.deleted for r in made)
+
     def test_missing_camera_is_reported(self, monkeypatch, tmp_path):
         scene, _stage = _setup_stage()
         mod = importlib.import_module("chunks.usd.render")

@@ -38,7 +38,7 @@ try:
 except ImportError:
     UsdImagingGL = None
 
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_utils, live
 
 
 # Parented under "usd_chunks" rather than left at the bare module name. A chunk module
@@ -402,6 +402,12 @@ def _make_recorder(node, settings_path="", pass_path=""):
                 "fail without an OpenGL context."
             )
 
+    _configure_recorder(recorder, node, use_gpu, settings_path, pass_path)
+    return recorder
+
+
+def _configure_recorder(recorder, node, use_gpu, settings_path="", pass_path=""):
+    """Point recorder at what node renders, and how -- again each time a kept one is reused."""
     # Pass and settings first, before every other setter -- the order usdrecord uses.
     # These say what is being rendered; the rest adjust how, and a couple of them
     # deliberately override what the settings prim asked for.
@@ -445,7 +451,38 @@ def _make_recorder(node, settings_path="", pass_path=""):
                 extension,
             )
 
-    return recorder
+
+# Recorders kept between commits while a live session serves: id(node) -> (key, recorder).
+# Kept, the delegate keeps the scene it translated and syncs only what an edit changed --
+# for V-Ray, a rebuild of the scene and a reload of every texture saved on each render.
+# Only then: a kept recorder holds the delegate's whole scene in memory between renders.
+_kept_recorders: dict = {}
+
+
+def _recorder_for(node, settings_path="", pass_path=""):
+    """(recorder, kept) for this render: the one kept from the last, while a session serves."""
+    if not live.is_serving():
+        return _make_recorder(node, settings_path, pass_path), False
+    use_gpu = bool(node.get_param("use_gpu").value)
+    key = (node.get_param("renderer").value, use_gpu, id(node.get_stage()))
+    kept = _kept_recorders.get(id(node))
+    if kept and kept[0] == key:
+        _configure_recorder(kept[1], node, use_gpu and _gl_context_possible(), settings_path, pass_path)
+        return kept[1], True
+    if kept:
+        _drop_kept_recorder(node)  # another renderer or stage now: start over
+    recorder = _make_recorder(node, settings_path, pass_path)
+    if recorder is None:
+        _kept_recorders.pop(id(node), None)
+        return None, False
+    _kept_recorders[id(node)] = (key, recorder)
+    return recorder, True
+
+
+def _drop_kept_recorder(node):
+    kept = _kept_recorders.pop(id(node), None)
+    if kept and hasattr(kept[1], "DeleteGLResources"):
+        kept[1].DeleteGLResources()
 
 
 def _purposes(node, settings_path):
@@ -629,7 +666,7 @@ def _render(node):
         _render_hydra(node, output_image)
 
 
-def _render_hydra(node, output_image):
+def _render_hydra(node, output_image, _fresh=False):
     stage = node.get_stage()
     if not stage:
         return
@@ -684,7 +721,7 @@ def _render_hydra(node, output_image):
             settings_path,
         )
 
-    recorder = _make_recorder(node, settings_path, pass_path)
+    recorder, kept = _recorder_for(node, settings_path, pass_path)
     if recorder is None:
         return
 
@@ -715,13 +752,19 @@ def _render_hydra(node, output_image):
             for wrote in paths:
                 logger.info("Render wrote %s", wrote)
     except Exception as exc:
+        if kept and not _fresh:
+            # A kept delegate can still hold prims a recook replaced (an instancer's
+            # prototypes made again): it fails on them every render after, so start over.
+            logger.info("Render: the kept renderer lost track of the scene (%s); starting it again", exc)
+            _drop_kept_recorder(node)
+            return _render_hydra(node, output_image, _fresh=True)
         # A render delegate failing must report something actionable rather than
         # propagate: the Render button dispatches through the notice system, where an
         # exception kills the callback instead of telling the user anything.
         logger.error("Render: %s", exc)
         return
     finally:
-        if hasattr(recorder, "DeleteGLResources"):
+        if not kept and hasattr(recorder, "DeleteGLResources"):
             recorder.DeleteGLResources()
 
     node.get_param("output").value = written[-1]
