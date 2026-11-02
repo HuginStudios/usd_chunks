@@ -1970,7 +1970,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             return
 
         if self._is_merge:
-            # No slot numbers: the ports run top (slot 0, strongest) to bottom around the arc.
+            # No slot numbers: the ports run weakest at the top to strongest at the bottom.
             border = _COL_NODE_SELECTED if self._selected else (
                 _COL_FAILED_BORDER if self._failed else _COL_NODE_BORDER)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
@@ -2636,7 +2636,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             "Needs recook — inputs changed since this last ran. Press Run/Recompute to update it."
             if self._stale
             # A merge draws no title, so its name is only here.
-            else f"{self.chunk.name} -- the top input is strongest" if self._is_merge
+            else f"{self.chunk.name} -- the bottom input is strongest" if self._is_merge
             else ""
         )
 
