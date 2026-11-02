@@ -133,7 +133,7 @@ Double-click either one to edit its text. Right-click its title bar (or anywhere
 note) to change its colour, fit a backdrop around its nodes, or delete it.
 
 Both are saved in the scene as USD `Backdrop` prims next to the chunks. Undo covers them
-too.
+too. Scripts can make and change them: see [Scripting](scripting.md#backdrops-and-notes).
 
 ## Disabled and locked nodes
 

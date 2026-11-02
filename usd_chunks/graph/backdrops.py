@@ -45,6 +45,10 @@ FIT_PADDING = 30.0
 HEADER_HEIGHT = 36.0
 MIN_SIZE = (120.0, 60.0)
 NOTE_SIZE = (220.0, 140.0)
+#: How big a node is taken to be where no UI has drawn it (a script): the Qt graph's
+#: default node width, and its title bar's height.
+NODE_SIZE = (250.0, 90.0)
+NODE_HEADER = 48.0
 
 Rect = tuple[float, float, float, float]
 
@@ -67,6 +71,29 @@ class BackdropInfo:
     color: tuple[float, float, float]
     text: str
     note: bool
+
+
+def to_color(value: str | tuple[float, float, float]) -> tuple[float, float, float]:
+    """A colour from a PALETTE name ("Blue", any case) or an (r, g, b) of 0-1 floats.
+
+    Args:
+        value: The name or the floats.
+
+    Returns:
+        (r, g, b), sRGB 0-1.
+
+    Raises:
+        ValueError: An unknown name, or not three numbers.
+    """
+    if isinstance(value, str):
+        for name, rgb in PALETTE.items():
+            if name.lower() == value.strip().lower():
+                return rgb
+        raise ValueError(f"unknown colour {value!r}; use one of {', '.join(PALETTE)} or (r, g, b)")
+    rgb = tuple(float(c) for c in value)
+    if len(rgb) != 3:
+        raise ValueError(f"a colour is (r, g, b), not {value!r}")
+    return rgb
 
 
 def is_backdrop(prim: Usd.Prim) -> bool:
