@@ -7,6 +7,8 @@ usd_chunks undoes **what chunks author**, on any host, in pure Python on the hos
 
 - **Chunk prims**: every prim the stage says is a `Chunk` -- its params, wires, view,
   position and metadata. Adding and deleting chunks, too.
+- **Backdrops and sticky notes** in a chunk graph: moving, resizing, recolouring, editing
+  their text, adding and deleting them.
 - **Wherever they are authored in the stage's own layers**: the root layer, the session
   layer, department sublayers the Edit Target picked, and overs on the prims a Reference
   chunk brought in.

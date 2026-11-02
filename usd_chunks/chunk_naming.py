@@ -32,6 +32,11 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only, no import at runtime
 #: The prim type a chunk is authored as.
 CHUNK_PRIM_TYPENAME = "Chunk"
 
+#: The prim type of a backdrop or sticky note in a chunk graph (UsdUI.Backdrop), and the
+#: attribute that marks a sticky note. See usd_chunks/graph/backdrops.py.
+BACKDROP_TYPENAME = "Backdrop"
+STICKY_NOTE_ATTR = "chunk:stickyNote"
+
 #: /chunks is a scope, like /lights or /render. Nothing lives AT it: the default chunkgroup
 #: sits under it and everything else under that. Typing it Chunk made the scope look like a
 #: chunk prim to anything reading the stage back.

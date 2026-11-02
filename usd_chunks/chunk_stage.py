@@ -938,8 +938,10 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # guard and leave a downstream view connected to a prim that no longer exists.
             root_sdf = Sdf.Path(chunk_root)
             root_prim = self._stage.GetPrimAtPath(root_sdf)
+            # Kept while a backdrop or sticky note is still in it: those are the user's too.
             if chunk_root == _CHUNKS_ROOT and root_prim.IsValid() and not any(
-                child.GetTypeName() == _CHUNK_PRIM_TYPENAME for child in root_prim.GetChildren()
+                child.GetTypeName() in (_CHUNK_PRIM_TYPENAME, chunk_naming.BACKDROP_TYPENAME)
+                for child in root_prim.GetChildren()
             ):
                 for layer in self._stage.GetLayerStack(includeSessionLayers=True):
                     root_parent = layer.GetPrimAtPath(root_sdf.GetParentPath())
@@ -8305,6 +8307,15 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
         key=lambda p: p.pathElementCount,
     )
     chunk_roots = {p.GetPrefixes()[0] for p in chunk_paths}
+    # Backdrops and sticky notes sit beside the chunks in a graph and are saved with them.
+    # One inside a chunkgroup comes along with the group's prim; only the ones directly
+    # under /chunks need adding.
+    root_prim = stage.GetPrimAtPath(_CHUNKS_ROOT)
+    if root_prim:
+        chunk_paths.extend(
+            child.GetPath() for child in root_prim.GetChildren()
+            if child.GetTypeName() == chunk_naming.BACKDROP_TYPENAME
+        )
     cook_layers = [
         layer.identifier for c in chunks
         if lm.initialized and (layer := lm.get_layer(c)) is not None and layer not in homes

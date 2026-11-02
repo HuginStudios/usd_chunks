@@ -25,12 +25,14 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_registry
 from usd_chunks import chunk_scene
+from usd_chunks.graph import backdrops
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.frontends.qt import node_theme, window_state
+from usd_chunks.frontends.qt.backdrop_item import BackdropItem, BackdropTextPopup
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
 logger = logging.getLogger(__name__)
@@ -2545,6 +2547,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if selected != self._selected:
                 self._selected = selected
                 self.update()
+                held = QtWidgets.QApplication.keyboardModifiers()
+                scene = self.scene()
+                if (selected and isinstance(scene, ChunkGraphScene)
+                        and not held & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier)):
+                    # A node picked on its own, here or from anywhere else (the prim
+                    # browser, a script), lets go of the backdrops: Delete must not take
+                    # one along that was only left selected from before.
+                    scene.clear_backdrop_selection()
             stale = self.chunk.has_state(ChunkFlags.State.STALE)
             failed = self.chunk.has_state(ChunkFlags.State.FAILED)
             if (stale, failed) != (self._stale, self._failed):
@@ -2787,6 +2797,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage: Usd.Stage | None = None
         self._scene_sender: chunk_scene.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
+        self._backdrops: dict[str, BackdropItem] = {}  # prim path → backdrop or sticky note
         # Source prim path -> names of its outputs that some node in the scene is wired to.
         # Built on demand by fed_outputs and dropped whenever a wire or the node set can
         # have changed; see there.
@@ -2970,6 +2981,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 self._rebuild_retries = 0
                 self._teardown_items()
                 self._nodes.clear()
+                self._backdrops.clear()
                 self._edges.clear()
                 return
             retries = getattr(self, "_rebuild_retries", 0)
@@ -3065,6 +3077,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         # Exec edges are built immediately (exec ports always exist).
         self._build_edges()
+        self._rebuild_backdrops(chunks_root_path, edit_id)
 
         # Proxy widgets (ChunkWidget) are created in small batches so newly-added nodes fill
         # in progressively -- existing nodes already have theirs and are left untouched.
@@ -3283,6 +3296,162 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 edge.update_path()
 
     # ------------------------------------------------------------------
+    # Backdrops and sticky notes (usd_chunks/graph/backdrops.py)
+
+    def _rebuild_backdrops(self, root_path: Sdf.Path, edit_id: str) -> None:
+        """Match the backdrop items to the Backdrop prims under this graph's root.
+
+        Args:
+            root_path: The graph's root prim path.
+            edit_id: The edit target layer's identifier. A backdrop defined in another
+                file is locked, by the same rule as a node.
+        """
+        wanted: set[str] = set()
+        for prim in backdrops.list_backdrops(self._stage, root_path):
+            path = str(prim.GetPath())
+            wanted.add(path)
+            src_layer = chunk_utils.composed_in_from(prim)
+            locked = src_layer is not None and src_layer.identifier != edit_id
+            item = self._backdrops.get(path)
+            if item is None:
+                item = BackdropItem(prim, locked=locked)
+                self.addItem(item)
+                self._backdrops[path] = item
+            else:
+                item.prim = prim
+                item.set_locked(locked)
+                if not self._backdrop_drag_active():
+                    item.refresh()
+        for path in [p for p in self._backdrops if p not in wanted]:
+            item = self._backdrops.pop(path)
+            try:
+                self.removeItem(item)
+            except RuntimeError:
+                pass
+
+    def _backdrop_drag_active(self) -> bool:
+        """Whether a backdrop is being dragged or resized. Nothing is read back from USD
+        until it ends: the prims still say where everything started."""
+        return any(item._mode is not None for item in self._backdrops.values())
+
+    def selected_backdrops(self) -> list[BackdropItem]:
+        """The backdrops and notes that are selected."""
+        return [item for item in self._backdrops.values() if item.selected]
+
+    def clear_backdrop_selection(self) -> None:
+        for item in self._backdrops.values():
+            item.set_selected(False)
+
+    def select_backdrop(self, item: BackdropItem, toggle: bool) -> None:
+        """Select a backdrop or note: on its own, or toggled in or out of the selection.
+
+        On its own means the nodes are let go too, so Delete and L act on it alone.
+        """
+        if toggle:
+            item.set_selected(not item.selected)
+            return
+        if item.selected:
+            return  # keep a multi-selection, so it can be dragged as one (drag_members)
+        self.clear_backdrop_selection()
+        item.set_selected(True)
+        if self._scene_sender is not None:
+            self._scene_sender.set_selected_chunks([])
+
+    def _node_header_rect(self, node: ChunkNodeItem) -> backdrops.Rect:
+        rect = node.sceneBoundingRect()
+        return rect.x(), rect.y(), rect.width(), min(rect.height(), _NODE_HEADER_H)
+
+    def nodes_in_backdrop(self, item: BackdropItem) -> list[ChunkNodeItem]:
+        """The nodes sitting inside a backdrop (backdrops.node_inside)."""
+        box = item.rect()
+        return [node for node in self._nodes.values()
+                if node.prim.IsValid() and backdrops.node_inside(box, self._node_header_rect(node))]
+
+    def backdrop_members(self, item: BackdropItem) -> list[QtWidgets.QGraphicsItem]:
+        """What moves with a backdrop: the nodes in it that can move, and the backdrops
+        and notes inside it."""
+        box = item.rect()
+        members: list[QtWidgets.QGraphicsItem] = [n for n in self.nodes_in_backdrop(item) if not n._locked]
+        members.extend(
+            other for other in self._backdrops.values()
+            if other is not item and not other.locked
+            and backdrops.backdrop_inside(box, other.rect(), other.is_note)
+        )
+        return members
+
+    def drag_members(self, item: BackdropItem) -> list[QtWidgets.QGraphicsItem]:
+        """What moves when a backdrop or note is dragged, itself left out: the other
+        selected backdrops and notes, and what is inside each backdrop."""
+        movers = [item]
+        if item.selected:
+            movers += [b for b in self.selected_backdrops() if b is not item and not b.locked]
+        moving: dict[int, QtWidgets.QGraphicsItem] = {}
+        for mover in movers:
+            moving[id(mover)] = mover
+            if not mover.is_note:
+                moving.update((id(m), m) for m in self.backdrop_members(mover))
+        moving.pop(id(item), None)
+        return list(moving.values())
+
+    def backdrop_moved(self, item: BackdropItem, members: list[QtWidgets.QGraphicsItem]) -> None:
+        """Save a drag that just ended: the backdrop's rect and where its members went."""
+        if item.prim.IsValid():
+            backdrops.set_rect(item.prim, item.rect())
+        for member in members:
+            try:
+                if isinstance(member, BackdropItem):
+                    if member.prim.IsValid():
+                        backdrops.set_rect(member.prim, member.rect())
+                elif member.prim.IsValid():
+                    member._write_pos_to_usd()
+            except RuntimeError:
+                continue
+
+    def edit_backdrop_text(self, item: BackdropItem) -> BackdropTextPopup | None:
+        """Open the text editor over a backdrop or note."""
+        views = self.views()
+        if not views or item.locked:
+            return None
+        popup = BackdropTextPopup(views[0], item)
+        popup.popup()
+        return popup
+
+    def create_backdrop(self, rect: backdrops.Rect, note: bool = False) -> BackdropItem | None:
+        """Make a backdrop or note in this graph, selected, and return its item.
+
+        Written to the layer the graph's own container lives in, so it is saved with it.
+        """
+        if self._stage is None:
+            return None
+        root = getattr(self, "_chunks_root_path", None) or Sdf.Path(_CHUNKS_ROOT)
+        context = self._built_context if self._built_context is not _UNBUILT else None
+        layer = chunk_utils.get_bookkeeping_layer(self._stage, context) if context is not None else None
+        prim = backdrops.create(self._stage, root, rect, note=note, layer=layer)
+        if prim is None:
+            return None
+        # The prim's resync rebuilds on the next tick; the item is wanted now, to select
+        # it and to open its editor.
+        self._chunks_root_path = root
+        edit_id = self._stage.GetEditTarget().GetLayer().identifier
+        self._rebuild_backdrops(root, edit_id)
+        item = self._backdrops.get(str(prim.GetPath()))
+        if item is not None:
+            self.select_backdrop(item, toggle=False)
+        return item
+
+    def delete_backdrops(self, items: Iterable[BackdropItem]) -> None:
+        """Delete backdrops and notes. The nodes inside a backdrop stay."""
+        for item in list(items):
+            if not item.locked and item.prim.IsValid():
+                backdrops.delete(item.prim)
+
+    def fit_backdrop(self, item: BackdropItem) -> None:
+        """Resize a backdrop to frame the nodes inside it."""
+        rect = backdrops.fit_around(n.sceneBoundingRect().getRect() for n in self.nodes_in_backdrop(item))
+        if rect is not None and item.prim.IsValid() and not item.locked:
+            backdrops.set_rect(item.prim, rect)
+
+    # ------------------------------------------------------------------
     # Auto-layout (L key)
 
     def layout_nodes(self, seed_paths: list[str] | None = None) -> None:
@@ -3426,6 +3595,12 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             if self._node_set_is_stale(root):
                 self._schedule_rebuild()
                 return
+        # Asked per backdrop, of USD: a handful of lookups, where walking the notice's
+        # paths would cost as much as the cook that sent it.
+        if not self._backdrop_drag_active():
+            for item in self._backdrops.values():
+                if item.changed_in(notice):
+                    item.refresh()
         for path in notice.GetChangedInfoOnlyPaths():
             if path.IsPropertyPath() and path.name == "ui:nodegraph:node:pos":
                 prim_path = str(path.GetPrimPath())
@@ -3689,6 +3864,19 @@ class _ProxyKeyRouter(QtCore.QObject):
                         view._group_selected()
                     else:
                         view._cut_selected_to_clipboard()
+                    event.accept()
+                    return True
+
+        # B: a backdrop around the selection. N: a sticky note. Same fallback as L.
+        if (self._active is None and not ctrl_down
+                and event.key() in (QtCore.Qt.Key.Key_B, QtCore.Qt.Key.Key_N)):
+            view_global = QtCore.QRect(view.mapToGlobal(QtCore.QPoint(0, 0)), view.size())
+            if view_global.contains(QtGui.QCursor.pos()):
+                if etype == QtCore.QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if etype == QtCore.QEvent.Type.KeyPress:
+                    view._create_backdrop(note=event.key() == QtCore.Qt.Key.Key_N)
                     event.accept()
                     return True
 
@@ -5006,6 +5194,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             # A lit port's ring is drawn over its dot, as an item of its own: the press is
             # the port's. Taken as the ring's, it fell through to the resize edge below.
             hit = hit.parentItem()
+        if (event.button() == QtCore.Qt.LeftButton and not isinstance(hit, BackdropItem)
+                and not event.modifiers() & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier)
+                and isinstance(self.scene(), ChunkGraphScene)):
+            # A plain click on anything but a backdrop lets go of the selected backdrops,
+            # the way it lets go of nodes.
+            self.scene().clear_backdrop_selection()
 
         # Walk up item parent chain to find a proxy widget, if any.
         proxy = None
@@ -5126,6 +5320,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             graph_scene._scene_sender.set_selected_chunks(merged)
         else:
             graph_scene._scene_sender.set_selected_chunks(boxed)
+        # A backdrop or note is boxed only when all of it is inside: the box-select starts
+        # on top of the backdrop it is drawn in.
+        for item in graph_scene._backdrops.values():
+            if scene_rect.contains(item.sceneBoundingRect()):
+                item.set_selected(True)
+            elif not self._rubber_band_add:
+                item.set_selected(False)
 
     # ------------------------------------------------------------------
     # Keyboard
@@ -5209,6 +5410,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._layout_selected_or_all()
             event.accept()
             return
+        if event.key() in (QtCore.Qt.Key.Key_B, QtCore.Qt.Key.Key_N) and not (
+                event.modifiers() & QtCore.Qt.ControlModifier):
+            self._create_backdrop(note=event.key() == QtCore.Qt.Key.Key_N)
+            event.accept()
+            return
         if (slot := slot_for_key(event.key())) is not None:
             self._pick_slot(slot)
             event.accept()
@@ -5238,6 +5444,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return
+        graph_scene.delete_backdrops(graph_scene.selected_backdrops())
         selected = [
             node.chunk for node in graph_scene._nodes.values()
             if node.chunk.has_state(ChunkFlags.State.SELECTED)
@@ -6684,6 +6891,74 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         ]
         graph_scene.layout_nodes(selected_paths or None)
 
+    # ------------------------------------------------------------------
+    # Backdrops and sticky notes
+
+    def _create_backdrop(self, note: bool = False) -> BackdropItem | None:
+        """B: a backdrop around the selected nodes, or at the cursor. N: a sticky note at
+        the cursor, with its editor open."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return None
+        cursor = self.mapToScene(self.mapFromGlobal(QtGui.QCursor.pos()))
+        selected = [n for n in graph_scene._nodes.values() if n.chunk.has_state(ChunkFlags.State.SELECTED)]
+        rect = None
+        if not note and selected:
+            rect = backdrops.fit_around(n.sceneBoundingRect().getRect() for n in selected)
+        if rect is None:
+            w, h = backdrops.NOTE_SIZE if note else (400.0, 260.0)
+            rect = (cursor.x(), cursor.y(), w, h)
+        item = graph_scene.create_backdrop(rect, note=note)
+        if item is not None and note:
+            graph_scene.edit_backdrop_text(item)
+        return item
+
+    def _show_backdrop_menu(self, item: BackdropItem, global_pos: QtCore.QPoint) -> None:
+        """Right-click on a backdrop's frame or a note: text, colour, fit, delete."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        if not item.selected:
+            graph_scene.select_backdrop(item, toggle=False)
+        menu = QtWidgets.QMenu()
+        edit = menu.addAction("Edit Text...")
+        colors = menu.addMenu("Colour")
+        picks: dict[QtGui.QAction, tuple[float, float, float]] = {}
+        for name, rgb in backdrops.PALETTE.items():
+            swatch = QtGui.QPixmap(14, 14)
+            swatch.fill(QtGui.QColor.fromRgbF(*rgb))
+            picks[colors.addAction(QtGui.QIcon(swatch), name)] = rgb
+        colors.addSeparator()
+        custom = colors.addAction("Custom...")
+        fit = None if item.is_note else menu.addAction("Fit to Nodes")
+        menu.addSeparator()
+        delete = menu.addAction("Delete")
+        for action in (edit, colors.menuAction(), fit, delete):
+            if action is not None:
+                action.setEnabled(not item.locked)
+        chosen = self._exec_menu(menu, global_pos)
+        if chosen is None or not item.prim.IsValid():
+            return
+        targets = [t for t in graph_scene.selected_backdrops() if not t.locked] or [item]
+        if chosen is edit:
+            graph_scene.edit_backdrop_text(item)
+        elif chosen in picks:
+            for target in targets:
+                backdrops.set_color(target.prim, picks[chosen])
+        elif chosen is custom:
+            color = QtWidgets.QColorDialog.getColor(
+                QtGui.QColor.fromRgbF(*item.info.color), self, "Backdrop Colour",
+                QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog,
+            )
+            if color.isValid():
+                for target in targets:
+                    if target.prim.IsValid():
+                        backdrops.set_color(target.prim, (color.redF(), color.greenF(), color.blueF()))
+        elif chosen is fit:
+            graph_scene.fit_backdrop(item)
+        elif chosen is delete:
+            graph_scene.delete_backdrops(targets)
+
     def _open_tab_menu(self):
         """Open the chunk creation menu at the cursor, like Houdini's Tab menu."""
         cursor_pos = self.mapFromGlobal(QtGui.QCursor.pos())
@@ -7147,6 +7422,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 return
             if isinstance(item, ChunkNodeItem):
                 self._show_chunk_menu(item, event.globalPos())
+                event.accept()
+                return
+            if isinstance(item, BackdropItem):
+                self._show_backdrop_menu(item, event.globalPos())
                 event.accept()
                 return
 
