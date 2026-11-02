@@ -1,7 +1,7 @@
 """Dropping a dragged exec output onto an exec wire joins it in through a Merge.
 
 A -> B with C's exec output dropped on the wire becomes C, A -> Merge -> B: C goes in
-above A, so it wins over A as a node chained after A would. The joining itself is chunk_graph.merge_into_wire (test_engine_headless); this
+below A, so it wins over A as a node chained after A would. The joining itself is chunk_graph.merge_into_wire (test_engine_headless); this
 covers the view's half: which wire lights under the drag, and that the drop reaches it.
 """
 
@@ -152,7 +152,7 @@ def fanned(wired, qapp):
     qapp.processEvents()
     nodes = gv.scene()._nodes
     pd, pe = extra
-    # E above D: the Merge takes them top to bottom, not in creation order.
+    # E above D: the Merge takes them bottom to top, strongest first, not in creation order.
     nodes[pd].setPos(400, 1000)
     nodes[pe].setPos(400, 800)
     for path in (pc, pd, pe):
@@ -178,7 +178,7 @@ def test_wires_from_every_selected_node_join_a_wire(fanned) -> None:
     gv._finish_wire_drag(drop)
 
     (merge,) = [p for p in stage.Traverse() if is_merge_prim(p)]
-    assert _slots_of(merge) == [[pc], [pe], [pd], [pa]]
+    assert _slots_of(merge) == [[pd], [pe], [pc], [pa]]
     b_in = stage.GetAttributeAtPath(Sdf.Path(f"{pb}.inputs:chunk"))
     assert [str(conn.GetPrimPath()) for conn in b_in.GetConnections()] == [str(merge.GetPath())]
     assert gv._drag_fan == []
@@ -192,25 +192,25 @@ def test_wires_from_every_selected_node_fill_a_merges_slots(fanned) -> None:
     for path in (pd, pe):  # the new Merge took the selection
         gv.scene()._nodes[path].chunk.set_state(ChunkFlags.State.SELECTED)
     d_out = gv.scene()._nodes[pd].get_port(f"{pd}.outputs:chunk")
-    slot = node._exec_in_ports[1]  # A's: the fan goes in there, above A
+    slot = node._exec_in_ports[1]  # A's: the fan goes in there, stronger than A
 
     gv._start_wire_drag(d_out, d_out.scenePos())
     gv._update_wire_drag(slot.scenePos())
     gv._finish_wire_drag(slot.scenePos())
 
-    assert _slots_of(merge) == [[pc], [pe], [pd], [pa]]
+    assert _slots_of(merge) == [[pc], [pd], [pe], [pa]]
 
 
-def test_the_empty_slot_is_drawn_on_top(wired) -> None:
+def test_the_empty_slot_is_drawn_at_the_bottom(wired) -> None:
     gv, stage, (_pa, _pb, pc), edge = wired
     _merge, node = _joined(gv, stage, pc, edge)
 
     *wired_slots, empty = node._exec_in_ports
-    assert all(empty.pos().y() < port.pos().y() for port in wired_slots)
-    assert wired_slots[0].pos().y() < wired_slots[1].pos().y(), "then strongest down to weakest"
+    assert all(empty.pos().y() > port.pos().y() for port in wired_slots)
+    assert wired_slots[0].pos().y() > wired_slots[1].pos().y(), "the strongest just above it"
 
 
-def _drop_on_top(gv, stage, src_path, pc, edge):
+def _drop_on_empty(gv, stage, src_path, pc, edge):
     """Join C into the wire, then drop src_path's exec output on the Merge's empty slot."""
     merge, _node = _joined(gv, stage, pc, edge)
     gv.scene()._build_edges()
@@ -223,17 +223,17 @@ def _drop_on_top(gv, stage, src_path, pc, edge):
     return merge
 
 
-def test_a_wire_dropped_on_the_empty_slot_goes_in_on_top(fanned) -> None:
+def test_a_wire_dropped_on_the_empty_slot_goes_in_strongest(fanned) -> None:
     gv, stage, (pa, _pb, pc, pd, pe), edge = fanned
     for path in (pc, pe):
         gv.scene()._nodes[path].chunk.unset_state(ChunkFlags.State.SELECTED)
 
-    merge = _drop_on_top(gv, stage, pd, pc, edge)
+    merge = _drop_on_empty(gv, stage, pd, pc, edge)
 
     assert _slots_of(merge) == [[pd], [pc], [pa]]
 
 
-def test_a_fan_dropped_on_the_empty_slot_goes_in_on_top(fanned) -> None:
+def test_a_fan_dropped_on_the_empty_slot_goes_in_strongest(fanned) -> None:
     gv, stage, (pa, _pb, pc, pd, pe), edge = fanned
     gv.scene()._nodes[pc].chunk.unset_state(ChunkFlags.State.SELECTED)
     merge, _node = _joined(gv, stage, pc, edge)
@@ -247,10 +247,10 @@ def test_a_fan_dropped_on_the_empty_slot_goes_in_on_top(fanned) -> None:
     gv._update_wire_drag(empty.scenePos())
     gv._finish_wire_drag(empty.scenePos())
 
-    assert _slots_of(merge) == [[pe], [pd], [pc], [pa]]
+    assert _slots_of(merge) == [[pd], [pe], [pc], [pa]]
 
 
-def test_a_slots_wire_dropped_on_the_empty_slot_moves_to_the_top(wired) -> None:
+def test_a_slots_wire_dropped_on_the_empty_slot_moves_to_slot_0(wired) -> None:
     gv, stage, (pa, _pb, pc), edge = wired
     merge, node = _joined(gv, stage, pc, edge)
     gv.scene()._build_edges()

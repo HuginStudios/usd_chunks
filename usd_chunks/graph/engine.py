@@ -898,10 +898,10 @@ def merge_into_wire(stage: Usd.Stage, scene, wire: EdgeRef, branch, usd_pos,
                     nest=None) -> tuple[GraphChange | None, str]:
     """Join a branch into an exec wire A -> B through a Merge: A and branch -> Merge -> B.
 
-    What dropping a node's exec output onto a wire means. The branch goes in above A, so
-    it wins over A the way a node chained after A would: in a Merge the top slot is the
+    What dropping a node's exec output onto a wire means. The branch goes in below A, so
+    it wins over A the way a node chained after A would: in a Merge the bottom slot is the
     strongest. A wire that already enters a Merge gets the branch in A's slot instead of a
-    second Merge in front of it, A and the slots under it moving down one.
+    second Merge in front of it, A and the weaker slots moving up one.
 
     Args:
         stage: The stage to author on.

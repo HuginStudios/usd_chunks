@@ -124,8 +124,8 @@ _PROXY_BUSY_WAIT_MAX_S = 15.0
 
 # A Merge is a circle, not a node box: it has no params, so a full-width node was length
 # spent on nothing. Its exec inputs sit on the left of the circle across _MERGE_ARC: the
-# empty slot on top, then slot 0 (strongest) down to the weakest; the circle grows only
-# when they would crowd.
+# weakest on top, down to slot 0 (strongest), then the empty slot at the bottom; the
+# circle grows only when they would crowd.
 _MERGE_MIN_R = 13
 _MERGE_ARC = math.radians(150)
 _MERGE_PORT_GAP = 15  # along the arc, between neighbouring slot ports
@@ -137,7 +137,8 @@ def _merge_radius(slots: int) -> float:
 
 
 def _merge_port_pos(index: int, slots: int, radius: float) -> QtCore.QPointF:
-    """Where slot index sits on the left arc of a Merge circle, in node coordinates."""
+    """Where the index-th port from the top sits on the left arc of a Merge circle, in node
+    coordinates."""
     angle = 0.0 if slots == 1 else -_MERGE_ARC / 2 + index * _MERGE_ARC / (slots - 1)
     return QtCore.QPointF(radius - radius * math.cos(angle), radius + radius * math.sin(angle))
 
@@ -812,7 +813,7 @@ def _wire_handle(x1: float, x2: float) -> float:
 
 
 def _is_merge_trailer(port) -> bool:
-    """Whether port is a Merge's empty slot: last in its _exec_in_ports, drawn on top."""
+    """Whether port is a Merge's empty slot: last in its _exec_in_ports, drawn at the bottom."""
     node = port.parentItem()
     return (getattr(node, "_is_merge", False) and bool(node._exec_in_ports)
             and port is node._exec_in_ports[-1])
@@ -1265,16 +1266,16 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             # _author_connection creates the attribute on demand from the port's own
             # attr_path, so an unconnected inputs:chunkN never has to be authored -- and then
             # serialized into every saved file forever -- just to give a wire somewhere to
-            # land. Ports read top-to-bottom as strongest-to-weakest, with the empty one on
-            # top: a branch dropped there goes in as slot 0 and wins, as a node chained after
-            # the rest would (see _drop_on_merge_top). It is still last in _exec_in_ports.
+            # land. Ports read top-to-bottom as weakest-to-strongest, with the empty one at
+            # the bottom: a branch dropped there goes in as slot 0 and wins, as a node chained
+            # after the rest would (see _drop_on_merge_trailer). Last in _exec_in_ports too.
             slots = len(chunk_stage.exec_input_connections(prim)) + 1
             radius = _merge_radius(slots)
             for i in range(slots):
                 port = ChunkPortItem(
                     f"{prim.GetPath()}.{chunk_stage.exec_input_name(i)}", _PORT_EXEC, parent=self
                 )
-                port.setPos(_merge_port_pos(0 if i == slots - 1 else i + 1, slots, radius))
+                port.setPos(_merge_port_pos(slots - 1 if i == slots - 1 else slots - 2 - i, slots, radius))
                 self._ports.append(port)
             # Everything that asks a node for "its" exec input (splice-on-drop, wire-drop
             # targeting) should get the primary one, which is slot 0 -- the strongest.
@@ -5350,13 +5351,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             self._drag_fan.append((out, wire))
 
     def _fan_branches(self) -> list[str]:
-        """Prim paths of the grabbed node and every node in its fan, top to bottom.
+        """Prim paths of the grabbed node and every node in its fan, bottom to top.
 
-        The order a Merge gets them in: its slots stack the same way, so the wires do not
-        cross, and the topmost node is the strongest.
+        The order a Merge gets them in, strongest first: its slots stack the same way, the
+        strongest at the bottom, so the wires do not cross.
         """
         ports = [self._drag_src_port] + [port for port, _wire in self._drag_fan]
-        ports.sort(key=lambda port: (port.scenePos().y(), port.scenePos().x()))
+        ports.sort(key=lambda port: (-port.scenePos().y(), port.scenePos().x()))
         return [str(Sdf.Path(port.attr_path).GetPrimPath()) for port in ports]
 
     def _fan_lands_on(self, port: ChunkPortItem | None) -> bool:
@@ -5542,11 +5543,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         if isinstance(item, ChunkPortItem)), None)
         graph_scene = self.scene()
         if hit is not None and self._drag_target_ok(hit) and _is_merge_trailer(hit):
-            self._drop_on_merge_top(hit)
+            self._drop_on_merge_trailer(hit)
             return
         if self._drag_fan and hit is not None and self._drag_target_ok(hit) and self._fan_lands_on(hit):
             # Wires from several selected nodes, dropped on a Merge's slot: they go in there,
-            # above what was in it, each taking a slot.
+            # stronger than what was in it, each taking a slot.
             node = hit.parentItem()
             merge, branches = str(Sdf.Path(hit.attr_path).GetPrimPath()), self._fan_branches()
             at = node._exec_in_ports.index(hit) if hit in node._exec_in_ports else None
@@ -5595,11 +5596,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         self._cancel_wire_drag()
 
-    def _drop_on_merge_top(self, trailer: ChunkPortItem) -> None:
-        """A wire let go on a Merge's empty slot, which sits on top: in as slot 0, the strongest.
+    def _drop_on_merge_trailer(self, trailer: ChunkPortItem) -> None:
+        """A wire let go on a Merge's empty slot, at the bottom: in as slot 0, the strongest.
 
-        A fresh wire, or the fan of them, goes in above every branch already there. A wire
-        picked up off an input moves: off that input, onto the top of the Merge.
+        A fresh wire, or the fan of them, goes in stronger than every branch already there.
+        A wire picked up off an input moves: off that input, into slot 0 of the Merge.
         """
         merge = str(Sdf.Path(trailer.attr_path).GetPrimPath())
         src = self._drag_src_port

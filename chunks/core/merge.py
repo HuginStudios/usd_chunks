@@ -22,9 +22,9 @@ def config():
         description="Fan-in for the execution chain: many upstream branches converge on one "
         "output, instead of being strung out in a single serial line. Inputs are ordered and "
         "the order decides who wins — input 0 is the strongest opinion, so when two branches "
-        "author the same prim, the one in the topmost slot takes precedence (same convention "
-        "as Houdini's Merge LOP). Slots stay dense: clearing one shifts the rest up. The "
-        "empty slot sits on top: a branch attached there goes in as input 0 and wins, the "
-        "way a node chained after the rest would.",
+        "author the same prim, the one in the bottom slot takes precedence. Slots stay "
+        "dense: clearing one closes the gap. The empty slot sits at the bottom: a branch "
+        "attached there goes in as input 0 and wins, the way a node chained after the rest "
+        "would.",
         dynamic_exec_inputs=True,
     )
