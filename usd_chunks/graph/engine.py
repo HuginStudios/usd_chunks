@@ -1797,7 +1797,8 @@ def layout_adjacency(prims: dict) -> tuple[dict, dict]:
     return up_of, down_of
 
 
-def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) -> dict:
+def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None, origin=None,
+                 obstacles=()) -> dict:
     """Compute an auto-layout for the graph, or for a selection and what it connects to.
 
     The computation only: growing a selection to its connected subgraph, scoping the
@@ -1816,6 +1817,9 @@ def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) 
         is_locked: Takes a prim path and returns whether the node must not move. Defaults to
             "nothing is locked": Qt pins nodes whose prim comes from a referenced layer, and
             the other frontends have no such concept yet.
+        origin: The (x, y) the layout starts at, top left. None starts where the nodes
+            already are.
+        obstacles: (x, y, w, h) rects no node may land on.
 
     Returns:
         {prim path: (x, y)} for the nodes that should move.
@@ -1834,7 +1838,7 @@ def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) 
     scoped_down = {node: {d for d in down_of.get(node, ()) if d in wanted} for node in node_ids}
     return chunk_graph_layout.layout_positions(
         node_ids, size_of, is_locked or (lambda path: False), current_pos,
-        scoped_up, scoped_down,
+        scoped_up, scoped_down, origin=origin, obstacles=obstacles,
     )
 
 

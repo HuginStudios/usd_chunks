@@ -3445,20 +3445,56 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             if not item.locked and item.prim.IsValid():
                 backdrops.delete(item.prim)
 
-    def fit_backdrop(self, item: BackdropItem) -> None:
-        """Resize a backdrop to frame the nodes inside it."""
-        rect = backdrops.fit_around(n.sceneBoundingRect().getRect() for n in self.nodes_in_backdrop(item))
+    def fit_backdrop(self, item: BackdropItem, nodes: list[ChunkNodeItem] | None = None) -> None:
+        """Resize a backdrop to frame its nodes.
+
+        Args:
+            item: The backdrop.
+            nodes: The nodes to frame. None frames the ones inside it now.
+        """
+        if nodes is None:
+            nodes = self.nodes_in_backdrop(item)
+        rect = backdrops.fit_around(n.sceneBoundingRect().getRect() for n in nodes)
         if rect is not None and item.prim.IsValid() and not item.locked:
             backdrops.set_rect(item.prim, rect)
+
+    def layout_in_backdrop(self, item: BackdropItem) -> None:
+        """Lay out only the nodes inside a backdrop, from its top-left corner, then fit
+        the backdrop around them. Wires to nodes outside it are ignored."""
+        if item.locked:
+            return
+        nodes = self.nodes_in_backdrop(item)
+        if not nodes:
+            return
+        x, y, _, _ = item.rect()
+        pad = backdrops.FIT_PADDING
+        # A node's bounding rect starts a port's radius left of the node itself.
+        origin = (x + pad + _PORT_RADIUS, y + backdrops.HEADER_HEIGHT + pad)
+        inside = {str(n.prim.GetPath()) for n in nodes}
+        # The nodes outside are in the way, so nothing lands on one, but their wires are
+        # not followed.
+        obstacles = [self._nodes[p].sceneBoundingRect().getRect() for p in self._nodes if p not in inside]
+        self.layout_nodes(only=inside, origin=origin, obstacles=obstacles)
+        self.fit_backdrop(item, nodes)
 
     # ------------------------------------------------------------------
     # Auto-layout (L key)
 
-    def layout_nodes(self, seed_paths: list[str] | None = None) -> None:
+    def layout_nodes(
+        self,
+        seed_paths: list[str] | None = None,
+        only: Iterable[str] | None = None,
+        origin: tuple[float, float] | None = None,
+        obstacles: Iterable[tuple[float, float, float, float]] = (),
+    ) -> None:
         """Auto-layout -- see usd_chunks/graph/layout.py for the algorithm itself.
 
         seed_paths: prim paths to grow into their full connected subgraph before laying out
         (the "Layout Selected" case). None lays out every node currently in this context.
+        only: lay out just these nodes, as if the rest of the graph were not there (the
+        nodes inside a backdrop).
+        origin: the (x, y) the layout starts at, top left. None starts where the nodes are.
+        obstacles: (x, y, w, h) rects no node may land on.
 
         The computation is chunk_graph.layout_graph, shared with the other frontends; what
         stays here is applying it, because only this one has QGraphicsItems to move.
@@ -3466,6 +3502,9 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         if not self._nodes:
             return
         prims = {path: node.prim for path, node in self._nodes.items() if node.prim.IsValid()}
+        if only is not None:
+            wanted = set(only)
+            prims = {path: prim for path, prim in prims.items() if path in wanted}
 
         def size_of(path):
             rect = self._nodes[path].boundingRect()
@@ -3476,7 +3515,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             return point.x(), point.y()
 
         positions = chunk_graph.layout_graph(
-            prims, size_of, current_pos, seeds=seed_paths,
+            prims, size_of, current_pos, seeds=seed_paths, origin=origin, obstacles=obstacles,
             # Unlike the other frontends, this one knows about locked nodes: a prim from an
             # external or referenced layer must not be moved, though it still acts as an
             # obstacle.
@@ -6885,6 +6924,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._nodes:
             return
+        picked = graph_scene.selected_backdrops()
+        if picked:
+            # Only backdrops lay out; a note or a locked backdrop has nothing to lay out.
+            # Either way the selection is not nodes, so the whole graph is left alone.
+            for item in picked:
+                if not item.is_note:
+                    graph_scene.layout_in_backdrop(item)
+            return
         selected_paths = [
             path for path, node in graph_scene._nodes.items()
             if node.chunk.has_state(ChunkFlags.State.SELECTED)
@@ -6931,9 +6978,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         colors.addSeparator()
         custom = colors.addAction("Custom...")
         fit = None if item.is_note else menu.addAction("Fit to Nodes")
+        layout = None if item.is_note else menu.addAction("Layout Nodes Inside  (L)")
         menu.addSeparator()
         delete = menu.addAction("Delete")
-        for action in (edit, colors.menuAction(), fit, delete):
+        for action in (edit, colors.menuAction(), fit, layout, delete):
             if action is not None:
                 action.setEnabled(not item.locked)
         chosen = self._exec_menu(menu, global_pos)
@@ -6956,6 +7004,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                         backdrops.set_color(target.prim, (color.redF(), color.greenF(), color.blueF()))
         elif chosen is fit:
             graph_scene.fit_backdrop(item)
+        elif chosen is layout:
+            graph_scene.layout_in_backdrop(item)
         elif chosen is delete:
             graph_scene.delete_backdrops(targets)
 

@@ -12,7 +12,7 @@ individual nodes with no grouping concept at all.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 X_GAP = 65  # horizontal gap between depth columns
 Y_GAP = 55  # vertical gap between nodes in the same column (or around a locked obstacle)
@@ -89,6 +89,8 @@ def layout_positions(
     current_pos: PosOf,
     up_of: AdjacencyMap,
     down_of: AdjacencyMap,
+    origin: tuple[float, float] | None = None,
+    obstacles: Iterable[tuple[float, float, float, float]] = (),
 ) -> dict[str, tuple[float, float]]:
     """Compute new positions for every node in `node_ids` that is not locked.
 
@@ -110,6 +112,10 @@ def layout_positions(
             subgraph" BFS closure already guarantee this, so this function doesn't filter
             external references itself.
         down_of: Downstream neighbours of each node, under the same rule as `up_of`.
+        origin: The (x, y) the layout starts at, top left. None starts where the nodes
+            already are: the leftmost x and topmost y among them.
+        obstacles: More (x, y, w, h) rects no node may land on, kept clear of the same way
+            as a locked node's, without being anyone's neighbour.
 
     Returns:
         {node_id: (x, y)} for every movable node.
@@ -122,8 +128,11 @@ def layout_positions(
     if not movable:
         return {}
 
-    start_x = min(current_pos(nid)[0] for nid in node_ids)
-    start_y = min(current_pos(nid)[1] for nid in node_ids)
+    if origin is not None:
+        start_x, start_y = origin
+    else:
+        start_x = min(current_pos(nid)[0] for nid in node_ids)
+        start_y = min(current_pos(nid)[1] for nid in node_ids)
 
     placed_cy: dict[str, float] = {}
     locked_rects: list[tuple[float, float, float, float]] = []  # (x, y, w, h)
@@ -132,6 +141,7 @@ def layout_positions(
         w, h = size_of(nid)
         placed_cy[nid] = y + h / 2
         locked_rects.append((x, y, w, h))
+    locked_rects.extend(obstacles)
 
     components = find_connected_components(movable, up_of, down_of)
     components.sort(key=len, reverse=True)  # largest first, anchors the top of the canvas

@@ -165,6 +165,27 @@ def test_delete_removes_the_backdrop_and_keeps_its_nodes(graph):
     assert all(p in view.scene()._nodes for p in paths)
 
 
+def test_l_on_a_backdrop_lays_out_only_its_nodes(graph):
+    qapp = graph[0]
+    view, _chunks, paths = _nodes(graph, 3)
+    view, item = _backdrop_around(graph, paths[:2])
+    graph_scene = view.scene()
+    outside_before = graph_scene._nodes[paths[2]].pos()
+    # Pile the two inside nodes on top of each other, still inside the box.
+    corner = graph_scene._nodes[paths[0]].pos()
+    graph_scene._nodes[paths[1]].setPos(corner + QtCore.QPointF(5, 5))
+    box_before = item.rect()
+    view._layout_selected_or_all()
+    _settle(qapp)
+    a, b = (graph_scene._nodes[p].sceneBoundingRect() for p in paths[:2])
+    assert not a.intersects(b)
+    assert graph_scene._nodes[paths[2]].pos() == outside_before
+    item = graph_scene._backdrops[str(item.prim.GetPath())]
+    x, y, _w, _h = item.rect()
+    assert (x, y) == pytest.approx(box_before[:2])
+    inside = {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(item)}
+    assert inside == set(paths[:2])
+
 
 def test_n_makes_a_note_and_its_text_is_kept(graph):
     qapp = graph[0]
@@ -289,6 +310,40 @@ def test_resizing_from_the_corner(graph):
     assert backdrops.read(item.prim).rect == pytest.approx((x, y, w + 80, h + 40), abs=1)
 
 
+def test_l_in_a_backdrop_keeps_clear_of_the_nodes_outside(graph):
+    """Nodes outside are obstacles: laying out the inside never drops a node on one."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 4)
+    graph_scene = view.scene()
+    for upstream, downstream in zip(chunks[:2], chunks[1:3]):
+        downstream.add_dependency(upstream)
+    _settle(qapp)
+    view, item = _backdrop_around(graph, paths[:1])
+    x, y, w, h = item.rect()
+    # Pile the chain's other two into the box, and park the fourth node just right of it.
+    for path in paths[1:3]:
+        graph_scene._nodes[path].setPos(graph_scene._nodes[paths[0]].pos() + QtCore.QPointF(4, 4))
+    outside = graph_scene._nodes[paths[3]]
+    outside.setPos(x + w + 20, y + backdrops.HEADER_HEIGHT + backdrops.FIT_PADDING)
+    outside_rect = outside.sceneBoundingRect()
+    graph_scene.select_backdrop(item, toggle=False)
+    view._layout_selected_or_all()
+    _settle(qapp)
+    assert outside.sceneBoundingRect() == outside_rect
+    for path in paths[:3]:
+        assert not graph_scene._nodes[path].sceneBoundingRect().intersects(outside_rect), path
+
+
+def test_l_with_only_a_note_selected_moves_nothing(graph):
+    qapp = graph[0]
+    view, _chunks, paths = _nodes(graph, 3)
+    graph_scene = view.scene()
+    before = {p: graph_scene._nodes[p].pos() for p in paths}
+    note = graph_scene.create_backdrop((0, 600, 200, 100), note=True)
+    assert note.selected
+    view._layout_selected_or_all()
+    _settle(qapp)
+    assert {p: graph_scene._nodes[p].pos() for p in paths} == before
 
 
 def test_selected_backdrops_drag_together(graph):

@@ -117,6 +117,21 @@ def test_layout_positions_preserves_the_pre_layout_top_left_corner() -> None:
     assert result_min_y == min(y for _, y in starting_positions.values())
 
 
+def test_layout_positions_starts_at_an_origin_when_given_one() -> None:
+    """Laying out the nodes in a backdrop starts at the backdrop's corner, wherever the
+    nodes were before."""
+    up = {"b": {"a"}}
+    down = {"a": {"b"}}
+    sizes = _sizes({"a": (100, 50), "b": (100, 50)})
+    starting_positions = {"a": (5000.0, -3000.0), "b": (6000.0, 900.0)}
+    result = layout_positions(
+        ["a", "b"], sizes, _locked(set()), _positions(starting_positions), up, down,
+        origin=(10.0, 20.0),
+    )
+    assert min(x for x, _ in result.values()) == 10.0
+    assert min(y for _, y in result.values()) == 20.0
+
+
 def test_layout_positions_omits_locked_nodes_from_the_result() -> None:
     up = {"b": {"a"}}
     down = {"a": {"b"}}
