@@ -63,6 +63,12 @@ _RESIZE_GRIP_IN = 3  # how far inside the node's right edge a press starts a res
 _RESIZE_GRIP_OUT = 4  # and how far outside it
 # On the edge, a press this close to a port (on screen) starts a wire, not a resize.
 _PORT_PRESS_PIXELS = 14
+# A wire dragged near the view's edge scrolls the graph that way, to reach a port off
+# screen: within _EDGE_PAN_PIXELS of the edge, up to _EDGE_PAN_SPEED screen pixels per
+# tick of _EDGE_PAN_MS, faster the closer to (or past) the edge.
+_EDGE_PAN_PIXELS = 40
+_EDGE_PAN_SPEED = 24
+_EDGE_PAN_MS = 16
 _NODE_HEADER_H = 48
 # Room under a node's body for its rounded bottom corners. The body is a square widget, so
 # one that reached the bottom edge covered the corners: a group's grey Description box, or
@@ -4057,6 +4063,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._drag_temp_port: ChunkPortItem | None = None
         self._drag_by_click = False
         self._swallow_release = False
+        # Ticks while a wire is dragged, scrolling when the cursor is near an edge.
+        self._edge_pan_timer = QtCore.QTimer(self)
+        self._edge_pan_timer.setInterval(_EDGE_PAN_MS)
+        self._edge_pan_timer.timeout.connect(self._edge_pan_tick)
         # The exec wire a dragged exec output would join through a Merge, lit while it is
         # under the cursor, with the pen to give back when it is not.
         self._drag_merge_wire: ChunkEdgeItem | None = None
@@ -5289,7 +5299,48 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Wire drag
 
+    def _edge_pan_tick(self) -> None:
+        """Scroll toward the edge the cursor is near while a wire is dragged; stop after."""
+        if self._drag_src_port is None:
+            self._edge_pan_timer.stop()
+            return
+        if not self._pan_active:
+            self._edge_pan_step(self.viewport().mapFromGlobal(QtGui.QCursor.pos()))
+
+    def _edge_pan_step(self, pos: QtCore.QPoint) -> bool:
+        """Scroll one tick toward the edge pos (viewport pixels) is near, keeping the
+        wire's loose end under it.
+
+        Args:
+            pos: The cursor, in viewport coordinates.
+
+        Returns:
+            True if it scrolled.
+        """
+        rect = self.viewport().rect()
+
+        def speed(near_low: int, near_high: int) -> int:
+            # Negative toward the low edge, positive toward the high one, 0 away from both.
+            for depth, sign in ((_EDGE_PAN_PIXELS - near_low, -1), (_EDGE_PAN_PIXELS - near_high, 1)):
+                if depth > 0:
+                    return sign * round(_EDGE_PAN_SPEED * min(depth, _EDGE_PAN_PIXELS) / _EDGE_PAN_PIXELS)
+            return 0
+
+        dx = speed(pos.x() - rect.left(), rect.right() - pos.x())
+        dy = speed(pos.y() - rect.top(), rect.bottom() - pos.y())
+        if not (dx or dy):
+            return False
+        hbar, vbar = self.horizontalScrollBar(), self.verticalScrollBar()
+        before = (hbar.value(), vbar.value())
+        hbar.setValue(hbar.value() + dx)
+        vbar.setValue(vbar.value() + dy)
+        if (hbar.value(), vbar.value()) == before:
+            return False  # at the end of the canvas
+        self._update_wire_drag(self.mapToScene(pos))
+        return True
+
     def _start_wire_drag(self, port: ChunkPortItem, scene_pos: QtCore.QPointF) -> None:
+        self._edge_pan_timer.start()
         self._drag_src_port = port
         self._drag_detach_attr = None
         self._drag_detach_source_port = None

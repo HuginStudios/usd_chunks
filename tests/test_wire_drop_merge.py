@@ -329,3 +329,28 @@ def test_dragging_a_slots_wire_onto_another_slot_swaps_them(wired) -> None:
     slots = [[str(conn.GetPrimPath()) for conn in attr.GetConnections()]
              for attr in chunk_naming.iter_exec_inputs(merge)]
     assert slots == [[pa], [pc]], "swapped, and neither branch dropped"
+
+
+def test_a_wire_dragged_to_the_views_edge_scrolls_the_graph(wired) -> None:
+    """To reach a port off screen: near an edge the graph scrolls, the wire's end with it."""
+    gv, _stage, (_pa, _pb, pc), _edge = wired
+    c_out = gv.scene()._nodes[pc].get_port(f"{pc}.outputs:chunk")
+    gv._start_wire_drag(c_out, c_out.scenePos())
+    assert gv._edge_pan_timer.isActive()
+    rect = gv.viewport().rect()
+    hbar, vbar = gv.horizontalScrollBar(), gv.verticalScrollBar()
+
+    assert not gv._edge_pan_step(rect.center()), "nowhere near an edge"
+    before = (hbar.value(), vbar.value())
+    near_right = QtCore.QPoint(rect.right() - 5, rect.center().y())
+    assert gv._edge_pan_step(near_right)
+    assert hbar.value() > before[0] and vbar.value() == before[1]
+    assert gv._drag_edge.path().currentPosition() == gv.mapToScene(near_right)
+
+    x = hbar.value()
+    assert gv._edge_pan_step(QtCore.QPoint(rect.left() + 5, rect.top() + 5))
+    assert hbar.value() < x and vbar.value() < before[1], "up and to the left"
+
+    gv._cancel_wire_drag()
+    gv._edge_pan_tick()
+    assert not gv._edge_pan_timer.isActive(), "stops once the wire is let go"
