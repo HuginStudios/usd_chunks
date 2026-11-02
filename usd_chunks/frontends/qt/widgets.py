@@ -649,6 +649,9 @@ class ChunkFloatSpinboxWidget(ChunkParamWidgetBase[chunk.Spinbox], QtWidgets.QDo
         super().__init__(param)
 
         self._step = 1
+        # "." is the decimal point whatever the system locale, as in the slider's field: on
+        # a comma locale (en_SE) a typed "2.5" otherwise drops the "." and reads as 25.
+        self.setLocale(QtCore.QLocale.c())
 
         min_val = param.min_value
         max_val = param.max_value
