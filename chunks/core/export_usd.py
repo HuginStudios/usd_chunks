@@ -487,10 +487,10 @@ def commit(node):
         # session-only identifier, in either mode, and must point at its file instead.
         # Every file gets the stage's up-axis and units: any of them may be the one opened
         # on its own, and without them it reads as USD's global default rather than this
-        # scene's.
+        # scene's. A sublayer's own, though, are its own: the stage never reads them.
         export_layer = Sdf.Layer.CreateAnonymous()
         export_layer.TransferContent(layer)
-        chunk_stage.stamp_stage_metadata(export_layer, stage)
+        chunk_stage.stamp_stage_metadata(export_layer, stage, keep_own=layer != stage.GetRootLayer())
         if baked:
             # Baked: bring each chunk's real content in from its own private layer
             # (only on choosing to bake does it get copied into this edit target),
