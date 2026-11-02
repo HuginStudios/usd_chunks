@@ -1541,7 +1541,7 @@ def _create_chunk_at_tail(module_name: str):
 #: Module the Transforms a run of viewport drags makes are gathered into.
 GATHER_MODULE = "merge"
 
-#: How far above the last branch a Transform gathered into a Merge is placed: open, and as
+#: How far below the last branch a Transform gathered into a Merge is placed: open, and as
 #: a collapsed header (48 tall, plus the gap a multi-file drop leaves).
 _BRANCH_STEP = 160
 _COLLAPSED_BRANCH_STEP = 64
@@ -1641,12 +1641,13 @@ def _gather_into_merge(scene, chunk: core.ChunkBase, tail: core.ChunkBase):
     sync._rewire_views_from_source(chunk, merge, outputs=True)
     chunk_stage.reconcile_edit_targets(stage, scene)
 
-    # Above the Transforms already there, the way the Merge's slots stack (USD is Y-up).
+    # Below the Transforms already there, the way the Merge's slots stack, strongest at the
+    # bottom, so the wires don't cross (USD is Y-up).
     placed = [p for p in (_node_pos(b) for b in gathered) if p is not None]
     if placed:
         step = (_COLLAPSED_BRANCH_STEP if chunk.has_state(core.ChunkFlags.State.COLLAPSED)
                 else _BRANCH_STEP)
-        _set_node_pos(stage, chunk, new_prim, (placed[0][0], max(p[1] for p in placed) + step))
+        _set_node_pos(stage, chunk, new_prim, (placed[0][0], min(p[1] for p in placed) - step))
     return merge
 
 

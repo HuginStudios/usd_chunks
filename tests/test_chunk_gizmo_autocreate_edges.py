@@ -156,15 +156,15 @@ def test_drags_in_a_row_gather_into_one_merge(gathering) -> None:
 
     merges = [p for p in stage.Traverse() if chunk_stage.is_merge_prim(p)]
     assert len(merges) == 1
-    # The newest on top, then the older Transforms, then what came before at the bottom:
+    # The newest strongest, then the older Transforms, then what came before, weakest:
     # each outranks what came before it, as it would chained after it.
     assert _sources(stage, merges[0].GetPath()) == [*reversed(paths), head]
     for path in paths:
         assert _sources(stage, path) == [], "a gathered Transform needs no input of its own"
 
 
-def test_a_merge_gathered_with_the_upstream_on_top_is_put_right(gathering) -> None:
-    """Merges gathered before the upstream moved to the bottom have it in slot 0."""
+def test_a_merge_gathered_with_the_upstream_strongest_is_put_right(gathering) -> None:
+    """Merges gathered before the upstream moved to the weakest slot have it in slot 0."""
     stage, registry, _module, head = gathering
     a, b = (str(chunk_gizmo.ensure_transform_chunk(_prim(stage, n)).chunk_prim) for n in "AB")
     (merge,) = [p for p in stage.Traverse() if chunk_stage.is_merge_prim(p)]
@@ -177,14 +177,14 @@ def test_a_merge_gathered_with_the_upstream_on_top_is_put_right(gathering) -> No
     assert _sources(stage, merge.GetPath()) == [c, a, b, head]
 
 
-def test_the_transforms_stack_upward_like_the_slots(gathering) -> None:
+def test_the_transforms_stack_downward_like_the_slots(gathering) -> None:
     stage, _registry, _module, _head = gathering
 
     paths = [str(chunk_gizmo.ensure_transform_chunk(_prim(stage, n)).chunk_prim) for n in "ABC"]
 
     xs, ys = zip(*(chunk_gizmo._node_pos(stage.GetPrimAtPath(p)) for p in paths))
     assert len(set(xs)) == 1
-    assert ys[0] < ys[1] < ys[2], "each one above the last, newest on top (USD is Y-up)"
+    assert ys[0] > ys[1] > ys[2], "each one below the last, newest at the bottom (USD is Y-up)"
 
 
 def test_a_dragged_transform_starts_collapsed(scene) -> None:
