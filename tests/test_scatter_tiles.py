@@ -64,6 +64,23 @@ def test_fills_flat_ground_as_fully_as_darts():
     assert sc.mean() == pytest.approx(np.mean(darts_sc), rel=0.05)
 
 
+@pytest.mark.parametrize("tilt", [0.58, 1.0])
+def test_slopes_fill_like_darts_and_keep_spacing_along_them(tilt):
+    """Darts spaces instances along the surface, so a slope takes more per metre of ground;
+    Tiles squashes its tile along the fall line to match, and holds the spacing in 3D."""
+    tris = _plane(tilt=tilt)
+    darts, _, _ = sp._scatter_sized(tris, 10_000_000, random.Random(1), 3.0, random.Random(14),
+                                    0.3, 0.65, 1.0, vary=True)
+    flat, _, _ = _tiles(_plane())
+    pos, _, sc = _tiles(tris)
+    assert len(pos) > 1.05 * len(flat)
+    assert len(pos) >= 0.85 * len(darts)
+    r = _radii(sc)
+    pairs = cKDTree(pos).query_pairs(2.0 * r.max(), output_type="ndarray")
+    d = np.linalg.norm(pos[pairs[:, 0]] - pos[pairs[:, 1]], axis=1)
+    assert not (d < (r[pairs[:, 0]] + r[pairs[:, 1]]) * (1.0 - 1e-6)).any()
+
+
 def test_same_layout_every_time():
     a, _, sa = _tiles(_plane())
     b, _, sb = _tiles(_plane())

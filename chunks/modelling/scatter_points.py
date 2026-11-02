@@ -543,6 +543,11 @@ _TILE_DIAMETERS = 64
 # what is left are gaps no instance fits.
 _TILE_FILL = 10.0
 _TILE_MAX_CANDIDATES = 600_000
+# Slope bands: a band per this much of the slope's cosine, down to the last (cos 0.4, ~66
+# degrees); and the ways a slope can face, in sectors.
+_TILE_BAND_STEP = 0.1
+_TILE_BANDS = 7
+_TILE_ASPECTS = 8
 # Tiled points dropped onto the surface per block, a block per thread.
 _TILE_BLOCK = 250_000
 _tiles: dict = {}
@@ -638,35 +643,91 @@ def _scatter_tiles(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
     if r_hi <= 0 or cKDTree is None:
         return _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi, bias,
                               mask=mask, avoid=avoid, vary=vary)
-    side, tile_ab, tile_sc, tile_rad = _blue_tile(
-        rng.getrandbits(63), unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing)
+    tile_seed = rng.getrandbits(63)
     gen = np.random.default_rng(scale_rng.getrandbits(63))
     a, b = [i for i in range(3) if i != up_idx]
     v0s, v1s, v2s = (np.asarray(x, dtype=np.float64) for x in (triangles.v0, triangles.v1, triangles.v2))
     normals_all = np.asarray(triangles.n, dtype=np.float64)
-    corners = np.concatenate((v0s, v1s, v2s))
-    lo, hi = corners[:, [a, b]].min(axis=0), corners[:, [a, b]].max(axis=0)
-    # Every copy of the tile that overlaps the footprint, in a fixed order.
-    ia = np.arange(math.floor(lo[0] / side), math.floor(hi[0] / side) + 1)
-    ib = np.arange(math.floor(lo[1] / side), math.floor(hi[1] / side) + 1)
-    offsets = np.stack(np.meshgrid(ia, ib, indexing="ij"), axis=-1).reshape(-1, 2) * side
-    ab = (offsets[:, None, :] + tile_ab[None, :, :]).reshape(-1, 2)
-    sc = np.tile(tile_sc, len(offsets))
-    rad = np.tile(tile_rad, len(offsets))
-    inside = np.all((ab >= lo) & (ab <= hi), axis=1)
-    ab, sc, rad = ab[inside], sc[inside], rad[inside]
+    # Slope bands. Darts spaces instances along the surface, so a slope takes more of them per
+    # metre of ground: seen from above, the same spacing is shorter along the fall line, by the
+    # slope's cosine, and unchanged across it. So each band -- a range of slope and the way it
+    # faces -- lays the one tile squashed along its fall line by its cosine: on the slope its
+    # points then stand as far apart as the tile's do. Where bands meet, the 3D settle below
+    # takes out the pairs that come too close.
+    side, tile_ab, tile_sc, _ = _blue_tile(tile_seed, unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing)
+    up = np.zeros(3)
+    up[up_idx] = 1.0
+    length = np.maximum(np.linalg.norm(normals_all, axis=1), 1e-12)
+    cos = np.clip(np.abs(normals_all @ up) / length, 0.0, 1.0)
+    slope = np.minimum(np.floor((1.0 - cos) / _TILE_BAND_STEP).astype(np.int64), _TILE_BANDS - 1)
+    # Which way it falls: the normal's lateral part, in _TILE_ASPECTS sectors (none when flat).
+    aspect = np.round(np.arctan2(normals_all[:, b], normals_all[:, a]) / (2.0 * math.pi) * _TILE_ASPECTS)
+    aspect = np.where(slope > 0, aspect.astype(np.int64) % _TILE_ASPECTS, 0)
+    band_of = slope * _TILE_ASPECTS + aspect
+    # The grid cells each band's triangles cover, so a band keeps only the tiled points near
+    # its own triangles: on hilly ground every band is spread across the whole terrain, and
+    # dropping every band's points over all of it was most of a valley's cook.
+    lat = np.stack((v0s[:, [a, b]], v1s[:, [a, b]], v2s[:, [a, b]]))
+    tri_lo, tri_hi = lat.min(axis=0), lat.max(axis=0)
+    origin = tri_lo.min(axis=0)
+    span = tri_hi.max(axis=0) - origin
+    cell = max(float(np.median((tri_hi - tri_lo).max(axis=1))), float(span.max()) / 4096.0, 1e-6)
+    first, last = np.floor((tri_lo - origin) / cell).astype(np.int64), np.floor((tri_hi - origin) / cell).astype(np.int64)
+    wide = int(last[:, 1].max()) + 2
+    per = (last[:, 0] - first[:, 0] + 1) * (last[:, 1] - first[:, 1] + 1)
+    owner = np.repeat(np.arange(len(per)), per)
+    within = np.arange(int(per.sum())) - np.repeat(np.cumsum(per) - per, per)
+    rows_b = np.repeat(last[:, 1] - first[:, 1] + 1, per)
+    covered = (np.repeat(first[:, 0], per) + within // rows_b) * wide + np.repeat(first[:, 1], per) + within % rows_b
+    band_cells = {band: np.unique(covered[band_of[owner] == band]) for band in np.unique(band_of).tolist()}
+    # Per band, the tile laid over its own triangles' footprint: (band, ab, sc).
+    laid = []
+    for band in np.unique(band_of).tolist():
+        s, q = divmod(band, _TILE_ASPECTS)
+        # The band's flattest cosine: squashed no further than its gentlest slope needs, so
+        # nothing in it lands closer than its spacing along the surface.
+        k = 1.0 - s * _TILE_BAND_STEP
+        phi = 2.0 * math.pi * q / _TILE_ASPECTS
+        fall = np.array([math.cos(phi), math.sin(phi)])
+        squash = np.eye(2) - (1.0 - k) * np.outer(fall, fall)
+        unsquash = np.eye(2) - (1.0 - 1.0 / k) * np.outer(fall, fall)
+        sel = band_of == band
+        corners = np.concatenate((v0s[sel], v1s[sel], v2s[sel]))[:, [a, b]]
+        lo, hi = corners.min(axis=0), corners.max(axis=0)
+        # Every copy of the tile that overlaps the band's footprint, found in the tile's own
+        # (unsquashed) frame, in a fixed order.
+        box = np.array([[lo[0], lo[1]], [hi[0], lo[1]], [lo[0], hi[1]], [hi[0], hi[1]]]) @ unsquash.T
+        ia = np.arange(math.floor(box[:, 0].min() / side), math.floor(box[:, 0].max() / side) + 1)
+        ib = np.arange(math.floor(box[:, 1].min() / side), math.floor(box[:, 1].max() / side) + 1)
+        offsets = np.stack(np.meshgrid(ia, ib, indexing="ij"), axis=-1).reshape(-1, 2) * side
+        ab = (offsets[:, None, :] + tile_ab[None, :, :]).reshape(-1, 2) @ squash.T
+        sc = np.tile(tile_sc, len(offsets))
+        inside = np.all((ab >= lo) & (ab <= hi), axis=1)
+        ab, sc = ab[inside], sc[inside]
+        at = np.floor((ab - origin) / cell).astype(np.int64)
+        near = np.isin(at[:, 0] * wide + at[:, 1], band_cells[band], assume_unique=False)
+        laid.append((band, ab[near], sc[near]))
+    ab = np.concatenate([x[1] for x in laid])
+    sc = np.concatenate([x[2] for x in laid])
+    band_pt = np.concatenate([np.full(len(x[1]), x[0]) for x in laid])
+    # The instance's own radius, which Keep Away From and the settle hold it to.
+    rad = unit * sc if vary else np.full(len(sc), spacing * 0.5)
     # Drawn for every point before the blocks split, so the result is the same on any machine.
     roll = gen.random(len(ab))
     rank = gen.random(len(ab))
-    centres = (v0s + v1s + v2s)[:, [a, b]] / 3.0
-    tree = cKDTree(centres)
+    # A tree per band, of its triangles' lateral centres: a point lands only on its band.
+    trees = {}
+    for band in np.unique(band_pt).tolist():
+        idx = np.flatnonzero(band_of == band)
+        trees[band] = (idx, cKDTree(((v0s[idx] + v1s[idx] + v2s[idx]) / 3.0)[:, [a, b]]))
     _warm_lookups(mask, avoid, v0s[:1], cKDTree)
     many = getattr(getattr(mask, "__self__", None), "sample_many", None)
 
-    def block(lo_hi):
-        s, e = lo_hi
-        rows, pos, tri = _drop_onto(tree, v0s, v1s, v2s, ab[s:e], a, b, up_idx)
-        rows = rows + s
+    def block(job):
+        band, s, e = job
+        idx, tree = trees[band]
+        rows, pos, tri = _drop_onto(tree, v0s[idx], v1s[idx], v2s[idx], ab[s:e], a, b, up_idx)
+        rows, tri = rows + s, idx[tri]
         ok = np.ones(len(rows), dtype=bool)
         if mask is not None:
             if many is not None:
@@ -679,22 +740,49 @@ def _scatter_tiles(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
             ok[live[avoid.near_many(pos[live], rad[rows[live]], cKDTree)]] = False
         return rows[ok], pos[ok], tri[ok]
 
-    edges = list(range(0, len(ab), _TILE_BLOCK)) + [len(ab)]
-    spans = list(zip(edges[:-1], edges[1:]))
-    with ThreadPoolExecutor(min(len(spans), os.cpu_count() or 1) or 1, initializer=kd_query.single_thread) as pool:
-        parts = list(pool.map(block, spans))
+    # Blocks within a band (each band's points are one run of the arrays).
+    jobs, start = [], 0
+    for band, band_ab, _ in laid:
+        end = start + len(band_ab)
+        jobs += [(band, s, min(s + _TILE_BLOCK, end)) for s in range(start, end, _TILE_BLOCK)]
+        start = end
+    with ThreadPoolExecutor(max(1, min(len(jobs), os.cpu_count() or 1)), initializer=kd_query.single_thread) as pool:
+        parts = list(pool.map(block, jobs))
     rows = np.concatenate([p[0] for p in parts]) if parts else np.zeros(0, dtype=np.int64)
     if not len(rows):
         return [], [], []
     pos = np.concatenate([p[1] for p in parts])
     tri = np.concatenate([p[2] for p in parts])
-    if len(rows) > count:
-        # Over the count: the ones with the lowest rank, so the thinning is even everywhere.
-        keep = np.sort(np.argpartition(rank[rows], count - 1)[:count])
-        rows, pos, tri = rows[keep], pos[keep], tri[keep]
+    # In rank order from here: the settle keeps the earlier of two that clash, and the count
+    # keeps the first -- both evenly, everywhere.
+    order = np.argsort(rank[rows], kind="stable")
+    rows, pos, tri = rows[order], pos[order], tri[order]
+    if any(band > 0 for band, _, _ in laid):
+        kept = _settle_3d(cKDTree, pos, rad[rows])
+        rows, pos, tri = rows[kept], pos[kept], tri[kept]
+    rows, pos, tri = rows[:count], pos[:count], tri[:count]
     return (Vt.Vec3fArray.FromNumpy(pos.astype(np.float32)),
             Vt.Vec3fArray.FromNumpy(normals_all[tri].astype(np.float32)),
             sc[rows].tolist())
+
+
+def _settle_3d(kdtree, pos, rad):
+    """Which of (N, 3) *pos* to keep, in order: each one clear of every earlier one it kept by
+    both radii, in 3D -- _settle_batch's walk, for the tiled points the bands brought close."""
+    kept = np.ones(len(pos), dtype=bool)
+    pairs = kdtree(pos).query_pairs(2.0 * float(rad.max()) * (1.0 + 1e-9), output_type="ndarray")
+    if not len(pairs):
+        return kept
+    i, j = pairs.min(axis=1), pairs.max(axis=1)
+    hit = ((pos[j] - pos[i]) ** 2).sum(axis=1) < (rad[i] + rad[j]) ** 2
+    i, j = i[hit], j[hit]
+    if len(j):
+        order = np.argsort(j, kind="stable")
+        i, j = i[order], j[order]
+        later, starts = np.unique(j, return_index=True)
+        for k, earlier in zip(later.tolist(), np.split(i, starts[1:])):
+            kept[k] = not kept[earlier].any()
+    return kept
 
 
 def _warm_lookups(mask, avoid, pts, kdtree):
