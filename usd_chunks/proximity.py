@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 from pxr import Usd, UsdGeom
 
+from usd_chunks import kd_query
 from usd_chunks.cell_runs import CellRuns, segment_starts
 
 # A cell (x, y, z) as one integer, so cells sort and look up as a flat array. Signed digits,
@@ -81,8 +82,12 @@ class Proximity:
         A road's vertices put hundreds of sources in reach of every candidate; weighing them
         all was most of a Grow Near edit on a verge, where one KD query answers the same.
         """
-        if not self._uniform:
+        if not self._uniform or (tree := self._kdtree()) is None:
             return None
+        return tree.query(points, k=1, distance_upper_bound=bound)
+
+    def _kdtree(self):
+        """The sources' KD-tree, built on first use; None without scipy."""
         if self._tree is None:
             try:
                 from scipy.spatial import cKDTree
@@ -90,9 +95,35 @@ class Proximity:
                 self._tree = False
             else:
                 self._tree = cKDTree(self._sources)
-        if self._tree is False:
+        return self._tree or None
+
+    def _pairs_in_reach(self, points, bound):
+        """(rows, sources): every source closer than *bound* to each of (N, 3) flattened
+        *points*, rows ascending -- or None without scipy.
+
+        What the cell neighbourhoods give, from one KD query: each point's nearest k within
+        *bound*, asked again with a larger k only for the points that filled all k. Over
+        321k valley pines the neighbourhood lookup (a sort and a binary search per batch) was
+        most of YoungValley's Grow Near; this is a C walk per point.
+        """
+        if (tree := self._kdtree()) is None:
             return None
-        return self._tree.query(points, k=1, distance_upper_bound=bound)
+        rows, near = [np.zeros(0, dtype=np.int64)], [np.zeros(0, dtype=np.int64)]
+        idx, k, n = np.arange(len(points)), 8, tree.n
+        while len(idx):
+            k = min(k, n)
+            d, j = kd_query.query(tree, points[idx], k=k, distance_upper_bound=bound)
+            if k == 1:
+                d, j = d[:, None], j[:, None]
+            hit = np.isfinite(d)
+            more = hit[:, -1] if k < n else np.zeros(len(idx), dtype=bool)
+            r, c = np.nonzero(hit[~more])
+            rows.append(idx[~more][r])
+            near.append(j[~more][r, c])
+            idx, k = idx[more], k * 2
+        rows, near = np.concatenate(rows), np.concatenate(near)
+        order = np.argsort(rows, kind="stable")
+        return rows[order], near[order]
 
     def _neighbourhoods(self, points, offsets):
         """The sources around each of (N, 3) *points*, as CellRuns.lookup gives them."""
@@ -127,6 +158,13 @@ class Proximity:
             found = near < len(self._sources)
             g, h = self._weights(d[found], near[found])
             out[found] = (self._outside + span * g) * h
+            return np.clip(out, 0.0, 1.0)
+        if (reach := self._pairs_in_reach(points, self._cell)) is not None:
+            rows, near = reach
+            if len(rows):
+                g, h = self._weights(np.linalg.norm(points[rows] - self._sources[near], axis=1), near)
+                first = segment_starts(rows)
+                out[rows[first]] = (self._outside + span * np.maximum.reduceat(g, first)) * np.minimum.reduceat(h, first)
             return np.clip(out, 0.0, 1.0)
         inverse, lo, runs = self._neighbourhoods(points, _OFFSETS)
         sparse, whole = CellRuns.split(inverse, runs)

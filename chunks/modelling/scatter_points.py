@@ -33,7 +33,6 @@ import math
 import os
 import random
 import re
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from importlib.util import find_spec
@@ -41,7 +40,7 @@ from importlib.util import find_spec
 import numpy as np
 from pxr import Gf, Pcp, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_utils, mesh_math, proximity
+from usd_chunks import chunk, chunk_utils, kd_query, mesh_math, proximity
 from usd_chunks import chunk_registry, chunk_stage
 
 logger = logging.getLogger(__name__)
@@ -474,20 +473,6 @@ _FREE_BATCH = 1 << 21
 # The streams a spacing-free scatter is split into. Changing it changes every such layout.
 _FREE_STREAMS = 8
 
-# Threads a KD-tree query may use: every core, unless the caller is one of several threads
-# already (_one_query_thread), where more would only wait on each other.
-_query_local = threading.local()
-
-
-def _workers():
-    return getattr(_query_local, "workers", -1)
-
-
-def _one_query_thread():
-    """A pool thread's initializer: its KD-tree queries run on it alone."""
-    _query_local.workers = 1
-
-
 def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi, bias,
                    mask=None, avoid=None, vary=True):
     """Like _scatter_on_triangles, but each candidate draws its scale first and keeps
@@ -533,7 +518,7 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
         seeds = zip(np.random.SeedSequence(seed).spawn(_FREE_STREAMS),
                     np.random.SeedSequence(scale_seed).spawn(_FREE_STREAMS))
         threads = min(_FREE_STREAMS, os.cpu_count() or 1)
-        with ThreadPoolExecutor(threads, initializer=_one_query_thread) as pool:
+        with ThreadPoolExecutor(threads, initializer=kd_query.single_thread) as pool:
             parts = list(pool.map(
                 lambda job: _sized_rounds(
                     np.random.default_rng(job[1][0]), np.random.default_rng(job[1][1]),
@@ -711,7 +696,7 @@ def _within(tree, pts, reach):
     k = 8
     while len(idx):
         k = min(k, n)
-        d, j = tree.query(pts[idx], k=k, distance_upper_bound=reach, workers=_workers())
+        d, j = kd_query.query(tree, pts[idx], k=k, distance_upper_bound=reach)
         if k == 1:
             d, j = d[:, None], j[:, None]
         hit = np.isfinite(d)
@@ -1171,7 +1156,7 @@ class _NearestWeight:
                 self._tree = cKDTree(self._points)
         if self._tree is not False:
             # On every core: one thread was 21 of GrassValley's 85 s on the woodland vista.
-            _, nearest = self._tree.query(points, k=1, distance_upper_bound=2.0 * self._cell, workers=_workers())
+            _, nearest = kd_query.query(self._tree, points, k=1, distance_upper_bound=2.0 * self._cell)
             found = nearest < len(self._points)
             out[found] = self._weights[nearest[found]]
             return out
