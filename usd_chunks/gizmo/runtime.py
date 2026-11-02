@@ -1541,7 +1541,7 @@ def _create_chunk_at_tail(module_name: str):
 #: Module the Transforms a run of viewport drags makes are gathered into.
 GATHER_MODULE = "merge"
 
-#: How far above the last branch a Transform gathered into a Merge is placed: open, and as
+#: How far below the last branch a Transform gathered into a Merge is placed: open, and as
 #: a collapsed header (48 tall, plus the gap a multi-file drop leaves).
 _BRANCH_STEP = 160
 _COLLAPSED_BRANCH_STEP = 64
@@ -1577,9 +1577,9 @@ def _gather_into_merge(scene, chunk: core.ChunkBase, tail: core.ChunkBase):
     dozen drags make a dozen nodes in a row. They move different prims, so their order means
     nothing: stacked under one Merge they read as the set of edits they are. So the second
     Transform in a row makes a Merge, and every one after that joins it. What fed the first
-    goes in the bottom slot and the Transforms, which need no input of their own, above it,
-    the newest on top: in a Merge the top slot wins, so each outranks what came before it,
-    as it would chained after it. Anything else at the tail keeps the plain chain.
+    goes in the weakest slot and the Transforms, which need no input of their own, in the
+    stronger ones, the newest strongest: so each outranks what came before it, as it would
+    chained after it. Anything else at the tail keeps the plain chain.
 
     Args:
         scene: The scene the chunks live in.
@@ -1600,8 +1600,8 @@ def _gather_into_merge(scene, chunk: core.ChunkBase, tail: core.ChunkBase):
         branches = [stage.GetPrimAtPath(c.GetPrimPath())
                     for c in chunk_stage.exec_input_connections(tail_prim)]
         gathered = [b for b in branches if _is_gathered(b)]
-        # At most one other branch, what came before: at the bottom, or on top in a Merge
-        # gathered before the upstream moved down -- which this puts right.
+        # At most one other branch, what came before: in the weakest slot, or the strongest
+        # in a Merge gathered before the upstream moved to the weakest -- which this puts right.
         rest = [b for b in branches if not _is_gathered(b)]
         if not gathered or len(rest) > 1 or (rest and rest[0] not in (branches[0], branches[-1])):
             return None
@@ -1641,12 +1641,13 @@ def _gather_into_merge(scene, chunk: core.ChunkBase, tail: core.ChunkBase):
     sync._rewire_views_from_source(chunk, merge, outputs=True)
     chunk_stage.reconcile_edit_targets(stage, scene)
 
-    # Above the Transforms already there, the way the Merge's slots stack (USD is Y-up).
+    # Below the Transforms already there, the way the Merge's slots stack, strongest at the
+    # bottom, so the wires don't cross (USD is Y-up).
     placed = [p for p in (_node_pos(b) for b in gathered) if p is not None]
     if placed:
         step = (_COLLAPSED_BRANCH_STEP if chunk.has_state(core.ChunkFlags.State.COLLAPSED)
                 else _BRANCH_STEP)
-        _set_node_pos(stage, chunk, new_prim, (placed[0][0], max(p[1] for p in placed) + step))
+        _set_node_pos(stage, chunk, new_prim, (placed[0][0], min(p[1] for p in placed) - step))
     return merge
 
 
