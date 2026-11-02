@@ -865,6 +865,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             self._loaded_prim_paths.discard(self._chunk_prim_paths.get(id(sender), ""))
             self._chunk_prim_paths.pop(id(sender), None)
             return
+        if hook := sender._module_hook(REMOVED_HOOK):
+            try:
+                hook(sender)
+            except Exception:
+                logger.exception("%s: its %s() hook failed", sender.name, REMOVED_HOOK)
         if sender.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             if not getattr(sender, "prim_path", None):
                 return  # tab context -- no USD prim to remove
@@ -7077,6 +7082,10 @@ PROMOTE_PARAM_HOOK = "promote_param"
 RESTORE_PARAMS_HOOK = "restore_params"
 #: Module hook param_unlofted(node, param): param of node was just unlofted from its group.
 PARAM_UNLOFTED_HOOK = "param_unlofted"
+#: Module hook removed(node): node was deleted from the scene. For a chunk that authors
+#: outside its own layer (Stage Settings on the session layer) to undo that: only the
+#: chunk's own layer goes with it. Not run when a whole stage is closed or replaced.
+REMOVED_HOOK = "removed"
 
 # Above 0 while a loft, an unloft or a restore is under way. Their USD writes arrive as
 # change notices partway through, with the params not yet in line; those are not an undo.
@@ -8303,7 +8312,7 @@ def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
     return dst
 
 
-def stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage) -> None:
+def stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage, keep_own: bool = False) -> None:
     """Stamp the stage's up-axis and units onto the in-memory layer before it is written.
 
     Read with the same UsdGeom API the live stage answers with, so the file carries the
@@ -8313,10 +8322,19 @@ def stamp_stage_metadata(dst: Sdf.Layer, stage: Usd.Stage) -> None:
 
     Shared by every writer -- save, export_network, scene.export and the Export USD chunk --
     since a file without them falls back to USD's global default whatever the scene was.
+
+    Args:
+        dst: The layer to stamp.
+        stage: The stage to read them from.
+        keep_own: Keep a value dst already holds. For a sublayer: the stage never reads
+            its values, so the stage's say nothing about what it was given (a Stage
+            Settings chunk behind an Edit Target writes them there for its export).
     """
     root = dst.pseudoRoot
-    root.SetInfo(UsdGeom.Tokens.upAxis, UsdGeom.GetStageUpAxis(stage))
-    root.SetInfo(UsdGeom.Tokens.metersPerUnit, UsdGeom.GetStageMetersPerUnit(stage))
+    for key, value in ((UsdGeom.Tokens.upAxis, UsdGeom.GetStageUpAxis(stage)),
+                       (UsdGeom.Tokens.metersPerUnit, UsdGeom.GetStageMetersPerUnit(stage))):
+        if not (keep_own and root.HasInfo(key)):
+            root.SetInfo(key, value)
 
 
 def _rebase_paths_in_layer(layer: Sdf.Layer, old_root: Sdf.Path, new_root: Sdf.Path) -> None:

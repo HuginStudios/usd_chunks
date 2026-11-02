@@ -42,3 +42,21 @@ def test_behind_an_edit_target_its_export_carries_them(tmp_path) -> None:
     assert UsdGeom.GetStageUpAxis(opened) == UsdGeom.Tokens.z
     assert (opened.GetStartTimeCode(), opened.GetEndTimeCode()) == (1001, 1100)
     assert opened.GetFramesPerSecond() == 25.0
+
+
+def test_removing_it_puts_the_stage_back() -> None:
+    """It writes on the session layer, outside its own layer: deleting the chunk used to
+    leave its settings behind."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        session = stage.GetSessionLayer()
+        session.pseudoRoot.SetInfo(UsdGeom.Tokens.upAxis, UsdGeom.Tokens.y)  # set before: kept
+        settings = scene.create.stage_settings(**SETTINGS)
+        assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
+
+        scene.remove_chunk(settings.get_hash())
+
+        assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y
+        assert not session.pseudoRoot.HasInfo(UsdGeom.Tokens.metersPerUnit)
+        assert not session.HasStartTimeCode() and not session.HasEndTimeCode()
+        assert not session.HasTimeCodesPerSecond() and not session.HasFramesPerSecond()
