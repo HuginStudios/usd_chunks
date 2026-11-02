@@ -4958,6 +4958,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             event.accept()
             return
 
+        # A new left press means the release a "+" click set out to swallow went elsewhere:
+        # the menu took it. Left set, it ate this press's release and a box-select never ended.
+        if event.button() == QtCore.Qt.LeftButton:
+            self._swallow_release = False
         scene_pos = self.mapToScene(event.pos())
         if self._drag_src_port is not None and event.button() == QtCore.Qt.MiddleButton:
             # Panning mid-drag, to reach a port off screen: the wire stays in hand.

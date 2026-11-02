@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 from pxr import Sdf, Usd, UsdUI
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
@@ -391,6 +391,33 @@ def test_the_output_plus_picks_a_param_and_drags_a_wire_from_it(graph, monkeypat
     assert not gv._drag_by_click
     pump_until(QtWidgets.QApplication.instance(), lambda: node_b.get_port(f"{pb}.outputs:tx") is not None)
     assert b.has_state(ChunkFlags.State.COLLAPSED)
+
+
+def _mouse(view, kind, scene_pos, buttons=QtCore.Qt.MouseButton.LeftButton):
+    pos = QtCore.QPointF(view.mapFromScene(scene_pos))
+    event = QtGui.QMouseEvent(kind, pos, QtCore.QPointF(view.viewport().mapToGlobal(pos.toPoint())),
+                              QtCore.Qt.MouseButton.LeftButton, buttons,
+                              QtCore.Qt.KeyboardModifier.NoModifier)
+    QtWidgets.QApplication.sendEvent(view.viewport(), event)
+
+
+def test_closing_the_output_plus_menu_on_the_canvas_starts_no_box_select(graph, monkeypatch):
+    """The "+" menu takes the release of the click that opened it. Closed by a click on
+    empty canvas, that click's release must still end the box-select it starts."""
+    gv, _stage, _chunks, (_node_a, node_b) = graph
+    app = QtWidgets.QApplication.instance()
+    menus = []
+    monkeypatch.setattr(gv, "_exec_menu", lambda menu, _pos: menus.append(menu))  # closed, no pick
+    out_plus = node_b.mapToScene(QtCore.QPointF(node_b._width, node_b._plus_y))
+    _mouse(gv, QtCore.QEvent.Type.MouseButtonPress, out_plus)
+    pump_until(app, lambda: menus)  # the menu ran, and had the release
+
+    empty = node_b.mapToScene(QtCore.QPointF(node_b._width + 150, node_b._height + 150))
+    assert gv.scene().itemAt(empty, QtGui.QTransform()) is None
+    _mouse(gv, QtCore.QEvent.Type.MouseButtonPress, empty)
+    assert gv._rubber_band_active
+    _mouse(gv, QtCore.QEvent.Type.MouseButtonRelease, empty, QtCore.Qt.MouseButton.NoButton)
+    assert not gv._rubber_band_active, "the release ends the box-select"
 
 
 def test_plus_to_plus_draws_the_wire_and_cutting_it_drops_both_ports(graph, monkeypatch):
