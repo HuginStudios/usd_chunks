@@ -78,5 +78,5 @@ namespaces = false
 [tool.setuptools.package-data]
 "usd_chunks" = ["resources/icons/*.png"]
 "usd_chunks.hosts.usdview" = ["plugInfo.json"]
-"usd_chunks.hosts.houdini" = ["README.md", "python3.11libs/*.py", "otls/**/*"]
+"usd_chunks.hosts.houdini" = ["README.md", "python3.11libs/*.py", "otls/**/*", "packages/*.json"]
 "usd_chunks.frontends.blender.addon" = ["blender_manifest.toml"]

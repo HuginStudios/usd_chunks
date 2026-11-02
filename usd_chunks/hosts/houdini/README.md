@@ -17,14 +17,13 @@ Tested with Houdini 21.0.
 
 ## Setup
 
-Run the installer once, with the `hython` of the Houdini to set up, then restart Houdini:
-
-```
-hython usd_chunks/hosts/houdini/install.py
-```
-
-The full steps, the options, and fixes for common problems are in
+Install typing-extensions for Houdini's Python, then set `HOUDINI_PACKAGE_DIR` to the
+`packages` folder here, which holds the package file `usd_chunks.json`. It works for every
+Houdini version on Python 3.11. The full steps and fixes for common problems are in
 [docs/houdini.md](../../../docs/houdini.md).
+
+`install.py` is the older setup: it writes a package file into one Houdini version's
+`packages` folder instead.
 
 ## Chunkgroups: import and export
 
@@ -87,6 +86,7 @@ until something starts a new one.
 
 | File | Role |
 |---|---|
+| `packages/usd_chunks.json` | The Houdini package `HOUDINI_PACKAGE_DIR` points at. Paths are relative to it, so it works from any clone. |
 | `otls/usdchunks_chunk.hda` | The node types (expanded, text): `usdchunks::chunk`, a subnet with a Python Script LOP calling `lop.cook` (a Layer chunk's through a Configure Layer starting a new layer) and two hidden parms naming the chunk; `usdchunks::chunkgroup`, an empty subnet with the Export Network button. |
 | `lop.py` | Creating, cooking, deleting a chunk node; button and menu callbacks. |
 | `parms.py` | Chunk params <-> Houdini parms. |

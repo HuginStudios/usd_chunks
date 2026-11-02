@@ -13,8 +13,8 @@ When using this plugin for usdview, set
 or print the right path for an installed copy with `usdchunks plugin-path --host usdview`.
 
 **houdini** makes every chunk a Solaris LOP, under TAB > usdchunks. Houdini wires the
-chunks and decides when they cook; their params are native Houdini parms. Set it up once
-with `hython usd_chunks/hosts/houdini/install.py` -- see
+chunks and decides when they cook; their params are native Houdini parms. Set it up by
+pointing `HOUDINI_PACKAGE_DIR` at `houdini/packages` -- see
 [docs/houdini.md](../../docs/houdini.md).
 
 **Blender** has no folder here. Its add-on is in `usd_chunks/frontends/blender/addon`. See
