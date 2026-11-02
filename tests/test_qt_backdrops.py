@@ -5,7 +5,7 @@ import time
 
 import pytest
 from pxr import Sdf, Usd
-from PySide6 import QtCore, QtGui, QtTest
+from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 
 from usd_chunks import chunk_registry, chunk_undo
 from usd_chunks.chunk_flags import ChunkFlags
@@ -430,3 +430,52 @@ def test_edits_never_go_to_a_chunk_layer(graph):
              if lyr.GetAttributeAtPath(path.AppendProperty("ui:description")) is not None
              and lyr.GetAttributeAtPath(path.AppendProperty("ui:description")).default == "kept"]
     assert owned and not chunk_registry.is_chunk_internal_layer(owned[0])
+
+
+class _ReleaseRecorder(QtCore.QObject):
+    """Stands in for the viewport gizmos: they switch tool on a key's release, anywhere in
+    the window (usd_gizmos' handler filters the main window)."""
+
+    def __init__(self):
+        super().__init__()
+        self.released: list[int] = []
+
+    def eventFilter(self, _obj, event):  # noqa: N802
+        if event.type() == QtCore.QEvent.Type.KeyRelease:
+            self.released.append(event.key())
+        return False
+
+
+def _send_key(widget, key, release=False, repeat=False):
+    etype = QtCore.QEvent.Type.KeyRelease if release else QtCore.QEvent.Type.KeyPress
+    event = QtGui.QKeyEvent(etype, key, QtCore.Qt.NoModifier, "", repeat)
+    QtWidgets.QApplication.sendEvent(widget, event)
+
+
+def test_b_over_the_graph_does_not_reach_the_brush(graph):
+    """B made a backdrop on the press, then the release reached the brush gizmo and
+    turned it on as well."""
+    qapp, _reg, _scene, docker, _stage = graph
+    view, _chunks, _paths = _nodes(graph, 1)
+    recorder = _ReleaseRecorder()
+    docker.installEventFilter(recorder)
+    try:
+        QtGui.QCursor.setPos(view.mapToGlobal(view.rect().center()))
+        _settle(qapp, 0.1)
+        _send_key(docker, QtCore.Qt.Key_B)
+        _send_key(docker, QtCore.Qt.Key_B, repeat=True)  # held down: still one backdrop
+        _send_key(docker, QtCore.Qt.Key_B, release=True)
+        _settle(qapp)
+        assert len(view.scene()._backdrops) == 1
+        assert QtCore.Qt.Key_B not in recorder.released
+
+        # Over anything else, B is not the graph's: the release goes on to the brush.
+        QtGui.QCursor.setPos(view.mapToGlobal(QtCore.QPoint(-50, -50)))
+        _settle(qapp, 0.1)
+        _send_key(docker, QtCore.Qt.Key_B)
+        _send_key(docker, QtCore.Qt.Key_B, release=True)
+        _settle(qapp)
+        assert len(view.scene()._backdrops) == 1
+        assert recorder.released == [QtCore.Qt.Key_B]
+    finally:
+        docker.removeEventFilter(recorder)
