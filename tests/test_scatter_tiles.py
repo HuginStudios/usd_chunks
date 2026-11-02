@@ -132,7 +132,7 @@ def test_keeps_away():
     assert (d >= 10.0 + _radii(sc) - 1e-6).all()
 
 
-def _scene_scatter(sampling=None):
+def _scene_scatter(sampling=None, expect=None):
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     mesh = UsdGeom.Mesh.Define(stage, "/ground")
@@ -147,17 +147,31 @@ def _scene_scatter(sampling=None):
                                         auto_spacing=False, spacing=2.0, size_spacing=True, seed=3,
                                         **{"prototypes.0.proto_path": "/protos/rock"}, **extra)
         scene.set_output(s)
-        assert s.get_param("sampling").value == (sampling or "Darts")
+        assert s.get_param("sampling").value == (expect or sampling)
         inst = UsdGeom.PointInstancer(stage.GetPrimAtPath("/scatter"))
         return np.asarray(inst.GetPositionsAttr().Get())
 
 
-def test_darts_is_the_default_and_tiles_is_a_choice():
-    darts = _scene_scatter()
-    tiles = _scene_scatter("Tiles")
+def test_a_new_scatter_samples_with_tiles_and_darts_is_a_choice():
+    tiles = _scene_scatter(expect="Tiles")
+    darts = _scene_scatter("Darts")
     assert len(darts) and len(tiles)
     assert len(darts) != len(tiles) or not np.array_equal(darts, tiles)
     assert ((tiles[:, :2] >= 0) & (tiles[:, :2] <= 60)).all() and np.allclose(tiles[:, 2], 0.0, atol=1e-4)
+
+
+def test_a_saved_scatter_without_sampling_loads_as_darts(tmp_path):
+    """Saved before Tiles existed (no sampling attribute): it keeps the layout it was made with."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    with Scene(stage) as scene:
+        scene.create.scatter_points(name="Old", sampling="Darts")
+        path = str(tmp_path / "old.usda")
+        scene.save(path)
+    layer = Sdf.Layer.FindOrOpen(path)
+    assert '"Darts"' not in layer.ExportToString()  # the default, so not written
+    with Scene.open(path) as scene:
+        assert scene.get_chunk("Old").get_param("sampling").value == "Darts"
 
 
 def test_sampling_is_saved_with_the_network(tmp_path):

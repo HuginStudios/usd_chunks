@@ -3711,6 +3711,9 @@ def config():
         # Placing a forest is minutes; reading it back is a layer. cache_key names what it
         # reads besides its params.
         cache_cook=True,
+        # A new scatter samples with Tiles; a saved one keeps the Darts it was made with (the
+        # param's default, so its layout doesn't move on reopen).
+        new_values={"sampling": "Tiles"},
         description=(
             "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
             "\n"
