@@ -536,6 +536,167 @@ def _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi
             np.concatenate(scales).tolist())
 
 
+# Sampling: Tiles. A tile's side, in its largest instance's diameters: wide enough that the
+# repeat doesn't read in a forest, small enough to fill in a second.
+_TILE_DIAMETERS = 64
+# Candidates thrown at a tile per smallest instance's disc of area: near enough to full that
+# what is left are gaps no instance fits.
+_TILE_FILL = 10.0
+_TILE_MAX_CANDIDATES = 600_000
+# Tiled points dropped onto the surface per block, a block per thread.
+_TILE_BLOCK = 250_000
+_tiles: dict = {}
+
+
+def _blue_tile(seed, unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing):
+    """A square tile of points that repeats without a seam -- (side, (N, 2) points, scales,
+    radii) -- filled the way a darts scatter fills a surface: candidates in random order, each
+    kept if it clears every one kept before it by both radii. Built once per settings."""
+    key = (seed, unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing)
+    if key in _tiles:
+        return _tiles[key]
+    from scipy.spatial import cKDTree
+    side = _TILE_DIAMETERS * 2.0 * r_hi
+    disc = math.pi * max(r_lo, 1e-6) ** 2
+    if side * side * _TILE_FILL / disc > _TILE_MAX_CANDIDATES:
+        side = math.sqrt(_TILE_MAX_CANDIDATES * disc / _TILE_FILL)
+    gen = np.random.default_rng(seed)
+    n = max(1, int(side * side * _TILE_FILL / disc))
+    pts = gen.random((n, 2)) * side
+    u = gen.random(n)
+    sc = scale_lo + (scale_hi - scale_lo) * (u ** bias if bias != 1.0 else u)
+    rad = unit * sc if vary else np.full(n, spacing * 0.5)
+    # Distances across the tile's edges as well: boxsize makes the tree periodic, so the
+    # copies laid side by side meet as cleanly as the inside.
+    pairs = cKDTree(pts, boxsize=side).query_pairs(2.0 * r_hi * (1.0 + 1e-9), output_type="ndarray")
+    kept = np.ones(n, dtype=bool)
+    if len(pairs):
+        i, j = pairs.min(axis=1), pairs.max(axis=1)
+        diff = pts[j] - pts[i]
+        diff -= side * np.round(diff / side)
+        hit = (diff ** 2).sum(axis=1) < (rad[i] + rad[j]) ** 2
+        i, j = i[hit], j[hit]
+        if len(j):
+            order = np.argsort(j, kind="stable")
+            i, j = i[order], j[order]
+            later, starts = np.unique(j, return_index=True)
+            # In draw order, as _settle_batch walks a batch: each candidate asks only whether
+            # an earlier one it clashes with was kept.
+            for k, earlier in zip(later.tolist(), np.split(i, starts[1:])):
+                kept[k] = not kept[earlier].any()
+    tile = (side, pts[kept], sc[kept], rad[kept])
+    _tiles[key] = tile
+    return tile
+
+
+def _drop_onto(tree, v0s, v1s, v2s, ab, a, b, up_idx, k=8):
+    """Each of (N, 2) lateral points *ab* dropped onto the highest triangle under it: (indices
+    of those that land, their (M, 3) positions, their triangles). *tree* is a KD-tree of the
+    triangles' lateral centres; a point's triangle is among its *k* nearest on a terrain."""
+    k = min(k, len(v0s))
+    _, near = kd_query.query(tree, ab, k=k)
+    near = near.reshape(len(ab), k)
+    p0, p1, p2 = v0s[near], v1s[near], v2s[near]
+    e1, e2 = p1 - p0, p2 - p0
+    q = ab[:, None, :] - p0[..., [a, b]]
+    den = e1[..., a] * e2[..., b] - e1[..., b] * e2[..., a]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = (q[..., 0] * e2[..., b] - q[..., 1] * e2[..., a]) / den
+        t = (e1[..., a] * q[..., 1] - e1[..., b] * q[..., 0]) / den
+    eps = 1e-9
+    inside = (np.abs(den) > 1e-12) & (s >= -eps) & (t >= -eps) & (s + t <= 1.0 + eps)
+    height = np.where(inside, p0[..., up_idx] + s * e1[..., up_idx] + t * e2[..., up_idx], -np.inf)
+    best = np.argmax(height, axis=1)
+    rows = np.flatnonzero(inside[np.arange(len(ab)), best])
+    pick = best[rows]
+    s, t = s[rows, pick], t[rows, pick]
+    pos = p0[rows, pick] + s[:, None] * e1[rows, pick] + t[:, None] * e2[rows, pick]
+    return rows, pos, near[rows, pick]
+
+
+def _scatter_tiles(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi, bias,
+                   mask=None, avoid=None, vary=True, up_idx=2):
+    """Sampling: Tiles. _scatter_sized's spacing rules, from a precomputed tile instead of
+    darts: one blue-noise tile (_blue_tile) laid edge to edge across the surface's footprint,
+    each point dropped onto the triangle under it, then thinned by the density, Keep Away
+    From and the count. The tile is filled once; laying it is array work, in blocks on
+    threads. A different layout from Darts, so opt-in.
+
+    The surface is read from above (along *up_idx*): a terrain, not a cave -- a point lands on
+    the highest face under it. Spacing is held across the ground, so on a slope instances
+    stand at least that far apart along it too.
+    """
+    if not len(triangles):
+        return [], [], []
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:  # scipy is optional: without it, Darts' own slow path
+        cKDTree = None
+    unit = spacing / max(scale_hi, 1e-9) * 0.5 if vary else 0.0
+    r_lo = unit * scale_lo if vary else spacing * 0.5
+    r_hi = unit * scale_hi if vary else spacing * 0.5
+    if r_hi <= 0 or cKDTree is None:
+        return _scatter_sized(triangles, count, rng, spacing, scale_rng, scale_lo, scale_hi, bias,
+                              mask=mask, avoid=avoid, vary=vary)
+    side, tile_ab, tile_sc, tile_rad = _blue_tile(
+        rng.getrandbits(63), unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing)
+    gen = np.random.default_rng(scale_rng.getrandbits(63))
+    a, b = [i for i in range(3) if i != up_idx]
+    v0s, v1s, v2s = (np.asarray(x, dtype=np.float64) for x in (triangles.v0, triangles.v1, triangles.v2))
+    normals_all = np.asarray(triangles.n, dtype=np.float64)
+    corners = np.concatenate((v0s, v1s, v2s))
+    lo, hi = corners[:, [a, b]].min(axis=0), corners[:, [a, b]].max(axis=0)
+    # Every copy of the tile that overlaps the footprint, in a fixed order.
+    ia = np.arange(math.floor(lo[0] / side), math.floor(hi[0] / side) + 1)
+    ib = np.arange(math.floor(lo[1] / side), math.floor(hi[1] / side) + 1)
+    offsets = np.stack(np.meshgrid(ia, ib, indexing="ij"), axis=-1).reshape(-1, 2) * side
+    ab = (offsets[:, None, :] + tile_ab[None, :, :]).reshape(-1, 2)
+    sc = np.tile(tile_sc, len(offsets))
+    rad = np.tile(tile_rad, len(offsets))
+    inside = np.all((ab >= lo) & (ab <= hi), axis=1)
+    ab, sc, rad = ab[inside], sc[inside], rad[inside]
+    # Drawn for every point before the blocks split, so the result is the same on any machine.
+    roll = gen.random(len(ab))
+    rank = gen.random(len(ab))
+    centres = (v0s + v1s + v2s)[:, [a, b]] / 3.0
+    tree = cKDTree(centres)
+    _warm_lookups(mask, avoid, v0s[:1], cKDTree)
+    many = getattr(getattr(mask, "__self__", None), "sample_many", None)
+
+    def block(lo_hi):
+        s, e = lo_hi
+        rows, pos, tri = _drop_onto(tree, v0s, v1s, v2s, ab[s:e], a, b, up_idx)
+        rows = rows + s
+        ok = np.ones(len(rows), dtype=bool)
+        if mask is not None:
+            if many is not None:
+                ok = roll[rows] <= many(pos)
+            else:
+                ok = np.array([roll[r] <= mask(Gf.Vec3f(*p), Gf.Vec3f(*normals_all[t]))
+                               for r, p, t in zip(rows, pos, tri)], dtype=bool)
+        if avoid is not None and ok.any():
+            live = np.flatnonzero(ok)
+            ok[live[avoid.near_many(pos[live], rad[rows[live]], cKDTree)]] = False
+        return rows[ok], pos[ok], tri[ok]
+
+    edges = list(range(0, len(ab), _TILE_BLOCK)) + [len(ab)]
+    spans = list(zip(edges[:-1], edges[1:]))
+    with ThreadPoolExecutor(min(len(spans), os.cpu_count() or 1) or 1, initializer=kd_query.single_thread) as pool:
+        parts = list(pool.map(block, spans))
+    rows = np.concatenate([p[0] for p in parts]) if parts else np.zeros(0, dtype=np.int64)
+    if not len(rows):
+        return [], [], []
+    pos = np.concatenate([p[1] for p in parts])
+    tri = np.concatenate([p[2] for p in parts])
+    if len(rows) > count:
+        # Over the count: the ones with the lowest rank, so the thinning is even everywhere.
+        keep = np.sort(np.argpartition(rank[rows], count - 1)[:count])
+        rows, pos, tri = rows[keep], pos[keep], tri[keep]
+    return (Vt.Vec3fArray.FromNumpy(pos.astype(np.float32)),
+            Vt.Vec3fArray.FromNumpy(normals_all[tri].astype(np.float32)),
+            sc[rows].tolist())
+
+
 def _warm_lookups(mask, avoid, pts, kdtree):
     """Build the density and keep-away trees before the streams start, so they are built once
     and not by every thread that finds them missing."""
@@ -967,7 +1128,7 @@ _NO_INDICES = np.zeros(0, dtype=np.int64)
 #: Volume do behave the same -- but Stack ignores the painted cloud on purpose, so Mode is the
 #: one control that still decides something. Hiding it stranded you: connect a brush and the
 #: only route to Stack disappeared, with no way back short of unwiring.
-_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope")
+_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope", "sampling")
 
 
 def _update_sampling_params(owner) -> None:
@@ -2458,6 +2619,7 @@ def execute(node):
         scale_min, scale_max = scale_max, scale_min
     scale_bias = max(0.05, node.get_param("scale_bias", is_f).value)
     size_spacing = node.get_param("size_spacing", is_b).value
+    sampling = node.get_param("sampling").value if node.get_param("sampling") is not None else "Darts"
     avoid_paths = [p.strip() for p in node.get_param("avoid_prims", is_s).value.split(",") if p.strip()]
     avoid_distance = max(0.0, node.get_param("avoid_distance", is_f).value)
     normal_offset = node.get_param("normal_offset", is_f).value
@@ -2649,7 +2811,15 @@ def execute(node):
                 avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5)
                 if avoid._dist <= 0.0:
                     avoid = None
-            if len(surf_tris) and (size_spacing or avoid is not None):
+            if len(surf_tris) and sampling == "Tiles" and spacing > 0:
+                # Sampling: Tiles -- the same rules from a laid blue-noise tile (opt-in: a
+                # different layout).
+                positions, normals, drawn = _scatter_tiles(
+                    surf_tris, max_count, rng, spacing, random.Random(seed + 13),
+                    scale_min, scale_max, scale_bias, mask=mask, avoid=avoid, vary=size_spacing,
+                    up_idx=up_idx)
+                sizes = drawn
+            elif len(surf_tris) and (size_spacing or avoid is not None):
                 # Spacing Follows Scale / Keep Away From: the scale is drawn with the point,
                 # so the spacing and the clearance can both take the instance's size.
                 positions, normals, drawn = _scatter_sized(
@@ -3058,6 +3228,19 @@ def main():
             default_value=False,
             tooltip="Surface mode: each instance keeps Spacing x its scale / Scale Max from the "
             "others, so small ones fill in between big ones without touching them.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.Menu(
+            "sampling",
+            "Sampling",
+            menu_items=["Darts", "Tiles"],
+            default_value="Darts",
+            tooltip="Surface mode, with Spacing set. Darts places instances a batch at a time, "
+            "each held to every one before it. Tiles lays one blue-noise tile across the "
+            "ground and drops it onto the surface -- the same spacing, many times faster on "
+            "big terrains, read from above (a terrain, not a cave). A different layout: "
+            "switching moves every instance.",
         )
     )
     dist_grp.add_param(
