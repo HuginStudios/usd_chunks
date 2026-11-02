@@ -37,6 +37,7 @@ from usd_chunks import chunk_core as core
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_naming, chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.graph import backdrops
 from usd_chunks.graph import layout as chunk_graph_layout
 from usd_chunks import chunk_stage
 
@@ -1083,6 +1084,7 @@ class ClipboardNode:
         lofts: (child index, inner attribute) for each param a group publishes.
         name: The name the chunk had.
         disabled: Whether the chunk was disabled.
+        collapsed: Whether its node was collapsed.
 
     Attributes:
         module_name: The chunk module to recreate it from.
@@ -1105,9 +1107,12 @@ class ClipboardNode:
             re-loft rather than re-connect -- the pasted group has no such param until
             something lofts one.
         disabled: Whether the chunk was disabled.
+        collapsed: Whether its node was collapsed; None when not recorded. A pasted node
+            opened when its copy was collapsed came out several times taller than the copy,
+            over whatever sat below it.
     """
     __slots__ = ("module_name", "values", "rel_pos", "children", "child_edges", "list_sizes",
-                 "lofts", "name", "disabled")
+                 "lofts", "name", "disabled", "collapsed")
 
     def __init__(
         self, module_name: str, values: list, rel_pos: tuple[float, float],
@@ -1117,10 +1122,12 @@ class ClipboardNode:
         lofts: list[tuple[int, str]] | None = None,
         name: str = "",
         disabled: bool = False,
+        collapsed: bool | None = None,
     ):
         self.module_name = module_name
         self.name = name
         self.disabled = disabled
+        self.collapsed = collapsed
         self.values = values
         self.list_sizes = list_sizes or []
         self.rel_pos = rel_pos
@@ -1259,6 +1266,7 @@ def snapshot_chunk_node(
         module_name, snapshot_param_values(chunk), rel_pos,
         list_sizes=snapshot_list_sizes(chunk), name=chunk.name,
         disabled=chunk.has_state(ChunkFlags.State.DISABLED),
+        collapsed=chunk.has_state(ChunkFlags.State.COLLAPSED),
     )
     # Children only for a chunkgroup. A chunk that builds its own children (AMD MaterialX
     # Library's Reference and BindMaterial) makes them again when the copy cooks, so
@@ -1378,8 +1386,9 @@ def apply_clipboard_node(chunk: core.ChunkBase, item: ClipboardNode) -> None:
     apply_param_values(chunk, item.values)
 
 
-def apply_disabled(chunk: core.ChunkBase, item: ClipboardNode) -> None:
-    """Disable a pasted chunk if the copy was disabled.
+def apply_node_states(chunk: core.ChunkBase, item: ClipboardNode) -> None:
+    """Disable a pasted chunk if the copy was disabled, and collapse or open its node as
+    the copy's was.
 
     Call it right after add_chunk and before anything cooks. Set any earlier, add_chunk
     clears it again.
@@ -1390,6 +1399,11 @@ def apply_disabled(chunk: core.ChunkBase, item: ClipboardNode) -> None:
     """
     if getattr(item, "disabled", False):
         chunk.set_state(ChunkFlags.State.DISABLED)
+    collapsed = getattr(item, "collapsed", None)
+    if collapsed is True:
+        chunk.set_state(ChunkFlags.State.COLLAPSED)
+    elif collapsed is False:
+        chunk.unset_state(ChunkFlags.State.COLLAPSED)
 
 
 def snapshot_param_values(chunk: core.ChunkCommon) -> list:
@@ -2002,7 +2016,7 @@ def materialize(scene, nodes, to_usd, nest=None) -> dict:
         with chunk_stage.creating_at(to_usd(item.rel_pos[0], item.rel_pos[1])):
             for chunk in chunks:
                 scene.add_chunk(chunk)
-        apply_disabled(primary, item)
+        apply_node_states(primary, item)
         made[index] = primary
     return made
 
@@ -2079,6 +2093,8 @@ def copy_to_clipboard(nodes, edges) -> int:
     """
     node_clipboard[:] = list(nodes)
     edge_clipboard[:] = list(edges)
+    # This copy holds no backdrops: one copied before it must not paste with it.
+    backdrops.clipboard.clear()
     return len(node_clipboard)
 
 

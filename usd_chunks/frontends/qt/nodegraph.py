@@ -4612,25 +4612,49 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         primary = next((c for c in chunks if not chunk_stage.is_view_chunk(c)), None)
         return primary, list(chunks)
 
+    def _expanded_selection(self) -> tuple[list[ChunkNodeItem], list[BackdropItem]]:
+        """What copy, cut, duplicate and Ctrl+G act on: the selected nodes, and each selected
+        backdrop with everything in it -- its nodes, and the backdrops and notes inside it.
+
+        View and Output nodes are left out: they are per-graph machinery, not content.
+        """
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return [], []
+        picked = {id(n) for n in graph_scene._nodes.values() if n.chunk.has_state(ChunkFlags.State.SELECTED)}
+        boxes = {id(b): b for b in graph_scene.selected_backdrops()}
+        for box in list(boxes.values()):
+            if box.is_note:
+                continue
+            picked.update(id(n) for n in graph_scene.nodes_in_backdrop(box))
+            rect = box.rect()
+            boxes.update((id(o), o) for o in graph_scene._backdrops.values()
+                         if o is not box and backdrops.backdrop_inside(rect, o.rect(), o.is_note))
+        nodes = [n for n in graph_scene._nodes.values()
+                 if id(n) in picked and not n._is_view and not n._is_output]
+        return nodes, list(boxes.values())
+
     def _snapshot_selection(self):
-        """Build (clip_nodes, clip_edges, top_left) from the current selection -- the shared
-        core of both Copy (into the module clipboard) and Duplicate (straight to paste,
-        clipboard untouched). View chunks are never included -- they're per-context slot
-        machinery, not content worth duplicating. A wire to a node OUTSIDE the selection is
-        dropped, not recreated against the original outside node -- only wires between two
-        selected nodes survive. Returns ([], [], None) if there's nothing selected to copy.
+        """Build (clip_nodes, clip_edges, top_left, clip_backdrops) from the selection
+        (_expanded_selection) -- the shared core of both Copy (into the module clipboard)
+        and Duplicate (straight to paste, clipboard untouched). A wire to a node OUTSIDE the
+        selection is dropped, not recreated against the original outside node -- only wires
+        between two selected nodes survive. Returns ([], [], None, []) if there's nothing
+        selected to copy.
         """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender or not graph_scene._stage:
-            return [], [], None
-        selected = [
-            node for node in graph_scene._nodes.values()
-            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view and not node._is_output
+            return [], [], None, []
+        selected, boxes = self._expanded_selection()
+        if not selected and not boxes:
+            return [], [], None, []
+        corners = [(n.pos().x(), n.pos().y()) for n in selected] + [b.rect()[:2] for b in boxes]
+        min_x = min(x for x, _ in corners)
+        min_y = min(y for _, y in corners)
+        clip_backdrops = [
+            backdrops.ClipboardBackdrop((x - min_x, y - min_y, w, h), b.info.text, b.info.color, b.is_note)
+            for b in boxes for x, y, w, h in [b.rect()]
         ]
-        if not selected:
-            return [], [], None
-        min_x = min(n.pos().x() for n in selected)
-        min_y = min(n.pos().y() for n in selected)
         kept_index: dict[str, int] = {}
         clip_nodes: list[_ClipboardNode] = []
         for node in selected:
@@ -4640,8 +4664,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 continue
             kept_index[str(node.prim.GetPath())] = len(clip_nodes)
             clip_nodes.append(clip_node)
-        if not clip_nodes:
-            return [], [], None
+        if not clip_nodes and not clip_backdrops:
+            return [], [], None, []
 
         clip_edges: list[_ClipboardEdge] = []
         for node in selected:
@@ -4654,7 +4678,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     continue  # source outside the copied selection -- wire dropped
                 clip_edges.append(_ClipboardEdge(src_index, src_attr, dst_index, dst_attr))
 
-        return clip_nodes, clip_edges, QtCore.QPointF(min_x, min_y)
+        return clip_nodes, clip_edges, QtCore.QPointF(min_x, min_y), clip_backdrops
 
     def selected_chunks(self, including: core.ChunkBase | None = None) -> list[core.ChunkBase]:
         """The chunks this graph has selected, with `including` first if it is one of them.
@@ -4681,13 +4705,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         """Ctrl+C: snapshot the selected chunks' type + param values + position, and the
         wires between them, into the module-level clipboard.
         """
-        clip_nodes, clip_edges, _top_left = self._snapshot_selection()
-        if not clip_nodes:
+        clip_nodes, clip_edges, _top_left, clip_backdrops = self._snapshot_selection()
+        if not clip_nodes and not clip_backdrops:
             return
         _node_clipboard.clear()
         _node_clipboard.extend(clip_nodes)
         _edge_clipboard.clear()
         _edge_clipboard.extend(clip_edges)
+        backdrops.clipboard[:] = clip_backdrops
 
     def _cut_selected_to_clipboard(self) -> None:
         """Ctrl+X: copy (as above), then delete the selection via the same path Delete
@@ -4699,14 +4724,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return
-        self._copy_selected_to_clipboard()
-        if not _node_clipboard:
+        nodes, boxes = self._expanded_selection()
+        if not nodes and not boxes:
             return
-        deletable = [
-            node.chunk for node in graph_scene._nodes.values()
-            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._locked and not node._is_view
-            and not node._is_output
-        ]
+        self._copy_selected_to_clipboard()
+        # A selected backdrop goes with what is in it (_expanded_selection).
+        graph_scene.delete_backdrops(boxes)
+        deletable = [node.chunk for node in nodes if not node._locked]
         if not deletable:
             return
         self.mark_pending_delete_relevance(deletable)
@@ -4719,13 +4743,15 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._paste_clipboard_at(scene_pos)
 
     def _paste_clipboard_at(self, scene_pos: QtCore.QPointF) -> list[core.ChunkBase]:
-        """Materialize the module-level clipboard as new chunk(s) centered at scene_pos."""
-        if not _node_clipboard:
+        """Materialize the module-level clipboard as new chunk(s) centered at scene_pos,
+        with the backdrops and notes copied along with them."""
+        if not _node_clipboard and not backdrops.clipboard:
             return []
-        return self._materialize_at(_node_clipboard, _edge_clipboard, scene_pos)
+        return self._materialize_at(_node_clipboard, _edge_clipboard, scene_pos, list(backdrops.clipboard))
 
     def _materialize_at(
-        self, clip_nodes: list[_ClipboardNode], clip_edges: list[_ClipboardEdge], scene_pos: QtCore.QPointF
+        self, clip_nodes: list[_ClipboardNode], clip_edges: list[_ClipboardEdge], scene_pos: QtCore.QPointF,
+        clip_backdrops: list[backdrops.ClipboardBackdrop] = (),
     ) -> list[core.ChunkBase]:
         """Create new chunk(s) from clip_nodes centered at scene_pos, wire clip_edges between
         them, and select the result -- nested into whatever context/tab this view is
@@ -4734,8 +4760,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         for free, including a selection copied from a different context. Shared by both Paste
         (module clipboard) and Duplicate (clipboard-free, straight from the selection).
         Returns the list of newly created primary chunks.
+
+        clip_backdrops are made in the same graph, placed the same way.
         """
-        if not clip_nodes:
+        if not clip_nodes and not clip_backdrops:
             return []
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene) or not graph_scene._scene_sender:
@@ -4793,7 +4821,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 with chunk_stage.creating_at((pos[0], -pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
-                    chunk_graph.apply_disabled(primary, item)
+                    chunk_graph.apply_node_states(primary, item)
                     for c in guarded:
                         c._executing = False
                     if view_exists:
@@ -4820,6 +4848,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     )
         if new_chunks and graph_scene._scene_sender:
             graph_scene._scene_sender.set_selected_chunks(new_chunks)
+        if clip_backdrops:
+            self._paste_backdrops(clip_backdrops, scene_pos, context, select_alone=not new_chunks)
         if clip_edges:
             # The new nodes' ports (typed ones especially) don't exist yet -- their proxy
             # widgets are built in deferred batches (see ChunkGraphScene._create_proxies_batch).
@@ -4836,6 +4866,44 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     self._wire_pasted_edges(paths, edges, created),
             )
         return new_chunks
+
+    def _paste_backdrops(
+        self, clip_backdrops: list[backdrops.ClipboardBackdrop], scene_pos: QtCore.QPointF,
+        context: core.ChunkBase | None, select_alone: bool,
+    ) -> list[str]:
+        """Make copied backdrops and notes in `context`'s graph, placed from scene_pos.
+
+        Selected, when that is the graph on screen (Ctrl+G pastes into a group that is not).
+        select_alone: nothing else was pasted, so the old node selection is let go too.
+
+        Returns:
+            The new prims' paths.
+        """
+        graph_scene = self.scene()
+        stage = graph_scene._stage if isinstance(graph_scene, ChunkGraphScene) else None
+        if stage is None:
+            return []
+        if context is not None and getattr(context, "prim_path", None):
+            root = Sdf.Path(chunk_stage._resolve_chunk_root(context))
+        else:
+            root = Sdf.Path(_CHUNKS_ROOT)
+        layer = chunk_utils.get_bookkeeping_layer(stage, context) if context is not None else None
+        made = []
+        for clip in clip_backdrops:
+            x, y, w, h = clip.rel_rect
+            prim = backdrops.create(stage, root, (scene_pos.x() + x, scene_pos.y() + y, w, h),
+                                    note=clip.note, text=clip.text, color=clip.color, layer=layer)
+            if prim is not None:
+                made.append(str(prim.GetPath()))
+        if made and root == getattr(graph_scene, "_chunks_root_path", None):
+            graph_scene._rebuild_backdrops(root, stage.GetEditTarget().GetLayer().identifier)
+            if select_alone and graph_scene._scene_sender:
+                graph_scene._scene_sender.set_selected_chunks([])
+            graph_scene.clear_backdrop_selection()
+            for path in made:
+                if (item := graph_scene._backdrops.get(path)) is not None:
+                    item.set_selected(True)
+        return made
 
     def _materialize_children(
         self, parent_chunk: core.ChunkBase,
@@ -4900,7 +4968,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 with chunk_stage.creating_at((item.rel_pos[0], -item.rel_pos[1])):
                     for c in chunks:
                         scene.add_chunk(c)
-                    chunk_graph.apply_disabled(primary, item)
+                    chunk_graph.apply_node_states(primary, item)
                     for c in guarded:
                         c._executing = False
                     for c in blockable:
@@ -4963,10 +5031,8 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         stage = graph_scene._stage
         if stage is None:
             return
-        selected = [
-            node for node in graph_scene._nodes.values()
-            if node.chunk.has_state(ChunkFlags.State.SELECTED) and not node._is_view and not node._is_output
-        ]
+        # A selected backdrop goes into the group with what is in it (_expanded_selection).
+        selected, _boxes = self._expanded_selection()
         if not selected:
             return
 
@@ -5052,13 +5118,19 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     def _duplicate_selected(self) -> None:
         """Ctrl+D: copy+paste the current selection in one step, without touching the
         Ctrl+C/Ctrl+V clipboard (so it never clobbers whatever was last explicitly copied).
-        Lands at a fixed +40/+40 offset from the originals rather than the mouse cursor.
+        Lands at a fixed +40/+40 offset from the originals rather than the mouse cursor --
+        or just below them when a backdrop is copied.
         """
-        clip_nodes, clip_edges, top_left = self._snapshot_selection()
-        if not clip_nodes or top_left is None:
+        clip_nodes, clip_edges, top_left, clip_backdrops = self._snapshot_selection()
+        if top_left is None:
             return
         anchor = QtCore.QPointF(top_left.x() + 40, top_left.y() + 40)
-        self._materialize_at(clip_nodes, clip_edges, anchor)
+        if clip_backdrops:
+            # Just below, not overlapping: a copy of a backdrop laid over the original would
+            # count the original's nodes as its own, and drag them with it.
+            bottom = max(b.rel_rect[1] + b.rel_rect[3] for b in clip_backdrops)
+            anchor = QtCore.QPointF(top_left.x(), top_left.y() + bottom + backdrops.FIT_PADDING * 2)
+        self._materialize_at(clip_nodes, clip_edges, anchor, clip_backdrops)
 
     def _wire_pasted_edges(
         self,
@@ -7054,8 +7126,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         fit = None if item.is_note else menu.addAction("Fit to Nodes")
         layout = None if item.is_note else menu.addAction("Layout Nodes Inside  (L)")
         menu.addSeparator()
+        cut = menu.addAction("Cut  (Ctrl+X)")
+        copy = menu.addAction("Copy  (Ctrl+C)")
+        duplicate = menu.addAction("Duplicate  (Ctrl+D)")
+        group = None if item.is_note else menu.addAction("Put in a ChunkGroup  (Ctrl+G)")
+        menu.addSeparator()
         delete = menu.addAction("Delete")
-        for action in (edit, colors.menuAction(), fit, layout, delete):
+        for action in (edit, colors.menuAction(), fit, layout, cut, group, delete):
             if action is not None:
                 action.setEnabled(not item.locked)
         chosen = self._exec_menu(menu, global_pos)
@@ -7080,6 +7157,14 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             graph_scene.fit_backdrop(item)
         elif chosen is layout:
             graph_scene.layout_in_backdrop(item)
+        elif chosen is cut:
+            self._cut_selected_to_clipboard()
+        elif chosen is copy:
+            self._copy_selected_to_clipboard()
+        elif chosen is duplicate:
+            self._duplicate_selected()
+        elif chosen is group:
+            self._group_selected()
         elif chosen is delete:
             graph_scene.delete_backdrops(targets)
 
