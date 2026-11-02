@@ -3650,6 +3650,8 @@ class _ProxyKeyRouter(QtCore.QObject):
         self._active: QtWidgets.QWidget | None = None  # proxy widget last clicked
         self._view_active: bool = False  # True while graph view was most recently clicked
         self._installed = False
+        # Keys whose press this router took, so it takes their release too (eventFilter).
+        self._taken_keys: set[int] = set()
 
     def install(self) -> None:
         """Attach to the QApplication, if not already attached.
@@ -3700,7 +3702,29 @@ class _ProxyKeyRouter(QtCore.QObject):
         QtWidgets.QComboBox,
     )
 
-    def eventFilter(self, _obj, event) -> bool:
+    def eventFilter(self, obj, event) -> bool:
+        """Route a key event (_route), and take the release of any key whose press it took.
+
+        Other tools act on the release. The viewport gizmos switch on it from anywhere in
+        the window: B over the graph made a backdrop on the press, then turned the brush
+        on with the release. A key the graph took is the graph's, up and down.
+        """
+        etype = event.type()
+        if etype == QtCore.QEvent.Type.KeyRelease and event.key() in self._taken_keys:
+            if not event.isAutoRepeat():
+                self._taken_keys.discard(event.key())
+            return True
+        taken = self._route(obj, event)
+        if etype == QtCore.QEvent.Type.KeyPress:
+            if taken:
+                self._taken_keys.add(event.key())
+            else:
+                # Its last release never came here (the window lost focus mid-press): this
+                # press is someone else's, and so is its release.
+                self._taken_keys.discard(event.key())
+        return taken
+
+    def _route(self, _obj, event) -> bool:
         # Read defensively: if a filter ever outlives its wrapper's __dict__, degrade to a
         # no-op rather than raising AttributeError inside Qt's dispatch. uninstall() is
         # what prevents that happening; this only keeps the failure mode harmless.
@@ -3876,7 +3900,8 @@ class _ProxyKeyRouter(QtCore.QObject):
                     event.accept()
                     return True
                 if etype == QtCore.QEvent.Type.KeyPress:
-                    view._create_backdrop(note=event.key() == QtCore.Qt.Key.Key_N)
+                    if not event.isAutoRepeat():  # held down: one, not one per repeat
+                        view._create_backdrop(note=event.key() == QtCore.Qt.Key.Key_N)
                     event.accept()
                     return True
 
