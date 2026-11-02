@@ -218,6 +218,105 @@ def layout_positions(
     return result
 
 
+Rect = tuple[float, float, float, float]
+
+
+def layout_grouped(
+    node_ids: list[str],
+    size_of: SizeOf,
+    is_locked: IsLocked,
+    current_pos: PosOf,
+    up_of: AdjacencyMap,
+    down_of: AdjacencyMap,
+    groups: dict[str, list[str]],
+    group_rect: Callable[[str], Rect],
+    group_locked: Callable[[str], bool],
+    inner_origin: tuple[float, float],
+    pad: float,
+) -> tuple[dict[str, tuple[float, float]], dict[str, Rect]]:
+    """Lay out nodes that sit in boxes (backdrops) without pulling the boxes apart.
+
+    Each box's nodes are laid out inside it first. Then the box takes part in the overall
+    layout as one block, the size it now needs, wired to whatever its nodes are wired to.
+    Its nodes move with it. A box that holds a locked node, or is locked itself, stays
+    where it is, nodes and all, and is an obstacle like a locked node.
+
+    Args:
+        node_ids: The nodes to lay out.
+        size_of: Takes a node id and returns its (width, height).
+        is_locked: Takes a node id and returns whether it must stay put.
+        current_pos: Takes a node id and returns its current (x, y).
+        up_of: Upstream neighbours of each node, both ends in node_ids.
+        down_of: Downstream neighbours of each node, both ends in node_ids.
+        groups: Box id -> the nodes in it. A node is in one box at most. Box ids must not
+            be node ids.
+        group_rect: Takes a box id and returns its current (x, y, w, h).
+        group_locked: Takes a box id and returns whether it must stay put.
+        inner_origin: Where a box's nodes start, from its top-left corner.
+        pad: Space left between a box's nodes and its right and bottom edges.
+
+    Returns:
+        ({node id: (x, y)} for every node that moves, {box id: (x, y, w, h)} for every box
+        that moves).
+    """
+    id_set = set(node_ids)
+    members = {g: [n for n in ns if n in id_set] for g, ns in groups.items()}
+    members = {g: ns for g, ns in members.items() if ns}
+    rep = {n: n for n in node_ids}
+    for g, ns in members.items():
+        for n in ns:
+            rep[n] = g
+    frozen = {g for g, ns in members.items() if group_locked(g) or any(is_locked(n) for n in ns)}
+
+    # Inside each box first, relative to its corner.
+    inner: dict[str, tuple[dict[str, tuple[float, float]], tuple[float, float]]] = {}
+    for g, ns in members.items():
+        if g in frozen:
+            continue
+        in_box = set(ns)
+        box_up = {n: {u for u in up_of.get(n, ()) if u in in_box} for n in ns}
+        box_down = {n: {d for d in down_of.get(n, ()) if d in in_box} for n in ns}
+        rel = layout_positions(ns, size_of, lambda n: False, current_pos, box_up, box_down, origin=inner_origin)
+        w = max(rel[n][0] + size_of(n)[0] for n in ns) + pad
+        h = max(rel[n][1] + size_of(n)[1] for n in ns) + pad
+        inner[g] = (rel, (w, h))
+
+    # Then the boxes and the loose nodes together, each box one block.
+    def block_size(r: str) -> tuple[float, float]:
+        if r in inner:
+            return inner[r][1]
+        if r in members:
+            return group_rect(r)[2], group_rect(r)[3]
+        return size_of(r)
+
+    def block_pos(r: str) -> tuple[float, float]:
+        return (group_rect(r)[0], group_rect(r)[1]) if r in members else current_pos(r)
+
+    def block_locked(r: str) -> bool:
+        return r in frozen if r in members else is_locked(r)
+
+    blocks = list(dict.fromkeys(rep[n] for n in node_ids))
+    block_up: AdjacencyMap = {}
+    block_down: AdjacencyMap = {}
+    for n in node_ids:
+        for u in up_of.get(n, ()):
+            if u in id_set and rep[u] != rep[n]:
+                block_up.setdefault(rep[n], set()).add(rep[u])
+                block_down.setdefault(rep[u], set()).add(rep[n])
+    placed = layout_positions(blocks, block_size, block_locked, block_pos, block_up, block_down)
+
+    positions: dict[str, tuple[float, float]] = {}
+    rects: dict[str, Rect] = {}
+    for r, (x, y) in placed.items():
+        if r in inner:
+            rel, (w, h) = inner[r]
+            rects[r] = (x, y, w, h)
+            positions.update((n, (x + rx, y + ry)) for n, (rx, ry) in rel.items())
+        else:
+            positions[r] = (x, y)
+    return positions, rects
+
+
 def grow_to_connected_subgraph(seed_ids: list[str], up_of: AdjacencyMap, down_of: AdjacencyMap) -> set[str]:
     """Every node reachable from the seeds through any connection, up or down.
 

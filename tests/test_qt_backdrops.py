@@ -479,3 +479,58 @@ def test_b_over_the_graph_does_not_reach_the_brush(graph):
         assert recorder.released == [QtCore.Qt.Key_B]
     finally:
         docker.removeEventFilter(recorder)
+
+
+def test_l_with_nothing_selected_keeps_each_backdrop_whole(graph):
+    """Reported: L with nothing selected scattered a backdrop's nodes out of it."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 4)
+    graph_scene = view.scene()
+    for upstream, downstream in zip(chunks, chunks[1:]):
+        downstream.add_dependency(upstream)
+    _settle(qapp)
+    view, box = _backdrop_around(graph, paths[1:3])
+    x, y, w, h = box.rect()
+    note = graph_scene.create_backdrop((x + 10, y + h - 60, 120, 50), note=True)
+    note_offset = (note.rect()[0] - x, note.rect()[1] - y)
+    graph_scene.clear_backdrop_selection()
+    graph_scene._scene_sender.set_selected_chunks([])
+    _settle(qapp)
+    view._layout_selected_or_all()
+    _settle(qapp)
+    box = graph_scene._backdrops[str(box.prim.GetPath())]
+    inside = {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(box)}
+    assert inside == set(paths[1:3])
+    bx, by, bw, bh = box.rect()
+    box_rect = QtCore.QRectF(bx, by, bw, bh)
+    for path in (paths[0], paths[3]):
+        assert not graph_scene._nodes[path].sceneBoundingRect().intersects(box_rect), path
+    note = graph_scene._backdrops[str(note.prim.GetPath())]
+    assert (note.rect()[0] - bx, note.rect()[1] - by) == pytest.approx(note_offset)
+
+
+def test_l_on_a_selected_node_keeps_a_wired_backdrop_whole(graph):
+    """Laying out a selection pulls in what it is wired to; a backdrop it reaches comes
+    whole, not one node at a time -- its unwired node too."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 4)
+    graph_scene = view.scene()
+    for upstream, downstream in zip(chunks[:3], chunks[1:3]):
+        downstream.add_dependency(upstream)
+    _settle(qapp)
+    view, box = _backdrop_around(graph, paths[1:])
+    # Far from the selected node, so a layout that ignored the box would visibly pull its
+    # wired nodes out of it.
+    for path in paths[1:]:
+        node = graph_scene._nodes[path]
+        node.setPos(node.pos() + QtCore.QPointF(3000, 1500))
+        node._write_pos_to_usd()
+    x, y, w, h = box.rect()
+    backdrops.set_rect(box.prim, (x + 3000, y + 1500, w, h))
+    _settle(qapp)
+    graph_scene._scene_sender.set_selected_chunks([chunks[0]])
+    _settle(qapp)
+    view._layout_selected_or_all()
+    _settle(qapp)
+    box = graph_scene._backdrops[str(box.prim.GetPath())]
+    assert {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(box)} == set(paths[1:])

@@ -5,6 +5,7 @@ from pxr import Sdf, Usd
 from usd_chunks.graph.layout import (
     find_connected_components,
     grow_to_connected_subgraph,
+    layout_grouped,
     layout_positions,
     topo_depth,
 )
@@ -314,3 +315,50 @@ def test_layout_nodes_never_moves_a_locked_node(qapp) -> None:
     pos_attr = stage.GetPrimAtPath("/Tab1/a").GetAttribute("ui:nodegraph:node:pos")
     if pos_attr.HasAuthoredValue():
         assert (pos_attr.Get()[0], -pos_attr.Get()[1]) == locked_pos_before
+
+
+# ---------------------------------------------------------------------------
+# layout_grouped (backdrops)
+# ---------------------------------------------------------------------------
+
+def _rect_of(pos, size):
+    return pos[0], pos[1], size[0], size[1]
+
+
+def _overlap(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def test_layout_grouped_keeps_a_box_and_its_nodes_together() -> None:
+    """a -> b -> c -> d with b, c in a box: the box moves as one block, b and c stay in it,
+    and nothing outside lands on it."""
+    up = {"b": {"a"}, "c": {"b"}, "d": {"c"}}
+    down = {"a": {"b"}, "b": {"c"}, "c": {"d"}}
+    sizes = _sizes({})
+    start = {"a": (0.0, 0.0), "b": (900.0, 700.0), "c": (100.0, 900.0), "d": (50.0, 50.0)}
+    box = (80.0, 650.0, 1000.0, 400.0)
+    nodes, boxes = layout_grouped(
+        ["a", "b", "c", "d"], sizes, _locked(set()), _positions(start), up, down,
+        {"box": ["b", "c"]}, lambda g: box, lambda g: False, (30.0, 66.0), 30.0,
+    )
+    bx, by, bw, bh = boxes["box"]
+    for n in ("b", "c"):
+        x, y = nodes[n]
+        w, h = sizes(n)
+        assert bx <= x and x + w <= bx + bw and by <= y and y + h <= by + bh, n
+    for n in ("a", "d"):
+        assert not _overlap(_rect_of(nodes[n], sizes(n)), boxes["box"]), n
+    # The block sits in the chain where its nodes do: after a, before d.
+    assert nodes["a"][0] < bx < nodes["d"][0]
+
+
+def test_layout_grouped_leaves_a_box_with_a_locked_node_where_it_is() -> None:
+    sizes = _sizes({})
+    start = {"a": (0.0, 0.0), "b": (500.0, 500.0)}
+    box = (480.0, 450.0, 300.0, 200.0)
+    nodes, boxes = layout_grouped(
+        ["a", "b"], sizes, _locked({"b"}), _positions(start), {"b": {"a"}}, {"a": {"b"}},
+        {"box": ["b"]}, lambda g: box, lambda g: False, (30.0, 66.0), 30.0,
+    )
+    assert "box" not in boxes and "b" not in nodes
+    assert not _overlap(_rect_of(nodes["a"], sizes("a")), box)

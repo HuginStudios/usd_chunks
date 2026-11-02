@@ -3498,6 +3498,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
 
         The computation is chunk_graph.layout_graph, shared with the other frontends; what
         stays here is applying it, because only this one has QGraphicsItems to move.
+
+        Backdrops stay whole (chunk_graph.layout_graph_with_boxes): each one's nodes are laid
+        out inside it, and it moves as one block, carrying the notes and smaller backdrops in
+        it. Not with `only`, which is a pass inside one backdrop already.
         """
         if not self._nodes:
             return
@@ -3514,13 +3518,22 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             point = self._nodes[path].pos()
             return point.x(), point.y()
 
-        positions = chunk_graph.layout_graph(
-            prims, size_of, current_pos, seeds=seed_paths, origin=origin, obstacles=obstacles,
-            # Unlike the other frontends, this one knows about locked nodes: a prim from an
-            # external or referenced layer must not be moved, though it still acts as an
-            # obstacle.
-            is_locked=lambda path: self._nodes[path]._locked,
-        )
+        # Unlike the other frontends, this one knows about locked nodes: a prim from an
+        # external or referenced layer must not be moved, though it still acts as an obstacle.
+        def is_locked(path):
+            return self._nodes[path]._locked
+
+        boxes = self._layout_boxes() if only is None else None
+        box_rects: dict[str, backdrops.Rect] = {}
+        if boxes is not None and boxes.members:
+            carried = {path: self._carried_by(self._backdrops[path]) for path in boxes.members}
+            positions, box_rects = chunk_graph.layout_graph_with_boxes(
+                prims, size_of, current_pos, boxes, seeds=seed_paths, is_locked=is_locked)
+        else:
+            positions = chunk_graph.layout_graph(
+                prims, size_of, current_pos, seeds=seed_paths, origin=origin, obstacles=obstacles,
+                is_locked=is_locked,
+            )
 
         # Apply after the full layout is computed (not interleaved with computing it) -- each
         # setPos triggers itemChange -> update_edges_for automatically, and _write_pos_to_usd
@@ -3531,6 +3544,66 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 continue
             node.setPos(x, y)
             node._write_pos_to_usd()
+        for path, rect in box_rects.items():
+            self._move_backdrop_to(self._backdrops[path], rect, *carried[path])
+
+    def _layout_boxes(self) -> chunk_graph.LayoutBoxes | None:
+        """The backdrops a layout keeps whole: the outermost ones, each with its nodes.
+
+        A backdrop inside another is part of the bigger one's block, and its nodes are too.
+        """
+        boxes = [b for b in self._backdrops.values() if not b.is_note and b.prim.IsValid()]
+        if not boxes:
+            return None
+        outermost = [b for b in boxes if not any(
+            o is not b and backdrops.backdrop_inside(o.rect(), b.rect(), False) for o in boxes)]
+        members: dict[str, list[str]] = {}
+        taken: set[str] = set()
+        for box in sorted(outermost, key=lambda b: b.rect()[2] * b.rect()[3], reverse=True):
+            paths = [str(n.prim.GetPath()) for n in self.nodes_in_backdrop(box)]
+            members[str(box.prim.GetPath())] = [p for p in paths if p not in taken]
+            taken.update(paths)
+        pad = backdrops.FIT_PADDING
+        return chunk_graph.LayoutBoxes(
+            members={k: v for k, v in members.items() if v},
+            rect=lambda path: self._backdrops[path].rect(),
+            locked=lambda path: self._backdrops[path].locked,
+            # A node's bounding rect starts a port's radius left of the node itself.
+            inner_origin=(pad + _PORT_RADIUS, backdrops.HEADER_HEIGHT + pad),
+            pad=pad,
+        )
+
+    def _carried_by(self, item: BackdropItem) -> tuple[list[BackdropItem], dict[str, list[ChunkNodeItem]]]:
+        """What rides along when a layout moves a backdrop: the notes in it, and the smaller
+        backdrops in it with the nodes each one frames now."""
+        box = item.rect()
+        notes, inner = [], {}
+        for other in self._backdrops.values():
+            if other is item or other.locked or not backdrops.backdrop_inside(box, other.rect(), other.is_note):
+                continue
+            if other.is_note:
+                notes.append(other)
+            else:
+                inner[str(other.prim.GetPath())] = self.nodes_in_backdrop(other)
+        return notes, inner
+
+    def _move_backdrop_to(self, item: BackdropItem, rect: backdrops.Rect, notes: list[BackdropItem],
+                          inner: dict[str, list[ChunkNodeItem]]) -> None:
+        """Put a backdrop where a layout placed it. Its notes keep their place in it; a
+        smaller backdrop in it is fitted around its nodes again, which the layout moved."""
+        if not item.prim.IsValid():
+            return
+        x, y, w, h = rect
+        old_x, old_y, _, _ = item.rect()
+        backdrops.set_rect(item.prim, (x, y, max(w, backdrops.MIN_SIZE[0]), max(h, backdrops.MIN_SIZE[1])))
+        for note in notes:
+            nx, ny, nw, nh = note.rect()
+            if note.prim.IsValid():
+                backdrops.set_rect(note.prim, (nx + x - old_x, ny + y - old_y, nw, nh))
+        for path, nodes in inner.items():
+            nested = self._backdrops.get(path)
+            if nested is not None and nodes:
+                self.fit_backdrop(nested, nodes)
 
     def _on_chunk_deleted(self, notice, sender):
         # A deleted chunk drops its prim from the stage. Rebuild from scratch so its node

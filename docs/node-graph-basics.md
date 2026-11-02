@@ -132,7 +132,8 @@ cursor, then type. Drag it anywhere on its body.
 Double-click either one to edit its text. Right-click its title bar (or anywhere on a
 note) to change its colour, fit a backdrop around its nodes, lay out the nodes inside it,
 or delete it. Select a backdrop and press `L` to lay out only the nodes inside it. Wires
-to nodes outside the box are ignored.
+to nodes outside the box are ignored. A plain `L` keeps every backdrop whole: its nodes are
+laid out inside it, and the box moves as one block, with its notes.
 
 Both are saved in the scene as USD `Backdrop` prims next to the chunks. Undo covers them
 too.
