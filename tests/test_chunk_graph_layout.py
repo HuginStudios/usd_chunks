@@ -5,7 +5,8 @@ from pxr import Sdf, Usd
 from usd_chunks.graph.layout import (
     find_connected_components,
     grow_to_connected_subgraph,
-    layout_grouped,
+    Box,
+    layout_nested,
     layout_positions,
     topo_depth,
 )
@@ -317,8 +318,9 @@ def test_layout_nodes_never_moves_a_locked_node(qapp) -> None:
         assert (pos_attr.Get()[0], -pos_attr.Get()[1]) == locked_pos_before
 
 
+
 # ---------------------------------------------------------------------------
-# layout_grouped (backdrops)
+# layout_nested (backdrops)
 # ---------------------------------------------------------------------------
 
 def _rect_of(pos, size):
@@ -329,36 +331,67 @@ def _overlap(a, b):
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-def test_layout_grouped_keeps_a_box_and_its_nodes_together() -> None:
+def _within(inner, outer):
+    return (outer[0] <= inner[0] and outer[1] <= inner[1]
+            and inner[0] + inner[2] <= outer[0] + outer[2] and inner[1] + inner[3] <= outer[1] + outer[3])
+
+
+def test_layout_nested_keeps_a_box_and_its_nodes_together() -> None:
     """a -> b -> c -> d with b, c in a box: the box moves as one block, b and c stay in it,
     and nothing outside lands on it."""
     up = {"b": {"a"}, "c": {"b"}, "d": {"c"}}
     down = {"a": {"b"}, "b": {"c"}, "c": {"d"}}
     sizes = _sizes({})
     start = {"a": (0.0, 0.0), "b": (900.0, 700.0), "c": (100.0, 900.0), "d": (50.0, 50.0)}
-    box = (80.0, 650.0, 1000.0, 400.0)
-    nodes, boxes = layout_grouped(
-        ["a", "b", "c", "d"], sizes, _locked(set()), _positions(start), up, down,
-        {"box": ["b", "c"]}, lambda g: box, lambda g: False, (30.0, 66.0), 30.0,
+    boxes = {"box": Box(nodes=["b", "c"], rect=(80.0, 650.0, 1000.0, 400.0))}
+    nodes, rects = layout_nested(
+        ["a", "b", "c", "d"], sizes, _locked(set()), _positions(start), up, down, boxes, (30.0, 66.0), 30.0,
     )
-    bx, by, bw, bh = boxes["box"]
     for n in ("b", "c"):
-        x, y = nodes[n]
-        w, h = sizes(n)
-        assert bx <= x and x + w <= bx + bw and by <= y and y + h <= by + bh, n
+        assert _within(_rect_of(nodes[n], sizes(n)), rects["box"]), n
     for n in ("a", "d"):
-        assert not _overlap(_rect_of(nodes[n], sizes(n)), boxes["box"]), n
+        assert not _overlap(_rect_of(nodes[n], sizes(n)), rects["box"]), n
     # The block sits in the chain where its nodes do: after a, before d.
-    assert nodes["a"][0] < bx < nodes["d"][0]
+    assert nodes["a"][0] < rects["box"][0] < nodes["d"][0]
 
 
-def test_layout_grouped_leaves_a_box_with_a_locked_node_where_it_is() -> None:
+def test_layout_nested_lays_a_box_inside_a_box_out_as_one_block() -> None:
+    """Five nodes feeding two merges that sit in their own box, all in an outer box:
+    laying out inside the outer box keeps the merges in theirs, and the inner box in the
+    outer one, clear of the other nodes."""
+    feeders = ["t2", "m1", "m2", "t", "t1"]
+    up = {"merge1": {"t2", "m1", "m2"}, "merge2": {"merge1", "t", "t1"}}
+    down: dict = {}
+    for n, ups in up.items():
+        for u in ups:
+            down.setdefault(u, set()).add(n)
+    sizes = _sizes({"merge1": (40.0, 40.0), "merge2": (50.0, 50.0)})
+    start = {n: (40.0, 80.0 + 110 * i) for i, n in enumerate(feeders)}
+    start.update({"merge1": (700.0, 340.0), "merge2": (820.0, 330.0)})
+    boxes = {
+        "stuff": Box(nodes=list(feeders), children=["merges"], rect=(0.0, 0.0, 970.0, 620.0)),
+        "merges": Box(nodes=["merge1", "merge2"], rect=(670.0, 270.0, 230.0, 140.0)),
+    }
+    nodes, rects = layout_nested(
+        feeders + ["merge1", "merge2"], sizes, _locked(set()), _positions(start), up, down, boxes,
+        (35.0, 66.0), 30.0, inside="stuff",
+    )
+    for n in ("merge1", "merge2"):
+        assert _within(_rect_of(nodes[n], sizes(n)), rects["merges"]), n
+    assert _within(rects["merges"], rects["stuff"])
+    for n in feeders:
+        assert _within(_rect_of(nodes[n], sizes(n)), rects["stuff"]), n
+        assert not _overlap(_rect_of(nodes[n], sizes(n)), rects["merges"]), n
+    assert rects["stuff"][:2] == (0.0, 0.0)  # laid out from its own corner
+
+
+def test_layout_nested_leaves_a_box_with_a_locked_node_where_it_is() -> None:
     sizes = _sizes({})
     start = {"a": (0.0, 0.0), "b": (500.0, 500.0)}
     box = (480.0, 450.0, 300.0, 200.0)
-    nodes, boxes = layout_grouped(
+    nodes, rects = layout_nested(
         ["a", "b"], sizes, _locked({"b"}), _positions(start), {"b": {"a"}}, {"a": {"b"}},
-        {"box": ["b"]}, lambda g: box, lambda g: False, (30.0, 66.0), 30.0,
+        {"box": Box(nodes=["b"], rect=box)}, (30.0, 66.0), 30.0,
     )
-    assert "box" not in boxes and "b" not in nodes
+    assert "box" not in rects and "b" not in nodes
     assert not _overlap(_rect_of(nodes["a"], sizes("a")), box)

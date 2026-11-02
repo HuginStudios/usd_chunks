@@ -534,3 +534,60 @@ def test_l_on_a_selected_node_keeps_a_wired_backdrop_whole(graph):
     _settle(qapp)
     box = graph_scene._backdrops[str(box.prim.GetPath())]
     assert {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(box)} == set(paths[1:])
+
+
+def _nested_backdrops(graph):
+    """An outer backdrop with five nodes and an inner backdrop holding two more, the way
+    it was reported: feeders on the left, the inner box on the right."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 7)
+    graph_scene = view.scene()
+    chunks[5].add_dependency(chunks[0])
+    chunks[6].add_dependency(chunks[5])
+    _settle(qapp)
+    for i, path in enumerate(paths[:5]):
+        node = graph_scene._nodes[path]
+        node.setPos(100, 100 + 110 * i)
+        node._write_pos_to_usd()
+    for path, x in ((paths[5], 800), (paths[6], 1100)):
+        node = graph_scene._nodes[path]
+        node.setPos(x, 330)
+        node._write_pos_to_usd()
+    _settle(qapp)
+    view, inner = _backdrop_around(graph, paths[5:])
+    outer = graph_scene.create_backdrop((40, 20, 1500, 700))
+    graph_scene.clear_backdrop_selection()
+    _settle(qapp)
+    return view, graph_scene, paths, inner, outer
+
+
+def _check_nested(graph_scene, paths, inner, outer):
+    inner = graph_scene._backdrops[str(inner.prim.GetPath())]
+    outer = graph_scene._backdrops[str(outer.prim.GetPath())]
+    in_inner = {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(inner)}
+    assert in_inner == set(paths[5:])
+    assert backdrops.backdrop_inside(outer.rect(), inner.rect(), False)
+    inner_rect = QtCore.QRectF(*inner.rect())
+    for path in paths[:5]:
+        node_rect = graph_scene._nodes[path].sceneBoundingRect()
+        assert not node_rect.intersects(inner_rect), path
+        assert backdrops.node_inside(outer.rect(), graph_scene._node_header_rect(graph_scene._nodes[path])), path
+
+
+def test_layout_inside_keeps_a_backdrop_in_it_whole(graph):
+    """Reported: Layout Nodes Inside on the outer backdrop laid the inner backdrop's nodes
+    out with the rest, leaving the inner box behind and the nodes piled on it."""
+    qapp = graph[0]
+    view, graph_scene, paths, inner, outer = _nested_backdrops(graph)
+    graph_scene.layout_in_backdrop(outer)
+    _settle(qapp)
+    _check_nested(graph_scene, paths, inner, outer)
+
+
+def test_plain_l_keeps_nested_backdrops_whole(graph):
+    qapp = graph[0]
+    view, graph_scene, paths, inner, outer = _nested_backdrops(graph)
+    graph_scene._scene_sender.set_selected_chunks([])
+    view._layout_selected_or_all()
+    _settle(qapp)
+    _check_nested(graph_scene, paths, inner, outer)

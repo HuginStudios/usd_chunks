@@ -13,6 +13,7 @@ individual nodes with no grouping concept at all.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 
 X_GAP = 65  # horizontal gap between depth columns
 Y_GAP = 55  # vertical gap between nodes in the same column (or around a locked obstacle)
@@ -221,25 +222,44 @@ def layout_positions(
 Rect = tuple[float, float, float, float]
 
 
-def layout_grouped(
+@dataclass
+class Box:
+    """A backdrop, for layout_nested.
+
+    Attributes:
+        nodes: The nodes directly in it, not in a smaller box inside it.
+        children: The boxes directly in it.
+        rect: Where it is now: (x, y, w, h).
+        locked: It must not move.
+    """
+
+    nodes: list[str]
+    children: list[str] = field(default_factory=list)
+    rect: Rect = (0.0, 0.0, 0.0, 0.0)
+    locked: bool = False
+
+
+def layout_nested(
     node_ids: list[str],
     size_of: SizeOf,
     is_locked: IsLocked,
     current_pos: PosOf,
     up_of: AdjacencyMap,
     down_of: AdjacencyMap,
-    groups: dict[str, list[str]],
-    group_rect: Callable[[str], Rect],
-    group_locked: Callable[[str], bool],
+    boxes: dict[str, Box],
     inner_origin: tuple[float, float],
     pad: float,
+    inside: str | None = None,
+    obstacles: Iterable[Rect] = (),
 ) -> tuple[dict[str, tuple[float, float]], dict[str, Rect]]:
-    """Lay out nodes that sit in boxes (backdrops) without pulling the boxes apart.
+    """Lay out nodes that sit in boxes (backdrops), boxes inside boxes included, without
+    pulling any box apart.
 
-    Each box's nodes are laid out inside it first. Then the box takes part in the overall
-    layout as one block, the size it now needs, wired to whatever its nodes are wired to.
-    Its nodes move with it. A box that holds a locked node, or is locked itself, stays
-    where it is, nodes and all, and is an obstacle like a locked node.
+    A box's contents are laid out inside it first: its nodes, and its own boxes, each laid
+    out the same way and placed as one block. Then the box is one block where it sits, the
+    size it now needs, wired to whatever is inside it is wired to. A box holding a locked
+    node or a locked box, or locked itself, stays where it is, contents and all, and is an
+    obstacle like a locked node.
 
     Args:
         node_ids: The nodes to lay out.
@@ -248,72 +268,100 @@ def layout_grouped(
         current_pos: Takes a node id and returns its current (x, y).
         up_of: Upstream neighbours of each node, both ends in node_ids.
         down_of: Downstream neighbours of each node, both ends in node_ids.
-        groups: Box id -> the nodes in it. A node is in one box at most. Box ids must not
-            be node ids.
-        group_rect: Takes a box id and returns its current (x, y, w, h).
-        group_locked: Takes a box id and returns whether it must stay put.
-        inner_origin: Where a box's nodes start, from its top-left corner.
-        pad: Space left between a box's nodes and its right and bottom edges.
+        boxes: Box id -> Box. A node is directly in one box at most. Box ids must not be
+            node ids.
+        inner_origin: Where a box's contents start, from its top-left corner.
+        pad: Space left between a box's contents and its right and bottom edges.
+        inside: Lay out only what is in this box, from its top-left corner, and fit the box
+            around it. None: node_ids and the boxes they are in, as a whole graph.
+        obstacles: (x, y, w, h) rects nothing may land on.
 
     Returns:
         ({node id: (x, y)} for every node that moves, {box id: (x, y, w, h)} for every box
-        that moves).
+        that moves or is resized).
     """
     id_set = set(node_ids)
-    members = {g: [n for n in ns if n in id_set] for g, ns in groups.items()}
-    members = {g: ns for g, ns in members.items() if ns}
-    rep = {n: n for n in node_ids}
-    for g, ns in members.items():
-        for n in ns:
-            rep[n] = g
-    frozen = {g for g, ns in members.items() if group_locked(g) or any(is_locked(n) for n in ns)}
+    under: dict[str, list[str]] = {}
+    frozen: dict[str, bool] = {}
 
-    # Inside each box first, relative to its corner.
-    inner: dict[str, tuple[dict[str, tuple[float, float]], tuple[float, float]]] = {}
-    for g, ns in members.items():
-        if g in frozen:
-            continue
-        in_box = set(ns)
-        box_up = {n: {u for u in up_of.get(n, ()) if u in in_box} for n in ns}
-        box_down = {n: {d for d in down_of.get(n, ()) if d in in_box} for n in ns}
-        rel = layout_positions(ns, size_of, lambda n: False, current_pos, box_up, box_down, origin=inner_origin)
-        w = max(rel[n][0] + size_of(n)[0] for n in ns) + pad
-        h = max(rel[n][1] + size_of(n)[1] for n in ns) + pad
-        inner[g] = (rel, (w, h))
+    def nodes_under(b: str) -> list[str]:
+        if b not in under:
+            found = [n for n in boxes[b].nodes if n in id_set]
+            for c in boxes[b].children:
+                found += nodes_under(c)
+            under[b] = found
+        return under[b]
 
-    # Then the boxes and the loose nodes together, each box one block.
-    def block_size(r: str) -> tuple[float, float]:
-        if r in inner:
-            return inner[r][1]
-        if r in members:
-            return group_rect(r)[2], group_rect(r)[3]
-        return size_of(r)
+    def is_frozen(b: str) -> bool:
+        if b not in frozen:
+            box = boxes[b]
+            frozen[b] = (box.locked or any(is_locked(n) for n in box.nodes if n in id_set)
+                         or any(is_frozen(c) for c in box.children))
+        return frozen[b]
 
-    def block_pos(r: str) -> tuple[float, float]:
-        return (group_rect(r)[0], group_rect(r)[1]) if r in members else current_pos(r)
+    def lay(nodes, children, origin, keep_clear):
+        """Lay out nodes and boxes side by side. Returns positions, rects, and the bottom
+        right corner of everything placed, or None when there was nothing."""
+        nodes = [n for n in nodes if n in id_set]
+        children = [c for c in children if nodes_under(c)]
+        items = nodes + children
+        if not items:
+            return {}, {}, None
+        inner = {}
+        for c in children:
+            if not is_frozen(c):
+                rel_pos, rel_rects, corner = lay(boxes[c].nodes, boxes[c].children, inner_origin, ())
+                inner[c] = (rel_pos, rel_rects, (corner[0] + pad, corner[1] + pad))
+        rep = {n: n for n in nodes}
+        for c in children:
+            rep.update((n, c) for n in nodes_under(c))
 
-    def block_locked(r: str) -> bool:
-        return r in frozen if r in members else is_locked(r)
+        def size(i):
+            if i in inner:
+                return inner[i][2]
+            return (boxes[i].rect[2], boxes[i].rect[3]) if i in boxes else size_of(i)
 
-    blocks = list(dict.fromkeys(rep[n] for n in node_ids))
-    block_up: AdjacencyMap = {}
-    block_down: AdjacencyMap = {}
-    for n in node_ids:
-        for u in up_of.get(n, ()):
-            if u in id_set and rep[u] != rep[n]:
-                block_up.setdefault(rep[n], set()).add(rep[u])
-                block_down.setdefault(rep[u], set()).add(rep[n])
-    placed = layout_positions(blocks, block_size, block_locked, block_pos, block_up, block_down)
+        def pos(i):
+            return (boxes[i].rect[0], boxes[i].rect[1]) if i in boxes else current_pos(i)
 
-    positions: dict[str, tuple[float, float]] = {}
-    rects: dict[str, Rect] = {}
-    for r, (x, y) in placed.items():
-        if r in inner:
-            rel, (w, h) = inner[r]
-            rects[r] = (x, y, w, h)
-            positions.update((n, (x + rx, y + ry)) for n, (rx, ry) in rel.items())
-        else:
-            positions[r] = (x, y)
+        def locked(i):
+            return is_frozen(i) if i in boxes else is_locked(i)
+
+        item_up: AdjacencyMap = {}
+        item_down: AdjacencyMap = {}
+        for n, r in rep.items():
+            for u in up_of.get(n, ()):
+                if u in rep and rep[u] != r:
+                    item_up.setdefault(r, set()).add(rep[u])
+                    item_down.setdefault(rep[u], set()).add(r)
+        placed = layout_positions(items, size, locked, pos, item_up, item_down, origin=origin,
+                                  obstacles=keep_clear)
+        positions: dict[str, tuple[float, float]] = {}
+        rects: dict[str, Rect] = {}
+        for i, (x, y) in placed.items():
+            if i in inner:
+                rel_pos, rel_rects, (w, h) = inner[i]
+                rects[i] = (x, y, w, h)
+                positions.update((n, (x + rx, y + ry)) for n, (rx, ry) in rel_pos.items())
+                rects.update((k, (x + r[0], y + r[1], r[2], r[3])) for k, r in rel_rects.items())
+            else:
+                positions[i] = (x, y)
+        corner = (max(placed.get(i, pos(i))[0] + size(i)[0] for i in items),
+                  max(placed.get(i, pos(i))[1] + size(i)[1] for i in items))
+        return positions, rects, corner
+
+    if inside is None:
+        in_a_box = {n for box in boxes.values() for n in box.nodes}
+        nested = {c for box in boxes.values() for c in box.children}
+        loose = [n for n in node_ids if n not in in_a_box]
+        positions, rects, _ = lay(loose, [b for b in boxes if b not in nested], None, obstacles)
+        return positions, rects
+
+    box = boxes[inside]
+    x, y = box.rect[0], box.rect[1]
+    positions, rects, corner = lay(box.nodes, box.children, (x + inner_origin[0], y + inner_origin[1]), obstacles)
+    if corner is not None:
+        rects[inside] = (x, y, corner[0] + pad - x, corner[1] + pad - y)
     return positions, rects
 
 

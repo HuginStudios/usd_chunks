@@ -27,6 +27,7 @@ from usd_chunks import chunk_registry
 from usd_chunks import chunk_scene
 from usd_chunks.graph import backdrops
 from usd_chunks.graph import engine as chunk_graph
+from usd_chunks.graph import layout as chunk_graph_layout
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks.chunk_flags import ChunkFlags
@@ -3445,70 +3446,38 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             if not item.locked and item.prim.IsValid():
                 backdrops.delete(item.prim)
 
-    def fit_backdrop(self, item: BackdropItem, nodes: list[ChunkNodeItem] | None = None) -> None:
-        """Resize a backdrop to frame its nodes.
-
-        Args:
-            item: The backdrop.
-            nodes: The nodes to frame. None frames the ones inside it now.
-        """
-        if nodes is None:
-            nodes = self.nodes_in_backdrop(item)
-        rect = backdrops.fit_around(n.sceneBoundingRect().getRect() for n in nodes)
+    def fit_backdrop(self, item: BackdropItem) -> None:
+        """Resize a backdrop to frame the nodes inside it."""
+        rect = backdrops.fit_around(n.sceneBoundingRect().getRect() for n in self.nodes_in_backdrop(item))
         if rect is not None and item.prim.IsValid() and not item.locked:
             backdrops.set_rect(item.prim, rect)
 
     def layout_in_backdrop(self, item: BackdropItem) -> None:
-        """Lay out only the nodes inside a backdrop, from its top-left corner, then fit
-        the backdrop around them. Wires to nodes outside it are ignored."""
-        if item.locked:
-            return
-        nodes = self.nodes_in_backdrop(item)
-        if not nodes:
-            return
-        x, y, _, _ = item.rect()
-        pad = backdrops.FIT_PADDING
-        # A node's bounding rect starts a port's radius left of the node itself.
-        origin = (x + pad + _PORT_RADIUS, y + backdrops.HEADER_HEIGHT + pad)
-        inside = {str(n.prim.GetPath()) for n in nodes}
-        # The nodes outside are in the way, so nothing lands on one, but their wires are
-        # not followed.
-        obstacles = [self._nodes[p].sceneBoundingRect().getRect() for p in self._nodes if p not in inside]
-        self.layout_nodes(only=inside, origin=origin, obstacles=obstacles)
-        self.fit_backdrop(item, nodes)
+        """Lay out only what is inside a backdrop, from its top-left corner, then fit the
+        backdrop around it. A backdrop inside it is laid out the same way and placed as one
+        block. Wires to nodes outside are ignored, and those nodes are kept clear of."""
+        if not item.locked:
+            self.layout_nodes(inside=item)
 
     # ------------------------------------------------------------------
     # Auto-layout (L key)
 
-    def layout_nodes(
-        self,
-        seed_paths: list[str] | None = None,
-        only: Iterable[str] | None = None,
-        origin: tuple[float, float] | None = None,
-        obstacles: Iterable[tuple[float, float, float, float]] = (),
-    ) -> None:
+    def layout_nodes(self, seed_paths: list[str] | None = None, inside: BackdropItem | None = None) -> None:
         """Auto-layout -- see usd_chunks/graph/layout.py for the algorithm itself.
+
+        Backdrops stay whole, backdrops inside backdrops too (chunk_graph.layout_graph_with_boxes):
+        a backdrop's contents are laid out inside it, and it moves as one block with its notes.
 
         seed_paths: prim paths to grow into their full connected subgraph before laying out
         (the "Layout Selected" case). None lays out every node currently in this context.
-        only: lay out just these nodes, as if the rest of the graph were not there (the
-        nodes inside a backdrop).
-        origin: the (x, y) the layout starts at, top left. None starts where the nodes are.
-        obstacles: (x, y, w, h) rects no node may land on.
+        inside: lay out only what is in this backdrop (layout_in_backdrop).
 
-        The computation is chunk_graph.layout_graph, shared with the other frontends; what
-        stays here is applying it, because only this one has QGraphicsItems to move.
-
-        Backdrops stay whole (chunk_graph.layout_graph_with_boxes): each one's nodes are laid
-        out inside it, and it moves as one block, carrying the notes and smaller backdrops in
-        it. Not with `only`, which is a pass inside one backdrop already.
+        The computation is in the engine, shared with the other frontends; what stays here
+        is applying it, because only this one has QGraphicsItems to move.
         """
         if not self._nodes:
             return
         prims = {path: node.prim for path, node in self._nodes.items() if node.prim.IsValid()}
-        if only is not None:
-            wanted = set(only)
-            prims = {path: prim for path, prim in prims.items() if path in wanted}
 
         def size_of(path):
             rect = self._nodes[path].boundingRect()
@@ -3523,16 +3492,17 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         def is_locked(path):
             return self._nodes[path]._locked
 
-        boxes = self._layout_boxes() if only is None else None
+        boxes = self._layout_boxes()
         box_rects: dict[str, backdrops.Rect] = {}
-        if boxes is not None and boxes.members:
-            carried = {path: self._carried_by(self._backdrops[path]) for path in boxes.members}
-            positions, box_rects = chunk_graph.layout_graph_with_boxes(
-                prims, size_of, current_pos, boxes, seeds=seed_paths, is_locked=is_locked)
+        notes: dict[str, list[BackdropItem]] = {}
+        if boxes is None:
+            positions = chunk_graph.layout_graph(prims, size_of, current_pos, seeds=seed_paths, is_locked=is_locked)
         else:
-            positions = chunk_graph.layout_graph(
-                prims, size_of, current_pos, seeds=seed_paths, origin=origin, obstacles=obstacles,
-                is_locked=is_locked,
+            notes = self._notes_by_backdrop()
+            positions, box_rects = chunk_graph.layout_graph_with_boxes(
+                prims, size_of, current_pos, boxes, seeds=seed_paths, is_locked=is_locked,
+                inside=str(inside.prim.GetPath()) if inside is not None else None,
+                obstacles=self._outside_of(inside) if inside is not None else (),
             )
 
         # Apply after the full layout is computed (not interleaved with computing it) -- each
@@ -3544,66 +3514,72 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                 continue
             node.setPos(x, y)
             node._write_pos_to_usd()
-        for path, rect in box_rects.items():
-            self._move_backdrop_to(self._backdrops[path], rect, *carried[path])
+        for path, (x, y, w, h) in box_rects.items():
+            item = self._backdrops.get(path)
+            if item is None or not item.prim.IsValid():
+                continue
+            old_x, old_y, _, _ = item.rect()
+            backdrops.set_rect(item.prim, (x, y, max(w, backdrops.MIN_SIZE[0]), max(h, backdrops.MIN_SIZE[1])))
+            # A note keeps its place in the backdrop it sits in.
+            for note in notes.get(path, ()):
+                nx, ny, nw, nh = note.rect()
+                backdrops.set_rect(note.prim, (nx + x - old_x, ny + y - old_y, nw, nh))
+
+    def _smallest_backdrop_holding(self, test) -> str | None:
+        """The prim path of the smallest backdrop for which test(item) is true, or None."""
+        holding = [b for b in self._backdrops.values() if not b.is_note and b.prim.IsValid() and test(b)]
+        if not holding:
+            return None
+        return str(min(holding, key=lambda b: b.rect()[2] * b.rect()[3]).prim.GetPath())
 
     def _layout_boxes(self) -> chunk_graph.LayoutBoxes | None:
-        """The backdrops a layout keeps whole: the outermost ones, each with its nodes.
+        """The backdrops as a tree for the layout: what each one holds directly.
 
-        A backdrop inside another is part of the bigger one's block, and its nodes are too.
+        A node belongs to the smallest backdrop it is inside, and so does a backdrop.
         """
-        boxes = [b for b in self._backdrops.values() if not b.is_note and b.prim.IsValid()]
-        if not boxes:
+        items = [b for b in self._backdrops.values() if not b.is_note and b.prim.IsValid()]
+        if not items:
             return None
-        outermost = [b for b in boxes if not any(
-            o is not b and backdrops.backdrop_inside(o.rect(), b.rect(), False) for o in boxes)]
-        members: dict[str, list[str]] = {}
-        taken: set[str] = set()
-        for box in sorted(outermost, key=lambda b: b.rect()[2] * b.rect()[3], reverse=True):
-            paths = [str(n.prim.GetPath()) for n in self.nodes_in_backdrop(box)]
-            members[str(box.prim.GetPath())] = [p for p in paths if p not in taken]
-            taken.update(paths)
+        boxes = {str(b.prim.GetPath()): chunk_graph_layout.Box(nodes=[], rect=b.rect(), locked=b.locked)
+                 for b in items}
+        for b in items:
+            parent = self._smallest_backdrop_holding(
+                lambda o, b=b: o is not b and backdrops.backdrop_inside(o.rect(), b.rect(), False))
+            if parent is not None:
+                boxes[parent].children.append(str(b.prim.GetPath()))
+        for path, node in self._nodes.items():
+            header = self._node_header_rect(node)
+            holder = self._smallest_backdrop_holding(lambda o, h=header: backdrops.node_inside(o.rect(), h))
+            if holder is not None:
+                boxes[holder].nodes.append(path)
         pad = backdrops.FIT_PADDING
-        return chunk_graph.LayoutBoxes(
-            members={k: v for k, v in members.items() if v},
-            rect=lambda path: self._backdrops[path].rect(),
-            locked=lambda path: self._backdrops[path].locked,
-            # A node's bounding rect starts a port's radius left of the node itself.
-            inner_origin=(pad + _PORT_RADIUS, backdrops.HEADER_HEIGHT + pad),
-            pad=pad,
-        )
+        # A node's bounding rect starts a port's radius left of the node itself.
+        return chunk_graph.LayoutBoxes(boxes, (pad + _PORT_RADIUS, backdrops.HEADER_HEIGHT + pad), pad)
 
-    def _carried_by(self, item: BackdropItem) -> tuple[list[BackdropItem], dict[str, list[ChunkNodeItem]]]:
-        """What rides along when a layout moves a backdrop: the notes in it, and the smaller
-        backdrops in it with the nodes each one frames now."""
+    def _notes_by_backdrop(self) -> dict[str, list[BackdropItem]]:
+        """Each backdrop's notes: the ones whose smallest backdrop it is."""
+        found: dict[str, list[BackdropItem]] = {}
+        for note in self._backdrops.values():
+            if note.is_note and not note.locked and note.prim.IsValid():
+                holder = self._smallest_backdrop_holding(
+                    lambda o, n=note: backdrops.backdrop_inside(o.rect(), n.rect(), True))
+                if holder is not None:
+                    found.setdefault(holder, []).append(note)
+        return found
+
+    def _outside_of(self, item: BackdropItem) -> list[backdrops.Rect]:
+        """What laying out inside a backdrop must keep clear of: the nodes that are not in
+        it, and the backdrops that neither sit in it nor hold it."""
         box = item.rect()
-        notes, inner = [], {}
+        inside = set(self.nodes_in_backdrop(item))
+        rects = [n.sceneBoundingRect().getRect() for n in self._nodes.values() if n not in inside]
         for other in self._backdrops.values():
-            if other is item or other.locked or not backdrops.backdrop_inside(box, other.rect(), other.is_note):
+            if other is item or other.is_note:
                 continue
-            if other.is_note:
-                notes.append(other)
-            else:
-                inner[str(other.prim.GetPath())] = self.nodes_in_backdrop(other)
-        return notes, inner
-
-    def _move_backdrop_to(self, item: BackdropItem, rect: backdrops.Rect, notes: list[BackdropItem],
-                          inner: dict[str, list[ChunkNodeItem]]) -> None:
-        """Put a backdrop where a layout placed it. Its notes keep their place in it; a
-        smaller backdrop in it is fitted around its nodes again, which the layout moved."""
-        if not item.prim.IsValid():
-            return
-        x, y, w, h = rect
-        old_x, old_y, _, _ = item.rect()
-        backdrops.set_rect(item.prim, (x, y, max(w, backdrops.MIN_SIZE[0]), max(h, backdrops.MIN_SIZE[1])))
-        for note in notes:
-            nx, ny, nw, nh = note.rect()
-            if note.prim.IsValid():
-                backdrops.set_rect(note.prim, (nx + x - old_x, ny + y - old_y, nw, nh))
-        for path, nodes in inner.items():
-            nested = self._backdrops.get(path)
-            if nested is not None and nodes:
-                self.fit_backdrop(nested, nodes)
+            if not (backdrops.backdrop_inside(box, other.rect(), False)
+                    or backdrops.backdrop_inside(other.rect(), box, False)):
+                rects.append(other.rect())
+        return rects
 
     def _on_chunk_deleted(self, notice, sender):
         # A deleted chunk drops its prim from the stage. Rebuild from scratch so its node
