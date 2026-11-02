@@ -26,6 +26,7 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (bulk mesh maths -- see `_TriangleSou
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import logging
 import math
@@ -38,7 +39,7 @@ from dataclasses import dataclass, field, replace
 from importlib.util import find_spec
 
 import numpy as np
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Pcp, Sdf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_utils, mesh_math, proximity
 from usd_chunks import chunk_registry, chunk_stage
@@ -2341,6 +2342,91 @@ def _migrate_legacy_proto(node):
     legacy.value = ""
 
 
+# What a scatter reads besides its params, for the cook cache (cook_cache.py): the params
+# are in its key already, these are the prims they name -- read off the same upstream stage
+# a cook reads, the same way each reader does, so a change any reader would see misses.
+_POINT_ARRAYS = ("positions", "orientations", "scales", "protoIndices", "points", "normals",
+                 "widths", "curveVertexCounts", "faceVertexCounts", "faceVertexIndices")
+
+
+def _hash_prims(stage, paths, prune_instancers=False, primvar=None) -> str:
+    """One digest of every prim under *paths* a reader here reads: its type, world
+    transform and point arrays, and *primvar* where it has it. *prune_instancers* skips an
+    instancer's prototypes, as Grow Near does; Keep Away From reads them too."""
+    h = hashlib.blake2b(digest_size=16)
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for path in paths:
+        root = stage.GetPrimAtPath(path) if path else None
+        h.update(f"|{path}:{bool(root)}".encode())
+        if not root:
+            continue
+        it = iter(Usd.PrimRange(root))
+        for prim in it:
+            if not prim.IsA(UsdGeom.PointBased) and not prim.IsA(UsdGeom.PointInstancer):
+                continue
+            if prune_instancers and prim.IsA(UsdGeom.PointInstancer):
+                it.PruneChildren()
+            h.update(f"|{prim.GetPath()}:{prim.GetTypeName()}".encode())
+            h.update(np.asarray(cache.GetLocalToWorldTransform(prim), dtype=np.float64).tobytes())
+            for name in _POINT_ARRAYS:
+                attr = prim.GetAttribute(name)
+                if attr and attr.HasValue():
+                    h.update(name.encode())
+                    h.update(np.asarray(attr.Get()).tobytes())
+            if primvar and (pv := UsdGeom.PrimvarsAPI(prim).GetPrimvar(primvar)) and pv.HasValue():
+                h.update(f"{primvar}:{pv.GetInterpolation()}".encode())
+                h.update(np.asarray(pv.Get()).tobytes())
+                if pv.IsIndexed():
+                    h.update(np.asarray(pv.GetIndices()).tobytes())
+    return h.hexdigest()
+
+
+def _layer_stamps(prim) -> list:
+    """Size and mtime of every file the prim's references and payloads reach, transitively --
+    its asset file, the files that one references, and on. A re-exported asset misses.
+
+    Not the stage's own layers: the network file is one, and saving it would change the key
+    of everything in it. What a cook reads from those is hashed by _hash_prims instead."""
+    local = {layer.identifier for layer in prim.GetStage().GetLayerStack(includeSessionLayers=True)}
+    seen, stamps = set(local), []
+    pending = [arc.GetTargetLayer() for arc in Usd.PrimCompositionQuery(prim).GetCompositionArcs()
+               if arc.GetArcType() in (Pcp.ArcTypeReference, Pcp.ArcTypePayload)]
+    while pending:
+        layer = pending.pop()
+        if layer is None or layer.identifier in seen:
+            continue
+        seen.add(layer.identifier)
+        if layer.realPath and os.path.exists(layer.realPath):
+            stat = os.stat(layer.realPath)
+            stamps.append((layer.realPath, stat.st_size, stat.st_mtime_ns))
+        for asset in layer.GetCompositionAssetDependencies():
+            child = Sdf.Layer.FindOrOpen(layer.ComputeAbsolutePath(asset))
+            if child is not None:
+                pending.append(child)
+    return sorted(stamps)
+
+
+def cache_key(node):
+    """The cook cache's key beyond the params: the surface, its density field, what Keep
+    Away From and Grow Near read, the painted points, and each prototype's asset files."""
+    stage = node.get_stage()
+    if not stage:
+        return None
+    scratch = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
+    paths = lambda name: [p.strip() for p in (node.get_param(name).value or "").split(",") if p.strip()]  # noqa: E731
+    surfaces = node.get_param("surface_prim").resolve_paths()[:1]
+    return (
+        ("surface", _hash_prims(scratch, surfaces, primvar=node.get_param("density_primvar").value or None)),
+        ("avoid", _hash_prims(scratch, paths("avoid_prims"))),
+        ("near", _hash_prims(scratch, paths("near_prims"), prune_instancers=True)),
+        ("placed", _hash_prims(scratch, paths("points_prim"))),
+        ("prototypes", tuple(
+            (p.src_path, repr(p.variants), _layer_stamps(scratch.GetPrimAtPath(p.src_path)))
+            for p in _resolve_prototypes(node, scratch) if scratch.GetPrimAtPath(p.src_path)
+        )),
+    )
+
+
 def execute(node):
     """Scatter prototype instances onto/into/over the surface.
 
@@ -3366,6 +3452,9 @@ def config():
         # test each candidate against every placed point in Python, which on a full road
         # scene ran for minutes in Blender (whose Python had no scipy) instead of seconds.
         requirements=["numpy>=2,<3", "scipy>=1.11,<2"],
+        # Placing a forest is minutes; reading it back is a layer. cache_key names what it
+        # reads besides its params.
+        cache_cook=True,
         description=(
             "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
             "\n"
