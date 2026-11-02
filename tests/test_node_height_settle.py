@@ -84,6 +84,7 @@ class _FakeNode:
         self._lod_simple = False
         self._ports = []
         self._disabled = False
+        self._help_badge = None
         self._proxy = QtWidgets.QGraphicsProxyWidget()
         self._proxy.setWidget(QtWidgets.QWidget())
 

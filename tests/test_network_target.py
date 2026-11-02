@@ -102,6 +102,9 @@ def test_a_file_in_another_format_is_not_opened_to_ask(tmp_path, monkeypatch):
     # A material Reference points at a .mtlx: opening it ran the MaterialX plugin's
     # conversion and hundreds of change notices, only for the reference to open it again.
     # Only a USD file can hold a network.
+    if Sdf.FileFormat.FindByExtension("mtlx") is None:
+        # pip usd-core has no MaterialX plugin: .mtlx is an unknown format, opened as before.
+        pytest.skip("no MaterialX file format plugin in this USD build")
     mtlx = tmp_path / "Metal.mtlx"
     mtlx.write_text('<?xml version="1.0"?>\n<materialx version="1.38"/>\n', encoding="utf-8")
     usda = _write(tmp_path, "net.usda", _GROUP.format(name="Net"), '(\n    defaultPrim = "Net"\n)')

@@ -4,6 +4,7 @@
 what it saw as JSON, and the asserts are made here. Skipped where Houdini 21 is not
 installed (HFS, else the default Windows install), or where usd_chunks' dependencies are
 not in the dependency dir for hython to find (hosts/houdini/install.py puts them there).
+Also skipped on CI, which has no Houdini licence, and where hython finds no licence.
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 HDA = REPO / "usd_chunks" / "hosts" / "houdini" / "otls" / "usdchunks_chunk.hda"
+
+pytestmark = pytest.mark.skipif(bool(os.environ.get("CI")), reason="Houdini is not run on CI")
 
 
 def _hython() -> str | None:
@@ -504,6 +507,8 @@ def result(tmp_path_factory):
     })
     proc = subprocess.run([hython, str(script)], env=env, capture_output=True, text=True, timeout=600)
     line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("USD_CHUNKS_RESULT")), None)
+    if line is None and "No licenses could be found" in proc.stdout + proc.stderr:
+        pytest.skip("no Houdini licence available to hython")
     assert line, f"hython failed:\n{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}"
     return json.loads(line[len("USD_CHUNKS_RESULT"):])
 
