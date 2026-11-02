@@ -31,7 +31,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
-from usd_chunks.graph import engine
+from usd_chunks.graph import backdrops, engine
 from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkBase,
     ChunkParamBase,
@@ -1287,6 +1287,173 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         engine.write_active_slot(stage, context_path, 0)
         chunk_stage.recook_for_view(stage, self, context, None)
         return next((c for c in self.get_chunks() if chunk_stage.get_chunk_prim_path(c) == output_path), None)
+
+    # -- backdrops and sticky notes (usd_chunks/graph/backdrops.py) -------------------
+
+    def _graph_root(self, chunks: Sequence[ChunkBase] = (), context: ChunkBase | None = None):
+        """The graph a backdrop goes in, and the layer to write it to.
+
+        The chunks' own graph and the layer the first one lives in, else `context`'s graph,
+        else the one new chunks go in.
+
+        Returns:
+            (root prim path, layer).
+        """
+        stage = self.get_stage()
+        if chunks:
+            path = chunk_stage.get_chunk_prim_path(chunks[0])
+            return str(Sdf.Path(path).GetParentPath()), chunk_utils.get_bookkeeping_layer(stage, chunks[0])
+        context = context or self.current_context or self.peek_root_context()
+        root = getattr(context, "prim_path", None) if context is not None else None
+        layer = chunk_utils.get_bookkeeping_layer(stage, context) if context is not None else None
+        return (root or chunk_naming.CHUNKS_ROOT), layer
+
+    def _node_rect(self, chunk: ChunkBase) -> tuple[float, float, float, float]:
+        """Where a chunk's node is in the graph, as USD records it (x, y down, w, h)."""
+        prim = self.get_stage().GetPrimAtPath(chunk_stage.get_chunk_prim_path(chunk))
+        x, y = engine.graph_position(prim)
+        w, h = engine.node_size(prim, backdrops.NODE_SIZE) if prim else backdrops.NODE_SIZE
+        return x, y, w, h
+
+    def _backdrop_prim(self, backdrop: Usd.Prim | str) -> Usd.Prim:
+        prim = backdrop if isinstance(backdrop, Usd.Prim) else self.get_stage().GetPrimAtPath(str(backdrop))
+        if not backdrops.is_backdrop(prim):
+            raise ValueError(f"{backdrop!r} is not a backdrop or note")
+        return prim
+
+    def add_backdrop(
+        self,
+        chunks: Sequence[ChunkBase] = (),
+        title: str = "",
+        color: str | tuple[float, float, float] | None = None,
+        rect: tuple[float, float, float, float] | None = None,
+        context: ChunkBase | None = None,
+    ) -> Usd.Prim | None:
+        """Put a backdrop around chunks: what B does in the graph.
+
+        Args:
+            chunks: The chunks to frame. Their graph is where it goes.
+            title: The text in its title bar.
+            color: A colour name ("Blue", see backdrops.PALETTE) or (r, g, b). None: blue.
+            rect: (x, y, width, height) in graph coordinates (y down), instead of fitting
+                it around `chunks`.
+            context: The chunkgroup to put it in when there are no chunks. None: the graph
+                new chunks go in.
+
+        Returns:
+            The Backdrop prim, or None when the graph has no root yet.
+
+        Raises:
+            ValueError: Neither chunks nor rect, or an unknown colour.
+        """
+        if rect is None:
+            if not chunks:
+                raise ValueError("add_backdrop needs chunks to frame, or a rect")
+            rect = backdrops.fit_around(self._node_rect(c) for c in chunks)
+        root, layer = self._graph_root(chunks, context)
+        return backdrops.create(
+            self.get_stage(), root, rect, text=title,
+            color=backdrops.to_color(color) if color else None, layer=layer,
+        )
+
+    def add_note(
+        self,
+        text: str,
+        at: ChunkBase | tuple[float, float] | None = None,
+        color: str | tuple[float, float, float] | None = None,
+        size: tuple[float, float] | None = None,
+        context: ChunkBase | None = None,
+    ) -> Usd.Prim | None:
+        """Add a sticky note: what N does in the graph.
+
+        Args:
+            text: What it says.
+            at: A chunk to put it just above, or an (x, y) in graph coordinates (y down).
+                None: the top-left of the graph.
+            color: A colour name or (r, g, b). None: yellow.
+            size: (width, height). None: the default note size.
+            context: The chunkgroup to put it in when `at` is not a chunk. None: the graph
+                new chunks go in.
+
+        Returns:
+            The Backdrop prim, or None when the graph has no root yet.
+        """
+        w, h = size or backdrops.NOTE_SIZE
+        chunks = [at] if isinstance(at, ChunkBase) else []
+        if chunks:
+            x, y, _, _ = self._node_rect(at)
+            y -= h + backdrops.FIT_PADDING
+        else:
+            x, y = at if at is not None else (0.0, 0.0)
+        root, layer = self._graph_root(chunks, context)
+        return backdrops.create(
+            self.get_stage(), root, (x, y, w, h), note=True, text=text,
+            color=backdrops.to_color(color) if color else None, layer=layer,
+        )
+
+    def get_backdrops(self, context: ChunkBase | None = None, notes: bool = True) -> list[Usd.Prim]:
+        """The backdrops (and notes) in a graph.
+
+        Args:
+            context: The chunkgroup whose graph to read. None: the graph new chunks go in.
+            notes: Include sticky notes.
+
+        Returns:
+            Their Backdrop prims. backdrops.read(prim) gives title, colour, rect and kind.
+        """
+        root, _ = self._graph_root((), context)
+        return [p for p in backdrops.list_backdrops(self.get_stage(), root) if notes or not backdrops.is_note(p)]
+
+    def set_backdrop(
+        self,
+        backdrop: Usd.Prim | str,
+        title: str | None = None,
+        color: str | tuple[float, float, float] | None = None,
+        rect: tuple[float, float, float, float] | None = None,
+        around: Sequence[ChunkBase] | None = None,
+    ) -> None:
+        """Change a backdrop or note. What is not given stays as it is.
+
+        Args:
+            backdrop: Its prim, or prim path.
+            title: New title (a note's text).
+            color: New colour: a name or (r, g, b).
+            rect: New (x, y, width, height).
+            around: Fit it around these chunks instead of giving a rect.
+        """
+        prim = self._backdrop_prim(backdrop)
+        if title is not None:
+            backdrops.set_text(prim, title)
+        if color is not None:
+            backdrops.set_color(prim, backdrops.to_color(color))
+        if around:
+            rect = backdrops.fit_around(self._node_rect(c) for c in around)
+        if rect is not None:
+            backdrops.set_rect(prim, rect)
+
+    def chunks_in_backdrop(self, backdrop: Usd.Prim | str) -> list[ChunkBase]:
+        """The chunks a backdrop holds: the ones whose node title bar is in it, by the
+        positions USD records. These move with it when it is dragged in the graph."""
+        prim = self._backdrop_prim(backdrop)
+        box = backdrops.read(prim).rect
+        parent = str(prim.GetParent().GetPath())
+        found = []
+        for chunk in self.get_chunks():
+            path = chunk_stage.get_chunk_prim_path(chunk)
+            if str(Sdf.Path(path).GetParentPath()) != parent:
+                continue
+            x, y, w, _ = self._node_rect(chunk)
+            if backdrops.node_inside(box, (x, y, w, backdrops.NODE_HEADER)):
+                found.append(chunk)
+        return found
+
+    def remove_backdrop(self, backdrop: Usd.Prim | str) -> bool:
+        """Delete a backdrop or note. The chunks in it stay.
+
+        Returns:
+            True if it is gone (False: it comes from a file this scene doesn't write).
+        """
+        return backdrops.delete(self._backdrop_prim(backdrop))
 
     def _active_view_of(self, target: ChunkBase):
         """The graph `target` is in, and the View active there.

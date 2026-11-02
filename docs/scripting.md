@@ -202,6 +202,36 @@ A script's own `Scene.new()` has no Output or View, so all its chunks cook, unti
 one of these. Build one chain there too: the saved network then works when you open it in
 usdview.
 
+## Backdrops and notes
+
+A backdrop frames chunks in the graph, and a sticky note says what part of it is for. See
+[Backdrops and sticky notes](node-graph-basics.md#backdrops-and-sticky-notes).
+
+``` py
+frame = scene.add_backdrop([box, lift], title="Geometry", color="Green")
+note = scene.add_note("Builds the box and lifts it", at=box)
+
+scene.set_backdrop(frame, title="Box", color=(0.6, 0.3, 0.2))
+scene.set_backdrop(frame, around=[box, lift, cap])   # fit it around these
+scene.chunks_in_backdrop(frame)                      # [box, lift, cap]
+scene.get_backdrops()                                # [frame, note]
+scene.remove_backdrop(note)                          # the chunks stay
+```
+
+| Call | Does |
+| --- | --- |
+| `scene.add_backdrop(chunks, title=, color=)` | A backdrop around the chunks, in their graph. Or give `rect=(x, y, w, h)` instead of chunks. |
+| `scene.add_note(text, at=)` | A note just above a chunk, or at an `(x, y)`. |
+| `scene.get_backdrops(context=None, notes=True)` | The backdrops and notes in a graph. `context` is a ChunkGroup; None is the graph new chunks go in. |
+| `scene.set_backdrop(b, title=, color=, rect=, around=)` | Change any of them. What you leave out stays. |
+| `scene.chunks_in_backdrop(b)` | The chunks in it: the ones that move with it in the graph. |
+| `scene.remove_backdrop(b)` | Delete it. |
+
+A colour is a name (Grey, Red, Orange, Yellow, Green, Teal, Blue, Purple) or `(r, g, b)`
+from 0 to 1. Graph coordinates have y pointing down, as on screen. Each call returns or
+takes the backdrop's USD prim (or its prim path). `backdrops.read(prim)` from
+`usd_chunks.graph` gives its title, colour, rect and whether it is a note.
+
 ## `with` blocks
 
 `with chunk:` says where the chunks made inside it go.

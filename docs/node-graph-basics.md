@@ -136,7 +136,7 @@ to nodes outside the box are ignored. A plain `L` keeps every backdrop whole: it
 laid out inside it, and the box moves as one block, with its notes.
 
 Both are saved in the scene as USD `Backdrop` prims next to the chunks. Undo covers them
-too.
+too. Scripts can make and change them: see [Scripting](scripting.md#backdrops-and-notes).
 
 ## Disabled and locked nodes
 
