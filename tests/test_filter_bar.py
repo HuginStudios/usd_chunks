@@ -105,6 +105,18 @@ def test_chunk_matches_search_scopes_to_name_or_type() -> None:
     assert chunk_stage.chunk_matches_search(c, "xform", scope="both") is True
 
 
+def test_search_finds_only_the_chunk_whose_name_holds_the_text() -> None:
+    """Mesh and Mesh1: "Mesh1" finds Mesh1 alone, though Mesh is a typo away from it."""
+    mesh, mesh1 = _chunk_with_module("Mesh", module="mesh"), _chunk_with_module("Mesh1", module="mesh")
+    assert chunk_stage.search_chunks([mesh, mesh1], "Mesh1") == [mesh1]
+    assert chunk_stage.search_chunks([mesh, mesh1], "Mesh") == [mesh, mesh1]
+
+
+def test_search_falls_back_to_typos_when_nothing_holds_the_text() -> None:
+    xform = _chunk_with_module("transform", module="xform")
+    assert chunk_stage.search_chunks([xform], "transfrom") == [xform]
+
+
 def test_chunk_matches_search_empty_query_matches_everything() -> None:
     c = _chunk_with_module("anything", module="whatever")
     assert chunk_stage.chunk_matches_search(c, "", scope="name") is True
