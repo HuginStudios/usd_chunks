@@ -1826,7 +1826,11 @@ class MenuEntry:
         """
         chunks = self.module.create() if self.module.loaded else self.module.load()
 
-        if self.presets:
+        # The module's values for a new chunk (ChunkConfig.new_values), then the variant's on
+        # top. Only here, where a chunk is made new: a load restores what was saved instead.
+        config = self.module.config
+        presets = {**(getattr(config, "new_values", None) or {}), **(self.presets or {})}
+        if presets:
             for c in chunks or []:
                 # Values only, no cook. Setting a param runs the chunk's module, and here
                 # the chunk is not in any context yet: it cooked into a layer the stage
@@ -1840,7 +1844,7 @@ class MenuEntry:
                 prev = getattr(c, "_executing", False)
                 c._executing = True
                 try:
-                    for param_name, value in self.presets.items():
+                    for param_name, value in presets.items():
                         if param := c.get_param(param_name):
                             param.value = value
                 finally:
