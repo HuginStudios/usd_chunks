@@ -287,6 +287,38 @@ cooks. When the block ends, what changed since then cooks once, upstream first: 
 per chunk. A readout you read inside the block is from that first, unwired cook. A 336-chunk
 network took 250 s this way, against 17-27 minutes.
 
+### Write the network without cooking it
+
+To only write a network, open the scene lazily. Nothing cooks until you ask for a result:
+
+``` py
+with Scene(stage, lazy=True) as scene:      # or Scene.open(path, lazy=True)
+    stand = scene.create.noise_field(...)   # marked, not cooked
+    pines = scene.create.scatter_points(stand, ...)
+    sun = scene.create.distant_light(pines, intensity=30.0)
+    scene.cook(pines)                       # cooks Stand and Pines, nothing else
+    print(pines.get_param("readout").value) # fresh
+    scene.save("forest_network.usda")       # writes the network, as it stands
+```
+
+- `scene.cook(chunk)` cooks that chunk and what is still marked above it. Do this before
+  you read a result: an OUTPUT param, or prims a chunk wrote. The chunk itself always
+  cooks, even when nothing marked it, so it also picks up what a script changed behind the
+  framework's back (a Scatter Brush's painted field, set as a Python attribute). It works
+  the same in an eager Scene. `scene.cook()` with no chunk cooks everything.
+- `export` and `commit` cook everything first, each chunk once.
+- `save` writes the network as it stands. It does not cook it.
+- Leaving the block cooks nothing. Closing the scene removes every result anyway.
+
+Some chunks build params in their cook, such as a Light's schema inputs. They take the
+values you give at `create` in that first cook, the same way a saved network's values come
+back when you open it. A save cooks only those chunks, alone, without what is above them,
+so their values are saved. The catch: a misspelled param name raises at the chunk's first
+cook, not at `create`.
+
+The woodland forest network (40 chunks, 8.5M instances) took about 12 minutes to write
+the old way. Lazily it takes 6 s.
+
 ## Inside usdview
 
 `Scene.current()` gives you the scene usdview is running. What you make goes into it:

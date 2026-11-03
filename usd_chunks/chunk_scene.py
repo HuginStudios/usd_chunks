@@ -1117,7 +1117,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             k: v for k, v in values.items()
             if k not in early or not chunk_utils.values_match(_scripted_param(new, k).value, v)
         }
-        if chunk_cook.is_batching():
+        if chunk_cook.is_batching() and not chunk_cook.is_deferring():
             # Inside a change_block: nothing else cooks, but each new chunk does once, now,
             # before it is wired (as the cook add_chunk starts outside a block): one that
             # builds params in its cook (Light's schema inputs) has them for the script to set,
@@ -1150,10 +1150,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         network. A list row's param is named `list.row.param` --
         `**{"prototypes.0.proto_path": "/assets/rock"}` -- so it too is set before the
         chunk's first cook rather than after it.
+
+        In a lazy Scene, a param the chunk has not built yet -- one it builds in its cook, as
+        Light does its schema inputs -- takes the value when that cook builds it, the way a
+        loaded network's stored value does; a name its cook does not build raises there.
         """
         for name, value in params.items():
             param = _scripted_param(target, name)
             if param is None:
+                if chunk_cook.is_deferring() and chunk_cook.is_cook_stale(target):
+                    _await_param(target, name, value)
+                    continue
                 raise KeyError(f"{target.name} has no param {name!r}")
             if isinstance(value, ChunkParamBase):
                 param.connect_value(value)
@@ -1170,6 +1177,32 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         last = self._last_placed() if getattr(self, "_last_placed", None) else None
         if last is not None:
             self._recook_active_view(last)
+
+    def cook(self, chunk: ChunkBase | None = None) -> ChunkBase | None:
+        """Cook `chunk` now, and what is pending above it, so its result can be read.
+
+        In a lazy Scene (Scene(lazy=True)) making a chunk and setting a value only mark what
+        they reach; this is how a script reads a result mid-block -- an OUTPUT param, or the
+        prims a chunk wrote, which the framework cannot see a script read. The rest stays
+        marked for the block's end. Elsewhere a change has already cooked what it reaches.
+
+        `chunk` itself always cooks, as chunk.execute() would, even when nothing marked it:
+        a script may have changed what its cook reads without the framework seeing it (a
+        Scatter Brush's painted field, set as a Python attribute). What is below it is marked
+        in a lazy Scene and cooks with it elsewhere, as after any change.
+
+        Args:
+            chunk: The chunk to read. None cooks everything pending.
+
+        Returns:
+            chunk, so a read can follow: `scene.cook(pines).get_param("count").value`.
+        """
+        if chunk is None:
+            chunk_cook.pull_all()
+        else:
+            chunk.execute()
+            chunk_cook.pull(chunk)
+        return chunk
 
     def execute(self) -> None:
         """Run every chunk, upstream first: chunk.execute() for the whole scene.
@@ -1208,14 +1241,23 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 "The network saved to %s leaves out what %s holds besides it (%s).",
                 path, root.identifier, names,
             )
+        # A value waiting for its param is stored once the chunk's cook builds it; that
+        # cook needs nothing above it, which in a lazy Scene is still uncooked.
+        for chunk in list(_awaited):
+            chunk_cook.cook_alone(chunk)
+        for chunk, waiting in _awaited.items():
+            logger.warning("%s could not cook to build %s, so the network saved to %s leaves them out.",
+                           chunk.name, ", ".join(waiting), path)
         chunk_stage.export_chunks(self, path)
 
     def export(self, path: str) -> None:
         """Write the result as plain USD, with the Chunk prims stripped out."""
+        chunk_cook.pull_all()
         chunk_stage.flatten_without_chunks(self.get_stage()).Export(path)
 
     def commit(self) -> None:
         """Run every chunk's commit hook -- the ones that write files, like Export USD."""
+        chunk_cook.pull_all()
         stage = self.get_stage()
         chunk_scheduler.commit_all(
             self.get_chunks(),
@@ -1554,6 +1596,54 @@ def _scripted_param(target: ChunkBase, name: str):
             except (IndexError, KeyError, ValueError):
                 return None
     return None
+
+
+# Values a lazy Scene was given for params their chunk builds in its cook, by chunk, until
+# that cook builds them (_await_param).
+_awaited: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+# The listener that hands them over, made with the first one; kept here, as a notice
+# connection holds its function weakly.
+_awaited_listener = None
+
+
+def _await_param(chunk: ChunkBase, name: str, value) -> None:
+    """Keep `name = value` for chunk's next cook, which builds the param (Scene.set)."""
+    global _awaited_listener
+    if _awaited_listener is None:
+        _awaited_listener = chunk_notice.NoticeConnection(
+            _on_param_added, chunk_notice.ChunkNoticeAlias.PARAM_ADDED, globally=True
+        )
+        chunk_cook.after_cook(_check_awaited)
+    _awaited.setdefault(chunk, {})[name] = value
+
+
+def _on_param_added(notice, sender) -> None:
+    """A param a cook built: set the values waiting for it, as its cook goes on."""
+    param = notice.data
+    if isinstance(param, ChunkBase) or not hasattr(param, "get_chunk"):
+        return
+    chunk = param.get_chunk()
+    waiting = _awaited.get(chunk) if chunk is not None else None
+    if not waiting:
+        return
+    for name in list(waiting):
+        target = _scripted_param(chunk, name)
+        if target is None:
+            continue
+        value = waiting.pop(name)
+        if isinstance(value, ChunkParamBase):
+            target.connect_value(value)
+        else:
+            target.value = value
+
+
+def _check_awaited(chunk: ChunkBase) -> None:
+    """After a cook: a value still waiting names a param the chunk does not have."""
+    waiting = _awaited.pop(chunk, None)
+    if waiting:
+        names = ", ".join(repr(n) for n in waiting)
+        raise KeyError(f"{chunk.name} has no param {names}")
 
 
 def current_scene() -> SceneSender | None:
