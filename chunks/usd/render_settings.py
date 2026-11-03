@@ -386,6 +386,46 @@ def _push_to_viewport(node):
         scene.set_viewport_renderer_settings(changed)
 
 
+def _viewport_settings_changed(owner, notice, sender):
+    """Take renderer settings set in the host's own UI (usdview's Hydra Settings) into the
+    params, so the chunk and the viewport's delegate never disagree.
+
+    The other half of _push_to_viewport: there the params drive the delegate, here the
+    delegate, changed behind this chunk's back, drives the params. Each value is also
+    recorded as sent -- the delegate has it already -- so the cook its param change starts
+    does not hand it straight back and restart the render for nothing. The group holding a
+    setting is built if it was not yet, so the value has a param to land in.
+    """
+    node = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
+    if node is None:
+        return
+    apply_param = node.get_param("apply_to_viewport")
+    if apply_param is None or not apply_param.value:
+        return
+
+    renderer_id, settings = notice.data
+    definition = render_defs.def_for_plugin(renderer_id)
+    if definition is None:
+        return
+    props = [prop for prop in definition.props if prop.attr_name in settings]
+    if not props:
+        return
+    _populate_groups_holding(node, {prop.name for prop in props})
+
+    last_renderer, last_sent = getattr(node, _SENT, ("", {}))
+    if last_renderer != renderer_id:
+        last_sent = {}
+    for prop in props:
+        last_sent[prop.attr_name] = settings[prop.attr_name]
+    setattr(node, _SENT, (renderer_id, last_sent))
+
+    for prop in props:
+        param = node.get_param(prop.name)
+        value = render_defs.displayed_value(prop, settings[prop.attr_name])
+        if param is not None and value is not None and not chunk_utils.values_match(param.value, value):
+            param.value = value
+
+
 def _token_list(value):
     """Comma-separated tokens, trimmed, with empties dropped."""
     return [token.strip() for token in (value or "").split(",") if token.strip()]
@@ -444,6 +484,11 @@ def main():
     chunk_api.add_callback(
         _chunk_loaded,
         notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED,
+    )
+    chunk_api.add_callback(
+        _viewport_settings_changed,
+        notice_alias=chunk_notice.ChunkNoticeAlias.VIEWPORT_RENDERER_SETTINGS_CHANGED,
+        listen_globally=True,
     )
 
     return chunk_api
@@ -575,10 +620,12 @@ def config():
             Arnold do read the prim, and for those two this only makes the viewport
             agree sooner. Only the running renderer's settings are sent, only the
             ones that changed, and only from groups that have been opened — a
-            delegate restarts its render on every setting it is handed. Note this is
-            the same channel as usdview's own Hydra Settings menu, so the two
-            overwrite each other, and that it touches no layer: nothing about it is
-            saved, and it does not reach a batch render.
+            delegate restarts its render on every setting it is handed. It is the
+            same channel as usdview's own Hydra Settings menu, and the two are kept
+            in step: a setting changed in that menu (or its More... dialog) updates
+            this chunk's param, and one changed here shows in the menu. The delegate
+            side touches no layer and does not reach a batch render; the params
+            themselves are authored and saved as usual.
 
         Every installed renderer also gets a group of its own settings alongside the
         standard ones -- all of them at once, not one selected renderer. A RenderSettings

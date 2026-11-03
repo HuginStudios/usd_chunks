@@ -1014,6 +1014,20 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             chunk_notice.ChunkNoticeAlias.CAMERA_CHANGED, sender=self, data=self.get_active_camera()
         )
 
+    def viewportRendererSettingsChangedCallback(self, renderer_id: str, settings: Mapping[str, Any]):
+        """Send VIEWPORT_RENDERER_SETTINGS_CHANGED: the host's own UI set these settings on the
+        viewport's delegate, so a chunk mirroring them (Render Settings) can follow.
+
+        Args:
+            renderer_id (str): Hydra plugin id of the viewport's delegate.
+            settings (Mapping[str, Any]): Setting key to the value it was set to.
+        """
+        chunk_notice.send_notice(
+            chunk_notice.ChunkNoticeAlias.VIEWPORT_RENDERER_SETTINGS_CHANGED,
+            sender=self,
+            data=(renderer_id, dict(settings)),
+        )
+
     def get_notice_alias(self) -> chunk_notice.ChunkNoticeAlias:
         """The scene's own notices carry no alias."""
         return chunk_notice.ChunkNoticeAlias.NONE

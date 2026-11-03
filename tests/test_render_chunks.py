@@ -16,7 +16,7 @@ import sys
 import pytest
 from pxr import Usd, UsdGeom, UsdRender, Sdf
 
-from usd_chunks import chunk_cook, chunk_registry, chunk, chunk_utils, render_defs
+from usd_chunks import chunk_cook, chunk_notice, chunk_registry, chunk, chunk_utils, render_defs
 from usd_chunks.chunk_core import ChunkConfig
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
@@ -667,8 +667,47 @@ class TestViewportPush:
         scene, _stage = _setup_stage()
         scene.renderer = renderer
         params = {name: types.SimpleNamespace(value=v) for name, v in values.items()}
-        node = types.SimpleNamespace(get_param=params.get)
+        params.setdefault("apply_to_viewport", types.SimpleNamespace(value=True))
+        node = types.SimpleNamespace(get_param=params.get, get_my_params=lambda: [])
         return mod, node, scene, scene.pushes
+
+    @staticmethod
+    def _menu_change(mod, node, scene, settings, renderer="HdFakePlugin"):
+        """What the usdview host reports when its Hydra Settings menu sets something."""
+        notice = types.SimpleNamespace(data=(renderer, settings))
+        mod._viewport_settings_changed(node, notice, scene)
+
+    def test_a_menu_change_updates_the_param(self, monkeypatch):
+        """usdview's Hydra Settings sets the delegate directly; the chunk follows it, so
+        the two never show different values."""
+        mod, node, scene, _pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        self._menu_change(mod, node, scene, {"fake:samples": 300})
+
+        assert node.get_param("fake_samples").value == 300
+
+    def test_a_menu_change_is_not_sent_back(self, monkeypatch):
+        """The delegate already has it: handing it back would restart the render."""
+        mod, node, scene, pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        self._menu_change(mod, node, scene, {"fake:samples": 300})
+        mod._push_to_viewport(node)
+
+        assert pushes == []
+
+    def test_another_renderers_menu_change_is_ignored(self, monkeypatch):
+        mod, node, scene, _pushes = self._rig(monkeypatch, {"fake_samples": 128})
+        self._menu_change(mod, node, scene, {"fake:samples": 300}, renderer="HdOtherPlugin")
+
+        assert node.get_param("fake_samples").value == 128
+
+    def test_menu_changes_are_ignored_without_apply_to_viewport(self, monkeypatch):
+        """Apply to Viewport off means the chunk and the viewport are not linked at all."""
+        mod, node, scene, _pushes = self._rig(
+            monkeypatch,
+            {"fake_samples": 128, "apply_to_viewport": False},
+        )
+        self._menu_change(mod, node, scene, {"fake:samples": 300})
+
+        assert node.get_param("fake_samples").value == 128
 
     def test_only_params_that_exist_are_sent(self, monkeypatch):
         """A param is built when its group is first expanded, so one that does not exist
@@ -753,6 +792,22 @@ class TestViewportPushSeam:
 
         assert scene.get_viewport_renderer() == ""
         assert scene.set_viewport_renderer_settings({"fake:samples": 1}) is None
+
+    def test_a_host_change_reaches_a_global_listener(self):
+        """What a host's own UI sets on the delegate goes out as a scene notice, which a
+        chunk may listen to from anywhere (SCENE_ALIASES)."""
+        scene = _DummyScene()
+        received = []
+        connection = chunk_notice.NoticeConnection(
+            lambda notice, sender: received.append(notice.data),
+            chunk_notice.ChunkNoticeAlias.VIEWPORT_RENDERER_SETTINGS_CHANGED,
+            globally=True,
+        )
+        scene.viewportRendererSettingsChangedCallback("HdFakePlugin", {"fake:samples": 300})
+        del connection
+
+        assert received == [("HdFakePlugin", {"fake:samples": 300})]
+        assert chunk_notice.ChunkNoticeAlias.VIEWPORT_RENDERER_SETTINGS_CHANGED in chunk_notice.SCENE_ALIASES
 
 
 class TestRenderPass:

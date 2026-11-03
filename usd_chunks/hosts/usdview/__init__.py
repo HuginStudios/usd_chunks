@@ -135,8 +135,13 @@ class UsdviewScene(chunk_scene.SceneSender):
         self._camera_snap_timer = QtCore.QTimer()
         self._camera_snap_timer.setSingleShot(True)
         self._camera_snap_timer.timeout.connect(self._on_snap_timer)
+        #: True while set_viewport_renderer_settings is setting the delegate, so the settings
+        #: a chunk sent are not reported back to it as the user's (_watch_renderer_settings).
+        self._setting_viewport_renderer = False
 
         super().__init__()
+
+        self._watch_renderer_settings(self._get_stage_view())
 
         # A deleted chunk can take the camera the viewport is looking through with it.
         self._deleted_listener = chunk_notice.NoticeConnection(
@@ -302,6 +307,29 @@ class UsdviewScene(chunk_scene.SceneSender):
         ctrl = self._get_ctrl()
         return getattr(ctrl, "_stageView", None) if ctrl else None
 
+    def _watch_renderer_settings(self, view) -> None:
+        """Report the renderer settings usdview's own UI sets, so a chunk can follow them.
+
+        usdview's Hydra Settings menu and its More... dialog both go through
+        StageView.SetRendererSetting, and nothing else is told: the Render Settings chunk
+        kept showing what it last sent while the delegate ran on what the menu set. Wrapped
+        on the instance, so every caller goes through it; settings a chunk sends
+        (set_viewport_renderer_settings) are left out, as that chunk already has them.
+        """
+        if view is None or getattr(view, "_usd_chunks_settings_watched", False):
+            return
+        set_setting = view.SetRendererSetting
+        scene = self
+
+        def watched_set_setting(key, value):
+            set_setting(key, value)
+            if not scene._setting_viewport_renderer:
+                renderer_id = str(view.GetCurrentRendererId() or "")
+                scene.viewportRendererSettingsChangedCallback(renderer_id, {str(key): value})
+
+        view.SetRendererSetting = watched_set_setting
+        view._usd_chunks_settings_watched = True
+
     def get_viewport_renderer(self) -> str:
         view = self._get_stage_view()
         if view is None:
@@ -315,9 +343,10 @@ class UsdviewScene(chunk_scene.SceneSender):
         """Hand settings to the delegate usdview is drawing with.
 
         StageView.SetRendererSetting is the same call usdview's own Hydra Settings menu
-        makes, so this reaches the delegate exactly where the built-in UI does -- and
-        the two do overwrite each other, last write winning, since there is only one
-        delegate between them.
+        makes, so this reaches the delegate exactly where the built-in UI does. The two
+        are kept in step: the menu is rebuilt afterwards to show these values, and what
+        the menu sets comes back as VIEWPORT_RENDERER_SETTINGS_CHANGED
+        (_watch_renderer_settings).
 
         Each call redraws the viewport, so the mapping handed in is expected to hold
         only what actually changed. One bad setting is skipped rather than abandoning
@@ -327,12 +356,28 @@ class UsdviewScene(chunk_scene.SceneSender):
         view = self._get_stage_view()
         if view is None:
             return
+        self._watch_renderer_settings(view)
 
-        for key, value in settings.items():
-            try:
-                view.SetRendererSetting(Tf.Token(key), value)
-            except Exception as exc:  # noqa: BLE001 - a value this delegate will not take
-                logger.debug("Could not set renderer setting %s=%r: %s", key, value, exc)
+        # The key as a str: Tf.Token has no Python binding (the binding converts str), and
+        # building one raised for every setting -- caught below, so nothing ever reached
+        # the delegate.
+        self._setting_viewport_renderer = True
+        try:
+            for key, value in settings.items():
+                try:
+                    view.SetRendererSetting(str(key), value)
+                except Exception as exc:  # noqa: BLE001 - a value this delegate will not take
+                    logger.debug("Could not set renderer setting %s=%r: %s", key, value, exc)
+        finally:
+            self._setting_viewport_renderer = False
+
+        # usdview reads its Hydra Settings checkboxes from the delegate only when it builds
+        # the menu (on a renderer switch), so rebuild it to show what was just set.
+        ctrl = self._get_ctrl()
+        try:
+            ctrl._configureRendererSettings()
+        except Exception as exc:  # noqa: BLE001 - a usdview without that menu
+            logger.debug("Could not refresh usdview's Hydra Settings menu: %s", exc)
 
     def _get_free_camera(self):
         app = self.usdviewAPI._UsdviewApi__appController
