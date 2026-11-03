@@ -14,7 +14,8 @@ A host with its own undo stack stores only `History.key()` with each of its step
 there after an undo or redo (Blender: frontends/blender/addon/undo.py). A host without one
 uses `UndoStack`, which groups by user input (usdview and any Qt app: frontends/qt/undo.py).
 
-Scope (docs/undo.md): only chunk prims are undone. An edit to a prim that is not a chunk
+Scope (docs/undo.md): only chunk prims are undone, and the backdrops and sticky notes
+that sit among them. An edit to a prim that is not a chunk
 -- scene data authored directly, another plugin or a script writing to the stage -- is not
 recorded; a host that needs that undone uses the C++ usd-undo plugin or its own.
 
@@ -34,6 +35,8 @@ from usd_chunks import chunk_naming, chunk_registry
 #: Steps kept. A slider drag records one step per tick, so this is many drags deep; older
 #: steps are dropped and undo stops there.
 MAX_STEPS = 5000
+
+_RECORDED_TYPES = (chunk_naming.CHUNK_PRIM_TYPENAME, chunk_naming.BACKDROP_TYPENAME)
 
 
 def _copy_value(*_args) -> bool:
@@ -141,8 +144,11 @@ class History:
                 self.specs.setdefault(path, {})[lid] = self._snapshot(lid, path)
 
     def _is_chunk(self, path: Sdf.Path) -> bool:
+        """Whether the prim at `path` is recorded: a chunk, or a backdrop or sticky note in
+        a chunk graph -- dragging a backdrop moves chunks with it, and undo has to put both
+        back."""
         prim = self.stage.GetPrimAtPath(path)
-        return bool(prim) and prim.GetTypeName() == chunk_naming.CHUNK_PRIM_TYPENAME
+        return bool(prim) and prim.GetTypeName() in _RECORDED_TYPES
 
     def _chunk_paths_under(self, layer: Sdf.Layer, path: Sdf.Path):
         """Every chunk prim `layer` holds a spec for at or below `path`."""

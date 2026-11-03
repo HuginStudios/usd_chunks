@@ -103,9 +103,11 @@ can't blank the graph by accident.
 | `1` | Cook to the Output. |
 | `2` / `3` | Switch to that view, if it exists. |
 | `L` | Auto-layout the selection, or the whole graph if nothing is selected. |
+| `B` | Put a backdrop around the selection (or at the cursor, if nothing is selected). |
+| `N` | Add a sticky note at the cursor. |
 | `C` | Collapse the selection, or the whole graph if nothing is selected. |
 | `D` | Disable or enable the selection. |
-| `Delete` | Delete the selection. |
+| `Delete` | Delete the selection, backdrops and notes included. A deleted backdrop leaves its nodes where they are. |
 | `Esc` | Cancel a wire drag, or clear focus. |
 | `Tab` | Open the create menu at the cursor. |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste the selection. |
@@ -114,6 +116,24 @@ can't blank the graph by accident.
 
 Some keys do one thing on their own and another with `Ctrl` (`D`/`Ctrl+D`, `C`/`Ctrl+C`).
 The plain key is the graph action, and the `Ctrl` version is the usual clipboard action.
+
+## Backdrops and sticky notes
+
+A **backdrop** is a coloured box that frames part of the network. Select some nodes and
+press `B` to put one around them. Drag its title bar or its edge and every node inside
+moves with it. A node counts as inside when the middle of its title bar is in the box.
+Drag the bottom-right corner to resize it. Clicking or dragging in the middle of a
+backdrop still does what it does on the empty canvas: box-select, or right-click to add a
+chunk.
+
+A **sticky note** says what a part of the network is for. Press `N` to add one at the
+cursor, then type. Drag it anywhere on its body.
+
+Double-click either one to edit its text. Right-click its title bar (or anywhere on a
+note) to change its colour, fit a backdrop around its nodes, or delete it.
+
+Both are saved in the scene as USD `Backdrop` prims next to the chunks. Undo covers them
+too. Scripts can make and change them: see [Scripting](scripting.md#backdrops-and-notes).
 
 ## Disabled and locked nodes
 
