@@ -766,7 +766,14 @@ class GraphView:
                     None)
 
     def try_splice(self, path: str) -> bool:
-        """If this node was dropped on a wire A->B, splice it in as A->self->B."""
+        """If this node was dropped on a wire A->B, splice it in as A->self->B.
+
+        Only a node with no exec wires yet, as in Qt: one wired on either side is in a chain
+        already and is being moved, and splicing it would re-point wires the user made.
+        """
+        if any(edge.is_exec and path in (edge.src_node_path, edge.dst_node_path)
+               for edge in self.edges):
+            return False
         found = self.edge_under_node(path)
         if found is None:
             return False
