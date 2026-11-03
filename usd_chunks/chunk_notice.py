@@ -155,6 +155,7 @@ class ChunkNoticeAlias(IntEnum):
     PRIM_SELECTION_CHANGED = auto()
     PROP_SELECTION_CHANGED = auto()
     CAMERA_CHANGED = auto()
+    VIEWPORT_RENDERER_SETTINGS_CHANGED = auto()  # Changed on the viewport's delegate by the host's UI
     OBJECT_CHANGED = auto()  # Something was changed on the stage
     STAGE_CHANGED = auto()
     STAGE_CONTENTS_CHANGED = auto()
@@ -437,6 +438,14 @@ class PropSelectionChangedNotice(ChunkNotice):
 class CameraChangedNotice(ChunkNotice):
     """Sent when the host's active camera changes; data is the camera."""
     data: Gf.Camera
+
+
+@chunk_notice(ChunkNoticeAlias.VIEWPORT_RENDERER_SETTINGS_CHANGED)
+class ViewportRendererSettingsChangedNotice(ChunkNotice):
+    """Sent when the host's own UI (usdview's Hydra Settings) sets renderer settings on the
+    viewport's delegate; data is (renderer plugin id, {setting key: value}). Not sent for
+    settings a chunk set through ChunkScene.set_viewport_renderer_settings."""
+    data: tuple
 
 
 # Register externally manages notice just to map to the custom enum
@@ -1716,6 +1725,7 @@ SCENE_ALIASES = frozenset({
     ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
     ChunkNoticeAlias.PROP_SELECTION_CHANGED,
     ChunkNoticeAlias.CAMERA_CHANGED,
+    ChunkNoticeAlias.VIEWPORT_RENDERER_SETTINGS_CHANGED,
     ChunkNoticeAlias.OBJECT_CHANGED,
     ChunkNoticeAlias.STAGE_CHANGED,
     ChunkNoticeAlias.STAGE_CONTENTS_CHANGED,

@@ -41,6 +41,7 @@ import logging
 import os
 import pickle
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -379,6 +380,24 @@ def authored_value(prop: RenderSettingProp, value):
         return None
 
 
+def displayed_value(prop: RenderSettingProp, value):
+    """What a param should show for a value the delegate holds: authored_value reversed.
+
+    Args:
+        prop: The render setting.
+        value: The value as the delegate has it.
+
+    Returns:
+        The param value, or None for a number that is not one of the options.
+    """
+    if not prop.option_values:
+        return value
+    try:
+        return prop.options[list(prop.option_values).index(value)]
+    except ValueError:
+        return None
+
+
 def _labelled_default(pairs: tuple, default):
     """The label standing for a numeric default, or the first label if none matches."""
     for label, value in pairs:
@@ -484,6 +503,83 @@ def _host_owns_a_viewport() -> bool:
     return QtWidgets.QApplication.instance() is not None
 
 
+def _probe_refused() -> bool:
+    """Whether USD_CHUNKS_PROBE_DELEGATES says no delegate is to be asked at all."""
+    override = os.environ.get("USD_CHUNKS_PROBE_DELEGATES")
+    return override is not None and override.strip() not in ("1", "true", "yes", "on")
+
+
+def _can_probe_out_of_process() -> bool:
+    """Whether this process can run discovery in a child Python of its own.
+
+    It needs an interpreter to run it with: sys.executable is one under usdview and a
+    script, but the host application itself under Blender, Houdini and the like.
+    """
+    return os.path.basename(sys.executable or "").lower().startswith("python")
+
+
+#: How long the child process may take. Cycles' delegate costs a minute the first time it is
+#: loaded on a cold machine.
+_PROBE_TIMEOUT_S = 300
+
+#: Run by the child process: delegate discovery with loading allowed, pickled to argv[1].
+_PROBE_SCRIPT = """\
+import pickle, sys
+from usd_chunks import render_defs
+found = render_defs._defs_from_delegates(render_defs._defs_without_delegates())
+with open(sys.argv[1], "wb") as f:
+    pickle.dump(tuple(found), f, protocol=pickle.HIGHEST_PROTOCOL)
+"""
+
+
+def _defs_from_delegates_out_of_process(existing) -> list[RenderSettingsDef]:
+    """Delegate-declared settings, read by a child process rather than this one.
+
+    A host must not load a delegate itself (see _defs_from_delegates), yet it is where the
+    settings are wanted most: a renderer that describes itself only through its delegate
+    (hdCycles, hdAurora) otherwise has no group in usdview at all. The child loads them
+    where a crash costs nothing and hands back what it found. Its output is captured, as
+    V-Ray logs to stdout, and only reaches the debug log when the probe fails.
+
+    The answer is cached on disk with the rest (_discover), so the cost -- a few seconds,
+    a minute for a cold Cycles -- is paid once per USD, plugin set and code change.
+    """
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, USD_CHUNKS_PROBE_DELEGATES="1")
+    # The child imports this package from where this process did, whatever its PYTHONPATH.
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (package_root, env.get("PYTHONPATH")) if p)
+
+    fd, out_path = tempfile.mkstemp(prefix="render_settings_probe-", suffix=".pickle")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _PROBE_SCRIPT, out_path],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT_S,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "Render settings probe exited with %s:\n%s",
+                result.returncode, (result.stderr or result.stdout)[-2000:],
+            )
+            return []
+        found = _read_disk_cache(out_path)
+    except Exception as exc:  # noqa: BLE001 - a timeout, no interpreter: only a miss
+        logger.debug("Render settings probe failed: %s", exc)
+        return []
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+    claimed = {d.namespace for d in existing if d.namespace}
+    return [d for d in found or () if d.source == "delegate" and d.namespace not in claimed]
+
+
 def _defs_from_delegates(existing) -> list[RenderSettingsDef]:
     """Ask every render delegate not already described for its setting descriptors.
 
@@ -506,15 +602,14 @@ def _defs_from_delegates(existing) -> list[RenderSettingsDef]:
         # A second engine in a process that already has one takes the host down with it:
         # usdview segfaults (0xC0000005) the moment this loads hdCycles, and every scene
         # holding a Render Settings chunk therefore fails to open at all. Nothing here is
-        # worth that, so in a host the schema- and Sdr-declared renderers are all that is
-        # offered -- V-Ray's settings come from its schema and are unaffected; a renderer
-        # that only describes itself through its delegate (hdCycles) has no group until
-        # this is done out of process.
-        logger.info(
-            "Render settings: not loading render delegates inside a host that owns a "
-            "viewport -- only schema- and Sdr-declared renderers are offered here."
-        )
-        return []
+        # worth that, so in a host the delegates are asked by a child process instead.
+        if _probe_refused() or not _can_probe_out_of_process():
+            logger.info(
+                "Render settings: not loading render delegates inside a host that owns a "
+                "viewport -- only schema- and Sdr-declared renderers are offered here."
+            )
+            return []
+        return _defs_from_delegates_out_of_process(existing)
 
     described = {_normalised(d.label) for d in existing}
     claimed = {d.namespace for d in existing if d.namespace}
@@ -561,16 +656,26 @@ def _disk_cache_dir() -> str | None:
     return user_cache_dir()
 
 
+def _mtime(path: str) -> int:
+    """A file's modification time, or 0 when it cannot be read."""
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return 0
+
+
 def _disk_cache_key() -> str:
     """Everything the discovered definitions depend on, hashed.
 
     USD's version, and every plugin with the path it loads from -- a renderer installed,
-    removed or upgraded changes that list, and a V-Ray build's path names its version.
+    removed or upgraded changes that list, and a V-Ray build's path names its version --
+    and that file's modification time, since a delegate rebuilt in place (hdAurora from
+    source) can declare different settings under the same path.
     Then whether this process may load delegates at all, which decides whether they are
     in the answer, and the two modules' own files, so a change to how definitions are
     built is never answered from a cache the old code wrote.
     """
-    plugins = sorted((p.name, p.path) for p in Plug.Registry().GetAllPlugins())
+    plugins = sorted((p.name, p.path, _mtime(p.path)) for p in Plug.Registry().GetAllPlugins())
     sources = []
     for module_file in (__file__, shader_defs.__file__):
         try:
@@ -583,7 +688,9 @@ def _disk_cache_key() -> str:
         Usd.GetVersion(),
         sys.version_info[:2],
         plugins,
-        UsdImagingGL is not None and not _host_owns_a_viewport(),
+        UsdImagingGL is not None
+        and not _probe_refused()
+        and (not _host_owns_a_viewport() or _can_probe_out_of_process()),
         sources,
     )
     return hashlib.sha1(repr(parts).encode()).hexdigest()
@@ -684,6 +791,20 @@ def _discover_uncached() -> tuple:
     what keeps that to a single load per renderer for the life of the process rather than
     one per cook.
     """
+    found = _defs_without_delegates()
+
+    # Last, because it is the only source that has to load anything to answer, and
+    # because what the other two already found is what lets it skip most of that work.
+    try:
+        found.extend(_defs_from_delegates(found))
+    except Exception as exc:  # noqa: BLE001 - no imaging, no GL, no delegates at all
+        logger.debug("Could not read render settings from any delegate: %s", exc)
+
+    return tuple(found)
+
+
+def _defs_without_delegates() -> list[RenderSettingsDef]:
+    """The renderers described by a schema or by Sdr -- everything that loads nothing."""
     found = []
 
     for schema_name in _schema_names_for_render_settings():
@@ -700,14 +821,7 @@ def _discover_uncached() -> tuple:
         except Exception as exc:  # noqa: BLE001 - registry shapes vary by USD version
             logger.debug("Could not read Sdr render settings for %s: %s", namespace, exc)
 
-    # Last, because it is the only source that has to load anything to answer, and
-    # because what the other two already found is what lets it skip most of that work.
-    try:
-        found.extend(_defs_from_delegates(found))
-    except Exception as exc:  # noqa: BLE001 - no imaging, no GL, no delegates at all
-        logger.debug("Could not read render settings from any delegate: %s", exc)
-
-    return tuple(found)
+    return found
 
 
 def clear_cache() -> None:
