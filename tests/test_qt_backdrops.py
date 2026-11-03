@@ -45,6 +45,7 @@ def graph(qapp):
     scene.clear_chunk_selection()
     chunk_graph.node_clipboard.clear()
     chunk_graph.edge_clipboard.clear()
+    backdrops.clipboard.clear()
 
 
 def _settle(qapp, seconds=0.3):
@@ -591,3 +592,134 @@ def test_plain_l_keeps_nested_backdrops_whole(graph):
     view._layout_selected_or_all()
     _settle(qapp)
     _check_nested(graph_scene, paths, inner, outer)
+def _wait_for_nodes(graph, paths):
+    qapp = graph[0]
+    view = graph[3].tab_widget.get_current_graph_view()
+    end = time.monotonic() + 10.0
+    while time.monotonic() < end and any(p not in view.scene()._nodes for p in paths):
+        qapp.processEvents()
+    _settle(qapp)
+
+
+def _box_with_a_note(graph, n_inside=2, n_total=3):
+    view, chunks, paths = _nodes(graph, n_total)
+    graph_scene = view.scene()
+    view, box = _backdrop_around(graph, paths[:n_inside])
+    backdrops.set_text(box.prim, "Geo")
+    backdrops.set_color(box.prim, backdrops.PALETTE["Teal"])
+    x, y, w, h = box.rect()
+    note = graph_scene.create_backdrop((x + 20, y + h - 70, 140, 50), note=True)
+    backdrops.set_text(note.prim, "why")
+    graph_scene.select_backdrop(box, toggle=False)
+    return view, graph_scene, chunks, paths, box, note
+
+
+def _new_backdrops(graph_scene, before):
+    made = [graph_scene._backdrops[p] for p in graph_scene._backdrops if p not in before]
+    boxes = [b for b in made if not b.is_note]
+    notes = [b for b in made if b.is_note]
+    return boxes, notes
+
+
+def test_copy_and_paste_a_backdrop_brings_what_is_in_it(graph):
+    view, graph_scene, _chunks, paths, box, note = _box_with_a_note(graph)
+    before = set(graph_scene._backdrops)
+    view._copy_selected_to_clipboard()
+    x, y, _w, _h = box.rect()
+    pasted = view._paste_clipboard_at(QtCore.QPointF(x, y + 1500))
+    pasted_paths = [get_chunk_prim_path(c) for c in pasted]
+    _wait_for_nodes(graph, pasted_paths)
+    assert len(pasted) == 2
+    boxes, notes = _new_backdrops(graph_scene, before)
+    assert len(boxes) == 1 and len(notes) == 1
+    new_box = boxes[0]
+    assert backdrops.read(new_box.prim).text == "Geo"
+    assert backdrops.read(new_box.prim).color == pytest.approx(backdrops.PALETTE["Teal"])
+    assert {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(new_box)} == set(pasted_paths)
+    assert backdrops.backdrop_inside(new_box.rect(), notes[0].rect(), True)
+    assert new_box.selected and not box.selected
+    # The originals are untouched.
+    assert {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(box)} == set(paths[:2])
+
+
+def test_cut_takes_the_backdrop_and_what_is_in_it(graph):
+    qapp, _reg, _scene, _docker, stage = graph
+    view, graph_scene, _chunks, paths, box, note = _box_with_a_note(graph)
+    box_path, note_path = box.prim.GetPath(), note.prim.GetPath()
+    view._cut_selected_to_clipboard()
+    _settle(qapp, 1.0)
+    assert not stage.GetPrimAtPath(box_path) and not stage.GetPrimAtPath(note_path)
+    assert paths[0] not in graph_scene._nodes and paths[1] not in graph_scene._nodes
+    assert paths[2] in graph_scene._nodes
+    assert len(chunk_graph.node_clipboard) == 2 and len(backdrops.clipboard) == 2
+
+
+def test_duplicate_a_backdrop(graph):
+    view, graph_scene, _chunks, _paths, box, _note = _box_with_a_note(graph)
+    before = set(graph_scene._backdrops)
+    nodes_before = set(graph_scene._nodes)
+    view._duplicate_selected()
+    _settle(graph[0], 1.0)
+    boxes, notes = _new_backdrops(graph_scene, before)
+    assert len(boxes) == 1 and len(notes) == 1
+    new_nodes = set(graph_scene._nodes) - nodes_before
+    assert len(new_nodes) == 2
+    _wait_for_nodes(graph, new_nodes)
+    assert {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(boxes[0])} == new_nodes
+    # Just below the original, not over it: overlapping, it would claim the original's nodes.
+    assert not QtCore.QRectF(*boxes[0].rect()).intersects(QtCore.QRectF(*box.rect()))
+
+
+def test_ctrl_g_puts_the_backdrop_in_the_group_with_its_nodes(graph):
+    qapp, _reg, _scene, _docker, stage = graph
+    view, graph_scene, chunks, paths, box, _note = _box_with_a_note(graph)
+    old_box = box.prim.GetPath()
+    view._group_selected()
+    _settle(qapp, 1.0)
+    assert not stage.GetPrimAtPath(old_box)
+    groups = [n for n in graph_scene._nodes.values() if n._is_chunkgroup]
+    assert len(groups) == 1
+    group_path = groups[0].prim.GetPath()
+    inside = [p for p in stage.GetPrimAtPath(group_path).GetChildren() if backdrops.is_backdrop(p)]
+    assert sorted(backdrops.read(p).text for p in inside) == ["Geo", "why"]
+    assert len([p for p in stage.GetPrimAtPath(group_path).GetChildren()
+                if p.GetTypeName() == "Chunk" and p.GetAttribute("info:chunkType").Get() == "transform"]) == 2
+    assert paths[2] in graph_scene._nodes  # the node outside the box stays outside
+
+
+def test_a_note_on_its_own_copies(graph):
+    view, graph_scene, _chunks, _paths, _box, note = _box_with_a_note(graph)
+    graph_scene.select_backdrop(note, toggle=False)
+    nodes_before = set(graph_scene._nodes)
+    before = set(graph_scene._backdrops)
+    view._copy_selected_to_clipboard()
+    assert not chunk_graph.node_clipboard and len(backdrops.clipboard) == 1
+    view._paste_clipboard_at(QtCore.QPointF(5000, 5000))
+    _settle(graph[0])
+    boxes, notes = _new_backdrops(graph_scene, before)
+    assert not boxes and len(notes) == 1 and backdrops.read(notes[0].prim).text == "why"
+    assert set(graph_scene._nodes) == nodes_before
+
+
+def test_a_copy_without_backdrops_does_not_paste_old_ones(graph):
+    """Another frontend's copy goes through engine.copy_to_clipboard: it must not paste
+    with backdrops a Qt copy left on the clipboard before it."""
+    view, graph_scene, _chunks, _paths, _box, _note = _box_with_a_note(graph)
+    view._copy_selected_to_clipboard()
+    assert backdrops.clipboard
+    chunk_graph.copy_to_clipboard([], [])
+    assert not backdrops.clipboard
+
+
+def test_pasted_nodes_stay_collapsed_like_the_copies(graph):
+    """Reported in a screenshot: duplicated nodes came out opened, many times taller than
+    the collapsed originals, spilling out of the copied backdrop."""
+    view, graph_scene, _chunks, _paths, _box, _note = _box_with_a_note(graph)
+    nodes_before = set(graph_scene._nodes)
+    view._duplicate_selected()
+    _settle(graph[0], 1.0)
+    new_nodes = set(graph_scene._nodes) - nodes_before
+    _wait_for_nodes(graph, new_nodes)
+    assert new_nodes
+    for path in new_nodes:
+        assert graph_scene._nodes[path].chunk.has_state(ChunkFlags.State.COLLAPSED), path

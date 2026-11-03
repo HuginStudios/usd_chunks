@@ -174,18 +174,32 @@ def test_list_sizes_grow_the_rows_back_before_values_land(graph):
     assert b.get_param("rows").get_indexed_param("item", 2).value == pytest.approx(7.0)
 
 
-def test_a_snapshot_keeps_the_name_and_disabled_state(graph):
+def test_a_snapshot_keeps_the_name_and_disabled_and_collapsed_state(graph):
     a = graph.make("named")
     a.set_state(ChunkFlags.State.DISABLED)
+    a.set_state(ChunkFlags.State.COLLAPSED)
     clip = chunk_graph.snapshot_chunk_node(a, graph.scene, graph.stage, (0, 0))
     fresh = _fresh(graph)
 
     chunk_graph.apply_name(fresh, clip)
     graph.scene.add_chunk(fresh)
-    chunk_graph.apply_disabled(fresh, clip)
+    chunk_graph.apply_node_states(fresh, clip)
 
     assert fresh.name.startswith("named") and fresh.name != "named"  # made unique on add
     assert fresh.has_state(ChunkFlags.State.DISABLED)
+    assert fresh.has_state(ChunkFlags.State.COLLAPSED)
+
+
+def test_an_open_node_pastes_open(graph):
+    a = graph.make("opened")
+    a.unset_state(ChunkFlags.State.COLLAPSED)
+    clip = chunk_graph.snapshot_chunk_node(a, graph.scene, graph.stage, (0, 0))
+    fresh = _fresh(graph)
+    fresh.set_state(ChunkFlags.State.COLLAPSED)
+    graph.scene.add_chunk(fresh)
+    chunk_graph.apply_node_states(fresh, clip)
+
+    assert not fresh.has_state(ChunkFlags.State.COLLAPSED)
 
 
 def test_a_chunk_without_a_module_has_no_snapshot(graph):

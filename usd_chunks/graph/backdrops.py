@@ -73,6 +73,27 @@ class BackdropInfo:
     note: bool
 
 
+@dataclass
+class ClipboardBackdrop:
+    """A copied backdrop or note.
+
+    Attributes:
+        rel_rect: Where it was, from the copy's top-left corner: (x, y, w, h).
+        text: Its title, or a note's text.
+        color: Its colour.
+        note: Whether it is a sticky note.
+    """
+
+    rel_rect: Rect
+    text: str
+    color: tuple[float, float, float]
+    note: bool
+
+
+#: Copied backdrops and notes, beside the engine's node clipboard. Every copy replaces it.
+clipboard: list[ClipboardBackdrop] = []
+
+
 def to_color(value: str | tuple[float, float, float]) -> tuple[float, float, float]:
     """A colour from a PALETTE name ("Blue", any case) or an (r, g, b) of 0-1 floats.
 
