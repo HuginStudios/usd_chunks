@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -1820,21 +1821,93 @@ def layout_graph(prims: dict, size_of, current_pos, seeds=None, is_locked=None) 
     Returns:
         {prim path: (x, y)} for the nodes that should move.
     """
-    up_of, down_of = layout_adjacency(prims)
-    if seeds:
-        grown = chunk_graph_layout.grow_to_connected_subgraph(list(seeds), up_of, down_of)
-        node_ids = sorted(grown & set(prims))
-    else:
-        node_ids = sorted(prims)
+    node_ids, scoped_up, scoped_down = _layout_scope(prims, seeds)
     if not node_ids:
         return {}
-
-    wanted = set(node_ids)
-    scoped_up = {node: {u for u in up_of.get(node, ()) if u in wanted} for node in node_ids}
-    scoped_down = {node: {d for d in down_of.get(node, ()) if d in wanted} for node in node_ids}
     return chunk_graph_layout.layout_positions(
         node_ids, size_of, is_locked or (lambda path: False), current_pos,
         scoped_up, scoped_down,
+    )
+
+
+def _layout_scope(prims: dict, seeds=None, keep_together: Iterable[Iterable[str]] = ()):
+    """The nodes a layout pass moves, and the wiring between just those.
+
+    Args:
+        prims: Maps prim path to prim.
+        seeds: Narrows the pass to those nodes and everything wired to them. None: all.
+        keep_together: Sets of nodes that are laid out all or none (a backdrop's nodes).
+
+    Returns:
+        (node ids, upstream map, downstream map).
+    """
+    up_of, down_of = layout_adjacency(prims)
+    if seeds:
+        wanted = chunk_graph_layout.grow_to_connected_subgraph(list(seeds), up_of, down_of) & set(prims)
+        for together in keep_together:
+            together = set(together) & set(prims)
+            if together & wanted:
+                wanted |= together
+    else:
+        wanted = set(prims)
+    node_ids = sorted(wanted)
+    scoped_up = {node: {u for u in up_of.get(node, ()) if u in wanted} for node in node_ids}
+    scoped_down = {node: {d for d in down_of.get(node, ()) if d in wanted} for node in node_ids}
+    return node_ids, scoped_up, scoped_down
+
+
+@dataclass
+class LayoutBoxes:
+    """Backdrops a layout keeps whole (chunk_graph_layout.layout_nested).
+
+    Attributes:
+        boxes: Backdrop id -> chunk_graph_layout.Box: the nodes and backdrops directly in it.
+        inner_origin: Where a backdrop's contents start, from its top-left corner.
+        pad: Space between a backdrop's contents and its right and bottom edges.
+    """
+
+    boxes: dict[str, chunk_graph_layout.Box]
+    inner_origin: tuple[float, float]
+    pad: float
+
+    def nodes_under(self, box_id: str) -> list[str]:
+        """Every node in a backdrop, in the backdrops inside it too."""
+        box = self.boxes[box_id]
+        found = list(box.nodes)
+        for child in box.children:
+            found += self.nodes_under(child)
+        return found
+
+
+def layout_graph_with_boxes(prims: dict, size_of, current_pos, boxes: LayoutBoxes, seeds=None,
+                            is_locked=None, inside: str | None = None, obstacles=()) -> tuple[dict, dict]:
+    """layout_graph, keeping every backdrop whole, backdrops inside backdrops too.
+
+    A selection that reaches a backdrop's nodes lays out all of them, so none is pulled out.
+
+    Args:
+        prims: Maps prim path to prim.
+        size_of: Takes a prim path and returns the node's (width, height).
+        current_pos: Takes a prim path and returns the node's current (x, y).
+        boxes: The backdrops and what is in each.
+        seeds: As for layout_graph. Ignored with `inside`.
+        is_locked: As for layout_graph.
+        inside: A backdrop id: lay out only what is in it, and fit it around that.
+        obstacles: (x, y, w, h) rects nothing may land on.
+
+    Returns:
+        ({prim path: (x, y)} for the nodes that move, {backdrop id: (x, y, w, h)} for the
+        backdrops that move or are resized).
+    """
+    nested = {c for box in boxes.boxes.values() for c in box.children}
+    outermost = [b for b in boxes.boxes if b not in nested]
+    together = [boxes.nodes_under(b) for b in outermost]
+    node_ids, scoped_up, scoped_down = _layout_scope(prims, None if inside else seeds, together)
+    if not node_ids:
+        return {}, {}
+    return chunk_graph_layout.layout_nested(
+        node_ids, size_of, is_locked or (lambda path: False), current_pos, scoped_up, scoped_down,
+        boxes.boxes, boxes.inner_origin, boxes.pad, inside=inside, obstacles=obstacles,
     )
 
 

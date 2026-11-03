@@ -102,7 +102,7 @@ can't blank the graph by accident.
 | `Ctrl+F` | Find a node by name or chunk type (untick Name or Type to search only the other). `Enter` frames the best match; `Ctrl+Enter` frames the next one each press. |
 | `1` | Cook to the Output. |
 | `2` / `3` | Switch to that view, if it exists. |
-| `L` | Auto-layout the selection, or the whole graph if nothing is selected. |
+| `L` | Auto-layout the selection, or the whole graph if nothing is selected. With a backdrop selected, only the nodes inside it. |
 | `B` | Put a backdrop around the selection (or at the cursor, if nothing is selected). |
 | `N` | Add a sticky note at the cursor. |
 | `C` | Collapse the selection, or the whole graph if nothing is selected. |
@@ -130,7 +130,10 @@ A **sticky note** says what a part of the network is for. Press `N` to add one a
 cursor, then type. Drag it anywhere on its body.
 
 Double-click either one to edit its text. Right-click its title bar (or anywhere on a
-note) to change its colour, fit a backdrop around its nodes, or delete it.
+note) to change its colour, fit a backdrop around its nodes, lay out the nodes inside it,
+or delete it. Select a backdrop and press `L` to lay out only the nodes inside it. Wires
+to nodes outside the box are ignored. A plain `L` keeps every backdrop whole: its nodes are
+laid out inside it, and the box moves as one block, with its notes.
 
 Both are saved in the scene as USD `Backdrop` prims next to the chunks. Undo covers them
 too. Scripts can make and change them: see [Scripting](scripting.md#backdrops-and-notes).

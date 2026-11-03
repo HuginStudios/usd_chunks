@@ -165,6 +165,27 @@ def test_delete_removes_the_backdrop_and_keeps_its_nodes(graph):
     assert all(p in view.scene()._nodes for p in paths)
 
 
+def test_l_on_a_backdrop_lays_out_only_its_nodes(graph):
+    qapp = graph[0]
+    view, _chunks, paths = _nodes(graph, 3)
+    view, item = _backdrop_around(graph, paths[:2])
+    graph_scene = view.scene()
+    outside_before = graph_scene._nodes[paths[2]].pos()
+    # Pile the two inside nodes on top of each other, still inside the box.
+    corner = graph_scene._nodes[paths[0]].pos()
+    graph_scene._nodes[paths[1]].setPos(corner + QtCore.QPointF(5, 5))
+    box_before = item.rect()
+    view._layout_selected_or_all()
+    _settle(qapp)
+    a, b = (graph_scene._nodes[p].sceneBoundingRect() for p in paths[:2])
+    assert not a.intersects(b)
+    assert graph_scene._nodes[paths[2]].pos() == outside_before
+    item = graph_scene._backdrops[str(item.prim.GetPath())]
+    x, y, _w, _h = item.rect()
+    assert (x, y) == pytest.approx(box_before[:2])
+    inside = {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(item)}
+    assert inside == set(paths[:2])
+
 
 def test_n_makes_a_note_and_its_text_is_kept(graph):
     qapp = graph[0]
@@ -289,6 +310,40 @@ def test_resizing_from_the_corner(graph):
     assert backdrops.read(item.prim).rect == pytest.approx((x, y, w + 80, h + 40), abs=1)
 
 
+def test_l_in_a_backdrop_keeps_clear_of_the_nodes_outside(graph):
+    """Nodes outside are obstacles: laying out the inside never drops a node on one."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 4)
+    graph_scene = view.scene()
+    for upstream, downstream in zip(chunks[:2], chunks[1:3]):
+        downstream.add_dependency(upstream)
+    _settle(qapp)
+    view, item = _backdrop_around(graph, paths[:1])
+    x, y, w, h = item.rect()
+    # Pile the chain's other two into the box, and park the fourth node just right of it.
+    for path in paths[1:3]:
+        graph_scene._nodes[path].setPos(graph_scene._nodes[paths[0]].pos() + QtCore.QPointF(4, 4))
+    outside = graph_scene._nodes[paths[3]]
+    outside.setPos(x + w + 20, y + backdrops.HEADER_HEIGHT + backdrops.FIT_PADDING)
+    outside_rect = outside.sceneBoundingRect()
+    graph_scene.select_backdrop(item, toggle=False)
+    view._layout_selected_or_all()
+    _settle(qapp)
+    assert outside.sceneBoundingRect() == outside_rect
+    for path in paths[:3]:
+        assert not graph_scene._nodes[path].sceneBoundingRect().intersects(outside_rect), path
+
+
+def test_l_with_only_a_note_selected_moves_nothing(graph):
+    qapp = graph[0]
+    view, _chunks, paths = _nodes(graph, 3)
+    graph_scene = view.scene()
+    before = {p: graph_scene._nodes[p].pos() for p in paths}
+    note = graph_scene.create_backdrop((0, 600, 200, 100), note=True)
+    assert note.selected
+    view._layout_selected_or_all()
+    _settle(qapp)
+    assert {p: graph_scene._nodes[p].pos() for p in paths} == before
 
 
 def test_selected_backdrops_drag_together(graph):
@@ -424,3 +479,115 @@ def test_b_over_the_graph_does_not_reach_the_brush(graph):
         assert recorder.released == [QtCore.Qt.Key_B]
     finally:
         docker.removeEventFilter(recorder)
+
+
+def test_l_with_nothing_selected_keeps_each_backdrop_whole(graph):
+    """Reported: L with nothing selected scattered a backdrop's nodes out of it."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 4)
+    graph_scene = view.scene()
+    for upstream, downstream in zip(chunks, chunks[1:]):
+        downstream.add_dependency(upstream)
+    _settle(qapp)
+    view, box = _backdrop_around(graph, paths[1:3])
+    x, y, w, h = box.rect()
+    note = graph_scene.create_backdrop((x + 10, y + h - 60, 120, 50), note=True)
+    note_offset = (note.rect()[0] - x, note.rect()[1] - y)
+    graph_scene.clear_backdrop_selection()
+    graph_scene._scene_sender.set_selected_chunks([])
+    _settle(qapp)
+    view._layout_selected_or_all()
+    _settle(qapp)
+    box = graph_scene._backdrops[str(box.prim.GetPath())]
+    inside = {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(box)}
+    assert inside == set(paths[1:3])
+    bx, by, bw, bh = box.rect()
+    box_rect = QtCore.QRectF(bx, by, bw, bh)
+    for path in (paths[0], paths[3]):
+        assert not graph_scene._nodes[path].sceneBoundingRect().intersects(box_rect), path
+    note = graph_scene._backdrops[str(note.prim.GetPath())]
+    assert (note.rect()[0] - bx, note.rect()[1] - by) == pytest.approx(note_offset)
+
+
+def test_l_on_a_selected_node_keeps_a_wired_backdrop_whole(graph):
+    """Laying out a selection pulls in what it is wired to; a backdrop it reaches comes
+    whole, not one node at a time -- its unwired node too."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 4)
+    graph_scene = view.scene()
+    for upstream, downstream in zip(chunks[:3], chunks[1:3]):
+        downstream.add_dependency(upstream)
+    _settle(qapp)
+    view, box = _backdrop_around(graph, paths[1:])
+    # Far from the selected node, so a layout that ignored the box would visibly pull its
+    # wired nodes out of it.
+    for path in paths[1:]:
+        node = graph_scene._nodes[path]
+        node.setPos(node.pos() + QtCore.QPointF(3000, 1500))
+        node._write_pos_to_usd()
+    x, y, w, h = box.rect()
+    backdrops.set_rect(box.prim, (x + 3000, y + 1500, w, h))
+    _settle(qapp)
+    graph_scene._scene_sender.set_selected_chunks([chunks[0]])
+    _settle(qapp)
+    view._layout_selected_or_all()
+    _settle(qapp)
+    box = graph_scene._backdrops[str(box.prim.GetPath())]
+    assert {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(box)} == set(paths[1:])
+
+
+def _nested_backdrops(graph):
+    """An outer backdrop with five nodes and an inner backdrop holding two more, the way
+    it was reported: feeders on the left, the inner box on the right."""
+    qapp = graph[0]
+    view, chunks, paths = _nodes(graph, 7)
+    graph_scene = view.scene()
+    chunks[5].add_dependency(chunks[0])
+    chunks[6].add_dependency(chunks[5])
+    _settle(qapp)
+    for i, path in enumerate(paths[:5]):
+        node = graph_scene._nodes[path]
+        node.setPos(100, 100 + 110 * i)
+        node._write_pos_to_usd()
+    for path, x in ((paths[5], 800), (paths[6], 1100)):
+        node = graph_scene._nodes[path]
+        node.setPos(x, 330)
+        node._write_pos_to_usd()
+    _settle(qapp)
+    view, inner = _backdrop_around(graph, paths[5:])
+    outer = graph_scene.create_backdrop((40, 20, 1500, 700))
+    graph_scene.clear_backdrop_selection()
+    _settle(qapp)
+    return view, graph_scene, paths, inner, outer
+
+
+def _check_nested(graph_scene, paths, inner, outer):
+    inner = graph_scene._backdrops[str(inner.prim.GetPath())]
+    outer = graph_scene._backdrops[str(outer.prim.GetPath())]
+    in_inner = {str(n.prim.GetPath()) for n in graph_scene.nodes_in_backdrop(inner)}
+    assert in_inner == set(paths[5:])
+    assert backdrops.backdrop_inside(outer.rect(), inner.rect(), False)
+    inner_rect = QtCore.QRectF(*inner.rect())
+    for path in paths[:5]:
+        node_rect = graph_scene._nodes[path].sceneBoundingRect()
+        assert not node_rect.intersects(inner_rect), path
+        assert backdrops.node_inside(outer.rect(), graph_scene._node_header_rect(graph_scene._nodes[path])), path
+
+
+def test_layout_inside_keeps_a_backdrop_in_it_whole(graph):
+    """Reported: Layout Nodes Inside on the outer backdrop laid the inner backdrop's nodes
+    out with the rest, leaving the inner box behind and the nodes piled on it."""
+    qapp = graph[0]
+    view, graph_scene, paths, inner, outer = _nested_backdrops(graph)
+    graph_scene.layout_in_backdrop(outer)
+    _settle(qapp)
+    _check_nested(graph_scene, paths, inner, outer)
+
+
+def test_plain_l_keeps_nested_backdrops_whole(graph):
+    qapp = graph[0]
+    view, graph_scene, paths, inner, outer = _nested_backdrops(graph)
+    graph_scene._scene_sender.set_selected_chunks([])
+    view._layout_selected_or_all()
+    _settle(qapp)
+    _check_nested(graph_scene, paths, inner, outer)
