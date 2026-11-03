@@ -27,6 +27,10 @@ The other chunks of the pass still cook. A cook that runs clears FAILED.
 A chunk whose cook waits on a long job holds every other cook until it ends (hold): the
 host's event loop runs meanwhile, and a recook it starts waits instead (hold_back).
 
+A script that only writes a network defers every cook (deferred): solves still mark what
+they reach pending and stale, a read pulls just the chunks it needs (pull), and the rest
+cooks once, when the block ends.
+
 The graph itself (DagNode, notices) is chunk_notice's; the graph algorithms are
 chunk_scheduler's. Chunk authors never call anything here: they write execute(node) and
 call chunk.execute() to run a chunk again.
@@ -79,6 +83,12 @@ _held = 0
 
 # What asked to run while a hold was open, by key, to run once it has ended (hold_back).
 _held_back: dict = {}
+
+# How many deferrals are open (deferred()): while any is, solves only mark.
+_deferring = 0
+
+# The DagNodes a pull() is cooking for, inside a deferral; None when none is running.
+_pull_only: dict | None = None
 
 # How many cook passes are running inside each other (cook_pass), and the DagNodes below a
 # chunk whose cook failed in the outermost one: those do not cook until it has ended.
@@ -200,7 +210,7 @@ def hold_back(key, fn) -> bool:
     Returns:
         False when no hold is open: the caller runs it now.
     """
-    if not _held:
+    if not (_held or _deferring):
         return False
     _held_back[key] = fn
     return True
@@ -241,6 +251,117 @@ def _release() -> None:
         _held_back.clear()
         for fn in pending:
             fn()
+
+
+def begin_deferring() -> None:
+    """Cook nothing until the matching end_deferring(); see deferred()."""
+    global _deferring
+    _deferring += 1
+
+
+def end_deferring(cook: bool = True) -> None:
+    """End a begin_deferring(): the outermost one cooks what is pending, or drops it.
+
+    Args:
+        cook: False to drop what is pending instead -- for a scene about to be thrown away,
+            whose results nobody will read. Its chunks stay stale.
+    """
+    global _deferring
+    _deferring -= 1
+    if _deferring:
+        return
+    if cook:
+        _release()
+    else:
+        _pending.clear()
+        _held_back.clear()
+
+
+@contextmanager
+def deferred():
+    """Cook nothing until the block ends, then cook what it left pending, once.
+
+    For a script writing a network: making a chunk, wiring it and setting its values each
+    solve as usual -- notices and callbacks run, and what they reach is marked pending and
+    stale -- but flush() cooks nothing, and a recook waits (hold_back). A read that needs a
+    result pulls the chunks it depends on (pull); everything else cooks when the outermost
+    block ends, as one flush. Not on a raise: what is pending is dropped, and stays stale.
+    """
+    begin_deferring()
+    try:
+        yield
+    except BaseException:
+        end_deferring(cook=False)
+        raise
+    end_deferring()
+
+
+def is_deferring() -> bool:
+    """Whether a deferred() block is open, so a change only marks what it reaches."""
+    return bool(_deferring)
+
+
+def pull(chunk) -> None:
+    """Inside deferred(), cook what is pending upstream of chunk, chunk included -- and only that.
+
+    For a read of a chunk's result in the middle of a block: the chunks it depends on cook
+    now, upstream first, and the rest stay pending for the block's end. Outside a deferral
+    nothing is left pending, so this cooks nothing.
+
+    Args:
+        chunk: The chunk whose result is about to be read.
+    """
+    global _pull_only
+    if not _deferring:
+        return
+    solve_batched()
+    prev, _pull_only = _pull_only, chunk_scheduler.upstream_closure(chunk.get_dag_node())
+    try:
+        flush(force=True)
+    finally:
+        _pull_only = prev
+
+
+def cook_alone(chunk) -> None:
+    """Inside deferred(), cook chunk now without what is above it, and leave it pending.
+
+    For a chunk that builds params in its cook (Light's schema inputs), when only those
+    params are wanted -- a save storing the values a script gave them -- and not its
+    result: cooking what is above it would be the whole network. It cooks again, in
+    place, with the rest.
+
+    Args:
+        chunk: The chunk.
+    """
+    changes, _ = _pending.pop(chunk, ([], True))
+    try:
+        chunk._cook()
+    finally:
+        mark_cook_stale(chunk)
+        _pending[chunk] = (changes, True)
+
+
+def pull_all() -> None:
+    """Inside deferred(), cook everything pending now, recooks included, and keep deferring.
+
+    For a read of the whole result -- an export, a commit -- in the middle of a block.
+    """
+    global _deferring
+    if not _deferring:
+        return
+    solve_batched()
+    was, _deferring = _deferring, 0
+    try:
+        _release()
+    finally:
+        _deferring = was
+
+
+def _cooks_now(chunk) -> bool:
+    """Whether flush() would cook a pending chunk now: not mid-cook, and not deferred."""
+    if getattr(chunk, "_executing", False):
+        return False
+    return not _deferring or (_pull_only is not None and chunk.get_dag_node() in _pull_only)
 
 
 @contextmanager
@@ -305,7 +426,7 @@ def flush(force: bool = False) -> None:
             cook (a Wedge setting its ranges), which reads the result straight after.
             A plain solve inside a cook waits for the outer flush instead.
     """
-    if _held or (_flushing and not force):
+    if _held or (_deferring and _pull_only is None) or (_flushing and not force):
         return
     with cook_pass():
         _flush()
@@ -325,7 +446,7 @@ def _flush() -> None:
     try:
         rounds = 0
         while True:
-            chunks = [c for c in _pending if not getattr(c, "_executing", False)]
+            chunks = [c for c in _pending if _cooks_now(c)]
             if not chunks:
                 break
             rounds += 1
@@ -411,7 +532,7 @@ def batched_solve():
     _after_batch = {}
     try:
         yield
-        while _batched or _batch_deferred or any(not getattr(c, "_executing", False) for c in _pending):
+        while _batched or _batch_deferred or any(_cooks_now(c) for c in _pending):
             while _batched:
                 prop = _batched.popleft()
                 # Not re-dirtied: an earlier solve in this loop may have cleaned it along

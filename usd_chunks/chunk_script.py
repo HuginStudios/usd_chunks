@@ -31,7 +31,7 @@ import sys
 
 from pxr import Usd
 
-from usd_chunks import chunk_registry, chunk_scene
+from usd_chunks import chunk_cook, chunk_registry, chunk_scene
 from usd_chunks.chunk_stage import (
     ChunkLayerManager,
     ChunkStageSync,
@@ -50,9 +50,17 @@ class Scene(chunk_scene.SceneSender):
         host_name: What the registry records as the host; only shows up in logs.
         sync: False to start the registry only, without the layer manager or stage sync --
             for reading chunk modules without loading or cooking the stage's network.
+        lazy: Write the network without cooking it. Loading it, making chunks and setting
+            values only mark what they reach; `scene.cook(chunk)` cooks what a read of
+            that chunk needs, and `export` and `commit` cook everything. `save` writes the
+            network as it stands, cooking only chunks that build a param a value waits
+            for. What is still marked when the Scene closes is dropped: closing removes
+            every chunk's result anyway. A param a chunk has not built yet is taken as one
+            its cook builds, so a misspelled name raises at that cook, not at `create`.
     """
 
-    def __init__(self, stage: Usd.Stage | None = None, host_name: str = "script", *, sync: bool = True):
+    def __init__(self, stage: Usd.Stage | None = None, host_name: str = "script", *, sync: bool = True,
+                 lazy: bool = False):
         live = chunk_scene.current_scene()
         if live is not None and live.is_app:
             raise RuntimeError(
@@ -66,11 +74,19 @@ class Scene(chunk_scene.SceneSender):
         self._stage = stage or Usd.Stage.CreateInMemory()
         self.registry = chunk_registry.ChunkRegistry()
         self.registry.initialize(self, host_name)
+        # Open from before the load, so loading a saved network cooks nothing either.
+        self._lazy = lazy
+        if lazy:
+            chunk_cook.begin_deferring()
         if sync:
             # Stage sync rather than a bare load_chunks: it keeps listening while the
             # network loads, which is what binds params a chunk builds during its own
             # execute to their prims, and it restores Edit Target selections.
-            chunk_stage_init(self._stage, self)
+            try:
+                chunk_stage_init(self._stage, self)
+            except BaseException:
+                self._end_lazy()
+                raise
 
     @classmethod
     def new(cls, host_name: str = "script") -> Scene:
@@ -83,12 +99,15 @@ class Scene(chunk_scene.SceneSender):
         return chunk_scene.current_scene()
 
     @classmethod
-    def open(cls, path: str, host_name: str = "script") -> Scene:
-        """Open a saved network and load its chunks, the way `usdchunks run` does."""
+    def open(cls, path: str, host_name: str = "script", *, lazy: bool = False) -> Scene:
+        """Open a saved network and load its chunks, the way `usdchunks run` does.
+
+        lazy: load without cooking, as Scene(lazy=True).
+        """
         stage = Usd.Stage.Open(path)
         if not stage:
             raise FileNotFoundError(f"Failed to open: {path}")
-        scene = cls(stage, host_name)
+        scene = cls(stage, host_name, lazy=lazy)
         scene._owns_stage = True
         return scene
 
@@ -125,12 +144,23 @@ class Scene(chunk_scene.SceneSender):
         # Unlike a host's scene, this one is the script's own, so the block ends it.
         self.close()
 
+    def _end_lazy(self) -> None:
+        """End a lazy Scene's deferral, once, dropping what it left marked.
+
+        Not cooked: closing deletes every chunk, and each chunk's layer -- its result -- with
+        it, so nothing cooked now could be read.
+        """
+        if self._lazy:
+            self._lazy = False
+            chunk_cook.end_deferring(cook=False)
+
     def close(self) -> None:
         """Delete the chunks and reset the layer manager, ready for the next scene.
 
         Without this the chunks stay registered, and the next scene that loads a file
         finds their names taken and builds a second copy of every chunk beside them.
         """
+        self._end_lazy()
         # Unwire first. request_delete does the same disconnect for a chunk that still has
         # outputs, and deleting the downstream end first would not avoid that, since it
         # leaves the upstream's outputs in place.
