@@ -847,7 +847,9 @@ def _current_points(node, stage):
     path = _points_path(node)
     prim = stage.GetPrimAtPath(path) if path else None
     if not prim or not prim.IsValid():
-        return [], [], []
+        # Not cooked since a reopen: add to what was saved rather than starting over.
+        recorded = _recorded_points(node, stage)
+        return [list(part) for part in recorded] if recorded else ([], [], [])
     cloud = UsdGeom.Points(prim)
     points = cloud.GetPointsAttr().Get()
     normals = cloud.GetNormalsAttr().Get()
@@ -1049,6 +1051,12 @@ _PAINT_COUNTS = "chunk:paint:counts"
 _PAINT_SPANS = "chunk:paint:spans"
 _PAINT_INDICES = "chunk:paint:indices"
 _PAINT_WEIGHTS = "chunk:paint:weights"
+#: The placed points (Points and Spray), recorded beside the field for the same reason. They
+#: are their own output, a point cloud under the chunk prim in the cook layer, and that was
+#: never written either -- a reopened scene came back with the field and without its points.
+_PAINT_POINTS = "chunk:paint:points"
+_PAINT_NORMALS = "chunk:paint:normals"
+_PAINT_WIDTHS = "chunk:paint:widths"
 
 
 def _chunk_prim_path(node):
@@ -1063,6 +1071,7 @@ def _record_paint(node):
     mouse-move, and re-flattening every painted mesh each time is the sticky drag `_stamp`
     exists to avoid.
     """
+    _record_points(node)
     prim, stage = _surface_prim(node)
     path = _chunk_prim_path(node)
     if prim is None or path is None:
@@ -1093,6 +1102,55 @@ def _record_paint(node):
             (_PAINT_WEIGHTS, Sdf.ValueTypeNames.FloatArray, Vt.FloatArray(weights)),
         ):
             chunk_prim.CreateAttribute(name, kind, custom=True).Set(value)
+
+
+def _record_points(node):
+    """Copy the placed points onto the chunk prim, so a save carries them.
+
+    Only once the chunk holds points -- a brush that has only ever painted density records
+    nothing -- but an emptied cloud is recorded, so a Clear survives the save too.
+    """
+    held = getattr(node, _POINTS, None)
+    stage = node.get_stage()
+    path = _chunk_prim_path(node)
+    if held is None or stage is None or path is None:
+        return
+    points, normals, widths = held
+    layer = chunk_utils.get_bookkeeping_layer(stage, node)
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
+        chunk_prim = stage.GetPrimAtPath(path)
+        if not chunk_prim or not chunk_prim.IsValid():
+            return
+        for name, kind, value in (
+            (_PAINT_POINTS, Sdf.ValueTypeNames.Point3fArray, Vt.Vec3fArray(points)),
+            (_PAINT_NORMALS, Sdf.ValueTypeNames.Normal3fArray, Vt.Vec3fArray(normals)),
+            (_PAINT_WIDTHS, Sdf.ValueTypeNames.FloatArray, Vt.FloatArray(widths)),
+        ):
+            chunk_prim.CreateAttribute(name, kind, custom=True).Set(value)
+
+
+def _recorded_points(node, stage):
+    """`(points, normals, widths)` from the chunk prim, or None when nothing was recorded."""
+    path = _chunk_prim_path(node)
+    chunk_prim = stage.GetPrimAtPath(path) if path else None
+    if not chunk_prim or not chunk_prim.IsValid():
+        return None
+    attr = chunk_prim.GetAttribute(_PAINT_POINTS)
+    if not attr or not attr.HasValue():
+        return None
+
+    def read(name):
+        other = chunk_prim.GetAttribute(name)
+        return other.Get() if other and other.HasValue() else None
+
+    points = [Gf.Vec3f(*p) for p in attr.Get() or []]
+    normals = [Gf.Vec3f(*n) for n in read(_PAINT_NORMALS) or []]
+    widths = [float(w) for w in read(_PAINT_WIDTHS) or []]
+    # Lengths that disagree are made to agree, the way `_current_points` treats a cloud
+    # placed before normals and widths were kept.
+    normals = (normals + [Gf.Vec3f(0, 0, 1)] * len(points))[:len(points)]
+    widths = (widths + [_dab_width(node)] * len(points))[:len(points)]
+    return points, normals, widths
 
 
 def _recorded_paint(node, stage):
@@ -1151,6 +1209,9 @@ def execute(node):
 
     stage = node.get_stage()
     held_points = getattr(node, _POINTS, None)
+    if held_points is None and stage is not None:
+        # A reopened scene: nothing in memory yet, so start from what the chunk prim recorded.
+        held_points = _recorded_points(node, stage)
     if held_points is not None and stage is not None:
         _write_points(node, stage, *held_points)
         _show_points(node, stage)
