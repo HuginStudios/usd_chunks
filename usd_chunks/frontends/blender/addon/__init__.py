@@ -15,11 +15,9 @@ trees can edit two networks.
 alongside Geometry Node Editor and the rest; the sidebar gets a USDChunks tab, and Shift+A
 lists the whole chunk library by the namespace each chunk declares.
 
-**Installing.** Blender 4.2+ extension: zip this directory and use Install from Disk. It
-needs `usd_chunks` importable -- either shipped as wheels in the manifest, or, for
-development, installed into Blender's own Python:
-
-    <blender>/<version>/python/bin/python -m pip install -e /path/to/usd_chunks
+**Installing.** Blender 4.2+ extension, built with `blender --command extension build`.
+It needs `usd_chunks` importable, installed with `pip --target` into Blender's user
+`scripts/addons/modules` folder. See docs/blender.md for the steps.
 
 Do **not** install `usd-core` alongside. Blender already ships the bindings, under a
 private namespace (`pxrBlender_v26_03__pxrReserved__`), so a pip build is a different C++

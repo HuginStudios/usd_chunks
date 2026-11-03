@@ -22,9 +22,9 @@ license = ["SPDX:Apache-2.0"]
 # different C++ type and cannot exchange objects with Blender's USD. Shipping it would not
 # conflict -- it would quietly give the add-on a second, unrelated USD.
 #
-# Until the wheels are built, install into Blender's own Python:
-#   <blender>/<version>/python/bin/python -m pip install /path/to/usd_chunks
-# which resolves attrs and typing-extensions and leaves the bindings alone.
+# Until the wheels are built, install usd_chunks with Blender's own Python, into Blender's
+# user scripts/addons/modules folder (`pip install --no-deps --target ...`). A plain pip
+# install can't write to Blender in Program Files. See docs/blender.md.
 #
 # wheels = ["./wheels/attrs-*.whl", "./wheels/typing_extensions-*.whl"]
 

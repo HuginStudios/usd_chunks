@@ -23,14 +23,13 @@ set up: if the Chunks panel works, this works too.
 
 ### In a terminal
 
-Before you run a script, you need:
+Before you run a script, you need **a Python with USD** and usd_chunks installed in it.
+Use usdview's own Python, or install usd_chunks with
+`python -m pip install -e "./usd_chunks[standalone]"`, which adds `usd-core`. See
+[Install](install.md#quick-start).
 
-1. **A Python with USD.** Use usdview's own Python, or install usd_chunks with
-   `python -m pip install -e "./usd_chunks[standalone]"`, which adds `usd-core`. See
-   [Install](install.md#quick-start).
-2. **`USD_CHUNK_DIRS` set** to your chunk folders, the same as for usdview. Without it,
-   `scene.create.cube` fails with "No chunk module or variant called 'cube' -- is
-   USD_CHUNK_DIRS set?".
+The chunks that come with usd_chunks are found by themselves. To use your own chunks too,
+set `USD_CHUNK_DIRS` to their folders, the same as for usdview.
 
 Save this as `box.py`:
 
@@ -48,12 +47,8 @@ with Scene.new() as scene:
 Then run it:
 
 ```
-set USD_CHUNK_DIRS=C:\path\to\usd_chunks\chunks
 python box.py
 ```
-
-In PowerShell, use `$env:USD_CHUNK_DIRS = "C:\path\to\usd_chunks\chunks"`. On Linux or
-macOS, use `export USD_CHUNK_DIRS=/path/to/usd_chunks/chunks`.
 
 Use `Scene.current()` in usdview and `Scene.new()` in a script. See
 [Get a scene](#get-a-scene).
