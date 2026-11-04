@@ -946,7 +946,7 @@ def _config_help_text(chunk: core.ChunkBase) -> str:
 
 
 class _NodeHelpBadge(QtWidgets.QGraphicsItem):
-    """The "?" beside a node's type label: hover or click it for the chunk's config description.
+    """The "?" above a node's menu button: hover or click it for the chunk's config description.
 
     Its own item rather than a region of the node, so its tooltip wins over the node's
     (the stale/failed one) only where the badge is.
@@ -971,17 +971,10 @@ class _NodeHelpBadge(QtWidgets.QGraphicsItem):
         self.place()
 
     def place(self) -> None:
-        """Sit just after the type label under the name, kept clear of the menu button."""
-        node = self._node
-        header_h = min(_NODE_HEADER_H, node._height)
-        metrics = QtGui.QFontMetricsF(_header_font(8))
-        # Mirrors paint()'s layout: the label starts after the icon, if there is one, and is
-        # centred in a 14-high row from header_h / 2 + 1.
-        text_x = 12 + 24 + 10 if node._icon else 12
-        x = min(text_x + metrics.horizontalAdvance(node._chunk_type_label) + 6, node._width - 58)
-        baseline = header_h / 2 + 1 + (14 - metrics.height()) / 2 + metrics.ascent()
-        # Level with the label's lower-case letters, which is what the eye lines it up with.
-        self.setPos(x, baseline - metrics.xHeight() / 2 - self.SIZE / 2)
+        """Sit centred above the menu button's three dots, in the header's top-right."""
+        menu = self._node._menu_button_rect()
+        # The top dot's edge is 6.6 above the button's centre; leave a small gap over it.
+        self.setPos(menu.center().x() - self.SIZE / 2, menu.center().y() - 6.6 - 2 - self.SIZE)
 
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802
         return QtCore.QRectF(0, 0, self.SIZE, self.SIZE)
