@@ -1926,7 +1926,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             return
         self._icon, self._icon_color = node_theme.node_icon(self.chunk, self.prim)
         if self._help_badge is not None:
-            self._help_badge.place()  # the type label moved with the icon
+            self._help_badge.place()
         self.update()
 
     def _is_active_output(self) -> bool:
