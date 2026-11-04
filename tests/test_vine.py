@@ -632,3 +632,30 @@ def test_wiring_painted_points_hides_the_root_count(host) -> None:
     node.execute()
 
     assert node.get_param("root_count").has_state(chunk.ChunkFlags.State.HIDDEN)
+
+
+def test_a_mesh_wired_as_painted_points_grows_nothing_and_says_why(host) -> None:
+    """A mesh has points too. Wired here by mistake, every vertex became a root: a scanned
+    rock froze the session, then crashed it."""
+    _paint(host.mesh, _stripe(0.0, SIZE))
+    _wall(host.stage, path="/World/Other", divisions=60)
+
+    node = host.vine(seed_points="/World/Other")
+    node.execute()
+
+    assert "not a point cloud" in node.get_param("readout").value
+    assert len(host.points()) == 0
+
+
+def test_too_many_painted_points_are_thinned_to_leave_room_to_grow(host) -> None:
+    _paint(host.mesh, _stripe(0.0, SIZE))
+    cloud = UsdGeom.Points.Define(host.stage, "/Painted")
+    seeds = [Gf.Vec3f(x * 0.1, 0.0, z * 0.1) for x in range(100) for z in range(10)]
+    cloud.CreatePointsAttr().Set(Vt.Vec3fArray(seeds))
+
+    node = host.vine(seed_points="/Painted", max_points=400)
+    node.execute()
+
+    readout = node.get_param("readout").value
+    assert "used 100 of 1000 painted points" in readout
+    assert "vines from painted points" in readout

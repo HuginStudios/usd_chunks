@@ -1072,28 +1072,47 @@ def _settings(node, surface):
     }
 
 
-def _painted_roots(stage, points_path, projector):
+def _painted_roots(stage, points_path, projector, limit):
     """Roots the brush placed by hand, projected onto the surface.
 
     A dab lands on the skin already, but the brush records where the *cursor* hit and this
     chunk's idea of the surface is a sampled reconstruction of it -- so they are reconciled here
     rather than trusted to agree. A dab outside the painted region has nowhere to grow and is
     dropped, which is the same rule the growth itself follows.
+
+    Only a point cloud is read. A mesh has points too, and a mesh path wired here by mistake
+    made every vertex a root: a scanned rock froze the session, then crashed it.
+
+    Args:
+        stage: The stage to read the points from.
+        points_path: The Painted Points path.
+        projector: Puts each point on the painted surface.
+        limit: The most roots to take. More are thinned evenly.
+
+    Returns:
+        (roots, note): the roots as (position, normal) pairs, and what to tell the user --
+        empty when there is nothing to say.
     """
     if not points_path or stage is None:
-        return []
+        return [], ""
     prim = stage.GetPrimAtPath(points_path)
     if not prim or not prim.IsValid():
-        return []
+        return [], ""
+    if not prim.IsA(UsdGeom.Points):
+        return [], f"Painted Points is a {prim.GetTypeName() or 'prim'}, not a point cloud: {points_path}"
     points = UsdGeom.Points(prim).GetPointsAttr().Get()
     if not points:
-        return []
+        return [], ""
+    note = ""
+    if len(points) > limit:
+        note = f"used {limit} of {len(points)} painted points"
+        points = [points[int(i)] for i in np.linspace(0, len(points) - 1, limit)]
     roots = []
     for point in points:
         landed, normal = projector.project(np.asarray(point, dtype=np.float64))
         if normal is not None:
             roots.append((landed, normal))
-    return roots
+    return roots, note
 
 
 def _attractor_count(surface, settings):
@@ -1182,9 +1201,14 @@ def execute(node):
         _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
         return
 
-    roots = _painted_roots(
-        upstream, (node.get_param("seed_points").value or "").strip(), projector
+    # Every root is a node, and the vine needs room past them to grow.
+    roots, roots_note = _painted_roots(
+        upstream, (node.get_param("seed_points").value or "").strip(), projector,
+        limit=max(1, settings["max_nodes"] // 4),
     )
+    if roots_note and not roots:
+        _bail(node, stage, layer, where, roots_note)
+        return
     hand_placed = bool(roots)
     if not roots:
         # Spread across the painted region, not merely out of each other's reach. Spacing them
@@ -1232,7 +1256,8 @@ def execute(node):
         f"{len(roots)} vine{'s' if len(roots) != 1 else ''}"
         f"{' from painted points' if hand_placed else ''} · "
         f"{len(strands)} branches · {len(leaves[0])} leaves"
-        + (f"\ncapped at {settings['max_nodes']} points — raise Max Points" if hit_cap else ""),
+        + (f"\ncapped at {settings['max_nodes']} points — raise Max Points" if hit_cap else "")
+        + (f"\n{roots_note}" if roots_note else ""),
     )
 
 
