@@ -3235,7 +3235,12 @@ class ChunkGroupBase(ChunkContainerBase):
 
             reserved_names.add(new_name)
 
-            if isinstance(new_param, ChunkGroupBase):
+            # A chunk entering a scene or chunkgroup keeps its own param names: they are
+            # attrs on its own prim, so they can't clash with another chunk. Renamed, a
+            # group called "Output" became "Output1" next to a chunk named Output, and its
+            # saved values were not read back on reopen.
+            entering_context = isinstance(new_param, ChunkBase) and self.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+            if isinstance(new_param, ChunkGroupBase) and not entering_context:
                 for p in new_param.get_params():
                     if not isinstance(p, ProxyParam):
                         new_name = self.get_valid_child_name(p.name, reserved_names)
