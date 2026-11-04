@@ -102,6 +102,11 @@ def test_an_exec_wire_still_splices(graph):
     """The feature itself -- pinned, since the fix is a narrowing."""
     qapp, scene, stage, gv, (a, b, c), (a_node, b_node, c_node) = _three_transforms(graph)
     connect_exec(stage, scene, get_chunk_prim_path(a), get_chunk_prim_path(b))
+    # The context's Output sits on the tail of its chain, which is C; a node feeding the
+    # Output is wired, so free C for the drop to mean "an unwired node".
+    for prim in stage.Traverse():
+        if (prim.GetAttribute("info:chunkType").Get() or "") == "output":
+            prim.GetAttribute("inputs:chunk").SetConnections([])
     gv.scene()._build_edges()
     qapp.processEvents()
     a_out = a_node.get_port(f"{a_node.prim.GetPath()}.outputs:chunk")
@@ -146,3 +151,34 @@ def test_a_node_already_in_the_chain_is_not_spliced(graph):
     assert c_in == [f"{get_chunk_prim_path(d)}.outputs:chunk"], (
         f"and the dragged node keeps its own input, got {c_in}"
     )
+
+
+@pytest.mark.parametrize("side", ["output", "input"])
+def test_a_node_wired_on_one_side_is_not_spliced(graph, side):
+    """Reported: a node with only its output wired, dropped by accident over a wire, was
+    spliced in -- it kept feeding what it fed and gained the wire too. Wired on either exec
+    side, a node is in a chain already and is being moved; the input side alone would have
+    had its wire replaced."""
+    qapp, scene, stage, gv, (a, b, c), (a_node, b_node, c_node) = _three_transforms(graph)
+    mod = chunk_registry.ChunkRegistry().get_chunk_module("transform")
+    d = _mk(mod, scene)
+    qapp.processEvents()
+    connect_exec(stage, scene, get_chunk_prim_path(a), get_chunk_prim_path(b))
+    if side == "output":
+        connect_exec(stage, scene, get_chunk_prim_path(c), get_chunk_prim_path(d))
+    else:
+        connect_exec(stage, scene, get_chunk_prim_path(d), get_chunk_prim_path(c))
+    gv.scene()._build_edges()
+    qapp.processEvents()
+    a_out = a_node.get_port(f"{a_node.prim.GetPath()}.outputs:chunk")
+    b_in = b_node.get_port(f"{b_node.prim.GetPath()}.inputs:chunk")
+    c_prim = stage.GetPrimAtPath(get_chunk_prim_path(c))
+    before = [str(x) for x in stage.GetAttributeAtPath(b_in.attr_path).GetConnections()]
+    c_in_before = [str(x) for x in c_prim.GetAttribute("inputs:chunk").GetConnections()]
+
+    _drop_onto(qapp, c_node, a_out, b_in)
+
+    after = [str(x) for x in stage.GetAttributeAtPath(b_in.attr_path).GetConnections()]
+    assert after == before, f"A -> B must be left alone: {before} -> {after}"
+    c_in = [str(x) for x in c_prim.GetAttribute("inputs:chunk").GetConnections()]
+    assert c_in == c_in_before, f"and the dragged node's input is untouched, got {c_in}"
