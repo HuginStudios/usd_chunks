@@ -1116,7 +1116,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # /materials/surface before its own Material Path was set).
             if name:
                 new.name = name
-            self.set(new, **early)
+            self._assign(new, early)
         finally:
             new._executing = prev
         self._add_scripted(new)
@@ -1142,18 +1142,19 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             chunk_cook.solve_batched()
             new._cook()
             chunk_cook.solve_batched()
-        self.set(new, **late)
+        self._assign(new, late)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
         for i in inputs:
             new.add_dependency(i)
-        self.set(new, **wires)
+        self._assign(new, wires)
         # And after the solves its wiring queued: left to the block's end, they marked the
         # chunk above it again, and that cooked twice.
         chunk_cook.solve_batched()
         self._last_placed = weakref.ref(new)
         self._recook_active_view(new)
+        _warn_hidden(new, params)
         return new
 
     def set(self, target: ChunkBase, **params) -> None:
@@ -1168,7 +1169,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         In a lazy Scene, a param the chunk has not built yet -- one it builds in its cook, as
         Light does its schema inputs -- takes the value when that cook builds it, the way a
         loaded network's stored value does; a name its cook does not build raises there.
+
+        A param the chunk's other settings hide (a tube's `radius` on a Mesh set to sphere)
+        is still set, with a warning, since the chunk will not use it.
         """
+        self._assign(target, params)
+        _warn_hidden(target, params)
+
+    def _assign(self, target: ChunkBase, params: Mapping[str, Any]) -> None:
+        """Set params by name, as `set` does, without the hidden-param warning."""
         for name, value in params.items():
             param = _scripted_param(target, name)
             if param is None:
@@ -1610,6 +1619,27 @@ def _scripted_param(target: ChunkBase, name: str):
             except (IndexError, KeyError, ValueError):
                 return None
     return None
+
+
+def _warn_hidden(target: ChunkBase, names: Iterable[str]) -> None:
+    """Warn about the params in `names` that target hides, as its other settings leave
+    them unused: a Mesh set to sphere hides the tube's `radius`."""
+    hidden = [name for name in names if (param := _scripted_param(target, name)) is not None and _is_hidden(param)]
+    if hidden:
+        logger.warning(
+            "%s does not use %s: its other settings hide it, so the value has no effect.",
+            target.name, ", ".join(repr(n) for n in hidden),
+        )
+
+
+def _is_hidden(param: ChunkParamBase) -> bool:
+    """True when param, or a group holding it, is hidden."""
+    obj = param
+    while obj is not None and not isinstance(obj, ChunkBase):
+        if hasattr(obj, "has_state") and obj.has_state(ChunkFlags.State.HIDDEN):
+            return True
+        obj = obj.get_owner()
+    return False
 
 
 # Values a lazy Scene was given for params their chunk builds in its cook, by chunk, until

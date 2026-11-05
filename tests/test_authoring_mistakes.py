@@ -3,6 +3,7 @@
 - USD's own variant-path spelling, `/geo{look=fancy}box`, read as a prim called `geobox`.
 - A mistyped target or material: the chunk authored nothing and said nothing.
 - `scene.save()` over the file a scene was opened on deleted that file's own prims.
+- A param another setting hides (a tube's `radius` on a sphere Mesh) did nothing, silently.
 
 The warning on a missing target must not fire for a target that is only switched off for
 the moment -- in a muted layer, or in a variant not selected -- which is the case the
@@ -211,3 +212,20 @@ def test_saving_a_network_of_its_own_says_nothing(tmp_path, caplog):
     with Scene.open(str(path)) as scene, caplog.at_level(logging.WARNING):
         scene.save(str(path))
     assert not _warnings(caplog, "leaves out")
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_a_param_the_picked_shape_hides_warns(caplog, lazy):
+    """`radius` is the tube's; a sphere's is `radius1`. Set on a sphere, it did nothing, silently."""
+    with Scene(host_name="pytest", lazy=lazy) as scene, caplog.at_level(logging.WARNING):
+        mesh = scene.create.mesh(mesh_type="sphere", prim_path="/World/ball", radius=0.5)
+        scene.set(mesh, dimx=4)
+    assert len(_warnings(caplog, "does not use 'radius'")) == 1
+    assert len(_warnings(caplog, "does not use 'dimx'")) == 1
+
+
+def test_the_picked_shapes_own_params_do_not_warn(caplog):
+    with Scene(host_name="pytest") as scene, caplog.at_level(logging.WARNING):
+        mesh = scene.create.mesh(radius=0.5, mesh_type="tube", prim_path="/World/pipe")
+        scene.set(mesh, rows=3)
+    assert not _warnings(caplog, "does not use")
