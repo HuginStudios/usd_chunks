@@ -1618,3 +1618,40 @@ class TestUnpatchedUsdBuild:
         scene, stage = _setup_stage()
         _mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
         assert node.get_param("camera_light").value is True
+
+
+class _Recorder:
+    """A FrameRecorder stand-in that notes the image width it was given."""
+
+    def __init__(self):
+        self.width = None
+
+    def SetImageWidth(self, width):
+        self.width = width
+
+    def __getattr__(self, name):
+        return lambda *args: None
+
+
+class TestRenderResolution:
+    """Render Settings asked 1600x900; Image Width overrode it, and the camera's aperture
+    made the height: 1600x1068."""
+
+    def test_a_settings_resolution_is_not_overridden_by_image_width(self):
+        scene, _stage = _setup_stage()
+        _var, _product, settings = _render_network(scene)
+        mod = importlib.import_module("chunks.usd.render")
+        rop = _make(scene, mod, "render")
+        path = settings.get_param("primpath_location").value
+        recorder = _Recorder()
+        mod._configure_recorder(recorder, rop, True, path)
+        assert recorder.width is None
+
+    def test_without_settings_image_width_applies(self):
+        scene, _stage = _setup_stage()
+        mod = importlib.import_module("chunks.usd.render")
+        rop = _make(scene, mod, "render")
+        rop.get_param("image_width").value = 512
+        recorder = _Recorder()
+        mod._configure_recorder(recorder, rop, True, "")
+        assert recorder.width == 512

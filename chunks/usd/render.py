@@ -287,6 +287,15 @@ def _resolve_pass_path(node, stage):
     return path
 
 
+def _settings_resolution(stage, settings_path):
+    """The resolution the settings prim authors, or None."""
+    if not stage or not settings_path:
+        return None
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path))
+    attr = UsdRender.Settings(prim).GetResolutionAttr() if prim and prim.IsValid() else None
+    return attr.Get() if attr and attr.HasAuthoredValue() else None
+
+
 def _settings_camera(stage, settings_path):
     """The camera a RenderSettings prim points at, if it names one."""
     if not settings_path:
@@ -417,7 +426,10 @@ def _configure_recorder(recorder, node, use_gpu, settings_path="", pass_path="")
     if settings_path and hasattr(recorder, "SetActiveRenderSettingsPrimPath"):
         recorder.SetActiveRenderSettingsPrimPath(Sdf.Path(settings_path))
 
-    if width := int(node.get_param("image_width").value or 0):
+    # A settings prim's resolution sizes the image. SetImageWidth overrides it and takes the
+    # height from the camera's aperture: 1600x900 asked came out 1600x1068.
+    width = int(node.get_param("image_width").value or 0)
+    if width and not _settings_resolution(node.get_stage(), settings_path):
         recorder.SetImageWidth(width)
 
     recorder.SetComplexity(_COMPLEXITIES.get(node.get_param("complexity").value, 1.0))
@@ -795,7 +807,9 @@ def main():
             "camera", "Camera",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         ),
-        chunk.Slider("image_width", "Image Width", default_value=960, is_int=True, min_value=0, max_value=16384),
+        chunk.Slider("image_width", "Image Width", default_value=960, is_int=True, min_value=0, max_value=16384,
+                     tooltip="Width in pixels; the height follows the camera's aperture.\n"
+                     "In Hydra mode a Render Settings prim with a resolution sizes the image instead."),
         chunk.Menu(
             "complexity", "Complexity",
             menu_items=list(_COMPLEXITIES), default_value="high",
