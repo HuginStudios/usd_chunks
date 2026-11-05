@@ -168,6 +168,7 @@ class ChunkNoticeAlias(IntEnum):
     CHUNK_CONFIG_CHANGED = auto()  # Sent when a chunk config was changed
 
     DEPENDENCY_ADDED = auto()  # Sent when a DAG dependency is added between two propagators
+    DEPENDENCY_REMOVED = auto()  # Sent when a DAG dependency is removed
 
     CUSTOM = auto()  # Custom notices should be registered with aliases > CUSTOM
 
@@ -405,6 +406,12 @@ class ChunkConfigChanged(ChunkNotice):
 @chunk_notice(ChunkNoticeAlias.DEPENDENCY_ADDED)
 class DependencyAddedNotice(ChunkNotice):
     """Sent when add_dependency() is called. sender=dependent, data=input propagator."""
+    data: chunk_notice.ChunkNoticePropagator
+
+
+@chunk_notice(ChunkNoticeAlias.DEPENDENCY_REMOVED)
+class DependencyRemovedNotice(ChunkNotice):
+    """Sent when remove_dependency() removed an input. sender=dependent, data=input propagator."""
     data: chunk_notice.ChunkNoticePropagator
 
 
@@ -1416,9 +1423,9 @@ class ChunkNoticePropagator:
         """Remove an input previously added with add_dependency.
 
         Dirties this propagator so the loss of the input propagates downstream like any other
-        change. No DEPENDENCY_ADDED counterpart notice is sent: the only listener
-        (ChunkStageSync._on_dependency_added) exists to author the USD connection, and every
-        caller of this method is reacting to that connection already being gone.
+        change. Sends DEPENDENCY_REMOVED, so ChunkStageSync removes the USD connection too and
+        the saved file loses the wire. When the connection is already gone (the stage sync
+        mirroring a wire the graph cut) that is a no-op.
 
         Args:
             input (ChunkNoticePropagator): The node to drop as input
@@ -1426,7 +1433,10 @@ class ChunkNoticePropagator:
         Returns:
             bool: True if input was a dependency and got removed
         """
-        return self.get_dag_node().remove_dependency(input.get_dag_node())
+        removed = self.get_dag_node().remove_dependency(input.get_dag_node())
+        if removed:
+            send_notice(ChunkNoticeAlias.DEPENDENCY_REMOVED, self, data=input)
+        return removed
 
     @overload
     def get_dependency(self, index: int = 0) -> ChunkNoticePropagator | None: ...
