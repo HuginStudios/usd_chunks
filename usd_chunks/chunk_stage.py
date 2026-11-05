@@ -6021,6 +6021,18 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
         return (not c.has_state(disabled) and c.can_cook()
                 and ((_force and in_context(c)) or chunk_cook.is_cook_stale(c)))
 
+    # A gate (Switch, Stage Expression Switch) re-applies its choice only when it cooks. In
+    # a pass where it does not, the branches it suppressed stay out: revealed below, they
+    # put both branches on the stage -- an export with day and night lights in it.
+    gated_off = {
+        path for g in cook_list
+        if g.get_param(GATE_RECORD_PARAM) is not None and not will_cook(g)
+        for path in _gate_record(g)
+    }
+    if gated_off:
+        cook_list = [c for c in cook_list if get_chunk_prim_path(c) not in gated_off]
+        cook_set = set(cook_list)
+
     # The chunks ahead of the first one that cooks: nothing above them changes in this pass,
     # so the result their layers hold is the one they would show at their turn anyway. They
     # stay visible instead of being muted and revealed again, which recomposed the stage --
