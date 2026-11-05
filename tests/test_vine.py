@@ -521,6 +521,20 @@ def test_the_leaf_cloud_exists_even_with_leaves_turned_off(host) -> None:
     assert not len(host.leaves().GetPointsAttr().Get() or [])
 
 
+def test_the_leaf_cloud_is_a_guide_so_renderers_skip_it(host) -> None:
+    """V-Ray drew each leaf point as a white ball. The cloud is data for Scatter Points."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine()
+    assert len(host.leaves().GetPointsAttr().Get())
+    assert host.leaves().ComputePurpose() == UsdGeom.Tokens.guide
+
+
+def test_the_empty_leaf_cloud_is_a_guide_too(host) -> None:
+    _paint(host.mesh, lambda p: 0.0)
+    host.vine()
+    assert host.leaves().ComputePurpose() == UsdGeom.Tokens.guide
+
+
 def test_the_outputs_are_published_before_anything_grows(host) -> None:
     node = host.vine()
     node.get_param("surface_prim").value = ""
