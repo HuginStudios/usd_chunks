@@ -169,3 +169,32 @@ def test_an_exr_goes_in_and_out_linear(tmp_path) -> None:
         node.get_chunk_module().module.run(node)
     rgb, alpha = ff.read_image(str(out))
     assert rgb[24, 32, 0] == pytest.approx(2.0, abs=1e-3), "linear and unclipped, exposure applied"
+
+
+def test_an_empty_render_is_not_finished(tmp_path) -> None:
+    """A delegate that failed quietly (V-Ray, licence taken) wrote a blank PNG; Finish Frame
+    then said it filled the sky 100 % and wrote a picture of only sky."""
+    _shot(tmp_path)
+    blank = tmp_path / "blank.png"
+    Image.fromarray(np.zeros((48, 64, 4), dtype=np.uint8)).save(blank)
+    out = tmp_path / "final.png"
+    with Scene.open(str(tmp_path / "shot.usda")) as scene:
+        node = scene.create.finish_frame(source_image=str(blank), output_image=str(out), camera="/World/cam")
+        node.get_chunk_module().module.run(node)
+        readout = node.get_param("readout").value
+    assert "blank.png is empty" in readout
+    assert not out.exists()
+
+
+def test_the_render_chunk_spots_an_empty_frame(tmp_path) -> None:
+    render = importlib.import_module("chunks.usd.render")
+    blank, full, opaque = tmp_path / "blank.png", tmp_path / "full.png", tmp_path / "rgb.png"
+    Image.fromarray(np.zeros((8, 8, 4), dtype=np.uint8)).save(blank)
+    pixels = np.zeros((8, 8, 4), dtype=np.uint8)
+    pixels[2, 2, 3] = 255
+    Image.fromarray(pixels).save(full)
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(opaque)
+    assert render.is_blank(str(blank))
+    assert not render.is_blank(str(full))
+    assert not render.is_blank(str(opaque)), "no alpha: nothing says it is empty"
+    assert not render.is_blank(str(tmp_path / "missing.png"))

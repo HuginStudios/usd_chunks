@@ -37,6 +37,10 @@ try:
     from pxr import UsdImagingGL
 except ImportError:
     UsdImagingGL = None
+try:
+    from PIL import Image
+except ImportError:  # only used to spot an empty frame
+    Image = None
 
 from usd_chunks import chunk, chunk_utils, live
 
@@ -751,6 +755,11 @@ def _render_hydra(node, output_image, _fresh=False):
             written.extend(paths)
             for wrote in paths:
                 logger.info("Render wrote %s", wrote)
+                if is_blank(wrote):
+                    logger.error(
+                        "Render: %s came out empty, every pixel transparent. The renderer "
+                        "probably failed (no licence?).", wrote,
+                    )
     except Exception as exc:
         if kept and not _fresh:
             # A kept delegate can still hold prims a recook replaced (an instancer's
@@ -768,6 +777,21 @@ def _render_hydra(node, output_image, _fresh=False):
             recorder.DeleteGLResources()
 
     node.get_param("output").value = written[-1]
+
+
+def is_blank(path: str) -> bool:
+    """True when path is an image whose every pixel is fully transparent.
+
+    What a delegate that failed without saying so writes (V-Ray with its licence taken).
+    Only for what Pillow reads; an .exr, or no Pillow, answers False.
+    """
+    if Image is None or not os.path.isfile(path):
+        return False
+    try:
+        with Image.open(path) as image:
+            return "A" in image.getbands() and image.getchannel("A").getextrema()[1] == 0
+    except OSError:
+        return False
 
 
 def _render_clicked(owner, notice, sender):
