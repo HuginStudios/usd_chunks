@@ -2752,6 +2752,9 @@ def execute(node):
 
     scratch_stage = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
     surface_prim = scratch_stage.GetPrimAtPath(surface_paths[0]) if surface_paths else None
+    # A path given that names no prim: place nothing rather than the no-surface preview grid.
+    surface_text = node.get_param("surface_prim", is_s).value.strip()
+    surface_missing = surface_text if surface_text and not surface_prim else ""
 
     _migrate_legacy_proto(node)
     missing: list[str] = []
@@ -2916,6 +2919,8 @@ def execute(node):
                 sizes = drawn
             elif len(surf_tris):
                 positions, normals = _scatter_on_triangles(surf_tris, max_count, rng, spacing, mask=mask)
+            elif surface_missing:
+                positions, normals = [], []
             else:
                 # No mesh / no qualifying faces -- fall back to a jittered grid.
                 sp = max(spacing, 2.0)
@@ -3083,7 +3088,7 @@ def execute(node):
             _author_proxy(stage, f"{inst_path}_proxy", proxy_mode, protos, specs, scratch_stage,
                           keep, (out_positions, out_indices, out_scales, out_orients))
 
-    _report(node, protos, quota, count, scatter_mode, pack_levels, missing)
+    _report(node, protos, quota, count, scatter_mode, pack_levels, missing, surface_missing)
 
 
 def _random_lateral(rng, lat_a, lat_b, axis_vec):
@@ -3092,12 +3097,13 @@ def _random_lateral(rng, lat_a, lat_b, axis_vec):
     return axis_vec[lat_a] * math.cos(ang) + axis_vec[lat_b] * math.sin(ang)
 
 
-def _report(node, protos, quota, count, mode, levels, missing=()):
+def _report(node, protos, quota, count, mode, levels, missing=(), surface_missing=""):
     """Fill the readout label + the output params other chunks can read.
 
     Prototype paths that matched nothing are named, and logged: a typo in one row otherwise
     passes for a working scatter. When no row resolved, the first line says the default cube
-    is being drawn, since a readout of "7000 instances" alone looks like success.
+    is being drawn, since a readout of "7000 instances" alone looks like success. A surface
+    path that names no prim is named and logged the same way.
     """
     if count and protos:
         mix = "\n".join(
@@ -3109,6 +3115,9 @@ def _report(node, protos, quota, count, mode, levels, missing=()):
     fallback = len(protos) == 1 and protos[0].label == _FALLBACK_LABEL
     head = f"{count} instances · {mode}{suffix}" + (" · no prototype found, drawing the default cube" if fallback else "")
     text = head if mix else f"{head}\nnothing placed — check the surface mesh and prototype paths"
+    if surface_missing:
+        text += f"\nsurface not found: {surface_missing}"
+        logger.warning("%s: surface prim not found: %s", node.name, surface_missing)
     if missing:
         text += "\nnot found: " + ", ".join(missing)
         logger.warning("%s: prototype path(s) not found: %s", node.name, ", ".join(missing))
