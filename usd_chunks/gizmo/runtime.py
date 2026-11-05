@@ -1562,7 +1562,7 @@ def _create_chunk_after_source(module_name: str, prim: Usd.Prim):
     if entry is None or scene is None or stage is None:
         return None
     source = _source_chunk(stage, scene, prim)
-    if source is None:
+    if source is None or _ops_set_by_another_chunk(scene, prim, source):
         return None
     source_path = chunk_stage.get_chunk_prim_path(source)
     anchor = _after_earlier_drags(stage, scene, source_path)
@@ -1612,16 +1612,9 @@ def _source_chunk(stage: Usd.Stage, scene, prim: Usd.Prim) -> core.ChunkBase | N
         The chunk, or None when the prim is defined in the scene's own files, or the chunk
         is in another graph than the one a new chunk goes into.
     """
-    manager = ChunkLayerManager()
-    if not getattr(manager, "initialized", False):
+    owners = _chunk_layer_owners(scene)
+    if not owners:
         return None
-    owners: dict = {}
-    for candidate in scene.get_chunks():
-        if candidate.has_flag(core.ChunkFlags.GroupFlags.CONTEXT) or chunk_stage.is_terminal_chunk(candidate):
-            continue
-        layer = manager.chunk_layers.get(candidate.get_hash())
-        for identifier in _layer_and_sublayers(layer):
-            owners.setdefault(identifier, candidate)
     local = {layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)}
 
     path = prim.GetPath()
@@ -1641,6 +1634,46 @@ def _source_chunk(stage: Usd.Stage, scene, prim: Usd.Prim) -> core.ChunkBase | N
             return None
         path = path.GetParentPath()
     return None
+
+
+def _chunk_layer_owners(scene) -> dict:
+    """{layer identifier: chunk} for every chunk's layer and the files under it."""
+    manager = ChunkLayerManager()
+    if not getattr(manager, "initialized", False):
+        return {}
+    owners: dict = {}
+    for candidate in scene.get_chunks():
+        if candidate.has_flag(core.ChunkFlags.GroupFlags.CONTEXT) or chunk_stage.is_terminal_chunk(candidate):
+            continue
+        layer = manager.chunk_layers.get(candidate.get_hash())
+        for identifier in _layer_and_sublayers(layer):
+            owners.setdefault(identifier, candidate)
+    return owners
+
+
+def _ops_set_by_another_chunk(scene, prim: Usd.Prim, source: core.ChunkBase) -> bool:
+    """Whether a chunk other than source authors prim's transform ops.
+
+    A chunk that places the prim with a handle is found before anything is created
+    (placement_gizmos). One without a handle -- a Reset Transform clearing the ops -- is
+    not, and placed after it, the drag would sit under it and do nothing.
+
+    Args:
+        scene: The scene the chunks live in.
+        prim: The prim being dragged.
+        source: The chunk that brings it in.
+
+    Returns:
+        True if another chunk's layer has an xformOpOrder or xformOp on the prim.
+    """
+    owners = _chunk_layer_owners(scene)
+    for spec in prim.GetPrimStack():
+        owner = owners.get(spec.layer.identifier)
+        if owner is None or owner is source:
+            continue
+        if any(name == "xformOpOrder" or name.startswith("xformOp:") for name in spec.properties.keys()):
+            return True
+    return False
 
 
 def _layer_and_sublayers(layer: Sdf.Layer | None) -> list[str]:

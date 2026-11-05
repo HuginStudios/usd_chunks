@@ -133,3 +133,77 @@ def test_an_over_on_the_prim_does_not_count_as_bringing_it_in(scene) -> None:  #
     moved = _dragged(stage, "/Asset/Car")
 
     assert _sources(stage, moved) == [imp]
+
+
+# ---------------------------------------------------------------------------
+# chunks further down the wire that already place the prim
+# ---------------------------------------------------------------------------
+
+def _transform_after(stage, registry, module, upstream, target, **values):
+    """A Transform made by hand, wired after upstream, moving target, cooked."""
+    (t,) = module.create()
+    registry.scene.add_chunk(t)
+    path = chunk_stage.get_chunk_prim_path(t)
+    chunk_stage.connect_exec(stage, registry.scene, upstream, path)
+    t.get_param("primpath_location").value = target
+    for name, value in values.items():
+        t.get_param(name).value = value
+    t.execute()
+    return t, path
+
+
+def _world_x(stage, path):
+    return UsdGeom.Xformable(stage.GetPrimAtPath(path)).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()).ExtractTranslation()[0]
+
+
+def test_a_transform_further_down_on_the_same_prim_is_still_used(scene) -> None:  # noqa: F811
+    """The check for a chunk that already places the prim comes first, as before."""
+    stage, registry, module = scene
+    _importer, _imp, reader = _import_then_reader(stage, registry, "/Asset/Car")
+    _t, existing = _transform_after(stage, registry, module, reader, "/Asset/Car", tx=2.0)
+    creates = module.creates
+
+    desc = chunk_gizmo.ensure_transform_chunk(stage.GetPrimAtPath("/Asset/Car"))
+
+    assert str(desc.chunk_prim) == existing
+    assert module.creates == creates, "a second Transform was made for a prim one already moves"
+
+
+def test_dragging_the_same_prim_again_reuses_the_new_transform(scene) -> None:  # noqa: F811
+    stage, registry, module = scene
+    _import_then_reader(stage, registry, "/Asset/Car")
+
+    first = _dragged(stage, "/Asset/Car")
+    chunk_gizmo.chunk_at_prim_path(first).execute()
+    second = _dragged(stage, "/Asset/Car")
+
+    assert second == first
+
+
+def test_a_transform_on_the_parent_further_down_still_adds_up(scene) -> None:  # noqa: F811
+    """Different prims: the parent's move and the part's own move both apply."""
+    stage, registry, module = scene
+    _importer, _imp, reader = _import_then_reader(stage, registry, "/Asset", "/Asset/Car")
+    _transform_after(stage, registry, module, reader, "/Asset", tx=10.0)
+
+    moved = chunk_gizmo.chunk_at_prim_path(_dragged(stage, "/Asset/Car"))
+    moved.get_param("tx").value = 1.0
+    moved.execute()
+
+    assert _world_x(stage, "/Asset/Car") == 11.0
+
+
+def test_a_chunk_further_down_that_sets_the_ops_keeps_the_drag_at_the_end(scene) -> None:  # noqa: F811
+    """A Reset Transform clears the prim's ops and offers no handle. Right after the import,
+    the drag would sit under the reset and do nothing; at the end it wins, as before."""
+    stage, registry, _module = scene
+    _importer, _imp, reader = _import_then_reader(stage, registry, "/Asset/Car")
+    reset, reset_path = _chunk(registry, "Reset")
+    _chain(stage, registry, reader, reset_path)
+    with Usd.EditContext(stage, ChunkLayerManager().get_layer(reset)):
+        UsdGeom.Xformable(stage.GetPrimAtPath("/Asset/Car")).ClearXformOpOrder()
+
+    moved = _dragged(stage, "/Asset/Car")
+
+    assert _sources(stage, moved) == [reset_path]
