@@ -207,3 +207,57 @@ def test_a_chunk_further_down_that_sets_the_ops_keeps_the_drag_at_the_end(scene)
     moved = _dragged(stage, "/Asset/Car")
 
     assert _sources(stage, moved) == [reset_path]
+
+
+# ---------------------------------------------------------------------------
+# an unused chunk is not the end of the chain
+# ---------------------------------------------------------------------------
+
+def _output_after(stage, registry, upstream):
+    from usd_chunks.chunk_core import ChunkConfig
+    out = chunk.Chunk("Output")
+    out._config = ChunkConfig(module="output", terminal=True)
+    registry.scene.add_chunk(out)
+    path = chunk_stage.get_chunk_prim_path(out)
+    stage.GetPrimAtPath(path).CreateAttribute(chunk_stage._EXEC_INPUT, Sdf.ValueTypeNames.Token).SetConnections(
+        [Sdf.Path(upstream).AppendProperty(chunk_stage._EXEC_OUTPUT)])
+    return path
+
+
+def _unused_transform(registry, module):
+    """A Transform wired to nothing, made before the chain -- like one left over in a scene.
+
+    Before, not after: the tail lookup takes the last unwired chunk in get_chunks() order,
+    which lists the newest first, so an old leftover is the one it found.
+    """
+    (t,) = module.create()
+    registry.scene.add_chunk(t)
+    return chunk_stage.get_chunk_prim_path(t)
+
+
+def test_an_unused_transform_is_not_taken_for_the_end_of_the_chain(scene) -> None:  # noqa: F811
+    """Reported: a light dragged in a scene with an unwired Transform went in beside it,
+    gathered into a Merge nothing reads. The end of the chain is what the Output shows."""
+    stage, registry, module = scene
+    unused = _unused_transform(registry, module)
+    _head, head = _chunk(registry, "Head")
+    _reader, reader = _chunk(registry, "Reader")
+    _chain(stage, registry, head, reader)
+    _output_after(stage, registry, reader)
+
+    moved = _dragged(stage, "/World/A")
+
+    assert _sources(stage, moved) == [reader]
+    assert all(unused not in _sources(stage, str(p.GetPath())) for p in stage.Traverse()
+               if chunk_stage.is_merge_prim(p)), "gathered with the unused Transform"
+
+
+def test_an_unused_transform_does_not_pull_in_a_prim_from_an_import(scene) -> None:  # noqa: F811
+    stage, registry, module = scene
+    _unused_transform(registry, module)
+    _importer, imp, reader = _import_then_reader(stage, registry, "/lights/light2")
+    _output_after(stage, registry, reader)
+
+    moved = _dragged(stage, "/lights/light2")
+
+    assert _sources(stage, moved) == [imp]
