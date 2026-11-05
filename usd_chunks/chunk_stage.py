@@ -8272,6 +8272,9 @@ def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     stage = scene.get_stage()
     if not stage:
         return
+    # Nodes a script made are laid out first, rather than written in one long row.
+    if hasattr(scene, "lay_out_scripted"):
+        scene.lay_out_scripted()
     dst = _export_layer(scene, Path(path))
     stamp_stage_metadata(dst, stage)
     dst.Export(str(path))

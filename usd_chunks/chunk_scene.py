@@ -31,7 +31,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
-from usd_chunks.graph import backdrops, engine
+from usd_chunks.graph import backdrops, engine, layout
 from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkBase,
     ChunkParamBase,
@@ -123,6 +123,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._script_origin: tuple[float, float] | None = None
         self._script_origin_found = False
         self._script_count = 0
+        # Nodes a script made outside an app, waiting for lay_out_scripted.
+        self._to_lay_out: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
 
     @property
     def current_context(self) -> ChunkBase | None:
@@ -1070,6 +1072,46 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """add_chunk, at the position _next_node_position picks."""
         with chunk_stage.creating_at(self._next_node_position()):
             self.add_chunk(chunk)
+        if not self.is_app:
+            self._to_lay_out.add(chunk)
+
+    def lay_out_scripted(self) -> None:
+        """Lay out the nodes a script made, as L does in the graph; the rest stay put.
+
+        Outside an app every new node lands in one row (85 nodes reached x = 29,000). Run
+        before anything reads node positions: a backdrop, and writing the network
+        (chunk_stage.export_chunks).
+        """
+        made, self._to_lay_out = list(self._to_lay_out), weakref.WeakSet()
+        stage = self.get_stage()
+        owners = {path: chunk for chunk in made if (path := chunk_stage.get_chunk_prim_path(chunk))}
+        by_graph: dict[str, set[str]] = {}
+        for path in owners:
+            by_graph.setdefault(str(Sdf.Path(path).GetParentPath()), set()).add(path)
+        for root, paths in by_graph.items():
+            prims = {str(p.GetPath()): p for p in engine.resolve_graph_nodes(stage, root)}
+
+            def size_of(path):
+                return engine.node_size(prims[path], backdrops.NODE_SIZE)
+
+            # Added to a graph that has nodes already: start to the right of them, which
+            # stay where they are.
+            kept = [path for path in prims if path not in paths]
+            origin = None
+            if kept:
+                rights = [engine.graph_position(prims[p])[0] + size_of(p)[0] for p in kept]
+                tops = [engine.graph_position(prims[p])[1] for p in kept]
+                origin = (max(rights) + layout.X_GAP, min(tops))
+            placed = engine.layout_graph(
+                prims,
+                size_of=size_of,
+                current_pos=lambda path: engine.graph_position(prims[path]),
+                seeds=[p for p in paths if p in prims],
+                is_locked=lambda path: path not in paths,
+                origin=origin,
+            )
+            for path, (x, y) in placed.items():
+                engine.write_position(prims[path], x, -y, owners.get(path))
 
     @property
     def create(self) -> Creator:
@@ -1366,6 +1408,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def _node_rect(self, chunk: ChunkBase) -> tuple[float, float, float, float]:
         """Where a chunk's node is in the graph, as USD records it (x, y down, w, h)."""
+        self.lay_out_scripted()
         prim = self.get_stage().GetPrimAtPath(chunk_stage.get_chunk_prim_path(chunk))
         x, y = engine.graph_position(prim)
         w, h = engine.node_size(prim, backdrops.NODE_SIZE) if prim else backdrops.NODE_SIZE
