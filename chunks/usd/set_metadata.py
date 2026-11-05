@@ -1,7 +1,7 @@
 """Set Metadata chunk -- authors metadata on a prim using structured UI widgets.
 
-Supports standard metadata (kind, hidden, active, documentation, purpose)
-and custom metadata (customData). If the metadata key doesn't exist as
+Supports standard metadata (kind, hidden, active, instanceable, documentation,
+purpose) and custom metadata (customData). If the metadata key doesn't exist as
 standard metadata, it creates a custom entry under customData.
 
 All edits authored on the chunk's own layer.
@@ -19,6 +19,7 @@ _METADATA_KEYS = [
     "kind",
     "active",
     "hidden",
+    "instanceable",
     "documentation",
     "purpose",
     "customData",
@@ -52,6 +53,10 @@ def _set_metadata_value(stage: Usd.Stage, prim: Usd.Prim, key: str,
             hidden = value_str.lower() in ("true", "1", "yes")
             prim.SetMetadata("hidden", hidden)
             return True
+
+        elif key == "instanceable":
+            instanceable = value_str.lower() in ("true", "1", "yes")
+            return prim.SetInstanceable(instanceable)
 
         elif key == "documentation":
             prim.SetMetadata("documentation", value_str)
@@ -122,7 +127,8 @@ def _get_prim_metadata_keys(prim: Usd.Prim) -> list[str]:
     keys = list(authored.keys()) if authored else []
 
     # Always include common settable keys
-    for essential in ("kind", "active", "hidden", "documentation", "purpose", "customData"):
+    for essential in ("kind", "active", "hidden", "instanceable", "documentation", "purpose",
+                      "customData"):
         if essential not in keys:
             keys.append(essential)
 
@@ -226,6 +232,9 @@ def _on_key_change(owner, notice, sender):
         "kind": "Kind value: model, group, assembly, component, subcomponent",
         "active": "Boolean: true or false",
         "hidden": "Boolean: true or false",
+        "instanceable": "Boolean: true or false. False turns a SimReady part's native "
+                        "instancing off so it can be edited and posed without recreating "
+                        "its prototype",
         "documentation": "Free-form documentation string",
         "purpose": "Purpose: default, render, proxy, guide",
         "customData": "Value for the custom key (auto-detects type: bool, int, float, string)",
@@ -290,12 +299,12 @@ def config():
         Parameters:
           - Prim: select prim(s) to author metadata on (supports globs, multi).
           - Metadata: dropdown to select which metadata to set (kind, active,
-            hidden, documentation, purpose, customData).
+            hidden, instanceable, documentation, purpose, customData).
           - Custom Key: when 'customData' is selected, the key name for the
             custom metadata entry.
           - Value: the value to author. Type is auto-detected:
             • kind: model, group, assembly, component, subcomponent
-            • active/hidden: true or false
+            • active/hidden/instanceable: true or false
             • documentation: free-form string
             • purpose: default, render, proxy, guide
             • customData: auto-detects bool, int, float, or string
