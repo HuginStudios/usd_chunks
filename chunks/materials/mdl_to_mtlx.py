@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 
-from pxr import Sdf, Usd, UsdShade
+from pxr import Gf, Sdf, Usd, UsdShade
 
 from usd_chunks import chunk
 
@@ -35,6 +35,9 @@ _SCALARS = {
 }
 
 _MTLX = "mtlx"
+
+#: Normal map scale, between the flat 0.1 the assets author and full strength.
+_NORMAL_STRENGTH = 0.5
 
 
 def _authored(shader, name):
@@ -56,6 +59,122 @@ def _mdl_shader(material):
             sub = child.GetAttribute("info:mdl:sourceAsset:subIdentifier")
             return UsdShade.Shader(child), str(sub.Get()) if sub and sub.HasAuthoredValue() else ""
     return None, ""
+
+
+#: (standard_surface input, ORM channel index, MDL influence input, MDL constant, default)
+_ORM_CHANNELS = (
+    ("specular_roughness", 1, "reflection_roughness_texture_influence",
+     "reflection_roughness_constant", 0.5),
+    ("metalness", 2, "metallic_texture_influence", "metallic_constant", 0.0),
+)
+
+#: Colour space of a map that holds data, not colour. MaterialX has no "raw" (that is USD's
+#: word, and a colour transform from it is unsupported); the working space is no transform.
+_DATA_SPACE = "lin_rec709"
+
+
+def _connect_orm(stage, material, mdl, surface):
+    """Drive roughness and metalness from an OmniPBR ORM map (G = roughness, B = metal).
+
+    OmniPBR blends constant and map by `*_texture_influence`, so the constant wins at 0
+    and the map at 1; anything between becomes a mix. The map is data, not colour, so it
+    is read in the working space -- tagging it sRGB would bend every roughness value.
+    """
+    orm = _authored(mdl, "ORM_texture")
+    if orm is None or not _authored(mdl, "enable_ORM_texture"):
+        return
+
+    base = material.GetPath()
+    image = UsdShade.Shader.Define(stage, base.AppendChild("mtlx_orm"))
+    image.CreateIdAttr("ND_image_color3")
+    file_input = image.CreateInput("file", Sdf.ValueTypeNames.Asset)
+    file_input.Set(Sdf.AssetPath(orm.resolvedPath or orm.path))
+    file_input.GetAttr().SetColorSpace(_DATA_SPACE)
+    image.CreateInput("uaddressmode", Sdf.ValueTypeNames.String).Set("periodic")
+    image.CreateInput("vaddressmode", Sdf.ValueTypeNames.String).Set("periodic")
+    image.CreateOutput("out", Sdf.ValueTypeNames.Color3f)
+
+    def channel_of(target, index):
+        # One extract per channel: Aurora cannot compile a separate3's several outputs.
+        extract = UsdShade.Shader.Define(stage, base.AppendChild(f"mtlx_{target}_channel"))
+        extract.CreateIdAttr("ND_extract_color3")
+        extract.CreateInput("in", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            image.ConnectableAPI(), "out"
+        )
+        extract.CreateInput("index", Sdf.ValueTypeNames.Int).Set(index)
+        extract.CreateOutput("out", Sdf.ValueTypeNames.Float)
+        return extract.ConnectableAPI()
+
+    for target, index, influence_name, constant_name, default in _ORM_CHANNELS:
+        influence = _authored(mdl, influence_name)
+        influence = 1.0 if influence is None else float(influence)
+        constant = _authored(mdl, constant_name)
+        constant = default if constant is None else float(constant)
+        socket = surface.CreateInput(target, Sdf.ValueTypeNames.Float)
+        if influence <= 0.0:
+            socket.Set(constant)
+        elif influence >= 1.0:
+            socket.ConnectToSource(channel_of(target, index), "out")
+        else:
+            mix = UsdShade.Shader.Define(stage, base.AppendChild(f"mtlx_{target}_mix"))
+            mix.CreateIdAttr("ND_mix_float")
+            mix.CreateInput("bg", Sdf.ValueTypeNames.Float).Set(constant)
+            mix.CreateInput("fg", Sdf.ValueTypeNames.Float).ConnectToSource(
+                channel_of(target, index), "out"
+            )
+            mix.CreateInput("mix", Sdf.ValueTypeNames.Float).Set(influence)
+            socket.ConnectToSource(mix.ConnectableAPI(), "out")
+
+
+def _connect_normal(stage, material, mdl, surface):
+    """Feed an OmniPBR normal map through a MaterialX normalmap node.
+
+    Read in the working space: a normal map is vectors, so an sRGB decode would tilt every normal.
+    """
+    texture = _authored(mdl, "normalmap_texture")
+    if texture is None:
+        return
+
+    base = material.GetPath()
+    image = UsdShade.Shader.Define(stage, base.AppendChild("mtlx_normal_image"))
+    image.CreateIdAttr("ND_image_vector3")
+    file_input = image.CreateInput("file", Sdf.ValueTypeNames.Asset)
+    file_input.Set(Sdf.AssetPath(texture.resolvedPath or texture.path))
+    file_input.GetAttr().SetColorSpace(_DATA_SPACE)
+    image.CreateInput("uaddressmode", Sdf.ValueTypeNames.String).Set("periodic")
+    image.CreateInput("vaddressmode", Sdf.ValueTypeNames.String).Set("periodic")
+    image.CreateOutput("out", Sdf.ValueTypeNames.Float3)
+
+    normalmap = UsdShade.Shader.Define(stage, base.AppendChild("mtlx_normalmap"))
+    normalmap.CreateIdAttr("ND_normalmap")
+    normalmap.CreateInput("in", Sdf.ValueTypeNames.Float3).ConnectToSource(
+        image.ConnectableAPI(), "out"
+    )
+    normalmap.CreateOutput("out", Sdf.ValueTypeNames.Float3)
+    # OmniPBR's bump_factor is deliberately not applied: assets author 0.1, and scaling by
+    # it flattened the map so the MaterialX look lost the surface detail the MDL shows,
+    # while full strength came out deeper and darker than the MDL. Matched by eye against
+    # the MDL render, not derived from the shader.
+    strength = _NORMAL_STRENGTH
+    # OmniPBR defaults to flip U off / flip V on, and that default is what an ordinary
+    # (OpenGL, green-up) map looks right with -- MaterialX's own convention. So only a
+    # departure from the default is a real flip: a negative scale on that axis.
+    flip_u = _authored(mdl, "flip_tangent_u")
+    flip_v = _authored(mdl, "flip_tangent_v")
+    flip_u = False if flip_u is None else bool(flip_u)
+    flip_v = True if flip_v is None else bool(flip_v)
+    sign_x = -1.0 if flip_u else 1.0
+    sign_y = 1.0 if flip_v else -1.0
+    if sign_x < 0 or sign_y < 0:
+        normalmap.CreateIdAttr("ND_normalmap_vector2")
+        normalmap.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(
+            Gf.Vec2f(sign_x * strength, sign_y * strength)
+        )
+    elif strength != 1.0:
+        normalmap.CreateInput("scale", Sdf.ValueTypeNames.Float).Set(strength)
+    surface.CreateInput("normal", Sdf.ValueTypeNames.Float3).ConnectToSource(
+        normalmap.ConnectableAPI(), "out"
+    )
 
 
 def _build_surface(stage, material, mdl, sub_id):
@@ -86,7 +205,11 @@ def _build_surface(stage, material, mdl, sub_id):
         # over means the texture silently fails to resolve and every material renders
         # black, which reads as a shading bug rather than a path one.
         resolved = texture.resolvedPath or texture.path
-        image.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(resolved))
+        file_input = image.CreateInput("file", Sdf.ValueTypeNames.Asset)
+        file_input.Set(Sdf.AssetPath(resolved))
+        # Colour maps are sRGB. Without this tag V-Ray still assumes sRGB, but Storm and
+        # Aurora read the map as linear and the whole material comes out too bright.
+        file_input.GetAttr().SetColorSpace("srgb_texture")
         # The assets carry no explicit wrap mode and their maps are laid out in UV 0-1.
         image.CreateInput("uaddressmode", Sdf.ValueTypeNames.String).Set("periodic")
         image.CreateInput("vaddressmode", Sdf.ValueTypeNames.String).Set("periodic")
@@ -95,6 +218,9 @@ def _build_surface(stage, material, mdl, sub_id):
         )
     elif colour is not None:
         surface.CreateInput("base_color", Sdf.ValueTypeNames.Color3f).Set(colour)
+
+    _connect_orm(stage, material, mdl, surface)
+    _connect_normal(stage, material, mdl, surface)
 
     if "glass" in sub_id.lower():
         # OmniGlass carries no standard_surface equivalent to copy across, so this is the
@@ -119,6 +245,25 @@ def execute(node):
     if not root or not root.IsValid():
         logger.warning("no prim at %s", root_path)
         return
+
+    # SimReady assets put their materials inside instanceable prims. Instance proxies are
+    # read-only and their descendants ignore stronger opinions, so an mtlx surface authored
+    # there would never compose. De-instance the owners (in this chunk's layer) first.
+    # Instances nest (a mesh instance holding a materials instance), so peel the outermost
+    # editable one each pass until no material is behind a proxy.
+    while True:
+        owners = set()
+        for prim in Usd.PrimRange(root, Usd.TraverseInstanceProxies()):
+            if prim.GetTypeName() == "Material" and (prim.IsInstance() or prim.IsInstanceProxy()):
+                owner = prim
+                while owner and not (owner.IsInstance() and not owner.IsInstanceProxy()):
+                    owner = owner.GetParent()
+                if owner:
+                    owners.add(owner.GetPath())
+        if not owners:
+            break
+        for path in owners:
+            stage.GetPrimAtPath(path).SetInstanceable(False)
 
     converted = skipped = 0
     for prim in Usd.PrimRange(root):

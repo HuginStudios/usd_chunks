@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "materials"))
 import mdl_to_mtlx  # noqa: E402
 
 
@@ -216,3 +216,92 @@ def test_nothing_happens_without_a_prim_path():
     mdl_to_mtlx.execute(_Node(stage, ""))
 
     assert stage.GetPrimAtPath("/World/Look/mtlx_surface").IsValid() is False
+
+
+def _source(stage, path, name):
+    """What an input of the mtlx surface is wired to, as (shader name, output)."""
+    inp = UsdShade.Shader(stage.GetPrimAtPath(path)).GetInput(name)
+    if not inp.HasConnectedSource():
+        return None
+    source, output, _ = inp.GetConnectedSource()
+    return source.GetPath().name, output
+
+
+def test_orm_map_drives_metalness_and_constant_roughness():
+    stage = _stage()
+    _mdl_material(
+        stage, "/World/Look",
+        ORM_texture=Sdf.AssetPath("orm.png"), enable_ORM_texture=1,
+        metallic_texture_influence=1, reflection_roughness_texture_influence=0,
+        reflection_roughness_constant=0.7,
+    )
+
+    _run(stage)
+
+    surface = "/World/Look/mtlx_surface"
+    assert _source(stage, surface, "metalness") == ("mtlx_metalness_channel", "out")
+    assert _source(stage, surface, "specular_roughness") is None
+    rough = UsdShade.Shader(stage.GetPrimAtPath(surface)).GetInput("specular_roughness")
+    assert rough.Get() == pytest.approx(0.7)
+    orm = stage.GetPrimAtPath("/World/Look/mtlx_orm").GetAttribute("inputs:file")
+    assert orm.GetColorSpace() == "lin_rec709"
+
+
+def test_partial_influence_mixes_constant_and_map():
+    stage = _stage()
+    _mdl_material(
+        stage, "/World/Look",
+        ORM_texture=Sdf.AssetPath("orm.png"), enable_ORM_texture=1,
+        metallic_texture_influence=0.5,
+    )
+
+    _run(stage)
+
+    name, _ = _source(stage, "/World/Look/mtlx_surface", "metalness")
+    assert name == "mtlx_metalness_mix"
+
+
+def test_normal_map_goes_through_a_normalmap_node():
+    stage = _stage()
+    _mdl_material(
+        stage, "/World/Look", normalmap_texture=Sdf.AssetPath("n.png"), bump_factor=0.1
+    )
+
+    _run(stage)
+
+    assert _source(stage, "/World/Look/mtlx_surface", "normal") == ("mtlx_normalmap", "out")
+    assert _source(stage, "/World/Look/mtlx_normalmap", "in") == ("mtlx_normal_image", "out")
+    scale = UsdShade.Shader(stage.GetPrimAtPath("/World/Look/mtlx_normalmap")).GetInput("scale")
+    assert scale.Get() == pytest.approx(mdl_to_mtlx._NORMAL_STRENGTH)  # not bump_factor
+
+
+def test_instanced_materials_are_made_editable():
+    stage = _stage()
+    UsdGeom.Xform.Define(stage, "/Library/Box")
+    _mdl_material(stage, "/Library/Box/Look", diffuse_color_constant=(0.5, 0.5, 0.5))
+    inst = UsdGeom.Xform.Define(stage, "/World/Box").GetPrim()
+    inst.GetReferences().AddInternalReference("/Library/Box")
+    inst.SetInstanceable(True)
+
+    _run(stage)
+
+    assert inst.IsInstanceable() is False
+    assert _surface(stage, "/World/Box/Look") is not None
+
+
+def test_normal_flips_matter_only_away_from_the_omnipbr_default():
+    stage = _stage()
+    _mdl_material(stage, "/World/A", normalmap_texture=Sdf.AssetPath("n.png"))
+    _mdl_material(
+        stage, "/World/B", normalmap_texture=Sdf.AssetPath("n.png"),
+        flip_tangent_v=0, flip_tangent_u=1,
+    )
+
+    _run(stage)
+
+    a = UsdShade.Shader(stage.GetPrimAtPath("/World/A/mtlx_normalmap"))
+    b = UsdShade.Shader(stage.GetPrimAtPath("/World/B/mtlx_normalmap"))
+    assert a.GetShaderId() == "ND_normalmap"
+    assert a.GetInput("scale").Get() == pytest.approx(mdl_to_mtlx._NORMAL_STRENGTH)
+    assert b.GetShaderId() == "ND_normalmap_vector2"
+    assert tuple(b.GetInput("scale").Get()) == pytest.approx((-mdl_to_mtlx._NORMAL_STRENGTH,) * 2)
