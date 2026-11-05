@@ -97,6 +97,9 @@ class UsdviewScene(chunk_scene.SceneSender):
     # The node graph recooks for the active view as soon as it opens a file.
     load_cooks_active_views_only = True
     is_app = True
+    #: (prim, path) of the camera the viewport looks through, as last seen valid
+    #: (_track_viewed_camera). The path is kept apart: an expired prim can't give it.
+    _viewed_camera: tuple | None = None
 
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
@@ -448,7 +451,41 @@ class UsdviewScene(chunk_scene.SceneSender):
             self._free_camera_lens = lens
         self._free_camera_clip = _clip_overrides(free_cam)
 
+    def _track_viewed_camera(self) -> None:
+        """Keep looking through a camera prim a cook re-authored.
+
+        A Camera chunk's cook clears its layer and writes the camera again, so the prim
+        usdview holds expires. usdview then drops it during the cook and goes back to the free
+        camera: changing fStop threw the view out of the camera. When the camera in view goes
+        because its handle expired (not because the user picked another), the prim at the same
+        path is put back once the cook has finished.
+        """
+        try:
+            prim = self.usdviewAPI.dataModel.viewSettings.cameraPrim
+        except Exception:  # noqa: BLE001 - usdview is shutting down
+            return
+        if isinstance(prim, Usd.Prim) and prim.IsValid():
+            self._viewed_camera = (prim, prim.GetPath())
+            return
+        lost, self._viewed_camera = self._viewed_camera, None
+        if prim is None and lost is not None and not lost[0].IsValid() and self._snap_prim is None:
+            path = lost[1]
+            QtCore.QTimer.singleShot(0, lambda: self._restore_viewed_camera(path))
+
+    def _restore_viewed_camera(self, path: Sdf.Path) -> None:
+        """Look through the camera at path again, if the view is still on the free camera."""
+        try:
+            if self.usdviewAPI.dataModel.viewSettings.cameraPrim is not None:
+                return  # the user picked one meanwhile
+        except Exception:  # noqa: BLE001 - usdview is shutting down
+            return
+        stage = self.get_stage()
+        prim = stage.GetPrimAtPath(path) if stage else None
+        if prim and prim.IsValid() and prim.IsA(UsdGeom.Camera):
+            self._set_viewport_camera(prim)
+
     def _on_view_settings_changed(self):
+        self._track_viewed_camera()
         current_cam = self._get_free_camera()
 
         if current_cam == self._current_cam:
