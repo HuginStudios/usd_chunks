@@ -1088,11 +1088,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         by_graph: dict[str, set[str]] = {}
         for path in owners:
             by_graph.setdefault(str(Sdf.Path(path).GetParentPath()), set()).add(path)
+        chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.get_chunks()} if by_graph else {}
         for root, paths in by_graph.items():
             prims = {str(p.GetPath()): p for p in engine.resolve_graph_nodes(stage, root)}
 
             def size_of(path):
-                return engine.node_size(prims[path], backdrops.NODE_SIZE)
+                # The size the graph saved; else about what it will draw. A fixed 250 x 90
+                # stacked branches on top of each other: nodes show their params, 50-900 px.
+                chunk = chunks.get(path)
+                fallback = engine.estimated_node_size(chunk) if chunk is not None else backdrops.NODE_SIZE
+                return engine.node_size(prims[path], fallback)
 
             # Added to a graph that has nodes already: start to the right of them, which
             # stay where they are.

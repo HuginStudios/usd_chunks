@@ -416,6 +416,41 @@ def node_size(prim: Usd.Prim, default: tuple[float, float] = DEFAULT_NODE_SIZE) 
     return (float(value[0]), float(value[1])) if value is not None else default
 
 
+#: estimated_node_size's numbers, fitted to Qt node bodies measured in usdview (2026-11-05,
+#: 32 nodes of 22 chunk types, most within 10 %): pixels for the header, per param row, per
+#: group heading and per vector part. A text box is about as tall as eight rows.
+_EST_WIDTH, _EST_BASE, _EST_ROW, _EST_GROUP, _EST_VECTOR_PART, _EST_TEXT_ROWS = 260.0, 76.0, 22.0, 30.0, 24.0, 8
+
+
+def estimated_node_size(chunk: core.ChunkCommon) -> tuple[float, float]:
+    """About how big the Qt graph draws chunk's node, with no widget to measure.
+
+    Args:
+        chunk: The chunk.
+
+    Returns:
+        (width, height).
+    """
+    def height(container) -> float:
+        total = 0.0
+        for p in container.get_my_params():
+            if p.has_state(ChunkFlags.State.HIDDEN):
+                continue
+            if isinstance(p, core.ChunkVectorBase):
+                total += _EST_ROW + _EST_VECTOR_PART * len(p.get_my_params())
+            elif isinstance(p, core.ChunkGroupBase):
+                total += _EST_GROUP
+                if not p.has_state(ChunkFlags.State.COLLAPSED):
+                    total += height(p)
+            elif isinstance(p, core.ChunkParamBase) and p.get_type() == ChunkFlags.ParamType.TEXTEDIT:
+                total += _EST_ROW * _EST_TEXT_ROWS
+            else:
+                total += _EST_ROW
+        return total
+
+    return _EST_WIDTH, _EST_BASE + height(chunk)
+
+
 def node_label(prim: Usd.Prim) -> str:
     """The text a node's header shows: the prim name."""
     return prim.GetName()
