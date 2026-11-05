@@ -3,7 +3,7 @@ import os
 import json
 import http.client
 from pxr import Gf, Sdf, Usd, UsdGeom
-from usd_chunks import chunk, chunk_utils
+from usd_chunks import chunk, chunk_notice, chunk_utils, render_defs, renderer_params
 from usd_chunks.chunk_cache import user_cache_dir
 from usd_chunks.gizmo import runtime as chunk_gizmo
 
@@ -424,6 +424,18 @@ def _author_camera_transform(node, stage):
         _author_matrix(node, stage, stage.OverridePrim(target_path), _camera_matrix(node))
 
 
+def _chunk_loaded(owner, notice, sender):
+    """Put saved renderer camera settings back, building whichever groups hold them.
+
+    Their params are built lazily, so a value restored before its group was ever expanded
+    would otherwise have nowhere to land. execute() restores them itself during a load;
+    this catches a cook that could not see the chunk prim, and cooks again for it.
+    """
+    _chunk = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
+    if _chunk is not None and renderer_params.restore_saved(_chunk, render_defs.iter_camera_defs()):
+        _chunk.execute()
+
+
 def _section(name: str, label: str, gizmo: str | None = None, icon: str = "") -> chunk.Group:
     """A collapsed, labelled group."""
     grp = chunk.Group(
@@ -554,11 +566,22 @@ def main():
     set_cam_btn.add_callback(_set_as_viewport_camera)
     chunk_api.add_param(set_cam_btn)
 
+    # Every installed renderer's own camera settings (V-Ray's physical camera, ...), a
+    # collapsed group each, as Render Settings shows each renderer's render settings.
+    renderer_params.loft(chunk_api, render_defs.iter_camera_defs())
+    chunk_api.add_callback(_chunk_loaded, notice_alias=chunk_notice.ChunkNoticeAlias.CHUNK_LOADED)
+
     return chunk_api
 
 
 def execute(node):
     stage = node.get_stage()
+
+    # Renderer settings are params built lazily, so on the first cook after a load they do
+    # not exist yet and nothing would author them. During a load a value lands without
+    # notices, so this schedules no cook of its own.
+    if chunk_notice._loading_stage:
+        renderer_params.restore_saved(node, render_defs.iter_camera_defs())
 
     primpath_param = node.get_param("primpath_location")
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
@@ -575,6 +598,8 @@ def execute(node):
 
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
+
+        renderer_params.author(node, prim, render_defs.iter_camera_defs(), "Camera")
 
     # After the prim exists: the transform is authored onto it, facing Aim At if set.
     _aim(node, stage)
@@ -641,6 +666,14 @@ def config():
             prim is also scheduled as the active viewport camera.
           - Set as Viewport Camera: one-shot button that makes the camera prim
             the active viewport camera without enabling the lock.
+
+        Every installed renderer that declares camera settings as a USD schema
+        applying only to cameras (V-Ray's VRayCameraAPI: physical camera, dome
+        camera, ...) gets a collapsed group of its own, as Render Settings shows
+        each renderer's render settings. Only values changed from the schema's
+        default are authored, and the renderer's API schema is applied to the
+        camera prim only once one is. Its lens values (focal length, f-stop, focus)
+        still come from the standard Lens and Focus params.
 
         GuideVisibility is set to inherited so the camera frustum is visible
         in DCC guide modes. Variant-path authoring is supported — uniqueness

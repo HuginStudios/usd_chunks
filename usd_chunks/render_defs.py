@@ -24,6 +24,10 @@ All three are read here and returned as the same :class:`RenderSettingsDef`, so 
 never learns which renderer or which mechanism produced a setting. Nothing here imports
 Qt.
 
+A renderer's *camera* settings are declared the first way only -- V-Ray's
+``VRayCameraAPI`` applies only to ``Camera`` -- and :func:`iter_camera_defs` returns them
+in the same shape.
+
 ``` py
 for d in iter_render_settings_defs():
     print(d.label, d.namespace, len(d.props))
@@ -66,9 +70,13 @@ logger = logging.getLogger(__name__)
 #: Prim type these settings attach to. Applied API schemas advertise this in plugInfo.
 RENDER_SETTINGS_TYPE = "RenderSettings"
 
+#: Prim type a renderer's camera settings attach to -- V-Ray's VRayCameraAPI (physical
+#: camera, dome camera, ...) is declared as applying only to it.
+CAMERA_TYPE = "Camera"
+
 #: Suffixes stripped from a schema type name to get a display label, longest first so
 #: "RendererSettingsAPI" wins over "SettingsAPI".
-_LABEL_SUFFIXES = ("RendererSettingsAPI", "RenderSettingsAPI", "SettingsAPI", "API")
+_LABEL_SUFFIXES = ("RendererSettingsAPI", "RenderSettingsAPI", "SettingsAPI", "CameraAPI", "API")
 
 #: Sdr identifiers that describe a renderer's options rather than a shader, by namespace.
 #: RenderMan declares its settings this way instead of as a USD schema. Unverified --
@@ -278,8 +286,8 @@ def _prop_from_definition(prim_def, attr_name: str, namespace: str) -> RenderSet
     )
 
 
-def _schema_names_for_render_settings() -> list[str]:
-    """Applied API schemas that may only be applied to a RenderSettings prim.
+def _schema_names_for_render_settings(prim_type: str = RENDER_SETTINGS_TYPE) -> list[str]:
+    """Applied API schemas that may only be applied to a prim of prim_type.
 
     Read from plugin metadata rather than Tf.Type: the schema's library is not loaded
     until something uses it, so Tf.Type.FindByName on the plugin's type name comes back
@@ -288,7 +296,7 @@ def _schema_names_for_render_settings() -> list[str]:
     names = []
     for plugin in Plug.Registry().GetAllPlugins():
         for type_name, info in (plugin.metadata.get("Types") or {}).items():
-            if RENDER_SETTINGS_TYPE not in (info.get("apiSchemaCanOnlyApplyTo") or []):
+            if prim_type not in (info.get("apiSchemaCanOnlyApplyTo") or []):
                 continue
             alias = (info.get("alias") or {}).get("UsdSchemaBase") or type_name
             names.append(alias)
@@ -824,9 +832,33 @@ def _defs_without_delegates() -> list[RenderSettingsDef]:
     return found
 
 
+@lru_cache(maxsize=1)
+def _discover_camera() -> tuple:
+    """Read every renderer's camera settings, once per process.
+
+    Schemas only. Sdr and the delegates describe render settings, never a camera's, and
+    the schema registry is already loaded, so this needs neither the disk cache nor the
+    out-of-process probe that _discover has.
+    """
+    found = []
+    for schema_name in _schema_names_for_render_settings(CAMERA_TYPE):
+        try:
+            if definition := _def_from_schema(schema_name):
+                found.append(definition)
+        except Exception as exc:  # noqa: BLE001 - a schema this USD cannot read
+            logger.debug("Could not read camera settings schema %s: %s", schema_name, exc)
+    return tuple(found)
+
+
 def clear_cache() -> None:
     """Forget the discovered definitions, for a test that registers a renderer late."""
     _discover.cache_clear()
+    _discover_camera.cache_clear()
+
+
+def iter_camera_defs() -> Iterator[RenderSettingsDef]:
+    """Every renderer whose camera settings this USD can describe."""
+    yield from _discover_camera()
 
 
 def iter_render_settings_defs() -> Iterator[RenderSettingsDef]:
