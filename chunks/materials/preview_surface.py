@@ -6,8 +6,8 @@ from usd_chunks import chunk, chunk_utils
 def execute(node):
     stage = node.get_stage()
 
-    mat_path = node.get_param("mat_path").value
-    if not mat_path:
+    mat_param = node.get_param("mat_path")
+    if not mat_param.value:
         return
 
     diffuse   = node.get_param("diffuse_color").value
@@ -19,27 +19,34 @@ def execute(node):
     _prim_path = getattr(node, '_exec_prim_path', None) or getattr(node, 'prim_path', None)
     chunk_prim = stage.GetPrimAtPath(_prim_path) if _prim_path else None
 
-    material = UsdShade.Material.Define(stage, mat_path)
-    shader = UsdShade.Shader.Define(stage, f"{mat_path}/surface")
-    shader.CreateIdAttr("UsdPreviewSurface")
+    # A free path, recorded on the param. Two Preview Surfaces left at the default path
+    # shared one material, and the stronger chunk layer's settings hid the other's.
+    material = None
+    for mat_path in chunk_utils.author_in_variant_contexts(stage, mat_param, unique=True):
+        material = UsdShade.Material.Define(stage, mat_path)
+        shader = UsdShade.Shader.Define(stage, f"{mat_path}/surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
 
-    diffuse_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
-    diffuse_input.Set(Gf.Vec3f(*diffuse))
-    node.get_param("diffuse_color").connect_usd_attr(diffuse_input.GetAttr())
-    chunk_utils.wire_shader_input(stage, chunk_prim, "diffuse_color", diffuse_input.GetAttr())
+        diffuse_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+        diffuse_input.Set(Gf.Vec3f(*diffuse))
+        node.get_param("diffuse_color").connect_usd_attr(diffuse_input.GetAttr())
+        chunk_utils.wire_shader_input(stage, chunk_prim, "diffuse_color", diffuse_input.GetAttr())
 
-    for param_name, shader_name_str, sdf_type, value in [
-        ("roughness", "roughness", Sdf.ValueTypeNames.Float, roughness),
-        ("metallic",  "metallic",  Sdf.ValueTypeNames.Float, metallic),
-        ("opacity",   "opacity",   Sdf.ValueTypeNames.Float, opacity),
-        ("ior",       "ior",       Sdf.ValueTypeNames.Float, ior),
-    ]:
-        inp = shader.CreateInput(shader_name_str, sdf_type)
-        inp.Set(value)
-        node.get_param(param_name).connect_usd_attr(inp.GetAttr())
+        for param_name, shader_name_str, sdf_type, value in [
+            ("roughness", "roughness", Sdf.ValueTypeNames.Float, roughness),
+            ("metallic",  "metallic",  Sdf.ValueTypeNames.Float, metallic),
+            ("opacity",   "opacity",   Sdf.ValueTypeNames.Float, opacity),
+            ("ior",       "ior",       Sdf.ValueTypeNames.Float, ior),
+        ]:
+            inp = shader.CreateInput(shader_name_str, sdf_type)
+            inp.Set(value)
+            node.get_param(param_name).connect_usd_attr(inp.GetAttr())
 
-    shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+    if material is None:
+        return
 
     primpath_param = node.get_param("primpath_location")
     if primpath_param.value and primpath_param.value != "/":
