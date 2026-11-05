@@ -1429,8 +1429,9 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     has to *make* one -- the same move Houdini makes when editing geometry drops an Edit
     node in front of you.
 
-    The new chunk lands at the end of the active context's chain, seeded from the prim's
-    current local transform so that creating it does not move anything.
+    The new chunk lands right after the chunk that brings the prim into the scene (a
+    Sublayer, a Reference, a Mesh), so the chunks after that import see the move. With no
+    such chunk in the graph being worked in, it lands at the end of the chain.
 
     Args:
         prim: The scene prim.
@@ -1457,7 +1458,8 @@ def ensure_transform_chunk(prim: Usd.Prim, *, create: bool = True):
     # already there, so an untouched chunk contributes identity and moves nothing -- and a
     # node behaves the same whether it was dragged into existence or added by hand. The
     # drag itself is converted from absolute to op-local by the module's gizmo_changed hook.
-    chunk = _create_chunk_at_tail(AUTO_TRANSFORM_MODULE)
+    chunk = (_create_chunk_after_source(AUTO_TRANSFORM_MODULE, prim)
+             or _create_chunk_at_tail(AUTO_TRANSFORM_MODULE))
     if chunk is None:
         return None
 
@@ -1536,6 +1538,185 @@ def _create_chunk_at_tail(module_name: str):
 
     _nudge_downstream_views(chunk)
     return chunk
+
+
+def _create_chunk_after_source(module_name: str, prim: Usd.Prim):
+    """Create one chunk from `module_name` right after the chunk that brings `prim` in.
+
+    A Transform at the end of a long chain moved the asset after everything that reads it:
+    a Remesh Proxy or a Scatter Brush after the import kept seeing it where it was. Right
+    after the import, everything downstream follows the move.
+
+    Args:
+        module_name: The module to create the chunk from.
+        prim: The prim the chunk is for.
+
+    Returns:
+        The new chunk, or None when no chunk in the graph being worked in brings the prim in
+        -- nothing is created then, and the caller chains onto the end instead.
+    """
+    registry = ChunkRegistry()
+    entry = getattr(registry, "registered_modules", {}).get(module_name)
+    scene = getattr(registry, "scene", None)
+    stage = getattr(chunk_stage.ChunkStageSync(), "_stage", None)
+    if entry is None or scene is None or stage is None:
+        return None
+    source = _source_chunk(stage, scene, prim)
+    if source is None:
+        return None
+    source_path = chunk_stage.get_chunk_prim_path(source)
+    anchor = _after_earlier_drags(stage, scene, source_path)
+
+    created = entry.create() if entry.loaded else entry.load()
+    if not created:
+        return None
+    chunk = created[0]
+    prev_pos = chunk_stage._create_node_pos
+    # Below the line from the anchor to what it feeds, not on top of the next node.
+    anchor_pos = _node_pos(stage.GetPrimAtPath(anchor))
+    chunk_stage._create_node_pos = (
+        None if anchor_pos is None else (anchor_pos[0] + chunk_stage._NODE_STEP, anchor_pos[1] - _BRANCH_STEP))
+    chunk_stage.start_collapsed([chunk])
+    try:
+        scene.add_chunk(chunk)
+    finally:
+        chunk_stage._create_node_pos = prev_pos
+
+    _splice_after(stage, scene, anchor, chunk_stage.get_chunk_prim_path(chunk))
+    tail = chunk_at_prim_path(anchor)
+    merge = _gather_into_merge(scene, chunk, tail) if tail is not None else None
+    if merge is not None:
+        # _gather_into_merge moves views and Outputs onto the Merge; mid-chain, the chunk
+        # after the import has to move too.
+        _repoint_consumers(stage, scene, chunk_stage.get_chunk_prim_path(chunk),
+                           chunk_stage.get_chunk_prim_path(merge))
+    chunk_stage.reconcile_edit_targets(stage, scene)
+    _nudge_downstream_views(merge or chunk)
+    return chunk
+
+
+def _source_chunk(stage: Usd.Stage, scene, prim: Usd.Prim) -> core.ChunkBase | None:
+    """The chunk that brings prim into the scene, if it is in the graph being worked in.
+
+    The weakest chunk that defines the prim, or references or payloads it in, with its
+    files: a Sublayer's file is a sublayer of the chunk's layer. Looked for on the prim,
+    then on its parents -- a part of a referenced asset is brought in with the asset.
+    Overs don't count: a Transform or a Preview Surface only changes what is there.
+
+    Args:
+        stage: The scene stage.
+        scene: The scene the chunks live in.
+        prim: The prim being dragged.
+
+    Returns:
+        The chunk, or None when the prim is defined in the scene's own files, or the chunk
+        is in another graph than the one a new chunk goes into.
+    """
+    manager = ChunkLayerManager()
+    if not getattr(manager, "initialized", False):
+        return None
+    owners: dict = {}
+    for candidate in scene.get_chunks():
+        if candidate.has_flag(core.ChunkFlags.GroupFlags.CONTEXT) or chunk_stage.is_terminal_chunk(candidate):
+            continue
+        layer = manager.chunk_layers.get(candidate.get_hash())
+        for identifier in _layer_and_sublayers(layer):
+            owners.setdefault(identifier, candidate)
+    local = {layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)}
+
+    path = prim.GetPath()
+    while path != Sdf.Path.absoluteRootPath:
+        found, defined_locally = None, False
+        for spec in stage.GetPrimAtPath(path).GetPrimStack():
+            if spec.specifier != Sdf.SpecifierDef and not spec.hasReferences and not spec.hasPayloads:
+                continue
+            owner = owners.get(spec.layer.identifier)
+            if owner is not None:
+                found = owner  # strongest first: the last one found is the weakest, the import
+            elif spec.layer.identifier in local:
+                defined_locally = True
+        if found is not None:
+            return found if found.get_context() is _target_context(scene) else None
+        if defined_locally:
+            return None
+        path = path.GetParentPath()
+    return None
+
+
+def _layer_and_sublayers(layer: Sdf.Layer | None) -> list[str]:
+    """The identifiers of layer and every layer under it."""
+    found, todo = [], [layer] if layer is not None else []
+    while todo:
+        current = todo.pop()
+        if current.identifier in found:
+            continue
+        found.append(current.identifier)
+        for sub_path in current.subLayerPaths:
+            sub = Sdf.Find(current.ComputeAbsolutePath(sub_path)) or Sdf.Find(sub_path)
+            if sub is not None:
+                todo.append(sub)
+    return found
+
+
+def _after_earlier_drags(stage: Usd.Stage, scene, source_path: str) -> str:
+    """Where a new Transform goes after source: past the Transform or Merge earlier drags left.
+
+    The first drag puts a Transform right after the import; the second gathers the two into
+    a Merge there (_gather_into_merge), and every one after joins that Merge.
+
+    Args:
+        stage: The scene stage.
+        scene: The scene the chunks live in.
+        source_path: Prim path of the chunk that brings the prim in.
+
+    Returns:
+        The prim path of the chunk to splice the new one in after.
+    """
+    consumers = _exec_consumers(stage, scene, source_path)
+    if len(consumers) != 1:
+        return source_path
+    (consumer,) = consumers
+    sources = [str(c.GetPrimPath()) for c in chunk_stage.exec_input_connections(consumer)]
+    if _is_module_prim(consumer, AUTO_TRANSFORM_MODULE) and sources == [source_path]:
+        return str(consumer.GetPath())
+    if chunk_stage.is_merge_prim(consumer) and any(
+            _is_gathered(stage.GetPrimAtPath(s)) for s in sources):
+        return str(consumer.GetPath())
+    return source_path
+
+
+def _exec_consumers(stage: Usd.Stage, scene, path: str) -> list[Usd.Prim]:
+    """The chunk prims whose exec inputs are wired to path's exec output."""
+    found = []
+    for candidate in scene.get_chunks():
+        prim = _chunk_prim(stage, candidate)
+        if prim is not None and any(str(c.GetPrimPath()) == path
+                                    for c in chunk_stage.exec_input_connections(prim)):
+            found.append(prim)
+    return found
+
+
+def _splice_after(stage: Usd.Stage, scene, anchor_path: str, new_path: str) -> None:
+    """Wire new in after anchor: what anchor fed, new feeds; anchor feeds new."""
+    _repoint_consumers(stage, scene, anchor_path, new_path)
+    chunk_stage.connect_exec(stage, scene, anchor_path, new_path)
+
+
+def _repoint_consumers(stage: Usd.Stage, scene, old_path: str, new_path: str) -> None:
+    """Move every exec wire out of old_path's output onto new_path's, except new_path's own."""
+    old_out = Sdf.Path(old_path).AppendProperty(chunk_stage._EXEC_OUTPUT)
+    new_out = Sdf.Path(new_path).AppendProperty(chunk_stage._EXEC_OUTPUT)
+    for consumer in _exec_consumers(stage, scene, old_path):
+        if str(consumer.GetPath()) == new_path:
+            continue
+        for attr in chunk_naming.iter_exec_inputs(consumer):
+            connections = list(attr.GetConnections())
+            if old_out not in connections:
+                continue
+            # Where the spec already lives, like every other edit to a wire.
+            home = chunk_utils.get_attr_home_layer(attr) or chunk_utils.get_bookkeeping_layer(stage, None)
+            with Usd.EditContext(stage, home):
+                attr.SetConnections([new_out if c == old_out else c for c in connections])
 
 
 #: Module the Transforms a run of viewport drags makes are gathered into.
@@ -1687,9 +1868,13 @@ def _tail_for_new_chunk(scene) -> core.ChunkBase | None:
     which reads as "no tail" and falls back to the default placement being fixed here.
     """
     sync = chunk_stage.ChunkStageSync()
-    stage = getattr(sync, "_stage", None)
-    if stage is None:
+    if getattr(sync, "_stage", None) is None:
         return None
+    return sync._find_dag_tail(_target_context(scene))
+
+
+def _target_context(scene) -> core.ChunkBase | None:
+    """The chunkgroup a new chunk goes into: the one dived into, else the scene's default."""
     current = getattr(scene, "_current_context", None)
     context = current() if current else None
     if context is None:
@@ -1700,7 +1885,7 @@ def _tail_for_new_chunk(scene) -> core.ChunkBase | None:
         # the chunk it was being chained onto.
         peek = getattr(scene, "peek_root_context", None)
         context = peek() if peek else None
-    return sync._find_dag_tail(context)
+    return context
 
 
 def _position_after(tail: core.ChunkBase | None) -> tuple[float, float] | None:
