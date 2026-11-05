@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
@@ -51,8 +52,14 @@ def _rbd_solver():
 _NOT_A_JOINT = ("inputs:chunk", "inputs:prim_path", "inputs:write_targets",
                 "inputs:pose")
 
-#: Params the chunk always has. Everything else on it is a lofted joint.
-_FIXED = ("prim_path", "write_targets")
+#: The group the joint sliders live in, so they can be collapsed out of the way.
+_GROUP = "joints"
+_GROUP_PREFIX = f"inputs:{_GROUP}:"
+
+
+def _natural(name):
+    """Sort key that reads digits as numbers, so roller2 comes before roller10."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", name)]
 
 
 def _roots(node):
@@ -66,7 +73,11 @@ def _roots(node):
     prim = stage.GetPrimAtPath(path)
     if not prim or not prim.IsValid():
         return stage, []
-    return stage, _rbd_solver().read_articulations(prim)
+    roots = _rbd_solver().read_articulations(prim, keep_colliderless=True)
+    # Kept for gizmo_offset, which is asked once per joint every time a slider moves: reading
+    # the articulation for each of them made one slider tick cost eighty full parses.
+    node._links = {link.name: link for link in _posable(roots)}
+    return stage, roots
 
 
 def _posable(roots):
@@ -118,18 +129,21 @@ def _saved_values(node):
     values = {}
     for attr in prim.GetAttributes():
         name = attr.GetName()
-        if not name.startswith("inputs:") or name in _NOT_A_JOINT:
-            continue
         value = attr.Get()
-        if isinstance(value, float):
-            values[name[len("inputs:"):]] = float(value)
+        if not isinstance(value, float):
+            continue
+        if name.startswith(_GROUP_PREFIX):
+            values[name[len(_GROUP_PREFIX):]] = float(value)
+        elif name.startswith("inputs:") and name not in _NOT_A_JOINT:
+            # Saved before the sliders were grouped; the group's own value wins if both exist.
+            values.setdefault(name[len("inputs:"):], float(value))
     return values
 
 
 def _lofted(node):
-    """The per-joint params, which is everything that is not fixed and not a group."""
-    return [p for p in node.get_my_params()
-            if not isinstance(p, chunk.Group) and p.name not in _FIXED]
+    """The per-joint params: everything in the Joints group."""
+    group = node.get_param(_GROUP)
+    return list(group.get_my_params()) if group is not None else []
 
 
 def _sync_joints(node):
@@ -144,6 +158,12 @@ def _sync_joints(node):
     for link in links:
         joint = link.joint
         lower, upper = joint.lower, joint.upper
+        # A continuous joint (a conveyor roller) authors -inf/inf, which is no slider
+        # range at all; treat it as unlimited and fall back to the default span.
+        if lower is not None and not math.isfinite(lower):
+            lower = None
+        if upper is not None and not math.isfinite(upper):
+            upper = None
         if joint.kind == "revolute":
             # USD authors rotational limits in degrees, and read_articulations converts
             # them to radians for MuJoCo. The slider is in degrees, which is what anyone
@@ -155,23 +175,79 @@ def _sync_joints(node):
             upper = 1.0 if upper is None else upper
         wanted[link.name] = (joint.kind, float(lower), float(upper))
 
+    group = node.get_param(_GROUP)
     have = {p.name: p for p in _lofted(node)}
     for name, param in have.items():
         if name not in wanted:
-            node.remove_param_or_group(param)
+            group.remove_param_or_group(param)
 
     pose = _saved_values(node)
     flags = ChunkFlags.ParamFlags.LABELED
-    for name, (kind, lower, upper) in wanted.items():
+    for name in sorted(wanted, key=_natural):
         if name in have:
             continue
+        kind, lower, upper = wanted[name]
         value = pose.get(name, 0.0)
         unit = "degrees" if kind == "revolute" else "stage units"
-        node.add_param(chunk.Slider(
+        group.add_param(chunk.Slider(
             name, name, default_value=min(max(value, lower), upper),
-            min_value=lower, max_value=upper, flags=flags,
+            min_value=lower, max_value=upper, flags=flags, gizmo="cube",
             tooltip=f"{kind} joint, {lower:g} to {upper:g} {unit}.",
         ))
+    _author_gizmos(node, [name for name in have if name not in wanted])
+
+
+def _author_gizmos(node, removed):
+    """Author the per-joint handles on the chunk prim.
+
+    Here rather than by the framework: author_gizmos runs when the chunk prim is created,
+    before any joint has been named, and nothing re-runs it for a param that arrives later.
+    """
+    stage = node.get_stage()
+    if stage is None:
+        return
+    try:
+        prim = stage.GetPrimAtPath(get_chunk_prim_path(node))
+    except Exception:
+        return
+    if not prim or not prim.IsValid():
+        return
+    home = chunk_utils.get_bookkeeping_layer(stage, node)
+    with Usd.EditContext(stage, home) if home else Usd.EditContext(stage, stage.GetSessionLayer()):
+        # A handle for a joint that no longer exists would keep drawing, driving an
+        # attribute that is gone.
+        for prop in prim.GetProperties():
+            pname = prop.GetName()
+            if pname.startswith(chunk_gizmo.GIZMO_PREFIX):
+                if pname[len(chunk_gizmo.GIZMO_PREFIX):].split(":")[0] in removed:
+                    prim.RemoveProperty(pname)
+        chunk_gizmo.author_gizmos(stage, prim, node)
+
+
+def gizmo_offset(node, gizmo):
+    """Put each joint's handle on the joint itself.
+
+    Every handle anchors to the articulation root, so the offset is the joint's pivot in
+    the root's object space. Read from where the link is now, so the handle follows the
+    joint as it is posed.
+    """
+    stage = node.get_stage()
+    if stage is None:
+        return None
+    links = getattr(node, "_links", None)
+    if links is None:
+        _roots(node)
+        links = getattr(node, "_links", {})
+    link = links.get(gizmo)
+    if link is None or link.joint is None:
+        return None
+    param = node.get_param("prim_path")
+    root = stage.GetPrimAtPath((param.value if param else "") or "/")
+    if not root or not root.IsValid():
+        return None
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    world = cache.GetLocalToWorldTransform(link.prim).Transform(Gf.Vec3d(*link.joint.pos))
+    return tuple(cache.GetLocalToWorldTransform(root).GetInverse().Transform(world))
 
 
 def _harvest(node):
@@ -451,6 +527,10 @@ def main():
             tooltip="Also author drive:<axis>:physics:targetPosition on each joint. The "
                     "transforms say where the robot is; this says where it is being asked "
                     "to go, which is what an engine with actuators reads.",
+        ),
+        chunk.Group(
+            _GROUP, "Joints",
+            flags=ChunkFlags.GroupFlags.COLLAPSABLE | ChunkFlags.GroupFlags.LABELED,
         ),
     ])
     chunk_api.add_callback(_param_changed,

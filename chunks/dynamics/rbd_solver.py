@@ -2287,7 +2287,7 @@ def _parse_joint(joint_prim):
     )
 
 
-def read_articulations(root_prim):
+def read_articulations(root_prim, keep_colliderless=False):
     """Parse an articulated asset under root_prim into link trees.
 
     Returns a list of root _Links, one per independent mechanism. Empty when the subtree
@@ -2297,6 +2297,10 @@ def read_articulations(root_prim):
     in the corpus this was built against have several -- an appliance plus its unjointed
     removable parts, and in one case fourteen of them. Simulating only the first would
     silently drop the rest.
+
+    `keep_colliderless` keeps jointed links that have no collider. A solver cannot build
+    those (a massless body), but posing only needs the joint -- a drawer authored with a
+    body and no collision mesh is still a drawer.
     """
     if not root_prim or not root_prim.IsValid():
         return []
@@ -2312,9 +2316,20 @@ def read_articulations(root_prim):
     if not joints or not links:
         return []
 
+    def owning_body(path):
+        # A joint may name a collision mesh below the body rather than the body itself
+        # (SimReady authors body1 = .../drawer_obj/drawer_mesh with the RigidBodyAPI on
+        # drawer_obj), so walk up to the nearest prim that is a link.
+        while path is not None and not path.IsAbsoluteRootPath():
+            if path in links:
+                return path
+            path = path.GetParentPath()
+        return None
+
     for joint_prim in joints:
         body0 = _joint_target(joint_prim.GetRelationship("physics:body0"))
         body1 = _joint_target(joint_prim.GetRelationship("physics:body1"))
+        body0, body1 = owning_body(body0), owning_body(body1)
         child = links.get(body1)
         if child is None:
             continue
@@ -2333,7 +2348,7 @@ def read_articulations(root_prim):
     # `Sites` prims holding manipulation target markers -- which compile as massless
     # bodies and take the whole model down with an error that names only the scope.
     for path, link in list(links.items()):
-        if link.children:
+        if link.children or (keep_colliderless and link.joint is not None):
             continue
         has_collider = any(
             pr.HasAPI(UsdPhysics.CollisionAPI) for pr in Usd.PrimRange(link.prim)
