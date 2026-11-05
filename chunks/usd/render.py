@@ -977,4 +977,6 @@ def config():
         headless farm wants a delegate that does not — Embree and the commercial
         delegates are fine.
         """,
+        # Only to spot an empty frame (is_blank); a render works without it.
+        requirements=["pillow>=10"],
     )
