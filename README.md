@@ -4,7 +4,23 @@
 
 <sub>One network, open in Blender, Houdini and usdview.</sub>
 
-**The procedural layer for USD.**
+# The procedural layer for USD
+
+
+## ⚠️🥳 Alpha Release & Feedback Wanted!
+
+**This project is currently in Alpha.** The core architecture is functional but actively evolving. Expect breaking changes, bugs, and incomplete features. **Do not use this in production yet.**
+
+### 💬 We Need Your Feedback!
+Because this project is in its early stages, **your input will directly shape the final product.** We are actively looking for feedback on:
+* **Developer Experience:** Is the setup process smooth? Are the docs clear?
+* **API Design:** Does the code feel intuitive to use?
+* **Edge Cases:** Did you find any bugs or strange behaviors?
+
+Please share your thoughts, feature ideas, or bug reports by opening a github issue.
+
+----------------
+
 
 USD is what 3D pipelines are built on, but it records what a scene is, not how it was
 made. usd_chunks adds that missing layer: proceduralism stored in USD itself.
@@ -13,6 +29,7 @@ instances, bind materials, run a physics solve.
 The network is saved in the `.usda` next to the scene it builds, so the file holds the
 steps that make the scene, not just a baked result. Open it again and every step can still
 be changed and re-cooked.
+
 
 The same file runs in **usdview, Houdini and Blender**, and headless in **automation
 pipelines**. One network can be a tool an artist tweaks in a viewport, then the same
