@@ -7,6 +7,7 @@ in usdview could build nodes the user could not see.
 from __future__ import annotations
 
 import pytest
+from pxr import Gf, Sdf, Usd
 from PySide6 import QtCore
 
 from usd_chunks import Scene, chunk_scene, chunk_stage
@@ -84,7 +85,7 @@ def test_each_with_block_starts_at_the_view_again(app) -> None:
 
 
 def test_a_script_s_own_scene_keeps_the_default_row(app) -> None:
-    """No app, no view to aim at: a saved network gets the same positions as before."""
+    """No app, no view to aim at: until it saves, a script's network keeps the default row."""
     host, _view = app
     host.is_app = False
     host.close()
@@ -93,3 +94,44 @@ def test_a_script_s_own_scene_keeps_the_default_row(app) -> None:
         box, xform = _build(scene)
         assert _pos(scene, box) == (0.0, 0.0)
         assert _pos(scene, xform) == (_STEP, 0.0)
+
+
+def _positions(path):
+    stage = Usd.Stage.Open(str(path))
+    root = chunk_graph.default_context(stage)
+    return {p.GetName(): chunk_graph.node_position(p) for p in chunk_graph.resolve_graph_nodes(stage, root)}
+
+
+def test_a_script_s_nodes_are_laid_out_when_it_saves(tmp_path) -> None:
+    """Every scripted node went in one row (85 nodes reached x = 29,000). Saved, they are
+    laid out as L does: a column per depth, branches one under the other."""
+    path = tmp_path / "net.usda"
+    with Scene.new() as scene:
+        trunk = scene.create.transform(name="trunk")
+        left = scene.create.transform(trunk, name="left")
+        right = scene.create.transform(trunk, name="right")
+        scene.create.merge(left, right, name="join")
+        scene.save(str(path))
+    pos = _positions(path)
+    assert pos["left"][0] == pos["right"][0], "both branches in the column after the trunk"
+    assert pos["left"][1] != pos["right"][1], "one under the other"
+    assert pos["trunk"][0] < pos["left"][0] < pos["join"][0]
+
+
+def test_nodes_already_in_a_file_stay_where_they_are(tmp_path) -> None:
+    first, second = tmp_path / "first.usda", tmp_path / "second.usda"
+    with Scene.new() as scene:
+        scene.create.transform(name="old")
+        scene.save(str(first))
+    layer = Sdf.Layer.FindOrOpen(str(first))
+    old = layer.GetAttributeAtPath(f"{chunk_graph.default_context(Usd.Stage.Open(layer))}/old.{chunk_graph.POS_ATTR}")
+    old.default = Gf.Vec2f(-5000.0, 1234.0)
+    layer.Save()
+
+    with Scene.open(str(first)) as scene:
+        old_chunk = next(c for c in scene.get_chunks() if c.name == "old")
+        scene.create.transform(old_chunk, name="new")
+        scene.save(str(second))
+    pos = _positions(second)
+    assert pos["old"] == (-5000.0, 1234.0)
+    assert pos["new"][0] > pos["old"][0]
