@@ -741,7 +741,9 @@ def _related(chunk) -> tuple[set[int], set[int]]:
     cached = rec.related
     if cached is not None and cached[0] == version:
         return cached[1], cached[2]
-    above = {id(c) for c in upstream_chunks(chunk)}
+    # The groups holding it are above it too: a Reference hosting a network brings in what
+    # the chunks inside it work on.
+    above = {id(c) for c in upstream_chunks(chunk)} | {id(group) for group in _groups_of(chunk)}
     below: set[int] = set()
     groups: set[int] = set()
     own = {id(group) for group in _groups_of(chunk)}

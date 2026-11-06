@@ -2032,9 +2032,11 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     others = any(p.GetName() != my_op for p in prim.GetPropertiesInNamespace("xformOp:transform"))
     if others and scene is not None:
         owners = scene.get_chunks()
-    else:
-        owners = [n.propagator for n in chunk_scheduler.downstream_closure(node.get_dag_node())
+    elif (get_dag_node := getattr(node, "get_dag_node", None)) is not None:
+        owners = [n.propagator for n in chunk_scheduler.downstream_closure(get_dag_node())
                   if callable(getattr(n.propagator, "can_cook", None))]
+    else:
+        owners = []
     for owner in owners:
         if owner is node:
             continue
