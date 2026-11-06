@@ -422,6 +422,41 @@ def _adopt_cooked_inputs(chunk: core.ChunkBase) -> None:
     ChunkStageSync()._adopt_cooked_inputs(chunk)
 
 
+# (file metersPerUnit, stage metersPerUnit) pairs _warn_unit_mismatch has already warned about.
+_unit_warnings: set[tuple[float, float]] = set()
+
+
+def _warn_unit_mismatch(chunk: core.ChunkBase) -> None:
+    """chunk_cook.after_cook's hook: warn when a file the chunk's layer brings in (reference,
+    payload, sublayer) says other units than the stage. USD does not rescale it.
+
+    Once per pair of units, naming the first file: a scene of metre assets on a centimetre
+    stage would otherwise warn for every asset.
+    """
+    stage = chunk.get_stage()
+    layer = ChunkLayerManager().get_layer(chunk) if stage is not None else None
+    if layer is None:
+        return
+    stage_mpu = UsdGeom.GetStageMetersPerUnit(stage)
+    for path in layer.GetCompositionAssetDependencies():
+        asset = Sdf.Layer.Find(layer.ComputeAbsolutePath(path))
+        if asset is None or not asset.pseudoRoot.HasInfo(UsdGeom.Tokens.metersPerUnit):
+            continue
+        asset_mpu = asset.pseudoRoot.GetInfo(UsdGeom.Tokens.metersPerUnit)
+        key = (asset_mpu, stage_mpu)
+        if math.isclose(asset_mpu, stage_mpu, rel_tol=1e-6) or key in _unit_warnings:
+            continue
+        _unit_warnings.add(key)
+        logger.warning(
+            "%s brings in %s, which has metersPerUnit %g, but the stage has %g. USD does not "
+            "rescale it, so whatever reads the stage's units (gravity, haze distance, camera "
+            "lens) is %gx off. Set Meters Per Unit with a Stage Settings chunk. Other files in "
+            "the same units are not listed.",
+            chunk.name, asset.GetDisplayName(), asset_mpu, stage_mpu,
+            max(asset_mpu, stage_mpu) / min(asset_mpu, stage_mpu),
+        )
+
+
 def _ancestor_paths(path: str):
     """Every ancestor of an absolute prim path, as a string, nearest first, "/" left out."""
     end = path.rfind("/")
@@ -622,6 +657,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
         self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
+        chunk_cook.after_cook(_warn_unit_mismatch)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
