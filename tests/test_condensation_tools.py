@@ -232,6 +232,7 @@ def test_flow_and_trails_chunks_chain(scene):
     f.get_param("stickiness").value = 0.0
     f.execute()
     t = mk("trails")
+    t.add_dependency(f)  # Trails reads what Surface Flow makes, so it is wired below it
     t.get_param("source").value = "/SurfaceFlow"
     t.get_param("grow").value = True
     t.execute()

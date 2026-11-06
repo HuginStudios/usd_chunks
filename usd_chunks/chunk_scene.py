@@ -1152,6 +1152,13 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # And after the solves its wiring queued: left to the block's end, they marked the
         # chunk above it again, and that cooked twice.
         chunk_cook.solve_batched()
+        # Its first cook ran before it was wired, and saw nothing above it -- a Prim chunk
+        # kept a name the chunk above it had taken. Made with its inputs, it cooks again with
+        # them. A block cooks it at its end; elsewhere, now.
+        if inputs and not chunk_cook.is_deferring():
+            chunk_cook.dispatch(new, new.get_dag_node(), [], None)
+        if not chunk_cook.is_batching():
+            chunk_cook.flush()
         self._last_placed = weakref.ref(new)
         self._recook_active_view(new)
         return new

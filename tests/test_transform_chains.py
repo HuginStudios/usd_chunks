@@ -110,11 +110,13 @@ def test_two_transforms_compose(scene) -> None:
     """The point of the whole change, and the exact inverse of what this asserted before.
 
     Each chunk used to author the same attribute, so USD picked the strongest layer and
-    discarded the other -- 5 or 3, never 8. Owning a named op each, they compose.
+    discarded the other -- 5 or 3, never 8. Owning a named op each, wired one after the
+    other, they compose.
     """
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     second = _mk(sender, transform_mod, "T2")
+    _wire(stage, "T2", "T1")
 
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
@@ -132,6 +134,7 @@ def test_each_transform_owns_a_distinct_op(scene) -> None:
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     second = _mk(sender, transform_mod, "T2")
+    _wire(stage, "T2", "T1")
     first.get_param("ty").value = 5.0
     second.get_param("ty").value = 3.0
     first.execute()
@@ -394,14 +397,10 @@ def test_removing_the_offset_leaves_the_placement(scene) -> None:
     assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 5, 0))
 
 
-def test_two_unconnected_chunks_have_no_defined_order(scene) -> None:
-    """The honest limit of deriving the order from the graph: with no connection between
-    them there is no graph relationship to derive, so which applies first is undefined.
-
-    Not a gap to fix. Asserting the undefined case has a particular answer would invent a
-    guarantee. What IS guaranteed is that both contribute -- neither silently vanishes,
-    which is the failure this whole change exists to remove.
-    """
+def test_two_unconnected_transforms_do_not_add_up(scene) -> None:
+    """A chunk sees only what is wired above it, so two Transforms with no wire between them
+    do not see each other's op: each lists only its own, and the stronger list wins. Wire
+    one after the other to add them up."""
     stage, sender, scene_layer = scene
     first = _mk(sender, transform_mod, "T1")
     second = _mk(sender, transform_mod, "T2")
@@ -410,7 +409,7 @@ def test_two_unconnected_chunks_have_no_defined_order(scene) -> None:
     first.execute()
     second.execute()
 
-    assert _translation(stage) == pytest.approx(Gf.Vec3d(0, 8, 0))
+    assert _translation(stage)[1] in (pytest.approx(5.0), pytest.approx(3.0))
 
 
 def test_a_scale_offset_multiplies(scene) -> None:

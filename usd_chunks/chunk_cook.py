@@ -39,6 +39,8 @@ call chunk.execute() to run a chunk again.
 from __future__ import annotations
 
 import collections
+import logging
+import weakref
 from collections.abc import Callable
 from contextlib import contextmanager
 
@@ -46,7 +48,9 @@ from pxr import Sdf, Tf, Usd
 
 from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, cook_timings, layer_arcs, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
-from usd_chunks.cook_errors import CookCancelled
+from usd_chunks.cook_errors import CookBlocked, CookCancelled
+
+logger = logging.getLogger(__name__)
 
 # The chunks the solves since the last flush() reached, waiting for it -- each with the
 # (alias, propagator) changes that reached it and whether it was stale before they did.
@@ -77,6 +81,10 @@ _solve_deferred: dict = {}
 
 # What runs after every cook, once its write guard is down. See after_cook().
 _after_cook_hooks: list[Callable] = []
+
+# The chunks whose last cook was blocked (CookBlocked): nothing below them cooks until they
+# cook again without it. Weak, so a deleted chunk blocks nothing.
+_blocked: weakref.WeakSet = weakref.WeakSet()
 
 # Orders the chunks of one flush round that sit at the same depth. See break_ties_with().
 _tie_break: Callable | None = None
@@ -678,17 +686,102 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
             and not muted and not not_yet_in_stack and not chunk.is_blocked()
             and not below_failed(chunk)):
         return False
+    if (blocker := blocked_above(chunk)) is not None:
+        _mark_not_cooked(chunk, blocker)
+        return False
 
     try:
         _run(chunk, stage, ctx, execute, layer_of, stamp)
-    except Exception:
-        _below_failed.update(chunk_scheduler.downstream_closure(chunk.get_dag_node()))
+    except Exception as e:
         _set_failed(chunk, True)
-        raise
+        below = chunk_scheduler.downstream_closure(chunk.get_dag_node())
+        if not isinstance(e, CookBlocked):
+            _below_failed.update(below)
+            raise
+        # The chunks below it wait out the pass; it does not.
+        _below_failed.update(dict.fromkeys(node for node in below if node is not chunk.get_dag_node()))
+        # Said on the node, not raised: a script, or the scene being opened, goes on. It is
+        # not held back for the rest of the pass itself: wired a moment later -- a script
+        # wires a chunk after its first cook -- it cooks again in the same pass.
+        if chunk not in _blocked or getattr(chunk, "_cook_problem", None) != str(e):
+            logger.warning("%s is blocked: %s", chunk.name, e)
+        _blocked.add(chunk)
+        chunk._cook_problem = str(e)
+        # It shows nothing: what the cook made without the prim it could not see -- a
+        # Scatter's fallback ground -- is not its result.
+        if ctx is not None and ctx.anonymous:
+            ctx.Clear()
+        _block_below(chunk)
+        return True
     _set_failed(chunk, False)
+    chunk._cook_problem = None
+    chunk._blocked_by = None
+    if chunk in _blocked:
+        _blocked.discard(chunk)
+        _unblock_below(chunk)
     for fn in _after_cook_hooks:
         fn(chunk)
+    # A chunk that looked for a prim nobody had made yet: made now, it cooks again, and finds
+    # out whether it can see it.
+    for waiting in skip_cook.waiting_on(chunk):
+        waiting.execute()
     return True
+
+
+def _block_below(chunk) -> None:
+    """Mark every chunk below a blocked one as not cooked: red, and stale for when it is fixed.
+
+    They may have cooked already -- opened from a file, a Cube below a Transform cooks before
+    the Transform finds it is blocked -- and they cook again once it is unblocked.
+    """
+    for below in _chunks_below(chunk):
+        _mark_not_cooked(below, chunk)
+        mark_cook_stale(below)
+
+
+def _unblock_below(chunk) -> None:
+    """Clear what _block_below marked, once chunk cooks without being blocked.
+
+    A chunk with nothing to cook of its own (a View, an Output) is never cooked to clear it.
+    The rest are stale, and cook as the chunk's change reaches them.
+    """
+    for below in _chunks_below(chunk):
+        blocker = getattr(below, "_blocked_by", None)
+        if blocker is not None and blocker() is chunk:
+            _set_failed(below, False)
+            below._cook_problem = None
+            below._blocked_by = None
+
+
+def _chunks_below(chunk) -> list:
+    return [node.propagator for node in chunk_scheduler.downstream_closure(chunk.get_dag_node())
+            if node.propagator is not chunk and callable(getattr(node.propagator, "can_cook", None))]
+
+
+def _mark_not_cooked(chunk, blocker) -> None:
+    _set_failed(chunk, True)
+    chunk._cook_problem = f"Not cooked: {blocker.name} above it is blocked."
+    chunk._blocked_by = weakref.ref(blocker)
+
+
+def blocked_above(chunk):
+    """The blocked chunk upstream of chunk, if any: chunk does not cook until it is unblocked.
+
+    Args:
+        chunk: The chunk about to cook.
+
+    Returns:
+        A blocked chunk above it, or None.
+    """
+    if not _blocked:
+        return None
+    above = skip_cook.chunks_above(chunk)
+    return next((b for b in list(_blocked) if b is not chunk and id(b) in above), None)
+
+
+def cook_problem(chunk) -> str | None:
+    """Why chunk's last cook failed or was refused, when there is something to say."""
+    return getattr(chunk, "_cook_problem", None)
 
 
 # Prim metadata that, set by a chunk below on a prim a chunk above writes under, makes USD
@@ -779,7 +872,7 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                         if cached is not None:
                             cached.before_cook(chunk)
                         if skipping:
-                            skip_cook.run(chunk, stage, ctx, execute, layer_of)
+                            skip_cook.run(chunk, stage, ctx, execute, layer_of, _tie_break)
                         else:
                             execute(chunk)
                     elif skipping:
@@ -897,9 +990,20 @@ def inputs_rewired(node) -> None:
     """A node gained or lost an input: what it and everything below it cooked on is gone.
 
     Called by DagNode when one of its input edges changes. The record skip-cooking keeps
-    of what a chunk read is what goes.
+    of what a chunk read is what goes, and the chunk goes stale: a cook sees only what is
+    wired above it, so its last result no longer says what it would make now. A script
+    wires a chunk after its first cook, and a Transform made below a Cube kept the result
+    of a cook that could not see the Cube.
     """
     skip_cook.inputs_rewired(node)
+    # A chunk alone has can_cook; a param's input edges are no cook's.
+    prop = node.propagator
+    if callable(getattr(prop, "can_cook", None)):
+        mark_cook_stale(prop)
+        # Blocked, or not cooked below a blocked one: the next flush finds out whether the
+        # new wire fixed it. A script wires a chunk after its first cook, which was blocked.
+        if prop in _blocked or getattr(prop, "_blocked_by", None) is not None:
+            dispatch(prop, node, [], None)
 
 
 def dispatch(chunk, node, changes, seed) -> None:

@@ -143,6 +143,7 @@ def test_chunk_paints_from_instances_and_scatter_nests(scene):
 
     UsdGeom.Sphere.Define(stage, "/Plant").GetRadiusAttr().Set(0.1)
     s = mk("scatter_points")
+    s.add_dependency(f)  # it reads the field's primvar, so it is wired below it
     s.get_param("surface_prim").value = "/Ground"
     s.get_param("auto_spacing").value = False
     s.get_param("spacing").value = 0.2
