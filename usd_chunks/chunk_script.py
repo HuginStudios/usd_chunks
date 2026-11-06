@@ -27,11 +27,12 @@ Scene refuses to start.
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 
 from pxr import Usd
 
-from usd_chunks import chunk_cook, chunk_registry, chunk_scene
+from usd_chunks import chunk_cook, chunk_registry, chunk_scene, configure_logging
 from usd_chunks.chunk_stage import (
     ChunkLayerManager,
     ChunkStageSync,
@@ -67,6 +68,9 @@ class Scene(chunk_scene.SceneSender):
                 f"{type(live).__name__} is already running a scene. "
                 "Use Scene.current() to build in it."
             )
+        # A script is an entry point too. Without this, a library's NullHandler swallowed
+        # every warning: a failed package install, a prototype path that matched nothing.
+        configure_logging(logging.WARNING)
         super().__init__()
         # Whether the stage is this Scene's own -- made here, or opened by Scene.open -- and
         # so goes when the Scene does. A stage passed in belongs to the caller.

@@ -60,17 +60,20 @@ _logger.addHandler(logging.NullHandler())
 _console_handler: logging.Handler | None = None
 
 
-def configure_logging() -> None:
+def configure_logging(level: int = logging.DEBUG) -> None:
     """Send ``usd_chunks`` log records to the console, unless the host already logs somewhere.
 
     Called by the entry points, not on import. Idempotent. Skipped when the root logger has a
     handler: records propagate there, and a second handler would print each one twice.
+
+    Args:
+        level: The least severe record printed. A script Scene prints warnings and up.
     """
     global _console_handler
     if _console_handler is not None or logging.getLogger().handlers:
         return
     _console_handler = logging.StreamHandler()
-    _console_handler.setLevel(logging.DEBUG)
+    _console_handler.setLevel(level)
     _console_handler.setFormatter(logging.Formatter(
         "%(levelname)s: %(asctime)s - %(name)s: %(message)s", datefmt="%y-%m-%d %H:%M"
     ))
