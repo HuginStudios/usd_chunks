@@ -44,12 +44,7 @@ from typing import NamedTuple
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-from usd_chunks import chunk, chunk_utils
-from usd_chunks import chunk_stage
-from usd_chunks import mesh_reduce
-from usd_chunks import proxy_setup
-from usd_chunks import sim_bake
-from usd_chunks import surface_samples
+from usd_chunks import chunk, chunk_stage, chunk_utils, mesh_reduce, proxy_setup, sim_bake, surface_samples
 
 try:
     from scipy import ndimage
