@@ -667,6 +667,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._dependency_added_listener = NoticeConnection(
             self._on_dependency_added, ChunkNoticeAlias.DEPENDENCY_ADDED, globally=True
         )
+        self._dependency_removed_listener = NoticeConnection(
+            self._on_dependency_removed, ChunkNoticeAlias.DEPENDENCY_REMOVED, globally=True
+        )
         self._objects_changed_listener = NoticeConnection(
             self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
         )
@@ -2130,6 +2133,30 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # its position (e.g. it's now downstream of an Edit Target chunk) -- re-home it and
         # everything downstream to honor the target at that place. Nothing above the new edge
         # can have moved, so the pass starts at the chunk that gained the input.
+        reconcile_edit_targets(self._stage, self._scene, roots=[dependent])
+
+    def _on_dependency_removed(self, notice, sender):
+        """remove_dependency between two chunks: drop the exec wire from USD too.
+
+        A no-op when the wire is already gone, as when the stage sync mirrors a wire the
+        graph cut (reconcile_dag_dependencies).
+        """
+        dependent, dependency = sender, notice.data
+        if not (self.initialized and self._stage and isinstance(dependent, core.ChunkBase)
+                and isinstance(dependency, core.ChunkBase)):
+            return
+        dep_prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dependent)))
+        if not dep_prim.IsValid():
+            return
+        src_path = Sdf.Path(exec_output_path(dependency))
+        removed = False
+        for attr in iter_exec_inputs(dep_prim):
+            if src_path in attr.GetConnections():
+                removed = chunk_utils.remove_connection_everywhere(self._stage, attr, src_path) or removed
+        if not removed:
+            return
+        normalize_merge_slots(self._stage, dep_prim)
+        invalidate_edit_layer_memo()
         reconcile_edit_targets(self._stage, self._scene, roots=[dependent])
 
     def _sync_vector_input(self, chunk: core.ChunkBase, vector: core.ChunkVectorBase, force: bool = False) -> None:
