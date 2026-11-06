@@ -177,6 +177,7 @@ def test_water_poured_on_a_floor_lands_on_it_and_feeds_scatter(graph):
     surface = UsdGeom.Points(stage.GetPrimAtPath("/ParticleSim/SurfacePoints")).GetPointsAttr().Get()
     assert len(surface) > 0
     scatter, _ = make("scatter_points")
+    scatter.add_dependency(solver)  # it reads what the solver makes, so it is wired below it
     scatter.get_param("points_prim").value = solver.get_param("surface_out").value
     instancer = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ScatterInstancer"))
     assert len(instancer.GetPositionsAttr().Get()) == len(surface)

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import pytest
 from chunk_stubs import register_stub_module
-from pxr import Sdf
+from pxr import Sdf, UsdGeom
 
-from usd_chunks import Scene, chunk, chunk_registry, skip_cook
+from usd_chunks import Scene, chunk, chunk_cook, chunk_registry, skip_cook
+from usd_chunks.chunk_flags import ChunkFlags
 
 
 def _add(scene, module):
@@ -280,8 +281,8 @@ def test_a_value_written_before_the_cook_still_reaches_the_chunks_below():
         assert _size(scene, "/Reader") == 18.0
 
 
-def test_a_cook_does_not_see_its_siblings_layers():
-    """Above and below stay: neither cooks while it does. A sibling may."""
+def test_a_cook_sees_only_the_layers_above_it():
+    """Not a sibling's, and not what is below it: a Transform wired above a Cube doesn't move it."""
     cooks: list = []
     with Scene() as scene:
         gen = _add(scene, _generator(cooks, "Gen"))
@@ -293,7 +294,7 @@ def test_a_cook_does_not_see_its_siblings_layers():
 
         hidden = skip_cook.hidden_layers(reader, layer_of(reader), layer_of)
 
-        assert set(hidden) == {layer_of(sibling).identifier}
+        assert set(hidden) == {layer_of(sibling).identifier, layer_of(below).identifier}
 
 
 def test_a_cook_reading_what_a_chunk_below_it_edits_stays_upstream_only():
@@ -308,23 +309,146 @@ def test_a_cook_reading_what_a_chunk_below_it_edits_stays_upstream_only():
 
         gen.get_param("size").value = 3.0
 
-        assert not skip_cook.record(reader).sees_all
+        assert _size(scene, "/Reader") == 6.0
+        assert not skip_cook.record(reader).warned_siblings
 
 
-def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
+def test_a_chunk_naming_a_prim_another_branch_makes_is_blocked(caplog):
+    """What a chunk sees is what is wired into it: live as after reopening, where the
+    sibling may well cook after it. One that names a prim only a sibling makes is blocked,
+    and says what to wire."""
     cooks: list = []
     with Scene() as scene:
         gen = _add(scene, _generator(cooks, "Gen"))
-        _add(scene, _generator(cooks, "Sibling"))
+        sibling = _add(scene, _generator(cooks, "Sibling"))
         reader = _add(scene, _reader(cooks, "Reader"))
         _chain(scene, gen, reader)
 
-        # Masked now, with Sibling hidden: the read misses, is caught, and runs again.
+        with caplog.at_level("WARNING", logger="usd_chunks.skip_cook"):
+            reader.get_param("target").value = "/Sibling"
+
+        assert not scene.get_stage().GetPrimAtPath("/Reader"), "a blocked chunk shows nothing"
+        assert reader.has_state(ChunkFlags.State.FAILED)
+        assert chunk_cook.cook_problem(reader) == (
+            "/Sibling is made by Sibling, which isn't wired above Reader. Wire Sibling above Reader.")
+        assert "Reader is blocked" in caplog.text
+
+        # Wired to it, it sees it.
+        reader.add_dependency(sibling)
+        sibling.get_param("size").value = 3.0
+        assert _size(scene, "/Reader") == 6.0
+        assert not reader.has_state(ChunkFlags.State.FAILED)
+
+
+def test_a_first_cook_does_not_see_a_sibling_that_cooked_before_it():
+    """A first cook runs on the whole stage, where a sibling shows only if it cooked first."""
+    cooks: list = []
+    with Scene() as scene:
+        sibling = _add(scene, _generator(cooks, "Sibling"))
+        sibling.get_param("size").value = 3.0
+        assert _size(scene, "/Sibling") == 3.0
+        reader = _add(scene, _reader(cooks, "Reader"))
         reader.get_param("target").value = "/Sibling"
 
-        assert _size(scene, "/Reader") == 2.0
-        assert skip_cook.record(reader).sees_all
+        assert not scene.get_stage().GetPrimAtPath("/Reader"), "a blocked chunk shows nothing"
         assert skip_cook.record(reader).mask is not None
+
+
+def _moved(scene, path):
+    prim = scene.get_stage().GetPrimAtPath(path)
+    return tuple(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0).ExtractTranslation())
+
+
+def test_a_chunk_in_a_group_sees_what_is_wired_into_the_group(caplog):
+    """No wire links a group's inner chunks to the group's input, yet they read what comes
+    in through it: a Bind Material in a material group binding the room's floor."""
+    with Scene() as scene:
+        box = scene.create.cube(name="Box", prim_path="/geo/box")
+        group = scene.create.chunkgroup(box, name="Group")
+        with group:
+            move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=3.0)
+        nested = scene.create.chunkgroup(group, name="Outer")
+        with nested:
+            inner = scene.create.chunkgroup(name="Inner")
+            with inner:
+                lift = scene.create.transform(name="Lift", primpath_location="/geo/box", tx=1.0)
+
+        with caplog.at_level("WARNING", logger="usd_chunks.skip_cook"):
+            scene.set(move, tz=5.0)
+            scene.set(lift, tx=2.0)
+
+        assert _moved(scene, "/geo/box") == (2.0, 0.0, 5.0)
+        assert "isn't wired above it" not in caplog.text
+
+
+def _red(scene) -> set[str]:
+    return {c.name for c in scene.get_chunks() if c.has_state(ChunkFlags.State.FAILED)}
+
+
+def _box_z(scene) -> float:
+    return _moved(scene, "/geo/box")[2]
+
+
+def test_a_transform_wired_above_the_cube_it_names_never_moves_it(tmp_path):
+    """Transform -> Cube: the Cube is below it, so the Transform never sees the box. An
+    edit saw it, and moved the box live but not after reopening."""
+    path = str(tmp_path / "chain.usda")
+    with Scene() as scene:
+        move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=5.0)
+        scene.set_output(scene.create.cube(move, name="Box", prim_path="/geo/box"))
+        assert _box_z(scene) == 0.0
+        scene.set(move, tz=6.0)
+        assert _box_z(scene) == 0.0, "an edit let the Transform see the Cube below it"
+        assert _red(scene) == {"Move", "Box", "Output"}
+        scene.save(path)
+
+    with Scene.open(path) as scene:
+        assert _box_z(scene) == 0.0
+        assert _red(scene) == {"Move", "Box", "Output"}, "opened, the Transform was not blocked"
+
+
+def test_a_merge_reads_like_a_chain(tmp_path):
+    """The Merge's bottom input comes after the ones above it: a Transform there moves the
+    Cube on the top input, as Cube -> Transform would."""
+    path = str(tmp_path / "merge.usda")
+    with Scene() as scene:
+        move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=5.0)
+        box = scene.create.cube(name="Box", prim_path="/geo/box")
+        scene.set_output(scene.create.merge(move, box, name="Merge"))
+        assert _box_z(scene) == 5.0
+        scene.set(move, tz=6.0)
+        assert _box_z(scene) == 6.0
+        assert not _red(scene)
+        scene.save(path)
+
+    with Scene.open(path) as scene:
+        assert _box_z(scene) == 6.0
+        assert not _red(scene)
+
+
+def test_a_transform_above_the_cube_in_a_merge_never_moves_it(tmp_path):
+    """A Merge input does not see the inputs below it, as Transform -> Cube does not."""
+    path = str(tmp_path / "merge.usda")
+    with Scene() as scene:
+        move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=5.0)
+        box = scene.create.cube(name="Box", prim_path="/geo/box")
+        scene.set_output(scene.create.merge(box, move, name="Merge"))
+        scene.set(move, tz=6.0)
+        assert _box_z(scene) == 0.0, "an edit let the Transform see the input below it"
+        assert _red(scene) == {"Move", "Merge", "Output"}
+        scene.save(path)
+
+    with Scene.open(path) as scene:
+        assert _box_z(scene) == 0.0
+        assert _red(scene) == {"Move", "Merge", "Output"}, "opened, the Transform was not blocked"
+
+
+def test_a_chunk_wired_after_its_first_cook_cooks_again():
+    """A script wires a chunk after its first cook, which could not see what is now above it."""
+    with Scene() as scene:
+        box = scene.create.cube(name="Box", prim_path="/geo/box")
+        scene.set_output(scene.create.transform(box, name="Move", primpath_location="/geo/box", tz=5.0))
+        assert _box_z(scene) == 5.0
 
 
 def test_changed_paths_ignore_a_parent_only_gaining_a_child():

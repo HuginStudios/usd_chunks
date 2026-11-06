@@ -32,6 +32,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdUI
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
+from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_stage
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
@@ -2026,9 +2027,15 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     depths: dict = {}
     # Only an op already on the prim can join the order, so with no other chunk op there,
     # there is no one to look for -- the usual case, and asking every chunk in a big scene
-    # made each Transform cook cost the size of the scene.
+    # made each Transform cook cost the size of the scene. A cook sees only what is above it,
+    # so the ops of the chunks below it are looked for in their own layers.
     others = any(p.GetName() != my_op for p in prim.GetPropertiesInNamespace("xformOp:transform"))
-    for owner in (scene.get_chunks() if scene is not None and others else ()):
+    if others and scene is not None:
+        owners = scene.get_chunks()
+    else:
+        owners = [n.propagator for n in chunk_scheduler.downstream_closure(node.get_dag_node())
+                  if callable(getattr(n.propagator, "can_cook", None))]
+    for owner in owners:
         if owner is node:
             continue
         # Never mint here: asking whether some other chunk owns an op must not give it one.
@@ -2037,7 +2044,7 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
         # The RBD solver bakes an op and declares no handle at all, so a gizmo-based lookup
         # left it out of everyone else's list -- and the moment another chunk's copy of the
         # order won, the bake was excluded and the simulation vanished.
-        if not op_name or not prim.HasAttribute(op_name):
+        if not op_name or not (prim.HasAttribute(op_name) or _in_own_layer(owner, prim, op_name)):
             continue
         owner_prim = _chunk_prim(stage, owner)
         if owner_prim is None:
@@ -2054,6 +2061,12 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     # Ties keep a stable order by name so two unconnected chunks do not swap places between
     # cooks -- identical copies matter more here than any particular winner.
     return base + sorted(depths, key=lambda name: (depths[name], name))
+
+
+def _in_own_layer(owner: core.ChunkBase, prim: Usd.Prim, op_name: str) -> bool:
+    """Whether owner's own layer holds op_name on prim: an op a cook above it cannot see."""
+    layer = ChunkLayerManager().get_layer(owner)
+    return layer is not None and layer.GetAttributeAtPath(prim.GetPath().AppendProperty(op_name)) is not None
 
 
 def _own_prim_path(stage: Usd.Stage, node: core.ChunkBase):

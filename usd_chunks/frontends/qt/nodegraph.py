@@ -20,6 +20,7 @@ from pxr import Gf, Sdf, Usd, UsdUI
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from usd_chunks import chunk as _chunk
+from usd_chunks import chunk_cook
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
@@ -229,6 +230,7 @@ _COL_OUTPUT_HEADER = QtGui.QColor("#3a6f8f")  # steel blue -- the Output: what t
 _COL_STALE = QtGui.QColor("#e0902a")   # amber -- chunk's result no longer reflects its inputs
 _COL_FAILED_HEADER = QtGui.QColor("#7a2626")  # dark red -- the chunk's last cook failed or was cancelled
 _COL_FAILED_BORDER = QtGui.QColor("#d04848")
+_COL_WARNING_ICON = QtGui.QColor("#f0b429")  # the warning sign on a failed or blocked node
 _COL_PORT_EXEC = node_theme.PORT_EXEC
 _COL_PORT_FLOAT = node_theme.PORT_FLOAT
 _COL_PORT_INT = node_theme.PORT_INT
@@ -2089,6 +2091,14 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
                                pixmap, QtCore.QRectF(pixmap.rect()))
             text_x = 12 + icon_size + 10
         text_w = self._width - text_x - 30
+        # A warning sign beside the menu button: the red header says it too, but not if a
+        # node's colour ever becomes the user's to pick.
+        if self._failed and (warning := node_theme.icon_pixmap(
+                "warning", _COL_WARNING_ICON, 16, _icon_dpr(painter))) is not None:
+            menu = self._menu_button_rect()
+            painter.drawPixmap(QtCore.QRectF(menu.left() - 18, (header_h - 16) / 2, 16, 16),
+                               warning, QtCore.QRectF(warning.rect()))
+            text_w -= 20
 
         name_color = _COL_TEXT_LOCKED if self._locked else _COL_TEXT_PRIMARY
         painter.setPen(QtGui.QPen(name_color))
@@ -2635,10 +2645,11 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
 
     def _update_stale_tooltip(self) -> None:
         if self._failed:
-            self.setToolTip(
+            problem = chunk_cook.cook_problem(self.chunk)
+            self.setToolTip(problem or (
                 "Its last cook failed or was cancelled, so the nodes below it did not cook.\n"
                 "It cooks again on the next change."
-            )
+            ))
             return
         self.setToolTip(
             "Needs recook — inputs changed since this last ran. Press Run/Recompute to update it."
