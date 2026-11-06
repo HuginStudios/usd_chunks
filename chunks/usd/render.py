@@ -623,19 +623,49 @@ def _gl_context_possible():
     and no Python traceback. That is what `usdchunks run` hits, where the same network
     renders fine inside usdview.
 
-    Hgi has no Python binding in this build, so the context cannot be probed directly.
-    Qt is the only thing that creates one in any of these hosts, so the question this
-    answers is the conservative half of it -- whether a context could exist at all,
-    not whether one is current. A GUI host always answers yes and keeps the behaviour
-    it has today; only a process with no Qt application, which is to say the CLI, can
-    answer no. Guessing wrong in that direction costs a CPU render rather than a crash.
+    Qt is the only thing that makes a context in any of these hosts. With no Qt
+    application (the CLI) the answer is no. With one but no current context (a script
+    that made a QApplication) one is made here, offscreen, and left current, as
+    usdrecord does for itself. A host that already has one current (usdview) keeps it.
     """
     # Looked up rather than imported: a QApplication can only exist if the host has already
     # imported Qt, and the CLI has no reason to load it just to learn it is absent.
-    QtWidgets = sys.modules.get("PySide6.QtWidgets")
-    if QtWidgets is None:
+    QtGui = sys.modules.get("PySide6.QtGui")
+    if QtGui is None or QtGui.QGuiApplication.instance() is None:
         return False
-    return QtWidgets.QApplication.instance() is not None
+    if QtGui.QOpenGLContext.currentContext() is not None:
+        return True
+    return _make_gl_context(QtGui)
+
+
+#: The offscreen surface and context _make_gl_context made, kept so they stay alive.
+_own_gl = None
+
+
+def _make_gl_context(QtGui):
+    """Make an offscreen OpenGL context current, the one usdrecord makes for itself.
+
+    Args:
+        QtGui: The PySide6.QtGui module.
+
+    Returns:
+        True when a context is current afterwards.
+    """
+    global _own_gl
+    if _own_gl is None:
+        fmt = QtGui.QSurfaceFormat()
+        fmt.setVersion(4, 5)
+        fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+        surface = QtGui.QOffscreenSurface()
+        surface.setFormat(fmt)
+        surface.create()
+        context = QtGui.QOpenGLContext()
+        context.setFormat(fmt)
+        if not (surface.isValid() and context.create()):
+            return False
+        _own_gl = (surface, context)
+    surface, context = _own_gl
+    return context.makeCurrent(surface)
 
 
 def _render(node):
