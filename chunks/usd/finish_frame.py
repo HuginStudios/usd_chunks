@@ -588,11 +588,17 @@ def _paths(text):
     return [p.strip() for p in re.split(r"[,\s]+", text or "") if p.strip()]
 
 
+class EmptyRender(RuntimeError):
+    """The source image has nothing in it: every pixel is transparent."""
+
+
 def finish(node, source: str, output: str) -> str:
     """Finish one image. Returns a one-line summary of what was done."""
     stage = node.get_stage()
     v = lambda name: node.get_param(name).value  # noqa: E731
     lin, alpha = read_image(source)
+    if not alpha.any():
+        raise EmptyRender("every pixel is transparent, so the render probably failed (no licence?)")
     h, w = lin.shape[:2]
     done = []
     camera = _camera(node, stage)
@@ -679,6 +685,9 @@ def run(node) -> None:
         output = _output_for(node, source)
         try:
             last = f"{os.path.basename(output)}: {finish(node, source, output)}"
+        except EmptyRender as e:
+            logger.error("Finish Frame: %s is empty: %s", source, e)
+            last = f"{os.path.basename(source)} is empty: {e}"
         except Exception as e:  # noqa: BLE001 - one bad frame says so and the rest still run
             logger.exception("Finish Frame: %s failed", source)
             last = f"{os.path.basename(source)} failed: {e}"
