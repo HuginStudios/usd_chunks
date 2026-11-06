@@ -2626,16 +2626,45 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             for conn in exec_input_connections(prim):
                 referenced.add(str(conn.GetPrimPath()))
 
-        # Last unreferenced chunk in list order is the tail
-        tail = None
+        unreferenced = {}
         for c in context_chunks:
             prim_path = (
                 c.prim_path if c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
                 else f"{_resolve_chunk_root(c)}/{c.name}"
             )
             if prim_path not in referenced:
-                tail = c
-        return tail
+                unreferenced[prim_path] = c
+        # What the graph shows is the end of the chain. A chunk wired to nothing (one left
+        # over in the scene) feeds nothing either, and taking it put a viewport drag's new
+        # Transform beside it, in a branch nothing reads.
+        for path in self._shown_chunk_paths(context):
+            if path in unreferenced:
+                return unreferenced[path]
+        # Last unreferenced chunk in list order is the tail
+        return next(reversed(unreferenced.values()), None)
+
+    def _shown_chunk_paths(self, context) -> list[str]:
+        """Prim paths of the chunks a graph's Views and Output read, the active View's first.
+
+        Args:
+            context: The graph.
+
+        Returns:
+            The paths: the saved active View's sources, then the Output's, then every View's.
+        """
+        showing = [
+            _saved_view(self._stage, self._scene, context),
+            find_output_chunk(self._stage, self._scene, context),
+            *_views_by_slot(self._stage, self._scene, context),
+        ]
+        paths = []
+        for terminal in showing:
+            if terminal is None:
+                continue
+            prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(terminal)))
+            if prim and prim.IsValid():
+                paths.extend(str(conn.GetPrimPath()) for conn in exec_input_connections(prim))
+        return paths
 
     def _new_chunk_bookkeeping_layer(
         self, chunk: core.ChunkBase, prev_chunk: core.ChunkBase | None
