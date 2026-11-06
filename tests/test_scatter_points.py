@@ -880,6 +880,26 @@ def test_without_scipy_it_places_nothing_and_says_why(monkeypatch) -> None:
     assert "needs scipy" in scatter.get_param("readout").value
 
 
+def test_a_surface_path_that_names_no_prim_places_nothing(caplog) -> None:
+    """A typo'd surface placed 25 instances on the no-surface grid at the origin, and the
+    readout only mentioned the prototype. An empty field still gets that preview grid."""
+    stage, mod, scatter = _bootstrap()
+    UsdGeom.Cube.Define(stage, "/Library/rock")
+    _set_proto(scatter, "/Library/rock")
+    scatter.get_param("max_count").value = 25
+    scatter.get_param("surface_prim").value = "/does/not/exist"
+    with caplog.at_level("WARNING"):
+        mod.module.execute(scatter)
+    assert scatter.get_param("out_count").value == 0
+    assert "surface not found: /does/not/exist" in scatter.get_param("readout").value
+    assert any("/does/not/exist" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+    scatter.get_param("surface_prim").value = ""
+    mod.module.execute(scatter)
+    assert scatter.get_param("out_count").value > 0
+    assert "surface not found" not in scatter.get_param("readout").value
+
+
 def _quad_mesh(stage, path, quads):
     """A strip of `quads` quads: 2 triangles each."""
     mesh = UsdGeom.Mesh.Define(stage, path)
