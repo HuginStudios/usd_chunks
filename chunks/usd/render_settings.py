@@ -199,7 +199,7 @@ def _viewport_settings_changed(owner, notice, sender):
     props = [prop for prop in definition.props if prop.attr_name in settings]
     if not props:
         return
-    _populate_groups_holding(node, {prop.name for prop in props})
+    renderer_params.populate_groups_holding(node, {prop.name for prop in props})
 
     last_renderer, last_sent = getattr(node, _SENT, ("", {}))
     if last_renderer != renderer_id:
