@@ -1046,6 +1046,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
     def _on_state_changed(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
             return
+        if self._reloading and getattr(sender, "_deleting", False):
+            # request_delete clears DISABLED so the chunk's last notices go out. Dropped
+            # Python-side (a script's Scene closing, File > Open), writing that back authored
+            # active = true into the file's own layer, and the file opened again in the same
+            # process came back with every disabled chunk on.
+            return
         prim_path = self._chunk_prim_paths.get(id(sender))
         if not prim_path:
             chunk_root = _resolve_chunk_root(sender)
