@@ -667,6 +667,9 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
     _set_failed(chunk, False)
     for fn in _after_cook_hooks:
         fn(chunk)
+    # A chunk beside this one that looked for a prim this cook brought, and found nothing.
+    for waiting in skip_cook.waiting_on(chunk):
+        waiting.execute()
     return True
 
 

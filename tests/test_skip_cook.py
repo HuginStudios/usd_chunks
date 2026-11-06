@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 from chunk_stubs import register_stub_module
-from pxr import Sdf
+from pxr import Sdf, UsdGeom
 
 from usd_chunks import Scene, chunk, chunk_registry, skip_cook
 
@@ -325,6 +325,27 @@ def test_a_cook_reading_a_sibling_it_is_not_wired_to_gets_every_layer_back():
         assert _size(scene, "/Reader") == 2.0
         assert skip_cook.record(reader).sees_all
         assert skip_cook.record(reader).mask is not None
+
+
+def _box_z(scene) -> float:
+    prim = scene.get_stage().GetPrimAtPath("/geo/box")
+    return UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0).ExtractTranslation()[2]
+
+
+def test_a_chunk_that_found_no_prim_cooks_again_once_a_chunk_beside_it_makes_one(tmp_path):
+    """A Transform made before the Cube it moves, on another branch of a Merge, cooks first
+    and finds no box. Once the Cube makes the box, it cooks again -- as it is built, and
+    when the scene is opened again."""
+    path = str(tmp_path / "merge.usda")
+    with Scene() as scene:
+        move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=5.0)
+        box = scene.create.cube(name="Box", prim_path="/geo/box")
+        scene.set_output(scene.create.merge(box, move, name="Merge"))
+        assert _box_z(scene) == 5.0, "the Transform was not cooked again once the box was made"
+        scene.save(path)
+
+    with Scene.open(path) as scene:
+        assert _box_z(scene) == 5.0, "opened again, the Transform cooked first and moved nothing"
 
 
 def test_changed_paths_ignore_a_parent_only_gaining_a_child():

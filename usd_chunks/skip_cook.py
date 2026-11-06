@@ -112,6 +112,11 @@ class CookRecord:
 # Weak, so a record goes with its chunk; chunks hash by an id no copy shares.
 _records: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
+# The chunks whose last cook found no prim at one of their inputs, with those inputs. A
+# chunk not wired below the one that makes the prim -- a Transform beside a Cube in a Merge
+# -- may cook first and find nothing; waiting_on cooks it again once the prim is made.
+_waiting: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
 
 def record(chunk) -> CookRecord:
     """chunk's CookRecord, made empty the first time it is asked for."""
@@ -1101,6 +1106,7 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     outputs = rec.outputs
     unmaskable = rec.unmaskable
     mask: set[Sdf.Path] | None = None
+    inputs: set[Sdf.Path] | None = None
     if outputs is not None and not unmaskable:
         mask = input_paths(chunk) | set(outputs) | set(rec.reads)
     hidden: dict[str, tuple] = {}
@@ -1158,13 +1164,16 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         mask = None
 
     rec.outputs = frozenset(output_paths(layer))
+    if inputs is None:
+        inputs = input_paths(chunk)
+    _note_missing(chunk, main, inputs)
     if mask is not None:
         rec.mask = frozenset(mask)
     elif not rec.unmaskable:
         # A first cook, on the whole stage, with nothing written yet to mask it by: its
         # inputs and what it wrote. Its next cook is masked by the same and checks it; left
         # unknown, the first edit after opening cooked every chunk below the one edited.
-        rec.mask = frozenset(input_paths(chunk) | rec.outputs)
+        rec.mask = frozenset(inputs | rec.outputs)
     else:
         rec.mask = None
     # What it looked up beyond its inputs and outputs, from this cook alone: a read it no
@@ -1205,6 +1214,53 @@ def _scene_changed_by(chunk, before: tuple, after: tuple) -> None:
     for other, rec in list(_records.items()):
         if other is not chunk and id(other) not in below_ids and rec.scene == before:
             rec.scene = after
+
+
+def _defined(stage: Usd.Stage, path: Sdf.Path) -> bool:
+    prim = stage.GetPrimAtPath(path)
+    return bool(prim) and prim.IsDefined()
+
+
+def _note_missing(chunk, main: Usd.Stage, inputs: Iterable[Sdf.Path]) -> None:
+    """Remember the inputs chunk's cook found no prim at, for waiting_on."""
+    missing = frozenset(path for path in inputs
+                        if path != Sdf.Path.absoluteRootPath and not _defined(main, path))
+    if missing:
+        _waiting[chunk] = missing
+    else:
+        _waiting.pop(chunk, None)
+
+
+def waiting_on(chunk) -> list:
+    """The chunks whose last cook found no prim at an input that is there now chunk has cooked.
+
+    The order chunks cook in follows their wires. Two chunks on separate branches of a Merge
+    are not wired to each other, so a Transform could cook before the Cube it moves, find no
+    prim, and move nothing until it cooked again. Its next cook sees the prim, so whoever
+    calls this cooks each chunk it returns again.
+
+    Asked of the stage, not of what chunk wrote: a Sublayer or Reference chunk brings prims
+    in without writing them into its own layer.
+
+    A chunk is forgotten as it is returned: it waits again only if its next cook misses too.
+
+    Args:
+        chunk: The chunk that has just cooked.
+
+    Returns:
+        The chunks to cook again.
+    """
+    if not _waiting:
+        return []
+    stage = chunk.get_scene_stage()
+    if stage is None:
+        return []
+    woken = []
+    for other, missing in list(_waiting.items()):
+        if other is not chunk and any(_defined(stage, path) for path in missing):
+            del _waiting[other]
+            woken.append(other)
+    return woken
 
 
 def baseline(chunk, layer: Sdf.Layer) -> Sdf.Layer:
