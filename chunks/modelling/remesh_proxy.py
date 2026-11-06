@@ -628,8 +628,16 @@ def execute(node: chunk.Chunk) -> None:
 def _write(node, stage, layer, paths, out_path, proxy: Proxy) -> None:
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         _author(stage, out_path, proxy)
-        if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
-            proxy_setup.set_up_proxy(stage, paths, out_path)
+        _set_up(node, stage, paths, out_path)
+
+
+def _set_up(node, stage, paths, out_path, copy_of=None) -> None:
+    """Make the new mesh the assets' proxy, or with Set Up as Proxy off only a proxy-purpose
+    mesh: it is never meant for a final render, and with no purpose it covered the asset."""
+    if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
+        proxy_setup.set_up_proxy(stage, paths, out_path, copy_of=copy_of)
+    else:
+        UsdGeom.Imageable(stage.GetPrimAtPath(out_path)).CreatePurposeAttr().Set(UsdGeom.Tokens.proxy)
 
 
 def _build(node, sources, settings: _Settings) -> Proxy | None:
@@ -685,8 +693,7 @@ def _keep_source(node, stage, layer, paths, out_path, triangles, keep_under) -> 
         prim = stage.DefinePrim(out_path)
         prim.GetReferences().AddInternalReference(source_path)
         prim.SetCustomDataByKey(surface_samples.PASSTHROUGH_KEY, True)
-        if node.get_param("as_proxy", chunk.is_param_t(bool)).value:
-            proxy_setup.set_up_proxy(stage, paths, out_path, copy_of=source_path)
+        _set_up(node, stage, paths, out_path, copy_of=source_path)
     _LAST_COOK.pop(layer.identifier, None)
     node.get_param("out_mesh").value = out_path
     if readout := node.get_param("readout"):
@@ -849,7 +856,8 @@ def main():
                 "on the asset, and the asset's proxyPrim pointing at it. Viewports that draw\n"
                 "proxies then show it in place of the asset; final renders show the asset.\n"
                 "In usdview, Display > Display Purposes > Render shows the asset again.\n"
-                "Off: the mesh gets no purpose, and the asset is left as it is.",
+                "Off: the asset is left as it is. The mesh is still purpose=proxy, so final\n"
+                "renders skip it.",
             ),
         ]
     )

@@ -422,6 +422,41 @@ def _adopt_cooked_inputs(chunk: core.ChunkBase) -> None:
     ChunkStageSync()._adopt_cooked_inputs(chunk)
 
 
+# (file metersPerUnit, stage metersPerUnit) pairs _warn_unit_mismatch has already warned about.
+_unit_warnings: set[tuple[float, float]] = set()
+
+
+def _warn_unit_mismatch(chunk: core.ChunkBase) -> None:
+    """chunk_cook.after_cook's hook: warn when a file the chunk's layer brings in (reference,
+    payload, sublayer) says other units than the stage. USD does not rescale it.
+
+    Once per pair of units, naming the first file: a scene of metre assets on a centimetre
+    stage would otherwise warn for every asset.
+    """
+    stage = chunk.get_stage()
+    layer = ChunkLayerManager().get_layer(chunk) if stage is not None else None
+    if layer is None:
+        return
+    stage_mpu = UsdGeom.GetStageMetersPerUnit(stage)
+    for path in layer.GetCompositionAssetDependencies():
+        asset = Sdf.Layer.Find(layer.ComputeAbsolutePath(path))
+        if asset is None or not asset.pseudoRoot.HasInfo(UsdGeom.Tokens.metersPerUnit):
+            continue
+        asset_mpu = asset.pseudoRoot.GetInfo(UsdGeom.Tokens.metersPerUnit)
+        key = (asset_mpu, stage_mpu)
+        if math.isclose(asset_mpu, stage_mpu, rel_tol=1e-6) or key in _unit_warnings:
+            continue
+        _unit_warnings.add(key)
+        logger.warning(
+            "%s brings in %s, which has metersPerUnit %g, but the stage has %g. USD does not "
+            "rescale it, so whatever reads the stage's units (gravity, haze distance, camera "
+            "lens) is %gx off. Set Meters Per Unit with a Stage Settings chunk. Other files in "
+            "the same units are not listed.",
+            chunk.name, asset.GetDisplayName(), asset_mpu, stage_mpu,
+            max(asset_mpu, stage_mpu) / min(asset_mpu, stage_mpu),
+        )
+
+
 def _ancestor_paths(path: str):
     """Every ancestor of an absolute prim path, as a string, nearest first, "/" left out."""
     end = path.rfind("/")
@@ -622,6 +657,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
         self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
+        chunk_cook.after_cook(_warn_unit_mismatch)
         chunk_cook.break_ties_with(branch_place)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
@@ -631,6 +667,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         )
         self._dependency_added_listener = NoticeConnection(
             self._on_dependency_added, ChunkNoticeAlias.DEPENDENCY_ADDED, globally=True
+        )
+        self._dependency_removed_listener = NoticeConnection(
+            self._on_dependency_removed, ChunkNoticeAlias.DEPENDENCY_REMOVED, globally=True
         )
         self._objects_changed_listener = NoticeConnection(
             self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True
@@ -1007,6 +1046,12 @@ class ChunkStageSync(metaclass=RegistrySingleton):
 
     def _on_state_changed(self, notice, sender: core.ChunkBase) -> None:
         if not self._stage or not isinstance(sender, core.ChunkBase):
+            return
+        if self._reloading and getattr(sender, "_deleting", False):
+            # request_delete clears DISABLED so the chunk's last notices go out. Dropped
+            # Python-side (a script's Scene closing, File > Open), writing that back authored
+            # active = true into the file's own layer, and the file opened again in the same
+            # process came back with every disabled chunk on.
             return
         prim_path = self._chunk_prim_paths.get(id(sender))
         if not prim_path:
@@ -2097,6 +2142,30 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # can have moved, so the pass starts at the chunk that gained the input.
         reconcile_edit_targets(self._stage, self._scene, roots=[dependent])
 
+    def _on_dependency_removed(self, notice, sender):
+        """remove_dependency between two chunks: drop the exec wire from USD too.
+
+        A no-op when the wire is already gone, as when the stage sync mirrors a wire the
+        graph cut (reconcile_dag_dependencies).
+        """
+        dependent, dependency = sender, notice.data
+        if not (self.initialized and self._stage and isinstance(dependent, core.ChunkBase)
+                and isinstance(dependency, core.ChunkBase)):
+            return
+        dep_prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(dependent)))
+        if not dep_prim.IsValid():
+            return
+        src_path = Sdf.Path(exec_output_path(dependency))
+        removed = False
+        for attr in iter_exec_inputs(dep_prim):
+            if src_path in attr.GetConnections():
+                removed = chunk_utils.remove_connection_everywhere(self._stage, attr, src_path) or removed
+        if not removed:
+            return
+        normalize_merge_slots(self._stage, dep_prim)
+        invalidate_edit_layer_memo()
+        reconcile_edit_targets(self._stage, self._scene, roots=[dependent])
+
     def _sync_vector_input(self, chunk: core.ChunkBase, vector: core.ChunkVectorBase, force: bool = False) -> None:
         """Create/restore a chunk-prim attr for a vector and wire it.
 
@@ -2627,16 +2696,45 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             for conn in exec_input_connections(prim):
                 referenced.add(str(conn.GetPrimPath()))
 
-        # Last unreferenced chunk in list order is the tail
-        tail = None
+        unreferenced = {}
         for c in context_chunks:
             prim_path = (
                 c.prim_path if c.has_flag(ChunkFlags.GroupFlags.CONTEXT)
                 else f"{_resolve_chunk_root(c)}/{c.name}"
             )
             if prim_path not in referenced:
-                tail = c
-        return tail
+                unreferenced[prim_path] = c
+        # What the graph shows is the end of the chain. A chunk wired to nothing (one left
+        # over in the scene) feeds nothing either, and taking it put a viewport drag's new
+        # Transform beside it, in a branch nothing reads.
+        for path in self._shown_chunk_paths(context):
+            if path in unreferenced:
+                return unreferenced[path]
+        # Last unreferenced chunk in list order is the tail
+        return next(reversed(unreferenced.values()), None)
+
+    def _shown_chunk_paths(self, context) -> list[str]:
+        """Prim paths of the chunks a graph's Views and Output read, the active View's first.
+
+        Args:
+            context: The graph.
+
+        Returns:
+            The paths: the saved active View's sources, then the Output's, then every View's.
+        """
+        showing = [
+            _saved_view(self._stage, self._scene, context),
+            find_output_chunk(self._stage, self._scene, context),
+            *_views_by_slot(self._stage, self._scene, context),
+        ]
+        paths = []
+        for terminal in showing:
+            if terminal is None:
+                continue
+            prim = self._stage.GetPrimAtPath(Sdf.Path(get_chunk_prim_path(terminal)))
+            if prim and prim.IsValid():
+                paths.extend(str(conn.GetPrimPath()) for conn in exec_input_connections(prim))
+        return paths
 
     def _new_chunk_bookkeeping_layer(
         self, chunk: core.ChunkBase, prev_chunk: core.ChunkBase | None
@@ -6069,6 +6167,18 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
         return (not c.has_state(disabled) and c.can_cook()
                 and ((_force and in_context(c)) or chunk_cook.is_cook_stale(c)))
 
+    # A gate (Switch, Stage Expression Switch) re-applies its choice only when it cooks. In
+    # a pass where it does not, the branches it suppressed stay out: revealed below, they
+    # put both branches on the stage -- an export with day and night lights in it.
+    gated_off = {
+        path for g in cook_list
+        if g.get_param(GATE_RECORD_PARAM) is not None and not will_cook(g)
+        for path in _gate_record(g)
+    }
+    if gated_off:
+        cook_list = [c for c in cook_list if get_chunk_prim_path(c) not in gated_off]
+        cook_set = set(cook_list)
+
     # The chunks ahead of the first one that cooks: nothing above them changes in this pass,
     # so the result their layers hold is the one they would show at their turn anyway. They
     # stay visible instead of being muted and revealed again, which recomposed the stage --
@@ -8320,6 +8430,9 @@ def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     stage = scene.get_stage()
     if not stage:
         return
+    # Nodes a script made are laid out first, rather than written in one long row.
+    if hasattr(scene, "lay_out_scripted"):
+        scene.lay_out_scripted()
     dst = _export_layer(scene, Path(path))
     stamp_stage_metadata(dst, stage)
     dst.Export(str(path))

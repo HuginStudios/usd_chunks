@@ -31,7 +31,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 from usd_chunks import chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
-from usd_chunks.graph import backdrops, engine
+from usd_chunks.graph import backdrops, engine, layout
 from usd_chunks.chunk_core import (  # noqa: F401  all_chunks re-exported
     ChunkBase,
     ChunkParamBase,
@@ -123,6 +123,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         self._script_origin: tuple[float, float] | None = None
         self._script_origin_found = False
         self._script_count = 0
+        # Nodes a script made outside an app, waiting for lay_out_scripted.
+        self._to_lay_out: weakref.WeakSet[ChunkBase] = weakref.WeakSet()
 
     @property
     def current_context(self) -> ChunkBase | None:
@@ -1070,6 +1072,51 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """add_chunk, at the position _next_node_position picks."""
         with chunk_stage.creating_at(self._next_node_position()):
             self.add_chunk(chunk)
+        if not self.is_app:
+            self._to_lay_out.add(chunk)
+
+    def lay_out_scripted(self) -> None:
+        """Lay out the nodes a script made, as L does in the graph; the rest stay put.
+
+        Outside an app every new node lands in one row (85 nodes reached x = 29,000). Run
+        before anything reads node positions: a backdrop, and writing the network
+        (chunk_stage.export_chunks).
+        """
+        made, self._to_lay_out = list(self._to_lay_out), weakref.WeakSet()
+        stage = self.get_stage()
+        owners = {path: chunk for chunk in made if (path := chunk_stage.get_chunk_prim_path(chunk))}
+        by_graph: dict[str, set[str]] = {}
+        for path in owners:
+            by_graph.setdefault(str(Sdf.Path(path).GetParentPath()), set()).add(path)
+        chunks = {chunk_stage.get_chunk_prim_path(c): c for c in self.get_chunks()} if by_graph else {}
+        for root, paths in by_graph.items():
+            prims = {str(p.GetPath()): p for p in engine.resolve_graph_nodes(stage, root)}
+
+            def size_of(path):
+                # The size the graph saved; else about what it will draw. A fixed 250 x 90
+                # stacked branches on top of each other: nodes show their params, 50-900 px.
+                chunk = chunks.get(path)
+                fallback = engine.estimated_node_size(chunk) if chunk is not None else backdrops.NODE_SIZE
+                return engine.node_size(prims[path], fallback)
+
+            # Added to a graph that has nodes already: start to the right of them, which
+            # stay where they are.
+            kept = [path for path in prims if path not in paths]
+            origin = None
+            if kept:
+                rights = [engine.graph_position(prims[p])[0] + size_of(p)[0] for p in kept]
+                tops = [engine.graph_position(prims[p])[1] for p in kept]
+                origin = (max(rights) + layout.X_GAP, min(tops))
+            placed = engine.layout_graph(
+                prims,
+                size_of=size_of,
+                current_pos=lambda path: engine.graph_position(prims[path]),
+                seeds=[p for p in paths if p in prims],
+                is_locked=lambda path: path not in paths,
+                origin=origin,
+            )
+            for path, (x, y) in placed.items():
+                engine.write_position(prims[path], x, -y, owners.get(path))
 
     @property
     def create(self) -> Creator:
@@ -1116,7 +1163,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             # /materials/surface before its own Material Path was set).
             if name:
                 new.name = name
-            self.set(new, **early)
+            self._assign(new, early)
         finally:
             new._executing = prev
         self._add_scripted(new)
@@ -1142,13 +1189,13 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             chunk_cook.solve_batched()
             new._cook()
             chunk_cook.solve_batched()
-        self.set(new, **late)
+        self._assign(new, late)
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
         for i in inputs:
             new.add_dependency(i)
-        self.set(new, **wires)
+        self._assign(new, wires)
         # And after the solves its wiring queued: left to the block's end, they marked the
         # chunk above it again, and that cooked twice.
         chunk_cook.solve_batched()
@@ -1161,6 +1208,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             chunk_cook.flush()
         self._last_placed = weakref.ref(new)
         self._recook_active_view(new)
+        _warn_hidden(new, params)
         return new
 
     def set(self, target: ChunkBase, **params) -> None:
@@ -1175,7 +1223,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         In a lazy Scene, a param the chunk has not built yet -- one it builds in its cook, as
         Light does its schema inputs -- takes the value when that cook builds it, the way a
         loaded network's stored value does; a name its cook does not build raises there.
+
+        A param the chunk's other settings hide (a tube's `radius` on a Mesh set to sphere)
+        is still set, with a warning, since the chunk will not use it.
         """
+        self._assign(target, params)
+        _warn_hidden(target, params)
+
+    def _assign(self, target: ChunkBase, params: Mapping[str, Any]) -> None:
+        """Set params by name, as `set` does, without the hidden-param warning."""
         for name, value in params.items():
             param = _scripted_param(target, name)
             if param is None:
@@ -1373,6 +1429,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
     def _node_rect(self, chunk: ChunkBase) -> tuple[float, float, float, float]:
         """Where a chunk's node is in the graph, as USD records it (x, y down, w, h)."""
+        self.lay_out_scripted()
         prim = self.get_stage().GetPrimAtPath(chunk_stage.get_chunk_prim_path(chunk))
         x, y = engine.graph_position(prim)
         w, h = engine.node_size(prim, backdrops.NODE_SIZE) if prim else backdrops.NODE_SIZE
@@ -1617,6 +1674,27 @@ def _scripted_param(target: ChunkBase, name: str):
             except (IndexError, KeyError, ValueError):
                 return None
     return None
+
+
+def _warn_hidden(target: ChunkBase, names: Iterable[str]) -> None:
+    """Warn about the params in `names` that target hides, as its other settings leave
+    them unused: a Mesh set to sphere hides the tube's `radius`."""
+    hidden = [name for name in names if (param := _scripted_param(target, name)) is not None and _is_hidden(param)]
+    if hidden:
+        logger.warning(
+            "%s does not use %s: its other settings hide it, so the value has no effect.",
+            target.name, ", ".join(repr(n) for n in hidden),
+        )
+
+
+def _is_hidden(param: ChunkParamBase) -> bool:
+    """True when param, or a group holding it, is hidden."""
+    obj = param
+    while obj is not None and not isinstance(obj, ChunkBase):
+        if hasattr(obj, "has_state") and obj.has_state(ChunkFlags.State.HIDDEN):
+            return True
+        obj = obj.get_owner()
+    return False
 
 
 # Values a lazy Scene was given for params their chunk builds in its cook, by chunk, until

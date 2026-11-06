@@ -937,6 +937,31 @@ def clear_connections_everywhere(stage: Usd.Stage, attr: Usd.Attribute) -> None:
                 attr.ClearConnections()
 
 
+def remove_connection_everywhere(stage: Usd.Stage, attr: Usd.Attribute, target: Sdf.Path) -> bool:
+    """Remove one connection target from attr in every layer that lists it.
+
+    Args:
+        stage: The stage attr is on.
+        attr: The attribute to edit.
+        target: The connection to remove.
+
+    Returns:
+        True when a layer listed it.
+    """
+    removed = False
+    for layer in stage.GetLayerStack(includeSessionLayers=True):
+        spec = layer.GetAttributeAtPath(attr.GetPath())
+        if not spec:
+            continue
+        paths = spec.connectionPathList
+        for items in ("explicitItems", "prependedItems", "appendedItems"):
+            kept = [p for p in getattr(paths, items) if p != target]
+            if len(kept) != len(getattr(paths, items)):
+                setattr(paths, items, kept)
+                removed = True
+    return removed
+
+
 def has_expression(text: str) -> bool:
     """Whether `text` contains a @Node.param@ reference."""
     return bool(_EXPR_RE.search(text))

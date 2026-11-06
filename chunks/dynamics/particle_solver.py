@@ -1306,7 +1306,13 @@ def _run(owner, notice, sender):
                                    ((t, _extent(pos32[f], width)) for f, t in enumerate(frames_at)))
             _bind_material(stage, cloud.GetPrim(), material_path)
 
-            if node.get_param("render_as", is_s).value == _AS_SPHERES:
+            # The spheres or a driven instancer are what renders then; the cloud is a guide,
+            # or V-Ray draws it as balls too.
+            as_spheres = node.get_param("render_as", is_s).value == _AS_SPHERES
+            if as_spheres or (drive_instances is not None and drive_instances.count):
+                cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+
+            if as_spheres:
                 _author_sphere_instancer(stage, sim_path.AppendChild("ParticleSpheres"), positions,
                                          width * 0.5, colour, material_path, start_frame)
 
@@ -1608,7 +1614,8 @@ def main():
         "render_as", "Render As", menu_items=_RENDER_MODES, default_value=_AS_POINTS,
         tooltip="Points is a UsdGeom.Points cloud -- cheap, and what Storm draws fastest.\n"
         "Instanced Spheres also writes a PointInstancer of real spheres, which is the only "
-        "one V-Ray renders: it draws a Points cloud as a single point.",
+        "one V-Ray renders: it draws a Points cloud as a single point. The Points cloud is then "
+        "guide purpose, as it is when the solver drives an instancer.",
     ))
     material = chunk.LineEdit(
         "material_prim", "Material", flags=_PF.LABELED | _PF.PRIM_SELECTION,

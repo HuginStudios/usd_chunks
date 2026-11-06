@@ -169,6 +169,8 @@ def test_water_poured_on_a_floor_lands_on_it_and_feeds_scatter(graph):
     first, last = np.asarray(points.Get(1)), np.asarray(points.Get(24))
     assert last[:, 2].mean() < first[:, 2].mean() - 5.0, "the water should have fallen"
     assert last[:, 2].min() > -2.0, "and stopped on the floor, not gone through it"
+    # Points is the only output here, so it keeps the default purpose and renders.
+    assert UsdGeom.Imageable(stage.GetPrimAtPath("/ParticleSim/Particles")).ComputePurpose() == UsdGeom.Tokens.default_
     assert solver.get_param("surface_out").value == "/ParticleSim/SurfacePoints"
 
     # Surface Points is what Scatter Points' Painted Points input reads.
@@ -204,6 +206,8 @@ def test_instanced_spheres_carry_the_material(graph):
     for prim in (proto, stage.GetPrimAtPath("/ParticleSim/Particles")):
         bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
         assert bound.GetPrim() == material.GetPrim()
+    # The spheres render; the cloud is a guide, or V-Ray draws it as balls as well.
+    assert UsdGeom.Imageable(stage.GetPrimAtPath("/ParticleSim/Particles")).ComputePurpose() == UsdGeom.Tokens.guide
 
 
 @needs_taichi
@@ -269,6 +273,8 @@ def test_instances_ride_the_flow_when_driven(graph):
     assert positions.GetNumTimeSamples() == 16
     assert positions.Get(1)[0][2] == pytest.approx(38.0, abs=0.01), "frame 1 is where it was scattered"
     assert positions.Get(16)[0][2] < 30.0, "carried down with the water"
+    # The driven instancer is what renders; the cloud is a guide.
+    assert UsdGeom.Imageable(stage.GetPrimAtPath("/ParticleSim/Particles")).ComputePurpose() == UsdGeom.Tokens.guide
 
 
 @needs_taichi

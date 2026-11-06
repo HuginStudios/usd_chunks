@@ -391,6 +391,8 @@ def test_a_child_with_its_own_default_purpose_turns_render_too(wired) -> None:
 
 
 def test_unticked_the_asset_is_left_as_it_is(wired) -> None:
+    """The mesh is still a proxy: with no purpose it rendered over the asset (a car proxy
+    covered the real car in every render)."""
     stage, make = wired
     _box(stage, "/Asset")
     node = make()
@@ -399,7 +401,7 @@ def test_unticked_the_asset_is_left_as_it_is(wired) -> None:
     node.get_param("prim_path").value = "/Asset"
 
     assert stage.GetPrimAtPath("/Asset_proxy")
-    assert _purpose(stage, "/Asset_proxy") == UsdGeom.Tokens.default_
+    assert _purpose(stage, "/Asset_proxy") == UsdGeom.Tokens.proxy
     assert _purpose(stage, "/Asset") == UsdGeom.Tokens.default_
     assert not stage.GetPrimAtPath("/Asset").GetRelationship(UsdGeom.Tokens.proxyPrim).HasAuthoredTargets()
 
