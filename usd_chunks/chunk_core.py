@@ -25,26 +25,36 @@ import uuid
 import weakref
 from abc import abstractmethod
 from collections import ChainMap
-from enum import IntFlag, Enum
 from collections.abc import Callable, Generator, Iterable, Sequence
+from enum import Enum, IntFlag
 from typing import (
+    TYPE_CHECKING,
     Any,
     Generic,
     Protocol,
     TypedDict,
-    TypeVar,
     TypeGuard,
+    TypeVar,
     overload,
-    TYPE_CHECKING,
 )
 
 import attrs
 from pxr import Sdf, Tf, Usd
 from typing_extensions import Required, Self, override
 
-from usd_chunks.chunk_notice import Predicate
-from usd_chunks import ATTRS_VERSION, chunk_cook, chunk_glob, chunk_naming, chunk_notice, chunk_registry, chunk_resources, chunk_utils, skip_cook
+from usd_chunks import (
+    ATTRS_VERSION,
+    chunk_cook,
+    chunk_glob,
+    chunk_naming,
+    chunk_notice,
+    chunk_registry,
+    chunk_resources,
+    chunk_utils,
+    skip_cook,
+)
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.chunk_notice import Predicate
 
 if TYPE_CHECKING:
     # SceneSender moved to chunk_scene, which imports this module -- so the reference
@@ -52,15 +62,10 @@ if TYPE_CHECKING:
     from usd_chunks.chunk_scene import SceneSender
 # The attribute layer -- declared attributes, their metadata and change notification --
 # lives in chunk_attributes. It is the mechanism; this file is the model that uses it.
-from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
-    GIZMO_AXES, GIZMO_BRUSH_TYPE, GIZMO_DEFAULT_EDIT_MODE, GIZMO_EDIT_MODES,
-    GIZMO_MANIPULATOR_TYPES, GIZMO_SHAPE_TYPES, GIZMO_TRANSFORM_ARITY,
-    GIZMO_TRANSFORM_TYPE, GIZMO_TYPES, GizmoBase, check_gizmo_sugar,
-)
 from usd_chunks.chunk_attributes import (  # noqa: F401  (re-exported)
     AttributeMetadata,
-    AttributeSender,
     AttributesBase,
+    AttributeSender,
     AttributesMetaclass,
     CopyMode,
     SendMode,
@@ -73,8 +78,19 @@ from usd_chunks.chunk_attributes import (  # noqa: F401  (re-exported)
 # because ChunkParamBase annotates custom_widget with ChunkParamWidgetBase and attrs
 # resolves that when the class is built -- the dependency is real, not stylistic.
 from usd_chunks.chunk_widget_api import ChunkParamWidgetBase, ChunkWidgetFactoryBase
-
-
+from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
+    GIZMO_AXES,
+    GIZMO_BRUSH_TYPE,
+    GIZMO_DEFAULT_EDIT_MODE,
+    GIZMO_EDIT_MODES,
+    GIZMO_MANIPULATOR_TYPES,
+    GIZMO_SHAPE_TYPES,
+    GIZMO_TRANSFORM_ARITY,
+    GIZMO_TRANSFORM_TYPE,
+    GIZMO_TYPES,
+    GizmoBase,
+    check_gizmo_sugar,
+)
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
 _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
@@ -944,6 +960,46 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         self._params: ChainMap[ChunkHash, ChunkT] = ChainMap()
         self._names: ChainMap[str, ChunkHash] = ChainMap()
 
+        self._reserved_names: dict[str, int] = {}
+
+    def get_valid_child_name(self, orig_name: str, reserved_names: set[str]) -> str:
+        """A unique form of orig_name, numbered so it does not clash with reserved_names.
+
+        Args:
+            orig_name (str): The name to make valid
+            reserved_names (set[str]): The names already taken. The new name is added to it, so
+                a group nested inside an already created group gets a unique name too
+
+        Returns:
+            str: a unique name
+        """
+        suffix = ""
+
+        if m := re.match("(.*?)([0-9]+)$", orig_name):
+            orig_name = m.group(1)
+            suffix = m.group(2)
+        # Resumed from this prefix's own last try, not always 1: adding the Nth unnamed
+        # "Cube" restarted the scan from "Cube1" every time, an O(n) search repeated n
+        # times. _reserved_names is only ever a starting guess -- the loop below still
+        # checks reserved_names itself, so a gap (an explicit "Cube7" out of order) is
+        # still found and never skipped past.
+        idx = int(suffix) if suffix else self._reserved_names.get(orig_name, 1)
+
+        max_iter = 1000
+
+        name = orig_name + suffix
+
+        # Capped on tries, not on the number: a name ending in 1000 or more (Cube1000, or a
+        # uuid's hex) started past the cap and failed on its first clash.
+        for _ in range(max_iter):
+            if name not in reserved_names:
+                if not suffix:
+                    self._reserved_names[orig_name] = idx + 1
+                return name
+            name = orig_name + str(idx)
+            idx += 1
+        raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
+
     def __copy__(self):
         """A new container holding copies of this one's direct children, and its callbacks."""
         copied = NameSyncedContainer()
@@ -1528,7 +1584,7 @@ class ChunkCommon(AttributesBase):
                 if other.has_flag(ChunkFlags.GroupFlags.CONTEXT) and group_parent_path(other) == home
             }
         if name in taken and taken[name] != own_key:
-            return ChunkGroupBase.get_valid_child_name(name, set(taken))
+            return owner.get_valid_child_name(name, set(taken))
         return name
 
     @override
@@ -3257,37 +3313,15 @@ class ChunkGroupBase(ChunkContainerBase):
         """
         return set(self.children.get_my_names()) | set([self.name])
 
-    @staticmethod
-    def get_valid_child_name(orig_name: str, reserved_names: set[str]) -> str:
-        """A unique form of orig_name, numbered so it does not clash with reserved_names.
+    def get_valid_child_name(self, orig_name: str, reserved_names: set[str]) -> str:
+        """A unique form of orig_name; see NameSyncedContainer.get_valid_child_name.
 
-        Args:
-            orig_name (str): The name to make valid
-            reserved_names (set[str]): The names already taken. The new name is added to it, so
-                a group nested inside an already created group gets a unique name too
-
-        Returns:
-            str: a unique name
+        Delegated to `self.children` (the NameSyncedContainer that owns the authoritative
+        name map) rather than implemented here, so the per-prefix "next index to try"
+        cache lives in one place and applies to every path that renames a new or existing
+        child -- this one and ChunkCommon._unique_among_siblings's rename path alike.
         """
-        suffix = ""
-
-        if m := re.match("(.*?)([0-9]+)$", orig_name):
-            orig_name = m.group(1)
-            suffix = m.group(2)
-
-        idx = int(suffix) if suffix else 1
-        max_iter = 1000
-
-        name = orig_name + suffix
-
-        # Capped on tries, not on the number: a name ending in 1000 or more (Cube1000, or a
-        # uuid's hex) started past the cap and failed on its first clash.
-        for _ in range(max_iter):
-            if name not in reserved_names:
-                return name
-            name = orig_name + str(idx)
-            idx += 1
-        raise RuntimeError(f"Failed to resolve name, loop exceeded {max_iter} iterations")
+        return self.children.get_valid_child_name(orig_name, reserved_names)
 
 
 class ChunkListGroupBase(ChunkGroupBase):
