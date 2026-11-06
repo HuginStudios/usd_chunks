@@ -878,3 +878,39 @@ def test_without_scipy_it_places_nothing_and_says_why(monkeypatch) -> None:
 
     assert not stage.GetPrimAtPath("/ScatterInstancer")
     assert "needs scipy" in scatter.get_param("readout").value
+
+
+def _quad_mesh(stage, path, quads):
+    """A strip of `quads` quads: 2 triangles each."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    points = [(x, 0, z) for x in range(quads + 1) for z in (0, 1)]
+    mesh.GetPointsAttr().Set(points)
+    mesh.GetFaceVertexCountsAttr().Set([4] * quads)
+    mesh.GetFaceVertexIndicesAttr().Set([i for q in range(quads) for i in (2 * q, 2 * q + 2, 2 * q + 3, 2 * q + 1)])
+    return mesh
+
+
+def test_the_readout_gives_the_triangles_every_instance_adds_up_to(caplog, monkeypatch) -> None:
+    """22 pine saplings were 45M triangles once expanded and crashed Aurora with no hint why.
+    A guide mesh inside the prototype does not render, so it is not counted."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    UsdGeom.Xform.Define(stage, "/Library/tree")
+    _quad_mesh(stage, "/Library/tree/leaves", 3)
+    _quad_mesh(stage, "/Library/tree/collider", 50).CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 10
+    _set_proto(scatter, "/Library/tree")
+    mod.module.execute(scatter)
+
+    placed = scatter.get_param("out_count").value
+    assert placed
+    readout = scatter.get_param("readout").value
+    assert f"{placed * 6} triangles expanded" in readout
+    assert "run out of memory" not in readout
+
+    monkeypatch.setattr(mod.module, "_TRIANGLE_BUDGET", placed * 6 - 1)
+    with caplog.at_level("WARNING"):
+        mod.module.execute(scatter)
+    assert "run out of memory" in scatter.get_param("readout").value
+    assert any("triangles expanded" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
