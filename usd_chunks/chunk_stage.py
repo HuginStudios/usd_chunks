@@ -622,6 +622,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
         self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
+        chunk_cook.break_ties_with(branch_place)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
         )
@@ -5858,57 +5859,104 @@ def view_cook_list(
     """
     prim_to_chunk = {get_chunk_prim_path(c): c for c in scene.get_chunks()}
     view_path = get_chunk_prim_path(view_chunk)
+    paths: list[str] = []
+    _roots_first(stage, prim_to_chunk, view_path, set(), paths)
+    return [c for path in paths if path != view_path and (c := prim_to_chunk.get(path)) is not None]
 
-    def sources_of(path: str) -> list[str]:
-        prim = stage.GetPrimAtPath(Sdf.Path(path))
-        if not prim.IsValid():
-            return []
-        srcs: list[str] = []
-        for attr in prim.GetAttributes():
-            if not attr.GetName().startswith(_INPUTS_PREFIX):
-                continue
-            for conn in attr.GetConnections():
-                src = str(conn.GetPrimPath())
-                if src in prim_to_chunk:
-                    srcs.append(src)
-        # A weaker department's chain feeds this one's first chunk through the stack.
-        srcs.extend(src for src in implied_sources(prim) if src in prim_to_chunk)
-        if not is_merge_prim(prim):
-            return srcs
-        # A merge's slot order is what decides which branch wins, and visit order is what
-        # produces that ranking: visit() appends a node only after its sources, so whichever
-        # branch is visited FIRST lands earliest in cook_list -- and recook_for_view ranks
-        # later-in-cook_list as STRONGER. Visiting the slots in descending order therefore
-        # leaves slot 0 visited last, ranked highest, and strongest, which is the documented
-        # "first input wins". iter_exec_inputs is strongest-first, hence the reverse.
-        #
-        # Branches are disjoint, so each stays contiguous in cook_list whatever its length.
-        # Where two slots share an upstream node, visit()'s `seen` keeps it at its FIRST
-        # visit -- i.e. with the weakest of the branches that reach it. Well-defined, and the
-        # only stable choice: a shared node cannot sit at two strengths at once.
-        exec_srcs = [
-            src
-            for attr in reversed(iter_exec_inputs(prim))
-            for conn in attr.GetConnections()
-            if (src := str(conn.GetPrimPath())) in prim_to_chunk
-        ]
-        exec_set = set(exec_srcs)
-        return [s for s in srcs if s not in exec_set] + exec_srcs
 
-    order: list[core.ChunkBase] = []
+def _sources_of(stage: Usd.Stage, prim_to_chunk: dict, path: str) -> list[str]:
+    """The chunk prims wired into the chunk prim at path, a Merge's last slot first."""
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if not prim.IsValid():
+        return []
+    srcs: list[str] = []
+    for attr in prim.GetAttributes():
+        if not attr.GetName().startswith(_INPUTS_PREFIX):
+            continue
+        for conn in attr.GetConnections():
+            src = str(conn.GetPrimPath())
+            if src in prim_to_chunk:
+                srcs.append(src)
+    # A weaker department's chain feeds this one's first chunk through the stack.
+    srcs.extend(src for src in implied_sources(prim) if src in prim_to_chunk)
+    if not is_merge_prim(prim):
+        return srcs
+    # A merge's slot order is what decides which branch wins, and visit order is what
+    # produces that ranking: _roots_first appends a node only after its sources, so whichever
+    # branch is visited FIRST lands earliest in cook_list -- and recook_for_view ranks
+    # later-in-cook_list as STRONGER. Visiting the slots in descending order therefore
+    # leaves slot 0 visited last, ranked highest, and strongest, which is the documented
+    # "first input wins". iter_exec_inputs is strongest-first, hence the reverse.
+    #
+    # Branches are disjoint, so each stays contiguous in cook_list whatever its length.
+    # Where two slots share an upstream node, `seen` keeps it at its FIRST
+    # visit -- i.e. with the weakest of the branches that reach it. Well-defined, and the
+    # only stable choice: a shared node cannot sit at two strengths at once.
+    exec_srcs = [
+        src
+        for attr in reversed(iter_exec_inputs(prim))
+        for conn in attr.GetConnections()
+        if (src := str(conn.GetPrimPath())) in prim_to_chunk
+    ]
+    exec_set = set(exec_srcs)
+    return [s for s in srcs if s not in exec_set] + exec_srcs
+
+
+def _roots_first(stage: Usd.Stage, prim_to_chunk: dict, path: str, seen: set, order: list[str]) -> None:
+    """Append what feeds path, then path itself, to order, roots first, skipping what seen holds."""
+    if path in seen:
+        return
+    seen.add(path)
+    for src in _sources_of(stage, prim_to_chunk, path):
+        _roots_first(stage, prim_to_chunk, src, seen, order)
+    order.append(path)
+
+
+# (chunk_scheduler.shape_version(), id(chunk) -> place) for branch_place.
+_branch_places: tuple[int, dict[int, int]] = (-1, {})
+
+
+def branch_place(chunk: core.ChunkBase) -> int:
+    """Where chunk cooks among chunks no wire orders: as a View cooks them, a Merge's last input first.
+
+    A Merge's slots are on the stage, not in the DAG, so the cook queue cannot see them
+    (chunk_cook.break_ties_with). Without this, two branches of a Merge cooked in the order
+    they were made, and a Transform made before the Cube it moves found nothing to move
+    once the scene was opened again. Every graph is walked once per shape of the graph.
+
+    Args:
+        chunk: The chunk to place.
+
+    Returns:
+        Its place; lower cooks first.
+    """
+    global _branch_places
+    version = chunk_scheduler.shape_version()
+    if _branch_places[0] != version:
+        _branch_places = (version, {})
+    places = _branch_places[1]
+    place = places.get(id(chunk))
+    if place is None:
+        stage, scene = chunk.get_scene_stage(), chunk.get_scene()
+        if stage is not None and scene is not None:
+            _place_branches(stage, scene, places)
+        place = places.setdefault(id(chunk), len(places))
+    return place
+
+
+def _place_branches(stage: Usd.Stage, scene: chunk_scene.SceneSender, places: dict[int, int]) -> None:
+    """Give every chunk of scene its place, walking up from each chunk nothing is wired below."""
+    chunks = list(scene.get_chunks())
+    prim_to_chunk = {get_chunk_prim_path(c): c for c in chunks}
+    fed = {id(dep) for c in chunks for _, dep in c.get_dependencies()}
     seen: set = set()
-
-    def visit(path: str) -> None:
-        if path in seen:
-            return
-        seen.add(path)
-        for src in sources_of(path):
-            visit(src)
-        if path != view_path and (c := prim_to_chunk.get(path)) is not None:
-            order.append(c)
-
-    visit(view_path)
-    return order
+    paths: list[str] = []
+    for c in chunks:
+        if id(c) not in fed and (path := get_chunk_prim_path(c)):
+            _roots_first(stage, prim_to_chunk, path, seen, paths)
+    for path in paths:
+        if (c := prim_to_chunk.get(path)) is not None:
+            places.setdefault(id(c), len(places))
 
 
 def recook_for_view(

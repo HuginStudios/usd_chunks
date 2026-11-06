@@ -78,6 +78,9 @@ _solve_deferred: dict = {}
 # What runs after every cook, once its write guard is down. See after_cook().
 _after_cook_hooks: list[Callable] = []
 
+# Orders the chunks of one flush round that sit at the same depth. See break_ties_with().
+_tie_break: Callable | None = None
+
 # How many holds are open (hold()): while any is, nothing else cooks.
 _held = 0
 
@@ -109,6 +112,24 @@ def after_cook(fn: Callable) -> None:
     """
     if fn not in _after_cook_hooks:
         _after_cook_hooks.append(fn)
+
+
+def break_ties_with(fn: Callable) -> None:
+    """Cook the chunks of a flush round that sit at the same depth in the order of fn(chunk).
+
+    For what sits above this module and knows what the DAG does not: a Merge's slots are on
+    the stage (chunk_stage.branch_place). Without it they cook in the order they were reached.
+
+    Args:
+        fn: Called with a chunk; lower cooks first.
+    """
+    global _tie_break
+    _tie_break = fn
+
+
+def _cook_order(chunk) -> tuple:
+    """flush()'s sort key: upstream first, then break_ties_with's order."""
+    return (chunk_scheduler.get_depth(chunk.get_dag_node()), _tie_break(chunk) if _tie_break is not None else 0)
 
 
 def queue(prop) -> bool:
@@ -455,7 +476,7 @@ def _flush() -> None:
                 raise RuntimeError("chunk_cook.flush: cooks kept dirtying each other: "
                                    + ", ".join(getattr(c, "name", "?") for c in chunks))
             work = [(c, *_pending.pop(c)) for c in chunks]
-            work.sort(key=lambda w: chunk_scheduler.get_depth(w[0].get_dag_node()))
+            work.sort(key=lambda w: _cook_order(w[0]))
             for chunk, changes, was_stale in work:
                 # Reached again since this round began: a cook before it set what it reads
                 # (a Math Ops whose a is @Mult1.result@). Decided on with only the reasons it
