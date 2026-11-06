@@ -23,8 +23,8 @@ Output is two prims under one Scope:
 
 * ``Curves`` -- a ``BasisCurves`` of the vines, tapered by the pipe model (a fork is thicker
   than either branch leaving it), ready to render with a curve shader.
-* ``Leaves`` -- a ``Points`` cloud with a surface normal per point, which is deliberately the
-  same shape a Scatter Brush publishes. Wire it into a **Scatter Points** chunk's *Painted
+* ``Leaves`` -- a guide-purpose ``Points`` cloud with a surface normal per point, which is
+  deliberately the same shape a Scatter Brush publishes. Wire it into a **Scatter Points** chunk's *Painted
   Points* input and its prototypes are instanced along the vine, laid flat on the wall. Leaf
   geometry is somebody's asset, not something to generate.
 
@@ -1276,6 +1276,7 @@ def _bail(node, stage, layer, where, message):
         curves.CreatePointsAttr().Set(Vt.Vec3fArray())
         curves.CreateWidthsAttr().Set(Vt.FloatArray())
         cloud = UsdGeom.Points.Define(stage, where[2])
+        cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
         cloud.CreatePointsAttr().Set(Vt.Vec3fArray())
         cloud.CreateNormalsAttr().Set(Vt.Vec3fArray())
     _report(node, message)
@@ -1324,9 +1325,13 @@ def _author_leaves(stage, path, leaves, settings, node):
     Authored even when it is empty, so the Leaf Points output resolves to a real prim the moment
     the chunk exists -- the same reason the brush publishes its points path before anything has
     been painted. Wiring an output is how you decide to use it; it cannot require having used it.
+
+    Guide purpose: the points are data for Scatter Points, and a renderer that draws Points
+    (V-Ray) would show each leaf as a ball. usdview shows them with Display Guide on.
     """
     points, normals = leaves
     cloud = UsdGeom.Points.Define(stage, path)
+    cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
     cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
     cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
     cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)))
