@@ -3088,7 +3088,8 @@ def execute(node):
             _author_proxy(stage, f"{inst_path}_proxy", proxy_mode, protos, specs, scratch_stage,
                           keep, (out_positions, out_indices, out_scales, out_orients))
 
-    _report(node, protos, quota, count, scatter_mode, pack_levels, missing, surface_missing)
+    triangles = sum(q * _triangle_count(stage.GetPrimAtPath(p.path)) for p, q in zip(protos, quota) if q)
+    _report(node, protos, quota, count, scatter_mode, pack_levels, missing, triangles, surface_missing)
 
 
 def _random_lateral(rng, lat_a, lat_b, axis_vec):
@@ -3097,13 +3098,45 @@ def _random_lateral(rng, lat_a, lat_b, axis_vec):
     return axis_vec[lat_a] * math.cos(ang) + axis_vec[lat_b] * math.sin(ang)
 
 
-def _report(node, protos, quota, count, mode, levels, missing=(), surface_missing=""):
+#: Expanded triangles past which the readout warns. Aurora crashed on 22 pine saplings, 45M.
+_TRIANGLE_BUDGET = 20_000_000
+
+
+def _triangle_count(prim) -> int:
+    """Triangles in the meshes under prim that render: guide and proxy prims are left out."""
+    if not prim:
+        return 0
+    total = 0
+    skip = (UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy)
+    it = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
+    for p in it:
+        imageable = UsdGeom.Imageable(p)
+        if imageable and imageable.GetPurposeAttr().Get() in skip:
+            it.PruneChildren()
+            continue
+        if p.IsA(UsdGeom.Mesh):
+            counts = UsdGeom.Mesh(p).GetFaceVertexCountsAttr().Get()
+            if counts:
+                counts = np.asarray(counts)
+                total += int(counts.sum()) - 2 * len(counts)
+    return total
+
+
+def _millions(n: int) -> str:
+    """A triangle count for the readout: 45200000 -> "45.2M"."""
+    return f"{n / 1e6:.1f}M" if n >= 100_000 else f"{n:,}"
+
+
+def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, surface_missing=""):
     """Fill the readout label + the output params other chunks can read.
 
     Prototype paths that matched nothing are named, and logged: a typo in one row otherwise
     passes for a working scatter. When no row resolved, the first line says the default cube
     is being drawn, since a readout of "7000 instances" alone looks like success. A surface
     path that names no prim is named and logged the same way.
+
+    The triangles all the instances add up to are given too, with a warning past
+    _TRIANGLE_BUDGET: a renderer that runs out of memory gives no hint why.
     """
     if count and protos:
         mix = "\n".join(
@@ -3115,6 +3148,15 @@ def _report(node, protos, quota, count, mode, levels, missing=(), surface_missin
     fallback = len(protos) == 1 and protos[0].label == _FALLBACK_LABEL
     head = f"{count} instances · {mode}{suffix}" + (" · no prototype found, drawing the default cube" if fallback else "")
     text = head if mix else f"{head}\nnothing placed — check the surface mesh and prototype paths"
+    if triangles:
+        text += f"\n{_millions(triangles)} triangles expanded"
+    if triangles > _TRIANGLE_BUDGET:
+        text += f", over {_millions(_TRIANGLE_BUDGET)}: a renderer may run out of memory"
+        logger.warning(
+            "%s: %s triangles expanded, over %s; a renderer may run out of memory. Use fewer "
+            "instances or a lighter prototype (Poly Reduce).",
+            node.name, _millions(triangles), _millions(_TRIANGLE_BUDGET),
+        )
     if surface_missing:
         text += f"\nsurface not found: {surface_missing}"
         logger.warning("%s: surface prim not found: %s", node.name, surface_missing)
