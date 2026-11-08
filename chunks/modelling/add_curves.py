@@ -181,7 +181,7 @@ def config():
         description="""
         Grows hair: BasisCurves strands on the faces of a target mesh.
 
-        Add Hair -- builds hair curves on a target mesh. Count, Segments and Length set the
-        strands; Mesh Type can build a test mesh (curly) to grow them on.
+        Add Hair -- builds hair curves, as BasisCurves strands, on the faces of a target mesh.
+        Count, Segments and Length set the strands; Mesh Type can build a test mesh (curly) to grow them on.
         """,
     )
