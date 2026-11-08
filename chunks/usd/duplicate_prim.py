@@ -7,15 +7,20 @@ Handles name collisions by auto-incrementing a numeric suffix.
 
 With Copies above 1 it makes that many copies under the destination, each moved by the
 per-copy offset one more time than the last: a row, a ring, a spiral staircase.
+
+As Instances makes each copy an instanceable reference to the source instead, so USD
+composes the source's subtree once and every copy shares it.
 """
 
 from __future__ import annotations
+
+import logging
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_utils, sdf_authoring
 
-_OFFSETS = ("copy_translate", "copy_rotate", "copy_scale", "copy_pivot")
+logger = logging.getLogger(__name__)
 
 
 def _generate_dest_path(stage: Usd.Stage, source_path: str) -> str:
@@ -79,21 +84,42 @@ def _duplicate(stage: Usd.Stage, owner, source: Usd.Prim, dest_path: str) -> Non
     """
     copies_param = owner.get_param("copies")
     copies = max(1, int(copies_param.value)) if copies_param is not None else 1
+    instances_param = owner.get_param("as_instances")
+    as_instances = bool(instances_param.value) if instances_param is not None else False
+    if as_instances and not source.GetChildren():
+        logger.warning("%s has no children: an instance shares only what is below its root, so "
+                       "instancing it saves nothing. A PointInstancer (Scatter Points) suits leaf "
+                       "prims.", source.GetPath())
+    writer = sdf_authoring.Writer(stage)
     if copies == 1:
-        _copy_prim_recursive(stage, source, dest_path)
+        if as_instances:
+            with Sdf.ChangeBlock():
+                _instance_spec(writer, source, dest_path)
+        else:
+            _copy_prim_recursive(stage, source, dest_path)
         return
     local = UsdGeom.Xformable(source).GetLocalTransformation() if source.IsA(UsdGeom.Xformable) else Gf.Matrix4d(1)
     step, width = _step_matrix(owner), max(2, len(str(copies - 1)))
-    writer = sdf_authoring.Writer(stage)
     with Sdf.ChangeBlock():
         if not stage.GetPrimAtPath(dest_path):
             writer.define(dest_path, "Xform")
         placed = Gf.Matrix4d(local)
         for i in range(copies):
             path = f"{dest_path}/{source.GetName()}_{i:0{width}d}"
-            _copy_spec(writer, source, path)
+            if as_instances:
+                _instance_spec(writer, source, path)
+            else:
+                _copy_spec(writer, source, path)
             _set_matrix(writer.layer.GetPrimAtPath(writer.spec_path(path)), placed)
             placed = placed * step
+
+
+def _instance_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str) -> None:
+    """An instanceable internal reference to source at dest_path: its type, properties and
+    children all come through the reference, and USD shares the subtree between instances."""
+    spec = writer.define(dest_path)
+    spec.referenceList.Prepend(Sdf.Reference(primPath=source.GetPath()))
+    spec.instanceable = True
 
 
 def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str):
@@ -281,6 +307,12 @@ def main():
     dest_path.add_callback(_on_change)
     chunk_api.add_param(dest_path)
 
+    chunk_api.add_param(chunk.Checkbox(
+        "as_instances", "As Instances", default_value=False,
+        tooltip="Each copy an instanceable reference to the source: light, and it follows the "
+        "source, but nothing under a copy can be edited on its own. Off makes full copies.",
+    ))
+
     copies = chunk.Group("copies_grp", "Copies")
     copies.add_params([
         chunk.Slider("copies", "Copies", min_value=1, max_value=100, default_value=1, is_int=True,
@@ -329,6 +361,12 @@ def config():
         Translate; a ring a Rotate around the ring's centre; a spiral staircase both, e.g.
         Rotate Y 18 and Translate Y 0.2 for 20 copies. Each copy's transform is written as
         one matrix op.
+
+        As Instances [as_instances]: each copy is an instanceable reference to the source
+        rather than a deep copy. USD composes the source's subtree once and shares it, and
+        the copies follow later changes to the source. Below a copy's root nothing can be
+        edited on its own (instance proxies are read-only), and only children are shared,
+        so instancing a leaf Mesh saves nothing -- a PointInstancer suits those.
 
         In the node graph: accepts prim input for source, outputs the new prim.
         """,
