@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import filecmp
+import json
 import os
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import time
 import traceback
 from argparse import SUPPRESS, ArgumentParser, RawDescriptionHelpFormatter
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from importlib.resources import files
 from pathlib import Path
 
@@ -23,7 +25,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_batch, chunk_naming, configure_logging
 from usd_chunks.chunk_process import python_executable
 from usd_chunks import chunk, chunk_registry, chunk_core, chunk_scene, chunk_scheduler, chunk_utils
-from usd_chunks import cook_timings, live
+from usd_chunks import chunk_catalog, cook_timings, live
 from usd_chunks import sweep as sweepmod
 from usd_chunks.store import pin as pinmod
 from usd_chunks.chunk_script import Scene
@@ -242,6 +244,111 @@ def cmd_info(args):
         else:
             print("  None (no chunkgroup params exists)")
         print("="*120)
+
+def _catalog_registry():
+    """The chunk registry, from USD_CHUNK_DIRS, without a stage worth the name."""
+    return Scene(Usd.Stage.CreateInMemory(), "cli", sync=False).registry
+
+
+#: Without a query, a module with more menu entries than this lists as one line (the
+#: MaterialX shader chunk has hundreds, one per node).
+_MANY_ENTRIES = 12
+
+
+def _utf8_stdout() -> None:
+    """Descriptions carry dashes and units (m²); a Windows pipe defaults to the ANSI page."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+
+def cmd_list(args):
+    _utf8_stdout()
+    rows = chunk_catalog.entries(_catalog_registry(), args.query or "")
+    if args.json:
+        print(json.dumps([vars(r) for r in rows], indent=1, default=str))
+        return
+    if not rows:
+        print(f"No chunk matches {args.query!r} -- is USD_CHUNK_DIRS set?" if args.query
+              else "No chunks found -- is USD_CHUNK_DIRS set?")
+        sys.exit(1)
+    counts: dict[str, int] = {}
+    for r in rows:
+        if r.presets is not None:
+            counts[r.module] = counts.get(r.module, 0) + 1
+    folded = set() if args.query else {m for m, n in counts.items() if n > _MANY_ENTRIES}
+    for r in rows:
+        if r.module in folded and r.presets is not None:
+            continue
+        kind = f"-> {r.module}" if r.presets is not None else r.category
+        summary = r.summary or "(no description)"
+        if r.module in folded:
+            summary = f"[{counts[r.module]} menu entries: usdchunks list <word>] {summary}"
+        print(f"{r.name:<28} {kind:<20} {summary[:90]}")
+    print("\n`usdchunks show <name>` for one in full; in a script, scene.create.<name>(input, param=value).")
+
+
+def _param_rows(params, depth=0):
+    """(indent, script name, type, default, range or choices, label: tooltip) per param."""
+    for p in params:
+        pad = "  " * depth
+        if p.kind in ("group", "list"):
+            note = f"list of rows: set row i as {p.name}.<i>.<param>" if p.kind == "list" else "group"
+            yield pad, f"[{p.name}]", "", "", "", f"{p.label} ({note})"
+            yield from _param_rows(p.children, depth + 1)
+            continue
+        if p.items:
+            joined = "|".join(p.items)
+            span = joined if len(joined) <= 40 else "|".join(p.items[:4]) + "|..."
+        elif p.min_value is not None or p.max_value is not None:
+            lo = "" if p.min_value is None else f"{p.min_value:g}"
+            hi = "" if p.max_value is None else f"{p.max_value:g}"
+            span = f"{lo}..{hi}"
+        else:
+            span = ""
+        tip = p.tooltip.splitlines()[0] if p.tooltip else ""
+        text = f"{p.label}: {tip}" if tip else p.label
+        yield pad, p.name, p.kind, repr(p.default), span, text[:100]
+
+
+def cmd_show(args):
+    _utf8_stdout()
+    registry = _catalog_registry()
+    found = chunk_catalog.describe(registry, args.name)
+    if found is None:
+        near = [e.name for e in chunk_catalog.entries(registry, args.name)][:8]
+        print(f"No chunk called {args.name!r}." + (f" Matching: {', '.join(near)}" if near else ""))
+        sys.exit(1)
+    entry, description, variants, params = found
+    if args.json:
+        print(json.dumps({"entry": vars(entry), "description": description,
+                          "menu_entries": [vars(v) for v in variants],
+                          "params": [asdict(p) for p in params]}, indent=1, default=str))
+        return
+    if entry.presets is not None:
+        sets = ", ".join(f"{k}={v!r}" for k, v in entry.presets.items())
+        print(f"{entry.name} -- a menu entry of {entry.module} ({entry.category}), with {sets}")
+    else:
+        print(f"{entry.name} ({entry.category})")
+    print(f"  scene.create.{entry.name}(input, param=value, ...)")
+    print()
+    print("\n".join(f"  {line}" for line in (description or "(no description)").splitlines()))
+    if variants:
+        print("\nMenu entries (the same chunk with params preset; create them by name):")
+        for v in variants[:_MANY_ENTRIES]:
+            print(f"  {v.name:<20} " + ", ".join(f"{k}={val!r}" for k, val in (v.presets or {}).items()))
+        if len(variants) > _MANY_ENTRIES:
+            print(f"  ... and {len(variants) - _MANY_ENTRIES} more: usdchunks list <word>")
+    print("\nParams (script name, type, default, range or choices, label):")
+    rows = list(_param_rows(params))
+    width = max((len(pad + name) for pad, name, *_ in rows), default=10)
+    for pad, name, kind, default, span, text in rows:
+        if not kind:
+            print(f"  {pad}{name} {text}")
+            continue
+        print(f"  {(pad + name):<{width}}  {kind:<9} {default:<16} {span:<16} {text}".rstrip())
+
 
 def cmd_validate(args):
     stage = Usd.Stage.Open(args.usda)
@@ -1067,6 +1174,9 @@ def main():
             "  usdchunks run setup.usda --live\n"
             "  usdchunks send setup.usda MyChunk.size=2 --wait\n"
             "  usdchunks batch setup.usda -o 'out/*.usda'\n"
+            "  usdchunks list\n"
+            "  usdchunks list scatter\n"
+            "  usdchunks show mesh\n"
             "  usdchunks info setup.usda\n"
             "  usdchunks validate setup.usda -v\n"
             "  usdchunks plugin-path\n"
@@ -1164,6 +1274,22 @@ def main():
     send_parser.add_argument("--wait", action="store_true", help="Return once the session has cooked them")
     send_parser.add_argument("--timeout", type=float, default=None, help="Seconds --wait waits at most")
     send_parser.add_argument("--list", action="store_true", help="List the params the session can set")
+
+    list_parser = sub.add_parser(
+        "list",
+        help="List the installed chunks (USD_CHUNK_DIRS), or those matching a word",
+        description="One line per chunk and menu entry: its script name, category and what it does.",
+    )
+    list_parser.add_argument("query", nargs="?", default="", help="Only chunks whose name or description has this")
+    list_parser.add_argument("--json", action="store_true", help="Print JSON instead")
+
+    show_parser = sub.add_parser(
+        "show",
+        help="Show one chunk in full: description, menu entries and every param",
+        description="What a chunk does and every param a script can set: name, type, default, range.",
+    )
+    show_parser.add_argument("name", help="The chunk's script name, as `usdchunks list` prints it")
+    show_parser.add_argument("--json", action="store_true", help="Print JSON instead")
 
     info_parser = sub.add_parser(
         "info",
@@ -1391,6 +1517,10 @@ def main():
         cmd_run(args)
     elif args.command == "send":
         cmd_send(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "show":
+        cmd_show(args)
     elif args.command == "info":
         cmd_info(args)
     elif args.command == "validate":

@@ -17,7 +17,6 @@ gone, because chunk_core cannot import this module without a cycle.
 from __future__ import annotations
 
 import contextlib
-import re
 import threading
 import logging
 import weakref
@@ -28,7 +27,8 @@ from typing import Any
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler, chunk_stage, chunk_utils
+from usd_chunks import chunk_catalog, chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler
+from usd_chunks import chunk_stage, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
 from usd_chunks.graph import backdrops, engine, layout
@@ -1816,11 +1816,6 @@ class Creator:
             for entry in chunk_registry.ChunkRegistry().get_menu_entries(sort_result=False):
                 if entry.presets is None:
                     continue
-                key = _script_name(entry.label)
+                key = chunk_catalog.script_name(entry.label)
                 self._variants[key] = None if key in self._variants else entry
         return self._variants
-
-
-def _script_name(label: str) -> str:
-    """A menu label as a Python name: "Dome Light" -> "dome_light"."""
-    return re.sub(r"\W+", "_", label.strip()).strip("_").lower()
