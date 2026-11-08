@@ -4220,6 +4220,16 @@ def clear_param(param: core.ChunkCommon) -> ParamClear:
     cleared = _clear_param(param)
     for attr in wires:
         clear_attr_connections(attr)
+    # The wire went with the attr's specs, out of the param's sight: no write of its own
+    # tells the hook, so the chunk's dependencies are brought in line here. The value set
+    # above already cooked it with the old source above it, so a chunk that lost one
+    # cooks again, now that it no longer sees what that source makes.
+    if (
+        (chunk := param.get_chunk()) is not None
+        and _live_prim(chunk) is not None
+        and _reconcile_after_param_wire(chunk)
+    ):
+        chunk.execute()
     return cleared
 
 
@@ -7171,6 +7181,29 @@ def reconcile_dag_dependencies(chunk: core.ChunkBase) -> bool:
         chunk.add_dependency(dep)
         changed = True
     return changed
+
+
+def _reconcile_after_param_wire(chunk: core.ChunkBase) -> bool:
+    """core.param_wires_changed_hook: a param's own write moved a wire, so reconcile chunk.
+
+    The stage notice reconciles every other wire edit, but it ignores the param's write
+    (_usd_write_active). Without this, replacing @Source.p@ with a number left Source
+    above the chunk, so its next cook still saw what Source makes.
+
+    Returns:
+        Whether a dependency was added or removed.
+    """
+    sync = ChunkStageSync()
+    if sync._reconciling_exec or sync._reloading:
+        return False
+    sync._reconciling_exec = True
+    try:
+        return reconcile_dag_dependencies(chunk)
+    finally:
+        sync._reconciling_exec = False
+
+
+core.param_wires_changed_hook = _reconcile_after_param_wire
 
 
 _chunk_clipboard: list[str] = []

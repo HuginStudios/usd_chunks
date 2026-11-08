@@ -97,6 +97,13 @@ _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+#: Called as hook(chunk) after a param's own write added, moved or removed the wire on its
+#: storage attr (an @Node.param@ expression set or replaced). Set by chunk_stage, which
+#: keeps the chunk's DAG dependencies in step with its wires: the stage notice that does
+#: that for every other edit is ignored while a param writes (_usd_write_active), and a
+#: dependency left behind keeps the old source above the chunk, so its cook still sees it.
+param_wires_changed_hook: Callable[[Any], None] | None = None
+
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
@@ -994,7 +1001,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         for _ in range(max_iter):
             if name not in reserved_names:
                 if not suffix:
-                    self._reserved_names[orig_name] = idx + 1
+                    # idx is already the next suffix to try: the loop moved past the
+                    # one just returned (or left it at its start, for the bare name).
+                    self._reserved_names[orig_name] = idx
                 return name
             name = orig_name + str(idx)
             idx += 1
@@ -1960,6 +1969,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
             is_expr = isinstance(raw, str) and chunk_utils.has_expression(raw)
             val = notice.data.value
             refused = None  # (locked layer, the value USD still composes) for a refused edit
+            wires_changed = False
             if val is not None:
                 prev_write = chunk_notice._usd_write_active
                 chunk_notice._usd_write_active = True
@@ -2001,6 +2011,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                 refused = (fallback, usd_attr.Get(0))
                                 usd_attr = None
                         if usd_attr:
+                            wires_before = usd_attr.GetConnections()
                             with chunk_utils.edit_context_for(stage, self._var_selections, fallback):
                                 # Read first: a String attr keeps its expression as its value,
                                 # which the write below replaces.
@@ -2053,10 +2064,14 @@ class ChunkUsdAttributeSupport(AttributesBase):
                                     if had_expr:
                                         usd_attr.ClearConnections()
                                     chunk_utils.clear_expression_text(usd_attr)
+                            # Composed, so a load writing back the wire it just read is no change.
+                            wires_changed = usd_attr.GetConnections() != wires_before
                     if not self.is_blocked() and refused is None:
                         self._write_driven_attrs(stage, val)
                 finally:
                     chunk_notice._usd_write_active = prev_write
+            if wires_changed and param_wires_changed_hook is not None and (chunk := self.get_chunk()):
+                param_wires_changed_hook(chunk)
             if refused is not None:
                 locked, composed = refused
                 logger.warning(
