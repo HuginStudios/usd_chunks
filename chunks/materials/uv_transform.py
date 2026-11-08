@@ -90,6 +90,8 @@ def config():
         icon="image",
         outputs=[("result", "Float2")],
         description="""
+        Offsets, scales and rotates UVs before they reach a texture.
+
         UV Transform chunk — inserts a UsdTransform2d shader to offset, scale and rotate
         UV coordinates before they reach a texture.
 
