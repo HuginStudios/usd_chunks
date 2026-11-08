@@ -8,7 +8,12 @@ def config():
         terminal=True,
         category=chunk.StandardCategory.CORE,
         icon="output",
-        description="What this graph delivers: the end of its chain. Cooks with no active view, and is what a run, a reference or a stronger layer cooks to.",
+        description="""
+        Marks what the network delivers: the end of its chain, what a run or reference cooks to.
+
+        What this graph delivers: the end of its chain. Cooks with no active view, and is what a run, a reference or a
+        stronger layer cooks to.
+        """,
     )
 
 

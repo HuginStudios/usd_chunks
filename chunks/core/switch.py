@@ -95,14 +95,16 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.CORE,
         icon="merge",
-        description="Picks one upstream branch. Where a Merge sums every branch wired into "
-        "it, a Switch passes the one in the selected slot and mutes the rest -- the whole "
-        "branch, not just the chunk in the slot. A chunk feeding both the chosen branch and "
-        "a muted one stays live.\n"
-        "Muting is stage-wide, so a branch that also feeds something outside this Switch is "
-        "suppressed for that consumer too.\n"
-        "Wire the Input to a Wedge range to sweep configurations that differ in structure "
-        "rather than in value. Use [0, number-of-slots) -- the index truncates and a wedge "
-        "range is half-open.",
+        description="""
+        Picks one of several branches by its slot and mutes the rest, e.g. to wedge structure.
+
+        Picks one upstream branch. Where a Merge sums every branch wired into it, a Switch passes the one in the
+        selected slot and mutes the rest -- the whole branch, not just the chunk in the slot. A chunk feeding both the
+        chosen branch and a muted one stays live.
+        Muting is stage-wide, so a branch that also feeds something outside this Switch is suppressed for that
+        consumer too.
+        Wire the Input to a Wedge range to sweep configurations that differ in structure rather than in value. Use [0,
+        number-of-slots) -- the index truncates and a wedge range is half-open.
+        """,
         dynamic_exec_inputs=True,
     )

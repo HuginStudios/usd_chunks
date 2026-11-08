@@ -47,6 +47,8 @@ def config():
         category=chunk.StandardCategory.CORE,
         hidden=True,
         description="""
+        What a chunk made in the interpreter, with no module of its own, saves as.
+
         Runtime Chunk -- what a chunk built in the interpreter is saved as.
 
         Not something to pick from this menu (it is hidden from it): the type exists so a
