@@ -11,7 +11,8 @@ from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import Scene, chunk
 
-SETTINGS = dict(meters_per_unit=1.0, up_axis="Z", start_frame=1001, end_frame=1100, fps=25.0)
+SETTINGS = dict(meters_per_unit=1.0, up_axis="Z", start_frame=1001, end_frame=1100, fps=25.0,
+                default_prim="World")
 
 
 def test_without_an_edit_target_it_applies_to_the_open_stage() -> None:
@@ -29,7 +30,8 @@ def test_behind_an_edit_target_its_export_carries_them(tmp_path) -> None:
         layer = scene.create.layer(layer_name="sh010")
         with scene.create.edit_target(layer, edit_target="sh010"):
             settings = scene.create.stage_settings(**SETTINGS)
-        exporter = scene.create.export_usd(settings, output_dir=str(tmp_path), keep_session_layer=False)
+            world = scene.create.prim(settings, primpath_location="/World", prim_type="Xform")
+        exporter = scene.create.export_usd(world, output_dir=str(tmp_path), keep_session_layer=False)
         rows = exporter.get_param("export_layers", chunk.is_inst(chunk.ListGroup))
         for i in range(rows.size):
             keep = rows.get_indexed_param(rows.get_param("layer_name"), i).value == "sh010"
@@ -42,6 +44,7 @@ def test_behind_an_edit_target_its_export_carries_them(tmp_path) -> None:
     assert UsdGeom.GetStageUpAxis(opened) == UsdGeom.Tokens.z
     assert (opened.GetStartTimeCode(), opened.GetEndTimeCode()) == (1001, 1100)
     assert opened.GetFramesPerSecond() == 25.0
+    assert opened.GetRootLayer().defaultPrim == "World"
 
 
 def test_removing_it_puts_the_stage_back() -> None:
@@ -60,3 +63,26 @@ def test_removing_it_puts_the_stage_back() -> None:
         assert not session.pseudoRoot.HasInfo(UsdGeom.Tokens.metersPerUnit)
         assert not session.HasStartTimeCode() and not session.HasEndTimeCode()
         assert not session.HasTimeCodesPerSecond() and not session.HasFramesPerSecond()
+        assert not session.pseudoRoot.HasInfo("defaultPrim")
+
+
+def test_a_scripts_export_has_the_default_prim(tmp_path) -> None:
+    """A network's exported result named no default prim, so a Reference to it brought in
+    nothing unless the target prim was spelled out."""
+    path = str(tmp_path / "result.usda")
+    with Scene() as scene:
+        world = scene.create.prim(scene.create.stage_settings(default_prim="/World"),
+                                  primpath_location="/World", prim_type="Xform")
+        scene.set_output(world)
+        scene.export(path)
+    assert Usd.Stage.Open(path).GetDefaultPrim().GetPath() == Sdf.Path("/World")
+
+
+def test_left_empty_it_keeps_the_layers_own_default_prim() -> None:
+    with Scene() as scene:
+        session = scene.get_stage().GetSessionLayer()
+        session.defaultPrim = "Set"
+        settings = scene.create.stage_settings(**SETTINGS)
+        assert session.defaultPrim == "World"
+        scene.set(settings, default_prim="")
+        assert session.defaultPrim == "Set", "clearing the param did not give back the layer's own"

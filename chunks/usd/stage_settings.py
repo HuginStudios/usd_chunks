@@ -1,4 +1,4 @@
-"""Stage Settings chunk -- units, up axis and frame range on the layer being edited.
+"""Stage Settings chunk -- units, up axis, frame range and default prim on the layer being edited.
 
 Requires: pxr (OpenUSD), usd_chunks.
 """
@@ -14,7 +14,7 @@ _UP_AXES = ["Y", "Z"]
 # The layer metadata this chunk writes.
 _FIELDS = (
     UsdGeom.Tokens.metersPerUnit, UsdGeom.Tokens.upAxis,
-    "startTimeCode", "endTimeCode", "timeCodesPerSecond", "framesPerSecond",
+    "startTimeCode", "endTimeCode", "timeCodesPerSecond", "framesPerSecond", "defaultPrim",
 )
 #: On the chunk: (layer, what _FIELDS held there before this chunk wrote them), None for a
 #: field that was not set. removed() puts it back.
@@ -41,6 +41,15 @@ def execute(node) -> None:
     fps = node.get_param("fps", is_f).value
     layer.timeCodesPerSecond = fps
     layer.framesPerSecond = fps
+    # Empty leaves the layer's own default prim (or none) as it was before this chunk.
+    name = node.get_param("default_prim", is_s).value.strip().lstrip("/")
+    before = getattr(node, _BEFORE)[1].get("defaultPrim")
+    if name:
+        root.SetInfo("defaultPrim", name)
+    elif before is None:
+        root.ClearInfo("defaultPrim")
+    else:
+        root.SetInfo("defaultPrim", before)
 
 
 def removed(node) -> None:
@@ -91,6 +100,13 @@ def main():
         chunk.Spinbox("start_frame", "Start Frame", default_value=1, is_int=True),
         chunk.Spinbox("end_frame", "End Frame", default_value=120, is_int=True),
         chunk.Spinbox("fps", "FPS", default_value=24.0, tooltip="Frames, and time codes, per second."),
+        chunk.LineEdit(
+            "default_prim",
+            "Default Prim",
+            default_value="",
+            tooltip="The root prim a Reference or Payload to this file brings in, e.g. World. "
+            "Empty leaves the layer's own as it is.",
+        ),
     ])
     return chunk_api
 
@@ -100,8 +116,11 @@ def config():
         category=chunk.StandardCategory.USD_LAYER,
         icon="sliders",
         description="""
-        Stage Settings chunk -- writes a stage's units, up axis, frame range and frame rate
-        onto the layer being edited.
+        Stage Settings chunk -- writes a stage's units, up axis, frame range, frame rate
+        and default prim onto the layer being edited.
+
+        Default Prim [default_prim] names the root prim ("World") that a Reference or
+        Payload to the file brings in; empty leaves the layer's own as it is.
 
         With an Edit Target upstream, they go on its layer, so an Export USD of that layer
         carries them: a shot file opened later starts in the right units and frame range.
