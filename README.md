@@ -191,6 +191,7 @@ The [`skills/`](skills/) folder has step-by-step recipes for the common jobs:
 | `usd-chunks-review-chunk` | Checking a chunk against the repo's conventions |
 | `usd-chunks-chunkgroup-asset` | Packaging a network as a reusable ChunkGroup and referencing it into other scenes |
 | `usd-chunks-add-gizmo` | Adding viewport handles to a chunk |
+| `usd-chunks-framework-change` | Changing the framework itself: the invariants to keep |
 
 `.agents/skills`, `.claude/skills` and `.codex/skills` are symlinks to `skills/`, so each
 agent finds the same files. On Windows without symlink support, run

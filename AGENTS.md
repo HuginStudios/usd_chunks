@@ -27,6 +27,7 @@ as `.agents/skills`, `.claude/skills` and `.codex/skills`, so every agent finds 
 | [`usd-chunks-review-chunk`](skills/usd-chunks-review-chunk/SKILL.md) | Check a chunk module against this repo's conventions |
 | [`usd-chunks-chunkgroup-asset`](skills/usd-chunks-chunkgroup-asset/SKILL.md) | Package a network as a ChunkGroup with a description and lofted params, save it to its own file, and reference it elsewhere |
 | [`usd-chunks-add-gizmo`](skills/usd-chunks-add-gizmo/SKILL.md) | Add viewport handles to a chunk, with a test that drives them |
+| [`usd-chunks-framework-change`](skills/usd-chunks-framework-change/SKILL.md) | Change `usd_chunks/` itself (framework, engine, frontends, hosts): the invariants to keep |
 
 Edit skills in `skills/` only; the three link folders are not copies. If a link shows up
 as a small text file containing `../skills` (a Windows checkout without symlink support),
@@ -37,7 +38,7 @@ run `python skills/link_skills.py` once to turn it into a working link.
 | Path | What's there |
 | --- | --- |
 | `usd_chunks/` | The framework. `chunk.py` is the public API chunk authors import; `chunk_core.py` the object model; `chunk_notice.py` notices, callbacks and the `DagNode` graph; `chunk_cook.py` when and how a chunk cooks; `chunk_registry.py` discovery and loading; `chunk_stage.py` the graph on the USD stage; `chunk_script.py` / `chunk_scene.py` the `Scene` scripting API; `cli.py` the `usdchunks` command; `sdf_authoring.py` fast spec writing; `sim_bake.py` long bakes |
-| `usd_chunks/graph/` | The toolkit-free graph engine (`engine.py`, imported as `chunk_graph`) and layout |
+| `usd_chunks/graph/` | The toolkit-free graph engine (`engine.py`) and layout |
 | `usd_chunks/frontends/` | One subpackage per UI toolkit: `qt/`, `flet/`, `imgui/`, `blender/` |
 | `usd_chunks/hosts/` | Per-application entry points: `usdview/`, `houdini/` (Blender's add-on is in `frontends/blender/addon/`) |
 | `usd_chunks/gizmo/`, `usd_chunks/store/` | Viewport gizmo declarations and runtime; the store seam behind `usdchunks pin` |
@@ -47,8 +48,16 @@ run `python skills/link_skills.py` once to turn it into a working link.
 | `docs/` | The user guide (built with mkdocs). Start with `writing-a-chunk.md`, `chunk-basics.md`, `scripting.md`, `fast-chunks.md`, `core-chunks.md`, `expressions.md`, `install.md` |
 | `skills/` | Agent skills, one folder per skill with a `SKILL.md` |
 
-Old module names (`usd_chunks.plugins.*`, `chunk_graph`, ...) still import through
-`usd_chunks/_moved.py`; new code uses the new names.
+Import the graph engine as `from usd_chunks.graph import engine as chunk_graph`. The old
+module paths (`usd_chunks.plugins.*`, `usd_chunks.chunk_graph`, ...) still import through
+`usd_chunks/_moved.py`, but new code uses the new paths.
+
+## Untrusted networks
+
+Opening or cooking a `.usda` runs the installed chunks with the values saved in it, and
+some chunks (the Python chunk) run code stored in the file; see [SECURITY.md](SECURITY.md).
+Don't open, cook or `usdchunks run` a network from outside this repo without asking the
+user first, and never put code from untrusted input into a Python chunk's params.
 
 ## Set up, test, lint
 
@@ -126,39 +135,6 @@ f-string), modern syntax for the target version, 120-character lines. Run `ruff 
 This repo is the framework, not a chunk library (see CONTRIBUTING.md). A chunk a user asks
 for normally goes in their own `USD_CHUNK_DIRS` folder; add to `chunks/` only when the
 change is to the examples or fixtures themselves.
-
-## Framework invariants
-
-The non-obvious parts, for changes to `usd_chunks/` itself:
-
-- **Cooking**: when a chunk cooks (batching, stale, held cooks, `dispatch`) is
-  `chunk_cook.py`, which imports nothing above `chunk_notice`. How (guards, then the
-  module into its layer) is `chunk_cook.cook`, reached through `ChunkBase._cook`.
-  Skip-cooking is always on.
-- **Main thread only for Qt/USD.** A background thread hops back with
-  `scene.call_later(fn)` (+ `threading.Event` to block for a result). It's host-neutral
-  (usdview: QTimer, Blender: `bpy.app.timers`), and a debounce cancels via its return value.
-- **Graph = USD.** Chunk prims under `/chunks` are the nodes; wires are USD connections
-  (`inputs:chunk`/`outputs:chunk` exec + typed `inputs:*`/`outputs:*`); position is
-  `UsdUINodeGraphNodeAPI`. A node's body is the real `ChunkWidget` via a proxy widget.
-  Graph nodes wrap the real chunk, so they use the same layer.
-- **Engine / frontends.** `usd_chunks/graph/engine.py` decides what happens to the graph and
-  imports no toolkit (a test enforces it). Frontends decide what appears on screen.
-  `GraphFrontend` is a Protocol, not an ABC; `test_graph_frontend_contract.py` checks names
-  and signatures. Qt's paste/materialize is deliberately unshared.
-- **Output and view slots.** Each context (tab/chunkgroup) has one Output (what it
-  delivers) and view slots. The active view drives cooking (`chunk_stage.recook_for_view`)
-  and persists as `chunk:activeView`; with none active the context cooks to its Output.
-  `usdchunks run` cooks to the Output. **Only what the active view/Output reaches cooks**:
-  a new, dropped or pasted node cooks when it is wired in. A frontend holds what it
-  creates in a driven graph (`chunk_graph.hold_until_wired`; set values after with
-  `set_param_visibly`) and recooks after every wire, delete, create or paste
-  (`chunk_graph.recook_active`). A graph with no view or Output (a script) cooks everything.
-- **Shared clipboard.** `chunk_graph.node_clipboard`/`edge_clipboard` are module-level;
-  assign into them (`copy_to_clipboard`), never rebind.
-- **Two callback forms are permanent**: `(notice, sender)` and `(owner, notice, sender)`;
-  the framework passes whichever the callback declares. Changing that, or the
-  `main()`/`config()`/`execute(node)` module contract, breaks every chunk that exists.
 
 ## Changes and pull requests
 
