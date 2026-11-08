@@ -419,6 +419,8 @@ def config():
         # Its xformOpOrder names every Transform below it on the prim (xform_op_order).
         cooks_when_wired_below=True,
         description="""
+        Moves, rotates and scales prims: translate, rotate, scale, around a pivot.
+
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and
         scale xform ops to one or more existing prims.
 
