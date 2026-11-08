@@ -337,7 +337,10 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="cube",
         description="""
-        Duplicate Prim — deep copies a prim and its full subtree to a new path.
+        Duplicate Prim — copies a prim N times in a row, ring, grid or spiral (stairs, columns), as full copies or shared instances; or once to a new path.
+
+        Each copy is a deep copy of the prim and its full subtree, or with As Instances a
+        light instance of it.
 
         Parameters:
           - Source Prim: the prim to copy (supports viewport picking).
