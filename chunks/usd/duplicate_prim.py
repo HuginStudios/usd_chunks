@@ -337,10 +337,11 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="cube",
         description="""
-        Copies a prim N times: row, ring, grid, spiral stairs; full copies or shared instances.
+        Copies a prim N times in a row, ring or spiral (stairs); full copies or shared instances.
 
         Each copy is a deep copy of the prim and its full subtree, or with As Instances a
-        light instance of it.
+        light instance of it. One Duplicate Prim lays its copies along one line, ring or
+        spiral; for a grid, duplicate the row it made with a second one.
 
         Parameters:
           - Source Prim: the prim to copy (supports viewport picking).
