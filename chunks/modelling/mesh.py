@@ -639,6 +639,8 @@ def config():
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
         icon="cube",
         description="""
+        Polygon shapes with UVs: cube, sphere, torus, cone, tube, or a flat grid or ground.
+
         Mesh -- a polygon primitive (a UsdGeom.Mesh, with UVs) at Prim Path: cube, sphere,
         torus, cone, tube or a flat grid. Pick the shape with Mesh Type; each menu entry
         (Cube, Sphere, Grid, Ground, ...) is this chunk with the type already set.

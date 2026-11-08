@@ -178,4 +178,10 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
         icon="curve",
+        description="""
+        Grows hair: BasisCurves strands on the faces of a target mesh.
+
+        Add Hair -- builds hair curves on a target mesh. Count, Segments and Length set the
+        strands; Mesh Type can build a test mesh (curly) to grow them on.
+        """,
     )

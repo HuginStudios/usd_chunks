@@ -92,6 +92,8 @@ def config():
         # creates this one chunk; the entry just presets light_type.
         variants=[(_label(t), {"light_type": t}) for t in _LIGHT_TYPES],
         description="""
+        A light of any USD type: disk, rect, dome, distant, sphere or cylinder.
+
         Light chunk — creates a USD light prim of a chosen type at a given path
         on the active stage.
 

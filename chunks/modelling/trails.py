@@ -245,6 +245,10 @@ def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         icon="curve",
-        description="One curve per point, through everywhere the point has been over time (Houdini's Trail).",
+        description="""
+        Draws a curve through every position a point has had over time: one trail per point.
+
+        One curve per point, through everywhere the point has been over time (Houdini's Trail).
+        """,
         requirements=["numpy>=2,<3"],
     )

@@ -163,7 +163,11 @@ def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         icon="waves",
-        description="Paints a 0..1 primvar on meshes from how near they are to other points -- "
-        "nests one Scatter Points layer under or around another.",
+        description="""
+        Paints nearness to other points on meshes, to grow one scatter under or around another.
+
+        Paints a 0..1 primvar on meshes from how near they are to other points -- nests one Scatter Points layer under
+        or around another.
+        """,
         requirements=["numpy>=2,<3"],
     )
