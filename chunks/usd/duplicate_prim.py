@@ -4,13 +4,18 @@ Copies all attributes, metadata, and children from the source prim's composed
 view to the destination path. The copy is authored on the chunk's own layer.
 
 Handles name collisions by auto-incrementing a numeric suffix.
+
+With Copies above 1 it makes that many copies under the destination, each moved by the
+per-copy offset one more time than the last: a row, a ring, a spiral staircase.
 """
 
 from __future__ import annotations
 
-from pxr import Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk, chunk_utils, sdf_authoring
+
+_OFFSETS = ("copy_translate", "copy_rotate", "copy_scale", "copy_pivot")
 
 
 def _generate_dest_path(stage: Usd.Stage, source_path: str) -> str:
@@ -39,6 +44,56 @@ def _copy_prim_recursive(stage: Usd.Stage, source: Usd.Prim, dest_path: str):
     writer = sdf_authoring.Writer(stage)
     with Sdf.ChangeBlock():
         _copy_spec(writer, source, dest_path)
+
+
+def _vec(owner, name, default):
+    param = owner.get_param(name)
+    value = param.value if param is not None else None
+    return Gf.Vec3d(*value) if value is not None else Gf.Vec3d(*default)
+
+
+def _step_matrix(owner) -> Gf.Matrix4d:
+    """One copy's offset, in its parent's space: scale and rotate (X, then Y, then Z) around
+    the pivot, then translate."""
+    t, r = _vec(owner, "copy_translate", (0, 0, 0)), _vec(owner, "copy_rotate", (0, 0, 0))
+    s, p = _vec(owner, "copy_scale", (1, 1, 1)), _vec(owner, "copy_pivot", (0, 0, 0))
+    rotation = (Gf.Rotation(Gf.Vec3d.XAxis(), r[0]) * Gf.Rotation(Gf.Vec3d.YAxis(), r[1])
+                * Gf.Rotation(Gf.Vec3d.ZAxis(), r[2]))
+    return (Gf.Matrix4d().SetTranslate(-p) * Gf.Matrix4d().SetScale(s) * Gf.Matrix4d().SetRotate(rotation)
+            * Gf.Matrix4d().SetTranslate(p) * Gf.Matrix4d().SetTranslate(t))
+
+
+def _set_matrix(spec: Sdf.PrimSpec, matrix: Gf.Matrix4d) -> None:
+    """Replace a copied prim's transform ops with one matrix op."""
+    for name in [n for n in spec.attributes.keys() if n.startswith("xformOp:") or n == "xformOpOrder"]:
+        spec.RemoveProperty(spec.attributes[name])
+    sdf_authoring.attribute(spec, "xformOp:transform", Sdf.ValueTypeNames.Matrix4d, matrix)
+    sdf_authoring.attribute(spec, "xformOpOrder", Sdf.ValueTypeNames.TokenArray, ["xformOp:transform"], uniform=True)
+
+
+def _duplicate(stage: Usd.Stage, owner, source: Usd.Prim, dest_path: str) -> None:
+    """One copy at dest_path, or with Copies above 1, that many under it.
+
+    Copy i is named after the source with a zero-padded index and placed at the source's own
+    transform with the per-copy offset applied i times, so copy 0 sits on the source.
+    """
+    copies_param = owner.get_param("copies")
+    copies = max(1, int(copies_param.value)) if copies_param is not None else 1
+    if copies == 1:
+        _copy_prim_recursive(stage, source, dest_path)
+        return
+    local = UsdGeom.Xformable(source).GetLocalTransformation() if source.IsA(UsdGeom.Xformable) else Gf.Matrix4d(1)
+    step, width = _step_matrix(owner), max(2, len(str(copies - 1)))
+    writer = sdf_authoring.Writer(stage)
+    with Sdf.ChangeBlock():
+        if not stage.GetPrimAtPath(dest_path):
+            writer.define(dest_path, "Xform")
+        placed = Gf.Matrix4d(local)
+        for i in range(copies):
+            path = f"{dest_path}/{source.GetName()}_{i:0{width}d}"
+            _copy_spec(writer, source, path)
+            _set_matrix(writer.layer.GetPrimAtPath(writer.spec_path(path)), placed)
+            placed = placed * step
 
 
 def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str):
@@ -148,7 +203,7 @@ def execute(node):
         if not chunk_utils.has_expression(raw or "") and dest_path != (raw or ""):
             dest_param.value = dest_path
 
-    _copy_prim_recursive(stage, source_prim, dest_path)
+    _duplicate(stage, node, source_prim, dest_path)
 
 
 def _on_change(owner, notice, sender):
@@ -181,7 +236,7 @@ def _on_change(owner, notice, sender):
         dest_path = _generate_dest_path(stage, source_path)
         dest_param.value = dest_path
 
-    _copy_prim_recursive(stage, source_prim, dest_path)
+    _duplicate(stage, _chunk, source_prim, dest_path)
 
 
 def _on_source_change(owner, notice, sender):
@@ -226,6 +281,22 @@ def main():
     dest_path.add_callback(_on_change)
     chunk_api.add_param(dest_path)
 
+    copies = chunk.Group("copies_grp", "Copies")
+    copies.add_params([
+        chunk.Slider("copies", "Copies", min_value=1, max_value=100, default_value=1, is_int=True,
+                     tooltip="How many copies. Above 1 they go under the destination, named after "
+                     "the source: step_00, step_01, ..."),
+        chunk.Vector("copy_translate", "Translate", param=chunk.Slider(), length=3, suffixes="XYZ",
+                     default_value=(0.0, 0.0, 0.0), tooltip="Moved this much more for each copy."),
+        chunk.Vector("copy_rotate", "Rotate", param=chunk.Slider(), length=3, suffixes="XYZ",
+                     default_value=(0.0, 0.0, 0.0), tooltip="Turned this many degrees more for each copy."),
+        chunk.Vector("copy_scale", "Scale", param=chunk.Slider(), length=3, suffixes="XYZ",
+                     default_value=(1.0, 1.0, 1.0), tooltip="Scaled by this once more for each copy."),
+        chunk.Vector("copy_pivot", "Pivot", param=chunk.Slider(), length=3, suffixes="XYZ",
+                     default_value=(0.0, 0.0, 0.0), tooltip="The point copies rotate and scale around."),
+    ])
+    chunk_api.add_param(copies)
+
     return chunk_api
 
 
@@ -249,6 +320,15 @@ def config():
 
         Handles name collisions by auto-incrementing a numeric suffix.
         All edits authored on the chunk's own layer (non-destructive).
+
+        Copies [copies]: above 1, makes that many copies under the destination (an Xform),
+        named after the source with an index -- step_00, step_01, ... Copy i is the source
+        moved by the per-copy offset i times, so copy 0 sits on the source. The offset, in
+        the copies' parent space: Translate [copy_translate], Rotate in degrees, X then Y
+        then Z [copy_rotate], Scale [copy_scale], around Pivot [copy_pivot]. A row is a
+        Translate; a ring a Rotate around the ring's centre; a spiral staircase both, e.g.
+        Rotate Y 18 and Translate Y 0.2 for 20 copies. Each copy's transform is written as
+        one matrix op.
 
         In the node graph: accepts prim input for source, outputs the new prim.
         """,
