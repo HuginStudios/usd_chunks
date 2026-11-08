@@ -176,6 +176,28 @@ chunks you have installed, with the values saved in the file. Some chunks, like 
 chunk, run code stored in the file. Read [SECURITY.md](SECURITY.md) before opening a network
 from someone else.
 
+## 🤖 Working with AI agents
+
+The repo comes set up for AI coding agents such as Claude Code and Codex.
+[AGENTS.md](AGENTS.md) is the one set of instructions they all read: the repo layout, how
+to test and lint, and the rules a chunk follows. [CLAUDE.md](CLAUDE.md) only points to it.
+The [`skills/`](skills/) folder has step-by-step recipes for the common jobs:
+
+| Skill | For |
+| --- | --- |
+| `usd-chunks-write-chunk` | A new chunk module with `main()`, `execute()`, `config()` and a test |
+| `usd-chunks-build-network` | Building or editing a network with the `Scene` API from a description |
+| `usd-chunks-batch` | `usdchunks run`/`batch`/`sweep` commands with param overrides for pipeline jobs |
+| `usd-chunks-review-chunk` | Checking a chunk against the repo's conventions |
+| `usd-chunks-chunkgroup-asset` | Packaging a network as a reusable ChunkGroup and referencing it into other scenes |
+| `usd-chunks-add-gizmo` | Adding viewport handles to a chunk |
+
+`.agents/skills`, `.claude/skills` and `.codex/skills` are symlinks to `skills/`, so each
+agent finds the same files. On Windows without symlink support, run
+`python skills/link_skills.py` once after cloning. If agent setups like this are new to
+you, the [AI harness quickstart](https://haluszka.com/ai-harness-quickstart/) gives the
+background.
+
 ## 🤝 Contributing
 
 This repo is the core framework, not a place to publish your own chunks. See
