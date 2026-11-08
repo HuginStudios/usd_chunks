@@ -1,10 +1,14 @@
-# usd_chunks
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg">
+    <img src="docs/assets/wordmark.svg" alt="usdchunks" width="640">
+  </picture>
+</p>
+<p align="center"><sub>the procedural layer for USD</sub></p>
 
 ![The same scatter network open in Blender, Houdini and usdview, each showing its node graph and the rocks it scatters across a ground plane](docs/assets/graph_hosts.png)
 
 <sub>One network, open in Blender, Houdini and usdview.</sub>
-
-# The procedural layer for USD
 
 
 ## ⚠️🥳 Alpha Release & Feedback Wanted!
