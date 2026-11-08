@@ -337,7 +337,7 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="cube",
         description="""
-        Duplicate Prim — copies a prim N times in a row, ring, grid or spiral (stairs, columns), as full copies or shared instances; or once to a new path.
+        Copies a prim N times: row, ring, grid, spiral stairs; full copies or shared instances.
 
         Each copy is a deep copy of the prim and its full subtree, or with As Instances a
         light instance of it.
