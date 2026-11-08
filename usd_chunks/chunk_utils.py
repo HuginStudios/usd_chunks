@@ -1660,6 +1660,40 @@ def target_paths(param):
     return list(dict.fromkeys(split_variant_path(path_str)[1] for path_str in param.resolve_paths()))
 
 
+def author_class_arc(node, arc: str) -> None:
+    """Add an inherits or specializes arc from the prims in `prim_path` to `base_path`.
+
+    The cook of the Inherit and Specialize chunks, which differ only in the arc. A base
+    that doesn't exist yet is created as an abstract `class` prim. A prim that is the base
+    or sits under it is skipped: an arc to an ancestor is a composition error. A prim not
+    on the stage yet gets an `over`.
+
+    Args:
+        node: The chunk, with `prim_path` and `base_path` params.
+        arc: "inherits" or "specializes".
+    """
+    base_value = (node.get_param("base_path").value or "").strip()
+    targets = node.get_param("prim_path")
+    if not base_value or not targets.value or not Sdf.Path.IsValidPathString(base_value):
+        return
+    base = Sdf.Path(base_value)
+    stage = node.get_stage()
+    if not stage.GetPrimAtPath(base).IsValid():
+        stage.CreateClassPrim(base)
+
+    for target_path in author_in_variant_contexts(stage, targets):
+        path = Sdf.Path(target_path)
+        if path == base or path.HasPrefix(base):
+            continue
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            prim = stage.OverridePrim(path)
+        if arc == "specializes":
+            prim.GetSpecializes().AddSpecialize(base)
+        else:
+            prim.GetInherits().AddInherit(base)
+
+
 def _claim_unique_path(stage, param):
     """Bump a create chunk's single literal path to a free one and record it on the param."""
     value = (param.value or "").strip()
