@@ -994,7 +994,9 @@ class NameSyncedContainer(Generic[ChunkT], chunk_notice.ChunkNoticePropagator):
         for _ in range(max_iter):
             if name not in reserved_names:
                 if not suffix:
-                    self._reserved_names[orig_name] = idx + 1
+                    # idx is already the next suffix to try: the loop moved past the
+                    # one just returned (or left it at its start, for the bare name).
+                    self._reserved_names[orig_name] = idx
                 return name
             name = orig_name + str(idx)
             idx += 1
