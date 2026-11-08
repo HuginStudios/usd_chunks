@@ -8198,11 +8198,30 @@ def _load_chunks(
 
                 # Fire CHUNK_LOADED for all loaded chunks (UI notification) and restore
                 # params that were created dynamically inside execute (e.g. show_attribute).
+                lofted = []
                 for prim, added in deferred:
+                    n_params = len(added.get_my_params())
                     chunk_notice.send_notice(
                         chunk_notice.ChunkNoticeAlias.CHUNK_LOADED, added, data=added
                     )
                     _restore_dynamic_params(prim, added)
+                    if len(added.get_my_params()) > n_params:
+                        lofted.append((prim, added))
+
+                # A chunk that lofts its params in CHUNK_LOADED (mtlx_shader from its
+                # nodedef) cooked above without them: a MaterialX Shader authored a bare
+                # shader at its definition's defaults, and a network of them opened with
+                # every input and wire gone. Its saved values are back now, so cook it
+                # again -- or, outside every active view, leave it stale for the view to.
+                # Stale first, then in cook order: a cook cascades downstream and clears
+                # what it reaches, so a chain of shaders cooks once from its first.
+                for _, added in lofted:
+                    chunk_cook.mark_cook_stale(added)
+                for prim, added in sorted(lofted, key=lambda item: cook_keys[id(item[1])]):
+                    if unseen(added) or not chunk_cook.is_cook_stale(added):
+                        continue
+                    if id(added) in top_level_chunk_ids or can_execute_sub_chunks:
+                        added.execute()
 
                 # Second and last expression pass. Chunks that loft their params in the
                 # CHUNK_LOADED callback above -- mtlx_shader from its nodedef, wedge from
