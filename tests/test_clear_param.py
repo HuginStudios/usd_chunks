@@ -173,6 +173,26 @@ def test_a_cleared_wire_leaves_no_connection(env, monkeypatch):  # noqa: F811
     assert _layers(env["stage"]) == before
 
 
+def test_a_number_typed_over_a_wire_lets_go_of_its_source(env):  # noqa: F811
+    # The wire's chunk-level dependency went with it: left behind, Source stayed above
+    # UVTransform, whose cook went on seeing Source's prim and wrote an `over` onto it.
+    source = env["mk"]("uv_transform", name="Source")
+    source.get_param("rotation").value = 30.0
+    node, _widget = _uv_transform(env)
+    rotation = node.get_param("rotation")
+    rotation.value = 1.0
+    env["settle"]()
+    before = _layers(env["stage"])
+
+    rotation.value = f"@{source.name}.rotation@"
+    env["settle"]()
+    rotation.value = 1.0
+    env["settle"]()
+
+    assert source not in [dep for _, dep in node.get_dependencies()]
+    assert _layers(env["stage"]) == before
+
+
 def test_only_the_edit_layer_is_cleared_and_the_others_are_named(env, monkeypatch, prompts):  # noqa: F811
     rotation, widget, dept = _edited_with_dept_value(env, 10.0)
     dept_before = dept.ExportToString()
