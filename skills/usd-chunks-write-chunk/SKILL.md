@@ -11,8 +11,9 @@ chunk's own layer, and `config()` says what it is. The full guide is
 
 ## 1. Pin down what it does
 
-- Check that no existing chunk already does it. Search the descriptions:
-  `grep -rn "description=" chunks/` and read the closest matches.
+- Check that no existing chunk already does it: `usdchunks list <word>` searches every
+  chunk's name and description, and `usdchunks show <name>` prints one in full with its
+  params. A chunk with a menu entry or a param that already does the job needs no new one.
 - Decide its **inputs** (which prims it reads, through prim-path params), its **params**
   (the values a person changes) and its **output** (the prims or attributes it writes, or an
   `OUTPUT` param other chunks read as `@Node.param@`).
@@ -156,6 +157,7 @@ sentence about the behaviour. A chunk outside `chunks/` needs its folder on
 ```
 USD_CHUNK_DIRS=chunks pytest -n0 tests/test_<module>.py
 ruff check chunks/<category>/<module>.py tests/test_<module>.py
+usdchunks show <module>     # what someone looking for a chunk will see: description, params
 ```
 
 Then run the `usd-chunks-review-chunk` skill on the new module. Tell the user what you

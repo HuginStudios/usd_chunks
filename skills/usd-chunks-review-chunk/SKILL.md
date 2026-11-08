@@ -16,6 +16,7 @@ Then:
 ```
 ruff check <module.py>
 usdchunks deps                 # undeclared or unpinned third-party imports, all chunks
+usdchunks show <module>        # the description and params as someone finding the chunk sees them
 ```
 
 `usdchunks deps` needs `USD_CHUNK_DIRS` to include the module's folder.

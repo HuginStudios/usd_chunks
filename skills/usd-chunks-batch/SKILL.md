@@ -23,6 +23,7 @@ the background is in `docs/index.md` ("Interactive or headless") and `docs/scrip
 ```
 usdchunks validate net.usda -v     # every chunk type resolves; exits 1 if one is missing
 usdchunks info net.usda            # each ChunkGroup's description and exposed params
+usdchunks show scatter_points      # a chunk type's params, by the names an override uses
 ```
 
 If `validate` fails, the job's machine is missing chunks: set `USD_CHUNK_DIRS` to the
