@@ -40,6 +40,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="link",
         description="""
+        Makes prims inherit a base prim, so its opinions override every instance at once.
+
         Inherit -- adds an inherits arc from prims to a base prim, so they pick up the
         base's opinions and keep following it.
 

@@ -184,6 +184,8 @@ def config():
         category=chunk.StandardCategory.USD_RENDER,
         icon="film",
         description="""
+        Defines one rendered output file: its camera and the AOVs it holds.
+
         Render Product chunk — creates a UsdRender.Product prim: one rendered
         output, the camera it is rendered from, and the ordered list of AOVs it
         contains.

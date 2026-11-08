@@ -116,6 +116,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="layers",
         description="""
+        Adds external USD files as sublayers, under everything else in the scene.
+
         Sublayer chunk: Lets the user add one or more external USD files as sublayers
         on the chunk's own edit layer, making those files compose underneath all
         other opinions on the stage.

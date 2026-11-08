@@ -46,5 +46,9 @@ def config():
     return chunk.DefaultConfig(
         chunk.StandardCategory.USD,
         icon="code",
-        description="Write .usda code directly in to the text param. The resulting layer overrides the chunk layer",
+        description="""
+        Writes hand-typed .usda text into the scene, as a layer over the chunk's own.
+
+        Write .usda code directly in to the text param. The resulting layer overrides the chunk layer
+        """,
     )

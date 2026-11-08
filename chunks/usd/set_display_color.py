@@ -78,8 +78,12 @@ def config():
         category=chunk.StandardCategory.MATERIALS,
         icon="palette",
         description=(
-            "Authors a uniform displayColor (primvars:displayColor) on the target prim —\n"
-            "a quick flat colour for previews or for tagging prims, without needing a\n"
-            "material."
+            """
+        Gives a prim a flat display colour, without a material.
+
+        Authors a uniform displayColor (primvars:displayColor) on the target prim —
+        a quick flat colour for previews or for tagging prims, without needing a
+        material.
+        """
         ),
     )
