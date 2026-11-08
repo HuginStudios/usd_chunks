@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pxr import Sdf
 from usd_chunks import chunk, chunk_utils, sdf_authoring
 
 
@@ -8,6 +9,12 @@ def execute(node):
     primpath_param = node.get_param("primpath_location")
     prim_type = node.get_param("prim_type").value
     for path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
+        if prim_type == "Class":
+            # A `class` specifier, not a type: an abstract prim for Inherit and Specialize
+            # to point at. DefinePrim(path, "Class") made a concrete prim typed "Class".
+            stage.CreateClassPrim(path)
+            sdf_authoring.Writer(stage).over(path).specifier = Sdf.SpecifierClass
+            continue
         stage.DefinePrim(path, prim_type)  # defines any missing parents too
         # Into this chunk's own layer even when another layer already defines the prim the
         # same way: DefinePrim writes nothing then, and the layer's publish lost the def.
@@ -49,11 +56,12 @@ def config():
             to a unique /prim path on load. If the path is already taken (and no
             variant selection is embedded), a unique suffix is chosen and the field
             is updated to reflect the actual path.
-          - Prim Type: the USD prim type to define — either Xform, Scope or Class.
+          - Prim Type: Xform or Scope defines a prim of that type. Class makes an
+            abstract `class` prim (no type, not rendered or traversed) for Inherit and
+            Specialize chunks to point at.
 
         When the path contains an embedded variant selection (e.g. /root{var=val}/child),
         uniqueness is not enforced and the prim is authored directly inside that
-        variant via author_in_variant_contexts. Outside of variants the chunk clears
-        its edit-target layer before each execution so re-runs are idempotent.
+        variant via author_in_variant_contexts.
         """,
     )
