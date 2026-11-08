@@ -619,7 +619,7 @@ def main():
             chunk.Spinbox("dimx1", "dimx", min_value=2, default_value=5, is_int=True),
             chunk.Spinbox("dimy1", "dimy", min_value=2, default_value=5, is_int=True),
             chunk.Slider("width1", "width", default_value=1),
-            chunk.Slider("height2", "height", default_value=1),
+            chunk.Slider("height2", "depth", default_value=1),  # along Z; the name is kept for saved files
             chunk.Menu("topo", default_value="quads", menu_items=["tris", "quads"]),
         ]
     )
@@ -638,6 +638,26 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING, requirements=["numpy>=2,<3"],
         icon="cube",
+        description="""
+        Mesh -- a polygon primitive (a UsdGeom.Mesh, with UVs) at Prim Path: cube, sphere,
+        torus, cone, tube or a flat grid. Pick the shape with Mesh Type; each menu entry
+        (Cube, Sphere, Grid, Ground, ...) is this chunk with the type already set.
+
+        Shapes sit at the origin, Y up. Cube, cone and tube stand on their base (the base
+        centred on the origin), so they rest on a ground at y = 0; sphere and torus are
+        centred. Move them with a Transform below.
+
+        Size params, by shape (script names in brackets):
+          - Cube: width (X), height (Y), depth (Z) [width, height, depth]; segments
+            [dimx, dimy, dimz].
+          - Sphere: radius [radius1]; segments [dimx2, dimy2].
+          - Torus: radius to the tube's middle, tube radius [torus_radius,
+            torus_tube_radius].
+          - Cone: base radius, height [cone_radius, cone_height].
+          - Tube: radius, height, end caps [radius, height1, caps].
+          - Grid: flat on the ground, centred; width (X), depth (Z) [width1, height2];
+            divisions [dimx1, dimy1]; quads or tris [topo]. Ground is a 20 x 20 grid.
+        """,
         cache_cook=True,
         # One entry per shape, so "Cube" is found and created directly rather than by
         # creating Mesh and re-picking the type. Ground is a grid preset, sized to stand
