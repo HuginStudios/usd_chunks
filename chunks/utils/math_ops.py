@@ -157,8 +157,12 @@ def config():
         # operation. Each still creates this one chunk -- the entry just presets the param.
         variants=[(op, {"operation": op}) for op in _OPS],
         description=(
-            "Applies a math operation to A/B/C, matching Blender's Geometry Nodes Math node.\n"
-            "Inputs shown depend on the selected operation's arity (1 to 3).\n"
-            "Clamp restricts the result to the 0..1 range."
+            """
+        Applies a math operation to up to three numbers, like Blender's Geometry Nodes Math node.
+
+        Applies a math operation to A/B/C, matching Blender's Geometry Nodes Math node.
+        Inputs shown depend on the selected operation's arity (1 to 3).
+        Clamp restricts the result to the 0..1 range.
+        """
         ),
     )
