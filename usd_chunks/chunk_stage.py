@@ -8397,15 +8397,33 @@ def _default_to_the_only_root(layer) -> None:
     file referenced without a prim path composes nothing unless it names a defaultPrim, so
     every delivered asset had to be patched by hand before a scene could reference it. A
     layer with several roots is left to say which it means; one naming a prim it still has
-    keeps it.
+    keeps it -- defined in the layer or in a layer it sublayers: a shot that only sublayers
+    its set and departments names the set's /World, and lost it on every export.
     """
     roots = [spec for spec in layer.rootPrims if spec.specifier == Sdf.SpecifierDef]
-    if layer.defaultPrim and layer.GetPrimAtPath(Sdf.Path.absoluteRootPath.AppendChild(layer.defaultPrim)):
+    if layer.defaultPrim and _defined_in_stack(layer, Sdf.Path.absoluteRootPath.AppendChild(layer.defaultPrim)):
         return
     if len(roots) == 1:
         layer.defaultPrim = roots[0].name
     elif layer.defaultPrim:
         layer.ClearDefaultPrim()  # it named a Chunk prim, now stripped
+
+
+def _defined_in_stack(layer, path, seen=None) -> bool:
+    """Whether path has a spec in layer or the layers it sublayers. A sublayer that cannot
+    be opened (a relative path from a layer not saved yet) counts as having it: a default
+    prim is dropped only when it surely names nothing."""
+    if layer.GetPrimAtPath(path):
+        return True
+    seen = seen if seen is not None else set()
+    seen.add(layer.identifier)
+    for sub_path in layer.subLayerPaths:
+        sub = Sdf.Layer.FindOrOpenRelativeToLayer(layer, sub_path)
+        if sub is None:
+            return True
+        if sub.identifier not in seen and _defined_in_stack(sub, path, seen):
+            return True
+    return False
 
 
 def _prune_over_only(spec) -> bool:
