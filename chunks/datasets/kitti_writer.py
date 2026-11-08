@@ -1047,6 +1047,8 @@ def config():
         icon="database",
         requirements=["numpy>=1.24,<3", "OpenEXR>=3.3,<4", "Pillow>=10,<13"],
         description="""
+        Turns rendered frames into a KITTI (and YOLO) training dataset: labels, masks, depth.
+
         KITTI Writer — turns rendered frames into a training dataset: KITTI object
         labels, calibration, class and instance masks and depth, plus per-frame
         distance arrays, box arrays, segmentation and camera parameters.
