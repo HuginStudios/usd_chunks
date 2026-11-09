@@ -210,6 +210,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
+  the first Points or Spray stroke placed instances; later strokes were skipped. The same
+  fix applies to Keep Away From.
 - Inline USD warns when its text does not parse; it imported nothing and said nothing, and
   whatever relied on its prims quietly fell back (a Scatter Points to its default cube).
 - A chunk made by `scene.create` with float params cooked once more per float: USD stores
