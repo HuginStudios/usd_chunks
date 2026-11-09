@@ -269,6 +269,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
+  skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
+  Prim below it made inactive copies. Python 3.11 was not affected.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.
