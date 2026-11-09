@@ -162,6 +162,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Export USD writes the files each exported file uses relative to where it writes it (its
+  new **Relative Paths**, on by default): a shot's sublayer of its set is
+  `../inputs/set.usda`, not where the set sat on the machine that exported it.
 - Saving a network writes its input file paths relative to its folder where they sit under
   it, and keeps relative paths naming the same file when saved to another folder.
   Reopened from anywhere, such a network finds them, as USD would.
@@ -269,6 +272,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A script building a correctly wired chain no longer gets "X is blocked: ... isn't wired
+  above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
+  cooks a chunk once before wiring it, and that cook found nothing above it; the warnings
+  now wait until the chunk is wired, and one that is not wired still gets them.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.
