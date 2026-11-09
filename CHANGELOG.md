@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Scatter Brush: a Stack checkbox. In Points mode, spacing then only counts the current
+  stroke, so with Surface Mesh empty each new stroke can land on top of the instances
+  earlier strokes made, to build towers.
 - An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
   instead of a View. With no active View a graph cooks to its Output, a ChunkGroup
   delivers its inner Output, and `usdchunks run` cooks to the Output whichever View the file

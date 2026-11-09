@@ -1352,3 +1352,46 @@ def test_with_no_surface_clear_still_removes_points() -> None:
     brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
 
     assert _points(stage, c) == []
+
+
+# ---------------------------------------------------------------------------
+# Stack: new strokes can land on top of earlier points
+# ---------------------------------------------------------------------------
+
+def _gesture(chunk_obj, *points):
+    """One stroke, bracketed the way a host brackets it."""
+    chunk_obj.start_gizmo()
+    for p in points:
+        _stroke(chunk_obj, p)
+    chunk_obj.stop_gizmo()
+
+
+def test_without_stack_a_point_on_top_of_another_is_skipped() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, target="", radius=2.0, strength=1.0)
+    _gesture(c, (5.0, 5.0, 0.0))
+
+    _gesture(c, (5.0, 5.0, 1.0))      # the top of a small cup standing on that point
+
+    assert len(_points(stage, c)) == 1
+
+
+def test_with_stack_a_new_stroke_lands_on_top() -> None:
+    """A tower: each stroke clicks on the cup the last one made."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, target="", radius=2.0, strength=1.0, stack=True)
+
+    for level in range(3):
+        _gesture(c, (5.0, 5.0, float(level)))
+
+    assert [round(p[2], 3) for p in _points(stage, c)] == [0.0, 1.0, 2.0]
+
+
+def test_with_stack_one_stroke_is_still_spaced() -> None:
+    """A slow drag must not pile points up, Stack or not."""
+    stage = _stage_with_floor()
+    c = _points_brush(stage, target="", radius=2.0, strength=1.0, stack=True)
+
+    _gesture(c, (5.0, 5.0, 0.0), (5.5, 5.0, 0.0), (6.0, 5.0, 0.0), (8.0, 5.0, 0.0))
+
+    assert len(_points(stage, c)) == 2

@@ -97,6 +97,10 @@ _STROKE_CACHE = "_stroke_cache"
 #: and recooking for it is a stall with nothing to show.
 _STROKE_TOUCHED = "_stroke_touched"
 
+#: The points placed in the current stroke. With Stack on, Points spacing is checked against
+#: these only, so a new stroke can land on top of what earlier strokes placed.
+_STROKE_POINTS = "_stroke_points"
+
 #: The painted field, `{mesh path: weights}`, and the placed points, `(points, normals,
 #: widths)`. The paint itself, held on the chunk -- see the module docstring. A stroke's
 #: working weights are these same arrays, so a cook in the middle of a stroke authors the
@@ -176,6 +180,7 @@ def _drop_stroke_cache(node):
 def _stroke_started(owner, notice, sender):
     _drop_stroke_cache(owner)
     setattr(owner, _STROKE_TOUCHED, False)
+    setattr(owner, _STROKE_POINTS, [])
 
 
 def _stroke_finished(owner, notice, sender):
@@ -574,6 +579,9 @@ def _place_points(node, stage, samples):
 
     Points accumulate on this chunk's own prim as an ordinary point cloud -- inspectable USD,
     like the density field, travelling the same wire.
+
+    With Stack on, spacing only counts points from this stroke. A click on an instance that
+    stands on an earlier point then adds one on top of it, which is how a tower is built.
     """
     radius = float(node.get_param("radius").value or 0.0)
     existing, normals, widths = _current_points(node, stage)
@@ -582,6 +590,10 @@ def _place_points(node, stage, samples):
         return _erase_points(node, stage, samples, existing, normals, widths, radius)
 
     spacing = radius
+    stack = bool(node.get_param("stack").value)
+    if stack and not hasattr(node, _STROKE_POINTS):
+        setattr(node, _STROKE_POINTS, [])
+    this_stroke = getattr(node, _STROKE_POINTS, [])
     added = False
 
     for sample in samples:
@@ -589,10 +601,12 @@ def _place_points(node, stage, samples):
         if point is None:
             continue
         if spacing > 0.0 and any(
-            (Gf.Vec3d(p) - point).GetLength() < spacing for p in existing
+            (Gf.Vec3d(p) - point).GetLength() < spacing for p in (this_stroke if stack else existing)
         ):
             continue
-        existing.append(Gf.Vec3f(point[0], point[1], point[2]))
+        placed = Gf.Vec3f(point[0], point[1], point[2])
+        this_stroke.append(placed)
+        existing.append(placed)
         widths.append(_dab_width(node))
         # The surface's facing where the dab landed. Recorded per point, the way Houdini
         # carries N, so a downstream instance can be laid flat on what it was painted on --
@@ -1394,6 +1408,14 @@ def main():
     grp.add_param(radius)
     grp.add_param(strength)
     grp.add_param(spray_spacing)
+    stack = chunk.Checkbox(
+        "stack", "Stack", default_value=False,
+        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        tooltip="Points: spacing only counts points from the current stroke, so a new stroke "
+                "can land on top of earlier instances. Leave Surface Mesh empty to paint on "
+                "them. Off: a dab is skipped within Radius of any point already placed.",
+    )
+    grp.add_param(stack)
     chunk_api.add_param(grp)
 
     display = chunk.Group("display_grp", "Display", icon="eye", flags=_GF)
@@ -1428,7 +1450,7 @@ def main():
     # cook -- execute() never reads them, and what a scatter sees is the painted field, not the
     # settings that produced it. Without this, dragging Radius would recook the whole chain
     # on every tick.
-    for param in (radius, strength, mode, colour, show):
+    for param in (radius, strength, mode, stack, colour, show):
         param.presentation_only = True
 
     # The drag bracket the host already sends. GIZMO_START drops the geometry cache so a
@@ -1470,6 +1492,8 @@ def config():
           - Strength: how much a single stroke adds or removes.
           - Mode: Add paints instances in, Subtract paints them out, Smooth
             evens the field toward the middle.
+          - Stack (Points): spacing only counts the current stroke, so new
+            points can land on top of earlier instances, for towers.
           - Fill / Clear: paint everything or nothing, for starting from
             either end.
           - Output: Density (the field), Points (one per click) or Spray
