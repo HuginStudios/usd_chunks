@@ -44,6 +44,7 @@ from typing_extensions import Required, Self, override
 
 from usd_chunks import (
     ATTRS_VERSION,
+    asset_paths,
     chunk_cook,
     chunk_glob,
     chunk_naming,
@@ -1669,8 +1670,14 @@ class ChunkCommon(AttributesBase):
         if chunk_glob.is_pattern(value):
             return True
 
+        # Found as USD finds it: a relative path is a search path from the network's folder
+        # (asset_paths), so checked against the working directory alone, a saved network
+        # with portable paths was refused whenever it was run from anywhere else.
         if not os.path.exists(value):
-            raise ValueError(f"path for attribute {attr.name} does not exist")
+            registry = chunk_registry.ChunkRegistry()
+            stage = registry.scene.get_stage() if registry.initialized and registry.scene else None
+            if not asset_paths.resolve(value, stage):
+                raise ValueError(f"path for attribute {attr.name} does not exist")
 
         return True
 

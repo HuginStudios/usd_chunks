@@ -107,6 +107,14 @@ def main():
             tooltip="The root prim a Reference or Payload to this file brings in, e.g. World. "
             "Empty leaves the layer's own as it is.",
         ),
+        chunk.Checkbox(
+            "relative_paths",
+            "Relative File Paths",
+            default_value=True,
+            tooltip="Saving the network writes the files chunks read relative to its folder, "
+            "where they sit under it, so the network and its inputs can move together. Off: "
+            "paths are saved as they were given.",
+        ),
     ])
     return chunk_api
 
@@ -130,5 +138,10 @@ def config():
 
         USD reads these from a stage's root and session layers only. On a layer that is
         sublayered into another, they do nothing until that layer is opened on its own.
+
+        Relative File Paths [relative_paths], on by default, is for the network rather than
+        the stage: saving the network writes the files its chunks read (a Sublayer's, a
+        Reference's, a texture) relative to the network's folder where they sit under it,
+        as USD search paths. Off, they are saved as given.
         """,
     )

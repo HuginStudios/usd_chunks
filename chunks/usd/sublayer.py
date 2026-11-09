@@ -25,7 +25,8 @@ def _apply_sublayers(owner: chunk.Chunk) -> None:
     for i in range(list_group.size):
         p = list_group.get_indexed_param("sublayer_path", i, chunk.is_param_t(str))
         if p and p.value:
-            paths.append(p.value)
+            # A ./ or ../ path is relative to the network's file, as in any USD file.
+            paths.append(chunk.anchor_file(owner, p.value))
 
     # Opened once here, for the network check and the sublayering below.
     chunk_stage.hold_asset_layers(owner, paths)

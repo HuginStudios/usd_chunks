@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, UsdUI, UsdUtils, Vt
 
+from usd_chunks import asset_paths
 from usd_chunks import chunk as _chunk_mod
 from usd_chunks import chunk_cook
 from usd_chunks import chunk_glob
@@ -658,6 +659,8 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
         chunk_cook.after_cook(_warn_unit_mismatch)
+        # Absolute, ./ or ../, and missing input files: the network's portability.
+        chunk_cook.after_cook(asset_paths.check)
         chunk_cook.break_ties_with(branch_place)
         self._attr_changed_listener = NoticeConnection(
             self._on_attr_changed, ChunkNoticeAlias.ATTRIBUTE_CHANGED, globally=True
@@ -5157,7 +5160,8 @@ def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: 
     for key in (UsdGeom.Tokens.upAxis, UsdGeom.Tokens.metersPerUnit):
         if stage.HasAuthoredMetadata(key):
             scratch_root.pseudoRoot.SetInfo(key, stage.GetMetadata(key))
-    return skip_cook.open_for_reading(scratch_root)
+    # The live stage's resolver context: a relative path is found from the network's folder.
+    return skip_cook.open_for_reading(scratch_root, stage.GetPathResolverContext())
 
 
 def heal_exec_chain_on_delete(stage: Usd.Stage, deleted_path: str) -> None:
@@ -8456,7 +8460,9 @@ def _prune_over_only(spec) -> bool:
     return has_def
 
 
-def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
+def export_chunks(
+    scene: chunk_scene.SceneSender, path: str | Path, relative_paths: bool | None = None,
+) -> None:
     """Export the current chunk graph as one clean, portable USD layer.
 
     Copies each chunk's already-composed, already-correctly-wired prim spec straight across
@@ -8496,6 +8502,9 @@ def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     Args:
         scene: The scene to export.
         path: The file to write.
+        relative_paths: Write the files the chunks read relative to path's folder where
+            they sit under it, as USD search paths, so the network and its inputs move
+            together (asset_paths). None: as the network's Stage Settings say, on if none.
     """
     stage = scene.get_stage()
     if not stage:
@@ -8504,6 +8513,9 @@ def export_chunks(scene: chunk_scene.SceneSender, path: str | Path) -> None:
     if hasattr(scene, "lay_out_scripted"):
         scene.lay_out_scripted()
     dst = _export_layer(scene, Path(path))
+    if relative_paths is None:
+        relative_paths = asset_paths.relative_paths_on(scene)
+    asset_paths.rebase_saved(dst, scene, str(Path(path).resolve().parent), relative_paths)
     stamp_stage_metadata(dst, stage)
     dst.Export(str(path))
     _reload_cached_layer(path)
@@ -8766,7 +8778,8 @@ def localise_network(host: core.ChunkBase) -> core.ChunkBase | None:
     host_path = Sdf.Path(get_chunk_prim_path(host))
     already_a_group = is_chunkgroup(host)
     composed = Usd.Stage.OpenMasked(
-        stage.GetRootLayer(), stage.GetSessionLayer(), Usd.StagePopulationMask([str(host_path)])
+        stage.GetRootLayer(), stage.GetSessionLayer(), stage.GetPathResolverContext(),
+        Usd.StagePopulationMask([str(host_path)]),
     )
     flat = composed.Flatten(False)
     prev = chunk_notice._usd_write_active
@@ -8906,8 +8919,10 @@ def _owned_stage(stage: Usd.Stage, also_mute: Iterable[str] = ()) -> Usd.Stage:
     foreign.extend(also_mute)
     if not foreign:
         return stage
+    # With the stage's resolver context: a relative path is found from the network's folder.
     owned = Usd.Stage.OpenMasked(
-        stage.GetRootLayer(), stage.GetSessionLayer(), Usd.StagePopulationMask()
+        stage.GetRootLayer(), stage.GetSessionLayer(), stage.GetPathResolverContext(),
+        Usd.StagePopulationMask(),
     )
     # Before muting, which is what sends the notice -- see _flatten_stages.
     _flatten_stages.append(owned)

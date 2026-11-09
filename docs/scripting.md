@@ -295,6 +295,33 @@ own file, `layout.usda` and `lighting.usda`.
 | `scene.execute()` | Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes. |
 | `scene.commit()` | Runs the chunks that write files, such as Export USD. |
 
+### File paths
+
+A file path in a param (a Sublayer's, a Reference's, a texture's) follows USD's rules,
+with the network file as the file it is written in:
+
+- **`inputs/set.usda`**, with no `./` or `../`, is a USD search path. It is found in the
+  network's folder, from whatever directory the network runs in.
+- **`../inputs/set.usda`** is relative to the network file, as it would be in any USD file.
+- **An absolute path** works only on a machine where that file is, so it logs a warning.
+  Saving writes one that sits under the network's folder relative to it (Stage Settings'
+  **Relative File Paths**, on by default; `scene.save(path, relative_paths=False)` turns it
+  off for one save).
+
+A network that isn't saved yet has no folder, so its relative paths are found from the
+working directory until it is. Give `Scene.new` the file you will save to, and they are
+found from that folder from the start:
+
+``` py
+with Scene.new(path="shots/sh010/shot_network.usda") as scene:
+    street = scene.create.reference(file_path="../../sets/street.usda", primpath_location="/set")
+    ...
+    scene.save()      # to the path given to Scene.new
+```
+
+Saving to another folder keeps each relative path naming the same file. A file that is not
+found logs a warning naming the folders it was looked for in.
+
 ## Build a big network fast
 
 Each chunk you make cooks what it affects straight away. In a long network that is often the

@@ -11,6 +11,16 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `Scene.new(path=...)` names the file the network will be saved to. Its relative file
+  paths resolve from that folder while it is built, and `scene.save()` writes there.
+- Stage Settings' **Relative File Paths** (on by default): saving a network writes the files
+  its chunks read relative to its folder where they sit under it. `scene.save(path,
+  relative_paths=...)` overrides it for one save.
+- A warning, once per chunk and path, for an input file given as an absolute path (the
+  network is not portable) or one that is not found (naming the folders searched).
+- `chunk.resolve_file(node, path)` and `chunk.anchor_file(node, path)`, for a chunk to
+  find or author a param's file as USD would.
+
 - An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
   instead of a View. With no active View a graph cooks to its Output, a ChunkGroup
   delivers its inner Output, and `usdchunks run` cooks to the Output whichever View the file
@@ -136,6 +146,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Saving a network writes its input file paths relative to its folder where they sit under
+  it, and keeps relative paths naming the same file when saved to another folder.
+  Reopened from anywhere, such a network finds them, as USD would.
 - **Breaking:** a Merge built from a script lets the last input win, as one built in the
   graph does. `scene.create.merge(a, b)` puts `b` in slot 0, the strongest, so `b` wins
   where both branches author the same prim; it used to put `a` there. A script that relied
@@ -240,6 +253,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A relative file path in a param resolves from the network file, as in USD, not from the
+  working directory: a search path (`inputs/set.usda`) is found in the network's folder, and
+  `./` or `../` is relative to the network file. A chunk authors into an anonymous layer, so
+  a network only worked when run from the folder its paths were written for. Cooks, the
+  stages a chunk reads through, saving, and a file param's existence check all use the
+  network's resolver context now; CAD Import, URDF Import and Script Runner find their file
+  the same way.
 - An exported layer keeps a default prim that one of its sublayers defines. A shot that
   only sublayers its set lost the set's `/World` as default prim, so a Reference to the
   exported shot brought in nothing.

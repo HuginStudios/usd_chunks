@@ -712,15 +712,17 @@ def execute(node):
     is_f = chunk.is_param_t(float)
     is_b = chunk.is_param_t(bool)
 
-    cad_path = node.get_param("file_path").value
-    if not cad_path:
+    given = node.get_param("file_path").value
+    if not given:
         _report(node, "pick a STEP or IGES file")
         return
     if not _HAS_OCP:
         _report(node, "cadquery-ocp is not installed — pip install cadquery-ocp")
         return
+    # Found as USD finds a file: a relative path is from the network's folder.
+    cad_path = chunk.resolve_file(node, given)
     if not os.path.isfile(cad_path):
-        _report(node, f"no such file: {os.path.basename(cad_path)}")
+        _report(node, f"no such file: {os.path.basename(given)}")
         return
 
     settings = _Settings(

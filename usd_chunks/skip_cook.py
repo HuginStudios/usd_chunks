@@ -50,7 +50,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from pxr import Sdf, Usd
+from pxr import Ar, Sdf, Usd
 
 from usd_chunks import chunk_scheduler, layer_arcs
 from usd_chunks.chunk_flags import ChunkFlags
@@ -471,21 +471,24 @@ def _watch_for(stage) -> _Watch | None:
     return watch if any(stage == watched for watched in watch.stages) else None
 
 
-def open_for_reading(root: Sdf.Layer) -> Usd.Stage:
+def open_for_reading(root: Sdf.Layer, context: Ar.ResolverContext | None = None) -> Usd.Stage:
     """A stage of root for a cook to read from -- masked and watched when the cook is.
 
     For a module that composes a stage of its own to read (chunk_stage.get_upstream_stage),
     so that what it reads there is held to its inputs like what it reads on the cook stage.
+    context is the scene stage's resolver context: root is anonymous, and opened without it
+    a relative path was looked for from the working directory, not the network's folder.
     """
+    context = context if context is not None else Ar.ResolverContext()
     if not _watches:
-        return Usd.Stage.Open(root)
+        return Usd.Stage.Open(root, context)
     watch = _watches[-1]
     if watch.scene:
         # A first cook sees the whole stage; what it reads here is still watched.
-        stage = Usd.Stage.Open(root)
+        stage = Usd.Stage.Open(root, context)
         watch.stages.append(stage)
         return stage
-    stage = Usd.Stage.OpenMasked(root, _population_mask(watch.mask))
+    stage = Usd.Stage.OpenMasked(root, context, _population_mask(watch.mask))
     # Hidden here as on the cook stage: a sibling not upstream of the cook is no more
     # readable through a stage the module composes itself.
     if watch.hidden:

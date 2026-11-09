@@ -151,7 +151,10 @@ _timer = None
 
 def _script_file(chunk_obj):
     param = chunk_obj.get_param("script_file")
-    return str(param.value).strip() if param is not None and param.value else ""
+    given = str(param.value).strip() if param is not None and param.value else ""
+    # Found as USD finds a file: a relative path is from the network's folder. One not
+    # found is returned as given, for the read to report.
+    return (chunk.resolve_file(chunk_obj, given) or given) if given else ""
 
 
 def _mtime(path):

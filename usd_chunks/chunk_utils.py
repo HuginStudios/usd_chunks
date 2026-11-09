@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
-from usd_chunks import chunk_cook, chunk_naming
+from usd_chunks import asset_paths, chunk_cook, chunk_naming
 from usd_chunks.layer_arcs import arc_edit_target, edit_target, is_editable  # noqa: F401
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
@@ -120,7 +120,9 @@ def arc_source_path(node) -> str:
     dot that is not a USD extension so that an arc can open it. Either names it.
     """
     if not arc_from_layer(node):
-        return node.get_param("file_path").value
+        # A ./ or ../ path is relative to the network's file, as in any USD file; authored
+        # as it is into the chunk's anonymous layer it would follow the working directory.
+        return asset_paths.anchor(node.get_param("file_path").value, node.get_stage())
     choice = node.get_param("layer").value
     if not choice:
         return ""
