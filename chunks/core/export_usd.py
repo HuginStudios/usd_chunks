@@ -515,7 +515,8 @@ def commit(node):
     # search path where the file is under that folder, else absolute -- which Relative Paths
     # then writes relative to the file (_write).
     out_folder = os.path.abspath(output_dir)
-    # A file layer this export writes too is named by its new file, however it is spelled.
+    # A relative path naming a file layer this export writes too names the written file, as
+    # it did when paths were copied unchanged. An absolute one names the file it always did.
     exported_files = {_same_file(lyr.realPath): filenames[lyr.identifier] for _n, lyr in layers if lyr.realPath}
 
     def _relocate(path):
@@ -524,9 +525,10 @@ def commit(node):
         if path in internal_ids or path in skipped_ids:
             return ""  # drop -- either has no meaning outside this session, or its Export
             # checkbox was unchecked, so it was never written as a file to reference
-        found = asset_paths.resolve(path, stage)
-        if found and _same_file(found) in exported_files:
-            return exported_files[_same_file(found)]
+        if asset_paths.kind(path) != "absolute":
+            found = asset_paths.resolve(path, stage)
+            if found and _same_file(found) in exported_files:
+                return exported_files[_same_file(found)]
         return asset_paths.refit(path, stage, out_folder, make_relative=False)
 
     networks = _network_files(stage)
