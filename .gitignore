@@ -19,6 +19,11 @@ issues/
 # .claude/ is local except the skills link (to ../skills, shared with .agents/ and .codex/).
 .claude/*
 !.claude/skills
+# On Windows without symlinks, skills/link_skills.py makes these links junctions, which git
+# reads as folders: their files are skills/'s. A folder pattern skips only a junction.
+/.agents/skills/
+/.claude/skills/
+/.codex/skills/
 CLAUDE.local.md
 .kilocode/
 .kiro/
