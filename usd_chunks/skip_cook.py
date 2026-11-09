@@ -1303,6 +1303,10 @@ def _warn_unwired(chunk, siblings: list) -> None:
         chunk: The chunk that cooked.
         siblings: The chunks whose hidden layers author something its cook read.
     """
+    if getattr(chunk, "_wiring_pending", False):
+        # A script's chunk cooked before its wire is made (chunk_scene.place): what it
+        # reads is above it in a moment, so nothing is said, or recorded as said.
+        return
     rec = record(chunk)
     names = frozenset(s.name for s in siblings)
     if names <= rec.warned_siblings:
