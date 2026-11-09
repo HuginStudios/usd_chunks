@@ -1142,7 +1142,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         Args:
             new: The chunk, fresh from its module or a menu entry.
             inputs: The chunks wired into its input port -- the exec edge, so it runs
-                after them. None given, the innermost `with` chunk, if there is one.
+                after them. None given, the innermost `with` chunk, if there is one. Into
+                a Merge the last one wins: it takes slot 0, the strongest.
             name: The node's name; the module's own when omitted.
             **params: See `set`.
         """
@@ -1193,6 +1194,11 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         inputs = list(inputs)
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
+        if chunk_stage.is_merge_chunk(new):
+            # The last one in wins, as a node chained after the rest would and as a branch
+            # joined at a Merge's empty slot in the graph does: merge(a, b) wires b into
+            # slot 0, the strongest. A Switch keeps argument order; its slots are indices.
+            inputs.reverse()
         for i in inputs:
             new.add_dependency(i)
         self._assign(new, wires)

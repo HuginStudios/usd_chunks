@@ -48,3 +48,6 @@ The graph engine is imported as `from usd_chunks.graph import engine as chunk_gr
 - Run the tests for the files you touched, then the full suite and `ruff check .`
   (see "Set up, test, lint" in `AGENTS.md`).
 - Update `docs/` when the change is something a user would notice.
+- Add it to `CHANGELOG.md` under Unreleased (Added, Changed or Fixed). Start the line with
+  `**Breaking:**` if an existing script, network or import now behaves differently or
+  fails, and say what to change.

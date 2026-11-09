@@ -42,7 +42,7 @@ def test_removing_a_merge_branch_keeps_the_others_in_order(tmp_path):
     first, second = tmp_path / "first.usda", tmp_path / "second.usda"
     with Scene(host_name="pytest") as scene:
         a, b, c = (scene.create.transform(name=n) for n in "abc")
-        scene.create.merge(a, b, c, name="merge")
+        scene.create.merge(c, b, a, name="merge")  # the last in takes slot 0
         scene.save(str(first))
     assert _sources(first, "merge") == ["a", "b", "c"]
 

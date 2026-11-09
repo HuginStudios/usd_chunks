@@ -144,6 +144,9 @@ change is to the examples or fixtures themselves.
 - A bug fix comes with a test that failed before it and passes after.
 - Say how you verified a change: the commands you ran, not just "tests pass".
 - Update the README or `docs/` when you change something a user would notice.
+- Add a line to `CHANGELOG.md` under Unreleased for anything a user would notice: Added,
+  Changed or Fixed. Start it with `**Breaking:**` when an existing script, network or
+  import would now behave differently or fail, and say what to change.
 - Commit subject about 50 characters (72 hard), prefixed with an emoji (📦 packaging,
   ✨ feature, 🐛 fix, 👷 CI, 📝 docs, ✅ tests), then a blank line and a body wrapped at 72
   explaining *why*.

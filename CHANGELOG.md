@@ -46,7 +46,27 @@ This file starts with the first release; development before that is in the commi
   the network, `export()` the plain-USD result. Examples in `examples/scripts/`.
   The same calls work on any host's scene: `usd_chunks.current_scene()` inside usdview
   builds into the network the graph is showing.
-- Mesh has one menu entry per shape: Cube, Grid, Tube and Ground.
+- Mesh has one menu entry per shape: Cube, Grid, Tube and Ground. A Plane entry is a
+  Grid with one face.
+- A Shape chunk for USD's own shape prims: Cube, Sphere, Cylinder, Cone, Capsule and Plane,
+  each in the menu as USD Cube, USD Sphere and so on. Renderers tessellate them; Mesh is
+  still the one for polygon meshes with UVs.
+- Duplicate Prim makes a row of copies: Copies sets how many, and Translate, Rotate, Scale
+  and Pivot step each copy from the one before, so a row, a ring or a spiral staircase is
+  one chunk. As Instances makes the copies share one prototype instead of being full
+  copies.
+- Scatter Points' Density (per m²) sets the count from the surface's area: the area of
+  the faces within Max Slope, in square metres by the stage's metersPerUnit.
+- Stage Settings sets the stage's Default Prim.
+- `usdchunks list [query] [--json]` lists every chunk and menu entry with the first line
+  of its description and the name a script creates it by; `usdchunks show <name>` prints
+  one chunk's description and params. They run from the shell, for people and agents
+  picking a chunk.
+- Every chunk's description starts with a one-line summary of what it does, which
+  `usdchunks list` shows. A test holds every chunk to it, and the write-chunk skill and
+  `docs/writing-a-chunk.md` say how to write one.
+- `docs/scripting.md` has a recipe for department layers side by side (layout, lighting,
+  anim) instead of each nested in the one before.
 - Viewport picking in Blender falls back to a CPU ray against prim bounds when Hydra's
   own pick is unavailable -- on some builds `TestIntersection` raises on pending GL errors
   left in the queue by whoever drew last, and a click did nothing but print a traceback.
@@ -116,6 +136,16 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** a Merge built from a script lets the last input win, as one built in the
+  graph does. `scene.create.merge(a, b)` puts `b` in slot 0, the strongest, so `b` wins
+  where both branches author the same prim; it used to put `a` there. A script that relied
+  on the first input winning needs its inputs swapped. Saved networks keep their slots.
+- **Breaking:** a new Mesh Grid has no checker material. Grid Checker, on by default, binds
+  it; a Grid made from the menu or a script sets it off. A script that wanted the checker
+  passes `grid_checker=True`. Saved networks keep theirs.
+- Export USD never writes over the network. A target that is a file holding a chunk
+  network, such as the network's own file when Output Directory is its folder, is skipped
+  with a message saying what to change.
 - The Particle Solver imports Taichi when it first simulates, not when it loads. Blender
   loads every chunk to make its node types, so New Chunk Network is about a second faster.
 - Chunks talk to each other only through wires: an exec input or an `@Node.param@`
@@ -210,6 +240,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- An exported layer keeps a default prim that one of its sublayers defines. A shot that
+  only sublayers its set lost the set's `/World` as default prim, so a Reference to the
+  exported shot brought in nothing.
+- Duplicate Prim keeps a destination given together with its source. Built in a
+  `change_block`, the source's suggested destination (`name_copy`) replaced it.
+- A Mesh Cube with 1 for dimx, dimy or dimz wrote no prim at all, and said nothing. They
+  count points along an edge, so they now start at 2, a plain box.
 - Inline USD warns when its text does not parse; it imported nothing and said nothing, and
   whatever relied on its prims quietly fell back (a Scatter Points to its default cube).
 - A chunk made by `scene.create` with float params cooked once more per float: USD stores
