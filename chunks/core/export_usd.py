@@ -51,7 +51,15 @@ def _holds_network(path: str) -> bool:
     if not os.path.isfile(path):
         return False
     layer = Sdf.Layer.FindOrOpen(path)
-    return bool(layer and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT))
+    if not layer or not layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT):
+        return False
+    # A file this chunk wrote is its own to write again, /chunks or not: an unbaked
+    # session layer carries the network's bookkeeping, and was refused on the next export.
+    return not layer.customLayerData.get(_EXPORTED_BY)
+
+
+#: Stamped in the customLayerData of every file Export USD writes (_write).
+_EXPORTED_BY = "usdChunks:exportedBy"
 
 
 def _would_overwrite_network(path: str, networks: set[str], row: str) -> bool:
@@ -440,6 +448,13 @@ def _write(_chunk, layer, path) -> None:
     relative = _chunk.get_param("relative_paths")
     if relative is None or relative.value:
         chunk_utils.relative_to_file(out, path)
+    # A file that still carries the network's bookkeeping is marked as this chunk's output,
+    # so a later export may write it again (_holds_network). Only those: without /chunks the
+    # guard never stops a file, and a baked file stays exactly what scene.export writes.
+    if out.GetPrimAtPath(chunk_naming.CHUNKS_ROOT):
+        data = dict(out.customLayerData)
+        data[_EXPORTED_BY] = "Export USD"
+        out.customLayerData = data
     out.Export(path)
 
 
