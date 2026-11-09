@@ -212,6 +212,9 @@ This file starts with the first release; development before that is in the commi
 
 - Inline USD warns when its text does not parse; it imported nothing and said nothing, and
   whatever relied on its prims quietly fell back (a Scatter Points to its default cube).
+- A Camera made in a `change_block` keeps the focal length and apertures a script gives
+  it. The preset menus put the default body's 50 mm back over them when the block ended;
+  now only choosing another body or format sets the lens.
 - A chunk made by `scene.create` with float params cooked once more per float: USD stores
   them as 32-bit, the read-back (0.16 -> 0.1599999964) counted as an edit. Compared within
   float precision now; a 45k-instance Scatter Points cooks once, not ten times.
