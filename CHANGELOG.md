@@ -266,6 +266,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
+  the first Points or Spray stroke placed instances; later strokes were skipped. The same
+  fix applies to Keep Away From.
 - A relative file path in a param resolves from the network file, as in USD, not from the
   working directory: a search path (`inputs/set.usda`) is found in the network's folder, and
   `./` or `../` is relative to the network file. A chunk authors into an anonymous layer, so
