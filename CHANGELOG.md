@@ -15,6 +15,9 @@ This file starts with the first release; development before that is in the commi
   the CLI, bringing in a file, moving or editing a prim from it, stage settings, one file
   per layer, and what to do for animation. `usdchunks list` ends by pointing at it, and
   `docs/scripting.md` opens with a pointer to it.
+- Property Editor's description, and so `usdchunks show property_editor`, says an edit's
+  value is JSON (a list for a vector, double quotes for a string, true/false) and shows
+  edit lines a script can copy.
 
 - The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
   and search finds them.

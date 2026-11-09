@@ -92,7 +92,7 @@ with Scene.new() as scene:
 | Name a node, to find or override it later | `scene.create.scatter_points(..., name="Rocks")`; then `usdchunks run net.usda Rocks.seed=3 -o out.usda` |
 | Bring in a file | `sublayer(imports=["inputs/set.usda"])`, or `reference(file_path=..., primpath_location="/set")` |
 | Move a prim that came from a file | `transform(last, primpath_location="/World/box", tx=3.0)` |
-| Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name; it edits attributes the prim already has |
+| Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name, the value as JSON (`[1, 0.9, 0.8]`, `"text"`, `true`); it edits attributes the prim already has |
 | Units, up axis, frame range, default prim | `stage_settings(meters_per_unit=1.0, up_axis="Y", start_frame=1, end_frame=48, default_prim="World")` |
 | Write one file per layer | `export_usd(last, output_dir=".", keep_session_layer=False)`; it lists every real layer itself (rows of `export_layers`, a sublayered input file too: set that row's `export_enabled` to False to skip it), names each file after its layer, and writes paths relative to each file |
 | Animate a value | There is no keyframe chunk yet. Write a small one (the `usd-chunks-write-chunk` skill) whose `execute` sets time samples, `attr.Set(value, Usd.TimeCode(frame))`, on a prim-path param |

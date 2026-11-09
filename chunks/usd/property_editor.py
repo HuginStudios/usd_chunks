@@ -534,8 +534,9 @@ def main():
         "edits",
         "Edits",
         default_value="",
-        tooltip="One edit per line, `name = value`. Put a type first, `float name = value`, to "
-        "create the attribute where a prim lacks it. Delete a line to drop that edit.",
+        tooltip="One edit per line, `name = value`, the value as JSON: `inputs:color = [1, 0.9, "
+        "0.8]`. Put a type first, `float name = value`, to create the attribute where a prim "
+        "lacks it. Delete a line to drop that edit.",
     )
     edits_grp.add_param(edits)
     clear = chunk.Button("clear_edits", "Clear Edits", tooltip="Drop every edit.")
@@ -574,6 +575,16 @@ def config():
             the path, e.g. /asset{color=red}/geo). Every edit applies to all of them.
           - Edits: the list of edits, one `name = value` per line. Delete a line to drop
             that edit, or press Clear Edits to drop them all.
+
+        Each line is the USD attribute name, `=`, and the value as JSON: a list for a
+        vector, double quotes for a string, true/false for a bool. A line that is not
+        valid JSON is skipped with a warning. A type before the name, as in a .usda file,
+        makes the attribute where a prim lacks it. From a script:
+
+            scene.create.property_editor(last, prim="/World/key", edits=(
+                "inputs:intensity = 3\\n"
+                "inputs:color = [1, 0.9, 0.8]\\n"
+                "bool vray:env:bg:tex:use = true"))
 
         The widgets below show the first prim's attributes. Changing one adds it to the
         edit list. Only edited attributes are written; the rest are left alone.
