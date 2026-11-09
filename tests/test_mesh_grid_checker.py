@@ -39,6 +39,15 @@ def test_a_plane_is_one_quad_sized_like_any_grid() -> None:
         assert _bound(scene.get_stage(), "/World/floor") is None
 
 
+def test_a_cube_with_one_point_per_edge_is_still_a_box() -> None:
+    """dimx/dimy/dimz count points along an edge, so 1 wrote no prim at all, silently."""
+    with Scene() as scene:
+        scene.set_output(scene.create.cube(prim_path="/World/box", dimx=1, dimy=1, dimz=1))
+        mesh = UsdGeom.Mesh(scene.get_stage().GetPrimAtPath("/World/box"))
+        assert mesh, "no prim written"
+        assert len(mesh.GetPointsAttr().Get()) == 8
+
+
 def test_uv_checker_binds_the_checker() -> None:
     with Scene() as scene:
         ground = scene.create.ground(prim_path="/World/ground")

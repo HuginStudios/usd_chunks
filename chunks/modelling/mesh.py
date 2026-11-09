@@ -174,9 +174,12 @@ def build_cube(
     one stacked on top sits at `height`. It used to span 0..width and 0..depth from a
     corner, so placing anything on its middle meant offsetting by half its size.
     """
-    xseg = max(int(xseg), 1)
-    yseg = max(int(yseg), 1)
-    zseg = max(int(zseg), 1)
+    # Points along each edge, so 2 is a plain box. 1 used to fall through to "fewer than 4
+    # points" and write no prim at all, silently -- and 1 is what someone asking for one
+    # segment per side passes.
+    xseg = max(int(xseg), 2)
+    yseg = max(int(yseg), 2)
+    zseg = max(int(zseg), 2)
 
     npts = xseg * yseg * zseg
     if npts < 4:
@@ -557,9 +560,9 @@ def main():
     cube_group = chunk.Group("cube", "Cube")
     cube_group.add_params(
         [
-            chunk.Spinbox("dimx", min_value=1, default_value=2, is_int=True),
-            chunk.Spinbox("dimy", min_value=1, default_value=2, is_int=True),
-            chunk.Spinbox("dimz", min_value=1, default_value=2, is_int=True),
+            chunk.Spinbox("dimx", min_value=2, default_value=2, is_int=True),
+            chunk.Spinbox("dimy", min_value=2, default_value=2, is_int=True),
+            chunk.Spinbox("dimz", min_value=2, default_value=2, is_int=True),
             chunk.Slider("width", default_value=1),
             chunk.Slider("height", default_value=1),
             chunk.Slider("depth", default_value=1),
@@ -652,8 +655,8 @@ def config():
         centred. Move them with a Transform below.
 
         Size params, by shape (script names in brackets):
-          - Cube: width (X), height (Y), depth (Z) [width, height, depth]; segments
-            [dimx, dimy, dimz].
+          - Cube: width (X), height (Y), depth (Z) [width, height, depth]; points along
+            each edge [dimx, dimy, dimz], 2 (the least) for flat sides.
           - Sphere: radius [radius1]; segments [dimx2, dimy2].
           - Torus: radius to the tube's middle, tube radius [torus_radius,
             torus_tube_radius].
