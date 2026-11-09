@@ -165,6 +165,10 @@ ruff check chunks/<category>/<module>.py tests/test_<module>.py
 usdchunks show <module>     # what someone looking for a chunk will see: description, params
 ```
 
+If the chunk goes in this repo's `chunks/`, add it to `CHANGELOG.md` under Unreleased →
+Added; when changing an existing one there, under Changed or Fixed, with `**Breaking:**`
+first if saved networks or scripts using it now behave differently.
+
 Then run the `usd-chunks-review-chunk` skill on the new module. Tell the user what you
 ran and the result. Mention any test you couldn't run (for example, no `pxr` in this
 Python).
