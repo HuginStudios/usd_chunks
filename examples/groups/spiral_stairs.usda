@@ -1,0 +1,119 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "SpiralStairs" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        string inputs:doc = """A box copied N times, each copy risen and turned about the Y axis: a spiral stair. Writes Stairs_dest_path/step_00, step_01 ... as USD Cube prims.
+Params: Stairs_copies, the number of steps; Place_tx, the radius to a step's centre; Place_ty, the first step's centre height; Place_sx / Place_sy / Place_sz, a step's length along the radius, height and width; Stairs_copy_translate, the rise per step (0, rise, 0); Stairs_copy_rotate, the turn per step (0, -degrees, 0): negative turns +X towards +Z; 0 makes a straight row; Stairs_dest_path, where the steps go."""
+        custom float inputs:Place_sx = 1
+        custom float inputs:Place_sy = 0.2
+        custom float inputs:Place_sz = 0.4
+        custom float inputs:Place_tx = 2
+        custom float inputs:Place_ty = 0.1
+        custom int inputs:Stairs_copies = 20
+        custom float3 inputs:Stairs_copy_rotate = (0, -18, 0)
+        custom float3 inputs:Stairs_copy_translate = (0, 0.2, 0)
+        custom string inputs:Stairs_dest_path = "/World/stairs"
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Step" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "shape"
+            string inputs:prim_path = "/World/stairs/step"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Place" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "transform"
+            token inputs:chunk.connect = </chunks/SpiralStairs/Step.outputs:chunk>
+            string inputs:primpath_location = "@Step.prim_path@"
+            string inputs:primpath_location.connect = </chunks/SpiralStairs/Step.inputs:prim_path>
+            float inputs:scale_grp:sx = 1
+            float inputs:scale_grp:sx.connect = </chunks/SpiralStairs.inputs:Place_sx>
+            float inputs:scale_grp:sy = 0.2
+            float inputs:scale_grp:sy.connect = </chunks/SpiralStairs.inputs:Place_sy>
+            float inputs:scale_grp:sz = 0.4
+            float inputs:scale_grp:sz.connect = </chunks/SpiralStairs.inputs:Place_sz>
+            float inputs:translate_grp:tx = 2
+            float inputs:translate_grp:tx.connect = </chunks/SpiralStairs.inputs:Place_tx>
+            float inputs:translate_grp:ty = 0.1
+            float inputs:translate_grp:ty.connect = </chunks/SpiralStairs.inputs:Place_ty>
+            uniform token outputs:chunk
+            rel ui:gizmo:transform:anchor = </prim>
+            uniform token ui:gizmo:transform:anchorSource = "primpath_location"
+            uniform token ui:gizmo:transform:driver.connect = [
+                </chunks/SpiralStairs/Place.inputs:translate_grp:tx>,
+                </chunks/SpiralStairs/Place.inputs:translate_grp:ty>,
+                </chunks/SpiralStairs/Place.inputs:translate_grp:tz>,
+                </chunks/SpiralStairs/Place.inputs:rotate_grp:rx>,
+                </chunks/SpiralStairs/Place.inputs:rotate_grp:ry>,
+                </chunks/SpiralStairs/Place.inputs:rotate_grp:rz>,
+                </chunks/SpiralStairs/Place.inputs:scale_grp:sx>,
+                </chunks/SpiralStairs/Place.inputs:scale_grp:sy>,
+                </chunks/SpiralStairs/Place.inputs:scale_grp:sz>,
+            ]
+            uniform token[] ui:gizmo:transform:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:transform:label = "Place"
+            uniform token ui:gizmo:transform:type = "transform"
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Stairs" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "duplicate_prim"
+            token inputs:chunk.connect = </chunks/SpiralStairs/Place.outputs:chunk>
+            int inputs:copies_grp:copies = 20
+            int inputs:copies_grp:copies.connect = </chunks/SpiralStairs.inputs:Stairs_copies>
+            float3 inputs:copies_grp:copy_rotate = (0, -18, 0)
+            float3 inputs:copies_grp:copy_rotate.connect = </chunks/SpiralStairs.inputs:Stairs_copy_rotate>
+            float3 inputs:copies_grp:copy_translate = (0, 0.2, 0)
+            float3 inputs:copies_grp:copy_translate.connect = </chunks/SpiralStairs.inputs:Stairs_copy_translate>
+            string inputs:dest_path = "/World/stairs"
+            string inputs:dest_path.connect = </chunks/SpiralStairs.inputs:Stairs_dest_path>
+            string inputs:source_prim = "@Step.prim_path@"
+            string inputs:source_prim.connect = </chunks/SpiralStairs/Step.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "DropSource" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "prune_prim"
+            token inputs:chunk.connect = </chunks/SpiralStairs/Stairs.outputs:chunk>
+            string inputs:prim_path = "@Step.prim_path@"
+            string inputs:prim_path.connect = </chunks/SpiralStairs/Step.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/SpiralStairs/DropSource.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (1060, 0)
+        }
+    }
+}
+

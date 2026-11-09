@@ -21,6 +21,13 @@ This file starts with the first release; development before that is in the commi
   `sphere`, the Mesh chunk) and as USD's own Cube and Sphere prims (`usd_cube`,
   `usd_sphere`, the Shape chunk), with how each sits on its origin. The build-network
   skill's Common jobs table says which to pick.
+- Ready-made ChunkGroups in `examples/groups/`: `scatter_on_terrain.usda` (instances so
+  many per m² over a terrain, up to a slope, resting on it) and `spiral_stairs.usda` (a box
+  copied, risen and turned: stairs, or a row). A scene references one and sets its params;
+  `build_groups.py` makes them and `examples/scripts/use_groups.py` uses both.
+- One row's param of a list lofts onto a group (`Scatter_proto_path`, Scatter's first
+  prototype). It warned "has no USD attribute bound" and lofted nothing: a list keeps each
+  column in one array, so the group's attribute now records the row it drives.
 
 - Transform: an **Aim** section. **Aim At** (a prim) or **Aim At Point** with **Point** turns the
   prim's -Z axis, the way lights and cameras face, toward the target on every cook:
@@ -311,6 +318,9 @@ This file starts with the first release; development before that is in the commi
 - Scatter Points built from a script no longer says "surface prim not found" or "prototype
   path(s) not found" for prims that are above it once it is wired. Its cook before the wire
   now waits instead; a prim still missing once wired is reported as before.
+- Closing a script's Scene cooks nothing. Unwiring the chunks recooked what was below them,
+  and a referenced group then found the Sublayer above it gone and said it "is blocked" as
+  the script ended.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
   side by side, the second Layer and its Edit Target were missing from the saved file, and
   the network opened again without what they led to. Edit Target now resolves its layer on
