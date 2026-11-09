@@ -123,7 +123,8 @@ def _param(p) -> Param | None:
     if cls in ("Group", "ListGroup"):
         level = p.get_my_params()
         if cls == "ListGroup":  # its level is the rows; a row's params are the template
-            level = level[0].get_my_params() if level else p.get_params()
+            # With no rows yet (a new Sublayer), the template itself: its children.
+            level = level[0].get_my_params() if level else p.children.get_params()
         kids = [c for c in (_param(x) for x in level) if c is not None]
         return Param(p.name, label, "list" if cls == "ListGroup" else "group", tooltip=tooltip, children=kids)
     if cls == "Vector":

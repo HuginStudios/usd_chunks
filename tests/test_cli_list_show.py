@@ -66,8 +66,16 @@ def test_list_rows_and_folds_big_menus(registry, capsys) -> None:
 def test_show_prints_params_and_a_list_groups_rows(capsys) -> None:
     cli.cmd_show(Namespace(name="scatter_points", json=False))
     out = capsys.readouterr().out
-    assert "prototypes.<i>.<param>" in out and "proto_path" in out
+    assert "prototypes=[{param: value, ...}, ...]" in out and "prototypes.<i>.<param>" in out
+    assert "proto_path" in out
     assert "max_slope" in out and "seed" in out
+
+
+def test_show_lists_the_row_params_of_a_list_with_no_rows(registry) -> None:
+    # A new Sublayer has no rows; its row param was missing, and with it what to set.
+    _, _, _, params = chunk_catalog.describe(registry, "sublayer")
+    imports = next(p for p in params if p.name == "imports")
+    assert [c.name for c in imports.children] == ["sublayer_path"]
 
 
 def test_show_an_unknown_name_fails(capsys) -> None:

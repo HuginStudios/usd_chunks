@@ -55,6 +55,65 @@ def test_set_adds_a_row(scene, tmp_path) -> None:
     assert scene.get_stage().GetPrimAtPath("/b")
 
 
+@pytest.mark.parametrize("in_block", [False, True])
+def test_a_list_of_values_sets_one_param_rows(scene, tmp_path, in_block) -> None:
+    a, b = _layer(tmp_path, "a", "/a"), _layer(tmp_path, "b", "/b")
+    if in_block:
+        with chunk.change_block():
+            sub = scene.create.sublayer(imports=[a, b])
+    else:
+        sub = scene.create.sublayer(imports=[a, b])
+    scene.set_output(sub)
+
+    rows = sub.get_param("imports")
+    assert [rows.get_indexed_param("sublayer_path", i).value for i in range(rows.size)] == [a, b]
+    stage = scene.get_stage()
+    assert stage.GetPrimAtPath("/a") and stage.GetPrimAtPath("/b")
+
+
+def test_a_list_replaces_every_row(scene, tmp_path) -> None:
+    a, b, c = (_layer(tmp_path, n, f"/{n}") for n in "abc")
+    sub = scene.create.sublayer(imports=[a, b, c])
+    scene.set_output(sub)
+
+    scene.set(sub, imports=[c])
+
+    rows = sub.get_param("imports")
+    assert rows.size == 1
+    assert rows.get_indexed_param("sublayer_path", 0).value == c
+    assert not scene.get_stage().GetPrimAtPath("/a")
+
+
+def test_dict_rows_set_their_params_and_default_the_rest(scene) -> None:
+    scatter = scene.create.scatter_points(prototypes=[
+        {"proto_path": "/rock", "proto_weight": 20.0},
+        {"proto_path": "/bush"},
+    ])
+    rows = scatter.get_param("prototypes")
+
+    def row(i, name):
+        return rows.get_indexed_param(name, i).value
+
+    assert rows.size == 2
+    assert (row(0, "proto_path"), row(0, "proto_weight")) == ("/rock", 20.0)
+    assert (row(1, "proto_path"), row(1, "proto_weight")) == ("/bush", 100.0)
+
+    # Given again, a row left out of a dict is back at its default, not what it was.
+    scene.set(scatter, prototypes=[{"proto_path": "/rock"}])
+    assert rows.size == 1
+    assert row(0, "proto_weight") == 100.0
+
+
+def test_a_bare_value_for_a_row_of_several_params_raises(scene) -> None:
+    with pytest.raises(TypeError, match="give each row as a dict"):
+        scene.create.scatter_points(prototypes=["/rock"])
+
+
+def test_a_misspelt_key_in_a_row_raises(scene) -> None:
+    with pytest.raises(KeyError, match="prototypes.0.proto_pth"):
+        scene.create.scatter_points(prototypes=[{"proto_pth": "/rock"}])
+
+
 def test_a_misspelt_row_param_raises_and_adds_no_row(scene) -> None:
     sub = scene.create.sublayer()
 

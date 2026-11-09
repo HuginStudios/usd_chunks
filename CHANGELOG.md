@@ -11,10 +11,16 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
-- A script can name a row a list param doesn't have yet: `scene.create.sublayer(**{
-  "imports.0.sublayer_path": "a.usda", "imports.1.sublayer_path": "b.usda"})` makes both
-  rows. A list starts with none, and naming one used to raise KeyError until
-  `get_param("imports").size` was set by hand. A misspelt row param still raises.
+- A list param takes a Python list in `scene.create` and `scene.set`, one item per row:
+  `scene.create.sublayer(imports=["a.usda", "b.usda"])`, or a dict per row where a row has
+  several params (`prototypes=[{"proto_path": "/rock", "proto_weight": 200.0}]`). The list
+  then has exactly those rows. Setting a list used to mean setting
+  `get_param("imports").size` by hand and then each row's params one by one.
+- A script can name one param of a row the list doesn't have yet
+  (`**{"imports.2.sublayer_path": "c.usda"}`), and the list grows to hold it; it raised
+  KeyError. A misspelt row param still raises.
+- `usdchunks show` lists the row params of a list with no rows yet, such as a new
+  Sublayer's `sublayer_path`, and gives the list form to set them.
 
 - An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
   instead of a View. With no active View a graph cooks to its Output, a ChunkGroup

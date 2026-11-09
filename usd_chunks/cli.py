@@ -295,7 +295,8 @@ def _param_rows(params, depth=0):
         pad = "  " * depth
         if p.kind in ("group", "list"):
             note = (
-                f"list of rows: set row i as {p.name}.<i>.<param>; rows are added as named"
+                f"list of rows: {p.name}=[{{param: value, ...}}, ...], one dict per row; "
+                f"one row's param alone as {p.name}.<i>.<param>"
                 if p.kind == "list" else "group"
             )
             yield pad, f"[{p.name}]", "", "", "", f"{p.label} ({note})"
