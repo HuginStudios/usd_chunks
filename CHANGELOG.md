@@ -291,6 +291,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Transform's Aim At no longer fills itself from the selection. In usdview a Transform made with
+  a prim selected turned that prim toward itself; Prim Path still takes the selection.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
   side by side, the second Layer and its Edit Target were missing from the saved file, and
   the network opened again without what they led to. Edit Target now resolves its layer on
