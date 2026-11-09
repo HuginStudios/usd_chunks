@@ -474,6 +474,18 @@ def parse(source: str) -> dict:
     }
 
 
+def _mesh_root(node, file_path):
+    """The folder the meshes are looked for in: Mesh Root, or the .urdf's own folder.
+
+    A relative Mesh Root is found as the URDF path is, from the network's folder, so the
+    robot gets its meshes whatever the working directory.
+    """
+    given = (node.get_param("mesh_root").value or "").strip()
+    if not given:
+        return os.path.dirname(file_path)
+    return chunk.resolve_file(node, given) or given
+
+
 def cache_key(node):
     """The meshes the .urdf names, by size and mtime, for the cook cache.
 
@@ -484,7 +496,7 @@ def cache_key(node):
     file_path = chunk.resolve_file(node, node.get_param("file_path").value)
     if not file_path or not os.path.isfile(file_path):
         return ()
-    mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
+    mesh_root = _mesh_root(node, file_path)
     with open(file_path, encoding="utf-8") as handle:
         source = handle.read()
     if "<!DOCTYPE" in source[:4096]:
@@ -508,7 +520,7 @@ def execute(node):
         logger.warning("no such file: %s", given)
         return
 
-    mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
+    mesh_root = _mesh_root(node, file_path)
     scale = float(node.get_param("scale").value or 1.0)
     approximation = node.get_param("collider_approximation").value or "convexHull"
     want_visual = bool(node.get_param("import_visual").value)

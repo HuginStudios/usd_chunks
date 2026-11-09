@@ -321,6 +321,9 @@ This file starts with the first release; development before that is in the commi
 - Closing a script's Scene cooks nothing. Unwiring the chunks recooked what was below them,
   and a referenced group then found the Sublayer above it gone and said it "is blocked" as
   the script ended.
+- URDF Import finds a relative Mesh Root from the network's folder, as it does the .urdf.
+  It was read from the working directory, so the robot came in without its meshes when the
+  network ran from anywhere else.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
   side by side, the second Layer and its Edit Target were missing from the saved file, and
   the network opened again without what they led to. Edit Target now resolves its layer on
