@@ -3218,7 +3218,8 @@ def main():
     points_input = chunk.LineEdit(
         "points_prim",
         "Painted Points",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        # PRIM_PATHS: a cook reads these points, so a new stroke must re-run it.
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
         tooltip="Place one instance at each point a Scatter Brush painted, instead of "
         "scattering. Wire this from the brush's Painted Points output. While it is "
         "connected, the distribution settings below do nothing and are hidden.",
@@ -3395,7 +3396,8 @@ def main():
         chunk.LineEdit(
             "avoid_prims",
             "Keep Away From",
-            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            # PRIM_PATHS: a cook reads these prims, so an edit to them must re-run it.
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
             tooltip="Surface mode: prims whose points (curves along their length) instances "
             "stay clear of -- e.g. a Trails output. Comma-separate several.",
         )
