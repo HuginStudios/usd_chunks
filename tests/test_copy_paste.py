@@ -626,7 +626,7 @@ def test_canvas_menu_paste_only_offered_when_clipboard_has_content(graph, monkey
     # to confirm that's the path taken, and make it a no-op (returns None -> nothing created).
     called = []
     monkeypatch.setattr(
-        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos: called.append(True) or None
+        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos, **_kw: called.append(True) or None
     )
     far_empty = gv.mapFromScene(QtCore.QPointF(-40000, -40000))
     ev = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Reason.Mouse, far_empty, far_empty)
@@ -643,7 +643,7 @@ def test_canvas_menu_new_chunk_option_falls_through_to_fuzzy_search(graph, monke
 
     called = []
     monkeypatch.setattr(
-        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos: called.append(True) or None
+        nodegraph.FilterableChunkMenu, "select_module", lambda self, pos, **_kw: called.append(True) or None
     )
     monkeypatch.setattr(gv, "_exec_menu", _pick_action_by_text("New Chunk..."))
 

@@ -13,7 +13,9 @@ from PySide6 import QtCore, QtGui
 
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_scene import SceneSender
-from usd_chunks.frontends.qt.widgets import _RESULT_DIVIDER, FilterableChunkMenu, _host_menu_highlight
+from usd_chunks.frontends.qt.widgets import (
+    _RESULT_DIVIDER, NODE_GRAPH_ITEMS, FilterableChunkMenu, GraphItemEntry, _host_menu_highlight,
+)
 
 
 class _Scene(SceneSender):
@@ -224,3 +226,18 @@ def test_without_a_host_rule_the_palette_is_used(qapp):
         assert _host_menu_highlight() == ("palette(highlight)", "palette(highlighted-text)")
     finally:
         qapp.setStyleSheet(previous)
+
+
+def test_graph_items_show_in_the_tree_and_in_search(qapp, menu):
+    assert not any(isinstance(a.data(), GraphItemEntry) for a in menu.actions()), \
+        "only menus asked for them list them"
+    m = FilterableChunkMenu()
+    m.exec_ = lambda _pos: None
+    m.select_module(None, graph_items=NODE_GRAPH_ITEMS)
+    labels = [a.text() for a in m._tree_actions if a.isVisible()]
+    assert "Backdrop\tB" in labels and "Sticky Note\tN" in labels
+    m.filter_widget.setText("sticky")
+    assert _results(m)[0] == "Sticky Note"
+    m.filter_widget.setText("")
+    assert "Backdrop\tB" in [a.text() for a in m._tree_actions if a.isVisible()]
+    m.deleteLater()

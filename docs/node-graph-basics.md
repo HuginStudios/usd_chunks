@@ -129,6 +129,9 @@ chunk.
 A **sticky note** says what a part of the network is for. Press `N` to add one at the
 cursor, then type. Drag it anywhere on its body.
 
+Both are also in the chunk menu (`Tab` or right-click on the canvas), at the bottom, and
+you can search for them there.
+
 Double-click either one to edit its text. Right-click its title bar (or anywhere on a
 note) to change its colour, fit a backdrop around its nodes, lay out the nodes inside it,
 cut, copy, duplicate, put it in a ChunkGroup, or delete it. Select a backdrop and press `L`
