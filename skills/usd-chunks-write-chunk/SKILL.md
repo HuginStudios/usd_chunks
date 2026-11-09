@@ -94,7 +94,12 @@ Rules, all from `docs/writing-a-chunk.md`:
 - **Callbacks** listen to this chunk's own params only. Use them for buttons; anything that
   must be redone after the file opens belongs in `execute`.
 - **`config()`** is self-contained: no module constants or helpers that need a non-`usd_chunks`
-  import. Give it a `description` that says what the chunk does and what it writes, a
+  import. Give it a `description` that opens with one **summary line**: the jobs the chunk
+  does, in the words someone asking for them would use ("Copies a prim N times in a row,
+  ring or spiral (stairs); ..."), at most 90 characters, no "X chunk --" prefix, then a blank
+  line, then what it writes and its params. The summary line sums up that text: nothing in
+  it the text below does not say. `usdchunks list` shows only that line, and it
+  is what an agent picks a chunk by. Also give it a
   `category`, and an `icon` from `usd_chunks/resources/icons/node/` (file name without
   `.svg`). Third-party packages go in `requirements=["numpy>=2,<3"]` with a version range.
 - **Writing files** (export, render) goes in `commit(node)`, not `execute`.

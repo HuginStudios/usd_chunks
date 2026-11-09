@@ -27,4 +27,12 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(
+        chunk.StandardCategory.EXAMPLES,
+        description="""
+        Example: a chunk class that keeps its own state, a counter saved with the network.
+
+        When saved, the MyCustomChunk instance is written with its current counter value, and
+        on loading the counter value is restored.
+        """,
+    )

@@ -40,6 +40,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="link",
         description="""
+        Makes prims specialize a base prim, so its opinions are fallbacks each prim can override.
+
         Specialize -- adds a specializes arc from prims to a base prim, so its opinions
         become their fallbacks.
 

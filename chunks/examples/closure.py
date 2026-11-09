@@ -30,4 +30,12 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(
+        chunk.StandardCategory.EXAMPLES,
+        description="""
+        Example: Button callbacks as lambdas and closures, and what a save keeps of them.
+
+        One lambda reads the Slider when the button is clicked. Another captures a closure
+        argument, whose value is saved with the network.
+        """,
+    )

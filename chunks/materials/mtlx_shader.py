@@ -665,6 +665,8 @@ def config():
         icon="sphere",
         variants=_menu_variants,
         description="""
+        A MaterialX shader or material (e.g. Standard Surface), its params from its definition.
+
         Authors a MaterialX shader as a UsdShade.Shader prim, with its params generated
         from the shader's own definition in USD's shader registry (Sdr).
 

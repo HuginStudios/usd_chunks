@@ -87,18 +87,22 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="grid",
         description=(
-            "Authors a named UsdCollectionAPI on Owner Prim from an Include/Exclude prim\n"
-            "pattern (comma-separated paths or Houdini-style globs: *, **, ?).\n"
-            "Reference outputs '%Name' — paste that token into any other chunk's prim-pattern\n"
-            "field (e.g. Transform's Prim Path, Bind Material's Prim Path) to target every\n"
-            "member of this collection.\n"
-            "Expansion Rule controls whether included prims' descendants are implicitly\n"
-            "members (Expand Prims / Expand Prims and Properties) or membership is limited\n"
-            "to exactly what's listed (Explicit).\n"
-            "Membership Expression authors a native USD SdfPathExpression instead — set\n"
-            "operations (+ union, - difference, & intersection), recursive wildcards (//),\n"
-            "and references to other collections (%:otherName). When set, it replaces\n"
-            "Include/Exclude entirely rather than combining with them, since USD unions\n"
-            "expression membership with rel-target membership rather than ANDing them."
+            """
+        Defines a USD collection from include/exclude paths or globs, for other chunks to target.
+
+        Authors a named UsdCollectionAPI on Owner Prim from an Include/Exclude prim
+        pattern (comma-separated paths or Houdini-style globs: *, **, ?).
+        Reference outputs '%Name' — paste that token into any other chunk's prim-pattern
+        field (e.g. Transform's Prim Path, Bind Material's Prim Path) to target every
+        member of this collection.
+        Expansion Rule controls whether included prims' descendants are implicitly
+        members (Expand Prims / Expand Prims and Properties) or membership is limited
+        to exactly what's listed (Explicit).
+        Membership Expression authors a native USD SdfPathExpression instead — set
+        operations (+ union, - difference, & intersection), recursive wildcards (//),
+        and references to other collections (%:otherName). When set, it replaces
+        Include/Exclude entirely rather than combining with them, since USD unions
+        expression membership with rel-target membership rather than ANDing them.
+        """
         ),
     )

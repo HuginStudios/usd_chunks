@@ -299,4 +299,16 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.MTLX, icon="sphere")
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.MTLX,
+        icon="sphere",
+        description="""
+        Gives MDL (Omniverse) materials a MaterialX surface, so other renderers shade them too.
+
+        Assets authored for Omniverse bind their looks through MDL (OmniPBR.mdl,
+        OmniGlass.mdl), and every other renderer -- V-Ray, Storm, Karma, Cycles -- finds no
+        surface it can build and falls back to grey. This authors a MaterialX standard_surface
+        from the MDL parameters that carry the look and connects it as the material's mtlx
+        surface output, beside the MDL one rather than replacing it.
+        """,
+    )

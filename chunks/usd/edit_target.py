@@ -255,6 +255,8 @@ def config():
         category=chunk.StandardCategory.USD_LAYER,
         icon="layers",
         description="""
+        Sets which layer edits go to (the stage's edit target), like usdview's Edit Target menu.
+
         Edit Target chunk — sets the stage's current edit target, mirroring usdview's
         Edit Target dropdown as a chunk.
 

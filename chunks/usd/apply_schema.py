@@ -94,4 +94,16 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.USD, icon="tag")
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.USD,
+        icon="tag",
+        description="""
+        Applies a USD API schema (UsdPhysics, UsdLux and other applied APIs) to a prim.
+
+        Schemas lists every single-apply API schema this USD has registered that the prim can
+        take: UsdPhysics', UsdLux's and the rest. Pick one and press Apply: it is applied with
+        ApplyAPI. Only applied
+        API schemas are accepted; an unknown name logs a warning and applies nothing. A
+        reopened network applies its saved schema again.
+        """,
+    )

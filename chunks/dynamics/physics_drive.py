@@ -169,8 +169,12 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.DYNAMICS,
         icon="waves",
         description=(
-            "Makes a prim a collider, a spinning part (kinematic body on a revolute joint with a\n"
-            "velocity drive) or a conveyor (PhysX surface velocity) -- plain UsdPhysics, read by\n"
-            "the RBD Solver."
+            """
+        Makes a prim a physics collider, a spinning part or a conveyor belt, for the RBD Solver.
+
+        Makes a prim a collider, a spinning part (kinematic body on a revolute joint with a
+        velocity drive) or a conveyor (PhysX surface velocity) -- plain UsdPhysics, read by
+        the RBD Solver.
+        """
         ),
     )

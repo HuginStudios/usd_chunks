@@ -412,6 +412,8 @@ def config():
         category=chunk.StandardCategory.CORE,
         icon="code",
         description="""
+        Runs a Python script or .py file with the stage in scope, and outputs its result.
+
         Python — runs a script with stage, prim, node, and usdviewApi in scope.
 
         Parameters:

@@ -361,6 +361,8 @@ def config():
         category=chunk.StandardCategory.USD_RENDER,
         icon="film",
         description="""
+        Sets up a render: resolution, camera, outputs, and each installed renderer's settings.
+
         Render Settings chunk — creates a UsdRender.Settings prim describing one
         render: its resolution, the camera it uses, and the products it writes.
 

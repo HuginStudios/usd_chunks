@@ -64,6 +64,11 @@ usdchunks deps                 # undeclared or unpinned third-party imports, all
 
 - [ ] It exists and has a `description` that says what the chunk does and what it writes,
       not the default `"Chunk description..."`.
+- [ ] The description opens with one summary line, then a blank line: the jobs the chunk
+      does in task words, at most 90 characters, no "X chunk --" prefix, and nothing the
+      text below it does not say. Check it with
+      `usdchunks list <word>` using a word someone would search for; `tests/test_chunk_summary_lines.py`
+      enforces the shape.
 - [ ] It sets `category` (a `chunk.StandardCategory` member where one fits).
 - [ ] It's self-contained: it uses only `usd_chunks` names, not module constants or
       helpers that need other imports.

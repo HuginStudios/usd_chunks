@@ -128,6 +128,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="link",
         description="""
+        Brings an external USD file into the scene as a payload, at a prim path you choose.
+
         Payload chunk: Lets the user pick an external USD file and insert it as a
         Usd.Payload into the active stage.
 
