@@ -274,6 +274,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points keeps the rotation of a prototype's source. A cone laid on its side by a
+  Transform now scatters on its side; before, only the scale carried over.
 - A script building a correctly wired chain no longer gets "X is blocked: ... isn't wired
   above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
   cooks a chunk once before wiring it, and that cook found nothing above it; the warnings
