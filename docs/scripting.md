@@ -257,6 +257,32 @@ with scene.create.edit_target(shot, edit_target="shot"):
 The ground and the light go into the `shot` layer. A Layer chunk only makes the layer. The
 Edit Target is what sends edits to it.
 
+### Department layers side by side
+
+A Layer chunk goes into whatever layer is being edited where it is wired. So a second Layer
+wired after a chunk inside the first one's Edit Target lands *inside* the first layer:
+lighting nested in layout, not beside it. For department layers that sit side by side, end
+each department with an Edit Target back to `Session Layer`, and wire the next Layer after
+that:
+
+``` py
+world = scene.create.prim(primpath_location="/World", prim_type="Xform")
+
+layout = scene.create.layer(world, layer_name="layout")
+into = scene.create.edit_target(layout, edit_target="layout")
+box = scene.create.cube(into, prim_path="/World/box")
+back = scene.create.edit_target(box, edit_target="Session Layer")   # out of layout
+
+lighting = scene.create.layer(back, layer_name="lighting")
+into = scene.create.edit_target(lighting, edit_target="lighting")
+key = scene.create.distant_light(into, primpath_location="/World/key", intensity=3.0)
+back = scene.create.edit_target(key, edit_target="Session Layer")   # out of lighting
+```
+
+`layout` and `lighting` are now both sublayers of the session layer, the box is in `layout`
+and the light in `lighting`. An Export USD chunk after the last `back` writes each to its
+own file, `layout.usda` and `lighting.usda`.
+
 ## Save and cook
 
 | Call | Does |

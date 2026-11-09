@@ -65,7 +65,11 @@ with Scene.new() as scene:
   file without cooking, use `Scene(stage, lazy=True)` or `Scene.open(path, lazy=True)`
   and `scene.cook(c)` before reading a result.
 - **Layers:** chunks inside `with scene.create.edit_target(layer_chunk, edit_target="shot"):`
-  write into that layer. **Groups:** chunks made inside `with group:` (a
+  write into that layer. A second Layer wired after a chunk inside that Edit Target nests
+  *inside* the first layer. For department layers side by side (layout, lighting, anim), end
+  each department with `scene.create.edit_target(last, edit_target="Session Layer")` and wire
+  the next Layer after it; `docs/scripting.md` ("Department layers side by side") has the
+  recipe. Export USD then writes one file per layer. **Groups:** chunks made inside `with group:` (a
   `scene.create.chunkgroup(name=...)`) go into it. Set a group's `doc` param to say what it
   does; agents and people read it.
 - **Frame the parts** with `scene.add_backdrop([...], title=...)` and `scene.add_note(...)`
