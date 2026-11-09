@@ -59,6 +59,17 @@ def set_format_list(owner, notice, sender):
     set_preset_values(owner, notice, sender)
 
 
+def _lens_values(cam_data, idx):
+    """(focal length, horizontal aperture, vertical aperture) of one camera body's format."""
+    sensor = cam_data["sensorSize"][idx]
+    return sensor.get("focalLength", [50.0])[0], sensor["size"][0], sensor["size"][1]
+
+
+def _selected_preset(_chunk):
+    """The (model, format index) the preset menus show now."""
+    return _chunk.get_param("camera_preset").value, _chunk.get_param("formats").get_selected_index()
+
+
 def set_preset_values(owner, notice, sender):
     param = notice.data
     _chunk = param.get_chunk()
@@ -67,12 +78,17 @@ def set_preset_values(owner, notice, sender):
     cam_data = next((c for c in camera_presets.cameras if c.get("model") == selected_model), None)
     if cam_data is None:
         return
-    formats = _chunk.get_param("formats")
-    idx = formats.get_selected_index()
-    sensor = cam_data["sensorSize"][idx]
-    _chunk.get_param("focalLength").value = sensor.get("focalLength", [50.0])[0]
-    _chunk.get_param("horizontalAperture").value = sensor["size"][0]
-    _chunk.get_param("verticalAperture").value = sensor["size"][1]
+    # Only a change of body or format sets the lens. The menus' notices also arrive when a
+    # chunk is made or cooked in a change_block, after a script's own focalLength=... was
+    # set, and putting the preset's values back then threw that away.
+    selected = _selected_preset(_chunk)
+    if selected == getattr(camera_presets, "applied", None):
+        return
+    camera_presets.applied = selected
+    focal, h_aperture, v_aperture = _lens_values(cam_data, selected[1])
+    _chunk.get_param("focalLength").value = focal
+    _chunk.get_param("horizontalAperture").value = h_aperture
+    _chunk.get_param("verticalAperture").value = v_aperture
 
 
 def _apply_freecam_transform(owner, notice, sender):
@@ -432,6 +448,9 @@ def _chunk_loaded(owner, notice, sender):
     this catches a cook that could not see the chunk prim, and cooks again for it.
     """
     _chunk = owner.get_chunk() if hasattr(owner, "get_chunk") else owner
+    if _chunk is not None and (presets := _chunk.get_param("camera_preset")) is not None:
+        # The saved lens values belong to the saved body and format, however they were set.
+        presets.applied = _selected_preset(_chunk)
     if _chunk is not None and renderer_params.restore_saved(_chunk, render_defs.iter_camera_defs()):
         _chunk.execute()
 
@@ -479,16 +498,24 @@ def main():
     formats = chunk.Menu("formats", "Formats")
     formats.add_callback(set_preset_values, send_on_create=False)
     chunk_api.add_param(formats)
-
+    # The default body's first format is the lens's default, and counts as applied, so the
+    # menus' first notices leave a focal length a script set alone (set_preset_values).
+    default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
+    focal, h_aperture, v_aperture = _lens_values(default_cam, 0)
+    menu.applied = (menu.value, 0)
 
     lens = _section("lens_grp", "Lens", icon="camera")
-    lens.add_param(chunk.Slider("focalLength", "Focal Length", min_value=1.0, max_value=800.0))
+    lens.add_param(chunk.Slider("focalLength", "Focal Length", min_value=1.0, max_value=800.0, default_value=focal))
     lens.add_param(chunk.Slider("fStop", "f-Stop", min_value=0.7, max_value=64.0))
     chunk_api.add_param(lens)
 
     sensor = _section("sensor_grp", "Sensor", icon="box_select")
-    sensor.add_param(chunk.Slider("horizontalAperture", "Horizontal Aperture", min_value=1.0, max_value=100.0))
-    sensor.add_param(chunk.Slider("verticalAperture", "Vertical Aperture", min_value=1.0, max_value=100.0))
+    sensor.add_param(chunk.Slider(
+        "horizontalAperture", "Horizontal Aperture", min_value=1.0, max_value=100.0, default_value=h_aperture,
+    ))
+    sensor.add_param(chunk.Slider(
+        "verticalAperture", "Vertical Aperture", min_value=1.0, max_value=100.0, default_value=v_aperture,
+    ))
     sensor.add_param(chunk.Slider("horizontalApertureOffset", "Horizontal Aperture Offset", min_value=-50.0, max_value=50.0))
     sensor.add_param(chunk.Slider("verticalApertureOffset", "Vertical Aperture Offset", min_value=-50.0, max_value=50.0))
     chunk_api.add_param(sensor)
@@ -529,8 +556,7 @@ def main():
     ))
     chunk_api.add_param(clipping)
 
-    default_cam = next((c for c in cameras if c.get("model") == menu.value), cameras[0])
-    formats.menu_items = [f.get("format") for f in default_cam.get("sensorSize", [])]
+    formats.menu_items =[f.get("format") for f in default_cam.get("sensorSize", [])]
 
     # The camera's own transform, so it needs no upstream Transform chunk to be placed.
     # Same param names and grouping as transform.py, so the one transform handle behaves
