@@ -27,6 +27,9 @@ def config():
         when two branches author the same prim, the one in the bottom slot takes precedence. Slots stay dense:
         clearing one closes the gap. The empty slot sits at the bottom: a branch attached there goes in as input 0 and
         wins, the way a node chained after the rest would.
+
+        From a script the last one in wins too: scene.create.merge(a, b) puts b in slot 0, so b
+        wins where both author the same thing.
         """,
         dynamic_exec_inputs=True,
     )

@@ -144,9 +144,12 @@ it. You can pass more than one.
 
 ``` py
 lift = scene.create.transform(box)      # box -> Transform
-both = scene.create.merge(a, b)         # a and b -> Merge
+both = scene.create.merge(a, b)         # a and b -> Merge; b wins
 c.add_dependency(b)                     # b -> c, for chunks that already exist
 ```
+
+Into a Merge, the last input wins, the same as a chunk chained after the others. Where `a`
+and `b` both author the same prim, `b`'s value is the one you get.
 
 **A param wire** makes one param follow another's value. Pass the param as the value:
 
