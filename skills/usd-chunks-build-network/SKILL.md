@@ -69,6 +69,8 @@ with Scene.new() as scene:
   in its folder, `../inputs/set.usda` from it. Start with `Scene.new(path="<network>.usda")`
   so they resolve from there while building too, not from the working directory, and
   `scene.save()` writes there. Don't `os.chdir`.
+- **Units:** a new Scene is in metres (`metersPerUnit` 1) with Y up. Add
+  `scene.create.stage_settings(...)` only for other units, an up axis or a default prim.
 - **End with `scene.set_output(last)`.** `usdchunks run` and a ChunkGroup deliver the
   Output. `scene.set_view(c)` only lets you look at something along the way.
 - **Many chunks:** wrap the building in `chunk.change_block()` as above. To only write the

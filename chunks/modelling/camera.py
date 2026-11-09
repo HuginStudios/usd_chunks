@@ -276,25 +276,35 @@ def _refocus(node) -> None:
         param.value = distance
 
 
+def _aim_target(node, stage, time) -> Gf.Vec3d | None:
+    """The world-space point the camera should face: Point with Aim At Point checked, else
+    the Aim At prim's centre; None with neither."""
+    at_point = node.get_param("aim_at_point")
+    if at_point is not None and at_point.value:
+        return Gf.Vec3d(*(float(v) for v in node.get_param("aim_point").value))
+    aim_param = node.get_param("aim_at")
+    aim_path = aim_param.value
+    if not aim_path:
+        return None
+    target = stage.GetPrimAtPath(chunk_utils.split_variant_path(aim_path)[1])
+    if not target:
+        chunk_utils.warn_if_missing(node, aim_path, "the camera is not aimed", aim_param)
+        return None
+    return chunk_utils.focus_point_of(stage, [target], time)
+
+
 def _aim(node, stage) -> None:
-    """With Aim At set, turn the camera to face that prim's centre from where it stands.
+    """With Aim At set, turn the camera to face that prim's centre from where it stands; with
+    Aim At Point checked, to face Point.
 
     Into the rotate params, as _refocus writes Focus Distance, so the sliders, the transform
     handle and a saved file all read the rotation the camera really has -- and clearing Aim
     At leaves the camera facing where it last aimed. The view is levelled to the stage's up
     axis. Writes only on a change: each write re-cooks the chunk, and the re-cook lands here.
     """
-    aim_param = node.get_param("aim_at")
-    aim_path = aim_param.value
-    if not aim_path:
-        return
-    target = stage.GetPrimAtPath(chunk_utils.split_variant_path(aim_path)[1])
-    if not target:
-        chunk_utils.warn_if_missing(node, aim_path, "the camera is not aimed", aim_param)
-        return
     scene = node.get_scene()
     time = _time(scene) if scene is not None else Usd.TimeCode.Default()
-    centre = chunk_utils.focus_point_of(stage, [target], time)
+    centre = _aim_target(node, stage, time)
     if centre is None:
         return
     up = Gf.Vec3d(0, 0, 1) if UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z else Gf.Vec3d(0, 1, 0)
@@ -580,6 +590,16 @@ def main():
         tooltip="A prim to keep the camera pointed at, from wherever it is moved to. Sets "
         "Rotate on every cook; clear it to rotate by hand again.",
     ))
+    chunk_api.add_param(chunk.Checkbox(
+        "aim_at_point", "Aim At Point", default_value=False,
+        tooltip="Keep the camera pointed at Point instead of the Aim At prim. Sets Rotate on "
+        "every cook; uncheck it to rotate by hand again.",
+    ))
+    chunk_api.add_param(chunk.Vector(
+        "aim_point", "Point",
+        param=chunk.Slider(), length=3, suffixes="XYZ", default_value=(0.0, 0.0, 0.0),
+        tooltip="The world-space point Aim At Point keeps the camera pointed at.",
+    ))
 
     lock_cam = chunk.Checkbox("lock_to_freecam", "Lock to Free Camera")
     lock_cam.add_callback(_apply_freecam_transform)
@@ -660,7 +680,7 @@ def config():
         category=chunk.StandardCategory.MODELLING,
         icon="camera",
         description="""
-        A camera: lens, sensor and focus as sliders, real camera presets, and aim at a prim.
+        A camera: lens, sensor and focus as sliders, real camera presets, aim at a prim or point.
 
         Camera chunk — creates a UsdGeom.Camera prim and exposes its lens
         parameters as live sliders, with optional real-world camera presets
@@ -688,6 +708,8 @@ def config():
           - Aim At: a prim to keep the camera pointed at. Each cook turns the
             Rotate params to face its centre from the camera's position, level to
             the stage's up axis, so moving the camera or the prim keeps it framed.
+          - Aim At Point / Point: aim at a world-space point instead, the same way;
+            it wins over Aim At while checked.
           - Lock to Free Camera: when checked, the chunk subscribes to the
             scene's active-camera-changed signal and continuously syncs the
             prim's transform and focus distance from the DCC freecam. The

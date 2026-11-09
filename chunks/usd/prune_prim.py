@@ -65,7 +65,7 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
         tooltip=(
             "Select prim(s) to prune. Supports glob patterns and multi-selection.\n"
-            "Pruned prims are deactivated and flagged for removal on export/flatten."
+            "Pruned prims are deactivated, and left out of what an export writes."
         ),
     )
     prim_path.add_callback(_on_change)
@@ -88,8 +88,9 @@ def config():
         Unlike Mute (which is a reversible bypass), Prune communicates the
         intent to permanently remove the prim. It authors:
           1. SetActive(false) — immediately excludes from traversal/render
-          2. customData["usd_chunks:pruned"] = true — metadata flag for
-             downstream tools to strip the prim on flatten/export
+          2. customData["usd_chunks:pruned"] = true — metadata flag; exports
+             (Export USD, scene.export, usdchunks run -o) leave the prim out. A
+             prim inside a referenced asset keeps its inactive over instead.
 
         The metadata convention allows export and flatten utilities to
         distinguish "temporarily disabled" prims from "meant to be deleted"

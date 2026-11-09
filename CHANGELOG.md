@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Transform: an **Aim** section. **Aim At** (a prim) or **Aim At Point** with **Point** turns the
+  prim's -Z axis, the way lights and cameras face, toward the target on every cook:
+  `scene.create.transform(light, primpath_location="/World/key", tx=3, ty=4, tz=3,
+  aim_at_point=True, aim_point=(0, 0.75, 0))`.
 - The build-network skill has a Common jobs table: naming a node and overriding it from
   the CLI, bringing in a file, moving or editing a prim from it, stage settings, one file
   per layer, and what to do for animation. `usdchunks list` ends by pointing at it, and
@@ -18,6 +22,9 @@ This file starts with the first release; development before that is in the commi
 
 - The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
   and search finds them.
+- Camera: **Aim At Point** and **Point** keep the camera pointed at a world-space point, as
+  Aim At does for a prim: `scene.create.camera(tx=0, ty=3, tz=15, aim_at_point=True,
+  aim_point=(0, 1, 0))`.
 - Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
   cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
   Density still needs a mesh.
@@ -169,6 +176,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
+  `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
+  stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To
+  keep centimetres, add `scene.create.stage_settings(meters_per_unit=0.01)`. Saved networks,
+  stages passed in and usdview, Blender and Houdini scenes keep their own units.
 - Export USD writes the files each exported file uses relative to where it writes it (its
   new **Relative Paths**, on by default): a shot's sublayer of its set is
   `../inputs/set.usda`, not where the set sat on the machine that exported it.
@@ -281,6 +293,12 @@ This file starts with the first release; development before that is in the commi
 
 - `usdchunks list` leaves out private modules (a name starting with `_`), which
   `scene.create` refuses to make, so every name it lists can be made from a script.
+- An export leaves out the prims a Prune Prim pruned: Export USD (layers and flattened),
+  `scene.export` and `usdchunks run -o` kept them as inactive `def`s. A pruned prim inside a
+  referenced asset keeps its inactive override, so it stays hidden.
+- On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
+  skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
+  Prim below it made inactive copies. Python 3.11 was not affected.
 - Export USD never writes over a network file on disk, open on the stage or not. A script
   built with `Scene.new(path=...)` names its root layer after the network file, so
   `scene.commit()` right after `scene.save()` wrote that layer's stripped result over it.
@@ -290,6 +308,10 @@ This file starts with the first release; development before that is in the commi
   above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
   cooks a chunk once before wiring it, and that cook found nothing above it; the warnings
   now wait until the chunk is wired, and one that is not wired still gets them.
+- Export USD keeps a relative asset path working when it writes into another folder than the
+  network's. A Reference to `inputs/set.usda` exported into `shot/` was written unchanged, and
+  USD looked for `shot/inputs/set.usda`. It now names the file it named in the network:
+  `../inputs/set.usda` with Relative Paths on, an absolute path with it off.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.

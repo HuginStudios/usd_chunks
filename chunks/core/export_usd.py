@@ -10,7 +10,7 @@ import os
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks import asset_paths, chunk, chunk_registry, chunk_utils
 from usd_chunks import chunk_naming, chunk_notice, chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
 
@@ -414,6 +414,8 @@ def _export_flattened(_chunk, stage) -> None:
         _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
         _strip_chunk_prims(flat)
+        # Baked: a pruned prim goes too. A network kept procedural keeps it for its Prune.
+        chunk_stage.remove_prim_specs(flat, chunk_stage.pruned_paths(stage, chunk_stage.layer_stack_ids(stage)))
     chunk_stage.stamp_stage_metadata(flat, stage)
     _write(_chunk, flat, output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
@@ -521,13 +523,29 @@ def commit(node):
         used_names.add(candidate)
         filenames[layer.identifier] = candidate + file_ext
 
+    # A relative path is found from the file it is written in, so one written into another
+    # folder than the network's is fitted to it, as saving the network elsewhere does: a
+    # search path where the file is under that folder, else absolute -- which Relative Paths
+    # then writes relative to the file (_write).
+    out_folder = os.path.abspath(output_dir)
+    # A relative path naming a file layer this export writes too names the written file, as
+    # it did when paths were copied unchanged. An absolute one names the file it always did.
+    exported_files = {_same_file(lyr.realPath): filenames[lyr.identifier] for _n, lyr in layers if lyr.realPath}
+
     def _relocate(path):
         if path in filenames:
             return filenames[path]
         if path in internal_ids or path in skipped_ids:
             return ""  # drop -- either has no meaning outside this session, or its Export
             # checkbox was unchecked, so it was never written as a file to reference
-        return path
+        if asset_paths.kind(path) != "absolute":
+            found = asset_paths.resolve(path, stage)
+            if found and _same_file(found) in exported_files:
+                return exported_files[_same_file(found)]
+        return asset_paths.refit(path, stage, out_folder, make_relative=False)
+
+    # Pruned prims a baked layer leaves out: those defined only in what this export writes.
+    pruned = chunk_stage.pruned_paths(stage, {lyr.identifier for _n, lyr in layers} | set(internal_ids))
 
     networks = _network_files(stage)
     for name, layer in layers:
@@ -559,9 +577,11 @@ def commit(node):
             # stage on this copy, and relocated, an arc names a file beside one that is
             # not written yet, which that stage cannot open.
             _strip_chunk_prims(export_layer)
+            chunk_stage.remove_prim_specs(export_layer, pruned)
             UsdUtils.ModifyAssetPaths(export_layer, _relocate)
             for run in below:
                 _strip_chunk_prims(run)
+                chunk_stage.remove_prim_specs(run, pruned)
                 UsdUtils.ModifyAssetPaths(run, _relocate)
                 chunk_stage.stamp_stage_metadata(run, stage)
                 run_path = os.path.join(output_dir, filenames[run.identifier])

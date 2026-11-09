@@ -95,3 +95,43 @@ def test_a_mistyped_target_warns_and_leaves_the_rotation(scene, caplog):
         scene.set_output(cam)
     assert cam.get_param("ry").value == pytest.approx(10.0)
     assert any("/World/bx" in r.getMessage() for r in caplog.records)
+
+
+def _miss_point(stage, camera, point):
+    m = UsdGeom.Xformable(stage.GetPrimAtPath(camera)).ComputeLocalToWorldTransform(0)
+    eye = m.Transform(Gf.Vec3d(0, 0, 0))
+    forward = (m.Transform(Gf.Vec3d(0, 0, -1)) - eye).GetNormalized()
+    return math.degrees(math.acos(min(1.0, Gf.Dot(forward, (Gf.Vec3d(*point) - eye).GetNormalized()))))
+
+
+def test_aim_at_point_faces_a_point(scene):
+    """A camera at (0, 3, 15) looking at (0, 1, 0): two agents worked the angles out by hand."""
+    cam = scene.create.camera(primpath_location="/World/camera1", tx=0.0, ty=3.0, tz=15.0,
+                              aim_at_point=True, aim_point=(0.0, 1.0, 0.0))
+    scene.set_output(cam)
+    stage = scene.get_stage()
+    assert _miss_point(stage, "/World/camera1", (0, 1, 0)) < 1e-3
+    assert _up(stage, "/World/camera1")[1] > 0.9  # level, not rolled
+    assert cam.get_param("rx").value == pytest.approx(-math.degrees(math.atan2(2.0, 15.0)), abs=1e-4)
+
+
+def test_aim_at_point_wins_over_the_prim_and_follows_the_camera(scene):
+    _, lift = _ball_on_pedestal(scene)
+    cam = scene.create.camera(lift, primpath_location="/World/camera1", tx=2.0, ty=2.0, tz=4.0,
+                              aim_at="/World/ball", aim_at_point=True, aim_point=(-1.0, 0.5, 0.0))
+    scene.set_output(cam)
+    stage = scene.get_stage()
+    assert _miss_point(stage, "/World/camera1", (-1, 0.5, 0)) < 1e-3
+    scene.set(cam, tx=5.0, tz=-2.0)
+    assert _miss_point(stage, "/World/camera1", (-1, 0.5, 0)) < 1e-3
+    scene.set(cam, aim_at_point=False)  # back to the prim
+    assert _miss_degrees(stage, "/World/camera1", "/World/ball") < 1e-3
+
+
+def test_aim_point_is_in_world_space_under_a_moved_parent(scene):
+    rig = scene.create.prim(primpath_location="/World/rig", prim_type="Xform")
+    moved = scene.create.transform(rig, primpath_location="/World/rig", tx=10.0, ry=90.0)
+    cam = scene.create.camera(moved, primpath_location="/World/rig/camera1", tx=0.0, ty=2.0, tz=5.0,
+                              aim_at_point=True, aim_point=(0.0, 0.0, 0.0))
+    scene.set_output(cam)
+    assert _miss_point(scene.get_stage(), "/World/rig/camera1", (0, 0, 0)) < 1e-3
