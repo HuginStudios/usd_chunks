@@ -55,8 +55,9 @@ def test_a_list_row_given_to_create_is_set_before_the_first_cook(monkeypatch) ->
         assert cooks.count("scatter") == 1, cooks
 
 
-def test_a_row_that_does_not_exist_still_raises() -> None:
+def test_a_row_param_that_does_not_exist_still_raises() -> None:
+    # A row past the end is made (test_scene_list_rows); a misspelt param in it is not.
     import pytest
     with Scene() as scene:
-        with pytest.raises(KeyError, match="prototypes.7.proto_path"):
-            scene.create.scatter_points(**{"prototypes.7.proto_path": "/x"})
+        with pytest.raises(KeyError, match="prototypes.7.proto_pth"):
+            scene.create.scatter_points(**{"prototypes.7.proto_pth": "/x"})

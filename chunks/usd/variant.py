@@ -59,6 +59,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="merge",
         description="""
+        Adds variant sets and their variants to prims.
+
         Add Variants chunk — authors one or more variant sets onto one or more prims,
         using OverridePrim so the prims don't need to exist yet.
 

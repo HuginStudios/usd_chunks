@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="150" viewBox="0 0 640 150" role="img" aria-label="usdchunks">
+  <style>
+    text {
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      font-weight: 900;
+      font-size: 128px;
+      letter-spacing: -4px;
+      fill: #f0f6fc;
+    }
+  </style>
+  <text x="50%" y="112" text-anchor="middle">usdchunks</text>
+</svg>

@@ -1056,9 +1056,13 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.DYNAMICS,
         icon="zap",
         description=(
-            "Pre-breaks a model -- or procedural rocks -- into a tree of pieces that exactly\n"
-            "add up to it, with UVs and inside/outside groups. Feed the result to the RBD\n"
-            "Solver with Breakable on."
+            """
+        Breaks a model or procedural rocks into pieces, ready for the RBD Solver to shatter.
+
+        Pre-breaks a model -- or procedural rocks -- into a tree of pieces that exactly
+        add up to it, with UVs and inside/outside groups. Feed the result to the RBD
+        Solver with Breakable on.
+        """
         ),
         requirements=["numpy>=2,<3", "manifold3d>=3"],
         cache_cook=True,

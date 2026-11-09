@@ -545,6 +545,8 @@ def config():
         category=chunk.StandardCategory.RIGS,
         icon="bone",
         description="""
+        Poses a robot arm or any jointed asset (drawers, doors): one slider per joint.
+
         Poses an articulation: one slider per joint, read out of UsdPhysics rather than out
         of a .urdf, so a robot arm is only the obvious case. A drawer is a prismatic joint
         and a door is a revolute one, so a kitchen opens the same way an elbow bends.

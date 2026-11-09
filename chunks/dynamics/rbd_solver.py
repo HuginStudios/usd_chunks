@@ -3930,10 +3930,14 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.DYNAMICS,
         icon="cube",
         description=(
-            "Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance\n"
-            "of a PointInstancer — as keyframed animation over the frame range. Add colliders\n"
-            "for objects to rest on or in (a heightfield is built for concave shapes like\n"
-            "bowls). Requires the 'mujoco' package."
+            """
+        Simulates rigid bodies falling and colliding (MuJoCo) and bakes them as animation.
+
+        Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance
+        of a PointInstancer — as keyframed animation over the frame range. Add colliders
+        for objects to rest on or in (a heightfield is built for concave shapes like
+        bowls). Requires the 'mujoco' package.
+        """
         ),
         # Declared, not just described. Saying it in the description tells a person
         # reading the chunk list; declaring it is what lets the framework act -- name

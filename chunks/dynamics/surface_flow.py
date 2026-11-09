@@ -403,8 +403,12 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.DYNAMICS,
         icon="waves",
         description=(
-            "Points crawl over a surface under a force (gravity): runs of water, rain on glass.\n"
-            "Writes a Points prim over time -- Trails turns the paths into curves."
+            """
+        Points crawling over a surface under gravity: water runs, rain on glass, over time.
+
+        Points crawl over a surface under a force (gravity): runs of water, rain on glass.
+        Writes a Points prim over time -- Trails turns the paths into curves.
+        """
         ),
         requirements=["numpy>=2,<3"],
     )

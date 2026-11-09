@@ -553,10 +553,15 @@ def config():
         icon="image",
         requirements=["numpy>=2,<3", "scipy>=1.11,<2", "pillow>=10"],
         description=(
-            "Bakes a full-detail asset's look onto a low-poly mesh's UVs: base colour,\n"
-            "roughness and metallic re-sampled from all of its materials and textures, a\n"
-            "tangent-space normal map that restores the detail the low-poly surface lost,\n"
-            "and optionally opacity. Binds a UsdPreviewSurface reading them.\n\n"
-            "The end of the proxy chain: Remesh Proxy → UV Unwrap → Bake."
+            """
+        Bakes a detailed asset's colour, roughness, metal and normals onto a low-poly mesh's UVs.
+
+        Bakes a full-detail asset's look onto a low-poly mesh's UVs: base colour,
+        roughness and metallic re-sampled from all of its materials and textures, a
+        tangent-space normal map that restores the detail the low-poly surface lost,
+        and optionally opacity. Binds a UsdPreviewSurface reading them.
+
+        The end of the proxy chain: Remesh Proxy → UV Unwrap → Bake.
+        """
         ),
     )

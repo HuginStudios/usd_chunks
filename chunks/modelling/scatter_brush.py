@@ -1454,6 +1454,8 @@ def config():
         # A stroke is array work over every vertex on the surface -- see `_stamp`.
         requirements=["numpy>=2,<3"],
         description="""
+        Paints where Scatter Points may place instances, as a per-vertex weight on a mesh.
+
         Scatter Brush — paints a per-vertex weight on a mesh saying where
         Scatter Points may place instances.
 

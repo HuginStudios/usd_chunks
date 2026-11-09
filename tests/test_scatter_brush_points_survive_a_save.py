@@ -100,7 +100,11 @@ def test_painted_points_are_still_there_after_a_reopen(tmp_path, output) -> None
     reopened, brushes = _reopen(scene, tmp_path)
 
     assert len(brushes) == 1
-    assert sorted(_placed(reopened, brushes[0])) == pytest.approx(sorted(before))
+    after = sorted(_placed(reopened, brushes[0]))
+    # Point by point: pytest 9.2's approx no longer takes a list of tuples.
+    assert len(after) == len(before)
+    for got, want in zip(after, sorted(before)):
+        assert got == pytest.approx(want)
 
 
 def _painted_scene(output):

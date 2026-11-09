@@ -154,9 +154,20 @@ from usd_chunks import chunk
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
-        description="Clears all authored transform ops on the target prim.",
+        description="""
+        Resets a prim's transform: clears every authored transform op.
+
+        Writes an empty xformOpOrder on the prim, so none of its transform ops apply.
+        """,
     )
 ```
+
+The description opens with one **summary line**, then a blank line, then the details. The
+summary line says what jobs the chunk does, in the words someone asking for them would use,
+in at most 90 characters, without repeating the chunk's name. It sums up the text below it,
+so it claims nothing that text doesn't say. `usdchunks list` and the
+create menu's search show only that line, so it decides whether a person or an agent finds
+the chunk at all.
 
 `config()` returns a [`chunk.DefaultConfig`][usd_chunks.chunk.DefaultConfig], a small
 subclass of [`chunk_core.ChunkConfig`][usd_chunks.chunk_core.ChunkConfig]. It describes how
@@ -434,3 +445,7 @@ Any file with a top-level `main()` is registered under its file name. There are
 no other rules for folder layout or file names. [Environment
 variables](install.md#environment-variables) explains which one wins when two folders have
 a chunk with the same name.
+
+To check what was found, run `usdchunks list` (or `usdchunks list <word>`). `usdchunks show
+<name>` prints a chunk as someone looking for one sees it: its description, its menu
+entries and every param, with its type, default and range.

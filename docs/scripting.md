@@ -91,9 +91,9 @@ To find what you can make and set:
 
 | To see | Use |
 | --- | --- |
-| Every chunk you can make | `dir(scene.create)` |
-| What a chunk is for | `help(scene.create.transform)` |
-| A chunk's param names | `[p.name for p in chunk.get_params()]` (group names are in the list too) |
+| Every chunk you can make | `usdchunks list` (or `usdchunks list <word>`), or `dir(scene.create)` |
+| What a chunk is for, and every param it takes | `usdchunks show transform`, or `help(scene.create.transform)` |
+| A chunk's param names | `usdchunks show transform`, or `[p.name for p in chunk.get_params()]` (group names are in the list too) |
 | Every chunk, in the order it was made | `scene.chunks_in_order()` (`scene.get_chunks()` lists the newest first) |
 
 If the chunk name is in a string, use `scene.add("transform", box, ty=3.0)`. This also
@@ -120,6 +120,29 @@ lift.get_param("ty").value = 5.0     # the same thing
 
 Chunks cook again by themselves when a value changes.
 
+A list param (Sublayer's `imports`, Scatter Points' `prototypes`) holds rows. Give it a
+Python list, one item per row. A dict sets a row's params by name, and the ones left out
+take their defaults. Where a row holds one param, the item can be just its value:
+
+``` py
+sets = scene.create.sublayer(imports=["lighting.usda", "set.usda"])   # first is strongest
+rocks = scene.create.scatter_points(prototypes=[
+    {"proto_path": "/assets/rock", "proto_weight": 200.0},
+    {"proto_path": "/assets/bush"},
+])
+```
+
+The list then has exactly those rows: setting it again with `scene.set` replaces them all.
+To change one param of one row and leave the rest, name it `list.row.param`. A list with
+fewer rows grows to hold the row you name:
+
+``` py
+scene.set(rocks, **{"prototypes.1.proto_weight": 50.0})
+scene.set(sets, **{"imports.2.sublayer_path": "props.usda"})   # adds row 2
+```
+
+`usdchunks show <chunk>` lists each row's params.
+
 Each value you set cooks what it affects straight away, so setting several cooks several
 times. Set them inside `chunk.change_block()` and they count as one change: what they
 affect cooks once, when the block ends, with every value in place.
@@ -144,9 +167,12 @@ it. You can pass more than one.
 
 ``` py
 lift = scene.create.transform(box)      # box -> Transform
-both = scene.create.merge(a, b)         # a and b -> Merge
+both = scene.create.merge(a, b)         # a and b -> Merge; b wins
 c.add_dependency(b)                     # b -> c, for chunks that already exist
 ```
+
+Into a Merge, the last input wins, the same as a chunk chained after the others. Where `a`
+and `b` both author the same prim, `b`'s value is the one you get.
 
 **A param wire** makes one param follow another's value. Pass the param as the value:
 
@@ -257,6 +283,32 @@ with scene.create.edit_target(shot, edit_target="shot"):
 The ground and the light go into the `shot` layer. A Layer chunk only makes the layer. The
 Edit Target is what sends edits to it.
 
+### Department layers side by side
+
+A Layer chunk goes into whatever layer is being edited where it is wired. So a second Layer
+wired after a chunk inside the first one's Edit Target lands *inside* the first layer:
+lighting nested in layout, not beside it. For department layers that sit side by side, end
+each department with an Edit Target back to `Session Layer`, and wire the next Layer after
+that:
+
+``` py
+world = scene.create.prim(primpath_location="/World", prim_type="Xform")
+
+layout = scene.create.layer(world, layer_name="layout")
+into = scene.create.edit_target(layout, edit_target="layout")
+box = scene.create.cube(into, prim_path="/World/box")
+back = scene.create.edit_target(box, edit_target="Session Layer")   # out of layout
+
+lighting = scene.create.layer(back, layer_name="lighting")
+into = scene.create.edit_target(lighting, edit_target="lighting")
+key = scene.create.distant_light(into, primpath_location="/World/key", intensity=3.0)
+back = scene.create.edit_target(key, edit_target="Session Layer")   # out of lighting
+```
+
+`layout` and `lighting` are now both sublayers of the session layer, the box is in `layout`
+and the light in `lighting`. An Export USD chunk after the last `back` writes each to its
+own file, `layout.usda` and `lighting.usda`.
+
 ## Save and cook
 
 | Call | Does |
@@ -265,6 +317,33 @@ Edit Target is what sends edits to it.
 | `scene.export(path)` | Writes the result as plain USD, without the Chunk prims. |
 | `scene.execute()` | Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes. |
 | `scene.commit()` | Runs the chunks that write files, such as Export USD. |
+
+### File paths
+
+A file path in a param (a Sublayer's, a Reference's, a texture's) follows USD's rules,
+with the network file as the file it is written in:
+
+- **`inputs/set.usda`**, with no `./` or `../`, is a USD search path. It is found in the
+  network's folder, from whatever directory the network runs in.
+- **`../inputs/set.usda`** is relative to the network file, as it would be in any USD file.
+- **An absolute path** works only on a machine where that file is, so it logs a warning.
+  Saving writes one that sits under the network's folder relative to it (Stage Settings'
+  **Relative File Paths**, on by default; `scene.save(path, relative_paths=False)` turns it
+  off for one save).
+
+A network that isn't saved yet has no folder, so its relative paths are found from the
+working directory until it is. Give `Scene.new` the file you will save to, and they are
+found from that folder from the start:
+
+``` py
+with Scene.new(path="shots/sh010/shot_network.usda") as scene:
+    street = scene.create.reference(file_path="../../sets/street.usda", primpath_location="/set")
+    ...
+    scene.save()      # to the path given to Scene.new
+```
+
+Saving to another folder keeps each relative path naming the same file. A file that is not
+found logs a warning naming the folders it was looked for in.
 
 ## Build a big network fast
 

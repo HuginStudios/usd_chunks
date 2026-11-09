@@ -27,4 +27,13 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES, interactive=True)
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.EXAMPLES,
+        interactive=True,
+        description="""
+        Example: a button that adds a Cube prim at the first free /cubeN path each press.
+
+        Add Cube's callback defines a Cube prim at /cube0, /cube1, ... on the stage. An
+        example of a Button callback that authors on the stage.
+        """,
+    )

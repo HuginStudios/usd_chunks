@@ -102,6 +102,8 @@ def config():
         icon="sphere",
         outputs=[("result", "Float2")],
         description="""
+        Adds a primvar reader (UVs, vertex colours) to a material and wires it to a surface input.
+
         Primvar Reader chunk — adds a UsdPrimvarReader shader of the chosen type into
         an existing material network and optionally connects its output to a
         UsdPreviewSurface input.

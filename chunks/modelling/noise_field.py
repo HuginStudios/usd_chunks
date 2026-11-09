@@ -195,6 +195,10 @@ def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         icon="waves",
-        description="Paints a 0..1 noise primvar on meshes -- a procedural Density Field for Scatter Points.",
+        description="""
+        Paints a noise pattern on meshes as a density field, to vary where Scatter Points places.
+
+        Paints a 0..1 noise primvar on meshes -- a procedural Density Field for Scatter Points.
+        """,
         requirements=["numpy>=2,<3"],
     )

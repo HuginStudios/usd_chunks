@@ -274,32 +274,36 @@ def config():
         category=chunk.StandardCategory.PROPERTIES,
         icon="tag",
         description=(
-            "Authors UsdSemantics labels — applies SemanticsLabelsAPI:<taxonomy> and sets\n"
-            "token[] semantics:labels:<taxonomy> on every matched prim.\n"
-            "Prim Path takes comma-separated paths, Houdini-style globs (*, **, ?), a\n"
-            "%name collection reference, or embedded variant selections; prims are\n"
-            "overridden rather than defined, so they need not exist yet.\n"
-            "Each Labels row is one taxonomy: an arbitrary classification domain you\n"
-            "invent (category, style, state...) plus a comma-separated list of label\n"
-            "tokens. A prim can carry any number of taxonomies at once, and labels\n"
-            "accumulate down the hierarchy — descendants inherit whatever their\n"
-            "ancestors declare, queryable via UsdSemantics.LabelsQuery.\n"
-            "Rows with an empty taxonomy, no labels, or a taxonomy name that isn't a\n"
-            "valid identifier are skipped. Each execution clears the edit-target layer\n"
-            "and re-authors from scratch, so re-cooking replaces labels rather than\n"
-            "accumulating them.\n"
-            "\n"
-            "Render Primvars (off by default) makes the labels renderable. No render\n"
-            "delegate reads UsdSemantics, but every one can output a primvar as an AOV\n"
-            "(a Render Var with Source Type \"primvar\"). With it on, every gprim a label\n"
-            "under Root covers gets constant primvars semantic_id / semantic_color (its\n"
-            "class, numbered in Classes order from 1) and instance_id / instance_color\n"
-            "(the labelled prim, numbered in path order from 1), so rendering the two\n"
-            "colours gives class and instance masks lined up with the beauty — what the\n"
-            "KITTI Writer reads. An instance is the prim the label sits on; its label\n"
-            "covers every gprim below it without a label of its own.\n"
-            "Every labelled prim is numbered, not just this chunk's own, since ids must\n"
-            "be unique across the scene: turn it on in the last Semantic Labels chunk\n"
-            "of a network, which sees every label above it."
+            """
+        Labels prims with semantic classes (UsdSemantics), and can render them as masks.
+
+        Authors UsdSemantics labels — applies SemanticsLabelsAPI:<taxonomy> and sets
+        token[] semantics:labels:<taxonomy> on every matched prim.
+        Prim Path takes comma-separated paths, Houdini-style globs (*, **, ?), a
+        %name collection reference, or embedded variant selections; prims are
+        overridden rather than defined, so they need not exist yet.
+        Each Labels row is one taxonomy: an arbitrary classification domain you
+        invent (category, style, state...) plus a comma-separated list of label
+        tokens. A prim can carry any number of taxonomies at once, and labels
+        accumulate down the hierarchy — descendants inherit whatever their
+        ancestors declare, queryable via UsdSemantics.LabelsQuery.
+        Rows with an empty taxonomy, no labels, or a taxonomy name that isn't a
+        valid identifier are skipped. Each execution clears the edit-target layer
+        and re-authors from scratch, so re-cooking replaces labels rather than
+        accumulating them.
+
+        Render Primvars (off by default) makes the labels renderable. No render
+        delegate reads UsdSemantics, but every one can output a primvar as an AOV
+        (a Render Var with Source Type "primvar"). With it on, every gprim a label
+        under Root covers gets constant primvars semantic_id / semantic_color (its
+        class, numbered in Classes order from 1) and instance_id / instance_color
+        (the labelled prim, numbered in path order from 1), so rendering the two
+        colours gives class and instance masks lined up with the beauty — what the
+        KITTI Writer reads. An instance is the prim the label sits on; its label
+        covers every gprim below it without a label of its own.
+        Every labelled prim is numbered, not just this chunk's own, since ids must
+        be unique across the scene: turn it on in the last Semantic Labels chunk
+        of a network, which sees every label above it.
+        """
         ),
     )

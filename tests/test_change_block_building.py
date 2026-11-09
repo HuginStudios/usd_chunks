@@ -90,7 +90,7 @@ def _edit_target_with_a_group(scene):
 
 
 def _merge_with_unequal_branches(scene):
-    """A Merge of a one-chunk branch (red) and a three-chunk one (green last): the first input wins."""
+    """A Merge of a one-chunk branch (red) and a three-chunk one (green last): red, last in, wins."""
     box = scene.create.cube(prim_path="/box", name="box_mesh")
     first = scene.create.set_display_color(box, prim_path="/box", color_r=1.0, color_g=0.0, color_b=0.0,
                                            name="first")
@@ -98,7 +98,7 @@ def _merge_with_unequal_branches(scene):
     for i, g in enumerate((0.2, 0.5, 1.0)):
         second = scene.create.set_display_color(second, prim_path="/box", color_r=0.0, color_g=g, color_b=0.0,
                                                 name=f"second{i}")
-    return scene.create.merge(first, second, name="merge")
+    return scene.create.merge(second, first, name="merge")
 
 
 @pytest.mark.parametrize("make", [_edit_target_with_a_group, _merge_with_unequal_branches],

@@ -621,6 +621,8 @@ def config():
         icon="curve",
         requirements=["numpy>=2,<3"],
         description="""
+        Turns curves (vines, hair) into tube meshes with UVs, so they can take a real material.
+
         Curves to Mesh — sweeps a tube along a BasisCurves and gives it UVs,
         so it can carry a real material.
 

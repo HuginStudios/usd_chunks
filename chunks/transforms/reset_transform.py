@@ -61,8 +61,12 @@ def config():
         category=chunk.StandardCategory.TRANSFORM,
         icon="move",
         description=(
-            "Clears all authored transform ops on the target prim, resetting it to its\n"
-            "underlying composed transform. Authors in the chunk layer, so the prim's\n"
-            "original definition is untouched — remove the chunk to restore it."
+            """
+        Resets a prim's transform: clears its authored transform ops.
+
+        Clears all authored transform ops on the target prim, resetting it to its
+        underlying composed transform. Authors in the chunk layer, so the prim's
+        original definition is untouched — remove the chunk to restore it.
+        """
         ),
     )

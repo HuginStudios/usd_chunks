@@ -226,6 +226,9 @@ Install that package into the Python usdview uses. The full list and the fix are
 plain install won't show every bundled
 chunk](#a-plain-install-wont-show-every-bundled-chunk).
 
+`usdchunks list` prints every chunk that was found, from the same `USD_CHUNK_DIRS`, so you
+can check outside usdview whether a chunk loads.
+
 ## Gizmos (viewport handles)
 
 This section is for usdview. Blender's add-on has its own handles, with nothing extra to
