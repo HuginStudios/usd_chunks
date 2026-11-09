@@ -414,6 +414,8 @@ def _export_flattened(_chunk, stage) -> None:
         _strip_chunk_prims(flat, only_paths=_baked_chunk_prim_paths(_chunk, stage))
     else:
         _strip_chunk_prims(flat)
+        # Baked: a pruned prim goes too. A network kept procedural keeps it for its Prune.
+        chunk_stage.remove_prim_specs(flat, chunk_stage.pruned_paths(stage, chunk_stage.layer_stack_ids(stage)))
     chunk_stage.stamp_stage_metadata(flat, stage)
     _write(_chunk, flat, output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
@@ -542,6 +544,9 @@ def commit(node):
                 return exported_files[_same_file(found)]
         return asset_paths.refit(path, stage, out_folder, make_relative=False)
 
+    # Pruned prims a baked layer leaves out: those defined only in what this export writes.
+    pruned = chunk_stage.pruned_paths(stage, {lyr.identifier for _n, lyr in layers} | set(internal_ids))
+
     networks = _network_files(stage)
     for name, layer in layers:
         out_path = os.path.join(output_dir, filenames[layer.identifier])
@@ -572,9 +577,11 @@ def commit(node):
             # stage on this copy, and relocated, an arc names a file beside one that is
             # not written yet, which that stage cannot open.
             _strip_chunk_prims(export_layer)
+            chunk_stage.remove_prim_specs(export_layer, pruned)
             UsdUtils.ModifyAssetPaths(export_layer, _relocate)
             for run in below:
                 _strip_chunk_prims(run)
+                chunk_stage.remove_prim_specs(run, pruned)
                 UsdUtils.ModifyAssetPaths(run, _relocate)
                 chunk_stage.stamp_stage_metadata(run, stage)
                 run_path = os.path.join(output_dir, filenames[run.identifier])

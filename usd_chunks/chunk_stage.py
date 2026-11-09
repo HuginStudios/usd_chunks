@@ -8313,6 +8313,47 @@ def _resync_lofted_menus(chunks: Iterable[core.ChunkBase]) -> None:
                 mirror()
 
 
+#: The customData key Prune Prim sets on a prim it prunes: meant to be deleted, not just off.
+PRUNED_KEY = "usd_chunks:pruned"
+
+
+def pruned_paths(stage, own_layer_ids) -> list[Sdf.Path]:
+    """The prims Prune Prim pruned that an export holding own_layer_ids can leave out.
+
+    A pruned prim is deactivated and flagged (PRUNED_KEY). One defined only in the layers
+    given -- what the export writes, and the chunk layers it bakes into them -- can go
+    from the written files altogether. One that also gets a `def` from somewhere else (a
+    referenced asset) is left: dropping its inactive over would bring it back.
+
+    Args:
+        stage: The stage the export writes from.
+        own_layer_ids: Identifiers of the layers whose content the export writes.
+
+    Returns:
+        The paths, shallowest first.
+    """
+    found = []
+    it = iter(Usd.PrimRange(stage.GetPseudoRoot(), Usd.PrimAllPrimsPredicate))
+    for prim in it:
+        if (prim.GetCustomData() or {}).get(PRUNED_KEY):
+            stack = prim.GetPrimStack()
+            if all(spec.layer.identifier in own_layer_ids for spec in stack
+                   if spec.specifier == Sdf.SpecifierDef):
+                found.append(prim.GetPath())
+            it.PruneChildren()  # what is under it goes with it
+    return found
+
+
+def remove_prim_specs(layer: Sdf.Layer, paths) -> None:
+    """Remove the prim specs at paths from layer, with what is under them, in place."""
+    for path in sorted(paths, key=lambda p: p.pathElementCount):
+        spec = layer.GetPrimAtPath(path)
+        if not spec:
+            continue
+        parent = spec.nameParent or layer.pseudoRoot
+        del parent.nameChildren[spec.name]
+
+
 def flatten_without_chunks(stage):
     """Flatten the stage to a layer carrying the result but none of the recipe.
 
@@ -8330,11 +8371,19 @@ def flatten_without_chunks(stage):
 
     The stage's up-axis and units are stamped on as well (stamp_stage_metadata): flattening
     carries them only when the root layer itself authors them, which a new scene never has.
+    The prims a Prune Prim pruned are left out (pruned_paths).
     """
     flat = UsdUtils.FlattenLayerStack(stage)
     strip_chunks(flat)
+    remove_prim_specs(flat, pruned_paths(stage, layer_stack_ids(stage)))
     stamp_stage_metadata(flat, stage)
     return flat
+
+
+def layer_stack_ids(stage) -> set[str]:
+    """Identifiers of every layer FlattenLayerStack takes in: the stage's stack and the chunk
+    layers in it, not what its references bring in."""
+    return {layer.identifier for layer in stage.GetLayerStack(includeSessionLayers=True)}
 
 
 def strip_chunks(layer, only_paths=None) -> None:

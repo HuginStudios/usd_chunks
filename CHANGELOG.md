@@ -286,6 +286,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- An export leaves out the prims a Prune Prim pruned: Export USD (layers and flattened),
+  `scene.export` and `usdchunks run -o` kept them as inactive `def`s. A pruned prim inside a
+  referenced asset keeps its inactive override, so it stays hidden.
 - On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
   skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
   Prim below it made inactive copies. Python 3.11 was not affected.
