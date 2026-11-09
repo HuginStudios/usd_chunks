@@ -703,10 +703,13 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
         # Said on the node, not raised: a script, or the scene being opened, goes on. It is
         # not held back for the rest of the pass itself: wired a moment later -- a script
         # wires a chunk after its first cook -- it cooks again in the same pass.
-        if chunk not in _blocked or getattr(chunk, "_cook_problem", None) != str(e):
+        # A script's chunk not wired yet (chunk_scene.place) keeps quiet, and is not marked
+        # as having said so: if it is still blocked once wired, that cook says it.
+        pending = getattr(chunk, "_wiring_pending", False)
+        if not pending and (chunk not in _blocked or getattr(chunk, "_cook_problem", None) != str(e)):
             logger.warning("%s is blocked: %s", chunk.name, e)
         _blocked.add(chunk)
-        chunk._cook_problem = str(e)
+        chunk._cook_problem = None if pending else str(e)
         # It shows nothing: what the cook made without the prim it could not see -- a
         # Scatter's fallback ground -- is not its result.
         if ctx is not None and ctx.anonymous:

@@ -11,6 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
+  and search finds them.
 - Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
   cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
   Density still needs a mesh.
@@ -162,6 +164,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Export USD writes the files each exported file uses relative to where it writes it (its
+  new **Relative Paths**, on by default): a shot's sublayer of its set is
+  `../inputs/set.usda`, not where the set sat on the machine that exported it.
 - Saving a network writes its input file paths relative to its folder where they sit under
   it, and keeps relative paths naming the same file when saved to another folder.
   Reopened from anywhere, such a network finds them, as USD would.
@@ -272,6 +277,12 @@ This file starts with the first release; development before that is in the commi
 - On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
   skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
   Prim below it made inactive copies. Python 3.11 was not affected.
+- Scatter Points keeps the rotation of a prototype's source. A cone laid on its side by a
+  Transform now scatters on its side; before, only the scale carried over.
+- A script building a correctly wired chain no longer gets "X is blocked: ... isn't wired
+  above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
+  cooks a chunk once before wiring it, and that cook found nothing above it; the warnings
+  now wait until the chunk is wired, and one that is not wired still gets them.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.

@@ -1154,6 +1154,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # prim, which does not exist until the chunk is in the scene.
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
+        inputs = list(inputs)
+        if not inputs and self._upstream and self._upstream[-1] is not None:
+            inputs = [self._upstream[-1]]
+        # Its first cook runs before it is wired, and finds above it nothing it reads: that
+        # is not worth a "blocked" or "isn't wired above" warning when the wire is coming in
+        # a moment. They are held back until it is wired (chunk_cook, skip_cook); a cook
+        # that is still blocked then says so. A benchmark agent took the warnings for a real
+        # fault in a correctly wired chain and rebuilt it again and again.
+        new._wiring_pending = bool(inputs)
         # A param the chunk only builds once it is in the scene (Light's) waits until then.
         early = {k: v for k, v in values.items() if _scripted_param(new, k, grow=True) is not None}
         prev = getattr(new, "_executing", False)
@@ -1193,9 +1202,6 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             new._cook()
             chunk_cook.solve_batched()
         self._assign(new, late)
-        inputs = list(inputs)
-        if not inputs and self._upstream and self._upstream[-1] is not None:
-            inputs = [self._upstream[-1]]
         if chunk_stage.is_merge_chunk(new):
             # The last one in wins, as a node chained after the rest would and as a branch
             # joined at a Merge's empty slot in the graph does: merge(a, b) wires b into
@@ -1203,6 +1209,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
             inputs.reverse()
         for i in inputs:
             new.add_dependency(i)
+        new._wiring_pending = False
         self._assign(new, wires)
         # And after the solves its wiring queued: left to the block's end, they marked the
         # chunk above it again, and that cooked twice.
