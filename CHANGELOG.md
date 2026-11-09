@@ -291,6 +291,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A network built in a `chunk.change_block()` saves every chunk it made. With department layers
+  side by side, the second Layer and its Edit Target were missing from the saved file, and
+  the network opened again without what they led to. Edit Target now resolves its layer on
+  the scene's stage, not on a cook's throwaway one.
 - `usdchunks list` leaves out private modules (a name starting with `_`), which
   `scene.create` refuses to make, so every name it lists can be made from a script.
 - An export leaves out the prims a Prune Prim pruned: Export USD (layers and flattened),

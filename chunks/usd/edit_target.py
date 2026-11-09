@@ -197,7 +197,10 @@ def execute(node):
         return
     node._edit_target_executing = True
     try:
-        stage = node.get_stage()
+        # The scene's stage, not a cook stage: publishing re-homes chunk bookkeeping, which is
+        # the scene's. A masked cook's stage has a throwaway session layer of its own, and
+        # chunk prims moved into it were lost with it.
+        stage = node.get_scene_stage() or node.get_stage()
 
         selection = node.get_param("edit_target").value
         if selection == _FOLLOW_UPSTREAM:
