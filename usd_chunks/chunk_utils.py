@@ -727,13 +727,20 @@ def find_collection(stage: Usd.Stage, name: str):
     return None
 
 
-def resolve_collection_members(stage: Usd.Stage, name: str) -> list[str]:
-    """Return the resolved member prim paths of the collection named `name`, or []."""
+def resolve_collection_members(stage: Usd.Stage, name: str, include_inactive: bool = False) -> list[str]:
+    """Return the resolved member prim paths of the collection named `name`, or [].
+
+    Args:
+        stage: The stage to resolve against.
+        name: The collection name.
+        include_inactive: Count deactivated members too (see resolve_prim_paths).
+    """
     coll = find_collection(stage, name)
     if coll is None:
         return []
     query = coll.ComputeMembershipQuery()
-    return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage)]
+    predicate = (Usd.PrimIsDefined & ~Usd.PrimIsAbstract) if include_inactive else Usd.PrimDefaultPredicate
+    return [str(p) for p in Usd.ComputeIncludedPathsFromCollection(query, stage, predicate)]
 
 
 def split_patterns(text: str) -> list[str]:
@@ -808,8 +815,8 @@ def resolve_prim_paths(stage, location_str, include_inactive=False):
     a prim that only exists in "red" is not on the stage until "red" is; the selection
     is put back afterwards. A glob cannot precede a selection: /a*{x=1}/b has no anchor.
 
-    A glob matches active prims only, unless include_inactive: then a deactivated prim
-    matches too (its children are not on the stage, so nothing under it does). That is
+    A glob or collection matches active prims only, unless include_inactive: then a
+    deactivated prim matches too (its children are not on the stage, so nothing under it does). That is
     for a pick list like a scatter's prototype library, whose entries are deactivated so
     they are not drawn and come alive only where they are referenced.
 
@@ -824,7 +831,7 @@ def resolve_prim_paths(stage, location_str, include_inactive=False):
     paths = []
     for token in split_patterns(location_str):
         if token.startswith("%"):
-            paths.extend(resolve_collection_members(stage, token[1:]))
+            paths.extend(resolve_collection_members(stage, token[1:], include_inactive))
             continue
         if not token.startswith("/"):
             token = "/" + token
