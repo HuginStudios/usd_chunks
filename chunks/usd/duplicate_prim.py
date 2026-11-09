@@ -15,6 +15,7 @@ composes the source's subtree once and every copy shares it.
 from __future__ import annotations
 
 import logging
+import re
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
@@ -265,8 +266,18 @@ def _on_change(owner, notice, sender):
     _duplicate(stage, _chunk, source_prim, dest_path)
 
 
+def _is_suggestion(dest: str) -> bool:
+    """Whether dest is empty or one _generate_dest_path made (".../name_copy", "_copy3")."""
+    return not dest or re.search(r"_copy\d*$", dest) is not None
+
+
 def _on_source_change(owner, notice, sender):
-    """When source changes, auto-suggest a destination path."""
+    """When source changes, suggest a destination path -- unless one was given.
+
+    A destination someone set is kept. Built in a change_block, a script's
+    `duplicate_prim(source_prim=..., dest_path="/World/twin")` runs this callback at the
+    block's end, after both values are in, and the suggestion replaced the given path.
+    """
     _chunk = owner.get_chunk()
     stage = owner.get_stage()
     if not stage or not _chunk:
@@ -276,7 +287,7 @@ def _on_source_change(owner, notice, sender):
     dest_param = _chunk.get_param("dest_path")
 
     prims = source_param.get_prims()
-    if prims:
+    if prims and _is_suggestion((dest_param.value or "").strip()):
         source_path = str(prims[0].GetPath())
         suggested = _generate_dest_path(stage, source_path)
         dest_param.value = suggested

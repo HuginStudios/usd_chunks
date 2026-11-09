@@ -6,11 +6,13 @@ own for it.
 """
 from __future__ import annotations
 
+import contextlib
 import math
 
+import pytest
 from pxr import Gf, UsdGeom
 
-from usd_chunks import Scene
+from usd_chunks import Scene, chunk
 
 
 def _staircase(scene, copies=20):
@@ -62,3 +64,24 @@ def test_one_copy_is_the_plain_duplicate_it_always_was() -> None:
         assert twin.GetTypeName() == "Mesh" and not twin.GetChildren()
         assert (UsdGeom.Xformable(twin).GetLocalTransformation()
                 == UsdGeom.Xformable(stage.GetPrimAtPath("/World/step")).GetLocalTransformation())
+
+
+@pytest.mark.parametrize("in_block", [False, True])
+def test_a_destination_given_with_the_source_is_kept(in_block) -> None:
+    """In a change_block, Source Prim's callback ran at the block's end and its suggestion
+    replaced a destination given in the same create."""
+    with Scene() as scene:
+        with chunk.change_block() if in_block else contextlib.nullcontext():
+            step = scene.create.cube(prim_path="/World/step")
+            twin = scene.create.duplicate_prim(step, source_prim="/World/step", dest_path="/World/twin")
+            scene.set_output(twin)
+        assert twin.get_param("dest_path").value == "/World/twin"
+        assert scene.get_stage().GetPrimAtPath("/World/twin").IsValid()
+
+
+def test_an_empty_destination_still_gets_a_suggestion() -> None:
+    with Scene() as scene:
+        step = scene.create.cube(prim_path="/World/step")
+        twin = scene.create.duplicate_prim(step, source_prim="/World/step")
+        scene.set_output(twin)
+        assert twin.get_param("dest_path").value == "/World/step_copy"
