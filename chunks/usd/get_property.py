@@ -127,6 +127,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="tag",
         description="""
+        Reads an attribute's or relationship's value from a prim, as an output to wire on.
+
         Get Property — reads the current value of an attribute or relationship
         from a prim on the stage.
 

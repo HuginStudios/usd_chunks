@@ -132,6 +132,8 @@ def config():
         category=chunk.StandardCategory.USD_RENDER,
         icon="film",
         description="""
+        Defines one AOV for a render product, e.g. a colour, depth or primvar channel.
+
         Render Var chunk — creates a UsdRender.Var prim, the USD description of a
         single AOV (arbitrary output variable).
 

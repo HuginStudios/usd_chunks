@@ -420,10 +420,15 @@ def config():
         requirements=["numpy>=2,<3", "xatlas>=0.0.9,<1"],
         cache_cook=True,
         description=(
-            "Generates UVs automatically with xatlas: splits the surface into low-distortion\n"
-            "charts, flattens them and packs them into one atlas with padding. Writes a\n"
-            "faceVarying st, so seams cost no extra points.\n\n"
-            "Use it after Remesh Proxy / Poly Reduce to give a proxy somewhere to bake\n"
-            "normal and colour maps to."
+            """
+        Generates UVs for a mesh automatically (xatlas), e.g. for a proxy before baking.
+
+        Generates UVs automatically with xatlas: splits the surface into low-distortion
+        charts, flattens them and packs them into one atlas with padding. Writes a
+        faceVarying st, so seams cost no extra points.
+
+        Use it after Remesh Proxy / Poly Reduce to give a proxy somewhere to bake
+        normal and colour maps to.
+        """
         ),
     )

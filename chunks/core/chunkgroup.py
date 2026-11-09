@@ -24,6 +24,8 @@ def config():
         category=chunk.StandardCategory.CORE,
         icon="folder",
         description="""
+        A group of chunks: a sub-network you dive into, save as a .usda file and load back.
+
         ChunkGroup: An empty container chunk that acts as a collection of Chunks.
 
         Double-click the node in the graph to dive into the group and work on its

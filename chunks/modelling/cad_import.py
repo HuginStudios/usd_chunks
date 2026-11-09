@@ -957,13 +957,19 @@ def config():
         requirements=["cadquery-ocp>=7.8,<9"],
         cache_cook=True,
         description=(
-            "Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.\n\n"
-            "Keeps the three things a converter usually drops: the assembly hierarchy (as\n"
-            "nested Xforms), part instancing (a repeated part is tessellated once into a\n"
-            "class prim and referenced), and per-face colour (as GeomSubsets in the\n"
-            "materialBind family, ready for a material library to bind against).\n\n"
-            "Points are not welded across B-rep face boundaries, so renderer-computed\n"
-            "normals smooth within a face and crease between them — curved surfaces stay\n"
-            "smooth and machined edges stay sharp with no authored normals."
+            """
+        Imports a STEP or IGES CAD assembly as USD, keeping hierarchy, instancing, face colours.
+
+        Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.
+
+        Keeps the three things a converter usually drops: the assembly hierarchy (as
+        nested Xforms), part instancing (a repeated part is tessellated once into a
+        class prim and referenced), and per-face colour (as GeomSubsets in the
+        materialBind family, ready for a material library to bind against).
+
+        Points are not welded across B-rep face boundaries, so renderer-computed
+        normals smooth within a face and crease between them — curved surfaces stay
+        smooth and machined edges stay sharp with no authored normals.
+        """
         ),
     )

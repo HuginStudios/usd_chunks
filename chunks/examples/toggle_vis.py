@@ -48,4 +48,12 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.EXAMPLES,
+        description="""
+        Example: buttons that toggle the selected prims' visibility, or clear it everywhere.
+
+        Toggle Visibility flips each selected prim between inherited and invisible. Clear
+        removes the authored visibility from every prim on the stage.
+        """,
+    )

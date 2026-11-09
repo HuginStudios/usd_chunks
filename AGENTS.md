@@ -109,8 +109,9 @@ f-string), modern syntax for the target version, 120-character lines. Run `ruff 
   Heavy work goes to compiled code (USD's C++, numpy); many prims go through
   `sdf_authoring` in one `Sdf.ChangeBlock` (see `docs/fast-chunks.md`).
 - **Every chunk has a `config()` with a real `description`.** It's the help a person reads
-  in the Tab menu and what an AI agent reads to choose a chunk (`usdchunks list` and
-  `usdchunks show <name>` print it, with the params). Also set `category` (a
+  in the Tab menu and what an AI agent reads to choose a chunk. It opens with a summary
+  line (the jobs it does, in task words, at most 90 characters), then a blank line; see the
+  write-chunk skill. Also set `category` (a
   `chunk.StandardCategory`) and, where a dependency is needed, `requirements`. Keep
   `config()` self-contained: it runs on its own, before the rest of the module.
 - **A new chunk needs a test** in `tests/` that builds it through the `Scene` API and checks

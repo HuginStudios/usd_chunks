@@ -793,32 +793,36 @@ def config():
         category=chunk.StandardCategory.CORE,
         icon="download",
         description=(
-            "Exports every real layer in the composed stack to Output Directory, one file\n"
-            "per layer, named after that layer's own name — e.g. a Layer chunk with\n"
-            "Layer Name \"MyEdits\" exports as MyEdits.usda. Name collisions get a _1, _2...\n"
-            "suffix. Format picks the extension used for all of them. This is the common\n"
-            "case and needs no other settings — just pick Output Directory and press Export.\n"
-            "\n"
-            "Check Flatten into one file to merge everything into a single Output File\n"
-            "instead, per Mode: Baked (default) is every chunk's real driven content merged\n"
-            "into one file, no chunk graph. Procedural is just the chunk graph, no driven\n"
-            "content, via the same rebuild-from-scratch mechanism as the Export ChunkGroup\n"
-            "chunk (chunk-prim bookkeeping follows Edit Target now, so it's no longer all in\n"
-            "the session layer to export directly); reloading it regenerates everything by\n"
-            "re-running each chunk's execute(). Based on Settings is Baked, but leaving in\n"
-            "the bookkeeping of chunks whose target layer is marked Procedural in Layers to\n"
-            "Export below.\n"
-            "\n"
-            "Layers to Export lists every real layer in the stage (refreshed automatically),\n"
-            "each with an Export checkbox and a Bake chunk outputs checkbox (off by default;\n"
-            "the Bake all switch sets every row at once). Export unchecked\n"
-            "skips that layer entirely. Bake chunk outputs checked brings each\n"
-            "bookkeeping — the baked result. Unchecked (Procedural) exports the bookkeeping\n"
-            "only, leaving each chunk's real content where it already is (not copied in) —\n"
-            "a re-editable recipe; reloading it re-runs execute() to regenerate the content.\n"
-            "\n"
-            "Pressing Export is not the only way to run this: the same export happens\n"
-            "headlessly via this chunk's commit() hook, so `usdchunks run` on a network\n"
-            "containing an Export USD chunk writes exactly the same files."
+            """
+        Writes each layer of the scene to its own file, or flattens everything into one file.
+
+        Exports every real layer in the composed stack to Output Directory, one file
+        per layer, named after that layer's own name — e.g. a Layer chunk with
+        Layer Name "MyEdits" exports as MyEdits.usda. Name collisions get a _1, _2...
+        suffix. Format picks the extension used for all of them. This is the common
+        case and needs no other settings — just pick Output Directory and press Export.
+
+        Check Flatten into one file to merge everything into a single Output File
+        instead, per Mode: Baked (default) is every chunk's real driven content merged
+        into one file, no chunk graph. Procedural is just the chunk graph, no driven
+        content, via the same rebuild-from-scratch mechanism as the Export ChunkGroup
+        chunk (chunk-prim bookkeeping follows Edit Target now, so it's no longer all in
+        the session layer to export directly); reloading it regenerates everything by
+        re-running each chunk's execute(). Based on Settings is Baked, but leaving in
+        the bookkeeping of chunks whose target layer is marked Procedural in Layers to
+        Export below.
+
+        Layers to Export lists every real layer in the stage (refreshed automatically),
+        each with an Export checkbox and a Bake chunk outputs checkbox (off by default;
+        the Bake all switch sets every row at once). Export unchecked
+        skips that layer entirely. Bake chunk outputs checked brings each
+        bookkeeping — the baked result. Unchecked (Procedural) exports the bookkeeping
+        only, leaving each chunk's real content where it already is (not copied in) —
+        a re-editable recipe; reloading it re-runs execute() to regenerate the content.
+
+        Pressing Export is not the only way to run this: the same export happens
+        headlessly via this chunk's commit() hook, so `usdchunks run` on a network
+        containing an Export USD chunk writes exactly the same files.
+        """
         ),
     )

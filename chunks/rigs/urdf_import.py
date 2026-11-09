@@ -683,6 +683,8 @@ def config():
         requirements=["numpy>=2,<3"],
         cache_cook=True,
         description="""
+        Imports a URDF robot as UsdPhysics links, joints and colliders, ready to simulate.
+
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,
         collision shapes with an approximation, and revolute, prismatic and fixed joints
         with their limits and damping.

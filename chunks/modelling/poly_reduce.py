@@ -1381,13 +1381,18 @@ def config():
         # A big one waits behind the progress window: a slider drag sets its value once.
         cook_on_release=True,
         description=(
-            "Reduces a mesh's triangle count using quadric error metrics — the method that\n"
-            "spends the triangle budget on silhouettes and creases and takes it out of flat\n"
-            "regions.\n\n"
-            "UV seams and material (GeomSubset) boundaries are preserved by splitting those\n"
-            "vertices before the collapse, so a reduced asset still textures and still\n"
-            "renders with the right materials. Vertex primvars — colours, skin weights —\n"
-            "are carried across. Authored normals are dropped so the renderer computes them\n"
-            "for the new surface."
+            """
+        Reduces a mesh's triangle count, keeping its silhouette, UV seams and materials.
+
+        Reduces a mesh's triangle count using quadric error metrics — the method that
+        spends the triangle budget on silhouettes and creases and takes it out of flat
+        regions.
+
+        UV seams and material (GeomSubset) boundaries are preserved by splitting those
+        vertices before the collapse, so a reduced asset still textures and still
+        renders with the right materials. Vertex primvars — colours, skin weights —
+        are carried across. Authored normals are dropped so the renderer computes them
+        for the new surface.
+        """
         ),
     )

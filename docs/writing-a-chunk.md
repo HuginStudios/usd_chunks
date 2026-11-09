@@ -154,9 +154,20 @@ from usd_chunks import chunk
 def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
-        description="Clears all authored transform ops on the target prim.",
+        description="""
+        Resets a prim's transform: clears every authored transform op.
+
+        Writes an empty xformOpOrder on the prim, so none of its transform ops apply.
+        """,
     )
 ```
+
+The description opens with one **summary line**, then a blank line, then the details. The
+summary line says what jobs the chunk does, in the words someone asking for them would use,
+in at most 90 characters, without repeating the chunk's name. It sums up the text below it,
+so it claims nothing that text doesn't say. `usdchunks list` and the
+create menu's search show only that line, so it decides whether a person or an agent finds
+the chunk at all.
 
 `config()` returns a [`chunk.DefaultConfig`][usd_chunks.chunk.DefaultConfig], a small
 subclass of [`chunk_core.ChunkConfig`][usd_chunks.chunk_core.ChunkConfig]. It describes how
