@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
+  camera layers side by side, exported as `shot.usda` plus one file per department. A test
+  runs it as written, from another directory.
+- Export USD's **Session File Name** names the session layer's file, which in a department
+  network is the shot: `session_file_name="shot"` writes `shot.usda`. With Bake all on, the
+  session layer is written like the rows, without the network's bookkeeping.
+
 - Transform: an **Aim** section. **Aim At** (a prim) or **Aim At Point** with **Point** turns the
   prim's -Z axis, the way lights and cameras face, toward the target on every cook:
   `scene.create.transform(light, primpath_location="/World/key", tx=3, ty=4, tz=3,
@@ -291,6 +298,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Export USD's relative Output Directory or Output File is from the network's folder, like
+  every other file path in a param. It was from the working directory, so `output_dir="."`
+  wrote a shot wherever a script or `usdchunks run` was started.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
   side by side, the second Layer and its Edit Target were missing from the saved file, and
   the network opened again without what they led to. Edit Target now resolves its layer on

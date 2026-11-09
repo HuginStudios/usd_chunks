@@ -80,8 +80,8 @@ with Scene.new() as scene:
   write into that layer. A second Layer wired after a chunk inside that Edit Target nests
   *inside* the first layer. For department layers side by side (layout, lighting, anim), end
   each department with `scene.create.edit_target(last, edit_target="Session Layer")` and wire
-  the next Layer after it; `docs/scripting.md` ("Department layers side by side") has the
-  recipe. Export USD then writes one file per layer. **Groups:** chunks made inside `with group:` (a
+  the next Layer after it. `examples/scripts/shot_departments.py` is that whole network,
+  set to shot.usda, and runs as written: copy it. **Groups:** chunks made inside `with group:` (a
   `scene.create.chunkgroup(name=...)`) go into it. Set a group's `doc` param to say what it
   does; agents and people read it.
 - **Frame the parts** with `scene.add_backdrop([...], title=...)` and `scene.add_note(...)`
@@ -96,7 +96,8 @@ with Scene.new() as scene:
 | Move a prim that came from a file | `transform(last, primpath_location="/World/box", tx=3.0)` |
 | Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name; it edits attributes the prim already has |
 | Units, up axis, frame range, default prim | `stage_settings(meters_per_unit=1.0, up_axis="Y", start_frame=1, end_frame=48, default_prim="World")` |
-| Write one file per layer | `export_usd(last, output_dir=".", keep_session_layer=False)`; it lists every real layer itself (rows of `export_layers`, a sublayered input file too: set that row's `export_enabled` to False to skip it), names each file after its layer, and writes paths relative to each file |
+| A shot in department layers | Copy `examples/scripts/shot_departments.py`: a set sublayered in, layout / lighting / camera side by side, exported as `shot.usda` plus one file per department |
+| Write one file per layer | `export_usd(last, output_dir=".", session_file_name="shot", bake_all=True)`: a relative Output Directory is from the network's folder; the session layer (the shot, in a department network) is written as `shot.usda`; Bake all writes plain USD, no network. It lists every real layer itself (rows of `export_layers`), the set file too: set that row's `export_enabled` to False to skip it |
 | Animate a value | There is no keyframe chunk yet. Write a small one (the `usd-chunks-write-chunk` skill) whose `execute` sets time samples, `attr.Set(value, Usd.TimeCode(frame))`, on a prim-path param |
 
 `usdchunks show <name>` has every param; the table is only where to start.

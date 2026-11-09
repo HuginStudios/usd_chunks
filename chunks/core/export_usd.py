@@ -32,6 +32,17 @@ def _network_files(stage) -> set[str]:
             if not lyr.anonymous and lyr.realPath and lyr.GetPrimAtPath(chunk_naming.CHUNKS_ROOT)}
 
 
+def _from_network(stage, path: str) -> str:
+    """A relative Output Directory or Output File, from the network's folder, as a file
+    path in any of its params is (asset_paths); left as it is when the network has none.
+    Resolved from the working directory, `output_dir="."` wrote the shot wherever the
+    script or `usdchunks run` happened to be started."""
+    if not path or os.path.isabs(path):
+        return path
+    folder = asset_paths.network_folder(stage)
+    return os.path.normpath(os.path.join(folder, path)) if folder else path
+
+
 def _holds_network(path: str) -> bool:
     """Whether the file at path, on disk, holds a chunk network -- one the stage need not
     have open. A script's Scene.new(path=...) builds in memory and names its root layer
@@ -390,7 +401,7 @@ def _export_flattened(_chunk, stage) -> None:
       exclude just theirs from one shared flat layer.
     """
     is_s = chunk.is_param_t(str)
-    output_path = _chunk.get_param("output_file", is_s).value.strip()
+    output_path = _from_network(stage, _chunk.get_param("output_file", is_s).value.strip())
     if not output_path:
         print("[ExportUSD] No output file set.")
         return
@@ -477,7 +488,7 @@ def commit(node):
         return
 
     is_s = chunk.is_param_t(str)
-    output_dir = _chunk.get_param("output_dir", is_s).value.strip()
+    output_dir = _from_network(stage, _chunk.get_param("output_dir", is_s).value.strip())
     if not output_dir:
         print("[ExportUSD] No output directory set.")
         return
@@ -502,13 +513,22 @@ def commit(node):
     if (_chunk.get_param("keep_session_layer", chunk.is_param_t(bool)).value
             and any(lyr.identifier == session_layer.identifier for _n, lyr in chunk_utils.user_layers(stage))):
         layers.append(("SessionLayer", session_layer))
+        # Built from a department recipe, the session layer is the shot itself: the stage
+        # settings and the department layers' sublayers. It has no row, so Bake all is what
+        # bakes it, and it would otherwise carry the network's bookkeeping into the shot.
+        if (bake_all := _chunk.get_param("bake_all")) is not None and bake_all.value:
+            baked_names.add("SessionLayer")
     layers.extend(real_layers)
 
     # Assign every exported layer its output filename up front, so cross-references
     # between them can be rewritten regardless of which order they're processed in.
     # A row's File Name, when set, replaces the layer's name; a USD extension in it wins
-    # over Format, for that one file.
+    # over Format, for that one file. The session layer, with no row, takes Session File
+    # Name: "shot" writes the shot file a department network builds as shot.usda.
     given_names = _read_file_names(_chunk)
+    session_param = _chunk.get_param("session_file_name")
+    if session_param is not None and (session_name := (session_param.value or "").strip()):
+        given_names["SessionLayer"] = session_name
     filenames = {}
     used_names = set()
     for name, layer in layers:
@@ -628,6 +648,7 @@ def _update_export_visibility(owner):
     _set_hidden("output_dir", flatten)
     _set_hidden("layer_format", flatten)
     _set_hidden("keep_session_layer", flatten)
+    _set_hidden("session_file_name", flatten)
 
 
 def _flatten_changed(owner, notice, sender):
@@ -764,6 +785,17 @@ def main():
         )
     )
     chunk_api.add_param(
+        chunk.LineEdit(
+            "session_file_name",
+            "Session File Name",
+            default_value="SessionLayer",
+            tooltip="The session layer's file, without extension. A department network builds "
+            "the shot there -- its stage settings and the department layers as sublayers -- so "
+            "\"shot\" writes it as shot.usda. With Bake all on it is written as clean USD, "
+            "without the network's bookkeeping.",
+        )
+    )
+    chunk_api.add_param(
         chunk.Checkbox(
             "relative_paths",
             "Relative Paths",
@@ -892,7 +924,13 @@ def config():
         It never writes over the network itself: opened from a file, the network is the
         stage's root layer and so one of the layers listed, but a target that is a file
         holding a chunk network is skipped, with a message saying what to change. So
-        Output Directory can be the network's own folder.
+        Output Directory can be the network's own folder. A relative Output Directory or
+        Output File is from the network's folder, like every file path in a param.
+
+        The session layer has no row. In a department network it is the shot -- the stage
+        settings and the department layers as sublayers -- so Session File Name
+        [session_file_name] names its file ("shot" writes shot.usda), and Bake all writes
+        it, like the rows, without the network's bookkeeping.
 
         Relative Paths [relative_paths], on by default, writes the files each exported file
         uses (a shot's set sublayer, a texture) relative to where it is written, so the
