@@ -32,8 +32,19 @@ def _network_files(stage) -> set[str]:
             if not lyr.anonymous and lyr.realPath and lyr.GetPrimAtPath(chunk_naming.CHUNKS_ROOT)}
 
 
+def _holds_network(path: str) -> bool:
+    """Whether the file at path, on disk, holds a chunk network -- one the stage need not
+    have open. A script's Scene.new(path=...) builds in memory and names its root layer
+    after the network file, so Export USD named that layer's file the same: commit() right
+    after save() wrote the stripped result over the network a benchmark agent had saved."""
+    if not os.path.isfile(path):
+        return False
+    layer = Sdf.Layer.FindOrOpen(path)
+    return bool(layer and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT))
+
+
 def _would_overwrite_network(path: str, networks: set[str], row: str) -> bool:
-    if _same_file(path) not in networks:
+    if _same_file(path) not in networks and not _holds_network(path):
         return False
     print(f"[ExportUSD] Not exporting {row} to {path}: that file is the chunk network itself, and "
           f"writing it would replace the network. Give the row another File Name, untick its "
@@ -404,8 +415,19 @@ def _export_flattened(_chunk, stage) -> None:
     else:
         _strip_chunk_prims(flat)
     chunk_stage.stamp_stage_metadata(flat, stage)
-    chunk_utils.export_layer(flat).Export(output_path)
+    _write(_chunk, flat, output_path)
     print(f"[ExportUSD] Stage exported to {output_path} ({mode})")
+
+
+def _write(_chunk, layer, path) -> None:
+    """Write layer to path, as the host's scene has it; with Relative Paths, the files it
+    uses named relative to path (chunk_utils.relative_to_file). A chunk authors them
+    absolute, so written as they are they named where they sat on this machine."""
+    out = chunk_utils.export_layer(layer)
+    relative = _chunk.get_param("relative_paths")
+    if relative is None or relative.value:
+        chunk_utils.relative_to_file(out, path)
+    out.Export(path)
 
 
 def commit(node):
@@ -545,7 +567,7 @@ def commit(node):
                 run_path = os.path.join(output_dir, filenames[run.identifier])
                 if _would_overwrite_network(run_path, networks, f"layer '{name}' chunk output"):
                     continue
-                chunk_utils.export_layer(run).Export(run_path)
+                _write(_chunk, run, run_path)
                 print(f"[ExportUSD] Layer '{name}' chunk output under its sublayers exported to {run_path}")
         else:
             # Procedural: the recipe only -- leave each chunk's real content where it
@@ -555,7 +577,7 @@ def commit(node):
             export_layer.subLayerPaths = _real_sublayers(layer, internal_ids)
             UsdUtils.ModifyAssetPaths(export_layer, _relocate)
 
-        chunk_utils.export_layer(export_layer).Export(out_path)
+        _write(_chunk, export_layer, out_path)
         print(f"[ExportUSD] Layer '{name}' exported to {out_path}")
 
 
@@ -721,6 +743,17 @@ def main():
             "Flatten into one file is unchecked.",
         )
     )
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "relative_paths",
+            "Relative Paths",
+            default_value=True,
+            tooltip="Checked (default): each file is written with the files it uses (a "
+            "shot's set sublayer, a texture) relative to where it is written, so the "
+            "exported files and their inputs can move together. Unchecked: absolute paths "
+            "are written as they are.",
+        )
+    )
 
     bake_all = chunk.Checkbox(
         "bake_all",
@@ -840,6 +873,10 @@ def config():
         stage's root layer and so one of the layers listed, but a target that is a file
         holding a chunk network is skipped, with a message saying what to change. So
         Output Directory can be the network's own folder.
+
+        Relative Paths [relative_paths], on by default, writes the files each exported file
+        uses (a shot's set sublayer, a texture) relative to where it is written, so the
+        files and their inputs can move together; off, absolute paths stay absolute.
 
         Check Flatten into one file to merge everything into a single Output File
         instead, per Mode: Baked (default) is every chunk's real driven content merged

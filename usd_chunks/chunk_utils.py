@@ -2473,6 +2473,27 @@ def relative_asset_paths(path: str) -> int:
         How many asset paths were rewritten
     """
     layer = Sdf.Layer.FindOrOpen(path)
+    changed = relative_to_file(layer, path)
+    if changed:
+        layer.Save()
+    return changed
+
+
+def relative_to_file(layer: Sdf.Layer, path: str) -> int:
+    """Rewrite layer's absolute asset paths relative to the file it is about to be written to.
+
+    relative_asset_paths, before the write rather than after: Export USD writes each layer
+    through this, so a shot's sublayer of its set is `../inputs/set.usda`, not where the set
+    sat on the machine that exported it. A path on another drive has no relative form and
+    stays as it is.
+
+    Args:
+        layer: The layer, in memory.
+        path: The file it will be written to.
+
+    Returns:
+        How many asset paths were rewritten
+    """
     folder = os.path.dirname(os.path.abspath(path))
     changed = 0
 
@@ -2487,8 +2508,6 @@ def relative_asset_paths(path: str) -> int:
         return rel if rel.startswith(".") else f"./{rel}"
 
     UsdUtils.ModifyAssetPaths(layer, relative)
-    if changed:
-        layer.Save()
     return changed
 
 

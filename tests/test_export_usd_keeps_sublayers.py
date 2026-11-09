@@ -35,5 +35,6 @@ def test_baked_export_keeps_sublayer_arc(tmp_path) -> None:
         scene.commit()
 
     out = Sdf.Layer.FindOrOpen(str(tmp_path / "shot.usda"))
-    assert list(out.subLayerPaths) == [dept_path], out.ExportToString()
+    # Written beside the shot, so relative to it (Export USD's Relative Paths).
+    assert list(out.subLayerPaths) == ["./dept.usda"], out.ExportToString()
     assert not out.GetPrimAtPath("/world"), "the sublayered file's content is not copied in"

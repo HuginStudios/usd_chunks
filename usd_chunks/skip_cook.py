@@ -794,8 +794,25 @@ def _chunk_prims(chunk) -> set[Sdf.Path]:
         paths.add(Sdf.Path(path))
     # A group's prim that holds others of them is populated as their parent: masked, it
     # would bring every chunk in the group along.
-    parents = {parent for path in paths for parent in path.GetParentPath().GetAncestorsRange()}
+    parents = {parent for path in paths for parent in _ancestors(path.GetParentPath())}
     return paths - parents
+
+
+def _ancestors(path: Sdf.Path) -> list[Sdf.Path]:
+    """path and its ancestors, as a list.
+
+    On Python 3.13 a comprehension can't loop over GetAncestorsRange() itself: its iterator
+    has no __iter__, and the comprehension raised TypeError. That failed every masked cook,
+    so every chunk fell back to cooking on the whole stage, where nothing is skipped and the
+    layers below a chunk are not hidden. list() takes it.
+
+    Args:
+        path: The path to start from.
+
+    Returns:
+        path, its parent, and so on up to its root prim.
+    """
+    return list(path.GetAncestorsRange())
 
 
 def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable,
@@ -1303,6 +1320,10 @@ def _warn_unwired(chunk, siblings: list) -> None:
         chunk: The chunk that cooked.
         siblings: The chunks whose hidden layers author something its cook read.
     """
+    if getattr(chunk, "_wiring_pending", False):
+        # A script's chunk cooked before its wire is made (chunk_scene.place): what it
+        # reads is above it in a moment, so nothing is said, or recorded as said.
+        return
     rec = record(chunk)
     names = frozenset(s.name for s in siblings)
     if names <= rec.warned_siblings:
@@ -1505,7 +1526,7 @@ def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | Non
         return
     prims = _chunk_prims(chunk)
     with cook_stage(main, layer, mask | prims, hidden) as watch:
-        watch.parents = {parent for path in prims for parent in path.GetAncestorsRange()
+        watch.parents = {parent for path in prims for parent in _ancestors(path)
                          if parent.HasPrefix(_CHUNKS_ROOT) and parent not in prims}
         watches.append(watch)
         try:

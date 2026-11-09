@@ -4109,6 +4109,39 @@ class _SearchableListMenu(QtWidgets.QMenu):
         return super().eventFilter(obj, event)
 
 
+class GraphItemEntry(NamedTuple):
+    """A chunk-menu item that makes a node graph item instead of a chunk.
+
+    It has the fields the menu and chunk_registry.search_menu_entries read from a MenuEntry,
+    so it shows in the tree and in search results like a chunk.
+
+    Attributes:
+        kind (str): "backdrop" or "note"
+        namespace (Tuple[str, ...]): Menu path; the last element is the label
+        shortcut (str): Key shown next to the label
+        tooltip (str): Help text
+    """
+
+    kind: str
+    namespace: tuple[str, ...]
+    shortcut: str = ""
+    tooltip: str = ""
+    presets: None = None
+
+    @property
+    def label(self) -> str:
+        """The text this entry shows in a menu."""
+        return self.namespace[-1]
+
+
+#: The node graph's items for FilterableChunkMenu.select_module(graph_items=...).
+NODE_GRAPH_ITEMS = (
+    GraphItemEntry("backdrop", ("Node Graph", "Backdrop"), "B",
+                   "A coloured box behind nodes. Made around the selected nodes, if any."),
+    GraphItemEntry("note", ("Node Graph", "Sticky Note"), "N", "A text note in the graph."),
+)
+
+
 class FilterableChunkMenu(QtWidgets.QMenu):
     """The chunk-creation menu: a category tree, and a ranked list while searching.
 
@@ -4210,7 +4243,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
         return False
 
-    def select_module(self, pos):
+    def select_module(self, pos, graph_items: tuple[GraphItemEntry, ...] = ()):
         """Pop the chunk menu at pos and return what the user picked.
 
         Renders chunk_registry.get_menu_entries() and ranks searches with
@@ -4219,10 +4252,12 @@ class FilterableChunkMenu(QtWidgets.QMenu):
 
         Args:
             pos (QtCore.QPoint): Global position to pop the menu at
+            graph_items (Tuple[GraphItemEntry, ...]): Non-chunk items to offer too, listed
+                after the chunks and found by search
 
         Returns:
-            Optional[chunk_registry.MenuEntry]: The chosen entry, or None if dismissed or
-            if the user picked "import" (which is handled here).
+            Optional[chunk_registry.MenuEntry | GraphItemEntry]: The chosen entry, or None
+            if dismissed or if the user picked "import" (which is handled here).
         """
         items = dict()
         items["menu"] = self
@@ -4267,6 +4302,16 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                     d[ns] = {"menu": submenu}
                 d = d[ns]
 
+        if graph_items:
+            self._tree_actions.append(self.addSeparator())
+            for item in graph_items:
+                # Text after a tab shows in the shortcut column without binding a shortcut.
+                action = self.addAction(f"{item.label}\t{item.shortcut}" if item.shortcut else item.label)
+                action.setData(item)
+                action.setToolTip(item.tooltip)
+                self._tree_actions.append(action)
+            self._entries = [*self._entries, *graph_items]
+
         self.addSeparator()
 
         import_action = QtGui.QAction("import")
@@ -4289,7 +4334,7 @@ class FilterableChunkMenu(QtWidgets.QMenu):
                 chunk_registry.ChunkRegistry().import_chunk(file)
             return
 
-        if not (entry := exc.data()) or not isinstance(entry, chunk_registry.MenuEntry):
+        if not (entry := exc.data()) or not isinstance(entry, (chunk_registry.MenuEntry, GraphItemEntry)):
             return
 
         return entry
