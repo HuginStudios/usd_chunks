@@ -378,6 +378,38 @@ def test_a_deactivated_library_resolves_and_hides_its_sources() -> None:
     assert stage.GetPrimAtPath("/Library/b").IsActive()
 
 
+def test_a_collection_picks_one_prototype_per_member() -> None:
+    """%trees takes the members of the collection "trees": one prototype per tree, not per
+    mesh under it (expandPrims lists those too), and deactivated library entries count."""
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    for name in ("oak", "pine"):
+        UsdGeom.Xform.Define(stage, f"/Library/{name}")
+        UsdGeom.Cube.Define(stage, f"/Library/{name}/trunk")
+        UsdGeom.Sphere.Define(stage, f"/Library/{name}/crown")
+    UsdGeom.Cube.Define(stage, "/Library/rock")
+    trees = Usd.CollectionAPI.Apply(stage.GetPrimAtPath("/Library"), "trees")
+    trees.GetIncludesRel().SetTargets(["/Library/oak", "/Library/pine"])
+    stage.GetPrimAtPath("/Library/pine").SetActive(False)
+
+    _set_proto(scatter, "%trees")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 20
+    mod.module.execute(scatter)
+
+    targets = _instancer(stage).GetPrototypesRel().GetTargets()
+    assert len(targets) == 2, targets
+    for t in targets:
+        proto = stage.GetPrimAtPath(t)
+        assert proto.IsActive(), "a deactivated library entry is switched on in its prototype"
+        assert sorted(c.GetName() for c in proto.GetChildren()) == ["crown", "trunk"]
+    assert "not found" not in scatter.get_param("readout").value
+
+    _set_proto(scatter, "%shrubs")
+    mod.module.execute(scatter)
+    assert "not found: %shrubs" in scatter.get_param("readout").value
+
+
 def test_hide_sources_keeps_a_source_other_chunks_write_into_writable() -> None:
     """A source another chunk writes inside is hidden, not deactivated.
 

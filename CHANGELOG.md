@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Scatter Points: a prototype row takes a collection, `%trees`, for one prototype per member of
+  the collection named trees. Deactivated library entries count, and the meshes under a member
+  are not prototypes of their own. Variant selections work on it too: `%trees{season=*}`.
 - Transform: an **Aim** section. **Aim At** (a prim) or **Aim At Point** with **Point** turns the
   prim's -Z axis, the way lights and cameras face, toward the target on every cook:
   `scene.create.transform(light, primpath_location="/World/key", tx=3, ty=4, tz=3,
