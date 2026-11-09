@@ -61,7 +61,9 @@ with Scene.new() as scene:
   (`box.get_param("prim_path")`) to make one param follow another, the same as
   `connect_value`. Both are saved.
 - **Values** go in as keyword args by param name; names inside groups are found too.
-  Change them later with `scene.set(c, ty=5.0)`.
+  Change them later with `scene.set(c, ty=5.0)`. A list param's rows are
+  `**{"imports.0.sublayer_path": "a.usda", "imports.1.sublayer_path": "b.usda"}`; the
+  list grows to hold the rows named.
 - **End with `scene.set_output(last)`.** `usdchunks run` and a ChunkGroup deliver the
   Output. `scene.set_view(c)` only lets you look at something along the way.
 - **Many chunks:** wrap the building in `chunk.change_block()` as above. To only write the

@@ -11,6 +11,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- A script can name a row a list param doesn't have yet: `scene.create.sublayer(**{
+  "imports.0.sublayer_path": "a.usda", "imports.1.sublayer_path": "b.usda"})` makes both
+  rows. A list starts with none, and naming one used to raise KeyError until
+  `get_param("imports").size` was set by hand. A misspelt row param still raises.
+
 - An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
   instead of a View. With no active View a graph cooks to its Output, a ChunkGroup
   delivers its inner Output, and `usdchunks run` cooks to the Output whichever View the file

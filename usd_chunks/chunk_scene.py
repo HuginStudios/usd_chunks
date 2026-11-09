@@ -1155,7 +1155,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
         # A param the chunk only builds once it is in the scene (Light's) waits until then.
-        early = {k: v for k, v in values.items() if _scripted_param(new, k) is not None}
+        early = {k: v for k, v in values.items() if _scripted_param(new, k, grow=True) is not None}
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
@@ -1224,7 +1224,8 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         one to it, so it follows that value from then on and the wire is saved with the
         network. A list row's param is named `list.row.param` --
         `**{"prototypes.0.proto_path": "/assets/rock"}` -- so it too is set before the
-        chunk's first cook rather than after it.
+        chunk's first cook rather than after it. A list with fewer rows grows to hold the
+        row named: `imports.1.sublayer_path` on a new Sublayer makes rows 0 and 1.
 
         In a lazy Scene, a param the chunk has not built yet -- one it builds in its cook, as
         Light does its schema inputs -- takes the value when that cook builds it, the way a
@@ -1239,7 +1240,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def _assign(self, target: ChunkBase, params: Mapping[str, Any]) -> None:
         """Set params by name, as `set` does, without the hidden-param warning."""
         for name, value in params.items():
-            param = _scripted_param(target, name)
+            param = _scripted_param(target, name, grow=True)
             if param is None:
                 if chunk_cook.is_deferring() and chunk_cook.is_cook_stale(target):
                     _await_param(target, name, value)
@@ -1665,9 +1666,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Update the host timeline range."""
 
 
-def _scripted_param(target: ChunkBase, name: str):
+def _scripted_param(target: ChunkBase, name: str, grow: bool = False):
     """The param a script names: a plain name, or `list.row.param` for one row of a list --
-    the form a frontend already keys rows by. None when there is no such param or row."""
+    the form a frontend already keys rows by. None when there is no such param or row.
+
+    With grow, a list with fewer rows than that grows to hold it, as a script setting
+    `imports.1.sublayer_path` on a new Sublayer means: a list starts with none, and having
+    to set `size` first was a step nothing told a script about.
+    """
     param = target.get_param(name)
     if param is not None:
         return param
@@ -1675,8 +1681,12 @@ def _scripted_param(target: ChunkBase, name: str):
     if len(parts) == 3 and parts[1].isdigit():
         rows = target.get_param(parts[0])
         if rows is not None and hasattr(rows, "get_indexed_param"):
+            row = int(parts[1])
+            # Only for a param the rows hold: a misspelt name still raises, not grows.
+            if grow and rows.size <= row and rows.get_param(parts[2]) is not None:
+                rows.size = row + 1
             try:
-                return rows.get_indexed_param(parts[2], int(parts[1]))
+                return rows.get_indexed_param(parts[2], row)
             except (IndexError, KeyError, ValueError):
                 return None
     return None
