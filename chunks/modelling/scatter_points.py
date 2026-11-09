@@ -1216,7 +1216,7 @@ _NO_INDICES = np.zeros(0, dtype=np.int64)
 #: Volume do behave the same -- but Stack ignores the painted cloud on purpose, so Mode is the
 #: one control that still decides something. Hiding it stranded you: connect a brush and the
 #: only route to Stack disappeared, with no way back short of unwiring.
-_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "seed", "max_slope", "sampling")
+_SAMPLING_ONLY = ("auto_spacing", "spacing", "max_count", "density", "seed", "max_slope", "sampling")
 
 
 def _update_sampling_params(owner) -> None:
@@ -2518,6 +2518,7 @@ def _on_mode_changed(owner, notice, sender):
         # part in it.
         _set_hidden(dist.get_param("auto_spacing"), mode == "Stack")
         _set_hidden(dist.get_param("spacing"), mode == "Stack")
+        _set_hidden(dist.get_param("density"), mode != "Surface")
     var = chunk_obj.get_param("Variation")
     if var:
         _set_hidden(var.get_param("orient_mode"), mode == "Stack")
@@ -2697,6 +2698,7 @@ def execute(node):
     inst_path = node.get_param("inst_path", is_s).value or "/ScatterInstancer"
     scatter_mode = node.get_param("scatter_mode", is_s).value
     max_count = max(1, int(node.get_param("max_count", is_i).value))
+    density_per_m2 = node.get_param("density", is_f).value if node.get_param("density", is_f) else 0.0
     seed = int(node.get_param("seed", is_i).value)
     auto_spacing = node.get_param("auto_spacing", is_b).value
     spacing = node.get_param("spacing", is_f).value
@@ -2896,6 +2898,13 @@ def execute(node):
                 centre = (v0 + v1 + v2) / 3.0
                 size = np.max([np.linalg.norm(v - centre, axis=1) for v in (v0, v1, v2)], axis=0)
                 surf_tris = surf_tris.select(near.within_reach(centre, size))
+            if density_per_m2 > 0.0:
+                # Density: the count is per square metre of the faces left to scatter on, so
+                # it follows the surface's size and Max Slope instead of being worked out by
+                # hand. A painted Density Field still thins it; Spacing can still cap it.
+                metres = UsdGeom.GetStageMetersPerUnit(stage)
+                area_m2 = float(np.sum(surf_tris.areas())) * metres * metres if len(surf_tris) else 0.0
+                max_count = int(round(density_per_m2 * area_m2))
             avoid = None
             if avoid_paths:
                 pts_, radii_ = _avoid_points(scratch_stage, avoid_paths, max(avoid_distance, spacing, 1e-6) * 0.5)
@@ -3209,7 +3218,8 @@ def main():
     points_input = chunk.LineEdit(
         "points_prim",
         "Painted Points",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED,
+        # PRIM_PATHS: a cook reads these points, so a new stroke must re-run it.
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
         tooltip="Place one instance at each point a Scatter Brush painted, instead of "
         "scattering. Wire this from the brush's Painted Points output. While it is "
         "connected, the distribution settings below do nothing and are hidden.",
@@ -3386,7 +3396,8 @@ def main():
         chunk.LineEdit(
             "avoid_prims",
             "Keep Away From",
-            flags=chunk.ChunkFlags.ParamFlags.LABELED,
+            # PRIM_PATHS: a cook reads these prims, so an edit to them must re-run it.
+            flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
             tooltip="Surface mode: prims whose points (curves along their length) instances "
             "stay clear of -- e.g. a Trails output. Comma-separate several.",
         )
@@ -3408,6 +3419,18 @@ def main():
             is_int=True,
             tooltip="Upper limit on instances. Spacing (or the lattice) may place fewer if the "
             "surface fills up first.",
+        )
+    )
+    dist_grp.add_param(
+        chunk.Slider(
+            "density",
+            "Density (per m²)",
+            min_value=0.0,
+            max_value=100.0,
+            default_value=0.0,
+            tooltip="Surface mode: instances per square metre of the faces within Max Slope, "
+            "in place of Max Count. 0 = use Max Count. Spacing may place fewer if the surface "
+            "fills up first.",
         )
     )
     dist_grp.add_param(
@@ -3782,6 +3805,10 @@ def config():
             "           from the prototype's oriented bounding box, so packing tight is\n"
             "           collision-free: a cup of crayons standing up, a woodpile, a tray of\n"
             "           bottles. Jitter and tilt stay inside the free space of each cell.\n"
+            "\n"
+            "How many: Max Count [max_count], or in Surface mode Density (per m²) [density],\n"
+            "instances per square metre of the faces within Max Slope [max_slope]. Seed [seed]\n"
+            "picks the pattern. Auto Spacing keeps instances apart and may place fewer.\n"
             "\n"
             "Feed the instancer path to the RBD Solver to settle a loose scatter physically."
         ),

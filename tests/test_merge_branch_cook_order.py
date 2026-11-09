@@ -29,7 +29,7 @@ def test_a_merges_first_input_cooks_after_the_others_once_reopened(tmp_path, tra
         else:
             box = scene.create.cube(name="Box", prim_path="/geo/box")
             move = scene.create.transform(name="Move", primpath_location="/geo/box")
-        scene.set_output(scene.create.merge(move, box, name="Merge"))
+        scene.set_output(scene.create.merge(box, move, name="Merge"))
         scene.set(move, tz=5.0)
         assert _box_z(scene) == 5.0
         scene.save(path)

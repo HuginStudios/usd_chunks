@@ -28,9 +28,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sys
 
-from pxr import Usd
+from pxr import Ar, Usd
 
 from usd_chunks import chunk_cook, chunk_registry, chunk_scene, configure_logging
 from usd_chunks.chunk_stage import (
@@ -93,9 +94,23 @@ class Scene(chunk_scene.SceneSender):
                 raise
 
     @classmethod
-    def new(cls, host_name: str = "script") -> Scene:
-        """Start a scene of your own, on a new in-memory stage. The same as Scene()."""
-        return cls(host_name=host_name)
+    def new(cls, host_name: str = "script", *, path: str | None = None) -> Scene:
+        """Start a scene of your own, on a new in-memory stage. The same as Scene().
+
+        path: the file the network will be saved to. Relative file paths in params are USD
+        search paths from the network's folder (see asset_paths), and with path given they
+        are found from that folder while building too, not from the working directory;
+        `save()` then writes there.
+        """
+        if path is None:
+            return cls(host_name=host_name)
+        folder = os.path.dirname(os.path.abspath(path))
+        context = Ar.ResolverContext(Ar.DefaultResolverContext([folder]))
+        stage = Usd.Stage.CreateInMemory(os.path.basename(path), context)
+        scene = cls(stage, host_name)
+        scene._owns_stage = True
+        scene._network_path = os.path.abspath(path)
+        return scene
 
     @staticmethod
     def current() -> chunk_scene.SceneSender | None:

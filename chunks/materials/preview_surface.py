@@ -108,6 +108,8 @@ def config():
         category=chunk.StandardCategory.MATERIALS,
         icon="sphere",
         description="""
+        Makes a simple UsdPreviewSurface material and binds it to prims.
+
         Preview Surface chunk — defines a UsdPreviewSurface material and binds it
         to one or more prims on the active stage.
 

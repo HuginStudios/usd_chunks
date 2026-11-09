@@ -97,7 +97,14 @@ The flags:
 - `TRANSIENT`: the value only lives in this session. It isn't saved with the scene and
   comes back empty when you reopen it.
 - `FILE_EXISTING`, `DIRECTORY`: for `FileBrowser`. Only allow existing files, or only
-  folders.
+  folders. A file the chunk reads (`FILE_EXISTING`, or `reads=True`) is checked after each
+  cook: an absolute path or a missing file logs a warning.
+
+A relative path in a param is relative to the network file, as in USD (see "File paths" in
+`scripting.md`). Hand it to USD as `chunk.anchor_file(node, value)`, which anchors a `./`
+or `../` path there. A chunk that opens the file itself, as CAD Import does, gets the file
+from `chunk.resolve_file(node, value)` instead of reading the value from the working
+directory.
 - `PRIM_SELECTION`, `PROP_SELECTION`: for `LineEdit`. The value is a prim or property path,
   so the UI lets you pick it from the selection.
 - `PY_SYNTAX_HIGHLIGHT`, `USD_SYNTAX_HIGHLIGHT`: syntax highlighting for `TextEdit`.

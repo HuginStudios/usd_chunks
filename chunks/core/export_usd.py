@@ -11,8 +11,34 @@ import os
 from pxr import Sdf, Usd, UsdUtils
 
 from usd_chunks import chunk, chunk_registry, chunk_utils
-from usd_chunks import chunk_notice, chunk_stage
+from usd_chunks import chunk_naming, chunk_notice, chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
+
+
+def _same_file(a: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(a)))
+
+
+def _network_files(stage) -> set[str]:
+    """The files on disk holding a chunk network this stage has open -- never export targets.
+
+    Opened with `usdchunks run net.usda`, the network file is the root layer, and so one of
+    the real layers this chunk writes out. With Output Directory set to the network's own
+    folder its row's file name is the network file itself, and exporting replaced the
+    network with its stripped, chunk-less result.
+    """
+    layers = list(stage.GetLayerStack(includeSessionLayers=True)) + list(stage.GetUsedLayers())
+    return {_same_file(lyr.realPath) for lyr in layers
+            if not lyr.anonymous and lyr.realPath and lyr.GetPrimAtPath(chunk_naming.CHUNKS_ROOT)}
+
+
+def _would_overwrite_network(path: str, networks: set[str], row: str) -> bool:
+    if _same_file(path) not in networks:
+        return False
+    print(f"[ExportUSD] Not exporting {row} to {path}: that file is the chunk network itself, and "
+          f"writing it would replace the network. Give the row another File Name, untick its "
+          f"Export, or pick another Output Directory.")
+    return True
 
 
 _USD_EXTENSIONS = (".usd", ".usda", ".usdc")
@@ -362,6 +388,9 @@ def _export_flattened(_chunk, stage) -> None:
     if ext.lower() not in (".usd", ".usda", ".usdc", ".usdz"):
         output_path += ".usda"
 
+    if _would_overwrite_network(output_path, _network_files(stage), "the flattened stage"):
+        return
+
     mode = _chunk.get_param("export_mode", is_s).value
     if mode == "Procedural":
         scene = chunk_registry.ChunkRegistry().scene
@@ -478,8 +507,11 @@ def commit(node):
             # checkbox was unchecked, so it was never written as a file to reference
         return path
 
+    networks = _network_files(stage)
     for name, layer in layers:
         out_path = os.path.join(output_dir, filenames[layer.identifier])
+        if _would_overwrite_network(out_path, networks, f"layer '{name}'"):
+            continue
         baked = name in baked_names
 
         # Rewritten on a throwaway copy -- never mutate the live session's own layers.
@@ -511,6 +543,8 @@ def commit(node):
                 UsdUtils.ModifyAssetPaths(run, _relocate)
                 chunk_stage.stamp_stage_metadata(run, stage)
                 run_path = os.path.join(output_dir, filenames[run.identifier])
+                if _would_overwrite_network(run_path, networks, f"layer '{name}' chunk output"):
+                    continue
                 chunk_utils.export_layer(run).Export(run_path)
                 print(f"[ExportUSD] Layer '{name}' chunk output under its sublayers exported to {run_path}")
         else:
@@ -793,32 +827,41 @@ def config():
         category=chunk.StandardCategory.CORE,
         icon="download",
         description=(
-            "Exports every real layer in the composed stack to Output Directory, one file\n"
-            "per layer, named after that layer's own name — e.g. a Layer chunk with\n"
-            "Layer Name \"MyEdits\" exports as MyEdits.usda. Name collisions get a _1, _2...\n"
-            "suffix. Format picks the extension used for all of them. This is the common\n"
-            "case and needs no other settings — just pick Output Directory and press Export.\n"
-            "\n"
-            "Check Flatten into one file to merge everything into a single Output File\n"
-            "instead, per Mode: Baked (default) is every chunk's real driven content merged\n"
-            "into one file, no chunk graph. Procedural is just the chunk graph, no driven\n"
-            "content, via the same rebuild-from-scratch mechanism as the Export ChunkGroup\n"
-            "chunk (chunk-prim bookkeeping follows Edit Target now, so it's no longer all in\n"
-            "the session layer to export directly); reloading it regenerates everything by\n"
-            "re-running each chunk's execute(). Based on Settings is Baked, but leaving in\n"
-            "the bookkeeping of chunks whose target layer is marked Procedural in Layers to\n"
-            "Export below.\n"
-            "\n"
-            "Layers to Export lists every real layer in the stage (refreshed automatically),\n"
-            "each with an Export checkbox and a Bake chunk outputs checkbox (off by default;\n"
-            "the Bake all switch sets every row at once). Export unchecked\n"
-            "skips that layer entirely. Bake chunk outputs checked brings each\n"
-            "bookkeeping — the baked result. Unchecked (Procedural) exports the bookkeeping\n"
-            "only, leaving each chunk's real content where it already is (not copied in) —\n"
-            "a re-editable recipe; reloading it re-runs execute() to regenerate the content.\n"
-            "\n"
-            "Pressing Export is not the only way to run this: the same export happens\n"
-            "headlessly via this chunk's commit() hook, so `usdchunks run` on a network\n"
-            "containing an Export USD chunk writes exactly the same files."
+            """
+        Writes each layer of the scene to its own file, or flattens everything into one file.
+
+        Exports every real layer in the composed stack to Output Directory, one file
+        per layer, named after that layer's own name — e.g. a Layer chunk with
+        Layer Name "MyEdits" exports as MyEdits.usda. Name collisions get a _1, _2...
+        suffix. Format picks the extension used for all of them. This is the common
+        case and needs no other settings — just pick Output Directory and press Export.
+
+        It never writes over the network itself: opened from a file, the network is the
+        stage's root layer and so one of the layers listed, but a target that is a file
+        holding a chunk network is skipped, with a message saying what to change. So
+        Output Directory can be the network's own folder.
+
+        Check Flatten into one file to merge everything into a single Output File
+        instead, per Mode: Baked (default) is every chunk's real driven content merged
+        into one file, no chunk graph. Procedural is just the chunk graph, no driven
+        content, via the same rebuild-from-scratch mechanism as the Export ChunkGroup
+        chunk (chunk-prim bookkeeping follows Edit Target now, so it's no longer all in
+        the session layer to export directly); reloading it regenerates everything by
+        re-running each chunk's execute(). Based on Settings is Baked, but leaving in
+        the bookkeeping of chunks whose target layer is marked Procedural in Layers to
+        Export below.
+
+        Layers to Export lists every real layer in the stage (refreshed automatically),
+        each with an Export checkbox and a Bake chunk outputs checkbox (off by default;
+        the Bake all switch sets every row at once). Export unchecked
+        skips that layer entirely. Bake chunk outputs checked brings each
+        bookkeeping — the baked result. Unchecked (Procedural) exports the bookkeeping
+        only, leaving each chunk's real content where it already is (not copied in) —
+        a re-editable recipe; reloading it re-runs execute() to regenerate the content.
+
+        Pressing Export is not the only way to run this: the same export happens
+        headlessly via this chunk's commit() hook, so `usdchunks run` on a network
+        containing an Export USD chunk writes exactly the same files.
+        """
         ),
     )

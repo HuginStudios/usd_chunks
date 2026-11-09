@@ -804,4 +804,20 @@ def config():
         category=chunk.StandardCategory.USD_RENDER,
         icon="image",
         requirements=["numpy>=2,<3", "pillow>=10", "OpenEXR>=3", "trimesh>=4", "embreex>=2"],
+        description="""
+        Finishes a rendered frame: sky behind it, distance haze, sun shafts and bloom, a grade.
+
+        Some renderers leave parts of a shot undone: hdVRay draws no aerial perspective with a
+        plain dome and distant light, and leaves the dome out of the camera background. This
+        works on the rendered image, from the stage's own camera, dome and sun:
+          - Sky: transparent pixels get the dome image (or a backplate) through the camera.
+          - Haze: distance haze from a depth pass ray-cast through the camera, brighter
+            toward the sun.
+          - Sun: light shafts from the sun's spot on screen, bloom on the brightest parts,
+            and the sun's disc where the sky shows.
+          - Grade: exposure, colour balance, contrast, saturation and a lift in the shadows.
+
+        Runs in commit(), after the Render chunk upstream has written its image, and from
+        Finish Now. It writes a new image and authors nothing.
+        """,
     )

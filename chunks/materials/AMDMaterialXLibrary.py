@@ -745,6 +745,8 @@ def config():
         icon="sphere",
         requirements=["requests>=2,<3"],
         description="""
+        Browses AMD's GPUOpen MaterialX library, then downloads a material and binds it to prims.
+
         Assign Material chunk: browses the AMD GPUOpen MaterialX library and
         downloads and binds a material to one or more prims on the active stage.
 

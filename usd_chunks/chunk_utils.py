@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
-from usd_chunks import chunk_cook, chunk_naming
+from usd_chunks import asset_paths, chunk_cook, chunk_naming
 from usd_chunks.layer_arcs import arc_edit_target, edit_target, is_editable  # noqa: F401
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
@@ -120,7 +120,9 @@ def arc_source_path(node) -> str:
     dot that is not a USD extension so that an arc can open it. Either names it.
     """
     if not arc_from_layer(node):
-        return node.get_param("file_path").value
+        # A ./ or ../ path is relative to the network's file, as in any USD file; authored
+        # as it is into the chunk's anonymous layer it would follow the working directory.
+        return asset_paths.anchor(node.get_param("file_path").value, node.get_stage())
     choice = node.get_param("layer").value
     if not choice:
         return ""
@@ -1658,6 +1660,40 @@ def target_paths(param):
         relationship should not target it twice.
     """
     return list(dict.fromkeys(split_variant_path(path_str)[1] for path_str in param.resolve_paths()))
+
+
+def author_class_arc(node, arc: str) -> None:
+    """Add an inherits or specializes arc from the prims in `prim_path` to `base_path`.
+
+    The cook of the Inherit and Specialize chunks, which differ only in the arc. A base
+    that doesn't exist yet is created as an abstract `class` prim. A prim that is the base
+    or sits under it is skipped: an arc to an ancestor is a composition error. A prim not
+    on the stage yet gets an `over`.
+
+    Args:
+        node: The chunk, with `prim_path` and `base_path` params.
+        arc: "inherits" or "specializes".
+    """
+    base_value = (node.get_param("base_path").value or "").strip()
+    targets = node.get_param("prim_path")
+    if not base_value or not targets.value or not Sdf.Path.IsValidPathString(base_value):
+        return
+    base = Sdf.Path(base_value)
+    stage = node.get_stage()
+    if not stage.GetPrimAtPath(base).IsValid():
+        stage.CreateClassPrim(base)
+
+    for target_path in author_in_variant_contexts(stage, targets):
+        path = Sdf.Path(target_path)
+        if path == base or path.HasPrefix(base):
+            continue
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            prim = stage.OverridePrim(path)
+        if arc == "specializes":
+            prim.GetSpecializes().AddSpecialize(base)
+        else:
+            prim.GetInherits().AddInherit(base)
 
 
 def _claim_unique_path(stage, param):

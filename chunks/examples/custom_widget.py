@@ -56,4 +56,12 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.EXAMPLES,
+        description="""
+        Example: a param drawn by a custom Qt widget (chunk.Custom) whose button sends a notice.
+
+        The chunk.Custom param gets its own QPushButton widget. Clicking it sends the param's
+        notice, and the chunk's callback prints the param's user_data value.
+        """,
+    )

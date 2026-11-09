@@ -22,7 +22,7 @@ def _two_branches(scene, output=True):
     for i, radius in enumerate((5, 6, 7)):
         second = scene.create.property_editor(second, prim="/World/ball", edits=f"double radius = {radius}",
                                               name=f"second{i}")
-    merge = scene.create.merge(first, second, name="merge")
+    merge = scene.create.merge(second, first, name="merge")  # first in slot 0
     if output:
         scene.set_output(merge)
     return merge
@@ -80,7 +80,7 @@ def test_a_group_ranks_by_its_output_even_with_an_inner_view_saved(tmp_path) -> 
             for i, radius in enumerate((5, 6, 7)):
                 second = scene.create.property_editor(second, prim="/World/ball", edits=f"double radius = {radius}",
                                                       name=f"second{i}")
-            scene.set_output(scene.create.merge(first, second, name="merge"))
+            scene.set_output(scene.create.merge(second, first, name="merge"))
             scene.set_view(second)
         scene.set_output(group)
         built = _radius(scene)

@@ -1395,3 +1395,24 @@ def test_with_stack_one_stroke_is_still_spaced() -> None:
     _gesture(c, (5.0, 5.0, 0.0), (5.5, 5.0, 0.0), (6.0, 5.0, 0.0), (8.0, 5.0, 0.0))
 
     assert len(_points(stage, c)) == 2
+
+
+# ---------------------------------------------------------------------------
+# a new stroke reaches a Scatter Points that already cooked
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["points_prim", "avoid_prims"])
+def test_scatter_watches_the_points_it_reads(name) -> None:
+    """Scatter Points must count Painted Points and Keep Away From as inputs.
+
+    A cook only re-runs when a path it reads changes. Without these, the second stroke in
+    usdview left the scatter at one instance: the brush's points changed, but the scatter
+    did not list them as something it reads, so its cook was skipped.
+    """
+    from usd_chunks import skip_cook
+
+    _stage_with_floor()
+    scatter = scatter_mod.main()
+    scatter.get_param(name).value = "/chunks/ScatterBrush/PaintedPoints"
+
+    assert Sdf.Path("/chunks/ScatterBrush/PaintedPoints") in skip_cook.input_paths(scatter)

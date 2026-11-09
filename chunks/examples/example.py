@@ -265,4 +265,13 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.EXAMPLES,
+        description="""
+        Example: one of each common param (checkbox, sliders, button, menu, text) with callbacks.
+
+        Hello World -- a Checkbox, two Sliders, a Button, a Menu and a text field (LineEdit).
+        Each param's callback prints what it receives, to show when callbacks run and what
+        they are given.
+        """,
+    )

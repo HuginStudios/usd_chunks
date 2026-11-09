@@ -31,7 +31,11 @@ def config():
         category=chunk.StandardCategory.UTILS,
         icon="dice",
         description=(
-            "Generates a deterministic random float between Min and Max, seeded by Seed.\n"
-            "Same seed always produces the same value; Min/Max are swapped if Min > Max."
+            """
+        A random number between Min and Max, the same every time for the same Seed.
+
+        Generates a deterministic random float between Min and Max, seeded by Seed.
+        Same seed always produces the same value; Min/Max are swapped if Min > Max.
+        """
         ),
     )

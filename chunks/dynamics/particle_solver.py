@@ -1691,13 +1691,17 @@ def config():
         requirements=["taichi>=1.7,<2", "numpy>=2,<3"],
         cache_cook=True,
         description=(
-            "Bakes an MLS-MPM simulation of water, sand, snow or jelly with Taichi (GPU when\n"
-            "available). The material starts in a mesh's volume, at a Scatter Brush's painted\n"
-            "points, or as a ball per Scatter Points instance. Static meshes collide; an RBD\n"
-            "Solver bake pushes through it as moving spheres.\n"
-            "\n"
-            "Outputs a time-sampled Points prim, and Surface Points -- the settled top\n"
-            "surface -- to wire into Scatter Points' Painted Points. Drive Instancer animates\n"
-            "a Scatter Points instancer with the flow. Requires the 'taichi' package."
+            """
+        Simulates water, sand, snow or jelly (MPM, Taichi) and bakes it as points over time.
+
+        Bakes an MLS-MPM simulation of water, sand, snow or jelly with Taichi (GPU when
+        available). The material starts in a mesh's volume, at a Scatter Brush's painted
+        points, or as a ball per Scatter Points instance. Static meshes collide; an RBD
+        Solver bake pushes through it as moving spheres.
+
+        Outputs a time-sampled Points prim, and Surface Points -- the settled top
+        surface -- to wire into Scatter Points' Painted Points. Drive Instancer animates
+        a Scatter Points instancer with the flow. Requires the 'taichi' package.
+        """
         ),
     )

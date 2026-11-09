@@ -910,6 +910,8 @@ def config():
         category=chunk.StandardCategory.USD_RENDER,
         icon="film",
         description="""
+        Renders the scene to images through Hydra, by hand or on every `usdchunks run`.
+
         Render chunk — the ROP. Renders the live stage through Hydra, using the
         UsdRender.Settings prim a Render Settings chunk authored.
 

@@ -75,17 +75,21 @@ def config():
         category=chunk.StandardCategory.CORE,
         icon="download",
         description=(
-            "Exports the current chunk graph as one clean, portable USD file — every\n"
-            "chunk's own bookkeeping (wiring, node-graph position, chunk type) freshly\n"
-            "authored into a brand-new layer, with no subLayerPaths at all.\n"
-            "\n"
-            "Unlike picking Session Layer in the Export USD chunk (a raw copy of the\n"
-            "live session layer, which can carry forward subLayerPaths referencing\n"
-            "in-memory anon: layers that don't resolve once the session ends), this\n"
-            "rebuilds every chunk prim from scratch via the same authoring path used\n"
-            "when chunks are first created — always self-contained.\n"
-            "\n"
-            "Reloading the exported file regenerates every chunk's driven content\n"
-            "automatically, by re-running each chunk's execute()."
+            """
+        Exports the chunk network as one self-contained USD file that rebuilds itself on load.
+
+        Exports the current chunk graph as one clean, portable USD file — every
+        chunk's own bookkeeping (wiring, node-graph position, chunk type) freshly
+        authored into a brand-new layer, with no subLayerPaths at all.
+
+        Unlike picking Session Layer in the Export USD chunk (a raw copy of the
+        live session layer, which can carry forward subLayerPaths referencing
+        in-memory anon: layers that don't resolve once the session ends), this
+        rebuilds every chunk prim from scratch via the same authoring path used
+        when chunks are first created — always self-contained.
+
+        Reloading the exported file regenerates every chunk's driven content
+        automatically, by re-running each chunk's execute().
+        """
         ),
     )
