@@ -217,6 +217,37 @@ def relative_to(folder: str, value: str) -> str:
     return rel.as_posix()
 
 
+def refit(value: str, stage, folder: str, make_relative: bool) -> str:
+    """value as a file in folder writes it, to name the file it names in the network.
+
+    A search path found from the network's folder is written as found from folder: a search
+    path where the file sits under folder, absolute where no search path reaches it. A ./ or
+    ../ path is anchored to the network's folder the same way. With make_relative, an
+    absolute path under folder becomes a search path too. A path that names no file, or a
+    folder that is the network's own, leaves value as it is.
+
+    Args:
+        value: The path as the network has it.
+        stage: The network's stage, for its folder and resolver context.
+        folder: The folder of the file value is written into.
+        make_relative: Whether an absolute path under folder becomes a search path.
+
+    Returns:
+        The path to write.
+    """
+    # Unsaved, with no folder of its own, a search path was found from the working directory.
+    old_folder = network_folder(stage) or os.getcwd()
+    moved = not _same_folder(old_folder, folder)
+    how = kind(value)
+    if how == "search" and moved and (found := resolve(value, stage)):
+        return relative_to(folder, found)
+    if how == "dot" and moved:
+        return relative_to(folder, os.path.normpath(os.path.join(old_folder, value.strip())))
+    if how == "absolute" and make_relative:
+        return relative_to(folder, value)
+    return value
+
+
 def rebase_saved(layer: Sdf.Layer, scene, folder: str, make_relative: bool) -> int:
     """Fit the input file paths saved in layer to its folder. Returns how many changed.
 
@@ -227,19 +258,9 @@ def rebase_saved(layer: Sdf.Layer, scene, folder: str, make_relative: bool) -> i
     and warned about at cook. layer holds the chunk prims at their live paths.
     """
     stage = scene.get_stage()
-    # Unsaved, with no folder of its own, a search path was found from the working directory.
-    old_folder = network_folder(stage) or os.getcwd()
-    moved = not _same_folder(old_folder, folder)
 
     def fit(value: str) -> str:
-        how = kind(value)
-        if how == "search" and moved and (found := resolve(value, stage)):
-            return relative_to(folder, found)
-        if how == "dot" and moved:
-            return relative_to(folder, os.path.normpath(os.path.join(old_folder, value.strip())))
-        if how == "absolute" and make_relative:
-            return relative_to(folder, value)
-        return value
+        return refit(value, stage, folder, make_relative)
 
     changed = 0
     for chunk in scene.get_chunks():

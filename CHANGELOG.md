@@ -276,6 +276,10 @@ This file starts with the first release; development before that is in the commi
   above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
   cooks a chunk once before wiring it, and that cook found nothing above it; the warnings
   now wait until the chunk is wired, and one that is not wired still gets them.
+- Export USD keeps a relative asset path working when it writes into another folder than the
+  network's. A Reference to `inputs/set.usda` exported into `shot/` was written unchanged, and
+  USD looked for `shot/inputs/set.usda`. It now names the file it named in the network:
+  `../inputs/set.usda` with Relative Paths on, an absolute path with it off.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.
