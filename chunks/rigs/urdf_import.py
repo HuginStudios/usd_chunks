@@ -627,8 +627,11 @@ def execute(node):
                     if geom is None:
                         continue
                     UsdPhysics.CollisionAPI.Apply(geom)
-                    mesh_api = UsdPhysics.MeshCollisionAPI.Apply(geom)
-                    mesh_api.CreateApproximationAttr(approximation)
+                    # Only a mesh is approximated: a box, sphere or cylinder collides as
+                    # itself, and MeshCollisionAPI is for Mesh prims only.
+                    if geom.IsA(UsdGeom.Mesh):
+                        mesh_api = UsdPhysics.MeshCollisionAPI.Apply(geom)
+                        mesh_api.CreateApproximationAttr(approximation)
                     UsdGeom.Imageable(geom).CreatePurposeAttr(UsdGeom.Tokens.guide)
 
             # Nesting is the weld, so a nested link gets no joint: a fixed joint to a prim
@@ -684,7 +687,8 @@ def main():
                         "boundingSphere", "meshSimplification", "none"],
             default_value="convexHull",
             flags=ChunkFlags.ParamFlags.LABELED,
-            tooltip="physics:approximation on each collision shape. convexHull is what most "
+            tooltip="physics:approximation on each collision mesh (a box, sphere or cylinder "
+            "collides as itself). convexHull is what most "
             "solvers want; none keeps the exact mesh and is slow.",
         ),
         chunk.Checkbox("import_visual", "Visual Geometry", default_value=True,
@@ -705,7 +709,7 @@ def config():
         Imports a URDF robot as UsdPhysics links, joints and colliders, ready to simulate.
 
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,
-        collision shapes with an approximation, and revolute, prismatic and fixed joints
+        collision shapes (meshes with an approximation), and revolute, prismatic and fixed joints
         with their limits and damping.
 
         URDF is how robots are actually distributed -- the LeRobot SO-101, every ROS arm --
