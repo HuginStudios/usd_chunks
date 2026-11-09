@@ -428,3 +428,64 @@ def test_a_load_cooks_a_chunk_fed_by_several_roots_once(tmp_path):
         pass
 
     assert cooks.get("Below") == 1
+
+
+class _Loop:
+    """call_later as a host with an event loop does it: queued, cancellable, run on demand."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    def call_later(self, fn, delay: float = 0.0):
+        call = [fn, False]
+        self.calls.append(call)
+        return lambda: call.__setitem__(1, True)
+
+    def run(self):
+        calls, self.calls = self.calls, []
+        for fn, cancelled in calls:
+            if not cancelled:
+                fn()
+
+
+def test_a_drag_writes_only_where_it_lets_go(monkeypatch):
+    """A slider drag cooks on every tick; only the last tick's result goes to disk, once the
+    cooks stop -- not one entry per tick."""
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _cached_module(cooks))
+        assert len(_entries()) == 1
+        loop = _Loop()
+        monkeypatch.setattr(c.get_scene(), "call_later", loop.call_later)
+
+        for size in (2.0, 3.0, 4.0):  # the drag's ticks
+            c.get_param("size").value = size
+
+        assert cooks[-3:] == [2.0, 3.0, 4.0], "every tick still cooks"
+        assert len(_entries()) == 1, "nothing written mid-drag"
+
+        loop.run()  # the drag let go, and the delay ran out
+
+        assert len(_entries()) == 2
+        count = len(cooks)
+        c.get_param("size").value = 3.0
+        assert len(cooks) == count + 1, "a tick passed over is not on disk"
+        c.get_param("size").value = 4.0
+        assert len(cooks) == count + 1, "where it let go is read back"
+
+
+def test_a_waiting_write_is_dropped_once_the_params_move_on(monkeypatch):
+    cooks: list = []
+    with Scene() as scene:
+        c = _add(scene, _cached_module(cooks))
+        loop = _Loop()
+        monkeypatch.setattr(c.get_scene(), "call_later", loop.call_later)
+        c.get_param("size").value = 2.0
+        # The key moved on before the delay ran out, with no cook yet for the new one (a
+        # cook still to come, an upstream changed): the layer holds size 2's result, and
+        # the waiting write must not file it under the new key.
+        monkeypatch.setattr(cook_cache, "lookup", lambda chunk: cook_cache.CookEntry("other"))
+
+        loop.run()
+
+        assert len(_entries()) == 1
