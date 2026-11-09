@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
+  cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
+  Density still needs a mesh.
 - Scatter Brush: a Stack checkbox. In Points mode, spacing then only counts the current
   stroke, so with Surface Mesh empty each new stroke can land on top of the instances
   earlier strokes made, to build towers.
