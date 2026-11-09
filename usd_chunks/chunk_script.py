@@ -31,7 +31,7 @@ import logging
 import os
 import sys
 
-from pxr import Ar, Usd
+from pxr import Ar, Usd, UsdGeom
 
 from usd_chunks import chunk_cook, chunk_registry, chunk_scene, configure_logging
 from usd_chunks.chunk_stage import (
@@ -39,6 +39,20 @@ from usd_chunks.chunk_stage import (
     ChunkStageSync,
     initialize as chunk_stage_init,
 )
+
+
+def _new_stage(*args) -> Usd.Stage:
+    """A new in-memory stage for a Scene, in metres.
+
+    USD's fallback for a stage that says nothing is centimetres (metersPerUnit 0.01), and
+    every export stamps that onto the file. A script's numbers read as metres -- a 20 x 20
+    ground, a camera 15 units back -- and the files it brings in mostly are, so every
+    script began with a Stage Settings chunk to say so. A Stage Settings chunk still sets
+    any other unit; a stage passed in or opened from a file keeps its own.
+    """
+    stage = Usd.Stage.CreateInMemory(*args)
+    UsdGeom.SetStageMetersPerUnit(stage, UsdGeom.LinearUnits.meters)
+    return stage
 
 
 class Scene(chunk_scene.SceneSender):
@@ -76,7 +90,7 @@ class Scene(chunk_scene.SceneSender):
         # Whether the stage is this Scene's own -- made here, or opened by Scene.open -- and
         # so goes when the Scene does. A stage passed in belongs to the caller.
         self._owns_stage = stage is None
-        self._stage = stage or Usd.Stage.CreateInMemory()
+        self._stage = stage or _new_stage()
         self.registry = chunk_registry.ChunkRegistry()
         self.registry.initialize(self, host_name)
         # Open from before the load, so loading a saved network cooks nothing either.
@@ -106,7 +120,7 @@ class Scene(chunk_scene.SceneSender):
             return cls(host_name=host_name)
         folder = os.path.dirname(os.path.abspath(path))
         context = Ar.ResolverContext(Ar.DefaultResolverContext([folder]))
-        stage = Usd.Stage.CreateInMemory(os.path.basename(path), context)
+        stage = _new_stage(os.path.basename(path), context)
         scene = cls(stage, host_name)
         scene._owns_stage = True
         scene._network_path = os.path.abspath(path)
