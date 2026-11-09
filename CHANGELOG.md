@@ -116,6 +116,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** a Merge built from a script lets the last input win, as one built in the
+  graph does. `scene.create.merge(a, b)` puts `b` in slot 0, the strongest, so `b` wins
+  where both branches author the same prim; it used to put `a` there. A script that relied
+  on the first input winning needs its inputs swapped. Saved networks keep their slots.
+- **Breaking:** a new Mesh Grid has no checker material. Grid Checker, on by default, binds
+  it; a Grid made from the menu or a script sets it off. A script that wanted the checker
+  passes `grid_checker=True`. Saved networks keep theirs.
 - The Particle Solver imports Taichi when it first simulates, not when it loads. Blender
   loads every chunk to make its node types, so New Chunk Network is about a second faster.
 - Chunks talk to each other only through wires: an exec input or an `@Node.param@`
