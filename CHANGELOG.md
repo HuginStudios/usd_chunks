@@ -308,6 +308,9 @@ This file starts with the first release; development before that is in the commi
 - Export USD writes over the files it wrote itself. An unbaked session layer carries the
   network's bookkeeping, so its next export took its own earlier file for a network and
   skipped it. Each file it writes is now stamped as its output; a saved network is not.
+- Scatter Points built from a script no longer says "surface prim not found" or "prototype
+  path(s) not found" for prims that are above it once it is wired. Its cook before the wire
+  now waits instead; a prim still missing once wired is reported as before.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
   side by side, the second Layer and its Edit Target were missing from the saved file, and
   the network opened again without what they led to. Edit Target now resolves its layer on
