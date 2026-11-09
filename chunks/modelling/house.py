@@ -1766,6 +1766,8 @@ def config():
         icon="home",
         cache_cook=True,
         description="""
+        Builds a Swedish Falu-red cottage with real window openings, floors and a tiled roof.
+
         Swedish House — builds a Falu-red cottage from a box.
 
         Width is the headline control: stretching it re-tiles the window bays to

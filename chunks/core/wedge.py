@@ -645,9 +645,13 @@ def config():
         category=chunk.StandardCategory.CORE,
         icon="shuffle",
         description=(
-            "Turns one network into N variants. Each lofted range drives a param by "
-            "connection; cooking at Index picks one value from every range.\n"
-            "Every value is a pure function of (Seed, Index, range name), so any single "
-            "variant regenerates on its own, on any machine, in any order."
+            """
+        Turns one network into N variants, each param driven from a seeded range.
+
+        Turns one network into N variants. Each lofted range drives a param by connection; cooking at Index picks one
+        value from every range.
+        Every value is a pure function of (Seed, Index, range name), so any single variant regenerates on its own, on
+        any machine, in any order.
+        """
         ),
     )

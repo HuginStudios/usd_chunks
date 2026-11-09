@@ -307,9 +307,13 @@ def config():
         category=chunk.StandardCategory.UTILS,
         icon="sigma",
         description=(
-            "Applies a vector math operation to A/B/C (and Scale for Scale/Refract).\n"
-            "Inputs shown depend on the selected\n"
-            "operation. Outputs a Vector for most operations, or a single float Result for\n"
-            "Dot Product, Distance, and Length."
+            """
+        Applies a vector math operation (dot product, length, distance ...) to vectors A/B/C.
+
+        Applies a vector math operation to A/B/C (and Scale for Scale/Refract).
+        Inputs shown depend on the selected
+        operation. Outputs a Vector for most operations, or a single float Result for
+        Dot Product, Distance, and Length.
+        """
         ),
     )

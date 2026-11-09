@@ -210,8 +210,12 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.DYNAMICS,
         icon="sparkles",
         description=(
-            "Rewrites a PointInstancer's instances as a stream over time: where each appears, when\n"
-            "(primvars:rbd:emitFrame), and its velocities -- plain instancer data the RBD Solver reads."
+            """
+        Emits a PointInstancer's instances as a stream over time: when each appears, its velocity.
+
+        Rewrites a PointInstancer's instances as a stream over time: where each appears, when
+        (primvars:rbd:emitFrame), and its velocities -- plain instancer data the RBD Solver reads.
+        """
         ),
         requirements=["numpy>=2,<3"],
     )

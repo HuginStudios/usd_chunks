@@ -414,7 +414,7 @@ def test_a_merge_reads_like_a_chain(tmp_path):
     with Scene() as scene:
         move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=5.0)
         box = scene.create.cube(name="Box", prim_path="/geo/box")
-        scene.set_output(scene.create.merge(move, box, name="Merge"))
+        scene.set_output(scene.create.merge(box, move, name="Merge"))
         assert _box_z(scene) == 5.0
         scene.set(move, tz=6.0)
         assert _box_z(scene) == 6.0
@@ -432,7 +432,7 @@ def test_a_transform_above_the_cube_in_a_merge_never_moves_it(tmp_path):
     with Scene() as scene:
         move = scene.create.transform(name="Move", primpath_location="/geo/box", tz=5.0)
         box = scene.create.cube(name="Box", prim_path="/geo/box")
-        scene.set_output(scene.create.merge(box, move, name="Merge"))
+        scene.set_output(scene.create.merge(move, box, name="Merge"))
         scene.set(move, tz=6.0)
         assert _box_z(scene) == 0.0, "an edit let the Transform see the input below it"
         assert _red(scene) == {"Move", "Merge", "Output"}

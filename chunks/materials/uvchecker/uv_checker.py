@@ -135,4 +135,14 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.MATERIALS, icon="image")
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.MATERIALS,
+        icon="image",
+        description="""
+        Binds a UV checker texture material to prims, to inspect their UV layout.
+
+        UV Scale sets how often the checker repeats in U and V, and the file browser picks
+        the checker image. Apply builds the material and binds it; Clear Vis clears this
+        chunk's layer, removing it again.
+        """,
+    )

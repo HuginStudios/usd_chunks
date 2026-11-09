@@ -94,6 +94,8 @@ def config():
         category=chunk.StandardCategory.USD_RENDER,
         icon="film",
         description="""
+        Defines a render pass: the render settings it uses and the passes that run before it.
+
         Render Pass chunk — creates a UsdRender.Pass prim, one step of a render
         pointing at the settings that describe it.
 

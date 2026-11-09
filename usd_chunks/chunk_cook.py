@@ -42,9 +42,9 @@ import collections
 import logging
 import weakref
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
-from pxr import Sdf, Tf, Usd
+from pxr import Ar, Sdf, Tf, Usd
 
 from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, cook_timings, layer_arcs, skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
@@ -943,8 +943,15 @@ def executing(prop):
     prop._executing = True
     chunk_notice._usd_write_active = True
     chunk_notice._executing_chunk = getattr(prop, "get_chunk", lambda: None)()
+    # The stage's resolver context, bound for the module: a file it opens itself
+    # (Sdf.Layer.FindOrOpen on a param's path) is found as the stage finds it -- a relative
+    # path from the network's folder -- not from the working directory (asset_paths).
+    stage = prop.get_stage() if hasattr(prop, "get_stage") else None
     try:
-        yield
+        with ExitStack() as bound:
+            if stage is not None:
+                bound.enter_context(Ar.ResolverContextBinder(stage.GetPathResolverContext()))
+            yield
     finally:
         # Restored, not cleared: a cook can be reached from inside a guarded
         # write (a rename triggers one), and clearing outright unsuppressed

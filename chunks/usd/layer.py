@@ -347,6 +347,8 @@ def config():
         category=chunk.StandardCategory.USD_LAYER,
         icon="layers",
         description="""
+        Adds a new layer for edits to go into, e.g. department layers like anim or layout.
+
         Layer chunk — authors a fresh anonymous layer and sublayers it into the
         session layer, or into whichever layer an upstream Edit Target chunk has
         explicitly pointed at — so chaining Layer → Edit Target → Layer

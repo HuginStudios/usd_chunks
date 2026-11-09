@@ -203,16 +203,17 @@ def config():
         category=chunk.StandardCategory.UTILS,
         icon="code",
         description=(
-            "Declares USD stage expression variables -- a name, a type and a value per row.\n"
-            "USD substitutes ${NAME} into asset paths and variant selections and nowhere "
-            "else, so `if(${USE_LOW_POLY}, \"low/hero.usda\", \"hero.usda\")` in a file "
-            "field is evaluated by composition itself. A chunk param is not one of those "
-            "places and keeps the text literally -- branch on the variable with a Stage "
-            "Expression Switch instead.\n"
-            "Variables the opened file already declares are added to rather than replaced; "
-            "a name set here overrides a studio default of the same name via the session "
-            "layer, leaving their file untouched.\n"
-            "A variable is visible stage-wide, but only chunks downstream of this one "
-            "re-execute when it changes -- wire this upstream of what should react."
+            """
+        Declares stage variables (USD expression variables) for asset paths and variants.
+
+        Declares USD stage expression variables -- a name, a type and a value per row.
+        USD substitutes ${NAME} into asset paths and variant selections and nowhere else, so `if(${USE_LOW_POLY},
+        "low/hero.usda", "hero.usda")` in a file field is evaluated by composition itself. A chunk param is not one of
+        those places and keeps the text literally -- branch on the variable with a Stage Expression Switch instead.
+        Variables the opened file already declares are added to rather than replaced; a name set here overrides a
+        studio default of the same name via the session layer, leaving their file untouched.
+        A variable is visible stage-wide, but only chunks downstream of this one re-execute when it changes -- wire
+        this upstream of what should react.
+        """
         ),
     )

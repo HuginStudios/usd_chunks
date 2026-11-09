@@ -896,12 +896,17 @@ def config():
         # A big one waits behind the progress window: a slider drag sets its value once.
         cook_on_release=True,
         description=(
-            "Rebuilds an asset as one closed, coloured proxy mesh by way of a volume: the\n"
-            "surface is sampled, turned into a distance field, gaps are closed and enclosed\n"
-            "cavities filled, and a new surface is extracted with marching cubes.\n\n"
-            "For the assets decimation can't reduce: a tree's leaf cards, a CAD assembly's\n"
-            "thousands of parts and hidden internals. The asset's colour — material diffuse,\n"
-            "textures, displayColor — is baked onto the proxy's vertices. Follow it with\n"
-            "UV Unwrap and Bake Textures for maps."
+            """
+        Rebuilds a heavy asset (a tree, a CAD assembly) as one closed, coloured proxy mesh.
+
+        Rebuilds an asset as one closed, coloured proxy mesh by way of a volume: the
+        surface is sampled, turned into a distance field, gaps are closed and enclosed
+        cavities filled, and a new surface is extracted with marching cubes.
+
+        For the assets decimation can't reduce: a tree's leaf cards, a CAD assembly's
+        thousands of parts and hidden internals. The asset's colour — material diffuse,
+        textures, displayColor — is baked onto the proxy's vertices. Follow it with
+        UV Unwrap and Bake Textures for maps.
+        """
         ),
     )

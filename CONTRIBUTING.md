@@ -100,6 +100,9 @@ extending `chunk_core`.
   before your change and pass after it.
 - Say how you verified it. "Tests pass" is less useful than what you actually ran.
 - Update the README when you change behaviour a user would notice.
+- Add a line to `CHANGELOG.md` under Unreleased for anything a user would notice. Start
+  it with **Breaking:** when existing scripts, networks or imports would now behave
+  differently or fail, and say what to change.
 
 Commit messages follow the standard git convention: a subject of 50 characters or so
 (72 hard), a blank line, then a body wrapped at 72 explaining *why*. This repository also

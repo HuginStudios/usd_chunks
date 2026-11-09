@@ -145,6 +145,8 @@ def config():
             ("a",   "Float"),
         ],
         description="""
+        Adds an image texture to a material, with outputs to wire into a surface's inputs.
+
         Creates a UsdUVTexture shader inside the material at primpath_location.
 
         Outputs rgb/r/g/b/a are exposed as nodegraph ports. Connect them

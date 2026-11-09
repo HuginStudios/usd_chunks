@@ -16,18 +16,20 @@ site
 # AI tool working directories and issue tracker (local only)
 .scratch/
 issues/
-.claude/
+# .claude/ is local except the skills link (to ../skills, shared with .agents/ and .codex/).
+.claude/*
+!.claude/skills
+CLAUDE.local.md
 .kilocode/
 .kiro/
 .planning/
 .vexp/
 .sven/
 
-# Shared team AI-agent config lives in a separate private repo
+# Private team AI-agent material lives in a separate repo
 # (HuginStudios/claude-settings, synced in via its setup.py) -- this repo is
 # going public, so keep these out even if something copies them in locally.
-CLAUDE.md
-AGENTS.md
+# The public agent guide (AGENTS.md, CLAUDE.md, skills/) is tracked here.
 /docs/adr/
 /docs/agents/
 CONTEXT.md

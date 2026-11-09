@@ -712,15 +712,17 @@ def execute(node):
     is_f = chunk.is_param_t(float)
     is_b = chunk.is_param_t(bool)
 
-    cad_path = node.get_param("file_path").value
-    if not cad_path:
+    given = node.get_param("file_path").value
+    if not given:
         _report(node, "pick a STEP or IGES file")
         return
     if not _HAS_OCP:
         _report(node, "cadquery-ocp is not installed — pip install cadquery-ocp")
         return
+    # Found as USD finds a file: a relative path is from the network's folder.
+    cad_path = chunk.resolve_file(node, given)
     if not os.path.isfile(cad_path):
-        _report(node, f"no such file: {os.path.basename(cad_path)}")
+        _report(node, f"no such file: {os.path.basename(given)}")
         return
 
     settings = _Settings(
@@ -957,13 +959,19 @@ def config():
         requirements=["cadquery-ocp>=7.8,<9"],
         cache_cook=True,
         description=(
-            "Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.\n\n"
-            "Keeps the three things a converter usually drops: the assembly hierarchy (as\n"
-            "nested Xforms), part instancing (a repeated part is tessellated once into a\n"
-            "class prim and referenced), and per-face colour (as GeomSubsets in the\n"
-            "materialBind family, ready for a material library to bind against).\n\n"
-            "Points are not welded across B-rep face boundaries, so renderer-computed\n"
-            "normals smooth within a face and crease between them — curved surfaces stay\n"
-            "smooth and machined edges stay sharp with no authored normals."
+            """
+        Imports a STEP or IGES CAD assembly as USD, keeping hierarchy, instancing, face colours.
+
+        Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.
+
+        Keeps the three things a converter usually drops: the assembly hierarchy (as
+        nested Xforms), part instancing (a repeated part is tessellated once into a
+        class prim and referenced), and per-face colour (as GeomSubsets in the
+        materialBind family, ready for a material library to bind against).
+
+        Points are not welded across B-rep face boundaries, so renderer-computed
+        normals smooth within a face and crease between them — curved surfaces stay
+        smooth and machined edges stay sharp with no authored normals.
+        """
         ),
     )

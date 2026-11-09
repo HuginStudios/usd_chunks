@@ -83,7 +83,7 @@ from usd_chunks.chunk_core import (
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
-from usd_chunks import chunk_cook, chunk_utils
+from usd_chunks import asset_paths, chunk_cook, chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -729,6 +729,41 @@ class Custom(ChunkParamBase):
 def set_validators_enabled(enabled: bool):
     """Turn attrs validators on or off globally."""
     validators.set_disabled(not enabled)
+
+
+def resolve_file(node, path: str) -> str:
+    """The file a param's path names, found as USD would find it; "" if there is none.
+
+    For a chunk that opens its file itself (a CAD or URDF import) rather than handing the
+    path to USD. A relative path is a search path from the network's folder, so the chunk
+    reads the same file whatever the working directory, as a Sublayer or Reference does.
+
+    Args:
+        node: The chunk, for its stage's resolver context.
+        path: The param's value.
+    """
+    path = (path or "").strip()
+    if not path:
+        return ""
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    return asset_paths.resolve(path, stage)
+
+
+def anchor_file(node, path: str) -> str:
+    """path as a chunk should author it, for USD to resolve: a ./ or ../ path anchored to
+    the network's folder.
+
+    In a USD file such a path is relative to that file. A param's value is saved in the
+    network file, but a chunk authors it into its own anonymous layer, which would anchor
+    it to the working directory instead. A search path (no ./ or ../) is left as it is: the
+    stage's resolver looks for it in the network's folder already.
+
+    Args:
+        node: The chunk, for its stage.
+        path: The param's value.
+    """
+    stage = node.get_stage() if hasattr(node, "get_stage") else None
+    return asset_paths.anchor(path, stage)
 
 
 @contextmanager

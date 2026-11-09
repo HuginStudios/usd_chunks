@@ -1740,6 +1740,8 @@ def config():
         # Growth is array work over thousands of nodes and attractors -- see `_grow`.
         requirements=["numpy>=2,<3"],
         description="""
+        Grows climbing vines over the painted part of a mesh, with points for leaves along them.
+
         Vine — grows climbing vines across the part of a mesh a Scatter Brush
         painted.
 

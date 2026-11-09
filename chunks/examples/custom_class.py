@@ -15,4 +15,12 @@ def main():
 
 
 def config():
-    return chunk.DefaultConfig(category=chunk.StandardCategory.EXAMPLES)
+    return chunk.DefaultConfig(
+        category=chunk.StandardCategory.EXAMPLES,
+        description="""
+        Example: a chunk built as a Python class, a chunk.Chunk subclass with a grouped slider.
+
+        main() returns an instance of a chunk.Chunk subclass whose __init__ adds a Container
+        group holding a Slider.
+        """,
+    )

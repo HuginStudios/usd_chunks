@@ -380,6 +380,8 @@ def config():
         icon="scatter",
         requirements=["numpy>=2,<3"],
         description="""
+        Merges PointInstancers that share assets into one, so a renderer builds each asset once.
+
         Merge Instancers — PointInstancers that share assets become one, so a renderer
         builds each asset once instead of once per instancer.
 

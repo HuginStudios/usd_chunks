@@ -481,7 +481,7 @@ def cache_key(node):
     named inside it -- and an STL is converted into the layer, not referenced, so an edited
     one would otherwise read back the old mesh. Resolved exactly as the cook resolves them.
     """
-    file_path = (node.get_param("file_path").value or "").strip()
+    file_path = chunk.resolve_file(node, node.get_param("file_path").value)
     if not file_path or not os.path.isfile(file_path):
         return ()
     mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
@@ -498,12 +498,14 @@ def cache_key(node):
 
 
 def execute(node):
-    file_path = (node.get_param("file_path").value or "").strip()
+    given = (node.get_param("file_path").value or "").strip()
     root_path = (node.get_param("primpath_location").value or "").strip()
-    if not file_path or not root_path:
+    if not given or not root_path:
         return
-    if not os.path.exists(file_path):
-        logger.warning("no such file: %s", file_path)
+    # Found as USD finds a file: a relative path is from the network's folder.
+    file_path = chunk.resolve_file(node, given)
+    if not file_path:
+        logger.warning("no such file: %s", given)
         return
 
     mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
@@ -683,6 +685,8 @@ def config():
         requirements=["numpy>=2,<3"],
         cache_cook=True,
         description="""
+        Imports a URDF robot as UsdPhysics links, joints and colliders, ready to simulate.
+
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,
         collision shapes with an approximation, and revolute, prismatic and fixed joints
         with their limits and damping.
