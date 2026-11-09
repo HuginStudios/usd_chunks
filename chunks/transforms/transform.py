@@ -86,6 +86,72 @@ def pivot(node):
     return tuple(values) if any(values) else None
 
 
+def _aim_target(node, stage) -> Gf.Vec3d | None:
+    """The world-space point to face: Point with Aim At Point checked, else the Aim At prim's
+    centre; None with neither."""
+    at_point = node.get_param("aim_at_point")
+    if at_point is not None and at_point.value:
+        return Gf.Vec3d(*(float(v) for v in node.get_param("aim_point").value))
+    aim_param = node.get_param("aim_at")
+    aim_path = aim_param.value if aim_param is not None else ""
+    if not aim_path:
+        return None
+    target = stage.GetPrimAtPath(chunk_utils.split_variant_path(aim_path)[1])
+    if not target:
+        chunk_utils.warn_if_missing(node, aim_path, "the prim is not aimed", aim_param)
+        return None
+    return chunk_utils.focus_point_of(stage, [target], Usd.TimeCode.Default())
+
+
+def _aim(node, stage, prim) -> None:
+    """With Aim At or Aim At Point set, turn Rotate so prim's -Z axis faces the target.
+
+    -Z is the way lights and cameras face. Aimed from the pivot, the one point the rotation
+    does not move, with the stage's up axis kept up. The ops above this chunk's and the
+    parent's transform are worked through, so the target is in world space. Into the rotate
+    params, as Camera's Aim At does, so the sliders and a saved file read the rotation the
+    prim really has, and clearing the aim leaves it facing where it last aimed. Writes only
+    on a change: each write cooks the chunk again, and that cook lands here.
+    """
+    target = _aim_target(node, stage)
+    if target is None:
+        return
+    time = Usd.TimeCode.Default()
+    to_world = _upstream_of(node, prim)
+    parent = prim.GetParent()
+    if parent and parent.IsA(UsdGeom.Xformable):
+        to_world = to_world * UsdGeom.Xformable(parent).ComputeLocalToWorldTransform(time)
+    origin = Gf.Vec3d(*(pivot(node) or (0.0, 0.0, 0.0))) + Gf.Vec3d(
+        *(float(node.get_param(n).value) for n in _TRANSLATE_PARAMS))
+    eye = to_world.Transform(origin)
+    up = Gf.Vec3d(0, 0, 1) if UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z else Gf.Vec3d(0, 1, 0)
+    # The rotation applies before the ops above it and the parent's, so the aim is worked
+    # out in that space.
+    to_local = to_world.GetInverse()
+    facing, up = to_local.TransformDir(target - eye), to_local.TransformDir(up)
+    if facing.GetLength() < 1e-9 or Gf.Cross(facing, up).GetLength() < 1e-9:
+        return  # on the target, or straight above or below it: no one way to face it
+    look = Gf.Matrix4d().SetLookAt(Gf.Vec3d(0, 0, 0), facing, up).GetInverse()
+    rotate = chunk_gizmo.decompose(look)["rotate"]
+    changed = {
+        name: float(value) for name, value in zip(("rx", "ry", "rz"), rotate)
+        if abs(float(node.get_param(name).value) - float(value)) > 1e-6
+    }
+    if changed:
+        with chunk.change_block():
+            for name, value in changed.items():
+                node.get_param(name).value = value
+
+
+def _first_target(stage, primpath_param) -> Usd.Prim | None:
+    """The first prim Prim Path names that exists: the one an aim is worked out for."""
+    for path in primpath_param.resolve_paths():
+        prim = stage.GetPrimAtPath(chunk_utils.split_variant_path(path)[1])
+        if prim:
+            return prim
+    return None
+
+
 def execute(node):
     stage = node.get_stage()
 
@@ -104,6 +170,9 @@ def execute(node):
     # execute via the DISABLED-unset). Bail rather than crash on None.value.
     if not primpath_param or not primpath_param.value:
         return
+
+    if (first := _first_target(stage, primpath_param)) is not None:
+        _aim(node, stage, first)
 
     xform = Gf.Transform()
     xform.SetTranslation(Gf.Vec3d(
@@ -408,6 +477,29 @@ def main():
     pivot_grp.add_param(center_btn)
     chunk_api.add_param(pivot_grp)
 
+    aim_grp = chunk.Group(
+        "aim_grp", "Aim", icon="camera",
+        flags=chunk_core.ChunkFlags.GroupFlags.COLLAPSABLE | chunk_core.ChunkFlags.GroupFlags.LABELED,
+    )
+    aim_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
+    aim_grp.add_param(chunk.LineEdit(
+        "aim_at", "Aim At",
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        tooltip="A prim to keep the prim's -Z axis (the way lights and cameras face) pointed at. "
+        "Sets Rotate on every cook; clear it to rotate by hand again.",
+    ))
+    aim_grp.add_param(chunk.Checkbox(
+        "aim_at_point", "Aim At Point", default_value=False,
+        tooltip="Point the prim's -Z axis at Point instead of the Aim At prim. Sets Rotate on "
+        "every cook; uncheck it to rotate by hand again.",
+    ))
+    aim_grp.add_param(chunk.Vector(
+        "aim_point", "Point",
+        param=chunk.Slider(), length=3, suffixes="XYZ", default_value=(0.0, 0.0, 0.0),
+        tooltip="The world-space point Aim At Point keeps the prim pointed at.",
+    ))
+    chunk_api.add_param(aim_grp)
+
     return chunk_api
 
 
@@ -419,7 +511,7 @@ def config():
         # Its xformOpOrder names every Transform below it on the prim (xform_op_order).
         cooks_when_wired_below=True,
         description="""
-        Moves, rotates and scales prims: translate, rotate, scale, around a pivot.
+        Moves, rotates and scales prims around a pivot, and aims lights or cameras at a target.
 
         Transform chunk — applies translate, rotate (XYZ Euler, degrees), and
         scale xform ops to one or more existing prims.
@@ -441,6 +533,11 @@ def config():
             viewport goes on placing the handle on the geometry; set one and the
             handle moves there. "Center Pivot" snaps it to the middle of the
             target's bounds.
+          - Aim: Aim At (a prim) or Aim At Point with Point (world space) turns
+            Rotate on every cook so the prim's -Z axis, the way lights and cameras
+            face, points at the target from the pivot, with the stage's up axis
+            kept up. The point wins while checked. With several prims matched, the
+            aim is worked out for the first.
 
         Each execution clears the chunk layer and re-authors all three ops,
         keeping authoring idempotent. AddTranslateOp / AddRotateXYZOp /
