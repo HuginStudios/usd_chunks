@@ -66,6 +66,8 @@ Use `Scene.current()` in usdview and `Scene.new()` in a script. See
 
 - `Scene()` is the same as `Scene.new()`.
 - `Scene(stage)` works on a stage you already have.
+- A scene from `Scene.new()` is in metres (`metersPerUnit` 1). A Stage Settings chunk sets
+  other units; a stage you pass in, or a network you open, keeps its own.
 - Only one scene can be live at a time. Leaving the `with` block closes a scene from
   `Scene.new()` or `Scene.open()`. Without `with`, call `scene.close()` when you are done.
 - Inside usdview, `Scene.new()` and `Scene.open()` raise an error. Use `Scene.current()`.

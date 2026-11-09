@@ -176,6 +176,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
+  `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
+  stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To
+  keep centimetres, add `scene.create.stage_settings(meters_per_unit=0.01)`. Saved networks,
+  stages passed in and usdview, Blender and Houdini scenes keep their own units.
 - Export USD writes the files each exported file uses relative to where it writes it (its
   new **Relative Paths**, on by default): a shot's sublayer of its set is
   `../inputs/set.usda`, not where the set sat on the machine that exported it.
