@@ -13,6 +13,9 @@ This file starts with the first release; development before that is in the commi
 
 - The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
   and search finds them.
+- Camera: **Aim At Point** and **Point** keep the camera pointed at a world-space point, as
+  Aim At does for a prim: `scene.create.camera(tx=0, ty=3, tz=15, aim_at_point=True,
+  aim_point=(0, 1, 0))`.
 - Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
   cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
   Density still needs a mesh.
