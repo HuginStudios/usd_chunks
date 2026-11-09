@@ -269,6 +269,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points keeps the rotation of a prototype's source. A cone laid on its side by a
+  Transform now scatters on its side; before, only the scale carried over.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.
