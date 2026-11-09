@@ -35,7 +35,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.frontends.qt import node_theme, window_state
 from usd_chunks.frontends.qt.backdrop_item import BackdropItem, BackdropTextPopup
-from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, LabeledWidget, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
+from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, GraphItemEntry, LabeledWidget, NODE_GRAPH_ITEMS, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
 logger = logging.getLogger(__name__)
 
@@ -7089,13 +7089,18 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
     # ------------------------------------------------------------------
     # Backdrops and sticky notes
 
-    def _create_backdrop(self, note: bool = False) -> BackdropItem | None:
+    def _create_backdrop(self, note: bool = False, scene_pos: QtCore.QPointF | None = None) -> BackdropItem | None:
         """B: a backdrop around the selected nodes, or at the cursor. N: a sticky note at
-        the cursor, with its editor open."""
+        the cursor, with its editor open.
+
+        Args:
+            note (bool): Make a sticky note instead of a backdrop
+            scene_pos (QtCore.QPointF | None): Where to put it; None for the cursor
+        """
         graph_scene = self.scene()
         if not isinstance(graph_scene, ChunkGraphScene):
             return None
-        cursor = self.mapToScene(self.mapFromGlobal(QtGui.QCursor.pos()))
+        cursor = scene_pos if scene_pos is not None else self.mapToScene(self.mapFromGlobal(QtGui.QCursor.pos()))
         selected = [n for n in graph_scene._nodes.values() if n.chunk.has_state(ChunkFlags.State.SELECTED)]
         rect = None
         if not note and selected:
@@ -7182,8 +7187,11 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
 
         Shared by both Tab key and right-click on empty graph area.
         """
-        entry = FilterableChunkMenu().select_module(global_pos)
+        entry = FilterableChunkMenu().select_module(global_pos, graph_items=NODE_GRAPH_ITEMS)
         if not entry:
+            return
+        if isinstance(entry, GraphItemEntry):
+            self._create_backdrop(note=entry.kind == "note", scene_pos=scene_pos)
             return
         self.create_chunk_from_entry(entry, scene_pos)
 

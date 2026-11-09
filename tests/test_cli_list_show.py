@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -58,6 +59,9 @@ def test_list_rows_and_folds_big_menus(registry, capsys) -> None:
     out = capsys.readouterr().out
     assert any(line.startswith("mesh ") for line in out.splitlines())
     assert "menu entries: usdchunks list <word>" in out, "MaterialX's node entries were not folded"
+    # The first command an agent runs points at the one page a script needs.
+    guide = out.rstrip().splitlines()[-1].split("Building a network in a script: ", 1)[1]
+    assert guide.endswith("SKILL.md") and Path(guide).is_file()
     cli.cmd_list(Namespace(query="cube", json=True))
     names = {row["name"] for row in json.loads(capsys.readouterr().out)}
     assert {"cube", "mesh"} <= names

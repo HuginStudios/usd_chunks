@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- The build-network skill has a Common jobs table: naming a node and overriding it from
+  the CLI, bringing in a file, moving or editing a prim from it, stage settings, one file
+  per layer, and what to do for animation. `usdchunks list` ends by pointing at it, and
+  `docs/scripting.md` opens with a pointer to it.
+
+- The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
+  and search finds them.
 - Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
   cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
   Density still needs a mesh.
@@ -272,6 +279,14 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
+  skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
+  Prim below it made inactive copies. Python 3.11 was not affected.
+- Export USD never writes over a network file on disk, open on the stage or not. A script
+  built with `Scene.new(path=...)` names its root layer after the network file, so
+  `scene.commit()` right after `scene.save()` wrote that layer's stripped result over it.
+- Scatter Points keeps the rotation of a prototype's source. A cone laid on its side by a
+  Transform now scatters on its side; before, only the scale carried over.
 - A script building a correctly wired chain no longer gets "X is blocked: ... isn't wired
   above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
   cooks a chunk once before wiring it, and that cook found nothing above it; the warnings

@@ -11,6 +11,7 @@ from usd_chunks import chunk_registry, chunk_undo
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_stage import export_chunks, get_chunk_prim_path, initialize as _chunk_usd_init
+from usd_chunks.frontends.qt import nodegraph
 from usd_chunks.frontends.qt.backdrop_item import BackdropTextPopup
 from usd_chunks.frontends.qt.factory import ChunkWidgetDocker
 from usd_chunks.graph import backdrops
@@ -723,3 +724,27 @@ def test_pasted_nodes_stay_collapsed_like_the_copies(graph):
     assert new_nodes
     for path in new_nodes:
         assert graph_scene._nodes[path].chunk.has_state(ChunkFlags.State.COLLAPSED), path
+
+
+@pytest.mark.parametrize("pick", ["backdrop", "note"])
+def test_the_chunk_menu_makes_backdrops_and_notes(graph, monkeypatch, pick):
+    """Tab or right-click on the canvas: picking Backdrop or Sticky Note puts one where the
+    menu was opened."""
+    qapp = graph[0]
+    view, _chunks, _paths = _nodes(graph, 1)
+    graph[2].clear_chunk_selection()  # with nodes selected, a backdrop goes around them
+    _settle(qapp)
+    offered = []
+
+    def fake_select(_menu, _pos, graph_items=()):
+        offered.extend(graph_items)
+        return next(i for i in graph_items if i.kind == pick)
+
+    monkeypatch.setattr(nodegraph.FilterableChunkMenu, "select_module", fake_select)
+    view._create_chunk_at(QtCore.QPointF(1500, 900), QtCore.QPoint())
+    _settle(qapp)
+    assert {i.kind for i in offered} == {"backdrop", "note"}
+    items = list(view.scene()._backdrops.values())
+    assert len(items) == 1
+    assert items[0].is_note == (pick == "note")
+    assert items[0].info.rect[:2] == (1500, 900)
