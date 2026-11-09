@@ -287,6 +287,15 @@ def cmd_list(args):
             summary = f"[{counts[r.module]} menu entries: usdchunks list <word>] {summary}"
         print(f"{r.name:<28} {kind:<20} {summary[:90]}")
     print("\n`usdchunks show <name>` for one in full; in a script, scene.create.<name>(input, param=value).")
+    # The first thing an agent runs, so it points at the one page a script needs: agents
+    # went from here straight to the docs and the framework's source, and never read it.
+    print(f"Building a network in a script: {_build_network_guide()}")
+
+
+def _build_network_guide() -> str:
+    """The build-network skill's file in a checkout, else the scripting guide's name."""
+    skill = Path(__file__).resolve().parent.parent / "skills" / "usd-chunks-build-network" / "SKILL.md"
+    return str(skill) if skill.is_file() else "docs/scripting.md in the usd_chunks repository"
 
 
 def _param_rows(params, depth=0):
