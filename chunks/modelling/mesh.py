@@ -174,9 +174,12 @@ def build_cube(
     one stacked on top sits at `height`. It used to span 0..width and 0..depth from a
     corner, so placing anything on its middle meant offsetting by half its size.
     """
-    xseg = max(int(xseg), 1)
-    yseg = max(int(yseg), 1)
-    zseg = max(int(zseg), 1)
+    # Points along each edge, so 2 is a plain box. 1 used to fall through to "fewer than 4
+    # points" and write no prim at all, silently -- and 1 is what someone asking for one
+    # segment per side passes.
+    xseg = max(int(xseg), 2)
+    yseg = max(int(yseg), 2)
+    zseg = max(int(zseg), 2)
 
     npts = xseg * yseg * zseg
     if npts < 4:
@@ -514,7 +517,7 @@ def _build_grid(node, stage, path):
         stage, path, _value(node, "dimx1", int), _value(node, "dimy1", int),
         _value(node, "width1", float), _value(node, "height2", float), topo=topo,
     )
-    if grid:
+    if grid and _value(node, "grid_checker", bool):
         add_texture(grid.GetPrim())
 
 
@@ -557,9 +560,9 @@ def main():
     cube_group = chunk.Group("cube", "Cube")
     cube_group.add_params(
         [
-            chunk.Spinbox("dimx", min_value=1, default_value=2, is_int=True),
-            chunk.Spinbox("dimy", min_value=1, default_value=2, is_int=True),
-            chunk.Spinbox("dimz", min_value=1, default_value=2, is_int=True),
+            chunk.Spinbox("dimx", min_value=2, default_value=2, is_int=True),
+            chunk.Spinbox("dimy", min_value=2, default_value=2, is_int=True),
+            chunk.Spinbox("dimz", min_value=2, default_value=2, is_int=True),
             chunk.Slider("width", default_value=1),
             chunk.Slider("height", default_value=1),
             chunk.Slider("depth", default_value=1),
@@ -621,6 +624,10 @@ def main():
             chunk.Slider("width1", "width", default_value=1),
             chunk.Slider("height2", "depth", default_value=1),  # along Z; the name is kept for saved files
             chunk.Menu("topo", default_value="quads", menu_items=["tris", "quads"]),
+            # On by default so a saved grid, which never wrote it, keeps its checker on
+            # reopening; config's new_values turns it off for every grid made from now on.
+            chunk.Checkbox("grid_checker", "UV Checker", default_value=True,
+                           tooltip="Bind a checker texture material, to see the grid's UVs."),
         ]
     )
     grid_group.set_state(chunk.ChunkFlags.State.HIDDEN | chunk.ChunkFlags.State.DISABLED)
@@ -650,17 +657,23 @@ def config():
         centred. Move them with a Transform below.
 
         Size params, by shape (script names in brackets):
-          - Cube: width (X), height (Y), depth (Z) [width, height, depth]; segments
-            [dimx, dimy, dimz].
+          - Cube: width (X), height (Y), depth (Z) [width, height, depth]; points along
+            each edge [dimx, dimy, dimz], 2 (the least) for flat sides.
           - Sphere: radius [radius1]; segments [dimx2, dimy2].
           - Torus: radius to the tube's middle, tube radius [torus_radius,
             torus_tube_radius].
           - Cone: base radius, height [cone_radius, cone_height].
           - Tube: radius, height, end caps [radius, height1, caps].
           - Grid: flat on the ground, centred; width (X), depth (Z) [width1, height2];
-            divisions [dimx1, dimy1]; quads or tris [topo]. Ground is a 20 x 20 grid.
+            divisions [dimx1, dimy1]; quads or tris [topo]. Ground is a 20 x 20 grid,
+            Plane a single 1 x 1 quad.
+            A new grid has no material; UV Checker [grid_checker] binds a checker
+            texture to show its UVs.
         """,
         cache_cook=True,
+        # A grid made before UV Checker existed always had the checker, and its saved file
+        # says nothing about it, so the param's default stays on and new grids start off.
+        new_values={"grid_checker": False},
         # One entry per shape, so "Cube" is found and created directly rather than by
         # creating Mesh and re-picking the type. Ground is a grid preset, sized to stand
         # things on.
@@ -672,5 +685,6 @@ def config():
             ("Grid", {"mesh_type": "grid", "prim_path": "/grid"}),
             ("Tube", {"mesh_type": "tube", "prim_path": "/tube"}),
             ("Ground", {"mesh_type": "grid", "prim_path": "/ground", "width1": 20.0, "height2": 20.0}),
+            ("Plane", {"mesh_type": "grid", "prim_path": "/plane", "dimx1": 2, "dimy1": 2}),
         ],
     )

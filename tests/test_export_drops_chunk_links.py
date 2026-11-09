@@ -30,7 +30,7 @@ def _links(layer):
 def test_export_drops_links_into_removed_chunks(tmp_path) -> None:
     out = tmp_path / "result.usda"
     with Scene() as scene:
-        ground = scene.create.ground(prim_path="/set/ground")   # brings a material
+        ground = scene.create.ground(prim_path="/set/ground", grid_checker=True)   # brings a material
         scene.create.camera(ground, primpath_location="/set/cam", focalLength=35.0)
         scene.export(str(out))
 
