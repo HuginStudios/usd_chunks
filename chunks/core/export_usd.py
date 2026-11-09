@@ -10,7 +10,7 @@ import os
 
 from pxr import Sdf, Usd, UsdUtils
 
-from usd_chunks import chunk, chunk_registry, chunk_utils
+from usd_chunks import asset_paths, chunk, chunk_registry, chunk_utils
 from usd_chunks import chunk_naming, chunk_notice, chunk_stage
 from usd_chunks.chunk_stage import get_chunk_prim_path
 
@@ -32,8 +32,19 @@ def _network_files(stage) -> set[str]:
             if not lyr.anonymous and lyr.realPath and lyr.GetPrimAtPath(chunk_naming.CHUNKS_ROOT)}
 
 
+def _holds_network(path: str) -> bool:
+    """Whether the file at path, on disk, holds a chunk network -- one the stage need not
+    have open. A script's Scene.new(path=...) builds in memory and names its root layer
+    after the network file, so Export USD named that layer's file the same: commit() right
+    after save() wrote the stripped result over the network a benchmark agent had saved."""
+    if not os.path.isfile(path):
+        return False
+    layer = Sdf.Layer.FindOrOpen(path)
+    return bool(layer and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT))
+
+
 def _would_overwrite_network(path: str, networks: set[str], row: str) -> bool:
-    if _same_file(path) not in networks:
+    if _same_file(path) not in networks and not _holds_network(path):
         return False
     print(f"[ExportUSD] Not exporting {row} to {path}: that file is the chunk network itself, and "
           f"writing it would replace the network. Give the row another File Name, untick its "
@@ -510,13 +521,26 @@ def commit(node):
         used_names.add(candidate)
         filenames[layer.identifier] = candidate + file_ext
 
+    # A relative path is found from the file it is written in, so one written into another
+    # folder than the network's is fitted to it, as saving the network elsewhere does: a
+    # search path where the file is under that folder, else absolute -- which Relative Paths
+    # then writes relative to the file (_write).
+    out_folder = os.path.abspath(output_dir)
+    # A relative path naming a file layer this export writes too names the written file, as
+    # it did when paths were copied unchanged. An absolute one names the file it always did.
+    exported_files = {_same_file(lyr.realPath): filenames[lyr.identifier] for _n, lyr in layers if lyr.realPath}
+
     def _relocate(path):
         if path in filenames:
             return filenames[path]
         if path in internal_ids or path in skipped_ids:
             return ""  # drop -- either has no meaning outside this session, or its Export
             # checkbox was unchecked, so it was never written as a file to reference
-        return path
+        if asset_paths.kind(path) != "absolute":
+            found = asset_paths.resolve(path, stage)
+            if found and _same_file(found) in exported_files:
+                return exported_files[_same_file(found)]
+        return asset_paths.refit(path, stage, out_folder, make_relative=False)
 
     networks = _network_files(stage)
     for name, layer in layers:
