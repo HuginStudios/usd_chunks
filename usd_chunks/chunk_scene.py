@@ -1155,7 +1155,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
         # A param the chunk only builds once it is in the scene (Light's) waits until then.
-        early = {k: v for k, v in values.items() if _scripted_param(new, k) is not None}
+        early = {k: v for k, v in values.items() if _scripted_param(new, k, grow=True) is not None}
         prev = getattr(new, "_executing", False)
         new._executing = True
         try:
@@ -1177,7 +1177,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # extra cooks of a 45k-instance Scatter Points, a minute of a 70-second create.
         late = {
             k: v for k, v in values.items()
-            if k not in early or not chunk_utils.values_match(_scripted_param(new, k).value, v)
+            if k not in early or (
+                not _is_rows(param := _scripted_param(new, k)) and not chunk_utils.values_match(param.value, v)
+            )
         }
         if chunk_cook.is_batching() and not chunk_cook.is_deferring():
             # Inside a change_block: nothing else cooks, but each new chunk does once, now,
@@ -1222,9 +1224,16 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         A plain value is assigned. A param (`other.get_param("prim_path")`) connects this
         one to it, so it follows that value from then on and the wire is saved with the
-        network. A list row's param is named `list.row.param` --
-        `**{"prototypes.0.proto_path": "/assets/rock"}` -- so it too is set before the
-        chunk's first cook rather than after it.
+        network.
+
+        A list param takes a Python list, one item per row, and then has exactly those
+        rows: `prototypes=[{"proto_path": "/rock", "weight": 2.0}, {"proto_path": "/bush"}]`.
+        A row's params left out of its dict go back to their defaults. Where a row holds one
+        param, an item can be its value: `imports=["a.usda", "b.usda"]`.
+
+        One param of one row, leaving the others as they are, is named `list.row.param` --
+        `**{"prototypes.1.weight": 3.0}`. A list with fewer rows grows to hold the row named.
+        Either way rows are set before the chunk's first cook rather than after it.
 
         In a lazy Scene, a param the chunk has not built yet -- one it builds in its cook, as
         Light does its schema inputs -- takes the value when that cook builds it, the way a
@@ -1239,13 +1248,15 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     def _assign(self, target: ChunkBase, params: Mapping[str, Any]) -> None:
         """Set params by name, as `set` does, without the hidden-param warning."""
         for name, value in params.items():
-            param = _scripted_param(target, name)
+            param = _scripted_param(target, name, grow=True)
             if param is None:
                 if chunk_cook.is_deferring() and chunk_cook.is_cook_stale(target):
                     _await_param(target, name, value)
                     continue
                 raise KeyError(f"{target.name} has no param {name!r}")
-            if isinstance(value, ChunkParamBase):
+            if _is_rows(param) and not isinstance(value, ChunkParamBase):
+                _set_rows(target, name, param, value)
+            elif isinstance(value, ChunkParamBase):
                 param.connect_value(value)
             else:
                 param.value = value
@@ -1678,9 +1689,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Update the host timeline range."""
 
 
-def _scripted_param(target: ChunkBase, name: str):
+def _scripted_param(target: ChunkBase, name: str, grow: bool = False):
     """The param a script names: a plain name, or `list.row.param` for one row of a list --
-    the form a frontend already keys rows by. None when there is no such param or row."""
+    the form a frontend already keys rows by. None when there is no such param or row.
+
+    With grow, a list with fewer rows than that grows to hold it, as a script setting
+    `imports.1.sublayer_path` on a new Sublayer means: a list starts with none, and having
+    to set `size` first was a step nothing told a script about.
+    """
     param = target.get_param(name)
     if param is not None:
         return param
@@ -1688,11 +1704,59 @@ def _scripted_param(target: ChunkBase, name: str):
     if len(parts) == 3 and parts[1].isdigit():
         rows = target.get_param(parts[0])
         if rows is not None and hasattr(rows, "get_indexed_param"):
+            row = int(parts[1])
+            # Only for a param the rows hold: a misspelt name still raises, not grows.
+            if grow and rows.size <= row and rows.get_param(parts[2]) is not None:
+                rows.size = row + 1
             try:
-                return rows.get_indexed_param(parts[2], int(parts[1]))
+                return rows.get_indexed_param(parts[2], row)
             except (IndexError, KeyError, ValueError):
                 return None
     return None
+
+
+def _is_rows(param) -> bool:
+    """True for a list param: one whose rows are reached by index."""
+    return hasattr(param, "get_indexed_param") and hasattr(param, "proxy_params")
+
+
+def _row_params(row) -> list:
+    """A row's params: the proxies of the list's own params, in the row's group."""
+    return list(row.get_my_params())
+
+
+def _set_rows(target: ChunkBase, name: str, rows, items) -> None:
+    """Give the list param `rows` one row per item of items, and no others.
+
+    An item is a dict of the row's params by name; those left out go back to their
+    defaults, so the rows are what the list says whatever they held before. Where a row
+    holds a single param, an item can be that param's value.
+    """
+    if isinstance(items, (str, bytes, Mapping)) or not isinstance(items, Iterable):
+        raise TypeError(f"{target.name}'s {name!r} takes a list, one item per row, not {items!r}")
+    items = list(items)
+    rows.size = len(items)
+    for i, item in enumerate(items):
+        params = _row_params(rows.proxy_params[i])
+        if not isinstance(item, Mapping):
+            if len(params) != 1:
+                names = ", ".join(p.name for p in params)
+                raise TypeError(
+                    f"{target.name}'s {name!r} rows hold {names}: give each row as a dict of them"
+                )
+            item = {params[0].name: item}
+        unknown = sorted(set(item) - {p.name for p in params})
+        if unknown:
+            raise KeyError(f"{target.name} has no param {f'{name}.{i}.{unknown[0]}'!r}")
+        for p in params:
+            if p.name in item:
+                value = item[p.name]
+                if isinstance(value, ChunkParamBase):
+                    p.connect_value(value)
+                else:
+                    p.value = value
+            elif getattr(p, "default_value", None) is not None:
+                p.value = p.default_value
 
 
 def _warn_hidden(target: ChunkBase, names: Iterable[str]) -> None:

@@ -20,6 +20,16 @@ This file starts with the first release; development before that is in the commi
   network is not portable) or one that is not found (naming the folders searched).
 - `chunk.resolve_file(node, path)` and `chunk.anchor_file(node, path)`, for a chunk to
   find or author a param's file as USD would.
+- A list param takes a Python list in `scene.create` and `scene.set`, one item per row:
+  `scene.create.sublayer(imports=["a.usda", "b.usda"])`, or a dict per row where a row has
+  several params (`prototypes=[{"proto_path": "/rock", "proto_weight": 200.0}]`). The list
+  then has exactly those rows. Setting a list used to mean setting
+  `get_param("imports").size` by hand and then each row's params one by one.
+- A script can name one param of a row the list doesn't have yet
+  (`**{"imports.2.sublayer_path": "c.usda"}`), and the list grows to hold it; it raised
+  KeyError. A misspelt row param still raises.
+- `usdchunks show` lists the row params of a list with no rows yet, such as a new
+  Sublayer's `sublayer_path`, and gives the list form to set them.
 
 - An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
   instead of a View. With no active View a graph cooks to its Output, a ChunkGroup
@@ -269,6 +279,9 @@ This file starts with the first release; development before that is in the commi
   count points along an edge, so they now start at 2, a plain box.
 - Inline USD warns when its text does not parse; it imported nothing and said nothing, and
   whatever relied on its prims quietly fell back (a Scatter Points to its default cube).
+- A Camera made in a `change_block` keeps the focal length and apertures a script gives
+  it. The preset menus put the default body's 50 mm back over them when the block ended;
+  now only choosing another body or format sets the lens.
 - A chunk made by `scene.create` with float params cooked once more per float: USD stores
   them as 32-bit, the read-back (0.16 -> 0.1599999964) counted as an edit. Compared within
   float precision now; a 45k-instance Scatter Points cooks once, not ten times.

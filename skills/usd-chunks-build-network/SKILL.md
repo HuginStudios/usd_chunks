@@ -61,7 +61,10 @@ with Scene.new() as scene:
   (`box.get_param("prim_path")`) to make one param follow another, the same as
   `connect_value`. Both are saved.
 - **Values** go in as keyword args by param name; names inside groups are found too.
-  Change them later with `scene.set(c, ty=5.0)`.
+  Change them later with `scene.set(c, ty=5.0)`. A list param takes a list, one item per
+  row: `imports=["a.usda", "b.usda"]`, or dicts where a row holds several params
+  (`prototypes=[{"proto_path": "/rock", "proto_weight": 200.0}]`). One param of one row
+  alone is `**{"prototypes.1.proto_weight": 50.0}`.
 - **File paths** are relative to the network file, as in USD: `inputs/set.usda` is found
   in its folder, `../inputs/set.usda` from it. Start with `Scene.new(path="<network>.usda")`
   so they resolve from there while building too, not from the working directory, and

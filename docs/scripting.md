@@ -120,6 +120,29 @@ lift.get_param("ty").value = 5.0     # the same thing
 
 Chunks cook again by themselves when a value changes.
 
+A list param (Sublayer's `imports`, Scatter Points' `prototypes`) holds rows. Give it a
+Python list, one item per row. A dict sets a row's params by name, and the ones left out
+take their defaults. Where a row holds one param, the item can be just its value:
+
+``` py
+sets = scene.create.sublayer(imports=["lighting.usda", "set.usda"])   # first is strongest
+rocks = scene.create.scatter_points(prototypes=[
+    {"proto_path": "/assets/rock", "proto_weight": 200.0},
+    {"proto_path": "/assets/bush"},
+])
+```
+
+The list then has exactly those rows: setting it again with `scene.set` replaces them all.
+To change one param of one row and leave the rest, name it `list.row.param`. A list with
+fewer rows grows to hold the row you name:
+
+``` py
+scene.set(rocks, **{"prototypes.1.proto_weight": 50.0})
+scene.set(sets, **{"imports.2.sublayer_path": "props.usda"})   # adds row 2
+```
+
+`usdchunks show <chunk>` lists each row's params.
+
 Each value you set cooks what it affects straight away, so setting several cooks several
 times. Set them inside `chunk.change_block()` and they count as one change: what they
 affect cooks once, when the block ends, with every value in place.
