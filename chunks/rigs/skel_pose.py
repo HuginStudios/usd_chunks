@@ -453,6 +453,8 @@ def config():
         category=chunk.StandardCategory.RIGS,
         icon="bone",
         description="""
+        Holds a few joints of an animated character (UsdSkel) in a pose, over its animation.
+
         Skel Pose -- holds a few joints of a UsdSkel character in a pose, over whatever
         is animating it.
 

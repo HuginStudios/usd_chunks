@@ -634,6 +634,8 @@ def config():
         category=chunk.StandardCategory.MODELLING,
         icon="camera",
         description="""
+        A camera: lens, sensor and focus as sliders, real camera presets, and aim at a prim.
+
         Camera chunk — creates a UsdGeom.Camera prim and exposes its lens
         parameters as live sliders, with optional real-world camera presets
         and freecam lock for DCC viewport alignment.

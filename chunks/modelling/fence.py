@@ -675,10 +675,14 @@ def config():
         category=chunk.StandardCategory.MODELLING,
         icon="posts",
         description=(
-            "Builds a parametric fence — posts, rails and pickets — as a single mesh.\n"
-            "Runs straight, or follows a curve/points prim including its terrain height.\n"
-            "Picket tops can be flat, pointed or dog-eared, and per-piece lean, height\n"
-            "jitter and missing pickets take it from new-built to derelict."
+            """
+        Builds a fence (posts, rails, pickets) along a line or curve, from new-built to derelict.
+
+        Builds a parametric fence — posts, rails and pickets — as a single mesh.
+        Runs straight, or follows a curve/points prim including its terrain height.
+        Picket tops can be flat, pointed or dog-eared, and per-piece lean, height
+        jitter and missing pickets take it from new-built to derelict.
+        """
         ),
         variants=[
             ("Picket Fence", {"picket_top": "Pointed", "rail_count": 2}),

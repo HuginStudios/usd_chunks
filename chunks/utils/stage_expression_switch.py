@@ -192,19 +192,19 @@ def config():
         # unlike a Switch's interchangeable inputs, these two mean different things.
         exec_inputs=2,
         description=(
-            "Two paths, and the stage picks between them: if the chosen expression variable "
-            "matches the pattern the scene goes through the matched path (the lower input), "
-            "otherwise through the normal one (the upper). Exactly one is ever live -- the "
-            "other is muted, the whole branch of it rather than just the chunk in the "
-            "slot.\n"
-            "So one network can carry work that only happens on some shots or some asset "
-            "variants, and cooking it against a different Stage Expression produces a "
-            "different scene with nothing rewired.\n"
-            "A chunk feeding both paths stays live whichever is taken, so the thread above "
-            "the fork is shared.\n"
-            "Patterns are globs, space-separated: `sh01* sh02*` matches either. An empty "
-            "pattern never matches, so the normal path runs.\n"
-            "Muting is stage-wide, so a suppressed path that also feeds something outside "
-            "this switch is suppressed for that consumer too."
+            """
+        Takes one of two branches depending on a stage variable, e.g. only on some shots.
+
+        Two paths, and the stage picks between them: if the chosen expression variable matches the pattern the scene
+        goes through the matched path (the lower input), otherwise through the normal one (the upper). Exactly one is
+        ever live -- the other is muted, the whole branch of it rather than just the chunk in the slot.
+        So one network can carry work that only happens on some shots or some asset variants, and cooking it against a
+        different Stage Expression produces a different scene with nothing rewired.
+        A chunk feeding both paths stays live whichever is taken, so the thread above the fork is shared.
+        Patterns are globs, space-separated: `sh01* sh02*` matches either. An empty pattern never matches, so the
+        normal path runs.
+        Muting is stage-wide, so a suppressed path that also feeds something outside this switch is suppressed for
+        that consumer too.
+        """
         ),
     )

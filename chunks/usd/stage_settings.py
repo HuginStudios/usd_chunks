@@ -116,6 +116,8 @@ def config():
         category=chunk.StandardCategory.USD_LAYER,
         icon="sliders",
         description="""
+        Sets the stage's units, up axis, frame range, frame rate and default prim.
+
         Stage Settings chunk -- writes a stage's units, up axis, frame range, frame rate
         and default prim onto the layer being edited.
 

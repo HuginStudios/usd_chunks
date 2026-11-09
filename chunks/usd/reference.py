@@ -121,6 +121,8 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="link",
         description="""
+        Brings an external USD file into the scene as a reference, at a prim path you choose.
+
         Reference chunk: Lets the user pick an external USD file and insert it as a
         Usd.Reference into the active stage.
 
