@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
+  cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
+  Density still needs a mesh.
 - An Output node: what a graph delivers. A new graph gets one wired to the end of its chain
   instead of a View. With no active View a graph cooks to its Output, a ChunkGroup
   delivers its inner Output, and `usdchunks run` cooks to the Output whichever View the file
