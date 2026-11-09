@@ -4,6 +4,9 @@ You can build a network from Python instead of the node graph. A script makes th
 chunks the graph does. What it builds opens as a graph, and a script can add to a graph
 you already have.
 
+The short version, with the common jobs in one table, is the build-network skill:
+`skills/usd-chunks-build-network/SKILL.md` in the repository. This page is the full reference.
+
 ## Quick start
 
 ### In usdview
