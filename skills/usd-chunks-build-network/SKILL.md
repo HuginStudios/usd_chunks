@@ -65,6 +65,10 @@ with Scene.new() as scene:
   row: `imports=["a.usda", "b.usda"]`, or dicts where a row holds several params
   (`prototypes=[{"proto_path": "/rock", "proto_weight": 200.0}]`). One param of one row
   alone is `**{"prototypes.1.proto_weight": 50.0}`.
+- **File paths** are relative to the network file, as in USD: `inputs/set.usda` is found
+  in its folder, `../inputs/set.usda` from it. Start with `Scene.new(path="<network>.usda")`
+  so they resolve from there while building too, not from the working directory, and
+  `scene.save()` writes there. Don't `os.chdir`.
 - **End with `scene.set_output(last)`.** `usdchunks run` and a ChunkGroup deliver the
   Output. `scene.set_view(c)` only lets you look at something along the way.
 - **Many chunks:** wrap the building in `chunk.change_block()` as above. To only write the

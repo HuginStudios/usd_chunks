@@ -1310,7 +1310,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
     # save, export and commit live here rather than on the script's Scene, so they work on
     # usdview's scene too (Scene.current()).
 
-    def save(self, path: str) -> None:
+    def save(self, path: str | None = None, *, relative_paths: bool | None = None) -> None:
         """Write the network itself -- Chunk prims and wires -- so it reopens as a graph.
 
         Only the network is written, with the root layer's sublayers: prims the stage's
@@ -1318,9 +1318,22 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         opened on) are not. Writing over that root layer would delete them, so that
         refuses; writing elsewhere warns, naming them.
 
+        The files chunks read are saved as USD search paths from path's folder where they
+        sit under it (relative_paths; None: as Stage Settings' Relative File Paths say, on
+        if the network has none), and a relative path is re-anchored when saving elsewhere.
+
+        Args:
+            path: The file to write; the one given to Scene.new(path=...) when omitted.
+            relative_paths: Override the network's own setting for this save.
+
         Raises:
-            ValueError: If path is the root layer's own file and it holds such prims.
+            ValueError: If path is the root layer's own file and it holds such prims, or
+                if no path is given and the scene has none.
         """
+        if path is None:
+            path = getattr(self, "_network_path", None)
+            if path is None:
+                raise ValueError("save() needs a path: this scene was not made with Scene.new(path=...).")
         root = self.get_stage().GetRootLayer()
         chunks_root = Sdf.Path(chunk_naming.CHUNKS_ROOT)
         left_out = [str(spec.path) for spec in root.rootPrims if spec.path != chunks_root]
@@ -1342,7 +1355,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         for chunk, waiting in _awaited.items():
             logger.warning("%s could not cook to build %s, so the network saved to %s leaves them out.",
                            chunk.name, ", ".join(waiting), path)
-        chunk_stage.export_chunks(self, path)
+        chunk_stage.export_chunks(self, path, relative_paths=relative_paths)
 
     def export(self, path: str) -> None:
         """Write the result as plain USD, with the Chunk prims stripped out."""
