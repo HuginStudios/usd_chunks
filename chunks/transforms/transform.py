@@ -484,7 +484,9 @@ def main():
     aim_grp.set_state(chunk_core.ChunkFlags.State.COLLAPSED)
     aim_grp.add_param(chunk.LineEdit(
         "aim_at", "Aim At",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        # PRIM_PATHS, not PRIM_SELECTION: a prim it reads, never filled from the selection. In
+        # usdview Prim Path takes the selection, and Aim At taking it too turned the prim to it.
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
         tooltip="A prim to keep the prim's -Z axis (the way lights and cameras face) pointed at. "
         "Sets Rotate on every cook; clear it to rotate by hand again.",
     ))
