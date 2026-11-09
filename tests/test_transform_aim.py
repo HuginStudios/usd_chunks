@@ -91,3 +91,15 @@ def test_off_by_default_and_unchecking_keeps_the_last_facing(scene):
     scene.set(aim, aim_at_point=False)
     assert [aim.get_param(n).value for n in ("rx", "ry", "rz")] == pytest.approx(facing)
     assert _miss(scene.get_stage(), "/World/key", (0, 0, 0)) < 1e-3
+
+
+def test_a_selection_fills_prim_path_but_never_the_aim(scene, monkeypatch):
+    """In usdview a new chunk's prim params fill from the selection. Aim At filled too, so a
+    Transform made with the box selected turned toward the box; an agent had to clear it."""
+    box = scene.create.cube(prim_path="/World/box")
+    selected = scene.get_stage().GetPrimAtPath("/World/box")
+    monkeypatch.setattr(type(scene), "get_selected_prims", lambda self: [selected])
+    move = scene.create.transform(box, tx=2.0)
+    assert move.get_param("primpath_location").value == "/World/box"  # still follows the selection
+    assert move.get_param("aim_at").value == ""
+    assert [move.get_param(n).value for n in ("rx", "ry", "rz")] == [0.0, 0.0, 0.0]
