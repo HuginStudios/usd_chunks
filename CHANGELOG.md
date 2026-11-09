@@ -11,6 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
+  and search finds them.
 - Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
   cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
   Density still needs a mesh.
