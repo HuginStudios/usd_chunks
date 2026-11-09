@@ -291,6 +291,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- `usdchunks list` leaves out private modules (a name starting with `_`), which
+  `scene.create` refuses to make, so every name it lists can be made from a script.
 - An export leaves out the prims a Prune Prim pruned: Export USD (layers and flattened),
   `scene.export` and `usdchunks run -o` kept them as inactive `def`s. A pruned prim inside a
   referenced asset keeps its inactive override, so it stays hidden.

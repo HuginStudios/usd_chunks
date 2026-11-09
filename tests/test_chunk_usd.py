@@ -1760,11 +1760,23 @@ def test_rename_context_prim_path_updates_chunk_prim_paths() -> None:
 _GROUP_MODULE_NAME = "_test_context_group"
 
 
-def _ensure_test_group_module() -> None:
-    """Insert a minimal CONTEXT-producing ChunkModule into the registry (once)."""
+@pytest.fixture
+def test_group_module():
+    """A minimal CONTEXT-producing ChunkModule in the registry, for this test only.
+
+    Removed afterwards: the registry is the process's, and left in it the stub was listed
+    by `usdchunks list` in whatever test ran next on the worker.
+    """
     reg = chunk_registry.ChunkRegistry()
-    if _GROUP_MODULE_NAME in reg.registered_modules:
-        return
+    added = _GROUP_MODULE_NAME not in reg.registered_modules
+    if added:
+        reg.registered_modules[_GROUP_MODULE_NAME] = _make_test_group_module()
+    yield
+    if added:
+        reg.registered_modules.pop(_GROUP_MODULE_NAME, None)
+
+
+def _make_test_group_module():
     grp_mod = object.__new__(chunk_registry.ChunkModule)
     grp_mod.module = _types.ModuleType(_GROUP_MODULE_NAME)
     grp_mod.module_name = _GROUP_MODULE_NAME
@@ -1773,12 +1785,11 @@ def _ensure_test_group_module() -> None:
     grp_mod._has_main = True
     grp_mod.config = ChunkConfig(module=_GROUP_MODULE_NAME)
     grp_mod.func = lambda: ChunkBase("grp", flags=ChunkFlags.GroupFlags.CONTEXT)
-    reg.registered_modules[_GROUP_MODULE_NAME] = grp_mod
+    return grp_mod
 
 
-def test_load_chunks_subchunk_in_group() -> None:
+def test_load_chunks_subchunk_in_group(test_group_module) -> None:
     """load_chunks adds sub-chunks as params of their nearest ancestor CONTEXT+module chunk."""
-    _ensure_test_group_module()
 
     stage = Usd.Stage.CreateInMemory()
     scene = _DummyScene()

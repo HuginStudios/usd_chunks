@@ -65,12 +65,15 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
     description mention it (any case).
 
     Named as scene.create resolves them: a module by its file name first, then a menu entry
-    by its label. A label two entries share names neither, so it is left out.
+    by its label. A label two entries share names neither, so it is left out, and so is a
+    private module (`_name`), which scene.create refuses to make.
     """
     found: dict[str, Entry] = {}
     variants: dict[str, list[Entry]] = {}
     for item in registry.get_menu_entries(sort_result=False):
         module = item.module.module_name.split(".")[-1]
+        if module.startswith("_"):
+            continue
         config = item.module.config
         if item.presets is None:
             found[module] = Entry(module, module, _category(config), _summary(config.description))
