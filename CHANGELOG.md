@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Scatter Brush with Surface Mesh left empty: Points and Spray paint on anything under the
+  cursor, and Clear removes them. With a Surface Mesh set, the brush paints only that mesh.
+  Density still needs a mesh.
 - `Scene.new(path=...)` names the file the network will be saved to. Its relative file
   paths resolve from that folder while it is built, and `scene.save()` writes there.
 - Stage Settings' **Relative File Paths** (on by default): saving a network writes the files

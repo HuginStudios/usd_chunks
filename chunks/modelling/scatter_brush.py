@@ -480,11 +480,15 @@ def gizmo_stroke(node, gizmo, samples):
     is decided here, so two hosts painting the same gesture get the same field.
 
     Nothing keeps the stroke. It is folded into the weights and dropped.
+
+    Points and Spray paint on anything when Surface Mesh is empty. Density always needs a
+    mesh, because the field is stored on its vertices.
     """
     if gizmo != "paint":
         return False
-    prim, stage = _surface_prim(node)
-    if prim is None:
+    prim, _ = _surface_prim(node)
+    stage = node.get_stage()
+    if stage is None:
         return False
 
     output = node.get_param("output").value
@@ -492,6 +496,8 @@ def gizmo_stroke(node, gizmo, samples):
         return _place_points(node, stage, samples)
     if output == _OUTPUT_SPRAY:
         return _spray_points(node, stage, prim, samples)
+    if prim is None:
+        return False
 
     targets = _cached_targets(node, prim)
     if not targets:
@@ -630,6 +636,32 @@ def _erase_points(node, stage, samples, existing, normals, widths, radius):
     return True
 
 
+def _mesh_triangles(prim):
+    """One mesh's triangles in world space: (v0, v1, v2, normals), or None if it has none."""
+    mesh = UsdGeom.Mesh(prim)
+    points = mesh.GetPointsAttr().Get()
+    if not points:
+        return None
+    tris, _corners, _faces = mesh_math.fan_triangulate(
+        mesh.GetFaceVertexCountsAttr().Get() or [], mesh.GetFaceVertexIndicesAttr().Get() or [])
+    if not len(tris):
+        return None
+    world = mesh_math.world_points(prim, points)
+    v0, v1, v2 = world[tris[:, 0]], world[tris[:, 1]], world[tris[:, 2]]
+    n = np.cross(v1 - v0, v2 - v0)
+    length = np.linalg.norm(n, axis=1)
+    keep = length > 1e-12
+    return v0[keep], v1[keep], v2[keep], n[keep] / length[keep, None]
+
+
+def _join_triangles(parts):
+    """Several meshes' triangles as one (v0, v1, v2, normals), or None if there are none."""
+    parts = [t for t in parts if t is not None and len(t[0])]
+    if not parts:
+        return None
+    return tuple(np.concatenate([t[i] for t in parts]) for i in range(4))
+
+
 def _spray_triangles(node, prim):
     """Every triangle under `prim` in world space -- (v0, v1, v2, normals) -- held for the
     stroke. Spray samples the surface itself, so a coarse mesh (one quad for a field) is as
@@ -638,29 +670,56 @@ def _spray_triangles(node, prim):
     key = str(prim.GetPath())
     if cache is not None and cache[0] == key:
         return cache[1]
-    v0s, v1s, v2s = [], [], []
-    for p in Usd.PrimRange(prim):
-        mesh = UsdGeom.Mesh(p)
-        points = mesh.GetPointsAttr().Get()
-        if not points:
-            continue
-        tris, _corners, _faces = mesh_math.fan_triangulate(
-            mesh.GetFaceVertexCountsAttr().Get() or [], mesh.GetFaceVertexIndicesAttr().Get() or [])
-        if not len(tris):
-            continue
-        world = mesh_math.world_points(p, points)
-        v0s.append(world[tris[:, 0]])
-        v1s.append(world[tris[:, 1]])
-        v2s.append(world[tris[:, 2]])
-    triangles = None
-    if v0s:
-        v0, v1, v2 = np.concatenate(v0s), np.concatenate(v1s), np.concatenate(v2s)
-        n = np.cross(v1 - v0, v2 - v0)
-        length = np.linalg.norm(n, axis=1)
-        keep = length > 1e-12
-        triangles = (v0[keep], v1[keep], v2[keep], n[keep] / length[keep, None])
+    triangles = _join_triangles(_mesh_triangles(p) for p in Usd.PrimRange(prim))
     setattr(node, _SPRAY_CACHE, (key, triangles))
     return triangles
+
+
+def _scene_meshes(node, stage):
+    """Every visible mesh on the stage with its world bounds, held for the stroke.
+
+    For Spray with no Surface Mesh. Triangles are only built for the meshes a dab reaches,
+    so a big scene costs one walk per stroke, not one triangulation of everything.
+    PointInstancer prototypes are skipped: they are not drawn where they are authored.
+
+    Returns:
+        ([(prim, lo, hi)], {mesh path: triangles}). The dict fills in as dabs need it.
+    """
+    cache = getattr(node, _SPRAY_CACHE, None)
+    if cache is not None and cache[0] is None:
+        return cache[1]
+    bounds = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy], True)
+    meshes = []
+    walk = iter(Usd.PrimRange(stage.GetPseudoRoot()))
+    for p in walk:
+        if p.IsA(UsdGeom.PointInstancer):
+            walk.PruneChildren()
+            continue
+        if not p.IsA(UsdGeom.Mesh):
+            continue
+        if UsdGeom.Imageable(p).ComputeVisibility() == UsdGeom.Tokens.invisible:
+            continue
+        box = bounds.ComputeWorldBound(p).ComputeAlignedRange()
+        if box.IsEmpty():
+            continue
+        meshes.append((p, np.array(box.GetMin(), dtype=np.float64), np.array(box.GetMax(), dtype=np.float64)))
+    state = (meshes, {})
+    setattr(node, _SPRAY_CACHE, (None, state))
+    return state
+
+
+def _triangles_near(node, stage, centre, radius):
+    """The triangles of every mesh within `radius` of `centre`, for Spray with no Surface Mesh."""
+    meshes, built = _scene_meshes(node, stage)
+    parts = []
+    for p, lo, hi in meshes:
+        if ((lo - radius) <= centre).all() and ((hi + radius) >= centre).all():
+            key = str(p.GetPath())
+            if key not in built:
+                built[key] = _mesh_triangles(p)
+            parts.append(built[key])
+    return _join_triangles(parts)
 
 
 def _spray_spacing(node):
@@ -704,6 +763,8 @@ def _spray_points(node, stage, prim, samples):
     past it. Candidates are dropped onto the surface along the dab's normal rather than
     sampled from the triangles near it, which is what lets one big quad take a stroke as
     finely as a dense grid would. Subtract rubs points out, as in Points mode.
+
+    With no surface (`prim` is None) each dab sprays whatever meshes are under it.
     """
     radius = float(node.get_param("radius").value or 0.0)
     existing, normals, widths = _current_points(node, stage)
@@ -711,12 +772,13 @@ def _spray_points(node, stage, prim, samples):
         return _erase_points(node, stage, samples, existing, normals, widths, radius)
     if radius <= 0.0:
         return False
-    triangles = _spray_triangles(node, prim)
-    if triangles is None:
-        return False
-    v0, v1, v2, tri_n = triangles
-    lo = np.minimum(np.minimum(v0, v1), v2)
-    hi = np.maximum(np.maximum(v0, v1), v2)
+    if prim is not None:
+        triangles = _spray_triangles(node, prim)
+        if triangles is None:
+            return False
+        v0, v1, v2, tri_n = triangles
+        lo = np.minimum(np.minimum(v0, v1), v2)
+        hi = np.maximum(np.maximum(v0, v1), v2)
     spacing = _spray_spacing(node)
     strength = float(node.get_param("strength").value or 0.0)
     width = _spray_width(spacing, radius)
@@ -728,10 +790,15 @@ def _spray_points(node, stage, prim, samples):
         if centre is None:
             continue
         c = np.array([centre[0], centre[1], centre[2]], dtype=np.float64)
-        near = np.flatnonzero(((lo - radius) <= c).all(axis=1) & ((hi + radius) >= c).all(axis=1))
-        if not len(near):
-            continue
-        local = (v0[near], v1[near], v2[near], tri_n[near])
+        if prim is None:
+            local = _triangles_near(node, stage, c, radius)
+            if local is None:
+                continue
+        else:
+            near = np.flatnonzero(((lo - radius) <= c).all(axis=1) & ((hi + radius) >= c).all(axis=1))
+            if not len(near):
+                continue
+            local = (v0[near], v1[near], v2[near], tri_n[near])
         if normal is not None:
             up = np.array([normal[0], normal[1], normal[2]], dtype=np.float64)
         else:
@@ -972,6 +1039,8 @@ def _set_everywhere(node, value):
     """Author one weight across every mesh under the surface."""
     _drop_stroke_cache(node)
     prim, stage = _surface_prim(node)
+    # Points need no surface, so Clear works without one too.
+    stage = stage or node.get_stage()
     if stage is not None and node.get_param("output").value in _POINT_OUTPUTS:
         # Points are the output in these modes, so Fill/Clear act on them instead. Filling a
         # cloud of single dabs has no meaning -- there is no "everywhere" to place one at --
@@ -994,10 +1063,10 @@ def _set_everywhere(node, value):
 def _show_paint_changed(owner, notice, sender):
     """Re-author the tint, or take it away, without touching the field itself."""
     node = owner.get_chunk()
+    _show_points(node, node.get_stage())
     prim, stage = _surface_prim(node)
     if prim is None:
         return
-    _show_points(node, stage)
     for mesh_prim, count in _paint_meshes(prim):
         _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, count))
 
@@ -1251,7 +1320,8 @@ def main():
     chunk_api.add_param(chunk.LineEdit(
         "surface_prim", "Surface Mesh",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="The mesh to paint on. Wire this chunk upstream of Scatter Points.",
+        tooltip="The mesh to paint on. Wire this chunk upstream of Scatter Points. Leave it "
+                "empty to paint Points or Spray on anything under the cursor.",
     ))
 
     output = chunk.Menu(
@@ -1396,7 +1466,8 @@ def config():
         probability, so 0.5 gives roughly half as many instances, not a hard edge.
 
         Parameters:
-          - Surface Mesh: the mesh to paint on.
+          - Surface Mesh: the mesh to paint on. Empty: Points and Spray
+            paint on anything under the cursor (Density needs a mesh).
           - Radius: brush size in scene units.
           - Strength: how much a single stroke adds or removes.
           - Mode: Add paints instances in, Subtract paints them out, Smooth

@@ -1302,6 +1302,56 @@ def test_sprayed_points_reach_scatter_as_painted_points() -> None:
 
 
 # ---------------------------------------------------------------------------
+# no Surface Mesh: Points and Spray paint on anything
+# ---------------------------------------------------------------------------
+
+def test_with_no_surface_points_land_wherever_you_click() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, target="", radius=2.0, strength=1.0)
+
+    assert _stroke(c, (3.0, 4.0, 7.0)) is True
+
+    assert _points(stage, c) == [pytest.approx(Gf.Vec3f(3.0, 4.0, 7.0), abs=1e-5)]
+
+
+def test_with_no_surface_spray_lands_on_the_mesh_under_the_dab() -> None:
+    """Instancer prototypes are skipped: they are not drawn where they are authored, so a
+    spray must not land on them there."""
+    stage = _stage_with_floor()
+    _quad(stage, "/World/Shelf", half=4.0).AddTranslateOp().Set(Gf.Vec3d(0, 0, 5))
+    UsdGeom.PointInstancer.Define(stage, "/Scatter")
+    _quad(stage, "/Scatter/Prototypes/proto", half=50.0).AddTranslateOp().Set(Gf.Vec3d(0, 0, 9))
+    c = _spray_brush(stage, target="", radius=1.0, strength=1.0, spray_spacing=0.3)
+
+    for centre in ((0.0, 0.0, 5.0), (15.0, 15.0, 0.0)):
+        assert chunk_gizmo.apply_stroke(c, "paint", [(Gf.Vec3d(*centre), 1.0, (0, 0, 1))]) is True
+
+    p = _xyz(stage, c)
+    on_shelf = p[np.linalg.norm(p[:, :2], axis=1) <= 1.0 + 1e-6]
+    on_floor = p[np.linalg.norm(p[:, :2] - [15.0, 15.0], axis=1) <= 1.0 + 1e-6]
+    assert len(on_shelf) and np.allclose(on_shelf[:, 2], 5.0)
+    assert len(on_floor) and np.allclose(on_floor[:, 2], 0.0), "landed on an instancer prototype"
+    assert len(on_shelf) + len(on_floor) == len(p)
+
+
+def test_with_no_surface_density_paints_nothing() -> None:
+    """The field is stored per vertex on one mesh, so it still needs one."""
+    stage = _stage_with_floor()
+    c = _brush(stage, target="", radius=5.0, strength=1.0)
+
+    assert _stroke(c, (5.0, 5.0, 0.0)) is False
+    assert _weights(stage) is None
+
+
+def test_with_no_surface_clear_still_removes_points() -> None:
+    stage = _stage_with_floor()
+    c = _points_brush(stage, target="", radius=2.0, strength=1.0)
+    _stroke(c, (5.0, 5.0, 0.0))
+    assert _points(stage, c)
+
+    brush_mod._clear_paint(c.get_param("clear_paint"), None, None)
+
+    assert _points(stage, c) == []
 # a new stroke reaches a Scatter Points that already cooked
 # ---------------------------------------------------------------------------
 
