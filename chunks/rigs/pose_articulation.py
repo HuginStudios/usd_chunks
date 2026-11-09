@@ -547,6 +547,14 @@ def config():
         description="""
         Poses a robot arm or any jointed asset (drawers, doors): one slider per joint.
 
+        Each slider is named after the link its joint moves (the child link), not the
+        joint: a URDF's `elbow` joint that moves `forearm_link` is the slider
+        `forearm_link`, in degrees, or stage units for a sliding joint. The sliders appear
+        once the chunk has read the articulation, so `usdchunks show` can't list them; from
+        a script they are set like any param, at create or with `scene.set`:
+        `pose_articulation(robot, prim_path="/World/robot", forearm_link=-45.0)`. A wrong
+        name raises and lists the sliders there are.
+
         Poses an articulation: one slider per joint, read out of UsdPhysics rather than out
         of a .urdf, so a robot arm is only the obvious case. A drawer is a prismatic joint
         and a door is a revolute one, so a kitchen opens the same way an elbow bends.

@@ -610,7 +610,10 @@ def execute(node):
                 orient_attr.Set(_to_quat(Gf.Rotation(placement.ExtractRotationQuat())))
                 xform.SetXformOpOrder([UsdGeom.XformOp(translate_attr), UsdGeom.XformOp(orient_attr)])
 
-            UsdPhysics.RigidBodyAPI.Apply(prim)
+            # A nested link is part of its parent's body, not a body of its own: as a rigid
+            # body it would be simulated apart from the parent and fall away from it.
+            if not nest:
+                UsdPhysics.RigidBodyAPI.Apply(prim)
             _author_inertial(prim, link, scale)
 
             if want_visual:
@@ -628,7 +631,9 @@ def execute(node):
                     mesh_api.CreateApproximationAttr(approximation)
                     UsdGeom.Imageable(geom).CreatePurposeAttr(UsdGeom.Tokens.guide)
 
-            if joint is not None:
+            # Nesting is the weld, so a nested link gets no joint: a fixed joint to a prim
+            # that is not a body would fix the parent to the world instead.
+            if joint is not None and not nest:
                 _author_joint(stage, joint, parent_prim_path, path, scale)
                 counts["joints"] += 1
 
@@ -715,9 +720,12 @@ def config():
         nested child would inherit its parent's simulated transform too and the mechanism
         would come apart. Joints reference bodies by relationship, so the tree survives.
 
-        A link joined by a fixed joint is nested instead. It is not a degree of freedom, the
-        solver leaves it out of the articulation, and nesting is what keeps it attached to
-        the parent it is welded to.
+        A link joined by a fixed joint with no collision geometry (a camera mount, a tool
+        tip) is nested instead. It is not a degree of freedom, so it gets no rigid body and
+        no joint: nesting is what keeps it attached to the parent it is welded to.
+
+        To pose the robot, wire Pose Articulation after this chunk with its Articulation
+        set to the same prim path: one slider per moving joint.
 
         STL meshes are converted to UsdGeom.Mesh -- USD cannot open an STL, so referencing
         one composes to nothing. Meshes USD can read are referenced rather than inlined, so

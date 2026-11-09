@@ -194,6 +194,15 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** URDF Import gives a welded link with no collision geometry (a camera mount,
+  a tool tip) no rigid body and no fixed joint: it is nested under its parent, which is the
+  weld. As a body it was simulated apart from its parent and fell away. A script that read
+  that link's `joint_<name>` fixed-joint prim should read the nesting instead.
+- Setting a param a chunk doesn't have from a script raises with the list of params it does
+  have, including those a chunk makes as it cooks (Pose Articulation's joint sliders, which
+  `usdchunks show` can't list). Pose Articulation's description says how its sliders are
+  named and set, URDF Import's points to it, the build-network skill has a row for importing
+  and posing a robot, and the write-chunk skill starts by checking that no chunk does the job.
 - **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
   `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
   stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To

@@ -422,6 +422,26 @@ class TestAuthoring:
         assert base.HasAPI(UsdPhysics.RigidBodyAPI)
         assert upper.HasAPI(UsdPhysics.RigidBodyAPI)
 
+    def test_a_welded_frame_is_part_of_its_parent_not_a_body(self, scene, tmp_path):
+        """A fixed link with no collision (a tool tip) is nested, with no RigidBodyAPI and no
+        joint. As a body it would be simulated apart from its parent and fall away; a fixed
+        joint to it, once it is not a body, would fix the parent to the world."""
+        stage, _ = scene
+        tipped = TWO_LINK.replace("</robot>", """
+  <link name="tip"/>
+  <joint name="tip_fixed" type="fixed">
+    <parent link="upper"/><child link="tip"/><origin xyz="0 0 0.4"/>
+  </joint>
+</robot>""")
+        _import(scene, tipped, tmp_path)
+
+        tip = stage.GetPrimAtPath("/World/robot/upper/tip")
+        assert tip.IsValid(), "the welded frame should be nested under its parent"
+        assert not tip.HasAPI(UsdPhysics.RigidBodyAPI)
+        joints = [p for p in Usd.PrimRange(stage.GetPrimAtPath("/World/robot"))
+                  if p.IsA(UsdPhysics.Joint)]
+        assert [p.GetName() for p in joints] == ["joint_shoulder"]
+
     def test_the_root_link_carries_the_articulation(self, scene, tmp_path):
         stage, _ = scene
         _import(scene, TWO_LINK, tmp_path)

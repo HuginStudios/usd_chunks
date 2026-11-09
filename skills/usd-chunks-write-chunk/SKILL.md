@@ -1,6 +1,6 @@
 ---
 name: usd-chunks-write-chunk
-description: Create a new usd_chunks chunk module (main(), execute(), config()) and a pytest test for it, following the chunks in chunks/. Use when asked to write, add or make a new chunk, node or tool for usd_chunks, or to turn a USD script into a chunk.
+description: Create a new usd_chunks chunk module (main(), execute(), config()) and a pytest test for it, following the chunks in chunks/. Use when asked to write, add or make a new chunk, node or tool for usd_chunks, or to turn a USD script into a chunk. Only once `usdchunks list <word>` shows no chunk that does the job: to use existing chunks, read usd-chunks-build-network instead.
 ---
 
 # Write a chunk
@@ -9,11 +9,22 @@ A chunk is one Python module: `main()` builds its params, `execute(node)` cooks 
 chunk's own layer, and `config()` says what it is. The full guide is
 `docs/writing-a-chunk.md`; the param types are in `docs/chunk-basics.md`.
 
-## 1. Pin down what it does
+## 1. Check that no chunk does it already
 
-- Check that no existing chunk already does it: `usdchunks list <word>` searches every
-  chunk's name and description, and `usdchunks show <name>` prints one in full with its
-  params. A chunk with a menu entry or a param that already does the job needs no new one.
+Before writing anything, search for the job in its own words:
+
+```
+usdchunks list urdf          # every chunk whose name or description mentions it
+usdchunks show urdf_import   # one in full, with its params
+```
+
+The repo has chunks for big jobs too: importing a URDF robot or a CAD file, posing a
+robot, scattering on a surface. A chunk with a menu entry or a param that already does the
+job needs no new one; build with it (the `usd-chunks-build-network` skill). Write a chunk
+only for a step nothing does, and say which chunks you checked.
+
+## 2. Pin down what it does
+
 - Decide its **inputs** (which prims it reads, through prim-path params), its **params**
   (the values a person changes) and its **output** (the prims or attributes it writes, or an
   `OUTPUT` param other chunks read as `@Node.param@`).
@@ -23,7 +34,7 @@ chunk's own layer, and `config()` says what it is. The full guide is
 - The file name is the chunk's module name and its `scene.create.<name>()` function, so
   use `snake_case` and don't reuse an existing name.
 
-## 2. Read two neighbours
+## 3. Read two neighbours
 
 Read one or two chunks in the same category that do something similar, and copy their
 style. Small, current examples:
@@ -33,7 +44,7 @@ style. Small, current examples:
 - `chunks/usd/prune_prim.py`: loops over target prims with
   `chunk_utils.author_in_variant_contexts`.
 
-## 3. Write the module
+## 4. Write the module
 
 ```python
 """Make Grid chunk -- one line on what it does.
@@ -111,7 +122,7 @@ Rules, all from `docs/writing-a-chunk.md`:
 - **Keep it small.** One job per chunk. If it grows past a few hundred lines, look for a
   second chunk hiding in it.
 
-## 4. Write the test
+## 5. Write the test
 
 Add `tests/test_<module>.py`. Build the chunk through the `Scene` API on an in-memory stage
 and check what it wrote. The pattern from `tests/test_apply_schema.py`:
@@ -157,7 +168,7 @@ change, and the empty or invalid input (nothing picked yet) not raising. Name ea
 sentence about the behaviour. A chunk outside `chunks/` needs its folder on
 `USD_CHUNK_DIRS` for `scene.add` to find it.
 
-## 5. Check it
+## 6. Check it
 
 ```
 USD_CHUNK_DIRS=chunks pytest -n0 tests/test_<module>.py
