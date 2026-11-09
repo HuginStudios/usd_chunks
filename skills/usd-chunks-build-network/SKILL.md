@@ -92,6 +92,7 @@ with Scene.new() as scene:
 | To | Do |
 | --- | --- |
 | Name a node, to find or override it later | `scene.create.scatter_points(..., name="Rocks")`; then `usdchunks run net.usda Rocks.seed=3 -o out.usda` |
+| A box or a ball | A USD `Cube` / `Sphere` prim ("a USD Cube", `UsdGeom.Cube`): `usd_cube(prim_path=..., cube_size=1.0)`, `usd_sphere(..., sphere_radius=0.5)`, centred on the prim. A polygon `Mesh` with UVs: `cube(...)`, `sphere(...)`, the cube's bottom on the prim. `examples/scripts/cubes_mesh_or_gprim.py` makes all four |
 | Bring in a file | `sublayer(imports=["inputs/set.usda"])`, or `reference(file_path=..., primpath_location="/set")` |
 | Move a prim that came from a file | `transform(last, primpath_location="/World/box", tx=3.0)` |
 | Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name; it edits attributes the prim already has |

@@ -17,6 +17,10 @@ This file starts with the first release; development before that is in the commi
 - Export USD's **Session File Name** names the session layer's file, which in a department
   network is the shot: `session_file_name="shot"` writes `shot.usda`. With Bake all on, the
   session layer is written like the rows, without the network's bookkeeping.
+- `examples/scripts/cubes_mesh_or_gprim.py`: a cube and a sphere as polygon meshes (`cube`,
+  `sphere`, the Mesh chunk) and as USD's own Cube and Sphere prims (`usd_cube`,
+  `usd_sphere`, the Shape chunk), with how each sits on its origin. The build-network
+  skill's Common jobs table says which to pick.
 
 - Transform: an **Aim** section. **Aim At** (a prim) or **Aim At Point** with **Point** turns the
   prim's -Z axis, the way lights and cameras face, toward the target on every cook:
@@ -301,6 +305,9 @@ This file starts with the first release; development before that is in the commi
 - Export USD's relative Output Directory or Output File is from the network's folder, like
   every other file path in a param. It was from the working directory, so `output_dir="."`
   wrote a shot wherever a script or `usdchunks run` was started.
+- Export USD writes over the files it wrote itself. An unbaked session layer carries the
+  network's bookkeeping, so its next export took its own earlier file for a network and
+  skipped it. Each file it writes is now stamped as its output; a saved network is not.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
   side by side, the second Layer and its Edit Target were missing from the saved file, and
   the network opened again without what they led to. Edit Target now resolves its layer on
