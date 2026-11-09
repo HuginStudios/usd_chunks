@@ -16,14 +16,17 @@ the step before it, and the last step is what the network delivers. For example,
 ground with three coloured boxes and a camera" becomes ground → cube → transform →
 set_display_color (×3) → dome_light → camera.
 
-Find the chunk for each step:
+Find the chunk for each step with the CLI, before reading any chunk source:
 
-- `dir(scene.create)` lists every chunk: each module by file name (`transform.py` →
-  `scene.create.transform()`) and each menu entry by its label in snake_case (Mesh's
-  "Cube" → `scene.create.cube()`).
-- `help(scene.create.transform)` shows what a chunk does (its `config()` description).
-- Outside Python: `grep -rn "description=" chunks/` and read the module.
-- A chunk's param names: `[p.name for p in c.get_params()]`, or read its `main()`.
+- `usdchunks list` lists every chunk you can make, one line each: its script name, its
+  category and what it does. `usdchunks list scatter` lists only those mentioning a word.
+  A module goes by its file name (`transform.py` → `scene.create.transform()`), a menu
+  entry by its label in snake_case (Mesh's "Cube" → `scene.create.cube()`).
+- `usdchunks show mesh` prints one chunk in full: its description, its menu entries,
+  and every param a script can set, with its type, default and range. Inside a group,
+  set a param by its own name; a list's rows as `prototypes.0.proto_path`.
+- Both take `--json`. From Python, `dir(scene.create)` and `help(scene.create.mesh)` give
+  the same names and descriptions.
 
 If no chunk does a step, say so and offer the `usd-chunks-write-chunk` skill. Don't fake
 the step with a Python chunk unless the user agrees.

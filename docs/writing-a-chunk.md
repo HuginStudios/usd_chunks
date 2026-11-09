@@ -445,3 +445,7 @@ Any file with a top-level `main()` is registered under its file name. There are
 no other rules for folder layout or file names. [Environment
 variables](install.md#environment-variables) explains which one wins when two folders have
 a chunk with the same name.
+
+To check what was found, run `usdchunks list` (or `usdchunks list <word>`). `usdchunks show
+<name>` prints a chunk as someone looking for one sees it: its description, its menu
+entries and every param, with its type, default and range.

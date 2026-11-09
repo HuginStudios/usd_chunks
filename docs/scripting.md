@@ -91,9 +91,9 @@ To find what you can make and set:
 
 | To see | Use |
 | --- | --- |
-| Every chunk you can make | `dir(scene.create)` |
-| What a chunk is for | `help(scene.create.transform)` |
-| A chunk's param names | `[p.name for p in chunk.get_params()]` (group names are in the list too) |
+| Every chunk you can make | `usdchunks list` (or `usdchunks list <word>`), or `dir(scene.create)` |
+| What a chunk is for, and every param it takes | `usdchunks show transform`, or `help(scene.create.transform)` |
+| A chunk's param names | `usdchunks show transform`, or `[p.name for p in chunk.get_params()]` (group names are in the list too) |
 | Every chunk, in the order it was made | `scene.chunks_in_order()` (`scene.get_chunks()` lists the newest first) |
 
 If the chunk name is in a string, use `scene.add("transform", box, ty=3.0)`. This also
