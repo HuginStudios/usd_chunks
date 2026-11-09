@@ -2012,7 +2012,9 @@ class _Proto:
     ``bmin``/``bmax`` are the *untransformed* local bounds -- the prototype reference has its
     xformOpOrder cleared, so that is what the instancer actually instances -- and ``scale`` is
     the source prim's world scale, which the instancer re-applies per instance. Effective
-    world size is therefore ``(bmax - bmin) * scale * instance_scale``.
+    world size is therefore ``(bmax - bmin) * scale * instance_scale``. A turned source is
+    the exception: its prototype keeps the source's rotation and scale (_source_turn), the
+    bounds include them, and ``scale`` is 1.
     """
 
     src_path: str = ""
@@ -2241,10 +2243,15 @@ def _author_prototypes(stage, inst_path, protos, scratch_stage, hide_sources=Fal
             # A local selection on the referencing prim outranks whatever the asset itself
             # selects, which is exactly how one asset yields several coloured prototypes.
             vsets.GetVariantSet(vset_name).SetVariantSelection(variant)
-        UsdGeom.Xformable(ref_prim).GetXformOpOrderAttr().Set([])
+        xformable = UsdGeom.Xformable(ref_prim)
+        xformable.GetXformOpOrderAttr().Set([])
+        turn = _source_turn(src)
+        if turn is not None:
+            # A suffix of its own: the source may have authored a plain xformOp:transform.
+            xformable.AddTransformOp(opSuffix="scatterSource").Set(turn)
 
         proto.path = path
-        _measure_proto(proto, ref_prim, src)
+        _measure_proto(proto, ref_prim, src, baked=turn is not None)
         if drop_purpose:
             _drop_purpose(ref_prim, drop_purpose)
         resolved.append(proto)
@@ -2335,14 +2342,47 @@ def _author_proxy(stage, proxy_path, mode, protos, specs, scratch_stage, keep, a
     proxy.GetOrientationsAttr().Set(Vt.QuathArray([orients[i] for i in keep]))
 
 
-def _measure_proto(proto, proto_prim, src_prim):
-    """Fill in proto.bmin/bmax (local, variant-aware) and proto.scale (source world scale)."""
+def _source_turn(src_prim):
+    """The source's world rotation and scale, for a source that is turned or mirrored.
+
+    Args:
+        src_prim (Usd.Prim): The prim a prototype references
+
+    Returns:
+        Gf.Matrix4d | None: Its world transform without the translation, or None when it
+        is only scaled along its axes (proto.scale carries that).
+    """
+    world = Gf.Matrix4d(UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(src_prim))
+    axis_aligned = all(
+        (world[i][j] > 1e-9) if i == j else abs(world[i][j]) <= 1e-9
+        for i in range(3) for j in range(3)
+    )
+    if axis_aligned:
+        return None
+    world.SetTranslateOnly(Gf.Vec3d(0, 0, 0))
+    return world
+
+
+def _measure_proto(proto, proto_prim, src_prim, baked=False):
+    """Fill in proto.bmin/bmax (local, variant-aware) and proto.scale (source world scale).
+
+    Args:
+        proto (_Proto): The entry to fill in
+        proto_prim (Usd.Prim): The prototype prim
+        src_prim (Usd.Prim): The prim it references
+        baked (bool): The prototype carries the source's rotation and scale itself (see
+            _source_turn); its bounds then include them and proto.scale stays 1.
+    """
     bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-    rng = bbox_cache.ComputeUntransformedBound(proto_prim).ComputeAlignedRange()
+    bound = bbox_cache.ComputeLocalBound(proto_prim) if baked else bbox_cache.ComputeUntransformedBound(proto_prim)
+    rng = bound.ComputeAlignedRange()
     if not rng.IsEmpty():
         mn, mx = rng.GetMin(), rng.GetMax()
         proto.bmin = Gf.Vec3f(mn[0], mn[1], mn[2])
         proto.bmax = Gf.Vec3f(mx[0], mx[1], mx[2])
+    if baked:
+        proto.scale = Gf.Vec3f(1, 1, 1)
+        return
 
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     wm = xform_cache.GetLocalToWorldTransform(src_prim)

@@ -934,3 +934,34 @@ def test_the_readout_gives_the_triangles_every_instance_adds_up_to(caplog, monke
         mod.module.execute(scatter)
     assert "run out of memory" in scatter.get_param("readout").value
     assert any("triangles expanded" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+def test_instances_keep_the_rotation_of_the_prototype_source() -> None:
+    """A cone turned on its side by a Transform scatters on its side, stretched as it was.
+
+    The prototype used to drop the source's transform and copy back only its scale, so a
+    rotated source scattered upright. Its translation is still dropped: the instancer places
+    each copy.
+    """
+    stage, mod, scatter = _bootstrap()
+    _plate(stage)
+    parent = UsdGeom.Xform.Define(stage, "/props")
+    parent.AddTranslateOp().Set(Gf.Vec3d(50, 60, 70))
+    cone = UsdGeom.Cone.Define(stage, "/props/cone")
+    cone.AddRotateXOp().Set(90.0)
+    cone.AddScaleOp().Set(Gf.Vec3f(1, 1, 3))
+
+    _set_proto(scatter, "/props/cone")
+    scatter.get_param("surface_prim").value = "/plate"
+    scatter.get_param("max_count").value = 3
+    mod.module.execute(scatter)
+
+    inst = _instancer(stage)
+    xforms = inst.ComputeInstanceTransformsAtTime(Usd.TimeCode.Default(), Usd.TimeCode.Default())
+    assert len(xforms) == 3
+    source = UsdGeom.XformCache().GetLocalToWorldTransform(cone.GetPrim())
+    positions = inst.GetPositionsAttr().Get()
+    for xform, pos in zip(xforms, positions):
+        for axis in (Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 1, 0), Gf.Vec3d(0, 0, 1)):
+            assert Gf.IsClose(xform.TransformDir(axis), source.TransformDir(axis), 1e-3), axis
+        assert Gf.IsClose(xform.ExtractTranslation(), Gf.Vec3d(pos), 1e-3)

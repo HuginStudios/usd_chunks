@@ -11,6 +11,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- The build-network skill has a Common jobs table: naming a node and overriding it from
+  the CLI, bringing in a file, moving or editing a prim from it, stage settings, one file
+  per layer, and what to do for animation. `usdchunks list` ends by pointing at it, and
+  `docs/scripting.md` opens with a pointer to it.
+
 - The chunk menu (`Tab` or right-click in the node graph) lists Backdrop and Sticky Note,
   and search finds them.
 - Camera: **Aim At Point** and **Point** keep the camera pointed at a world-space point, as
@@ -277,10 +282,22 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
+  skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
+  Prim below it made inactive copies. Python 3.11 was not affected.
+- Export USD never writes over a network file on disk, open on the stage or not. A script
+  built with `Scene.new(path=...)` names its root layer after the network file, so
+  `scene.commit()` right after `scene.save()` wrote that layer's stripped result over it.
+- Scatter Points keeps the rotation of a prototype's source. A cone laid on its side by a
+  Transform now scatters on its side; before, only the scale carried over.
 - A script building a correctly wired chain no longer gets "X is blocked: ... isn't wired
   above X" or "X reads prims that Y edits, but isn't wired above it" warnings. `scene.create`
   cooks a chunk once before wiring it, and that cook found nothing above it; the warnings
   now wait until the chunk is wired, and one that is not wired still gets them.
+- Export USD keeps a relative asset path working when it writes into another folder than the
+  network's. A Reference to `inputs/set.usda` exported into `shot/` was written unchanged, and
+  USD looked for `shot/inputs/set.usda`. It now names the file it named in the network:
+  `../inputs/set.usda` with Relative Paths on, an absolute path with it off.
 - Scatter Points follows every Scatter Brush stroke in usdview. With Painted Points wired, only
   the first Points or Spray stroke placed instances; later strokes were skipped. The same
   fix applies to Keep Away From.
