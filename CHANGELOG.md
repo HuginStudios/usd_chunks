@@ -279,6 +279,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- `usdchunks list` leaves out private modules (a name starting with `_`), which
+  `scene.create` refuses to make, so every name it lists can be made from a script.
 - Export USD never writes over a network file on disk, open on the stage or not. A script
   built with `Scene.new(path=...)` names its root layer after the network file, so
   `scene.commit()` right after `scene.save()` wrote that layer's stripped result over it.
