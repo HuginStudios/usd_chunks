@@ -279,6 +279,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Export USD never writes over a network file on disk, open on the stage or not. A script
+  built with `Scene.new(path=...)` names its root layer after the network file, so
+  `scene.commit()` right after `scene.save()` wrote that layer's stripped result over it.
 - Scatter Points keeps the rotation of a prototype's source. A cone laid on its side by a
   Transform now scatters on its side; before, only the scale carried over.
 - A script building a correctly wired chain no longer gets "X is blocked: ... isn't wired

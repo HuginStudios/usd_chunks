@@ -32,8 +32,19 @@ def _network_files(stage) -> set[str]:
             if not lyr.anonymous and lyr.realPath and lyr.GetPrimAtPath(chunk_naming.CHUNKS_ROOT)}
 
 
+def _holds_network(path: str) -> bool:
+    """Whether the file at path, on disk, holds a chunk network -- one the stage need not
+    have open. A script's Scene.new(path=...) builds in memory and names its root layer
+    after the network file, so Export USD named that layer's file the same: commit() right
+    after save() wrote the stripped result over the network a benchmark agent had saved."""
+    if not os.path.isfile(path):
+        return False
+    layer = Sdf.Layer.FindOrOpen(path)
+    return bool(layer and layer.GetPrimAtPath(chunk_naming.CHUNKS_ROOT))
+
+
 def _would_overwrite_network(path: str, networks: set[str], row: str) -> bool:
-    if _same_file(path) not in networks:
+    if _same_file(path) not in networks and not _holds_network(path):
         return False
     print(f"[ExportUSD] Not exporting {row} to {path}: that file is the chunk network itself, and "
           f"writing it would replace the network. Give the row another File Name, untick its "
