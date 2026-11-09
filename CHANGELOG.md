@@ -279,6 +279,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- On Python 3.13 (Blender 5.2 among others) every cook ran on the whole stage. Nothing was
+  skipped, and a chunk saw what the chunks below it had done: a Duplicate Prim with a Prune
+  Prim below it made inactive copies. Python 3.11 was not affected.
 - Export USD never writes over a network file on disk, open on the stage or not. A script
   built with `Scene.new(path=...)` names its root layer after the network file, so
   `scene.commit()` right after `scene.save()` wrote that layer's stripped result over it.
