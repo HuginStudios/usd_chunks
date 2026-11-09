@@ -13,6 +13,8 @@ Prototypes are a list, each row carrying its own share of the mix (a percentage,
 across the rows), a scale multiplier, and optionally a variant selection written straight
 into the path -- ``/asset/crayon{color=red}``. ``{color=*}`` expands to one prototype per
 variant in that set, which is the cheap way to scatter a whole colour range from one row.
+``%trees`` takes every member of the collection named trees, one prototype per member (a
+member's own descendants are not prototypes of their own).
 
 Physical settling (apples coming to rest in a bowl) is still the RBD Solver's job -- scatter
 loosely, then settle. Stack mode is the deterministic alternative for when you want a tidy,
@@ -2080,7 +2082,8 @@ def _parse_proto_spec(raw):
 def _resolve_prototypes(node, scratch_stage, missing=None):
     """Turn the Prototypes list rows into _Proto entries.
 
-    Handles, per row: glob expansion (one prototype per matched prim), an explicit variant
+    Handles, per row: glob expansion (one prototype per matched prim), a %collection (one
+    prototype per topmost member, deactivated members included), an explicit variant
     selection, and ``{set=*}`` wildcards (one prototype per variant in the set, the row's
     weight split evenly between them). Paths that match no prim are appended to missing, when
     given, for the readout to name.
@@ -2116,6 +2119,10 @@ def _resolve_prototypes(node, scratch_stage, missing=None):
                 if scratch_stage
                 else [base]
             )
+            if base.startswith("%"):
+                # A collection that includes /Library/oak (expandPrims, the default) has every
+                # mesh under the oak as a member too; the oak is the prototype, not its parts.
+                matched = _topmost(matched)
             # A plain path comes back as typed whether or not the prim exists (only a glob is
             # matched against the stage), so existence is checked here. A path that carries a
             # variant selection is not a prim path, so only "matched nothing" counts for it.
@@ -2144,6 +2151,16 @@ def _resolve_prototypes(node, scratch_stage, missing=None):
     for p in protos:
         p.weight /= per_source[p.src_path]
     return protos
+
+
+def _topmost(paths):
+    """The paths with no ancestor among them, in their order: /a and /b from /a, /a/x, /b."""
+    kept = []
+    for path in sorted(paths, key=len):
+        if not any(path.startswith(k.rstrip("/") + "/") for k in kept):
+            kept.append(path)
+    keep = set(kept)
+    return [p for p in paths if p in keep]
 
 
 def _expand_variants(stage, prim_path, selections):
@@ -3305,8 +3322,9 @@ def main():
             "proto_path",
             "Prim",
             flags=_PF.LABELED | _PF.PRIM_SELECTION,
-            tooltip="Prim to instance. Globs work (/props/crayon_*), and a variant selection "
-            "can be written into the path:\n"
+            tooltip="Prim to instance. Globs work (/props/crayon_*), %name takes every member of "
+            "the collection called name (%trees), and a variant selection can be written into "
+            "the path:\n"
             "  /props/crayon{color=red}   one variant\n"
             "  /props/crayon{color=*}     one prototype per variant in the set,\n"
             "                             sharing this row's Mix %.",
@@ -3838,7 +3856,7 @@ def config():
         description=(
             "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
             "\n"
-            "Prototypes are a list: each row takes a prim (globs allowed), a share of the mix\n"
+            "Prototypes are a list: each row takes a prim (globs and %collection allowed), a share of the mix\n"
             "as a percentage, and its own scale multiplier. A variant selection can be written\n"
             "into the path -- /props/crayon{color=red} -- and {color=*} expands to one\n"
             "prototype per variant in that set, splitting the row's share between them. Mix\n"
