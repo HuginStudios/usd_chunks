@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Transform: an **Aim** section. **Aim At** (a prim) or **Aim At Point** with **Point** turns the
+  prim's -Z axis, the way lights and cameras face, toward the target on every cook:
+  `scene.create.transform(light, primpath_location="/World/key", tx=3, ty=4, tz=3,
+  aim_at_point=True, aim_point=(0, 0.75, 0))`.
 - The build-network skill has a Common jobs table: naming a node and overriding it from
   the CLI, bringing in a file, moving or editing a prim from it, stage settings, one file
   per layer, and what to do for animation. `usdchunks list` ends by pointing at it, and
