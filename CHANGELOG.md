@@ -338,6 +338,9 @@ This file starts with the first release; development before that is in the commi
 - URDF Import puts `MeshCollisionAPI` and the Collider approximation only on mesh
   colliders. A box, sphere or cylinder collider collides as itself and carried an
   approximation that meant nothing.
+- Dragging a slider on a chunk with Cache Result on no longer writes a cache entry to disk on
+  every tick. The entry is written once the chunk stops cooking for half a second, so only
+  where the drag lets go is kept. Headless runs still write at once.
 - Transform's Aim At no longer fills itself from the selection. In usdview a Transform made with
   a prim selected turned that prim toward itself; Prim Path still takes the selection.
 - A network built in a `chunk.change_block()` saves every chunk it made. With department layers
