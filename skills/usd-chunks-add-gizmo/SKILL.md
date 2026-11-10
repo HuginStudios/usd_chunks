@@ -85,6 +85,10 @@ Module-level functions the framework calls if they exist. Write them only when n
 - `gizmo_changed(node, gizmo, value) -> bool`: solve the drag yourself (IK, constraints).
   Set the params, then return `True` to skip the declared drivers.
 - `gizmo_stroke(node, gizmo, samples) -> bool`: for `brush` handles.
+- `gizmos(node) -> list[chunk.Gizmo]`: handles that come and go with the chunk's params,
+  one per row of a list. A driver entry names a row as `list.param[i]` (`doors.u[2]`).
+  A row added gets its handle, a row removed loses it. Read
+  `tests/test_chunk_gizmo_rows.py`.
 - `gizmo_offset_changed`: for a draggable pivot. Read its use in `chunks/transforms/transform.py`
   and `usd_chunks/gizmo/runtime.py` before you write one.
 

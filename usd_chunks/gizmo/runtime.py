@@ -23,6 +23,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -107,7 +108,8 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
         chunk: The chunk to read.
 
     Returns:
-        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name.
+        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name, and both win
+        over a runtime one (GIZMOS_HOOK) of the same name.
     """
     config = chunk.get_config() if hasattr(chunk, "get_config") else None
     gizmos = list(getattr(config, "gizmos", None) or ())
@@ -118,7 +120,32 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
         # form is "write the full one", and that has to actually replace the short one.
         if sugared.name not in declared:
             gizmos.append(sugared)
+            declared.add(sugared.name)
+    for runtime in _runtime_gizmos(chunk):
+        if runtime.name not in declared:
+            gizmos.append(runtime)
+            declared.add(runtime.name)
     return gizmos
+
+
+#: A module function returning more handles, worked out from the chunk as it is now:
+#: ``def gizmos(node) -> list[chunk.Gizmo]``. For handles that come and go with the chunk's
+#: params -- one per row of a list (driving ``doors.u[2]``), one per joint. config() runs
+#: once, before the chunk has any rows; this runs whenever the handles are authored or
+#: refreshed, so a row added or removed adds or removes its handle.
+GIZMOS_HOOK = "gizmos"
+
+
+def _runtime_gizmos(chunk: core.ChunkBase) -> list:
+    hook = getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK)
+    if hook is None:
+        return []
+    try:
+        return [g for g in (hook(chunk) or ()) if isinstance(g, core.GizmoBase)]
+    except Exception:
+        # Called from the param-changed path: a hook that raises must not break editing.
+        logger.exception("%s hook failed on chunk %r", GIZMOS_HOOK, getattr(chunk, "name", chunk))
+        return []
 
 
 def _sugared_gizmos(chunk: core.ChunkBase) -> list:
@@ -362,6 +389,42 @@ def _iter_vectors(obj, prefix: str = ""):
             yield from _iter_vectors(param, path)
 
 
+#: A driver entry naming one row of a list: ``u[2]``, or ``doors.u[2]`` with the list's path.
+_ROW_ENTRY = re.compile(r"^(?P<name>.+)\[(?P<index>\d+)\]$")
+
+
+def _iter_lists(obj, prefix: str = ""):
+    """(path, list group) for every list group under obj, not crossing into a nested chunk."""
+    for param in obj.get_my_params():
+        if isinstance(param, core.ChunkBase):
+            continue
+        path = f"{prefix}.{param.name}" if prefix else param.name
+        if isinstance(param, core.ChunkListGroupBase):
+            yield path, param
+        elif isinstance(param, core.ChunkGroupBase) and not isinstance(param, core.ChunkVectorBase):
+            yield from _iter_lists(param, path)
+
+
+def _row_entry(chunk: core.ChunkBase, entry: str):
+    """(row param, column path) for a driver entry naming a list row, or None if it names none.
+
+    The column path is the list's path and the param's name -- what the list keeps that
+    param's rows under, one array attribute for all of them.
+    """
+    match = _ROW_ENTRY.match(str(entry).strip())
+    if not match:
+        return None
+    name, index = match["name"], int(match["index"])
+    for path, group in _iter_lists(chunk):
+        template = name[len(path) + 1:] if name.startswith(path + ".") else name
+        if group.get_param(template) is None or not 0 <= index < group.size:
+            continue
+        row = group.get_indexed_param(template, index)
+        if row is not None:
+            return row, f"{path}.{template}"
+    return None
+
+
 def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     """The full dotted path of a driven param, from either its path or its bare name.
 
@@ -373,6 +436,9 @@ def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     for path, param in itertools.chain(_iter_params(chunk), _iter_vectors(chunk)):
         if path == entry or param.name == entry:
             return path
+    # A list row is kept in its column's array: the connection names the column.
+    if row := _row_entry(chunk, entry):
+        return row[1]
     raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
 
 
@@ -438,6 +504,30 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> No
                 # One malformed gizmo must not take the chunk prim down with it -- the rest of
                 # the prim's bookkeeping (exec ports, params) is what makes the chunk work at all.
                 logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
+
+
+def _sync_runtime_records(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmos: list) -> bool:
+    """Bring the prim's records in line with a chunk whose handles change (GIZMOS_HOOK).
+
+    A row's handle that is new gets authored; one whose row has gone loses its record, or a
+    host would keep drawing a handle that drives nothing. Only for a chunk with the hook: a
+    plain chunk's set never changes. True if anything was written.
+    """
+    if getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK) is None:
+        return False
+    wanted = {g.name for g in gizmos}
+    have = set(_gizmo_names(prim))
+    gone, new = have - wanted, [g for g in gizmos if g.name not in have]
+    if not gone and not new:
+        return False
+    with Sdf.ChangeBlock():
+        for prop in prim.GetProperties():
+            name = prop.GetName()
+            if name.startswith(GIZMO_PREFIX) and name[len(GIZMO_PREFIX):].split(":")[0] in gone:
+                prim.RemoveProperty(name)
+    if new:
+        author_gizmos(stage, prim, chunk)
+    return True
 
 
 def _author_hidden(prim: Usd.Prim, chunk: core.ChunkBase, name: str) -> None:
@@ -530,7 +620,11 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
         chunk: The chunk whose gizmos to refresh.
     """
     gizmos = get_gizmos(chunk)
-    if not gizmos or not (prim and prim.IsValid()):
+    if not (prim and prim.IsValid()):
+        return
+    if _sync_runtime_records(stage, prim, chunk, gizmos):
+        return  # re-authored whole, anchors included
+    if not gizmos:
         return
 
     for gizmo in gizmos:
@@ -570,7 +664,7 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
 
 def _gizmo_names(prim: Usd.Prim) -> list:
     names = []
-    for attr in prim.GetAttributes():
+    for attr in prim.GetProperties():
         name = attr.GetName()
         if not name.startswith(GIZMO_PREFIX):
             continue
@@ -1088,6 +1182,8 @@ def _param_for_entry(chunk: core.ChunkBase, entry: str):
     A name that does not resolve is a declaration bug -- the chunk's own config naming a
     param it does not have -- so it raises rather than quietly doing nothing.
     """
+    if row := _row_entry(chunk, entry):
+        return row[0]
     param = chunk.get_param(str(entry).strip())
     if param is None:
         raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
