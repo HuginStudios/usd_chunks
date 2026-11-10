@@ -16,7 +16,9 @@ the step before it, and the last step is what the network delivers. For example,
 ground with three coloured boxes and a camera" becomes ground → cube → transform →
 set_display_color (×3) → dome_light → camera.
 
-Find the chunk for each step with the CLI, before reading any chunk source:
+Start from [common-chunks.md](common-chunks.md): the chunks most networks use, each with its
+key params, so most steps need no lookup. For the rest, find the chunk with the CLI, before
+reading any chunk source:
 
 - `usdchunks list` lists every chunk you can make, one line each: its script name, its
   category and what it does. `usdchunks list scatter` lists only those mentioning a word.
