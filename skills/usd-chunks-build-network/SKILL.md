@@ -92,10 +92,17 @@ with Scene.new() as scene:
 | To | Do |
 | --- | --- |
 | Name a node, to find or override it later | `scene.create.scatter_points(..., name="Rocks")`; then `usdchunks run net.usda Rocks.seed=3 -o out.usda` |
-| A box or a ball | A USD `Cube` / `Sphere` prim ("a USD Cube", `UsdGeom.Cube`): `usd_cube(prim_path=..., cube_size=1.0)`, `usd_sphere(..., sphere_radius=0.5)`, centred on the prim. A polygon `Mesh` with UVs: `cube(...)`, `sphere(...)`, the cube's bottom on the prim. `examples/scripts/cubes_mesh_or_gprim.py` makes all four |
+| A box or a ball | A USD `Cube` / `Sphere` prim ("a USD Cube", `UsdGeom.Cube`): `usd_cube(prim_path=..., cube_size=1.0)`, `usd_sphere(..., sphere_radius=0.5)`, centred on the prim. A polygon `Mesh` with UVs: `cube(...)`, `sphere(...)`, the cube's bottom on the prim. `examples/scripts/cubes_mesh_or_gprim.py` makes all four. A centred prim needs lifting to stand on y=0: a 4 m `usd_cylinder` needs `transform(..., ty=2.0)` |
+| A ground or a grid | `ground(prim_path="/World/ground", width1=10, height2=10)`: a grid `width1` (X) by `height2` (Z); it binds a checker material unless `grid_checker=False` |
 | Bring in a file | `sublayer(imports=["inputs/set.usda"])`, or `reference(file_path=..., primpath_location="/set")` |
 | Move a prim that came from a file | `transform(last, primpath_location="/World/box", tx=3.0)` |
-| Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name; it edits attributes the prim already has |
+| Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name (a light's need `inputs:`). Values are JSON: `inputs:color = [1, 0.8, 0.6]`, not a tuple. `float name = 1` creates an attribute the prim lacks |
+| A colour or a material | `preview_surface(last, mat_path="/World/mats/red", primpath_location="/World/box", diffuse_color=(0.8, 0.1, 0.1), roughness=0.4)` binds a UsdPreviewSurface (comma-separate several prims); `set_display_color(last, prim_path=..., color_r=0.8, color_g=0.1, color_b=0.1)` is a flat colour, no material |
+| A light | `light(last, primpath_location="/World/key", light_type="rect_light")` (`distant_light`, `dome_light`, `sphere_light`, `disk_light` too). `intensity`, `width`, `height` and `color` are built when it cooks but can be passed at create |
+| Aim a light or camera at a point | `transform(last, primpath_location="/World/key", tx=4.0, ty=5.0, aim_at_point=True, aim_point=(0, 1, 0))` turns the prim's -Z to the point. `camera(last, primpath_location="/World/cam", tz=10.0, aim_at_point=True, aim_point=(0, 1, 0))` has its own |
+| A ring of N copies | Put the source at the radius on +X (`transform(..., tx=6.0)`), then `duplicate_prim(last, source_prim="/World/column", dest_path="/World/ring", copies=8, copy_rotate=(0, 45, 0))`: copy i is the source moved i times by the per-copy offset, turned about `copy_pivot`. Copies are named after the source. Then `prune_prim(last, prim_path="/World/column")` drops the source |
+| Scatter an exact count, turned about Y only | `scatter_points(last, surface_prim=..., inst_path=..., prototypes=[{"proto_path": "/rock", "proto_weight": 70}], auto_spacing=False, spacing=0.5, max_count=40, orient_mode="Up", rand_axis="Y", rand_amount=360)`. For a margin from the edge, scatter onto a smaller grid and `prune_prim` it |
+| Drop objects that fall and land (rigid bodies) | `rbd_solver(last, prim_path="/World/box", collision_path="/World/ground")`: `collision_path` holds the still colliders, one per line. Leave `gravity` at 0: it means Earth gravity along the up axis in the stage's units, and a positive value pushes bodies up. Headless (scripts, `usdchunks run`) it bakes when it cooks; in a UI press **Run Simulation** (`run_sim`) |
 | Units, up axis, frame range, default prim | `stage_settings(meters_per_unit=1.0, up_axis="Y", start_frame=1, end_frame=48, default_prim="World")` |
 | Instances (rocks ...) on a terrain | Reference the ready-made group: `reference(last, file_path="<repo>/examples/groups/scatter_on_terrain.usda", name="Rocks", Scatter_surface_prim="/World/terrain", Scatter_proto_path="/World/prototypes/rock", Scatter_inst_path="/World/rocks", Scatter_density=2.0, Scatter_max_slope=20.0, Scatter_seed=0)`, after the terrain and prototype are in. Density is per m² of the stage's units: put `stage_settings(meters_per_unit=1.0)` first. A seed per file: `usdchunks run net.usda Rocks.Scatter_seed=N -o rocks_N.usda`. `examples/scripts/use_groups.py` |
 | Spiral stairs, or a row of copies | Reference `<repo>/examples/groups/spiral_stairs.usda` (`name="Stairs"`): `Stairs_copies`, `Stairs_copy_translate=(0, rise, 0)`, `Stairs_copy_rotate=(0, -degrees, 0)` (0 for a straight row), `Place_tx` (radius), `Place_ty`, `Place_sx`/`sy`/`sz` (step size), `Stairs_dest_path`. Steps are USD Cubes `step_00` ... |
@@ -143,5 +150,15 @@ usdchunks run set_network.usda -o check.usda
 ```
 
 Open `check.usda` (or read it) and confirm the prims the description asked for are there.
+Then check they do what was asked, as the user would look at it:
+
+- **Sizes and places:** world bounds (`UsdGeom.BBoxCache`). Standing on the ground means the
+  bottom is at the ground's top.
+- **Anything that moves:** read the bounds at a few frames across the frame range. A dropped
+  body goes down, stops moving, and ends resting on the ground. Up is +Y (or +Z).
+- **Signs and units:** a value that sends things the wrong way or a hundred times too far is
+  the usual mistake.
+
+If a check fails, fix the param on the chunk that is off and check again.
 A misspelled param name raises at `create`, or with `lazy=True` at that chunk's first cook.
 Tell the user which files you wrote and what's in them.
