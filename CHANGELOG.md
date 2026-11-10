@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- A `box` gizmo type: a box whose faces are the handles. A host picks the face under the
+  mouse and pulls it along its normal, and only that face moves. It drives six params, the
+  distance to each face. `gizmo.runtime.pick_box_face` and `drag_box_face` do the picking
+  and the drag for every host, against the box itself, never the geometry inside it.
 - Scatter Points: a prototype row takes a collection, `%trees`, for one prototype per member of
   the collection named trees. Deactivated library entries count, and the meshes under a member
   are not prototypes of their own. Variant selections work on it too: `%trees{season=*}`.

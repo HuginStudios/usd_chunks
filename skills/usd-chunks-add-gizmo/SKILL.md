@@ -21,6 +21,7 @@ A gizmo drives exactly one thing, and its type says what it sends back:
 | `translate`, `rotate`, `scale` | a `Vector` or a group of three params | `Gf.Vec3d` (rotate: Euler XYZ, degrees) |
 | `cube`, `sphere` | one scalar param (a `Slider`) | a number |
 | `transform` | the whole chunk; drives nine params, translate xyz, rotate xyz, scale xyz | `Gf.Matrix4d` |
+| `box` | six face params (+X, -X, +Y, -Y, +Z, -Z), declared in `config()` | six numbers; the box's faces are the handles, dragged one at a time |
 | `brush` | a painting chunk (see `chunks/modelling/scatter_brush.py`) | stroke samples to a hook |
 
 Read a chunk that already does it: `chunks/transforms/transform.py` (groups + a whole-chunk

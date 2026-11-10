@@ -957,6 +957,100 @@ def _translation_about(matrix: Gf.Matrix4d, translation, pivot: tuple | None) ->
 
 
 # ---------------------------------------------------------------------------
+# box handles: the face under the mouse, and where a drag takes it
+# ---------------------------------------------------------------------------
+
+#: (axis index, sign) of each face of a `box` handle, in its driver order: +X, -X, +Y, -Y, +Z, -Z.
+BOX_FACES = ((0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1))
+
+# Below this a ray runs along a slab, or along the face's normal, and has no answer there.
+_PARALLEL_EPSILON = 1e-12
+
+
+def box_bounds(values) -> tuple[Gf.Vec3d, Gf.Vec3d]:
+    """The (min, max) corners of a `box` handle's six values, in the anchor's own space.
+
+    Args:
+        values: The six face distances from the anchor's origin, +X, -X, +Y, -Y, +Z, -Z.
+    """
+    px, nx, py, ny, pz, nz = (float(v) for v in values)
+    return Gf.Vec3d(-nx, -ny, -nz), Gf.Vec3d(px, py, pz)
+
+
+def pick_box_face(values, origin, direction) -> tuple[int, float] | None:
+    """Which face of a `box` handle a ray enters it through, and how far along the ray.
+
+    Against the box the six values describe and nothing else: a mesh inside the box, or the
+    box's own drawn geometry, can never be what is picked, so a host tests this before (and
+    instead of) its own pick. Offered to hosts for the same reason `decompose()` is -- the
+    face order and the "entering face" rule live in one place.
+
+    Args:
+        values: The handle's six face distances (the params it drives, as they are now).
+        origin: The ray's start, in the anchor's own space (the inverse of its world transform
+            applied to the world ray).
+        direction: The ray's direction, in the same space. Need not be unit length.
+
+    Returns:
+        (face index into BOX_FACES and the driver, ray parameter of the hit), or None when
+        the ray misses the box or starts inside it.
+    """
+    lo, hi = box_bounds(values)
+    o, d = Gf.Vec3d(*origin), Gf.Vec3d(*direction)
+    t_enter, t_exit, face = -math.inf, math.inf, None
+    for axis in range(3):
+        if abs(d[axis]) < _PARALLEL_EPSILON:
+            if not lo[axis] <= o[axis] <= hi[axis]:
+                return None
+            continue
+        t_lo, t_hi = (lo[axis] - o[axis]) / d[axis], (hi[axis] - o[axis]) / d[axis]
+        near, far = min(t_lo, t_hi), max(t_lo, t_hi)
+        if near > t_enter:
+            # A ray heading up an axis enters through that axis's min face, the -X face for X.
+            t_enter, face = near, 2 * axis + (1 if d[axis] > 0 else 0)
+        t_exit = min(t_exit, far)
+    if face is None or t_enter > t_exit or t_enter < 0.0:
+        return None
+    return face, t_enter
+
+
+def drag_box_face(values, face: int, grab, origin, direction) -> list[float]:
+    """The six values of a `box` handle once `face` is pulled to where a ray now points.
+
+    The face moves along its own normal only: the new distance is where the line through
+    the grab point along the normal comes closest to the ray. All in the anchor's own space.
+
+    Args:
+        values: The six face distances **as they were when the drag began**, not the last
+            tick's, so a drag never drifts.
+        face: The face being dragged, from pick_box_face.
+        grab: The point the face was grabbed at, also from the press:
+            ``origin + direction * t`` for the press's ray and pick_box_face's t.
+        origin: This tick's ray start.
+        direction: This tick's ray direction.
+
+    Returns:
+        The six values to send to apply_bindings. Unchanged while the ray runs along the
+        normal (looking straight at the face), where no point on it is nearer than another.
+        A face is never pulled past the opposite one.
+    """
+    out = [float(v) for v in values]
+    axis, sign = BOX_FACES[face]
+    normal = Gf.Vec3d(0, 0, 0)
+    normal[axis] = float(sign)
+    d = Gf.Vec3d(*direction)
+    w = Gf.Vec3d(*grab) - Gf.Vec3d(*origin)
+    b, c = normal * d, d * d
+    denom = c - b * b
+    if denom < _PARALLEL_EPSILON * max(c, 1.0):
+        return out
+    s = (b * (d * w) - c * (normal * w)) / denom
+    opposite = face ^ 1
+    out[face] = max(out[face] + s, -out[opposite])
+    return out
+
+
+# ---------------------------------------------------------------------------
 # write-back
 # ---------------------------------------------------------------------------
 
