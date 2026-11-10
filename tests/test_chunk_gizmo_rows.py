@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 from chunk_stubs import register_stub_module
+from pxr import Sdf
 
 from usd_chunks import Scene, chunk
 from usd_chunks.gizmo import runtime as chunk_gizmo
@@ -41,7 +42,7 @@ def doors():
 
 
 def _prim(scene, c):
-    return scene.get_stage().GetPrimAtPath(f"/World/Wall")
+    return scene.get_stage().GetPrimAtPath("/World/Wall")
 
 
 def _handles(scene, c):
@@ -104,3 +105,21 @@ def test_a_row_entry_that_names_no_row_is_a_declaration_error(doors):
 
     with pytest.raises(ValueError, match="no param"):
         chunk_gizmo._param_for_entry(c, "doors.u[5]")
+
+
+def test_a_rows_handle_can_hang_off_a_prim_path(doors):
+    """No param holds a row's own prim: the hook names it."""
+    scene, c = doors
+    stage = scene.get_stage()
+    stage.DefinePrim("/World/Wall/door_1", "Xform")
+
+    def gizmos(node):
+        return [chunk.Gizmo(f"door_{i}", type="cube", axis="X", driver=f"doors.u[{i}]",
+                            anchor=f"/World/Wall/door_{i}") for i in range(node.get_param("doors").size)]
+
+    c.get_chunk_module().module.gizmos = gizmos
+    c.get_param("doors").size = 2
+
+    handles = chunk_gizmo.resolve_gizmos(stage.GetPrimAtPath("/World/Wall/door_1"))
+    assert [h.name for h in handles] == ["door_1"]
+    assert handles[0].anchor == (Sdf.Path("/World/Wall/door_1"),)

@@ -105,7 +105,9 @@ class GizmoBase:
             a single scalar.
         label (str): Display name. Falls back to the chunk's name when empty.
         anchor (str): Name of the param holding the target prim path. Empty means infer --
-            see chunk_gizmo.resolve_anchor_param.
+            see chunk_gizmo.resolve_anchor_param. A prim path ("/...") is taken as the target
+            itself: for a handle a gizmos(node) hook makes per row, hanging off the prim the
+            chunk makes for that row.
         driver (tuple[str, ...]): The params this handle writes, as paths on its own chunk --
             ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz"), or a single entry
             for a scalar or a vector-typed param. A bare string normalises to a one-tuple.

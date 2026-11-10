@@ -305,6 +305,11 @@ def _anchor_targets(chunk: core.ChunkBase, gizmo, stage: Usd.Stage) -> list:
     never have to evaluate a chunk param to find out where to draw. We already re-read this
     param on every cook, so keeping the rel fresh costs nothing.
     """
+    # A prim path rather than a param's name: a handle the module's gizmos(node) hook made
+    # for one row, hanging off the prim the chunk makes for that row -- no param holds it.
+    if str(gizmo.anchor).startswith("/"):
+        return [Sdf.Path(gizmo.anchor)] if Sdf.Path.IsValidPathString(gizmo.anchor) else []
+
     param = resolve_anchor_param(chunk, gizmo)
 
     resolve = getattr(param, "resolve_paths", None)
@@ -598,8 +603,9 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmo) 
     # anchorSource is for us, not for hosts: write-back needs to know which param produced
     # the target, and a host that had to read it would be back to the two-hop lookup this
     # schema exists to avoid.
-    anchor_param = resolve_anchor_param(chunk, gizmo)
-    _uniform_token(prim, _attr_name(gizmo.name, "anchorSource")).Set(anchor_param.name)
+    if not str(gizmo.anchor).startswith("/"):  # a literal prim path has no param behind it
+        anchor_param = resolve_anchor_param(chunk, gizmo)
+        _uniform_token(prim, _attr_name(gizmo.name, "anchorSource")).Set(anchor_param.name)
 
     rel = prim.CreateRelationship(_attr_name(gizmo.name, "anchor"), custom=False)
     rel.SetTargets(_anchor_targets(chunk, gizmo, stage))
