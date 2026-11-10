@@ -11,6 +11,23 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
+  camera layers side by side, exported as `shot.usda` plus one file per department. A test
+  runs it as written, from another directory.
+- Export USD's **Session File Name** names the session layer's file, which in a department
+  network is the shot: `session_file_name="shot"` writes `shot.usda`. With Bake all on, the
+  session layer is written like the rows, without the network's bookkeeping.
+- `examples/scripts/cubes_mesh_or_gprim.py`: a cube and a sphere as polygon meshes (`cube`,
+  `sphere`, the Mesh chunk) and as USD's own Cube and Sphere prims (`usd_cube`,
+  `usd_sphere`, the Shape chunk), with how each sits on its origin. The build-network
+  skill's Common jobs table says which to pick.
+- Ready-made ChunkGroups in `examples/groups/`: `scatter_on_terrain.usda` (instances so
+  many per m² over a terrain, up to a slope, resting on it) and `spiral_stairs.usda` (a box
+  copied, risen and turned: stairs, or a row). A scene references one and sets its params;
+  `build_groups.py` makes them and `examples/scripts/use_groups.py` uses both.
+- One row's param of a list lofts onto a group (`Scatter_proto_path`, Scatter's first
+  prototype). It warned "has no USD attribute bound" and lofted nothing: a list keeps each
+  column in one array, so the group's attribute now records the row it drives.
 - Scatter Points: a prototype row takes a collection, `%trees`, for one prototype per member of
   the collection named trees. Deactivated library entries count, and the meshes under a member
   are not prototypes of their own. Variant selections work on it too: `%trees{season=*}`.
@@ -179,6 +196,15 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** URDF Import gives a welded link with no collision geometry (a camera mount,
+  a tool tip) no rigid body and no fixed joint: it is nested under its parent, which is the
+  weld. As a body it was simulated apart from its parent and fell away. A script that read
+  that link's `joint_<name>` fixed-joint prim should read the nesting instead.
+- Setting a param a chunk doesn't have from a script raises with the list of params it does
+  have, including those a chunk makes as it cooks (Pose Articulation's joint sliders, which
+  `usdchunks show` can't list). Pose Articulation's description says how its sliders are
+  named and set, URDF Import's points to it, the build-network skill has a row for importing
+  and posing a robot, and the write-chunk skill starts by checking that no chunk does the job.
 - **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
   `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
   stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To
@@ -294,6 +320,24 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Export USD's relative Output Directory or Output File is from the network's folder, like
+  every other file path in a param. It was from the working directory, so `output_dir="."`
+  wrote a shot wherever a script or `usdchunks run` was started.
+- Export USD writes over the files it wrote itself. An unbaked session layer carries the
+  network's bookkeeping, so its next export took its own earlier file for a network and
+  skipped it. Each file it writes is now stamped as its output; a saved network is not.
+- Scatter Points built from a script no longer says "surface prim not found" or "prototype
+  path(s) not found" for prims that are above it once it is wired. Its cook before the wire
+  now waits instead; a prim still missing once wired is reported as before.
+- Closing a script's Scene cooks nothing. Unwiring the chunks recooked what was below them,
+  and a referenced group then found the Sublayer above it gone and said it "is blocked" as
+  the script ended.
+- URDF Import finds a relative Mesh Root from the network's folder, as it does the .urdf.
+  It was read from the working directory, so the robot came in without its meshes when the
+  network ran from anywhere else.
+- URDF Import puts `MeshCollisionAPI` and the Collider approximation only on mesh
+  colliders. A box, sphere or cylinder collider collides as itself and carried an
+  approximation that meant nothing.
 - Dragging a slider on a chunk with Cache Result on no longer writes a cache entry to disk on
   every tick. The entry is written once the chunk stops cooking for half a second, so only
   where the drag lets go is kept. Headless runs still write at once.

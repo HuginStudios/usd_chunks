@@ -58,6 +58,9 @@ saves it as an `inputs:` attribute on the group prim.
   lofting if you want a better name.
 - Loft only what a user of the asset should change. Everything else stays inside.
 - A vector lofts whole: loft the vector param, not its fields.
+- One row's param of a list lofts too: `loft_param_to_context(rows.get_indexed_param("proto_path", 0), group)`
+  publishes Scatter's first prototype as `Scatter_proto_path`. `examples/groups/build_groups.py`
+  builds two such groups.
 - In the graph: right-click a param and choose **Loft up**. **Loft up chunk** shows a whole
   chunk's panel on the group's Params page without adding params.
 

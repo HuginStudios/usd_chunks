@@ -80,8 +80,8 @@ with Scene.new() as scene:
   write into that layer. A second Layer wired after a chunk inside that Edit Target nests
   *inside* the first layer. For department layers side by side (layout, lighting, anim), end
   each department with `scene.create.edit_target(last, edit_target="Session Layer")` and wire
-  the next Layer after it; `docs/scripting.md` ("Department layers side by side") has the
-  recipe. Export USD then writes one file per layer. **Groups:** chunks made inside `with group:` (a
+  the next Layer after it. `examples/scripts/shot_departments.py` is that whole network,
+  set to shot.usda, and runs as written: copy it. **Groups:** chunks made inside `with group:` (a
   `scene.create.chunkgroup(name=...)`) go into it. Set a group's `doc` param to say what it
   does; agents and people read it.
 - **Frame the parts** with `scene.add_backdrop([...], title=...)` and `scene.add_note(...)`
@@ -92,11 +92,17 @@ with Scene.new() as scene:
 | To | Do |
 | --- | --- |
 | Name a node, to find or override it later | `scene.create.scatter_points(..., name="Rocks")`; then `usdchunks run net.usda Rocks.seed=3 -o out.usda` |
+| A box or a ball | A USD `Cube` / `Sphere` prim ("a USD Cube", `UsdGeom.Cube`): `usd_cube(prim_path=..., cube_size=1.0)`, `usd_sphere(..., sphere_radius=0.5)`, centred on the prim. A polygon `Mesh` with UVs: `cube(...)`, `sphere(...)`, the cube's bottom on the prim. `examples/scripts/cubes_mesh_or_gprim.py` makes all four |
 | Bring in a file | `sublayer(imports=["inputs/set.usda"])`, or `reference(file_path=..., primpath_location="/set")` |
 | Move a prim that came from a file | `transform(last, primpath_location="/World/box", tx=3.0)` |
 | Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name; it edits attributes the prim already has |
 | Units, up axis, frame range, default prim | `stage_settings(meters_per_unit=1.0, up_axis="Y", start_frame=1, end_frame=48, default_prim="World")` |
-| Write one file per layer | `export_usd(last, output_dir=".", keep_session_layer=False)`; it lists every real layer itself (rows of `export_layers`, a sublayered input file too: set that row's `export_enabled` to False to skip it), names each file after its layer, and writes paths relative to each file |
+| Instances (rocks ...) on a terrain | Reference the ready-made group: `reference(last, file_path="<repo>/examples/groups/scatter_on_terrain.usda", name="Rocks", Scatter_surface_prim="/World/terrain", Scatter_proto_path="/World/prototypes/rock", Scatter_inst_path="/World/rocks", Scatter_density=2.0, Scatter_max_slope=20.0, Scatter_seed=0)`, after the terrain and prototype are in. Density is per m² of the stage's units: put `stage_settings(meters_per_unit=1.0)` first. A seed per file: `usdchunks run net.usda Rocks.Scatter_seed=N -o rocks_N.usda`. `examples/scripts/use_groups.py` |
+| Spiral stairs, or a row of copies | Reference `<repo>/examples/groups/spiral_stairs.usda` (`name="Stairs"`): `Stairs_copies`, `Stairs_copy_translate=(0, rise, 0)`, `Stairs_copy_rotate=(0, -degrees, 0)` (0 for a straight row), `Place_tx` (radius), `Place_ty`, `Place_sx`/`sy`/`sz` (step size), `Stairs_dest_path`. Steps are USD Cubes `step_00` ... |
+| Import a URDF robot and pose it | `urdf_import(stage_settings(up_axis="Z"), primpath_location="/World/robot", file_path="pkg/urdf/arm.urdf", mesh_root="pkg")`: links, STL meshes, colliders, masses and joints as UsdPhysics; `mesh_root` is the folder `package://pkg/...` paths are found in. Then `pose_articulation(robot, prim_path="/World/robot", forearm_link=-45.0)`: one slider per moving joint, named after the link the joint moves (degrees, or metres when sliding) |
+| A ready-made group's params | `usdchunks info <file>.usda` prints its description and every param with its default |
+| A shot in department layers | Copy `examples/scripts/shot_departments.py`: a set sublayered in, layout / lighting / camera side by side, exported as `shot.usda` plus one file per department |
+| Write one file per layer | `export_usd(last, output_dir=".", session_file_name="shot", bake_all=True)`: a relative Output Directory is from the network's folder; the session layer (the shot, in a department network) is written as `shot.usda`; Bake all writes plain USD, no network. It lists every real layer itself (rows of `export_layers`), the set file too: set that row's `export_enabled` to False to skip it |
 | Animate a value | There is no keyframe chunk yet. Write a small one (the `usd-chunks-write-chunk` skill) whose `execute` sets time samples, `attr.Set(value, Usd.TimeCode(frame))`, on a prim-path param |
 
 `usdchunks show <name>` has every param; the table is only where to start.

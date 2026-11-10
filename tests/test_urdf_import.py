@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import struct
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -422,6 +423,26 @@ class TestAuthoring:
         assert base.HasAPI(UsdPhysics.RigidBodyAPI)
         assert upper.HasAPI(UsdPhysics.RigidBodyAPI)
 
+    def test_a_welded_frame_is_part_of_its_parent_not_a_body(self, scene, tmp_path):
+        """A fixed link with no collision (a tool tip) is nested, with no RigidBodyAPI and no
+        joint. As a body it would be simulated apart from its parent and fall away; a fixed
+        joint to it, once it is not a body, would fix the parent to the world."""
+        stage, _ = scene
+        tipped = TWO_LINK.replace("</robot>", """
+  <link name="tip"/>
+  <joint name="tip_fixed" type="fixed">
+    <parent link="upper"/><child link="tip"/><origin xyz="0 0 0.4"/>
+  </joint>
+</robot>""")
+        _import(scene, tipped, tmp_path)
+
+        tip = stage.GetPrimAtPath("/World/robot/upper/tip")
+        assert tip.IsValid(), "the welded frame should be nested under its parent"
+        assert not tip.HasAPI(UsdPhysics.RigidBodyAPI)
+        joints = [p for p in Usd.PrimRange(stage.GetPrimAtPath("/World/robot"))
+                  if p.IsA(UsdPhysics.Joint)]
+        assert [p.GetName() for p in joints] == ["joint_shoulder"]
+
     def test_the_root_link_carries_the_articulation(self, scene, tmp_path):
         stage, _ = scene
         _import(scene, TWO_LINK, tmp_path)
@@ -445,10 +466,22 @@ class TestAuthoring:
         assert collider.HasAPI(UsdPhysics.CollisionAPI)
 
     def test_the_approximation_is_what_was_asked_for(self, scene, tmp_path):
+        """On a mesh collider only: a box collides as itself, and MeshCollisionAPI is for
+        Mesh prims."""
         stage, _ = scene
-        _import(scene, TWO_LINK, tmp_path, collider_approximation="boundingCube")
-        collider = stage.GetPrimAtPath("/World/robot/base/collision_0")
-        assert UsdPhysics.MeshCollisionAPI(collider).GetApproximationAttr().Get() == "boundingCube"
+        stl = tmp_path / "tri.stl"
+        stl.write_bytes(b"binary".ljust(80, b" ") + struct.pack("<I", 1)
+                        + struct.pack("<12f", 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0) + struct.pack("<H", 0))
+        meshed = TWO_LINK.replace(
+            '<collision><geometry><cylinder radius="0.03" length="0.4"/></geometry></collision>',
+            f'<collision><geometry><mesh filename="{stl.as_posix()}"/></geometry></collision>')
+        _import(scene, meshed, tmp_path, collider_approximation="boundingCube")
+        mesh = stage.GetPrimAtPath("/World/robot/upper/collision_0")
+        assert mesh.IsA(UsdGeom.Mesh)
+        assert UsdPhysics.MeshCollisionAPI(mesh).GetApproximationAttr().Get() == "boundingCube"
+        box = stage.GetPrimAtPath("/World/robot/base/collision_0")
+        assert box.HasAPI(UsdPhysics.CollisionAPI)
+        assert not box.HasAPI(UsdPhysics.MeshCollisionAPI)
 
     def test_the_joint_is_typed_and_wired_to_both_bodies(self, scene, tmp_path):
         stage, _ = scene
