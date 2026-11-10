@@ -123,3 +123,31 @@ def test_a_rows_handle_can_hang_off_a_prim_path(doors):
     handles = chunk_gizmo.resolve_gizmos(stage.GetPrimAtPath("/World/Wall/door_1"))
     assert [h.name for h in handles] == ["door_1"]
     assert handles[0].anchor == (Sdf.Path("/World/Wall/door_1"),)
+
+
+def test_a_rows_handle_is_offered_only_on_its_own_prim():
+    """The chunk writes every row's prim, so each prim's layer stack names it -- yet a drag
+    on one door must move that door only, not every row's handle at once."""
+    def main():
+        c = _doors_main()
+        return c
+
+    def execute(node):
+        for i in range(node.get_param("doors").size):
+            node.get_stage().DefinePrim(f"/World/Wall/door_{i}", "Xform")
+
+    def gizmos(node):
+        return [chunk.Gizmo(f"door_{i}", type="translate", driver=[f"doors.u[{i}]"] * 3,
+                            anchor=f"/World/Wall/door_{i}") for i in range(node.get_param("doors").size)]
+
+    with Scene() as scene:
+        module = register_stub_module(main=main, gizmos=gizmos, execute=execute)
+        (c,) = module.load()
+        scene.add_chunk(c)
+        c.get_param("doors").size = 2
+        c._cook()
+
+        stage = scene.get_stage()
+        for i in range(2):
+            names = [h.name for h in chunk_gizmo.resolve_gizmos(stage.GetPrimAtPath(f"/World/Wall/door_{i}"))]
+            assert names == [f"door_{i}"]

@@ -875,6 +875,11 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     # Order matters and is preserved: chunks_for_prim walks GetPrimStack(), which USD
     # returns strength-ordered, so the chunk whose result is actually on screen stays first
     # and a host driving handles[0] drives the one the user can see.
+    # A handle anchored by a literal prim path (one a gizmos(node) hook made for one row) is
+    # that prim's alone. Its chunk writes every row's prim, so each prim's layer stack names
+    # the chunk -- and without this, dragging one door handed the drag to every door.
+    path = prim.GetPath()
+    descs = [d for d in descs if d.anchor_source or not d.anchor or path in d.anchor]
     seen = {(str(d.chunk_prim), d.name) for d in descs}
     for desc in _gizmos_anchored_at(prim):
         if (str(desc.chunk_prim), desc.name) not in seen:
