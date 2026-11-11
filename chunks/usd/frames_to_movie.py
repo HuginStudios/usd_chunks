@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 from usd_chunks import chunk, chunk_utils
 
@@ -147,28 +148,42 @@ def _set_status(node, text: str) -> None:
     node.get_param("status").value = text
 
 
-def make_movie(node) -> str:
-    """Encode the chunk's Frames into its Output Movie.
+class _Encode:
+    """One ffmpeg run: its command line, the movie it writes and the temp folder to delete."""
+
+    def __init__(self, argv: list[str], movie: str, frame_count: int, scratch: str):
+        self.argv = argv
+        self.movie = movie
+        self.frame_count = frame_count
+        self.scratch = scratch
+
+
+#: Frames to Movie chunks encoding in the background. One encode at a time per chunk.
+_encoding: set[int] = set()
+
+
+def _prepare(node) -> _Encode | None:
+    """Find the frames and build the ffmpeg command, on the main thread.
 
     Args:
         node: The Frames to Movie chunk.
 
     Returns:
-        The movie path written, or "" on failure (the reason goes to Status and the log).
+        The encode to run, or None when there is nothing to encode (the reason goes to Status).
     """
     stage = node.get_stage()
     pattern = chunk_utils.resolve_output_path(node.get_param("frames").value or "", stage, logger)
     movie = chunk_utils.resolve_output_path(node.get_param("output_movie").value or "", stage, logger)
     if not pattern or not movie:
         _set_status(node, "Set Frames and Output Movie first.")
-        return ""
+        return None
     pattern, movie = chunk_utils.cwd_relative(pattern), chunk_utils.cwd_relative(movie)
 
     frames = find_frames(pattern)
     if not frames:
         _set_status(node, f"No frames found for {os.path.basename(pattern)}")
         logger.warning("Frames to Movie: no files match %s", pattern)
-        return ""
+        return None
 
     codec = node.get_param("codec").value
     if codec not in _CODECS:
@@ -180,48 +195,113 @@ def make_movie(node) -> str:
     if imageio_ffmpeg is None:
         _set_status(node, "imageio-ffmpeg is not installed.")
         logger.error("Frames to Movie: pip install imageio-ffmpeg to make movies.")
-        return ""
+        return None
     try:
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     except RuntimeError as exc:
         _set_status(node, "ffmpeg not found.")
         logger.error("Frames to Movie: %s", exc)
-        return ""
+        return None
 
     if parent := os.path.dirname(movie):
         os.makedirs(parent, exist_ok=True)
 
     fps = int(node.get_param("fps").value)
     quality = int(node.get_param("quality").value)
-    with tempfile.TemporaryDirectory(prefix="frames_to_movie_") as scratch:
-        image2 = _image2_input(frames)
-        if image2 is None:  # a gap or mixed names: give ffmpeg a clean, numbered copy
-            image2 = (_link_frames(frames, scratch), 0)
-        argv = build_argv(ffmpeg, image2[0], image2[1], movie, fps, codec, quality)
-        logger.info("Frames to Movie: %s", subprocess.list2cmdline(argv))
-        try:
-            result = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                                    creationflags=_NO_WINDOW, check=False)
-        except OSError as exc:
-            _set_status(node, f"ffmpeg did not start: {exc}")
-            logger.error("Frames to Movie: ffmpeg did not start: %s", exc)
-            return ""
+    scratch = tempfile.mkdtemp(prefix="frames_to_movie_")
+    image2 = _image2_input(frames)
+    if image2 is None:  # a gap or mixed names: give ffmpeg a clean, numbered copy
+        image2 = (_link_frames(frames, scratch), 0)
+    argv = build_argv(ffmpeg, image2[0], image2[1], movie, fps, codec, quality)
+    return _Encode(argv, movie, len(frames), scratch)
 
-    if result.returncode != 0 or not os.path.isfile(movie):
+
+def _encode(job: _Encode) -> subprocess.CompletedProcess | OSError:
+    """Run ffmpeg. Touches no USD, so it is safe on a worker thread."""
+    logger.info("Frames to Movie: %s", subprocess.list2cmdline(job.argv))
+    try:
+        return subprocess.run(job.argv, capture_output=True, text=True, errors="replace",
+                              creationflags=_NO_WINDOW, check=False)
+    except OSError as exc:
+        return exc
+
+
+def _finish(node, job: _Encode, result: subprocess.CompletedProcess | OSError) -> str:
+    """Report an encode on the chunk, on the main thread.
+
+    Args:
+        node: The Frames to Movie chunk.
+        job: The encode that ran.
+        result: What ffmpeg returned, or the error that kept it from starting.
+
+    Returns:
+        The movie path written, or "" on failure (the reason goes to Status and the log).
+    """
+    shutil.rmtree(job.scratch, ignore_errors=True)
+    if isinstance(result, OSError):
+        _set_status(node, f"ffmpeg did not start: {result}")
+        logger.error("Frames to Movie: ffmpeg did not start: %s", result)
+        return ""
+    if result.returncode != 0 or not os.path.isfile(job.movie):
         tail = "\n".join(result.stderr.strip().splitlines()[-15:])
         last = tail.splitlines()[-1] if tail else f"exit code {result.returncode}"
         _set_status(node, f"ffmpeg failed: {last}")
         logger.error("Frames to Movie: ffmpeg failed (exit code %s):\n%s", result.returncode, tail)
         return ""
 
-    _set_status(node, f"{len(frames)} frames -> {os.path.basename(movie)}")
-    logger.info("Frames to Movie wrote %s (%d frames)", movie, len(frames))
-    node.get_param("output").value = movie
-    return movie
+    _set_status(node, f"{job.frame_count} frames -> {os.path.basename(job.movie)}")
+    logger.info("Frames to Movie wrote %s (%d frames)", job.movie, job.frame_count)
+    node.get_param("output").value = job.movie
+    return job.movie
+
+
+def make_movie(node) -> str:
+    """Encode the chunk's Frames into its Output Movie and wait for it.
+
+    Args:
+        node: The Frames to Movie chunk.
+
+    Returns:
+        The movie path written, or "" on failure (the reason goes to Status and the log).
+    """
+    job = _prepare(node)
+    if job is None:
+        return ""
+    return _finish(node, job, _encode(job))
+
+
+def make_movie_in_background(node) -> None:
+    """Start the encode on a worker thread and return at once; Status says when it is done.
+
+    Args:
+        node: The Frames to Movie chunk.
+    """
+    if id(node) in _encoding:
+        logger.warning("Frames to Movie: already making this movie.")
+        return
+    job = _prepare(node)
+    if job is None:
+        return
+    _encoding.add(id(node))
+    _set_status(node, f"Encoding {job.frame_count} frames")
+    scene = node.get_scene()
+
+    def done(result):
+        _encoding.discard(id(node))
+        try:
+            _finish(node, job, result)
+        except Exception as exc:  # noqa: BLE001 - the chunk may have been deleted meanwhile
+            logger.debug("Frames to Movie: could not report the finished movie (%s)", exc)
+
+    def work():
+        result = _encode(job)
+        scene.call_later(lambda: done(result))
+
+    threading.Thread(target=work, name="usdchunks-movie", daemon=True).start()
 
 
 def _make_clicked(owner, notice, sender):
-    make_movie(owner.get_chunk())
+    make_movie_in_background(owner.get_chunk())
 
 
 def main():
@@ -285,7 +365,8 @@ def config():
             Odd image sizes get one black pixel of padding, since both need even sizes.
           - Quality (CRF): H.264 only; lower is better and bigger.
           - Make Movie on Commit: make the movie on every `usdchunks run`. On by default.
-          - Make Movie: make it now.
+          - Make Movie: make it now, in the background, so you keep working while
+            ffmpeg runs. Status says when it is done. Commit waits for it instead.
           - Status: how many frames went into which movie, or why it failed.
           - Output (output): the movie path written.
 

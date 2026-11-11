@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 
 import pytest
 from pxr import Usd
 
+from usd_chunks.chunk_scene import run_pending
 from usd_chunks.chunk_script import Scene
 
 imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
@@ -40,13 +42,22 @@ def _probe(movie):
     return int(counts[-1]), int(stream.group(2)), int(stream.group(3)), stream.group(1)
 
 
+def _make(node, timeout=60.0):
+    """Press Make Movie and wait for the background encode to report back."""
+    node.get_param("make_movie").click()
+    end = time.monotonic() + timeout
+    while node.get_param("status").value.startswith("Encoding") and time.monotonic() < end:
+        run_pending()
+        time.sleep(0.05)
+
+
 def test_make_movie_encodes_every_frame_of_an_odd_sized_sequence(scene, tmp_path):
     _write_frames(tmp_path / "frames", range(1001, 1006))
     movie = tmp_path / "out" / "shot.mp4"
     node = scene.add("frames_to_movie", frames=str(tmp_path / "frames" / "render.####.png"),
                      output_movie=str(movie), make_on_commit=False)
 
-    node.get_param("make_movie").click()
+    _make(node)
 
     assert movie.is_file(), node.get_param("status").value
     frames, width, height, codec = _probe(movie)
@@ -54,6 +65,23 @@ def test_make_movie_encodes_every_frame_of_an_odd_sized_sequence(scene, tmp_path
     assert (width, height) == (34, 18)  # padded to even sizes
     assert node.get_param("output").value == str(movie)
     assert node.get_param("status").value == "5 frames -> shot.mp4"
+
+
+def test_make_movie_returns_while_ffmpeg_runs(scene, tmp_path, caplog):
+    _write_frames(tmp_path, range(3))
+    movie = tmp_path / "bg.mp4"
+    node = scene.add("frames_to_movie", frames=str(tmp_path / "render.####.png"),
+                     output_movie=str(movie), make_on_commit=False)
+
+    node.get_param("make_movie").click()
+    assert node.get_param("status").value == "Encoding 3 frames"
+    assert not node.get_param("output").value
+    node.get_param("make_movie").click()  # a second press while encoding starts nothing
+    assert "already making this movie" in caplog.text
+
+    _make(node)  # nothing to start now; waits for the first encode
+    assert node.get_param("status").value == "3 frames -> bg.mp4"
+    assert node.get_param("output").value == str(movie)
 
 
 def test_commit_makes_the_movie_and_a_gap_in_the_frames_still_works(scene, tmp_path):
@@ -73,7 +101,7 @@ def test_a_path_to_one_frame_finds_the_whole_sequence(scene, tmp_path):
     node = scene.add("frames_to_movie", frames=str(tmp_path / "render.0002.png"),
                      output_movie=str(movie), make_on_commit=False)
 
-    node.get_param("make_movie").click()
+    _make(node)
 
     assert _probe(movie)[0] == 3
 
@@ -83,7 +111,7 @@ def test_prores_writes_a_mov(scene, tmp_path):
     node = scene.add("frames_to_movie", frames=str(tmp_path / "render.####.png"),
                      output_movie=str(tmp_path / "edit.mp4"), codec="ProRes 422 (.mov)", make_on_commit=False)
 
-    node.get_param("make_movie").click()
+    _make(node)
 
     movie = tmp_path / "edit.mov"
     assert node.get_param("output").value == str(movie)
@@ -95,7 +123,7 @@ def test_no_frames_says_so_and_writes_nothing(scene, tmp_path):
     node = scene.add("frames_to_movie", frames=str(tmp_path / "render.####.png"),
                      output_movie=str(movie), make_on_commit=False)
 
-    node.get_param("make_movie").click()
+    _make(node)
 
     assert node.get_param("status").value.startswith("No frames found")
     assert not movie.exists()
