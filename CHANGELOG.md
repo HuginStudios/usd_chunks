@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
+  sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
+  `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
+  and gaps in the frames work.
 - Render chunk: **Run in Background**. Render Now saves the scene to a file and renders it
   in its own process through Render Command (usdrecord with the chosen Renderer), so you
   keep working while it renders. **Stop Render** ends it and every process it started,
