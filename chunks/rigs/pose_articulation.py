@@ -425,10 +425,13 @@ def apply_pose(stage, roots, values, root_path, node, write_targets=True):
             _write_target(prim, joint.kind, value)
         posed += 1
 
-    # In path order: a set of prims comes out in another order each cook, and the layer's
-    # prims then changed order every time -- which a diff cook can only apply by removing
-    # and writing them again, a resync of every link (and of an instanced link's prototype).
-    for prim in sorted(touched, key=lambda p: p.GetPath()):
+    # Every link a joint can move, posed or not (an unposed one gets the identity): a link
+    # written only while its joint is off zero came and went with the joint, and a diff cook
+    # can only apply that by adding and removing its specs -- a resync of the link, and of its
+    # prototype if it is instanced, where a value set in place is not. In path order: a set
+    # comes out in another order each cook, and reordering prims is the same resync.
+    del touched
+    for prim in sorted(local, key=lambda p: p.GetPath()):
         _set_local(prim, local[prim], upstream[prim], node)
     return posed
 
