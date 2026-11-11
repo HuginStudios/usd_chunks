@@ -23,6 +23,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import re
 import time
 import weakref
 from collections.abc import Iterable
@@ -109,7 +110,8 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
         chunk: The chunk to read.
 
     Returns:
-        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name.
+        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name, and both win
+        over a runtime one (GIZMOS_HOOK) of the same name.
     """
     config = chunk.get_config() if hasattr(chunk, "get_config") else None
     gizmos = list(getattr(config, "gizmos", None) or ())
@@ -120,7 +122,32 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
         # form is "write the full one", and that has to actually replace the short one.
         if sugared.name not in declared:
             gizmos.append(sugared)
+            declared.add(sugared.name)
+    for runtime in _runtime_gizmos(chunk):
+        if runtime.name not in declared:
+            gizmos.append(runtime)
+            declared.add(runtime.name)
     return gizmos
+
+
+#: A module function returning more handles, worked out from the chunk as it is now:
+#: ``def gizmos(node) -> list[chunk.Gizmo]``. For handles that come and go with the chunk's
+#: params -- one per row of a list (driving ``doors.u[2]``), one per joint. config() runs
+#: once, before the chunk has any rows; this runs whenever the handles are authored or
+#: refreshed, so a row added or removed adds or removes its handle.
+GIZMOS_HOOK = "gizmos"
+
+
+def _runtime_gizmos(chunk: core.ChunkBase) -> list:
+    hook = getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK)
+    if hook is None:
+        return []
+    try:
+        return [g for g in (hook(chunk) or ()) if isinstance(g, core.GizmoBase)]
+    except Exception:
+        # Called from the param-changed path: a hook that raises must not break editing.
+        logger.exception("%s hook failed on chunk %r", GIZMOS_HOOK, getattr(chunk, "name", chunk))
+        return []
 
 
 def _sugared_gizmos(chunk: core.ChunkBase) -> list:
@@ -280,6 +307,11 @@ def _anchor_targets(chunk: core.ChunkBase, gizmo, stage: Usd.Stage) -> list:
     never have to evaluate a chunk param to find out where to draw. We already re-read this
     param on every cook, so keeping the rel fresh costs nothing.
     """
+    # A prim path rather than a param's name: a handle the module's gizmos(node) hook made
+    # for one row, hanging off the prim the chunk makes for that row -- no param holds it.
+    if str(gizmo.anchor).startswith("/"):
+        return [Sdf.Path(gizmo.anchor)] if Sdf.Path.IsValidPathString(gizmo.anchor) else []
+
     param = resolve_anchor_param(chunk, gizmo)
 
     resolve = getattr(param, "resolve_paths", None)
@@ -364,6 +396,42 @@ def _iter_vectors(obj, prefix: str = ""):
             yield from _iter_vectors(param, path)
 
 
+#: A driver entry naming one row of a list: ``u[2]``, or ``doors.u[2]`` with the list's path.
+_ROW_ENTRY = re.compile(r"^(?P<name>.+)\[(?P<index>\d+)\]$")
+
+
+def _iter_lists(obj, prefix: str = ""):
+    """(path, list group) for every list group under obj, not crossing into a nested chunk."""
+    for param in obj.get_my_params():
+        if isinstance(param, core.ChunkBase):
+            continue
+        path = f"{prefix}.{param.name}" if prefix else param.name
+        if isinstance(param, core.ChunkListGroupBase):
+            yield path, param
+        elif isinstance(param, core.ChunkGroupBase) and not isinstance(param, core.ChunkVectorBase):
+            yield from _iter_lists(param, path)
+
+
+def _row_entry(chunk: core.ChunkBase, entry: str):
+    """(row param, column path) for a driver entry naming a list row, or None if it names none.
+
+    The column path is the list's path and the param's name -- what the list keeps that
+    param's rows under, one array attribute for all of them.
+    """
+    match = _ROW_ENTRY.match(str(entry).strip())
+    if not match:
+        return None
+    name, index = match["name"], int(match["index"])
+    for path, group in _iter_lists(chunk):
+        template = name[len(path) + 1:] if name.startswith(path + ".") else name
+        if group.get_param(template) is None or not 0 <= index < group.size:
+            continue
+        row = group.get_indexed_param(template, index)
+        if row is not None:
+            return row, f"{path}.{template}"
+    return None
+
+
 def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     """The full dotted path of a driven param, from either its path or its bare name.
 
@@ -375,6 +443,9 @@ def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     for path, param in itertools.chain(_iter_params(chunk), _iter_vectors(chunk)):
         if path == entry or param.name == entry:
             return path
+    # A list row is kept in its column's array: the connection names the column.
+    if row := _row_entry(chunk, entry):
+        return row[1]
     raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
 
 
@@ -440,6 +511,30 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> No
                 # One malformed gizmo must not take the chunk prim down with it -- the rest of
                 # the prim's bookkeeping (exec ports, params) is what makes the chunk work at all.
                 logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
+
+
+def _sync_runtime_records(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmos: list) -> bool:
+    """Bring the prim's records in line with a chunk whose handles change (GIZMOS_HOOK).
+
+    A row's handle that is new gets authored; one whose row has gone loses its record, or a
+    host would keep drawing a handle that drives nothing. Only for a chunk with the hook: a
+    plain chunk's set never changes. True if anything was written.
+    """
+    if getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK) is None:
+        return False
+    wanted = {g.name for g in gizmos}
+    have = set(_gizmo_names(prim))
+    gone, new = have - wanted, [g for g in gizmos if g.name not in have]
+    if not gone and not new:
+        return False
+    with Sdf.ChangeBlock():
+        for prop in prim.GetProperties():
+            name = prop.GetName()
+            if name.startswith(GIZMO_PREFIX) and name[len(GIZMO_PREFIX):].split(":")[0] in gone:
+                prim.RemoveProperty(name)
+    if new:
+        author_gizmos(stage, prim, chunk)
+    return True
 
 
 def _author_hidden(prim: Usd.Prim, chunk: core.ChunkBase, name: str) -> None:
@@ -510,8 +605,9 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmo) 
     # anchorSource is for us, not for hosts: write-back needs to know which param produced
     # the target, and a host that had to read it would be back to the two-hop lookup this
     # schema exists to avoid.
-    anchor_param = resolve_anchor_param(chunk, gizmo)
-    _uniform_token(prim, _attr_name(gizmo.name, "anchorSource")).Set(anchor_param.name)
+    if not str(gizmo.anchor).startswith("/"):  # a literal prim path has no param behind it
+        anchor_param = resolve_anchor_param(chunk, gizmo)
+        _uniform_token(prim, _attr_name(gizmo.name, "anchorSource")).Set(anchor_param.name)
 
     rel = prim.CreateRelationship(_attr_name(gizmo.name, "anchor"), custom=False)
     rel.SetTargets(_anchor_targets(chunk, gizmo, stage))
@@ -532,7 +628,11 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
         chunk: The chunk whose gizmos to refresh.
     """
     gizmos = get_gizmos(chunk)
-    if not gizmos or not (prim and prim.IsValid()):
+    if not (prim and prim.IsValid()):
+        return
+    if _sync_runtime_records(stage, prim, chunk, gizmos):
+        return  # re-authored whole, anchors included
+    if not gizmos:
         return
 
     for gizmo in gizmos:
@@ -572,7 +672,7 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
 
 def _gizmo_names(prim: Usd.Prim) -> list:
     names = []
-    for attr in prim.GetAttributes():
+    for attr in prim.GetProperties():
         name = attr.GetName()
         if not name.startswith(GIZMO_PREFIX):
             continue
@@ -777,6 +877,11 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     # Order matters and is preserved: chunks_for_prim walks GetPrimStack(), which USD
     # returns strength-ordered, so the chunk whose result is actually on screen stays first
     # and a host driving handles[0] drives the one the user can see.
+    # A handle anchored by a literal prim path (one a gizmos(node) hook made for one row) is
+    # that prim's alone. Its chunk writes every row's prim, so each prim's layer stack names
+    # the chunk -- and without this, dragging one door handed the drag to every door.
+    path = prim.GetPath()
+    descs = [d for d in descs if d.anchor_source or not d.anchor or path in d.anchor]
     seen = {(str(d.chunk_prim), d.name) for d in descs}
     for desc in _gizmos_anchored_at(prim):
         if (str(desc.chunk_prim), desc.name) not in seen:
@@ -959,6 +1064,100 @@ def _translation_about(matrix: Gf.Matrix4d, translation, pivot: tuple | None) ->
 
 
 # ---------------------------------------------------------------------------
+# box handles: the face under the mouse, and where a drag takes it
+# ---------------------------------------------------------------------------
+
+#: (axis index, sign) of each face of a `box` handle, in its driver order: +X, -X, +Y, -Y, +Z, -Z.
+BOX_FACES = ((0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1))
+
+# Below this a ray runs along a slab, or along the face's normal, and has no answer there.
+_PARALLEL_EPSILON = 1e-12
+
+
+def box_bounds(values) -> tuple[Gf.Vec3d, Gf.Vec3d]:
+    """The (min, max) corners of a `box` handle's six values, in the anchor's own space.
+
+    Args:
+        values: The six face distances from the anchor's origin, +X, -X, +Y, -Y, +Z, -Z.
+    """
+    px, nx, py, ny, pz, nz = (float(v) for v in values)
+    return Gf.Vec3d(-nx, -ny, -nz), Gf.Vec3d(px, py, pz)
+
+
+def pick_box_face(values, origin, direction) -> tuple[int, float] | None:
+    """Which face of a `box` handle a ray enters it through, and how far along the ray.
+
+    Against the box the six values describe and nothing else: a mesh inside the box, or the
+    box's own drawn geometry, can never be what is picked, so a host tests this before (and
+    instead of) its own pick. Offered to hosts for the same reason `decompose()` is -- the
+    face order and the "entering face" rule live in one place.
+
+    Args:
+        values: The handle's six face distances (the params it drives, as they are now).
+        origin: The ray's start, in the anchor's own space (the inverse of its world transform
+            applied to the world ray).
+        direction: The ray's direction, in the same space. Need not be unit length.
+
+    Returns:
+        (face index into BOX_FACES and the driver, ray parameter of the hit), or None when
+        the ray misses the box or starts inside it.
+    """
+    lo, hi = box_bounds(values)
+    o, d = Gf.Vec3d(*origin), Gf.Vec3d(*direction)
+    t_enter, t_exit, face = -math.inf, math.inf, None
+    for axis in range(3):
+        if abs(d[axis]) < _PARALLEL_EPSILON:
+            if not lo[axis] <= o[axis] <= hi[axis]:
+                return None
+            continue
+        t_lo, t_hi = (lo[axis] - o[axis]) / d[axis], (hi[axis] - o[axis]) / d[axis]
+        near, far = min(t_lo, t_hi), max(t_lo, t_hi)
+        if near > t_enter:
+            # A ray heading up an axis enters through that axis's min face, the -X face for X.
+            t_enter, face = near, 2 * axis + (1 if d[axis] > 0 else 0)
+        t_exit = min(t_exit, far)
+    if face is None or t_enter > t_exit or t_enter < 0.0:
+        return None
+    return face, t_enter
+
+
+def drag_box_face(values, face: int, grab, origin, direction) -> list[float]:
+    """The six values of a `box` handle once `face` is pulled to where a ray now points.
+
+    The face moves along its own normal only: the new distance is where the line through
+    the grab point along the normal comes closest to the ray. All in the anchor's own space.
+
+    Args:
+        values: The six face distances **as they were when the drag began**, not the last
+            tick's, so a drag never drifts.
+        face: The face being dragged, from pick_box_face.
+        grab: The point the face was grabbed at, also from the press:
+            ``origin + direction * t`` for the press's ray and pick_box_face's t.
+        origin: This tick's ray start.
+        direction: This tick's ray direction.
+
+    Returns:
+        The six values to send to apply_bindings. Unchanged while the ray runs along the
+        normal (looking straight at the face), where no point on it is nearer than another.
+        A face is never pulled past the opposite one.
+    """
+    out = [float(v) for v in values]
+    axis, sign = BOX_FACES[face]
+    normal = Gf.Vec3d(0, 0, 0)
+    normal[axis] = float(sign)
+    d = Gf.Vec3d(*direction)
+    w = Gf.Vec3d(*grab) - Gf.Vec3d(*origin)
+    b, c = normal * d, d * d
+    denom = c - b * b
+    if denom < _PARALLEL_EPSILON * max(c, 1.0):
+        return out
+    s = (b * (d * w) - c * (normal * w)) / denom
+    opposite = face ^ 1
+    out[face] = max(out[face] + s, -out[opposite])
+    return out
+
+
+# ---------------------------------------------------------------------------
 # write-back
 # ---------------------------------------------------------------------------
 
@@ -996,6 +1195,8 @@ def _param_for_entry(chunk: core.ChunkBase, entry: str):
     A name that does not resolve is a declaration bug -- the chunk's own config naming a
     param it does not have -- so it raises rather than quietly doing nothing.
     """
+    if row := _row_entry(chunk, entry):
+        return row[0]
     param = chunk.get_param(str(entry).strip())
     if param is None:
         raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")

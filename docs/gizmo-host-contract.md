@@ -191,6 +191,7 @@ payload map — reading the type answers the whole question.
 | `rotate` | `Gf.Vec3d`, Euler XYZ, **degrees** | as above |
 | `scale` | `Gf.Vec3d` | as above |
 | `cube`, `sphere` | a single number | One param |
+| `box` | six numbers | Six params: the +X, -X, +Y, -Y, +Z, -Z faces, in that order |
 
 **`transform` is the whole-chunk handle** — in effect *"run your native transform
 manipulator and give me the result"*. Build your own TRS handle, let the user drag it, and
@@ -201,6 +202,28 @@ every host.
 **Shape types are one-dimensional handles.** A shape plus an `axis` *is* a linear handle:
 map it onto your native linear-handle primitive and ignore the shape name entirely.
 `usd-guides` draws the shape literally; Houdini and Blender should not.
+
+**`box` is a box whose faces are the handles.** Draw no handle of your own. Each driven
+param is the distance from the anchor's origin to one face, in the anchor's local space, so
+the six values *are* the box. The user hovers a face, it highlights, they grab it and pull
+it along its normal; only that face moves. Two pure helpers do the maths, in the anchor's
+space (apply the inverse of its world transform to the mouse ray first):
+
+```python
+hit = chunk_gizmo.pick_box_face(values, origin, direction)  # on hover and press
+if hit:
+    face, t = hit
+    start, grab = values, origin + direction * t            # keep both for the drag
+...
+new = chunk_gizmo.drag_box_face(start, face, grab, origin, direction)  # every tick
+chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, new)
+```
+
+**Pick against the box, never the scene.** `pick_box_face` tests the box the six values
+describe, so a mesh inside the volume can never be what is grabbed. Test it before your
+own pick and let a hit win. `drag_box_face` always starts from the press's values and grab
+point, not the last tick's, so a long drag does not drift. Snapping is the chunk's
+(`gizmo_changed`), not yours.
 
 **Unknown types.** The set will grow. Skip a `type` you do not recognise rather than
 guessing — a *custom* type is one only the `usd-guides` render path understands, and

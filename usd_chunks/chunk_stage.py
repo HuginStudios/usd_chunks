@@ -1718,6 +1718,16 @@ class ChunkStageSync(metaclass=RegistrySingleton):
                         self._follow_composed(chunk, owner)
             return
 
+        if attr_sender.name == "size":
+            # A list grown or shrunk: a chunk with a handle per row (gizmo.runtime's
+            # GIZMOS_HOOK) gains or loses one, and no row value need change for it.
+            owner = attr_sender.get_owner()
+            if isinstance(owner, core.ChunkListGroupBase):
+                chunk = owner.get_chunk()
+                if chunk and id(chunk) in self._chunk_prim_paths:
+                    self._refresh_gizmo_anchors(chunk)
+            return
+
         if attr_sender.name != "name":
             return
         old_name = attr_sender.old_value
@@ -2271,7 +2281,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         no single name to watch. Cheap enough to sit here because chunk_gizmo returns
         immediately for a chunk that declares no gizmos, which is nearly all of them.
         """
-        if not chunk_gizmo.get_gizmos(chunk):
+        # A chunk with handles per row may have none right now (no rows) and still have records
+        # to take down, so it is not let off here.
+        if not chunk_gizmo.get_gizmos(chunk) and chunk._module_hook(chunk_gizmo.GIZMOS_HOOK) is None:
             return
         prim_path = self._chunk_prim_paths.get(id(chunk))
         if not prim_path:

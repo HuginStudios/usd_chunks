@@ -81,6 +81,8 @@ from usd_chunks.chunk_attributes import (  # noqa: F401  (re-exported)
 from usd_chunks.chunk_widget_api import ChunkParamWidgetBase, ChunkWidgetFactoryBase
 from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
     GIZMO_AXES,
+    GIZMO_BOX_ARITY,
+    GIZMO_BOX_TYPE,
     GIZMO_BRUSH_TYPE,
     GIZMO_DEFAULT_EDIT_MODE,
     GIZMO_EDIT_MODES,

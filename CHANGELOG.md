@@ -41,6 +41,16 @@ This file starts with the first release; development before that is in the commi
 - One row's param of a list lofts onto a group (`Scatter_proto_path`, Scatter's first
   prototype). It warned "has no USD attribute bound" and lofted nothing: a list keeps each
   column in one array, so the group's attribute now records the row it drives.
+- Gizmos per list row: a chunk module's `gizmos(node)` hook returns handles worked out
+  from the chunk as it is, and a driver entry can name one row of a list, `doors.u[2]`.
+  A row added gets its handle and a row removed loses it, so a list of placements can
+  each have their own handle in the viewport. A gizmo's `anchor` can be a literal prim
+  path (`/Building/Doors/door_2`), so a row's handle hangs off the prim made for that row
+  and is offered on that prim only.
+- A `box` gizmo type: a box whose faces are the handles. A host picks the face under the
+  mouse and pulls it along its normal, and only that face moves. It drives six params, the
+  distance to each face. `gizmo.runtime.pick_box_face` and `drag_box_face` do the picking
+  and the drag for every host, against the box itself, never the geometry inside it.
 - Scatter Points: a prototype row takes a collection, `%trees`, for one prototype per member of
   the collection named trees. Deactivated library entries count, and the meshes under a member
   are not prototypes of their own. Variant selections work on it too: `%trees{season=*}`.
