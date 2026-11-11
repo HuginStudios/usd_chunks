@@ -64,7 +64,7 @@ def config():
 | `name` | The handle's id on this chunk (not its type; two cubes on one chunk is fine) |
 | `type` | From the table above |
 | `driver` | The param path(s) it writes: one (`"focusDistance"`, a vector), three, or nine for `transform`, in order. Required |
-| `anchor` | Name of the prim-path param the handle hangs off. Empty: inferred from the `PRIM_SELECTION` param, or `primpath_location` |
+| `anchor` | Name of the prim-path param the handle hangs off, or a literal prim path starting with `/` (a row's handle on the prim the chunk makes for that row). Empty: inferred from the `PRIM_SELECTION` param, or `primpath_location` |
 | `axis` | `X`, `-X`, `Y`, `-Y`, `Z`, `-Z` or `screen`, in the anchor's local space. Set it only when the direction is the meaning (focus runs along -Z). `None` = free drag |
 | `label` | Display name; defaults to the chunk's name |
 | `space` | `"local"` (default) or `"world"` |

@@ -44,7 +44,9 @@ This file starts with the first release; development before that is in the commi
 - Gizmos per list row: a chunk module's `gizmos(node)` hook returns handles worked out
   from the chunk as it is, and a driver entry can name one row of a list, `doors.u[2]`.
   A row added gets its handle and a row removed loses it, so a list of placements can
-  each have their own handle in the viewport.
+  each have their own handle in the viewport. A gizmo's `anchor` can be a literal prim
+  path (`/Building/Doors/door_2`), so a row's handle hangs off the prim made for that row
+  and is offered on that prim only.
 - A `box` gizmo type: a box whose faces are the handles. A host picks the face under the
   mouse and pulls it along its normal, and only that face moves. It drives six params, the
   distance to each face. `gizmo.runtime.pick_box_face` and `drag_box_face` do the picking
