@@ -63,9 +63,11 @@ def _natural(name):
 
 
 def _roots(node):
-    """The articulation under the chunk's prim path, or an empty list."""
-    scene = node.get_scene()
-    stage = scene.get_stage() if scene else None
+    """The articulation under the chunk's prim path, or an empty list.
+
+    On the stage the cook runs on (node.get_stage()), which holds the layer it writes into.
+    """
+    stage = node.get_stage()
     param = node.get_param("prim_path")
     path = (param.value if param else "") or ""
     if stage is None or not path:
@@ -423,7 +425,10 @@ def apply_pose(stage, roots, values, root_path, node, write_targets=True):
             _write_target(prim, joint.kind, value)
         posed += 1
 
-    for prim in touched:
+    # In path order: a set of prims comes out in another order each cook, and the layer's
+    # prims then changed order every time -- which a diff cook can only apply by removing
+    # and writing them again, a resync of every link (and of an instanced link's prototype).
+    for prim in sorted(touched, key=lambda p: p.GetPath()):
         _set_local(prim, local[prim], upstream[prim], node)
     return posed
 
