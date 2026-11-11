@@ -218,6 +218,13 @@ This file starts with the first release; development before that is in the commi
   `usdchunks show` can't list). Pose Articulation's description says how its sliders are
   named and set, URDF Import's points to it, the build-network skill has a row for importing
   and posing a robot, and the write-chunk skill starts by checking that no chunk does the job.
+- Dragging a gizmo stays on the cursor when the chunk cooks slowly. During a drag a chunk
+  cooks at most 30 times a second, with the newest handle value, so mouse moves that arrive
+  during a cook no longer queue up behind it. Once a cook takes longer than 50 ms, the drag
+  stops cooking while the handle moves, instead of freezing the viewport on every cook, and
+  cooks where the handle is held still for a tenth of a second and where it is let go.
+  Hosts still call `apply_bindings` every tick. In Blender, the pivot dot now follows the
+  mouse instead of the last cook.
 - **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
   `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
   stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To

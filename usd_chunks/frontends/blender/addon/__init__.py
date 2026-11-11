@@ -192,6 +192,8 @@ _later_order = itertools.count()
 
 #: How often the queue is checked: the resolution of a call_later delay.
 _LATER_INTERVAL = 0.05
+#: The soonest the queue is checked again when a call is about due.
+_LATER_MIN = 0.001
 
 
 def _run_due_calls() -> float:
@@ -207,6 +209,11 @@ def _run_due_calls() -> float:
             fn()
         except Exception:  # one failing call must not stop the queue for good
             logger.exception("usd_chunks: a call_later callback failed")
+    # Wake for the next call when it is due, not at the next poll: a gizmo drag's held-back
+    # write is due within a frame or two, and a 50 ms poll would add up to 50 ms to it.
+    with _later_lock:
+        if _later:
+            return min(_LATER_INTERVAL, max(_LATER_MIN, _later[0][0] - time.monotonic()))
     return _LATER_INTERVAL
 
 
