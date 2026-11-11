@@ -2818,6 +2818,13 @@ def execute(node):
     _migrate_legacy_proto(node)
     missing: list[str] = []
     specs = _resolve_prototypes(node, scratch_stage, missing)
+    # A script's chunk cooks once before it is wired (chunk_scene.place), when the surface
+    # and prototypes it names are above it in a moment but not yet: scattering then placed
+    # nothing, and said "surface prim not found" for a network that was right -- every
+    # benchmark agent saw it and some went looking for the fault. Wait for the wire; a prim
+    # still missing once wired is reported as before.
+    if (surface_missing or missing) and getattr(node, "_wiring_pending", False):
+        return
 
     triangles = _collect_triangles(surface_prim)
     # None whenever the surface carries no painted weight, so an unpainted scatter never pays

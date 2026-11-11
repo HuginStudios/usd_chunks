@@ -1,0 +1,71 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "ScatterOnTerrain" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        string inputs:doc = """Instances spread over a terrain mesh, as one PointInstancer. Wire it after what brings in the terrain and the prototype (a Sublayer, a usd_sphere ...).
+Params: Scatter_surface_prim, the terrain mesh; Scatter_proto_path, the prim to instance; Scatter_inst_path, where the PointInstancer is written; Scatter_density, instances per m² of the faces within Scatter_max_slope degrees of up (count = density x that area, exactly); Scatter_seed, a different pattern per seed; Scatter_sit_on_surface, rest each instance's bottom on the surface. Instances may overlap: spacing is off so the count is exact."""
+        custom float inputs:Scatter_density = 1
+        custom string inputs:Scatter_inst_path = "/World/scatter"
+        custom float inputs:Scatter_max_slope = 90
+        custom string inputs:Scatter_proto_path = "/prototypes/rock" (
+            customData = {
+                dictionary usdChunks = {
+                    string loftedRow = "Scatter/prototypes.0.proto_path"
+                }
+            }
+        )
+        custom int inputs:Scatter_seed = 0
+        custom bool inputs:Scatter_sit_on_surface = 1
+        custom string inputs:Scatter_surface_prim = "/World/terrain"
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Scatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            bool inputs:Distribution:auto_spacing = 0
+            float inputs:Distribution:density = 1
+            float inputs:Distribution:density.connect = </chunks/ScatterOnTerrain.inputs:Scatter_density>
+            int inputs:Distribution:max_count = 1000000
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 0
+            int inputs:Distribution:seed.connect = </chunks/ScatterOnTerrain.inputs:Scatter_seed>
+            float inputs:Distribution:spacing = 0
+            string inputs:inst_path = "/World/scatter"
+            string inputs:inst_path.connect = </chunks/ScatterOnTerrain.inputs:Scatter_inst_path>
+            string[] inputs:prototypes:proto_path = ["/prototypes/rock"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            float inputs:Region:max_slope = 90
+            float inputs:Region:max_slope.connect = </chunks/ScatterOnTerrain.inputs:Scatter_max_slope>
+            string inputs:surface_prim = "/World/terrain"
+            string inputs:surface_prim.connect = </chunks/ScatterOnTerrain.inputs:Scatter_surface_prim>
+            bool inputs:Variation:sit_on_surface = 1
+            bool inputs:Variation:sit_on_surface.connect = </chunks/ScatterOnTerrain.inputs:Scatter_sit_on_surface>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/ScatterOnTerrain/Scatter.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (280, 0)
+        }
+    }
+}
+

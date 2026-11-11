@@ -40,6 +40,11 @@ default, to opt one node out. The environment decides for all of them:
 
 Every write prunes: entries unread for 30 days go, then the least recently read until the
 folder is under the cap. Reading an entry counts as using it.
+
+A cook's entry is written once the chunk has stopped cooking for STORE_DELAY_S, not by
+the cook itself: a slider drag cooks on every tick, and each tick's result is one nobody
+comes back to. Each cook replaces the chunk's waiting write, so the drag's last result is
+the one written. A headless run has no event loop to wait in, and writes at once.
 """
 
 from __future__ import annotations
@@ -51,7 +56,9 @@ import os
 import pickle
 import sys
 import time
+import weakref
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from pxr import Sdf, Usd, UsdGeom
@@ -109,6 +116,59 @@ def incomplete(chunk) -> None:
         chunk: The chunk cooking.
     """
     setattr(chunk, _INCOMPLETE, True)
+
+
+#: How long a chunk's cooks must stop before its last result is written: a slider drag
+#: cooks on every tick, and only where it lets go is worth keeping.
+STORE_DELAY_S = 0.5
+
+#: Each chunk's write still waiting out STORE_DELAY_S, by id(chunk): the cancel call_later gave.
+_pending: dict[int, Callable[[], None]] = {}
+
+
+def _store_later(chunk, key: str, layer: Sdf.Layer, written: list) -> None:
+    """Write this cook's entry once chunk has stopped cooking for STORE_DELAY_S.
+
+    A drag on a slider cooks on every tick, and each tick's result is one nobody comes
+    back to: written, it is a disk write per tick and an entry that only pushes the useful
+    ones out of the cap. So each cook replaces the chunk's waiting write, and the one that
+    lands is the last. Through the scene's call_later: a host with an event loop waits; a
+    headless run, which has none, writes now.
+    """
+    _cancel_pending(chunk)
+    ref = weakref.ref(chunk)
+    ran = []
+
+    def store() -> None:
+        ran.append(True)
+        _pending.pop(id(chunk), None)
+        node = ref()
+        if node is None or node.is_deleting() or not layer:
+            return
+        # Only if the layer still holds the result the key describes: a param changed since
+        # has its own cook coming, which writes its own entry.
+        entry = lookup(node)
+        if entry is None or entry.key != key:
+            return
+        try:
+            _store(key, layer, written)
+        except Exception:  # noqa: BLE001 - a cache that cannot be written is only slower
+            logger.warning("cook cache: could not store %s", node.name, exc_info=True)
+
+    scene = chunk.get_scene()
+    if scene is None:
+        store()
+        return
+    cancel = scene.call_later(store, STORE_DELAY_S)
+    if not ran:  # headless, call_later has run it already
+        _pending[id(chunk)] = cancel
+
+
+def _cancel_pending(chunk) -> None:
+    """Drop chunk's waiting write, if any: a newer cook describes its layer now."""
+    cancel = _pending.pop(id(chunk), None)
+    if cancel is not None:
+        cancel()
 
 
 def _always(config) -> bool:
@@ -217,6 +277,8 @@ class CookEntry:
 
     def after_cook(self, chunk, layer: Sdf.Layer) -> None:
         """Store what the cook just made, if it is something the key accounts for."""
+        # A drag's earlier cook no longer describes the layer, whether or not this one is kept.
+        _cancel_pending(chunk)
         if self._restored or self._before is None or getattr(chunk, _INCOMPLETE, False):
             return
         elapsed = time.perf_counter() - self._started
@@ -239,10 +301,7 @@ class CookEntry:
                 )
                 return
             written.append((index, name, has_value, item.value if has_value else None, bits))
-        try:
-            _store(self.key, layer, written)
-        except Exception:  # noqa: BLE001 - a cache that cannot be written is only slower
-            logger.warning("cook cache: could not store %s", chunk.name, exc_info=True)
+        _store_later(chunk, self.key, layer, written)
 
     def store(self, chunk, layer: Sdf.Layer) -> None:
         """Store a result made outside a cook, such as a bake run from a button.

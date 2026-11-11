@@ -289,16 +289,41 @@ prim. That is the whole reason this boundary exists.
 
 ### Write on every tick
 
-> **Never batch writes to `stop_gizmo()`.**
+> **Never batch writes to `stop_gizmo()` yourself.** Call `apply_bindings` every tick;
+> `usd_chunks` decides when to cook.
 
-This is the tempting optimisation the first time a heavy chunk cooks slowly, and it is
-exactly what makes a handle feel dead — the object stops following the cursor and jumps at
-the end. Writing per tick is already how sliders behave. If a chunk is too slow to drag,
-fix the cook.
+Batching in the host is the tempting optimisation the first time a heavy chunk cooks
+slowly, and for a chunk that cooks fast it is exactly what makes a handle feel dead: the
+object stops following the cursor and jumps at the end. Writing per tick is already how
+sliders behave.
+
+Inside the `start_gizmo()`/`stop_gizmo()` bracket, `usd_chunks` paces the cooks:
+
+- **At most every `chunk_gizmo.DRAG_INTERVAL` (1/30 s), the newest value only.** A write
+  that comes sooner waits on a `scene.call_later` timer and is replaced by any later one,
+  so mouse moves that arrive during a cook collapse into one cook instead of queueing
+  behind it. A tick that arrives once the interval is up cooks then and there, so the drag
+  keeps cooking even where a host's timers starve while input keeps coming (Qt's on
+  Windows do); the timer only cooks the value left when the mouse stops.
+- **Once a cook takes longer than `chunk_gizmo.SLOW_COOK` (50 ms), not until release.** A
+  cook that long blocks the viewport, so the handle would freeze on every one. While the
+  handle moves the rest of the drag cooks nothing; it cooks where the handle rests (held
+  still for `chunk_gizmo.DRAG_REST`, 0.1 s; each tick starts the wait again) and where it
+  is let go. That release
+  cook is timed too, and the chunk's next drag starts from it: still slow, it waits from
+  the first tick; fast again, it drags live.
+
+`stop_gizmo()` cooks the write still waiting before `GIZMO_STOP` goes out. Outside a
+bracket, every write cooks at once.
+
+Draw your handle from the mouse every frame, not from the cooked prim: it would trail the
+cursor by up to one interval plus a cook, and on a slow chunk stand still until release.
+Your `call_later` must honour its `delay`, and your viewport must redraw after a cook that
+a timer ran, not only on mouse moves.
 
 ### Notices
 
-`GIZMO_START` → `GIZMO_CHANGED` (one per tick, after the write) → `GIZMO_STOP`.
+`GIZMO_START` → `GIZMO_CHANGED` (one per cook, after the write) → `GIZMO_STOP`.
 
 If your host has its own undo stack, open a block on START and close it on STOP. usdview
 needs none of this: `chunk_undo.UndoStack` (fed by `frontends/qt/undo.py`) makes one step

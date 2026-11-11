@@ -9420,6 +9420,61 @@ def _wire_loft_sync(param: core.ChunkParamBase, context_param: core.ChunkParamBa
     )
 
 
+#: On a group attribute lofted from one row of a list: "<inner chunk>/<list>.<row>.<param>",
+#: the row's name as a script gives it (chunk_scene._scripted_param).
+_LOFTED_ROW = "usdChunks:loftedRow"
+
+
+def _list_row(param) -> tuple | None:
+    """(list, row index) when param is one row's param in a list, else None."""
+    container = param.get_owner() if hasattr(param, "get_owner") else None
+    row = container.get_owner() if container is not None and hasattr(container, "get_owner") else None
+    rows = row.get_owner() if row is not None and hasattr(row, "get_owner") else None
+    if rows is None or not hasattr(rows, "proxy_params"):
+        return None
+    index = next((i for i, group in enumerate(rows.proxy_params) if group is row), None)
+    return (rows, index) if index is not None else None
+
+
+def _loft_source(param):
+    """What a lofted param is cloned from: a row's own param is a proxy of the list's."""
+    return getattr(param, "_param_ref", None) or param if _list_row(param) else param
+
+
+def _loft_row(stage: Usd.Stage, param, context: core.ChunkBase, rows, index: int) -> None:
+    """Loft one row's param of a list: Scatter's first prototype, a Sublayer's first file.
+
+    A row has no attribute of its own to connect: the list keeps each column in one array
+    (inputs:prototypes:proto_path). So the group's attribute records the row it drives
+    (_LOFTED_ROW), and the two params are kept in step in Python, as a loft is anyway;
+    _find_lofted_inner finds the row again from the record when the file is opened.
+    """
+    owner = param.get_chunk()
+    key = f"{owner.name}/{rows.name}.{index}.{param.name}"
+    context_prim_path = Sdf.Path(context.prim_path if context.prim_path else _CHUNKS_ROOT)
+    context_prim = stage.GetPrimAtPath(context_prim_path) or stage.DefinePrim(context_prim_path)
+    if any(a.GetCustomDataByKey(_LOFTED_ROW) == key for a in context_prim.GetAttributes()):
+        return  # one copy per group
+    owner_prim = stage.GetPrimAtPath(get_chunk_prim_path(owner))
+    column = owner_prim.GetAttribute(f"{_INPUTS_PREFIX}{rows.name}:{param.name}") if owner_prim else None
+    type_name = column.GetTypeName().scalarType if column else Sdf.ValueTypeNames.String
+
+    lofted_name = _lofted_attr_name(context_prim, context, _INPUTS_PREFIX, owner, param.name)
+    context_attr = context_prim.CreateAttribute(f"{_INPUTS_PREFIX}{lofted_name}", type_name, custom=True)
+    if (val := param.value) is not None:
+        context_attr.Set(val)
+    context_attr.SetCustomDataByKey(_LOFTED_ROW, key)
+
+    context_param = _loft_source(param).clone()
+    context_param.name = lofted_name
+    context_param.label = _lofted_label(owner, context, param.get_label())
+    context_param._lofted = True
+    context.add_param(context_param)
+    context_param._chunk_parent = None
+    context_param._connect_param_attr(context_attr)
+    _wire_loft_sync(param, context_param)
+
+
 def _promoted_for_loft(param):
     """The param to loft for param: itself, or the saved one its module promotes it to.
 
@@ -9452,6 +9507,9 @@ def loft_param_to_context(param: core.ChunkParamBase, context: core.ChunkBase) -
     """
     sync = ChunkStageSync()
     if not sync.initialized or not sync._stage:
+        return
+    if (row := _list_row(param)) is not None:
+        _loft_row(sync._stage, param, context, *row)
         return
     param = _promoted_for_loft(param)
     if lofted_copy(param, context) is not None:
@@ -9899,6 +9957,28 @@ def _find_lofted_inner(stage: Usd.Stage, context: core.ChunkBase, context_attr_p
                 continue
             if any(str(c) == context_attr_path for c in inner_attr.GetConnections()):
                 return inner_chunk, param
+    return _find_lofted_row(stage, context, context_attr_path)
+
+
+def _find_lofted_row(stage: Usd.Stage, context: core.ChunkBase, context_attr_path: str):
+    """The inner chunk and row param a group attribute lofted from a list row drives.
+
+    Read from the attribute's _LOFTED_ROW record (_loft_row); (None, None) if it has none.
+    """
+    attr = stage.GetAttributeAtPath(Sdf.Path(context_attr_path))
+    key = attr.GetCustomDataByKey(_LOFTED_ROW) if attr else None
+    if not key:
+        return None, None
+    chunk_name, _, script_name = key.partition("/")
+    list_name, index, param_name = script_name.split(".")
+    for inner_chunk in context.get_my_params():
+        if isinstance(inner_chunk, core.ChunkBase) and inner_chunk.name == chunk_name:
+            rows = inner_chunk.get_param(list_name)
+            if rows is None or not hasattr(rows, "proxy_params"):
+                break
+            if rows.size <= int(index):
+                rows.size = int(index) + 1
+            return inner_chunk, rows.get_indexed_param(param_name, int(index))
     return None, None
 
 
@@ -10053,7 +10133,7 @@ def _restore_lofted_on(stage: Usd.Stage, contexts: list[core.ChunkBase]) -> None
             # every reload, and also defeats the already-lofted guard above, which
             # compares against the attribute's name: the param would never match, so a
             # duplicate would be added each time the file was opened.
-            context_param = inner_param.clone()
+            context_param = _loft_source(inner_param).clone()
             context_param.name = param_name
             # See loft_param_to_context's matching comment: without this, a reload showed
             # every lofted param under its bare inner label again, with no way to tell

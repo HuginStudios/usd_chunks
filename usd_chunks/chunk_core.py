@@ -95,6 +95,12 @@ from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
     check_gizmo_sugar,
 )
 
+#: Run with the chunk when a host opens a drag (start_gizmo), before GIZMO_START goes out,
+#: and when it closes one (stop_gizmo), before GIZMO_STOP. gizmo.runtime keeps its drag
+#: throttle in these: the write it held back cooks before anyone hears the drag ended.
+GIZMO_START_HOOKS: list[Callable[[ChunkBase], None]] = []
+GIZMO_STOP_HOOKS: list[Callable[[ChunkBase], None]] = []
+
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
 _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
 
@@ -3643,10 +3649,18 @@ class ChunkBase(ChunkGroupBase):
 
     def start_gizmo(self, notice=None, sender=None):
         """Send GIZMO_START; a callback for when a host starts a drag."""
+        for hook in GIZMO_START_HOOKS:
+            hook(self)
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
 
     def stop_gizmo(self, notice=None, sender=None):
-        """Send GIZMO_STOP; a callback for when a host ends a drag."""
+        """Send GIZMO_STOP; a callback for when a host ends a drag.
+
+        The drag's last write cooks first (GIZMO_STOP_HOOKS), so the chunk holds where the
+        handle was let go by the time STOP goes out.
+        """
+        for hook in GIZMO_STOP_HOOKS:
+            hook(self)
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_STOP)
 
     def disable(self, notice=None, sender=None):

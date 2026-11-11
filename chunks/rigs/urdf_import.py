@@ -474,6 +474,18 @@ def parse(source: str) -> dict:
     }
 
 
+def _mesh_root(node, file_path):
+    """The folder the meshes are looked for in: Mesh Root, or the .urdf's own folder.
+
+    A relative Mesh Root is found as the URDF path is, from the network's folder, so the
+    robot gets its meshes whatever the working directory.
+    """
+    given = (node.get_param("mesh_root").value or "").strip()
+    if not given:
+        return os.path.dirname(file_path)
+    return chunk.resolve_file(node, given) or given
+
+
 def cache_key(node):
     """The meshes the .urdf names, by size and mtime, for the cook cache.
 
@@ -484,7 +496,7 @@ def cache_key(node):
     file_path = chunk.resolve_file(node, node.get_param("file_path").value)
     if not file_path or not os.path.isfile(file_path):
         return ()
-    mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
+    mesh_root = _mesh_root(node, file_path)
     with open(file_path, encoding="utf-8") as handle:
         source = handle.read()
     if "<!DOCTYPE" in source[:4096]:
@@ -508,7 +520,7 @@ def execute(node):
         logger.warning("no such file: %s", given)
         return
 
-    mesh_root = (node.get_param("mesh_root").value or "").strip() or os.path.dirname(file_path)
+    mesh_root = _mesh_root(node, file_path)
     scale = float(node.get_param("scale").value or 1.0)
     approximation = node.get_param("collider_approximation").value or "convexHull"
     want_visual = bool(node.get_param("import_visual").value)
@@ -598,7 +610,10 @@ def execute(node):
                 orient_attr.Set(_to_quat(Gf.Rotation(placement.ExtractRotationQuat())))
                 xform.SetXformOpOrder([UsdGeom.XformOp(translate_attr), UsdGeom.XformOp(orient_attr)])
 
-            UsdPhysics.RigidBodyAPI.Apply(prim)
+            # A nested link is part of its parent's body, not a body of its own: as a rigid
+            # body it would be simulated apart from the parent and fall away from it.
+            if not nest:
+                UsdPhysics.RigidBodyAPI.Apply(prim)
             _author_inertial(prim, link, scale)
 
             if want_visual:
@@ -612,11 +627,16 @@ def execute(node):
                     if geom is None:
                         continue
                     UsdPhysics.CollisionAPI.Apply(geom)
-                    mesh_api = UsdPhysics.MeshCollisionAPI.Apply(geom)
-                    mesh_api.CreateApproximationAttr(approximation)
+                    # Only a mesh is approximated: a box, sphere or cylinder collides as
+                    # itself, and MeshCollisionAPI is for Mesh prims only.
+                    if geom.IsA(UsdGeom.Mesh):
+                        mesh_api = UsdPhysics.MeshCollisionAPI.Apply(geom)
+                        mesh_api.CreateApproximationAttr(approximation)
                     UsdGeom.Imageable(geom).CreatePurposeAttr(UsdGeom.Tokens.guide)
 
-            if joint is not None:
+            # Nesting is the weld, so a nested link gets no joint: a fixed joint to a prim
+            # that is not a body would fix the parent to the world instead.
+            if joint is not None and not nest:
                 _author_joint(stage, joint, parent_prim_path, path, scale)
                 counts["joints"] += 1
 
@@ -667,7 +687,8 @@ def main():
                         "boundingSphere", "meshSimplification", "none"],
             default_value="convexHull",
             flags=ChunkFlags.ParamFlags.LABELED,
-            tooltip="physics:approximation on each collision shape. convexHull is what most "
+            tooltip="physics:approximation on each collision mesh (a box, sphere or cylinder "
+            "collides as itself). convexHull is what most "
             "solvers want; none keeps the exact mesh and is slow.",
         ),
         chunk.Checkbox("import_visual", "Visual Geometry", default_value=True,
@@ -688,7 +709,7 @@ def config():
         Imports a URDF robot as UsdPhysics links, joints and colliders, ready to simulate.
 
         Imports a URDF robot as UsdPhysics: links as rigid bodies with mass and inertia,
-        collision shapes with an approximation, and revolute, prismatic and fixed joints
+        collision shapes (meshes with an approximation), and revolute, prismatic and fixed joints
         with their limits and damping.
 
         URDF is how robots are actually distributed -- the LeRobot SO-101, every ROS arm --
@@ -703,9 +724,12 @@ def config():
         nested child would inherit its parent's simulated transform too and the mechanism
         would come apart. Joints reference bodies by relationship, so the tree survives.
 
-        A link joined by a fixed joint is nested instead. It is not a degree of freedom, the
-        solver leaves it out of the articulation, and nesting is what keeps it attached to
-        the parent it is welded to.
+        A link joined by a fixed joint with no collision geometry (a camera mount, a tool
+        tip) is nested instead. It is not a degree of freedom, so it gets no rigid body and
+        no joint: nesting is what keeps it attached to the parent it is welded to.
+
+        To pose the robot, wire Pose Articulation after this chunk with its Articulation
+        set to the same prim path: one slider per moving joint.
 
         STL meshes are converted to UsdGeom.Mesh -- USD cannot open an STL, so referencing
         one composes to nothing. Meshes USD can read are referenced rather than inlined, so

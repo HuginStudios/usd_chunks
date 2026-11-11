@@ -314,6 +314,11 @@ back = scene.create.edit_target(key, edit_target="Session Layer")   # out of lig
 and the light in `lighting`. An Export USD chunk after the last `back` writes each to its
 own file, `layout.usda` and `lighting.usda`.
 
+The session layer is then the shot: the stage settings and the departments as sublayers.
+`export_usd(back, output_dir=".", session_file_name="shot", bake_all=True)` writes it as
+`shot.usda`, plain USD without the network. `examples/scripts/shot_departments.py` is a
+whole shot built this way, on a set file, and runs as written.
+
 ## Save and cook
 
 | Call | Does |

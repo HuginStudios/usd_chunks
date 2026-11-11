@@ -194,6 +194,18 @@ class Scene(chunk_scene.SceneSender):
         finds their names taken and builds a second copy of every chunk beside them.
         """
         self._end_lazy()
+        # Nothing cooks while closing: every chunk and its result is about to go, and an
+        # unwiring cooked what was left below it -- a referenced group then found the
+        # Sublayer above it gone and said it "is blocked" as the script ended.
+        chunk_cook.begin_deferring()
+        try:
+            self._delete_all()
+        finally:
+            chunk_cook.end_deferring(cook=False)
+        ChunkLayerManager().reset()
+
+    def _delete_all(self) -> None:
+        """Unwire and delete every chunk, for close."""
         # Unwire first. request_delete does the same disconnect for a chunk that still has
         # outputs, and deleting the downstream end first would not avoid that, since it
         # leaves the upstream's outputs in place.
@@ -215,4 +227,3 @@ class Scene(chunk_scene.SceneSender):
         with teardown, ChunkLayerManager().holding_deletes():
             for c in inner + list(self.get_chunks()):
                 c.request_delete()
-        ChunkLayerManager().reset()

@@ -52,3 +52,26 @@ def test_committing_right_after_saving_keeps_the_network(tmp_path, monkeypatch, 
 
     assert "Not exporting layer 'shot_network.usda'" in capsys.readouterr().out
     assert (tmp_path / "shot_network.usda").read_bytes() == saved, "the export replaced the network file"
+
+
+def test_an_export_writes_over_its_own_earlier_files(tmp_path, capsys) -> None:
+    # Unbaked, the session layer carries the network's bookkeeping under /chunks, so the
+    # guard took the file Export USD had written for a network and refused it the next time.
+    # A benchmark agent wrote empty stub files over its outputs to get past it.
+    with Scene.new(path=str(tmp_path / "net.usda")) as scene:
+        last = scene.create.layer(layer_name="shot")
+        last = scene.create.edit_target(last, edit_target="shot")
+        last = scene.create.prim(last, primpath_location="/World/ball", prim_type="Sphere")
+        last = scene.create.edit_target(last, edit_target="Session Layer")
+        export = scene.create.export_usd(last, output_dir=".", session_file_name="shot")
+        scene.set_output(export)
+        scene.save()
+        scene.commit()
+        assert Sdf.Layer.OpenAsAnonymous(str(tmp_path / "shot.usda")).GetPrimAtPath(chunk_naming.CHUNKS_ROOT)
+        capsys.readouterr()
+        scene.set(export, layer_format=".usda")  # a change, so the export runs again
+        scene.commit()
+
+    assert "Not exporting layer 'SessionLayer'" not in capsys.readouterr().out
+    assert Sdf.Layer.OpenAsAnonymous(str(tmp_path / "net.usda")).GetPrimAtPath(chunk_naming.CHUNKS_ROOT), \
+        "the network itself is still protected"

@@ -1260,7 +1260,7 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
                 if chunk_cook.is_deferring() and chunk_cook.is_cook_stale(target):
                     _await_param(target, name, value)
                     continue
-                raise KeyError(f"{target.name} has no param {name!r}")
+                raise KeyError(_no_param(target, repr(name)))
             if _is_rows(param) and not isinstance(value, ChunkParamBase):
                 _set_rows(target, name, param, value)
             elif isinstance(value, ChunkParamBase):
@@ -1696,6 +1696,17 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """Update the host timeline range."""
 
 
+def _no_param(target: ChunkBase, names: str) -> str:
+    """The message for a param name target doesn't have, listing the names it does.
+
+    A chunk can make params as it cooks (Pose Articulation's one slider per joint), and
+    `usdchunks show` can't list those, so the error is where a script finds them.
+    """
+    have = [p.name for p in target.get_params()
+            if isinstance(p, ChunkParamBase) or _is_rows(p)]
+    return f"{target.name} has no param {names}; its params are: {', '.join(have)}"
+
+
 def _scripted_param(target: ChunkBase, name: str, grow: bool = False):
     """The param a script names: a plain name, or `list.row.param` for one row of a list --
     the form a frontend already keys rows by. None when there is no such param or row.
@@ -1832,7 +1843,7 @@ def _check_awaited(chunk: ChunkBase) -> None:
     waiting = _awaited.pop(chunk, None)
     if waiting:
         names = ", ".join(repr(n) for n in waiting)
-        raise KeyError(f"{chunk.name} has no param {names}")
+        raise KeyError(_no_param(chunk, names))
 
 
 def current_scene() -> SceneSender | None:

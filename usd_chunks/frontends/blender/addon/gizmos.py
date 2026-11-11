@@ -48,6 +48,9 @@ _DOT_COLOR = (1.0, 0.65, 0.15, 1.0)
 _DOT_OUTLINE = (0.0, 0.0, 0.0, 0.8)
 _DOT_SIZE = 9.0
 
+#: Seconds between the redraws a gesture asks for: one a frame at 60 Hz.
+_FRAME = 1.0 / 60.0
+
 _draw_state = {"handle": None}
 
 #: Degrees per radian, spelled once. A `rotate` value goes back as Euler XYZ in DEGREES
@@ -395,8 +398,9 @@ def write_components(desc, chunk, components) -> None:
 
     A `transform` desc takes a matrix, so all three go together and the chunk decomposes
     once; a desc of one component's own type takes that vector. Every tick, never batched
-    to the end of the gesture (contract §5): the chunk cooks per write, and that is what
-    makes the prim follow the cursor.
+    to the end of the gesture (contract §5): apply_bindings cooks at most every
+    chunk_gizmo.DRAG_INTERVAL with the newest value, and that is what makes the prim follow
+    the cursor.
     """
     if desc.type == "transform":
         payload = _compose(components[_TRANSLATE], components[_ROTATE], components[_SCALE])
@@ -442,7 +446,12 @@ def _disc(centre, radius: float, segments: int = 24) -> list:
 def _draw_pivot():
     if not viewport.hydra_view_enabled():
         return
-    point = pivot_point(viewport.active_stage(), _active_view())
+    # Mid-gesture the dot is where the gesture puts the pivot, not where the last cook
+    # did: the chunk cooks at most every chunk_gizmo.DRAG_INTERVAL, and the dot must stay
+    # on the cursor every frame in between.
+    point = _draw_state.get("drag_pivot")
+    if point is None:
+        point = pivot_point(viewport.active_stage(), _active_view())
     if point is None:
         return
     try:
@@ -538,7 +547,11 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         # component handle, which still writes its own vector.
         self._matrices = (_anchor_matrices(stage, desc) if desc.type == "transform"
                           else None)
+        _draw_state["drag_pivot"] = self._pivot.copy()
         self._chunk.start_gizmo()
+        # A redraw every frame of the gesture: the chunk cooks a held-back write on a timer
+        # (chunk_gizmo.DRAG_INTERVAL), and Blender redraws for no stage change by itself.
+        self._timer = context.window_manager.event_timer_add(_FRAME, window=context.window)
         context.window_manager.modal_handler_add(self)
         self.report({"INFO"},
                     f"{self.mode}: X/Y/Z to constrain, click to confirm, Esc to cancel")
@@ -558,9 +571,11 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         if event.type == "MOUSEMOVE":
             self._apply(event)
             return {"RUNNING_MODAL"}
-        if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER"} and event.value == "PRESS":
-            self._chunk.stop_gizmo()
+        if event.type == "TIMER":
             _redraw()
+            return {"RUNNING_MODAL"}
+        if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER"} and event.value == "PRESS":
+            self._end(context)
             return {"FINISHED"}
         if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
             if self._matrices is not None:
@@ -568,10 +583,16 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
                                            self._matrices[0])
             else:
                 write_components(self._desc, self._chunk, self._start)
-            self._chunk.stop_gizmo()
-            _redraw()
+            self._end(context)
             return {"CANCELLED"}
         return {"RUNNING_MODAL"}
+
+    def _end(self, context) -> None:
+        """Close the gesture: the dot back on the prim, the last write cooked, a redraw."""
+        context.window_manager.event_timer_remove(self._timer)
+        _draw_state["drag_pivot"] = None
+        self._chunk.stop_gizmo()
+        _redraw()
 
     def _apply(self, event):
         mouse = Vector((event.mouse_region_x, event.mouse_region_y))
@@ -583,6 +604,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         if self.mode == _TRANSLATE:
             delta = constrain(self._world_at(mouse) - self._start_world,
                               self._axis, self._basis)
+            _draw_state["drag_pivot"] = self._pivot + delta
             local = self._to_local @ delta
             components[_TRANSLATE] = [self._start[_TRANSLATE][i] + local[i] for i in range(3)]
         elif self.mode == _ROTATE:
@@ -610,6 +632,7 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
             delta = constrain(self._world_at(mouse) - self._start_world,
                               self._axis, self._basis)
             world_delta = Gf.Matrix4d().SetTranslate(Gf.Vec3d(*delta))
+            _draw_state["drag_pivot"] = self._pivot + delta
         elif self.mode == _ROTATE:
             angle = screen_angle(self._pivot_2d, self._start_mouse, mouse)
             if axis is None:
