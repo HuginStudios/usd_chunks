@@ -11,6 +11,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Render chunk: **Run in Background**. Render Now saves the scene to a file and renders it
+  in its own process through Render Command (usdrecord with the chosen Renderer), so you
+  keep working while it renders. **Stop Render** ends it and every process it started,
+  and a status line shows Rendering, Done, Stopped or Failed. Render on Commit
+  (`usdchunks run`) still waits for the render to finish.
 - `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
   camera layers side by side, exported as `shot.usda` plus one file per department. A test
   runs it as written, from another directory.
