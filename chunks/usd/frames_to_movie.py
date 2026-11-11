@@ -320,12 +320,14 @@ def main():
                      tooltip="H.264 only. Lower is better and bigger: 0 is lossless, 18 looks clean, 28 is small."),
         chunk.Checkbox("make_on_commit", "Make Movie on Commit", default_value=True,
                        tooltip="Make the movie on every `usdchunks run`."),
-        chunk.Label("status", "not made yet", default_value="not made yet", tooltip="What the last Make Movie did."),
-        chunk.LineEdit("output", "Output", flags=chunk.ChunkFlags.ParamFlags.OUTPUT | labeled),
     ])
     button = chunk.Button("make_movie", "Make Movie")
     button.add_callback(_make_clicked)
-    chunk_api.add_param(button)
+    chunk_api.add_params([
+        button,
+        chunk.Label("status", "not made yet", default_value="not made yet", tooltip="What the last Make Movie did."),
+        chunk.LineEdit("output", "Output", flags=chunk.ChunkFlags.ParamFlags.OUTPUT | labeled),
+    ])
     return chunk_api
 
 
