@@ -778,6 +778,24 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def tree_selection(view) -> list:
+    """The chunk prim paths selected in the node editor, read off the tree itself.
+
+    Not `view.selected_nodes`: that is only brought up to date when one of the add-on's
+    operators runs (pull_selection_from_tree), while a click in the editor sets
+    `node.select` at once. The viewport tools -- a box handle, the brush -- answer to the
+    click, so they read this.
+    """
+    tree = getattr(view, "tree", None)
+    if tree is None:
+        return []
+    try:
+        return [n.name for n in tree.nodes if n.select]
+    except ReferenceError:  # the tree was removed under the view
+        return []
+
+
+
 # ---------------------------------------------------------------------------
 # Generated node classes
 # ---------------------------------------------------------------------------

@@ -86,7 +86,9 @@ def brush_desc(stage, view):
     """
     if stage is None:
         return None
-    for path in sorted(getattr(view, "selected_nodes", ()) or ()):
+    # The tree's own selection: view.selected_nodes lags a click in the editor until an
+    # add-on operator runs, so selecting the brush node and pressing B found no brush.
+    for path in sorted(bg.tree_selection(view)):
         descs = _brush_descs(stage.GetPrimAtPath(path))
         if descs:
             return descs[0]

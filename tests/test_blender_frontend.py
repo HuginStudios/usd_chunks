@@ -1098,6 +1098,69 @@ def test_the_transform_keys_live_in_the_object_mode_keymap():
     assert gz._KEYMAP == ("Object Mode", "EMPTY")
 
 
+class _BoxDesc:
+    """A stand-in `box` record: what box_lines and pick_box read off a GizmoDesc."""
+
+    type = "box"
+    name = "box"
+    chunk_prim = Sdf.Path("/chunks/Box")
+    anchor = (Sdf.Path("/World/Box"),)
+    driver = ("px", "nx", "py", "ny", "pz", "nz")
+
+
+@pytest.fixture
+def one_box(monkeypatch):
+    """A 2 x 2 x 2 box about the origin, picked, with no stage behind it."""
+    desc = _BoxDesc()
+    monkeypatch.setattr(gz, "box_descs", lambda stage, view: [desc])
+    monkeypatch.setattr(gz, "box_values", lambda view, d: [1.0] * 6)
+    monkeypatch.setattr(gz, "box_world", lambda stage, d: Gf.Matrix4d(1.0))
+    gz._box_state.update(hover=None, drag=None)
+    yield desc
+    gz._box_state.update(hover=None, drag=None)
+
+
+def test_a_box_handle_draws_its_twelve_edges(one_box):
+    """A picked Blockout Box showed nothing: Blender drew the pivot dot only, and a `box`
+    handle -- whose faces are the handles -- was never drawn at all."""
+    lines = gz.box_lines(None, None)
+    assert len(lines) == 1
+    _colour, verts = lines[0]
+    assert len(verts) == 24
+    assert {tuple(abs(c) for c in v) for v in verts} == {(1.0, 1.0, 1.0)}
+
+
+def test_the_face_corners_lie_on_their_own_face(one_box):
+    corners = gz.box_corners([1.0] * 6, Gf.Matrix4d(1.0))
+    for face, (axis, sign) in enumerate(chunk_gizmo.BOX_FACES):
+        assert {corners[i][axis] for i in gz.FACE_CORNERS[face]} == {float(sign)}
+
+
+def test_the_face_under_the_mouse_is_picked_and_lit(one_box):
+    hit = gz.pick_box(None, None, (10.0, 0.0, 0.0), (-1.0, 0.0, 0.0))
+    assert hit is not None and hit[1] == 0  # +X
+    assert gz.pick_box(None, None, (0.0, 10.0, 0.0), (0.0, -1.0, 0.0))[1] == 2  # +Y
+    assert gz.pick_box(None, None, (10.0, 10.0, 0.0), (1.0, 0.0, 0.0)) is None
+    gz._box_state["hover"] = (gz.box_key(one_box), 0)
+    lit = gz.box_lines(None, None)[1:]
+    assert len(lit) == 1 and len(lit[0][1]) == 8
+    assert {v[0] for v in lit[0][1]} == {1.0}
+
+
+def test_a_box_drag_is_drawn_from_the_drag_not_the_params(one_box):
+    """The params cook at most every DRAG_INTERVAL; the box in the hand runs ahead of them."""
+    gz._box_state["drag"] = {"key": gz.box_key(one_box), "face": 0,
+                             "values": [3.0, 1.0, 1.0, 1.0, 1.0, 1.0]}
+    edges = gz.box_lines(None, None)[0][1]
+    assert max(v[0] for v in edges) == 3.0
+
+
+def test_the_box_operators_register_with_their_mouse_keys():
+    assert {gz.USDCHUNKS_OT_box_hover, gz.USDCHUNKS_OT_box_drag} <= set(gz._CLASSES)
+    assert {(op.bl_idname, key) for op, key, _value in gz._BOX_KEYS} == {
+        ("usd_chunks.box_hover", "MOUSEMOVE"), ("usd_chunks.box_drag", "LEFTMOUSE")}
+
+
 def test_the_pivot_dot_follows_the_driven_anchor(driven):
     view, xf, prim = driven
     desc = gz.placement_desc(prim, view)
@@ -1718,16 +1781,25 @@ def painted(view):
     painter.get_param("strength").value = 1.0
     painter.execute()
     view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
-    view.selected_nodes = set()
+    view.reload()
+    view.set_selection(set())
     bg.set_picked_prim_paths([])
     yield view, painter
     bg.set_picked_prim_paths([])
 
 
+def _click_node(view, chunk_obj):
+    """Select a node the way a click in the editor does: on the tree only, not through
+    the view, whose selected_nodes lags until an add-on operator runs."""
+    path = chunk_stage.get_chunk_prim_path(chunk_obj)
+    for node in view.tree.nodes:
+        node.select = node.name == path
+
+
 def test_a_brush_selected_in_the_graph_is_the_one_to_paint_with(painted):
     view, painter = painted
     assert br.brush_desc(view.stage, view) is None
-    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    _click_node(view, painter)
     desc = br.brush_desc(view.stage, view)
     assert desc is not None and desc.type == "brush"
     assert str(desc.chunk_prim) == chunk_stage.get_chunk_prim_path(painter)
@@ -1773,7 +1845,7 @@ def test_a_surface_with_no_mesh_has_nothing_to_hit(view):
 def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
     """The whole path but the mouse: ray, hit, sample, field."""
     view, painter = painted
-    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    _click_node(view, painter)
     desc = br.brush_desc(view.stage, view)
     point, normal = br.Surface(view.stage, desc.anchor).hit((5.0, 5.0, 10.0), (0.0, 0.0, -1.0))
     painter.start_gizmo()
@@ -1789,7 +1861,7 @@ def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
 
 def test_the_ring_is_sized_from_the_chunks_radius(painted):
     view, painter = painted
-    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    _click_node(view, painter)
     desc = br.brush_desc(view.stage, view)
     assert br.brush_radius(painter, desc, default=0.5) == pytest.approx(2.0)
     painter.get_param("radius").value = 0.0

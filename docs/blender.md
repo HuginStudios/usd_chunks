@@ -46,6 +46,10 @@ rotate or scale it, like a Blender object. X, Y or Z locks an axis, named as in 
 Z is up. Click to confirm, Esc to cancel. This changes the chunk's params. A prim no chunk drives gets a Transform chunk.
 The handles are part of the add-on, so there is nothing else to install.
 
+A chunk with a box handle (Blockout Box, Blocking Volume) shows a wire box when you pick
+its prim or select its node in the editor. Hover a face to light it, then drag it to move
+that face. Esc puts it back.
+
 A network saved Y-up (usdview's default) is turned to stand up in Blender's Z-up viewport,
 as Blender's USD importer does, and scaled by its `metersPerUnit`. The file itself is not
 changed: chunks still read and write in the network's own space.

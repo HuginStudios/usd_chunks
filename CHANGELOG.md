@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
+  prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
+  it and drag it to move that face. Esc puts it back.
 - **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
   sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
   `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
@@ -350,6 +353,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: B (brush) did nothing on a brush chunk just selected in the node editor. The
+  viewport tools read the editor's selection as it is now.
 - Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the
   ground. The live view now stands it up, as Blender's USD importer does, and scales it by
   `metersPerUnit`. Picking, the pivot, G/R/S, the brush and the camera mirror go through
