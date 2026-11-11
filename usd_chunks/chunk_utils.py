@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack, nullcontext
 from pxr import Ar, Gf, Pcp, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
-from usd_chunks import asset_paths, chunk_cook, chunk_naming
+from usd_chunks import asset_paths, chunk_cook, chunk_naming, skip_cook
 from usd_chunks.layer_arcs import arc_edit_target, edit_target, is_editable  # noqa: F401
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_registry
@@ -1340,7 +1340,7 @@ def set_stage_expression_variables(stage: Usd.Stage, variables: dict) -> None:
         session.ClearExpressionVariables()
 
 
-def get_unique_path(stage, prim_path, own_layer=None):
+def get_unique_path(stage, prim_path, own_layer=None, ignore=frozenset()):
     """prim_path if it is unused on the stage, else a unique variant with a numeric suffix.
 
     A pure lookup. A chunk's own prim from its last cook must not count against it, or the
@@ -1359,6 +1359,9 @@ def get_unique_path(stage, prim_path, own_layer=None):
             Target, or that layer itself. The same path defined in another file (a
             department's publish) or behind another Edit Target is another opinion on the
             prim, the way USD layering works, and keeps its name.
+        ignore: Identifiers of layers whose specs never count as taking a path: those of the
+            chunks below the asking one, which write under what it makes (a Cube's parent
+            over a Prim chunk's Xform).
 
     Returns:
         A prim path free on the stage.
@@ -1380,7 +1383,9 @@ def get_unique_path(stage, prim_path, own_layer=None):
     layers = chunk_registry.ChunkLayerManager()
     # Where the asking chunk's content really lands: its Edit Target's layer (or the session
     # layer), or own_layer itself for a chunk with no layer of its own.
-    own_target = (layers.target_of_layer(own_layer) or own_layer) if own_layer is not None else None
+    # A diff cook's scratch layer lands where the chunk layer it stands in for does.
+    real = chunk_cook.real_layer(own_layer)
+    own_target = (layers.target_of_layer(real) or real) if real is not None else None
 
     def _is_taken(path):
         prim = stage.GetPrimAtPath(path)
@@ -1388,8 +1393,10 @@ def get_unique_path(stage, prim_path, own_layer=None):
             return False
         if own_layer is None:
             return True
+        # Its real layer too: a diff cook leaves its last result there until the reconcile.
         return any(
-            spec.layer != own_layer
+            spec.layer != own_layer and spec.layer != real
+            and spec.layer.identifier not in ignore
             and spec.specifier == Sdf.SpecifierDef
             and (layers.target_of_layer(spec.layer) or spec.layer) == own_target
             for spec in prim.GetPrimStack()
@@ -1718,7 +1725,18 @@ def _claim_unique_path(stage, param):
     own_layer = owner.get_edit_context() if owner is not None else None
     if own_layer is None and owner is not None and chunk_notice._executing_chunk is owner:
         own_layer = stage.GetEditTarget().GetLayer()
-    unique_path = get_unique_path(stage, param, own_layer=own_layer)
+    # A chunk's first claim is against the whole scene, as its first cook once ran on it: a
+    # cook stage holds only what is upstream, and a chunk a script has not wired yet sees
+    # nothing there of the one made before it. Less what the chunks below it write, which is
+    # under what it makes, not in its way. Its later claims are on the stage it cooks on,
+    # where the chunks below it -- a Cube defining the parent of its seat over this Xform,
+    # wired below it only after it was made -- are not.
+    ignore = frozenset()
+    never_cooked = owner is not None and skip_cook.record(owner).outputs is None
+    if never_cooked and (scene_stage := owner.get_scene_stage()) is not None:
+        stage = scene_stage
+        ignore = skip_cook.layers_below(owner, chunk_registry.ChunkLayerManager().get_layer)
+    unique_path = get_unique_path(stage, param, own_layer=own_layer, ignore=ignore)
     if unique_path and unique_path != param.value:
         param.value = unique_path
 
