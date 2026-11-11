@@ -449,9 +449,12 @@ def _draw_pivot():
     # Mid-gesture the dot is where the gesture puts the pivot, not where the last cook
     # did: the chunk cooks at most every chunk_gizmo.DRAG_INTERVAL, and the dot must stay
     # on the cursor every frame in between.
-    point = _draw_state.get("drag_pivot")
+    point = _draw_state.get("drag_pivot")  # already in Blender's space
     if point is None:
-        point = pivot_point(viewport.active_stage(), _active_view())
+        stage = viewport.active_stage()
+        point = pivot_point(stage, _active_view())
+        if point is not None:
+            point = viewport.to_blender(stage, point)
     if point is None:
         return
     try:
@@ -533,16 +536,26 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         self._axis = None
         self._start = {kind: _current(self._chunk, kind)
                        for kind in (_TRANSLATE, _ROTATE, _SCALE)}
-        self._pivot = anchor_world(stage, desc) or Vector((0.0, 0.0, 0.0))
+        # The gesture runs in Blender's space -- the mouse, the pivot, X/Y/Z -- and crosses
+        # into the stage's (viewport.stage_to_blender) only where it writes.
+        self._to_blender = viewport.stage_to_blender(stage)
+        pivot = anchor_world(stage, desc)
+        self._pivot = (self._to_blender @ pivot) if pivot is not None else Vector((0.0, 0.0, 0.0))
         self._pivot_2d = view3d_utils.location_3d_to_region_2d(
             self._region, self._rv3d, self._pivot) or Vector((0.0, 0.0))
         self._start_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
         self._start_world = self._world_at(self._start_mouse)
-        self._to_local = parent_rotation(stage, desc)
+        c3 = self._to_blender.to_3x3()
+        parent = parent_rotation(stage, desc).to_3x3()
+        self._to_local = (parent @ c3.inverted_safe()).to_4x4()
         # The basis a constraint is taken in: the world's for a world-space handle, the
         # anchor's own for a local one (contract section 3 -- absent space means local).
+        # X/Y/Z name Blender's axes either way, turned by the parent's rotation for a local
+        # handle: the parent's rotation is carried into Blender's space (c3 P^-1 c3^-1)
+        # rather than its axes, so on a Y-up stage Z is still up -- R Z spins a prim
+        # upright instead of tipping it over about the stage's Z, which is Blender's -Y.
         self._basis = (Matrix() if getattr(desc, "space", "local") == "world"
-                       else self._to_local.inverted_safe())
+                       else (c3 @ parent.inverted_safe() @ c3.inverted_safe()).to_4x4())
         # A transform handle moves the whole local matrix about the pivot; None for a
         # component handle, which still writes its own vector.
         self._matrices = (_anchor_matrices(stage, desc) if desc.type == "transform"
@@ -609,7 +622,8 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
             components[_TRANSLATE] = [self._start[_TRANSLATE][i] + local[i] for i in range(3)]
         elif self.mode == _ROTATE:
             angle = screen_angle(self._pivot_2d, self._start_mouse, mouse)
-            view_axis = -Vector(self._rv3d.view_matrix.col[2][:3])
+            view_axis = self._to_blender.inverted_safe().to_3x3() @ -Vector(
+                self._rv3d.view_matrix.col[2][:3])
             components[_ROTATE] = rotated(self._start[_ROTATE], self._axis, angle, view_axis)
         else:
             factor = screen_scale(self._pivot_2d, self._start_mouse, mouse)
@@ -644,6 +658,10 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
         else:
             factor = screen_scale(self._pivot_2d, self._start_mouse, mouse)
             world_delta = about(self._pivot, stretch(factor, axis))
+        # The change was built in Blender's space; the same change in the stage's is
+        # C * D * C^-1 in Gf's row-vector order, C being stage_to_blender.
+        c = Gf.Matrix4d(*[v for row in self._to_blender.transposed() for v in row])
+        world_delta = c * world_delta * c.GetInverse()
         local, parent_world = self._matrices
         chunk_gizmo.apply_bindings(self._desc.chunk_prim, self._desc.name,
                                    gesture_local(local, parent_world, world_delta))

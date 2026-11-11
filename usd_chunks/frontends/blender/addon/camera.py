@@ -13,15 +13,17 @@ The Hydra view (viewport.py) draws from Blender's view matrices, so it follows f
 and the mirror is an ID. A notice sent from inside a draw would also cook mid-draw. The
 timer reads the same matrices a draw would, and is the one place both directions run.
 
-USD and Blender cameras both look down -Z with +Y up, and the Hydra view draws the stage
-with no axis conversion, so a prim's world matrix is the object's matrix_world unchanged.
+USD and Blender cameras both look down -Z with +Y up, so a camera's own frame needs no
+conversion; only the world does. The Hydra view draws the stage through
+`viewport.stage_to_blender` (a Y-up stage turned to stand up in Z-up Blender), so a prim's
+world matrix crosses over through it, and the view goes back through its inverse.
 """
 from __future__ import annotations
 
 import logging
 
 import bpy
-from mathutils import Matrix, Vector
+from mathutils import Matrix
 from pxr import Gf, Usd, UsdGeom
 
 from usd_chunks.frontends.blender.addon import viewport
@@ -87,11 +89,20 @@ def gf_camera_from_view(view_matrix, window_matrix, lens, clip_start, clip_end,
 
 
 def prim_camera(prim, time=Usd.TimeCode.Default()):
-    """(world matrix as mathutils, Gf.Camera) for a camera prim, or None if it is not one."""
+    """(world matrix in Blender's space, Gf.Camera) for a camera prim, or None if it is not
+    one."""
     if prim is None or not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
         return None
     camera = UsdGeom.Camera(prim).GetCamera(time)
-    return to_mathutils(camera.transform), camera
+    world = viewport.stage_to_blender(prim.GetStage()) @ to_mathutils(camera.transform)
+    return world, camera
+
+
+def _to_stage_camera(camera: Gf.Camera) -> Gf.Camera:
+    """A camera placed in Blender's world, placed in the open stage's instead."""
+    back = viewport.stage_to_blender(viewport.active_stage()).inverted_safe()
+    camera.transform = to_gf(back @ to_mathutils(camera.transform))
+    return camera
 
 
 def apply_to_object(obj, world, camera: Gf.Camera) -> None:
@@ -166,11 +177,13 @@ def _view3d():
 
 
 def viewport_camera() -> Gf.Camera | None:
-    """The 3D view as a Gf.Camera; the scene camera headless; None with neither."""
+    """The 3D view as a Gf.Camera in the stage's space (what a chunk authors with it); the
+    scene camera headless; None with neither."""
     space, rv3d = _view3d()
     if rv3d is not None:
-        return gf_camera_from_view(rv3d.view_matrix, rv3d.window_matrix, space.lens,
-                                   space.clip_start, space.clip_end, rv3d.is_perspective)
+        return _to_stage_camera(gf_camera_from_view(
+            rv3d.view_matrix, rv3d.window_matrix, space.lens,
+            space.clip_start, space.clip_end, rv3d.is_perspective))
     scene = bpy.context.scene
     obj = scene.camera if scene else None
     if obj is None:
@@ -182,7 +195,7 @@ def viewport_camera() -> Gf.Camera | None:
         camera.horizontalAperture = obj.data.sensor_width
         camera.verticalAperture = obj.data.sensor_height
     camera.clippingRange = Gf.Range1f(obj.data.clip_start, obj.data.clip_end)
-    return camera
+    return _to_stage_camera(camera)
 
 
 def mirror_object():
@@ -262,7 +275,7 @@ def release_viewport_camera() -> None:
 
 
 def look_at(point) -> None:
-    """Turn the 3D view in place to face world-space `point`.
+    """Turn the 3D view in place to face `point`, a point in the stage's world space.
 
     In place: the eye stays where it is. Blender orbits about `view_location` at
     `view_distance`, so the pivot moves onto the point and the distance takes up the
@@ -272,7 +285,7 @@ def look_at(point) -> None:
     if rv3d is None:
         return
     eye = rv3d.view_matrix.inverted().translation
-    target = Vector(tuple(point))
+    target = viewport.to_blender(viewport.active_stage(), point)
     direction = target - eye
     if direction.length < 1e-9:
         return
