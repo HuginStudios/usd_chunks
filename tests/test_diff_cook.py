@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
-from usd_chunks import Scene, chunk_registry
+from usd_chunks import Scene, chunk_registry, layer_reconcile
 
 
 class _Heard:
@@ -73,6 +73,33 @@ def test_recooks_leave_the_same_layer():
             mesh.execute()
         assert _own(mesh).ExportToString() == first
         assert stage.GetPrimAtPath("/World/ball").IsValid()
+
+
+def test_a_reconcile_that_fails_still_leaves_the_cook(monkeypatch):
+    """A field Sdf refuses to set in place: the layer is replaced whole with the cook's result,
+    and the chunk is cooked by clearing its layer from then on."""
+    with Scene() as scene:
+        mesh = scene.create.mesh(mesh_type="sphere", prim_path="/World/ball", radius=0.5)
+        place = scene.create.transform(mesh, primpath_location="/World/ball", ty=1.0)
+        scene.set_output(place)
+        stage = scene.get_stage()
+        real = layer_reconcile.reconcile
+
+        def refuses(src, dst, sublayers=None):
+            # Half done, then refused: the layer is left part changed.
+            dst.pseudoRoot.SetInfo("comment", "half done")
+            raise RuntimeError("a field Sdf will not set")
+
+        monkeypatch.setattr(layer_reconcile, "reconcile", refuses)
+        place.get_param("ty").value = 3.0
+        monkeypatch.setattr(layer_reconcile, "reconcile", real)
+
+        xf = UsdGeom.Xformable(stage.GetPrimAtPath("/World/ball"))
+        assert xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation() == Gf.Vec3d(0, 3, 0)
+        assert _own(place).pseudoRoot.GetInfo("comment") == ""
+        assert place._diff_ok is False
+        place.get_param("ty").value = 5.0
+        assert xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation() == Gf.Vec3d(0, 5, 0)
 
 
 def test_the_same_as_clearing(monkeypatch):

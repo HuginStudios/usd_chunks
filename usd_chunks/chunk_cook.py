@@ -1030,6 +1030,17 @@ def _diff_cooked(chunk, stage, ctx, execute, layer_of, cached, kept) -> set[Sdf.
     _reconciling = True
     try:
         return layer_reconcile.reconcile(scratch, ctx)
+    except Exception:  # noqa: BLE001 -- a field Sdf will not set where it is: the cook stands
+        # The layer may be half changed: replaced whole with the cook's result, as clearing and
+        # rewriting it would have, and everything handed down. The same field would be refused
+        # every cook, so the chunk is cooked the old way from now on.
+        logger.warning("%s: its cook could not be applied in place; replacing its layer, and "
+                       "cooking it by clearing its layer from now on", chunk.name, exc_info=True)
+        chunk._diff_ok = False
+        _reconciling = False
+        with Sdf.ChangeBlock():
+            ctx.TransferContent(scratch)
+        return {Sdf.Path.absoluteRootPath}
     finally:
         _reconciling = False
 
