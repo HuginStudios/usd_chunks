@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "usd_chunks"
-version = "0.1.0"
+version = "1.0.0-rc"
 name = "USDChunks Editor"
 tagline = "Author OpenUSD composition as a node graph"
 maintainer = "Hugin Studios <info@huginstudios.com>"

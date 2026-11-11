@@ -29,11 +29,11 @@ mkdir dist 2>nul
 "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --command extension build --source-dir usd_chunks\frontends\blender\addon --output-dir dist
 ```
 
-This makes `dist\usd_chunks-0.1.0.zip`.
+This makes `dist\usd_chunks-1.0.0-rc.zip`.
 
 **Step 3. Install the add-on:** in Blender, go to **Edit > Preferences > Add-ons**, open
 the **⌄** menu at the top right, choose **Install from Disk...** and pick
-`dist\usd_chunks-0.1.0.zip`.
+`dist\usd_chunks-1.0.0-rc.zip`.
 
 **Step 4. Try it:** switch any area to **USDChunks Editor**, click **New**, and press
 Shift+A to add a chunk.

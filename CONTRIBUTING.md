@@ -108,6 +108,33 @@ Commit messages follow the standard git convention: a subject of 50 characters o
 (72 hard), a blank line, then a body wrapped at 72 explaining *why*. This repository also
 prefixes subjects with an emoji (📦 packaging, ✨ feature, 🐛 fix, 👷 CI, 📝 docs, ✅ tests).
 
+## Making a release
+
+Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). A tag such as
+`v1.0.0` makes a release; a tag with a dash, such as `v1.0.0-rc`, makes a pre-release.
+
+1. In a PR, set `version` in `pyproject.toml` to the new version. Python spells some
+   versions differently: `v1.0.0-rc` is `1.0.0rc0`, `v1.0.0-rc.2` is `1.0.0rc2`. Set
+   `version` in `usd_chunks/frontends/blender/addon/blender_manifest.toml` too, spelled
+   like the tag without its `v` (`1.0.0-rc`), and the zip name in `docs/blender.md`.
+2. In the same PR, rename `## [Unreleased]` in `CHANGELOG.md` to `## [1.0.0] - <date>`
+   and add an empty `## [Unreleased]` above it.
+3. Once it's merged, tag that commit on `main` and push the tag:
+
+   ```
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+The tag runs `.github/workflows/release.yml`. It stops if the tag doesn't match the version
+in `pyproject.toml` or has no section in `CHANGELOG.md`. Otherwise it publishes that
+version's docs to <https://huginstudios.github.io/usd_chunks/> and makes a GitHub Release
+with the changelog section as its notes and the wheel attached. The docs site has a
+version picker in the header, and its front page opens the newest release.
+
+The docs are served from the `gh-pages` branch, which the workflow writes. That needs
+Settings > Pages > "Deploy from a branch" > `gh-pages` set once in the repository.
+
 ## Reporting bugs
 
 Open an issue using the bug template. The two things that make a report actionable are the
