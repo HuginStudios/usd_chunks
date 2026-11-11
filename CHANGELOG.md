@@ -16,6 +16,10 @@ This file starts with the first release; development before that is in the commi
   keep working while it renders. **Stop Render** ends it and every process it started,
   and a status line shows Rendering, Done, Stopped or Failed. Render on Commit
   (`usdchunks run`) still waits for the render to finish.
+- **Points to Instancer** chunk: turns an animated Points prim into a PointInstancer of a
+  low-poly mesh sphere (or a prototype you pick), one instance per point on every frame.
+  For renderers that draw no Points (Aurora) or draw each as one pixel (V-Ray). Instances
+  can shrink with each point's opacity, so fading points still vanish.
 - `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
   camera layers side by side, exported as `shot.usda` plus one file per department. A test
   runs it as written, from another directory.
