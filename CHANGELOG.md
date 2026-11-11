@@ -2,15 +2,22 @@
 
 Notable changes to usd_chunks. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the pre-1.0 caveat that
-the API may still change between minor versions.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each version's docs are at
+<https://huginstudios.github.io/usd_chunks/>, with a version picker in the header.
 
 This file starts with the first release; development before that is in the commit history.
 
 ## [Unreleased]
 
+## [1.0.0-rc] - 2026-11-11
+
+The first release candidate.
+
 ### Added
 
+- Releases: pushing a version tag such as `v1.0.0` publishes that version's docs to
+  GitHub Pages and makes a GitHub Release with its changelog section and the wheel. See
+  "Making a release" in `CONTRIBUTING.md`.
 - `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
   camera layers side by side, exported as `shot.usda` plus one file per department. A test
   runs it as written, from another directory.

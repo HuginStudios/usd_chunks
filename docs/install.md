@@ -325,9 +325,11 @@ set USD_CHUNK_DIRS=chunks
 mkdocs serve
 ```
 
-`mkdocs serve` runs the site locally, and `mkdocs build` writes it to `site/` instead. CI
-doesn't build the docs, so if something is broken you'll find out when you publish (the
-publish step below builds the site).
+`mkdocs serve` runs the site locally, and `mkdocs build` writes it to `site/` instead.
+
+Each release's docs are published to <https://huginstudios.github.io/usd_chunks/> when its
+tag is pushed (see "Making a release" in `CONTRIBUTING.md`). CI doesn't build the docs on
+pull requests, so if something is broken you'll find out when you publish.
 
 On Windows, `build_docs.bat` does both. With no arguments it runs the site locally. With
 `--share` it builds the site and copies it to a folder you choose, such as a network share,
