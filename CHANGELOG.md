@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
+  sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
+  `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
+  and gaps in the frames work.
 - `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
   camera layers side by side, exported as `shot.usda` plus one file per department. A test
   runs it as written, from another directory.
