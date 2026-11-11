@@ -8,9 +8,16 @@ instead of building the prim again.
 
 from __future__ import annotations
 
+import pytest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
 from usd_chunks import Scene, chunk_registry, layer_reconcile
+
+
+@pytest.fixture(autouse=True)
+def _diff_cook_on(monkeypatch):
+    """These tests are about diff cook, so they cook with it even in a run that turns it off."""
+    monkeypatch.delenv("USD_CHUNKS_DIFF_COOK", raising=False)
 
 
 class _Heard:
