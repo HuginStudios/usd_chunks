@@ -11,6 +11,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Render chunk: **Run in Background**. Render Now saves the scene to a file and renders it
+  in its own process through Render Command (usdrecord with the chosen Renderer), so you
+  keep working while it renders. **Stop Render** ends it and every process it started,
+  and a status line shows Rendering, Done, Stopped or Failed. Render on Commit
+  (`usdchunks run`) still waits for the render to finish.
 - **Points to Instancer** chunk: turns an animated Points prim into a PointInstancer of a
   low-poly mesh sphere (or a prototype you pick), one instance per point on every frame.
   For renderers that draw no Points (Aurora) or draw each as one pixel (V-Ray). Instances
