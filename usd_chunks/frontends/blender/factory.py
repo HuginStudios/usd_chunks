@@ -364,6 +364,12 @@ def property_for(param):
     return None
 
 
+def node_builtins() -> frozenset:
+    """Every property a plain `bpy.types.Node` already has: name, label, color, location,
+    width, hide, mute, ... A param must not be declared under one of these names."""
+    return frozenset(p.identifier for p in bpy.types.Node.bl_rna.properties)
+
+
 def annotations_for(chunk) -> tuple[dict, list, list]:
     """(rna properties, button param names, unmapped param names) for one chunk.
 
@@ -384,6 +390,12 @@ def annotations_for(chunk) -> tuple[dict, list, list]:
             # property fails the whole node class: Layer's private bookkeeping params left
             # it with no node at all. Such a param is an ID property instead, made by
             # sync_to_node, as a lofted param is.
+            continue
+        if param.name in node_builtins():
+            # A param named like one of Node's own properties -- Exterior Walls' `color`
+            # -- took that property over: painting the node's header (apply_node_state
+            # sets node.color) fired the param's update and wrote the header grey into
+            # the chunk, so the walls cooked grey. An ID property instead, like "_" above.
             continue
         prop = property_for(param)
         if prop is not None:
@@ -482,6 +494,9 @@ def sync_to_node(node, chunk) -> None:
                 # the module docstring describes only works if this is the layer that
                 # seeds layer 2.
                 node[key] = value
+                if PT.COLOR_PICKER in param.get_type():
+                    # A swatch, not three bare numbers: what a declared colour draws as.
+                    node.id_properties_ui(key).update(subtype="COLOR", min=0.0, max=1.0)
                 # Seen as mirrored, not edited: sync_lofted pushes only a user's change.
                 _lofted_seen[(node.as_pointer(), key)] = _plain(node[key])
         except Exception:
@@ -514,9 +529,11 @@ def sync_lofted(node, chunk) -> None:
     every frame. So a key is pushed when the node's value differs from what this last
     saw, which only a user edit does.
     """
-    declared = node.bl_rna.properties
     for key in list(node.keys()):
-        if key.startswith("_") or key in _RESERVED or key in declared:
+        # declares(), the class's own fields, not node.bl_rna.properties: that also lists
+        # Node's built-ins, and a param named like one (`color`) lives here as an ID
+        # property precisely because it cannot be a field (see annotations_for).
+        if key.startswith("_") or key in _RESERVED or declares(node, key):
             continue
         value = _plain(node[key])
         seen_key = (node.as_pointer(), key)
