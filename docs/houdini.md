@@ -47,8 +47,11 @@ reinstall. The same setup works for every Houdini version that runs Python 3.11.
   or something upstream changes.
 - **Params are Houdini parms.** They take keys and expressions and save with the `.hip`.
   To read another chunk's param, use `ch("../mesh1/radius")`.
-- **No viewport handles yet.** Chunk gizmos don't show in Houdini's viewport. Use the
-  parms.
+- **Viewport handles.** Select a chunk node and press **Enter** in the viewport. Its box
+  gizmos become Houdini's bounding box handle: drag a face and only that face moves, so a
+  Blockout Box's faces snap to its Snap step. Its translate gizmos become move handles.
+  Drags undo like any Houdini handle. Other gizmo types (rotate, scale, transform,
+  scalar, brush) have no handle in Houdini yet, so use the parms for those.
 - **Networks travel between apps.** Tab > usdchunks > **Import Network...** loads a network
   saved in usdview or Blender. A **Chunkgroup** node's **Export Network...** button writes
   one back.

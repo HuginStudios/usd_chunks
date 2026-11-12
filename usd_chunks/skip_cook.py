@@ -1542,6 +1542,12 @@ def _note_missing(chunk, main: Usd.Stage, inputs: Iterable[Sdf.Path]) -> None:
         _waiting.pop(chunk, None)
 
 
+def forget_waiting(chunk) -> None:
+    """Stop chunk waiting for a prim (waiting_on): for a host that decides itself when a
+    chunk cooks again, and cooks each one on a stage of its own."""
+    _waiting.pop(chunk, None)
+
+
 def waiting_on(chunk) -> list:
     """The chunks whose last cook found no prim at an input that is there now chunk has cooked.
 

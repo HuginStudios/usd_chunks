@@ -301,6 +301,9 @@ SCRIPT = textwrap.dedent(r"""
     except chunkgroup.ExportError as exc:
         out["export_refused"] = str(exc)
 
+    sections = lop.node_type().definition().sections()
+    out["default_state"] = sections["DefaultState"].contents() if "DefaultState" in sections else ""
+
     print("USD_CHUNKS_RESULT" + json.dumps(out))
 """)
 
@@ -724,3 +727,8 @@ def test_a_stage_that_sets_no_units_is_in_houdinis_metres(result):
     # A Solaris stage authors no upAxis or metersPerUnit: it is Houdini's Y-up metres, not
     # USD's centimetre fallback.
     assert result["solaris_space"] == ["Y", 1.0]
+
+
+def test_enter_on_a_chunk_node_opens_the_state_drawing_its_gizmos(result):
+    # The HDA's DefaultState names the viewer state viewer_states/usdchunks_chunk.py registers.
+    assert result["default_state"] == "usdchunks::chunk"

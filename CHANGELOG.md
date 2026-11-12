@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
+  box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
+  drag one face at a time, and a translate gizmo is a move handle. Drags go through the
+  chunk's own hooks (snapping, landing on the roof) and undo as one step.
 - Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
   prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
   it and drag it to move that face. Esc puts it back.
@@ -373,6 +377,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
+  nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
+  the prim it reads existed was cooked again inside a later node's cook, on that node's
+  stage; Houdini now recooks it itself.
 - Blender: B (brush) did nothing on a brush chunk just selected in the node editor. The
   viewport tools read the editor's selection as it is now.
 - Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the
