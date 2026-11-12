@@ -146,6 +146,29 @@ nodes where they are.
 Both are saved in the scene as USD `Backdrop` prims next to the chunks. Undo covers them
 too. Scripts can make and change them: see [Scripting](scripting.md#backdrops-and-notes).
 
+## Which chunk made this prim?
+
+Select a prim in the viewport and the graph shows which chunks it came from:
+
+- The chunk that **made** it gets an orange ring tagged *made*.
+- Each chunk that **changed** it (moved it, bound a material, set a property) gets a blue
+  ring with a number: 1 changes it first, and the highest number wins a value they both set.
+- A prim inside an asset that a chunk referenced in (a mesh inside a Reference chunk's
+  asset) has no chunk of its own. The chunk that **brought it in** gets a purple ring.
+
+A chunk inside a ChunkGroup you're not looking into rings the group's node. The line at the
+bottom of the graph says the same in words, for example
+`/World/house/walls ← made by House · changed by Transform3, Paint`. Click a name to jump to
+that node, or **frame them** to fit them all in view. Select several prims and the
+graph rings every chunk that made or changed any of them.
+
+The other way round, right-click a node and pick **Select Its Prims**. The viewport selects
+what that chunk made (the outermost prim it made, such as `/World/house`, not every board)
+and each prim it changed.
+
+None of this slows a big scene down. It's worked out from the selected prims' own layers,
+only when the selection changes, and nothing happens while you cook or orbit.
+
 ## Disabled and locked nodes
 
 A **disabled** chunk (`D`) stays on the canvas, greyed out, so you can turn it back on. It
