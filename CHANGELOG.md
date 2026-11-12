@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `scene.connect(upstream, downstream, slot=None)` wires chunks that already exist. Into a
+  Merge the new branch is the strongest, as a wire dropped on the Merge in the graph is,
+  unless you give a slot. `scene.get_inputs(chunk)` lists what is wired in, strongest first.
 - Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
   prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
   it and drag it to move that face. Esc puts it back.
