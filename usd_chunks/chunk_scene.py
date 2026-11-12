@@ -1248,8 +1248,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         A param the chunk's other settings hide (a tube's `radius` on a Mesh set to sphere)
         is still set, with a warning, since the chunk will not use it.
+
+        Several params cook once, together, not once each: `set(birches, max_count=90,
+        scale_max=1.6)` cooked a scatter twice, the first time with only half of the edit.
         """
-        self._assign(target, params)
+        # A batch only when it saves something; one param solves as it always did.
+        batch = chunk_cook.batched_solve() if len(params) > 1 else contextlib.nullcontext()
+        with batch:
+            self._assign(target, params)
         _warn_hidden(target, params)
 
     def _assign(self, target: ChunkBase, params: Mapping[str, Any]) -> None:
