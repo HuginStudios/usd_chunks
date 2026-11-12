@@ -17,6 +17,7 @@ optional extra rather than a dependency.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import threading
 
@@ -271,27 +272,90 @@ def test_no_active_view_reads_as_zero(view):
 # registration
 # ---------------------------------------------------------------------------
 
-def test_a_node_class_is_generated_per_chunk_type():
-    """Registration loads the whole library, because Blender needs a class registered
-    before a node of that type can exist -- there is no lazy path."""
-    assert len(bg._generated) > 10
+def test_a_node_class_is_generated_per_chunk_type(view):
+    """A class per chunk type, built when a node of it is first made: the view's own
+    Reference and Transform have one, and an unused type gets one when asked."""
+    assert {"reference", "transform"} <= set(bg._generated)
+    cls = bg.ensure_chunk_type("prim")
+    assert cls is not None and cls.bl_idname == bg.node_class_id("prim")
+    assert bg.ensure_chunk_type("prim") is cls
+
+
+def test_opening_a_network_builds_only_the_types_it_uses(view, monkeypatch):
+    """Opening the house network loaded all 115 modules to build every class (~5.6 s of
+    6.8); now a rebuild asks only for the types on the graph."""
+    asked = []
+    real = bg.ensure_chunk_type
+    monkeypatch.setattr(bg, "ensure_chunk_type", lambda name: asked.append(name) or real(name))
+    view.reload()
+    assert set(asked) == {chunk_graph.node_kind(p) for p in view.prims.values()}
+
+
+def test_the_add_menu_needs_no_node_class(view):
+    """Shift+A lists the library from the registry's configs, before any class exists."""
+    assert bg.build_add_menu() > 50
+
+
+def test_a_type_that_cannot_build_is_not_retried_on_every_rebuild(view, monkeypatch):
+    calls = []
+    module = chunk_registry.ChunkRegistry().get_chunk_module("custom_widget")
+    monkeypatch.setattr(bg, "_build_chunk_type", lambda m: calls.append(m) or None)
+    bg._failed.discard("custom_widget")
+    assert bg.ensure_chunk_type("custom_widget") is None
+    assert bg.ensure_chunk_type("custom_widget") is None
+    assert len(calls) == 1 and calls[0] is module
+    bg._failed.discard("custom_widget")
+
+
+def test_drawing_asks_the_stage_once_until_it_changes(view):
+    """Drawing asked the stage whether each param was held or overridden ~180 times a frame
+    on a dozen nodes. The answer is kept until the network's stage changes."""
+    param = _node(view, "Move").get_chunk().get_param("tz")
+    asked = []
+    chunk_blender.clear_draw_cache()
+    for _frame in range(3):
+        chunk_blender._cached("held", param, lambda p: asked.append(p) or None)
+    assert len(asked) == 1
+    view.stage.DefinePrim("/Poke")  # any change to the stage
+    chunk_blender._cached("held", param, lambda p: asked.append(p) or None)
+    assert len(asked) == 2
+
+
+def test_quitting_does_not_run_chunks_never_used(tmp_path):
+    """A discovered chunk module sits in sys.modules as a lazy module. Blender's quit reads
+    `__dict__` off every module there, which ran each chunk the session never used --
+    display_modes, wanting usdview, printed a traceback on every quit."""
+    source = tmp_path / "never_used_chunk.py"
+    source.write_text("raise RuntimeError('a chunk nobody used ran on quit')\n")
+    spec = importlib.util.spec_from_file_location("never_used_chunk", source)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # A mapping of its own: the session's real lazy chunk modules must stay for later tests.
+    modules = {"never_used_chunk": module, "sys": sys}
+    assert addon.forget_unloaded_modules(modules=modules) == 1
+    assert modules == {"sys": sys}
+
+
+def test_the_quit_hook_is_registered(addon_on):
+    assert addon.forget_unloaded_modules in bpy.app.handlers.exit_pre
 
 
 def test_qt_only_chunks_are_skipped_not_fatal():
     """A chunk that imports PySide6 at module level cannot load in Blender (the
     custom_widget example still does). The registry skips a module whose import fails,
     so the add-on degrades rather than refusing to start."""
-    assert "custom_widget" not in bg._generated
+    assert bg.ensure_chunk_type("custom_widget") is None
 
 
 def test_uv_checker_loads_without_qt():
     """uv_checker imported Qt for one error popup; Qt is optional there now."""
-    assert "uv_checker" in bg._generated
+    assert bg.ensure_chunk_type("uv_checker") is not None
 
 
 def test_a_chunk_that_only_waited_with_qt_now_loads():
     """rbd_solver imported Qt for one debounce timer; it waits through call_later now."""
-    assert "rbd_solver" in bg._generated
+    assert bg.ensure_chunk_type("rbd_solver") is not None
 
 
 def test_call_later_from_a_worker_runs_on_the_main_thread():
@@ -309,7 +373,7 @@ def test_call_later_from_a_worker_runs_on_the_main_thread():
 def test_the_material_library_loads_without_qt():
     """AMDMaterialXLibrary's thumbnail grid is Qt, but the chunk is not: without the import
     guard its nodes were missing from a loaded network, and every wire through them too."""
-    assert "AMDMaterialXLibrary" in bg._generated
+    assert bg.ensure_chunk_type("AMDMaterialXLibrary") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +491,82 @@ def test_a_cut_wire_does_not_heal_the_chain(view):
     view.tree.update()
     after = list(view.prims[view_path].GetAttribute("inputs:chunk").GetConnections())
     assert after == before
+
+
+@pytest.fixture
+def loose(view):
+    """The view plus X, a Prim chunk with no wires: a node to drop on Ref -> Move."""
+    x = _make(chunk_registry.ChunkRegistry().get_chunk_module("prim"))
+    x.name = "X"
+    view.scene.add_chunk(x)
+    x.get_param("primpath_location").value = "/X"
+    x.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    for link in [lk for lk in view.tree.links if "X" in (lk.from_node.label, lk.to_node.label)]:
+        view.tree.links.remove(link)
+        view.tree.update()
+    view.reload()
+    assert not any("X" in (lk.from_node.label, lk.to_node.label) for lk in view.tree.links)
+    return view
+
+
+def _drop_on_wire(view, monkeypatch, label="X", src="Ref", dst="Move"):
+    """What Blender's own drop of a node on a wire does: A -> B becomes A -> X -> B, made
+    in C and reported to update() once (so the links change here with update() held off)."""
+    node, wire = _node(view, label), _wire(view, src, dst)
+    a_out, b_in = wire.from_socket, wire.to_socket
+    monkeypatch.setattr(bg, "_rebuilding", True)
+    view.tree.links.remove(wire)
+    view.tree.links.new(a_out, node.inputs["chunk"])
+    view.tree.links.new(node.outputs["chunk"], b_in)
+    monkeypatch.setattr(bg, "_rebuilding", False)
+    view.tree.update()
+
+
+def _sources(prim, attr="inputs:chunk"):
+    return [str(c.GetPrimPath()).rsplit("/", 1)[-1] for c in prim.GetAttribute(attr).GetConnections()]
+
+
+def test_a_node_dropped_on_a_wire_joins_it_through_a_merge(loose, monkeypatch):
+    """Blender's drop chained the node into the wire (Ref -> X -> Move). It merges, as the
+    Qt graph does: Ref and X -> Merge -> Move, X in the slot that wins."""
+    view = loose
+    _drop_on_wire(view, monkeypatch)
+    move = view.prims[_node(view, "Move").name]
+    feeding = _sources(move)
+    assert len(feeding) == 1 and feeding[0] != "Ref" and feeding[0] != "X"
+    merge = view.stage.GetPrimAtPath(_exec_input(view, "Move").GetConnections()[0].GetPrimPath())
+    assert chunk_stage.is_merge_prim(merge)
+    slots = [(a.GetName(), _sources(merge, a.GetName())) for a in merge.GetAttributes()
+             if a.GetName().startswith("inputs:chunk") and a.GetConnections()]
+    assert sorted(s for _n, src in slots for s in src) == ["Ref", "X"]
+    assert [src for name, src in sorted(slots)][0] == ["X"], "X takes the strongest slot"
+
+
+def test_a_merged_drop_survives_another_update_before_the_reload(loose, monkeypatch):
+    """Blender may call update() again before the deferred reload; with the model stale it
+    saw Ref -> Move missing from the tree and cut Move's input, Merge and all."""
+    view = loose
+    _drop_on_wire(view, monkeypatch)
+    feeding = _sources(view.prims[_node(view, "Move").name])
+    view.tree.update()
+    view.tree.update()
+    assert _sources(view.prims[_node(view, "Move").name]) == feeding
+    view.reload()
+    merge_nodes = [n for n in view.tree.nodes if n.name.rsplit("/", 1)[-1] == feeding[0]]
+    assert merge_nodes, "the Merge is on the graph after the reload"
+    assert _wire(view, merge_nodes[0].label, "Move")
+
+
+def test_an_ordinary_new_link_is_still_just_a_link(loose):
+    """Only the drop's exact shape merges: wiring X into Move's input by hand connects."""
+    view = loose
+    view.tree.links.remove(_wire(view, "Ref", "Move"))
+    view.tree.update()
+    view.tree.links.new(_node(view, "X").outputs["chunk"], _node(view, "Move").inputs["chunk"])
+    view.tree.update()
+    assert _sources(view.prims[_node(view, "Move").name]) == ["X"]
 
 
 def test_update_with_nothing_changed_schedules_no_reload(view, monkeypatch):
@@ -927,6 +1067,9 @@ def driven(view):
     maker.name = "Maker"
     view.scene.add_chunk(maker)
     maker.get_param("prim_type").value = "Cube"
+    # Its own path: the view fixture's Move transform targets the default /prim, and two
+    # transform chunks on one prim put Move's handle first.
+    maker.get_param("primpath_location").value = "/Driven"
     maker.execute()
     target = maker.get_param("primpath_location").value
     xf = _make(registry.get_chunk_module("transform"))
@@ -2151,7 +2294,7 @@ def test_a_chunk_with_private_params_still_gets_a_node(view):
     """Blender refuses an RNA property whose name starts with "_", and one refused property
     failed the whole class: Layer (with its _new_layer_id bookkeeping) had no node at all,
     so it never showed in the Add menu or in a graph."""
-    assert "layer" in bg._generated
+    assert bg.ensure_chunk_type("layer") is not None
     layer = _make(chunk_registry.ChunkRegistry().get_chunk_module("layer"))
     layer.name = "Lookdev"
     view.scene.add_chunk(layer)
@@ -2166,7 +2309,7 @@ def test_every_chunk_that_builds_gets_a_node_class(view):
     missing = []
     for module in chunk_registry.ChunkRegistry().get_chunk_modules():
         name = getattr(module, "module_name", None)
-        if not name or name in bg._generated:
+        if not name or bg.ensure_chunk_type(name) is not None:
             continue
         try:
             built = module.create() if module.loaded else module.load()

@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: drag a node with no wires onto a wire and it joins the wire through a Merge, as
+  in the Qt graph: A and the node into a new Merge feeding B, the dropped node winning. A
+  wire into a Merge takes the node into that Merge instead.
 - Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
   prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
   it and drag it to move that face. Esc puts it back.
@@ -227,6 +230,11 @@ This file starts with the first release; development before that is in the commi
 - Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
   forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
   tested against the points already kept instead of against each other.
+- Blender: opening a network is about 4.7x faster (a 14-chunk house: 6.8 s to 1.45 s).
+  Node classes are built per chunk type when a node of it is first made, instead of
+  loading the whole library on open, so a chunk's missing packages are asked for when it
+  is used. Drawing the node editor is about a third faster: what it asks of the stage per
+  param is kept until the stage changes.
 - **Breaking:** URDF Import gives a welded link with no collision geometry (a camera mount,
   a tool tip) no rigid body and no fixed joint: it is nested under its parent, which is the
   weld. As a body it was simulated apart from its parent and fell away. A script that read
@@ -379,6 +387,11 @@ This file starts with the first release; development before that is in the commi
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.
+- Blender: quitting ran every chunk module the session never used, and one that could not
+  import (PySide6, usdview) stopped Blender disabling the add-ons after it, with a
+  traceback. Unused chunks are left alone on quit.
+- Blender: Ctrl+click on part of a `component` (a car's wheel) picks the component again
+  when its parents carry no `group` or `assembly` kind, which is most real files.
 - A relative `USD_CHUNK_DIRS` folder (`chunks`, as CI sets it) is resolved once, when the
   chunks are found. A chunk first used after the working directory changed (a script's
   `os.chdir`) could not be loaded, and making it failed with "not enough values to
