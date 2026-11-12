@@ -409,6 +409,9 @@ This file starts with the first release; development before that is in the commi
   new node.
 - Houdini: a pip install of usd_chunks now includes the viewport handles'
   `viewer_states` folder.
+- Houdini: a box handle shrank to a point at the origin when the chunkgroup had an input,
+  such as a Sublayer. Reading the input's stage swapped out the node's stage before the
+  handle was placed on it.
 - Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
   nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
   the prim it reads existed was cooked again inside a later node's cook, on that node's

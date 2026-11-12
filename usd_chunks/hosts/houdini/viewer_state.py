@@ -103,11 +103,16 @@ class ChunkHandles:
 
     # ---------------------------------------------------------------- the maths' inputs
 
-    def _stage(self):
-        return self.node.stage()
+    def _placement(self, target):
+        """(the node's stage, its to-Houdini matrix, the anchor's matrices or None).
 
-    def _matrices(self, target):
-        return gizmos.anchor_matrices(self._stage(), target.anchor, space.to_host(self.node))
+        to_host first: it reads the stage of the chunkgroup's input (a Sublayer, say), and
+        asking Houdini for another node's stage swaps out one fetched before it, so the
+        anchor would not be found on it.
+        """
+        to_host = space.to_host(self.node)
+        stage = self.node.stage()
+        return stage, to_host, gizmos.anchor_matrices(stage, target.anchor, to_host)
 
     # ---------------------------------------------------------------- node -> handle
 
@@ -117,7 +122,7 @@ class ChunkHandles:
         if target is None or (self.drag is not None and self.drag["handle"] == name):
             return  # not in use, or in the hand: Houdini knows where it is better than we do
         try:
-            matrices = self._matrices(target)
+            stage, to_host, matrices = self._placement(target)
             values = lop.gizmo_values(self.node, target)
             if matrices is None or values is None:
                 return
@@ -126,7 +131,7 @@ class ChunkHandles:
             if target.type == "box":
                 out.update(gizmos.box_to_handle(values, world))
             else:
-                point = gizmos.handle_point(self._stage(), target, world, space.to_host(self.node))
+                point = gizmos.handle_point(stage, target, world, to_host)
                 out.update(dict(zip(gizmos.MOVE_PARMS, point)))
         except Exception:
             logger.debug("could not place handle %s", name, exc_info=True)
@@ -138,13 +143,13 @@ class ChunkHandles:
         target = self.slots.get(name)
         if target is None or self.drag is not None:
             return
-        matrices = self._matrices(target)
+        stage, to_host, matrices = self._placement(target)
         values = lop.gizmo_values(self.node, target)
         if matrices is None or values is None:
             return
         world, parent = matrices
         # Where onStateToHandle put the handle: the drag's start, which the move is measured from.
-        point = (gizmos.handle_point(self._stage(), target, world, space.to_host(self.node))
+        point = (gizmos.handle_point(stage, target, world, to_host)
                  if target.type == "translate" else None)
         self.viewer.beginStateUndo(f"Drag {target.label}")
         self.drag = {"handle": name, "target": target, "world": world, "parent": parent,
