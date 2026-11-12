@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: drag a node with no wires onto a wire and it joins the wire through a Merge, as
+  in the Qt graph: A and the node into a new Merge feeding B, the dropped node winning. A
+  wire into a Merge takes the node into that Merge instead.
 - Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
   prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
   it and drag it to move that face. Esc puts it back.

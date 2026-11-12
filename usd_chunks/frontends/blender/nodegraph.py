@@ -214,6 +214,11 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
             self.links.remove(link)
             if a is not None and b is not None:
                 bpy.app.timers.register(lambda a=a, b=b: _join_later(view, a, b), first_interval=0.0)
+        # Refused or not, the tree no longer matches USD (Blender took A -> B out), and
+        # the reload is what puts it back.
+        if _merge_dropped_on_wire(view, self) is not None:
+            bpy.app.timers.register(lambda: _reload_after_connect(view), first_interval=0.0)
+            return
         changed = False
         present = {(link.from_node.name, link.from_socket.name,
                     link.to_node.name, link.to_socket.name) for link in self.links}
@@ -248,6 +253,72 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
                 changed = True
         if changed:
             bpy.app.timers.register(lambda: _reload_after_connect(view), first_interval=0.0)
+
+
+def _link_key(link) -> tuple:
+    return (link.from_node.name, link.from_socket.name, link.to_node.name, link.to_socket.name)
+
+
+def _edge_key(edge) -> tuple:
+    return (edge.src_node_path, _port_name(edge.src_attr_path),
+            edge.dst_node_path, _port_name(edge.dst_attr_path))
+
+
+def _merge_dropped_on_wire(view, tree):
+    """A node dropped on an exec wire joins it through a Merge, as in the Qt graph.
+
+    Blender's own drop inserts the node into the wire: A -> X -> B. update() sees that as
+    exactly one exec wire gone (A -> B) and two links new (A -> X, X -> B) on a node that
+    had no wires, all in one call, since Blender makes the change in C and reports it once.
+    That shape is turned into chunk_graph.merge_into_wire instead: A and X -> Merge -> B,
+    X in the slot below A so it wins, the way the Qt graph does it. A wire that already
+    enters a Merge takes X there rather than getting a second Merge.
+
+    Returns:
+        None when the change is not a node dropped on a wire (update() carries on as
+        usual); True when it was merged; False when merge_into_wire refused (a loop, say),
+        with Blender's two links taken back out and the wire left as it was in USD.
+    """
+    present = {_link_key(link): link for link in tree.links}
+    edges = {_edge_key(edge): edge for edge in view.edges}
+    gone = [edge for key, edge in edges.items() if key not in present]
+    new = [link for key, link in present.items() if key not in edges]
+    if len(gone) != 1 or len(new) != 2 or not gone[0].is_exec:
+        return None
+    wire = gone[0]
+    into = next((lk for lk in new if lk.from_node.name == wire.src_node_path), None)
+    out = next((lk for lk in new if lk.to_node.name == wire.dst_node_path), None)
+    if into is None or out is None or into.to_node != out.from_node:
+        return None
+    node = into.to_node
+    dropped = node.name
+    if (dropped in (wire.src_node_path, wire.dst_node_path)
+            or getattr(into.to_socket, "port_type", "") != chunk_graph.PORT_EXEC
+            or getattr(out.from_socket, "port_type", "") != chunk_graph.PORT_EXEC
+            or any(dropped in (e.src_node_path, e.dst_node_path) for e in view.edges)):
+        return None
+    # Beside the dropped node, towards B: where the Merge's node will be drawn.
+    usd_pos = ((node.location.x + node.dimensions.x + 60.0) / _SCALE, node.location.y / _SCALE)
+    global _rebuilding
+    _rebuilding = True  # links.remove calls update() again, mid-change; it must not act
+    try:
+        tree.links.remove(into)
+        tree.links.remove(out)
+    finally:
+        _rebuilding = False
+    change, error = chunk_graph.merge_into_wire(
+        view.stage, view.scene, wire, dropped, usd_pos,
+        chunk_graph.nest_target(chunk_graph.context_chunk(view.scene, view.chunks, view.context)))
+    # The model as USD now has it, before the deferred reload: a further update() would
+    # otherwise see A -> B missing from the tree and cut B's input, Merge and all.
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.prims, view.ports, view.edges = chunk_graph.read_graph(view.stage, view.context, view.chunks)
+    if change is None:
+        view.status = f"not merged: {error}"
+        logger.warning("usd_chunks: %s", view.status)
+        return False
+    view.status = "merged into the wire"
+    return True
 
 
 def socket_param(socket, node):

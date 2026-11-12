@@ -493,6 +493,82 @@ def test_a_cut_wire_does_not_heal_the_chain(view):
     assert after == before
 
 
+@pytest.fixture
+def loose(view):
+    """The view plus X, a Prim chunk with no wires: a node to drop on Ref -> Move."""
+    x = _make(chunk_registry.ChunkRegistry().get_chunk_module("prim"))
+    x.name = "X"
+    view.scene.add_chunk(x)
+    x.get_param("primpath_location").value = "/X"
+    x.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    for link in [lk for lk in view.tree.links if "X" in (lk.from_node.label, lk.to_node.label)]:
+        view.tree.links.remove(link)
+        view.tree.update()
+    view.reload()
+    assert not any("X" in (lk.from_node.label, lk.to_node.label) for lk in view.tree.links)
+    return view
+
+
+def _drop_on_wire(view, monkeypatch, label="X", src="Ref", dst="Move"):
+    """What Blender's own drop of a node on a wire does: A -> B becomes A -> X -> B, made
+    in C and reported to update() once (so the links change here with update() held off)."""
+    node, wire = _node(view, label), _wire(view, src, dst)
+    a_out, b_in = wire.from_socket, wire.to_socket
+    monkeypatch.setattr(bg, "_rebuilding", True)
+    view.tree.links.remove(wire)
+    view.tree.links.new(a_out, node.inputs["chunk"])
+    view.tree.links.new(node.outputs["chunk"], b_in)
+    monkeypatch.setattr(bg, "_rebuilding", False)
+    view.tree.update()
+
+
+def _sources(prim, attr="inputs:chunk"):
+    return [str(c.GetPrimPath()).rsplit("/", 1)[-1] for c in prim.GetAttribute(attr).GetConnections()]
+
+
+def test_a_node_dropped_on_a_wire_joins_it_through_a_merge(loose, monkeypatch):
+    """Blender's drop chained the node into the wire (Ref -> X -> Move). It merges, as the
+    Qt graph does: Ref and X -> Merge -> Move, X in the slot that wins."""
+    view = loose
+    _drop_on_wire(view, monkeypatch)
+    move = view.prims[_node(view, "Move").name]
+    feeding = _sources(move)
+    assert len(feeding) == 1 and feeding[0] != "Ref" and feeding[0] != "X"
+    merge = view.stage.GetPrimAtPath(_exec_input(view, "Move").GetConnections()[0].GetPrimPath())
+    assert chunk_stage.is_merge_prim(merge)
+    slots = [(a.GetName(), _sources(merge, a.GetName())) for a in merge.GetAttributes()
+             if a.GetName().startswith("inputs:chunk") and a.GetConnections()]
+    assert sorted(s for _n, src in slots for s in src) == ["Ref", "X"]
+    assert [src for name, src in sorted(slots)][0] == ["X"], "X takes the strongest slot"
+
+
+def test_a_merged_drop_survives_another_update_before_the_reload(loose, monkeypatch):
+    """Blender may call update() again before the deferred reload; with the model stale it
+    saw Ref -> Move missing from the tree and cut Move's input, Merge and all."""
+    view = loose
+    _drop_on_wire(view, monkeypatch)
+    feeding = _sources(view.prims[_node(view, "Move").name])
+    view.tree.update()
+    view.tree.update()
+    assert _sources(view.prims[_node(view, "Move").name]) == feeding
+    view.reload()
+    merge_nodes = [n for n in view.tree.nodes if n.name.rsplit("/", 1)[-1] == feeding[0]]
+    assert merge_nodes, "the Merge is on the graph after the reload"
+    assert _wire(view, merge_nodes[0].label, "Move")
+
+
+def test_an_ordinary_new_link_is_still_just_a_link(loose):
+    """Only the drop's exact shape merges: wiring X into Move's input by hand connects."""
+    view = loose
+    view.tree.links.remove(_wire(view, "Ref", "Move"))
+    view.tree.update()
+    view.tree.links.new(_node(view, "X").outputs["chunk"], _node(view, "Move").inputs["chunk"])
+    view.tree.update()
+    assert _sources(view.prims[_node(view, "Move").name]) == ["X"]
+
+
 def test_update_with_nothing_changed_schedules_no_reload(view, monkeypatch):
     """Blender calls NodeTree.update for every node PROPERTY change, i.e. on each tick of
     a slider drag. Connecting every link on every call re-authored each wire, reported a
