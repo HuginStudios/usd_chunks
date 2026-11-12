@@ -222,7 +222,37 @@ def _range(param, cast):
     return kw
 
 
+#: Answers drawing asks about a param on every frame of every node: its list row, and the
+#: layers that override or hold its value. A network of a dozen nodes asked them ~180 times
+#: a frame, and the two layer questions walk the stage. Keyed by the param's id with the
+#: param kept beside it (an id is only reused once its object is gone, and this holds it),
+#: cleared by clear_draw_cache whenever the network's stage changes or the tree is rebuilt.
+_draw_cache: dict = {}
+
+
+def clear_draw_cache(*_args) -> None:
+    """Forget every cached answer. Takes and ignores a notice's arguments."""
+    _draw_cache.clear()
+
+
+def _cached(kind: str, param, compute):
+    key = (kind, id(param))
+    hit = _draw_cache.get(key)
+    if hit is not None and hit[0] is param:
+        return hit[1]
+    value = compute(param)
+    _draw_cache[key] = (param, value)
+    return value
+
+
 def list_row_of(param):
+    """(list group, row group) enclosing `param`, or None when it is not in a ListGroup.
+
+    Cached (see _draw_cache): it is asked for every param on every frame."""
+    return _cached("row", param, _list_row_of)
+
+
+def _list_row_of(param):
     """(list group, row group) enclosing `param`, or None when it is not in a ListGroup.
 
     A row is a ChunkGroupBase directly under a ChunkListGroupBase; the param may sit a
@@ -579,8 +609,10 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     # sequence. Blender's alert red is the nearest built-in "this is not the default".
     # Held by a stronger layer (chunk_stage.param_held_by) is marked the same way: the
     # value shown is not this graph's either, and an edit here will not show.
-    override_source = chunk_stage.param_override_source(param)
-    layout.alert = override_source is not None or chunk_stage.param_held_by(param) is not None
+    # Both walk the stage, so they are cached until it changes (see _draw_cache).
+    override_source = _cached("override", param, chunk_stage.param_override_source)
+    layout.alert = (override_source is not None
+                    or _cached("held", param, chunk_stage.param_held_by) is not None)
     # A PRIM_SELECTION field gets a pin button beside it, same as Qt's -- pulling in
     # whatever the viewport-click picker last found (chunk_blender_nodegraph.pin_prim /
     # set_picked_prim_paths), which is this frontend's counterpart of the Qt/usdview

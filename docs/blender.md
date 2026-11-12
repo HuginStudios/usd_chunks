@@ -3,12 +3,26 @@
 usd_chunks adds a **USDChunks Editor** node editor to Blender. You build a chunk network
 there, and the 3D viewport shows the result.
 
-You need Blender 4.2 or newer and a clone of usd_chunks. Tested with Blender 5.2 on
-Windows.
+You need Blender 4.2 or newer. Tested with Blender 5.1 and 5.2 on Windows.
 
 ## Install
 
-Open cmd in the folder you cloned usd_chunks into:
+1. Download `usd_chunks_blender-<version>.zip` from the
+   [Releases page](https://github.com/HuginStudios/usd_chunks/releases). Don't unzip it.
+2. In Blender, go to **Edit > Preferences > Add-ons**, open the **⌄** menu at the top right,
+   choose **Install from Disk...** and pick the zip.
+
+That is all: usd_chunks and its chunks are inside the zip, and Blender has its own USD.
+To use your own chunks as well, set `USD_CHUNK_DIRS` to their folders before starting
+Blender.
+
+**Try it:** switch any area to **USDChunks Editor**, click **New**, and press Shift+A to add
+a chunk.
+
+## Install from a clone
+
+To install a version that isn't released yet. Open cmd in the folder you cloned usd_chunks
+into:
 
 ```
 cd C:\src\usd_chunks
@@ -38,6 +52,9 @@ the **⌄** menu at the top right, choose **Install from Disk...** and pick
 **Step 4. Try it:** switch any area to **USDChunks Editor**, click **New**, and press
 Shift+A to add a chunk.
 
+To join a branch into a chain, drag a node with no wires onto a wire: it goes in through a
+Merge, the dropped node winning, as in the other graph editors.
+
 To open a saved network, press N in the editor, go to the **USDChunks** tab and click
 **Open Chunk Network**. **File > Import > USD** of a network file opens its network too, in
 a node tree of its own.
@@ -57,7 +74,8 @@ changed: chunks still read and write in the network's own space.
 
 ## Updating
 
-After a `git pull`, run steps 1 to 3 again and restart Blender.
+Install the newer zip the same way and restart Blender; it replaces the old one. From a
+clone: after a `git pull`, run steps 1 to 3 again and restart Blender.
 
 ## Working from a checkout
 
@@ -75,6 +93,25 @@ For people working on usd_chunks itself. This links Blender to your clone, so a
     ```
 
 3. Start Blender and turn on **USDChunks Editor** in Preferences.
+
+## Other renderers in the live view
+
+The live view draws with Storm, the renderer Blender ships. Another Hydra render delegate
+can draw it instead, if it was built against **Blender's own USD**: a build for any other
+USD won't load inside Blender.
+
+1. In **Edit > Preferences > Add-ons > USDChunks Editor**, set **Hydra Delegate Folders**
+   to the delegate's folder: the one with its `plugInfo.json`, or with a `resources`
+   folder that has it. Separate several folders with `;`.
+2. In the 3D viewport, open the sidebar (N) and pick it in **USDChunks > Renderer**.
+
+A launcher can set `USD_CHUNKS_HYDRA_DELEGATES` to the same list instead. The add-on reads
+it when it starts.
+
+The live view uses the stage's RenderSettings prim: the one the stage's
+`renderSettingsPrimPath` names, or else the first one under `/Render`. The renderer's own
+settings on it, such as Aurora's `aurora:max_samples` or `aurora:is_denoising_enabled`,
+apply to the live view. A path tracer keeps refining the image until it is done.
 
 ## If something is wrong
 

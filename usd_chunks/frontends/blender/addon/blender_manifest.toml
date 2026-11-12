@@ -13,20 +13,18 @@ tags = ["Pipeline", "Import-Export", "Node"]
 blender_version_min = "4.2.0"
 license = ["SPDX:Apache-2.0"]
 
-# No `wheels` entry, and that is a decision rather than an omission.
+# No `wheels` entry in this copy. tools/build_blender_addon.py, which the release workflow
+# runs on every v* tag, adds one for the usd_chunks wheel it bundles; this folder built
+# as-is (`blender --command extension build`, docs/blender.md) is the add-on for a usd_chunks
+# installed into Blender separately.
 #
-# usd_chunks needs `attrs`, `typing-extensions` and the OpenUSD Python bindings. The first
-# two are ordinary wheels and belong here once this is published. The bindings must NOT be:
-# Blender already ships them, compiled under a private namespace
-# (pxrBlender_v26_03__pxrReserved__), so a pip `usd-core` installed beside them is a
-# different C++ type and cannot exchange objects with Blender's USD. Shipping it would not
+# usd_chunks needs `attrs`, `typing-extensions` and the OpenUSD Python bindings. Blender
+# ships all three. The bindings must NEVER be bundled: Blender's are compiled under a
+# private namespace (pxrBlender_v26_03__pxrReserved__), so a pip `usd-core` beside them is
+# a different C++ type and cannot exchange objects with Blender's USD. Shipping it would not
 # conflict -- it would quietly give the add-on a second, unrelated USD.
 #
-# Until the wheels are built, install usd_chunks with Blender's own Python, into Blender's
-# user scripts/addons/modules folder (`pip install --no-deps --target ...`). A plain pip
-# install can't write to Blender in Program Files. See docs/blender.md.
-#
-# wheels = ["./wheels/attrs-*.whl", "./wheels/typing_extensions-*.whl"]
+# wheels = ["./wheels/usd_chunks-*.whl"]
 
 [permissions]
 files = "Read and write .usda chunk networks chosen by the user"

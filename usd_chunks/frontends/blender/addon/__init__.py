@@ -30,6 +30,7 @@ import heapq
 import itertools
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -41,6 +42,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
+from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.blender.addon import brush
@@ -242,13 +244,11 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     # Reference8, View1 -> View11) laid out in a row off to the right of the real
     # network, which read as "the file's positions are wrong".
     chunk_stage.ChunkStageSync().initialize(stage, _scene)
-    # Node classes are generated from the registry, and the registry only discovers chunks
-    # once a scene exists -- so this cannot happen in register(), where there is no scene
-    # yet and every class would be generated from an empty library. Idempotent, so opening
-    # a second network costs a dict lookup per already-registered type.
-    made = bg.register_chunk_types()
-    if made:
-        logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
+    # The Add menu comes from the registry, and the registry only discovers chunks once a
+    # scene exists -- so this cannot happen in register(), where there is no scene yet.
+    # Node classes are not built here: the tree builds the ones it needs as it is made
+    # (bg.ensure_chunk_type), so opening a network loads only the chunks it uses.
+    bg.build_add_menu()
 
     if tree is None:
         tree = _active_tree()
@@ -1299,7 +1299,39 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
             layout.label(text=view.status)
 
 
+def _register_delegates(_prefs=None, _context=None) -> list[str]:
+    """Make the delegates in USD_CHUNKS_HYDRA_DELEGATES and the preference available.
+
+    Also the preference's update callback, so a folder typed in takes effect at once: the
+    Renderer menu asks USD for its delegates every time it opens.
+    """
+    folders = delegates.split_folders(os.environ.get(delegates.ENV_VAR, ""))
+    addon_entry = bpy.context.preferences.addons.get(__package__)
+    if addon_entry is not None:
+        folders += delegates.split_folders(addon_entry.preferences.hydra_delegate_folders)
+    return delegates.register_folders(folders)
+
+
+class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    hydra_delegate_folders: bpy.props.StringProperty(
+        name="Hydra Delegate Folders",
+        description=(
+            "Render delegates for the live view, built against Blender's USD: each folder "
+            "holds plugInfo.json or a resources folder with one. Separate several with ';'"),
+        default="",
+        update=_register_delegates,
+    )
+
+    def draw(self, _context):
+        self.layout.prop(self, "hydra_delegate_folders")
+        self.layout.label(text="Pick one in the 3D viewport: N panel > USDChunks > Renderer",
+                          icon="INFO")
+
+
 _CLASSES = (
+    USDCHUNKS_AP_preferences,
     USDCHUNKS_OT_open_network,
     USDCHUNKS_OT_new_network,
     USDCHUNKS_OT_save_network,
@@ -1427,8 +1459,32 @@ def _unregister_keymap() -> None:
     _keymaps.clear()
 
 
+@persistent
+def forget_unloaded_modules(*_args, modules: dict | None = None) -> int:
+    """Drop modules that were found but never run from sys.modules. Returns how many.
+
+    The registry puts each chunk module it discovers in sys.modules as a lazy module, run
+    on its first attribute access. Blender's quit (addon_utils.disable_all) reads
+    `__dict__` off every module there, which ran every chunk the session never used: a
+    slower quit, and a chunk that needs another host (display_modes wants usdview) printed
+    a traceback on the way out. `type()`, not an attribute, so asking does not run one.
+    """
+    modules = sys.modules if modules is None else modules
+    lazy = [name for name, mod in list(modules.items())
+            if type(mod).__name__ == "_LazyModule"]
+    for name in lazy:
+        modules.pop(name, None)
+    return len(lazy)
+
+
 def register() -> None:
     configure_logging()
+    # exit_pre runs before Blender's quit disables the add-ons (bpy.utils._on_exit ->
+    # addon_utils.disable_all), which is what this has to get ahead of. Not atexit: that
+    # runs after, when the interpreter is finalized.
+    exit_pre = getattr(bpy.app.handlers, "exit_pre", None)
+    if exit_pre is not None and forget_unloaded_modules not in exit_pre:
+        exit_pre.append(forget_unloaded_modules)
     bg.register()
     for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
@@ -1462,6 +1518,11 @@ def register() -> None:
         bpy.app.handlers.undo_post.append(_on_undo)
     if _on_undo not in bpy.app.handlers.redo_post:
         bpy.app.handlers.redo_post.append(_on_undo)
+    # Before the viewport: its Renderer menu lists whatever delegates USD knows by then.
+    try:
+        _register_delegates()
+    except Exception:  # a bad folder must not take the add-on down with it
+        logger.exception("could not register Hydra delegates")
     viewport.register()
     gizmos.register()
     brush.register()
@@ -1469,6 +1530,9 @@ def register() -> None:
 
 
 def unregister() -> None:
+    exit_pre = getattr(bpy.app.handlers, "exit_pre", None)
+    if exit_pre is not None and forget_unloaded_modules in exit_pre:
+        exit_pre.remove(forget_unloaded_modules)
     undo.untrack()
     camera.unregister()
     brush.unregister()

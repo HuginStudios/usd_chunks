@@ -15,11 +15,26 @@ This file starts with the first release; development before that is in the commi
   box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
   drag one face at a time, and a translate gizmo is a move handle. Drags go through the
   chunk's own hooks (snapping, landing on the roof) and undo as one step.
+- Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
+  Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
+  Blender's USD appear in the sidebar's **Renderer** menu, next to Storm. The live view
+  renders with the stage's RenderSettings prim (a path tracer's samples, denoising, ...),
+  and a progressive renderer keeps refining until it is done.
+- `scene.connect(upstream, downstream, slot=None)` wires chunks that already exist. Into a
+  Merge the new branch is the strongest, as a wire dropped on the Merge in the graph is,
+  unless you give a slot. `scene.get_inputs(chunk)` lists what is wired in, strongest first.
+- Blender: drag a node with no wires onto a wire and it joins the wire through a Merge, as
+  in the Qt graph: A and the node into a new Merge feeding B, the dropped node winning. A
+  wire into a Merge takes the node into that Merge instead.
 - Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
   prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
   it and drag it to move that face. Esc puts it back.
 - Blender: **File > Import > USD** of a network file opens its chunk network in the
   USDChunks Editor, in a node tree of its own.
+- **One-file Blender add-on.** Each release (a `v*` tag) carries
+  `usd_chunks_blender-<version>.zip`: install it with Install from Disk and it works, with
+  usd_chunks and its chunks inside. No pip, no `--target`, no `USD_CHUNK_DIRS`. Built by
+  `tools/build_blender_addon.py`; the steps from a clone still work.
 - **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
   sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
   `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
@@ -228,6 +243,14 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
+  forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
+  tested against the points already kept instead of against each other.
+- Blender: opening a network is about 4.7x faster (a 14-chunk house: 6.8 s to 1.45 s).
+  Node classes are built per chunk type when a node of it is first made, instead of
+  loading the whole library on open, so a chunk's missing packages are asked for when it
+  is used. Drawing the node editor is about a third faster: what it asks of the stage per
+  param is kept until the stage changes.
 - **Breaking:** URDF Import gives a welded link with no collision geometry (a camera mount,
   a tool tip) no rigid body and no fixed joint: it is nested under its parent, which is the
   weld. As a body it was simulated apart from its parent and fell away. A script that read
@@ -381,6 +404,18 @@ This file starts with the first release; development before that is in the commi
   nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
   the prim it reads existed was cooked again inside a later node's cook, on that node's
   stage; Houdini now recooks it itself.
+- `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
+  per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
+  tz=3)`.
+- Blender: quitting ran every chunk module the session never used, and one that could not
+  import (PySide6, usdview) stopped Blender disabling the add-ons after it, with a
+  traceback. Unused chunks are left alone on quit.
+- Blender: Ctrl+click on part of a `component` (a car's wheel) picks the component again
+  when its parents carry no `group` or `assembly` kind, which is most real files.
+- A relative `USD_CHUNK_DIRS` folder (`chunks`, as CI sets it) is resolved once, when the
+  chunks are found. A chunk first used after the working directory changed (a script's
+  `os.chdir`) could not be loaded, and making it failed with "not enough values to
+  unpack". The same folder was also found twice, under its relative and absolute paths.
 - Blender: B (brush) did nothing on a brush chunk just selected in the node editor. The
   viewport tools read the editor's selection as it is now.
 - Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the
