@@ -370,6 +370,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: a chunk param named like one of a node's own properties (`color`, `name`,
+  `location`, `width`, ...) was overwritten by the node. Exterior Walls' `color` took the
+  node's header grey, so its walls cooked grey in Blender only.
 - Blender: a network whose chunks are not on `USD_CHUNK_DIRS` opened as an empty graph
   with only its Output node; the missing chunks were dropped without a word. Each one now
   shows as a red node that names its chunk type, with its wires kept. Open Chunk Network

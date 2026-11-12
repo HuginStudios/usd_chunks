@@ -1098,6 +1098,16 @@ def test_the_transform_keys_live_in_the_object_mode_keymap():
     assert gz._KEYMAP == ("Object Mode", "EMPTY")
 
 
+def test_a_param_named_like_a_node_builtin_is_not_a_node_field():
+    """Exterior Walls' `color` param took over Node.color, the header colour: painting the
+    header grey wrote grey into the chunk, and the walls cooked grey in Blender only."""
+    c = chunk.Chunk("Walls")
+    c.add_param(chunk.ColorPicker("color", "Stucco", default_value=(0.86, 0.54, 0.24)))
+    props, _buttons, _skipped = chunk_blender.annotations_for(c)
+    assert "color" in chunk_blender.node_builtins()
+    assert "color" not in props
+
+
 def test_the_pivot_dot_follows_the_driven_anchor(driven):
     view, xf, prim = driven
     desc = gz.placement_desc(prim, view)
