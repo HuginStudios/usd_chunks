@@ -110,7 +110,7 @@ def _visible_descs(prim, view):
              if "onPrimSelection" in d.editmode or "always" in d.editmode]
     if not descs:
         return []
-    selected = set(getattr(view, "selected_nodes", ()) or ())
+    selected = set(bg.tree_selection(view))
     if selected:
         owned = [d for d in descs if str(d.chunk_prim) in selected]
         if owned:
@@ -485,6 +485,306 @@ def _redraw() -> None:
 
 
 # ---------------------------------------------------------------------------
+# box handles: a box whose faces are the handles (contract §3, `box`)
+#
+# The pivot dot and G/R/S cover the manipulator types; a `box` (Blockout Box, Blocking
+# Volume) was skipped entirely, so picking one showed nothing to pull. Drawn as the wire
+# box its six values describe, in the anchor's space; the face under the mouse lights up and
+# a plain click-drag on it pulls that face. The maths is chunk_gizmo's
+# (pick_box_face/drag_box_face), the same as usdview's, so both hosts agree on the faces.
+# ---------------------------------------------------------------------------
+
+_BOX = "box"
+
+#: The box's 12 edges, as corner index pairs (bit 1 = max X, 2 = max Y, 4 = max Z).
+BOX_EDGES = tuple((i, i | bit) for i in range(8) for bit in (1, 2, 4) if not i & bit)
+
+#: Each face's corners in order around it, in the driver's order +X, -X, +Y, -Y, +Z, -Z.
+FACE_CORNERS = ((1, 3, 7, 5), (0, 4, 6, 2), (2, 6, 7, 3), (0, 1, 5, 4), (4, 5, 7, 6), (0, 2, 3, 1))
+
+_BOX_COLOR = (0.3, 0.8, 0.9, 1.0)
+_BOX_HOVER = (1.0, 1.0, 0.7, 1.0)
+_BOX_ACTIVE = (1.0, 1.0, 0.1, 1.0)
+
+#: hover: (handle key, face) under the mouse. drag: the face in the hand and the values the
+#: drag last sent -- drawn in place of the params, which cook at most every DRAG_INTERVAL.
+_box_state = {"hover": None, "drag": None}
+
+
+def box_key(desc) -> tuple:
+    return (str(desc.chunk_prim), desc.name)
+
+
+def selected_chunk_paths(view) -> list:
+    """The chunk prim paths selected in the node editor (bg.tree_selection)."""
+    return bg.tree_selection(view)
+
+
+def box_descs(stage, view) -> list:
+    """The box handles to show, six faces each: the picked prim's chunk's, and those of
+    every chunk selected in the node graph -- a selected node stands in for a viewport
+    pick, as it does in usdview, whatever the handle's editmode."""
+    if stage is None:
+        return []
+    found = []
+    prim = _picked_prim(stage)
+    if prim is not None:
+        found += _visible_descs(prim, view)
+    for path in selected_chunk_paths(view):
+        chunk_prim = stage.GetPrimAtPath(path)
+        if chunk_prim and chunk_prim.IsValid():
+            found += [d for d in chunk_gizmo.resolve_gizmos(chunk_prim)
+                      if d.chunk_prim == chunk_prim.GetPath()]
+    out, seen = [], set()
+    for desc in found:
+        if desc.type != _BOX or not desc.anchor or len(desc.driver) != 6:
+            continue
+        if box_key(desc) not in seen:
+            seen.add(box_key(desc))
+            out.append(desc)
+    return out
+
+
+def _may_show_boxes(view) -> bool:
+    """Cheap gate for the mouse operators: something picked or a node selected."""
+    return bool(bg.get_picked_prim_paths()) or bool(selected_chunk_paths(view))
+
+
+#: The node selection the 3D view was last drawn for; see _watch_node_selection.
+_last_node_selection: list = [frozenset()]
+
+
+def _watch_node_selection() -> float:
+    """Redraw the 3D view when the graph's selection changes.
+
+    Clicking a node repaints the node editor only, so a box handle shown for the selected
+    chunk would otherwise appear (or linger) until the viewport next redrew by itself.
+    """
+    try:
+        now = frozenset(selected_chunk_paths(_active_view()))
+        if now != _last_node_selection[0]:
+            _last_node_selection[0] = now
+            _box_state["hover"] = None
+            _redraw()
+    except Exception:  # a timer that raises is unregistered for good
+        logger.debug("node selection watch failed", exc_info=True)
+    return 0.1
+
+
+def box_values(view, desc) -> list | None:
+    """The six face distances as the chunk's params hold them now, or None.
+
+    Read off the params, not the chunk prim: inputs are authored only when they differ from
+    the default, so an untouched face has no attribute to read.
+    """
+    chunk = _chunk_for(view, desc)
+    if chunk is None:
+        return None
+    values = []
+    for entry in desc.driver:
+        param = chunk.get_param(str(entry).rsplit(".", 1)[-1].split(":")[-1])
+        value = getattr(param, "value", None) if param is not None else None
+        if value is None:
+            return None
+        values.append(float(value))
+    return values
+
+
+def box_world(stage, desc) -> Gf.Matrix4d | None:
+    """The anchor's local-to-world: the space the six values are distances in."""
+    prim = stage.GetPrimAtPath(desc.anchor[0]) if stage is not None else None
+    if not prim or not prim.IsValid():
+        return None
+    xf = UsdGeom.Xformable(prim)
+    return xf.ComputeLocalToWorldTransform(0) if xf else Gf.Matrix4d(1.0)
+
+
+def box_corners(values, world: Gf.Matrix4d) -> list:
+    """The eight corners in world space, indexed as BOX_EDGES and FACE_CORNERS expect."""
+    lo, hi = chunk_gizmo.box_bounds(values)
+    return [world.Transform(Gf.Vec3d(hi[0] if i & 1 else lo[0],
+                                     hi[1] if i & 2 else lo[1],
+                                     hi[2] if i & 4 else lo[2])) for i in range(8)]
+
+
+def pick_box(stage, view, origin, direction):
+    """(desc, face, grab point in the anchor's space, values) of the face nearest along a
+    world ray, or None. Against the boxes' own six values, never the scene inside them."""
+    best = None
+    for desc in box_descs(stage, view):
+        values = box_values(view, desc)
+        world = box_world(stage, desc)
+        if values is None or world is None:
+            continue
+        inverse = world.GetInverse()
+        o = inverse.Transform(Gf.Vec3d(*origin))
+        d = inverse.TransformDir(Gf.Vec3d(*direction))
+        hit = chunk_gizmo.pick_box_face(values, o, d)
+        if hit is None:
+            continue
+        face, t = hit
+        grab = o + d * t
+        # Compared in world space: each box's t is in its own anchor's units.
+        distance = (world.Transform(grab) - Gf.Vec3d(*origin)).GetLength()
+        if best is None or distance < best[0]:
+            best = (distance, (desc, face, grab, values))
+    return best[1] if best else None
+
+
+def _mouse_ray(region, rv3d, mouse, stage=None):
+    """The ray under the mouse, in the stage's world space."""
+    return viewport.ray_from_region(region, rv3d, mouse[0], mouse[1], stage)
+
+
+def box_lines(stage, view) -> list:
+    """[(colour, line vertices in Blender's world)]: every box's edges, then the lit face's
+    outline. Through viewport.stage_to_blender, so the box sits on the geometry it shapes."""
+    edges, lit = [], []
+    drag = _box_state["drag"]
+    to_blender = viewport.stage_to_blender(stage)
+    for desc in box_descs(stage, view):
+        key = box_key(desc)
+        in_hand = drag is not None and drag["key"] == key
+        values = drag["values"] if in_hand else box_values(view, desc)
+        world = box_world(stage, desc)
+        if values is None or world is None:
+            continue
+        corners = [tuple(to_blender @ Vector(tuple(c))) for c in box_corners(values, world)]
+        for a, b in BOX_EDGES:
+            edges += [corners[a], corners[b]]
+        hover = _box_state["hover"]
+        face, colour = ((drag["face"], _BOX_ACTIVE) if in_hand
+                        else (hover[1], _BOX_HOVER) if hover and hover[0] == key
+                        else (None, None))
+        if face is not None:
+            quad = [corners[i] for i in FACE_CORNERS[face]]
+            lit.append((colour, [p for i in range(4) for p in (quad[i], quad[(i + 1) % 4])]))
+    return ([(_BOX_COLOR, edges)] if edges else []) + lit
+
+
+def _draw_boxes():
+    if not viewport.hydra_view_enabled():
+        return
+    try:
+        lines = box_lines(viewport.active_stage(), _active_view())
+        if not lines:
+            return
+        shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+        region = bpy.context.region
+        gpu.state.blend_set("ALPHA")
+        # Always on top: the box is a handle around the geometry, and half of it would
+        # otherwise vanish inside the walls it is shaping.
+        gpu.state.depth_test_set("NONE")
+        shader.bind()
+        shader.uniform_float("viewportSize", (region.width, region.height))
+        for colour, verts in lines:
+            shader.uniform_float("lineWidth", 2.0 if colour is _BOX_COLOR else 3.0)
+            shader.uniform_float("color", colour)
+            batch_for_shader(shader, "LINES", {"pos": verts}).draw(shader)
+        gpu.state.blend_set("NONE")
+    except Exception:
+        logger.debug("box handle draw failed", exc_info=True)
+
+
+class USDCHUNKS_OT_box_hover(bpy.types.Operator):
+    """Light the box face under the mouse. Passes every move through untouched."""
+
+    bl_idname = "usd_chunks.box_hover"
+    bl_label = "Box Handle Hover"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return (_box_state["drag"] is None and viewport.hydra_view_enabled()
+                and _may_show_boxes(_active_view()))
+
+    def invoke(self, context, event):
+        try:
+            stage = viewport.active_stage()
+            ray = _mouse_ray(context.region, context.region_data,
+                             (event.mouse_region_x, event.mouse_region_y), stage)
+            hit = pick_box(stage, _active_view(), *ray)
+        except Exception:
+            logger.debug("box hover failed", exc_info=True)
+            hit = None
+        hover = (box_key(hit[0]), hit[1]) if hit else None
+        if hover != _box_state["hover"]:
+            _box_state["hover"] = hover
+            if context.area is not None:
+                context.area.tag_redraw()
+        return {"PASS_THROUGH"}
+
+
+class USDCHUNKS_OT_box_drag(bpy.types.Operator):
+    """Pull the box face under the mouse along its normal. A click that lands on no face
+    passes through, so Blender's own click-select runs as always."""
+
+    bl_idname = "usd_chunks.box_drag"
+    bl_label = "Drag Box Face"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return viewport.hydra_view_enabled() and _may_show_boxes(_active_view())
+
+    def invoke(self, context, event):
+        self._region, self._rv3d = context.region, context.region_data
+        stage = viewport.active_stage()
+        ray = _mouse_ray(self._region, self._rv3d,
+                         (event.mouse_region_x, event.mouse_region_y), stage)
+        hit = pick_box(stage, _active_view(), *ray)
+        if hit is None:
+            return {"PASS_THROUGH"}
+        desc, face, grab, values = hit
+        self._chunk = _chunk_for(_active_view(), desc)
+        if self._chunk is None:
+            return {"PASS_THROUGH"}
+        self._desc, self._face, self._grab, self._start = desc, face, grab, list(values)
+        self._stage = stage
+        # The press's values and grab point, kept for the whole drag: drag_box_face always
+        # starts from them, so a long drag cannot drift.
+        _box_state["drag"] = {"key": box_key(desc), "face": face, "values": list(values)}
+        self._chunk.start_gizmo()
+        self._timer = context.window_manager.event_timer_add(_FRAME, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "MOUSEMOVE":
+            world = box_world(self._stage, self._desc)
+            if world is not None:
+                origin, direction = _mouse_ray(self._region, self._rv3d,
+                                               (event.mouse_region_x, event.mouse_region_y),
+                                               self._stage)
+                inverse = world.GetInverse()
+                values = chunk_gizmo.drag_box_face(
+                    self._start, self._face, self._grab,
+                    inverse.Transform(Gf.Vec3d(*origin)),
+                    inverse.TransformDir(Gf.Vec3d(*direction)))
+                _box_state["drag"]["values"] = values
+                chunk_gizmo.apply_bindings(self._desc.chunk_prim, self._desc.name, values)
+            _redraw()
+            return {"RUNNING_MODAL"}
+        if event.type == "TIMER":
+            _redraw()
+            return {"RUNNING_MODAL"}
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            self._end(context)
+            return {"FINISHED"}
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            chunk_gizmo.apply_bindings(self._desc.chunk_prim, self._desc.name, self._start)
+            self._end(context)
+            return {"CANCELLED"}
+        return {"RUNNING_MODAL"}
+
+    def _end(self, context) -> None:
+        context.window_manager.event_timer_remove(self._timer)
+        _box_state["drag"] = None
+        self._chunk.stop_gizmo()
+        _redraw()
+
+
+# ---------------------------------------------------------------------------
 # the gesture
 # ---------------------------------------------------------------------------
 
@@ -667,7 +967,14 @@ class USDCHUNKS_OT_transform(bpy.types.Operator):
                                    gesture_local(local, parent_world, world_delta))
 
 
-_CLASSES = (USDCHUNKS_OT_transform,)
+_CLASSES = (USDCHUNKS_OT_transform, USDCHUNKS_OT_box_hover, USDCHUNKS_OT_box_drag)
+
+#: The box handle's mouse items, in the same keymap as G/R/S (see _register_keymap). Plain
+#: LEFTMOUSE is safe there because box_drag passes through any click that lands on no face.
+_BOX_KEYS = (
+    (USDCHUNKS_OT_box_hover, "MOUSEMOVE", "ANY"),
+    (USDCHUNKS_OT_box_drag, "LEFTMOUSE", "PRESS"),
+)
 
 #: Blender's own transform keys, for a USD prim.
 _KEYS = (
@@ -695,6 +1002,10 @@ def _register_keymap() -> None:
         for name, value in props.items():
             setattr(kmi.properties, name, value)
         _keymaps.append((km, kmi))
+    # The box's click-drag has to come before Blender's own click-select, which is in
+    # "Object Mode" too -- the same reason G/R/S live there.
+    for operator, key, value in _BOX_KEYS:
+        _keymaps.append((km, km.keymap_items.new(operator.bl_idname, key, value)))
 
 
 def _unregister_keymap() -> None:
@@ -715,6 +1026,11 @@ def register() -> None:
     if _draw_state["handle"] is None:
         _draw_state["handle"] = bpy.types.SpaceView3D.draw_handler_add(
             _draw_pivot, (), "WINDOW", "POST_PIXEL")
+    if _draw_state.get("box_handle") is None:
+        _draw_state["box_handle"] = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_boxes, (), "WINDOW", "POST_VIEW")
+    if not bpy.app.timers.is_registered(_watch_node_selection):
+        bpy.app.timers.register(_watch_node_selection, first_interval=0.1, persistent=True)
     _register_keymap()
 
 
@@ -723,6 +1039,12 @@ def unregister() -> None:
     if _draw_state["handle"] is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_state["handle"], "WINDOW")
         _draw_state["handle"] = None
+    if _draw_state.get("box_handle") is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_draw_state["box_handle"], "WINDOW")
+        _draw_state["box_handle"] = None
+    _box_state.update(hover=None, drag=None)
+    if bpy.app.timers.is_registered(_watch_node_selection):
+        bpy.app.timers.unregister(_watch_node_selection)
     for cls in reversed(_CLASSES):
         if cls.is_registered:
             bpy.utils.unregister_class(cls)
