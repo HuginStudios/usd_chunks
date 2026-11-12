@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
+  Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
+  Blender's USD appear in the sidebar's **Renderer** menu, next to Storm.
 - Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
   prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
   it and drag it to move that face. Esc puts it back.

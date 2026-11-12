@@ -1,4 +1,7 @@
-"""A live Hydra Storm view of the chunk stage, in Blender's own 3D viewport.
+"""A live Hydra view of the chunk stage, in Blender's own 3D viewport.
+
+Storm by default; any other delegate built against Blender's USD from the Renderer menu
+(see USDCHUNKS_OT_set_renderer and delegates.py).
 
 It lives in the add-on rather than in an external launcher: the add-on always has a real
 usd_chunks import available to it, and chunk_blender_addon.BlenderScene.get_selected_prims()
@@ -645,11 +648,11 @@ def _renderer_display_name(plugin_id) -> str:
 class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
     """Switch the Hydra render delegate drawing the stage.
 
-    Blender's own runtime currently exposes only HdStorm (measured:
-    UsdImagingGL.Engine.GetRendererPlugins() == ['HdStormRendererPlugin']) -- there is no
-    route to add hdVray/hdCycles/etc into it, since they are ABI-locked to whatever exact
-    USD build produced them and Blender's is a differently-namespaced, monolithic one. This
-    menu is future-proofed for whenever that changes rather than hardcoded to one entry.
+    Blender ships only HdStorm. Any other delegate has to be built against Blender's own USD
+    (its monolithic, privately namespaced usd_ms): one built for another USD build cannot
+    load beside it. Built that way it is found like Storm -- from PXR_PLUGINPATH_NAME, or
+    from the folders the add-on registers at start (delegates.py) -- and listed here.
+    Measured: hdAurora built against Blender 5.1's USD 25.08 draws the live view.
     """
 
     bl_idname = "usd_chunks.set_renderer"

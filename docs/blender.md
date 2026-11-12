@@ -76,6 +76,20 @@ For people working on usd_chunks itself. This links Blender to your clone, so a
 
 3. Start Blender and turn on **USDChunks Editor** in Preferences.
 
+## Other renderers in the live view
+
+The live view draws with Storm, the renderer Blender ships. Another Hydra render delegate
+can draw it instead, if it was built against **Blender's own USD**: a build for any other
+USD won't load inside Blender.
+
+1. In **Edit > Preferences > Add-ons > USDChunks Editor**, set **Hydra Delegate Folders**
+   to the delegate's folder: the one with its `plugInfo.json`, or with a `resources`
+   folder that has it. Separate several folders with `;`.
+2. In the 3D viewport, open the sidebar (N) and pick it in **USDChunks > Renderer**.
+
+A launcher can set `USD_CHUNKS_HYDRA_DELEGATES` to the same list instead. The add-on reads
+it when it starts.
+
 ## If something is wrong
 
 **"No module named 'usd_chunks'" when the add-on turns on.** Step 1 didn't run, or used
