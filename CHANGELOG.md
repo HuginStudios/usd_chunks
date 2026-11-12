@@ -379,6 +379,10 @@ This file starts with the first release; development before that is in the commi
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.
+- A relative `USD_CHUNK_DIRS` folder (`chunks`, as CI sets it) is resolved once, when the
+  chunks are found. A chunk first used after the working directory changed (a script's
+  `os.chdir`) could not be loaded, and making it failed with "not enough values to
+  unpack". The same folder was also found twice, under its relative and absolute paths.
 - Blender: B (brush) did nothing on a brush chunk just selected in the node editor. The
   viewport tools read the editor's selection as it is now.
 - Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the
