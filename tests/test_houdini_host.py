@@ -230,6 +230,16 @@ SCRIPT = textwrap.dedent(r"""
     out["import_house"] = bool(stage.GetPrimAtPath("/House"))
     out["import_positions"] = {n: list(group.node(n).position()) for n in ("House", "Ground", "Move")}
     out["boundary_positions"] = {n: list(group.node(n).position()) for n in ("space_in", "space_out", "output0")}
+    # The same network with its last chunk drawn left of its first, as an Output chunk often
+    # sits by a chain's head in another graph: read top to bottom, Move would sit above House.
+    with open(os.environ["USD_CHUNKS_TEST_NETWORK"]) as f:
+        backwards = f.read().replace("ui:nodegraph:node:pos = (520, 0)", "ui:nodegraph:node:pos = (-260, 0)")
+    backwards_path = os.path.join(os.path.dirname(os.environ["USD_CHUNKS_TEST_HIP"]), "backwards.usda")
+    with open(backwards_path, "w") as f:
+        f.write(backwards)
+    back = chunkgroup.import_file(backwards_path, hou.node("/stage"))[0]
+    out["backwards_positions"] = {n: list(back.node(n).position())
+                                  for n in ("space_in", "House", "Ground", "Move", "space_out", "output0")}
     out["import_type"] = group.type().name()
     out["import_editable"] = group.isEditable()
 
@@ -738,6 +748,16 @@ def test_an_imported_groups_houdini_nodes_sit_by_its_chunks(result):
     assert [nodes[n][0] for n in nodes] == pytest.approx([chain["House"][0]] * 3)
     assert nodes["space_in"][1] - chain["House"][1] < 3
     assert chain["Move"][1] - nodes["output0"][1] < 6
+
+
+def test_an_imported_group_drawn_out_of_order_is_laid_out_as_a_chain(result):
+    # Move ends the chain but is drawn left of House, so read top to bottom it would sit
+    # above it, its wire running back up. Houdini lays such a group out itself: a chain from
+    # space_in down to the output.
+    nodes = result["backwards_positions"]
+    order = ["space_in", "House", "Ground", "Move", "space_out", "output0"]
+    ys = [nodes[n][1] for n in order]
+    assert ys == sorted(ys, reverse=True), nodes
 
 
 def test_positions_survive_the_round_trip(result):

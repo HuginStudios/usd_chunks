@@ -406,7 +406,8 @@ This file starts with the first release; development before that is in the commi
   built. The cook builds them now.
 - Houdini: an imported chunkgroup's own nodes (`space_in`, `space_out` and its output)
   sit by its chunks, a row above and below them, instead of far away where Houdini puts a
-  new node.
+  new node. A network drawn so it doesn't read top to bottom (an Output chunk beside the
+  chain's head, its wire running back up) is laid out by Houdini as one chain instead.
 - Houdini: a pip install of usd_chunks now includes the viewport handles'
   `viewer_states` folder.
 - Houdini: a box handle shrank to a point at the origin when the chunkgroup had an input,

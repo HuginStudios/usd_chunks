@@ -327,11 +327,30 @@ def import_group(prim: Usd.Prim, parent: hou.Node) -> hou.Node:
     if exit_node is not None and out is not None:
         exit_node.setInput(0, out)
         out.setDisplayFlag(True)
-    if not any(c.GetAttribute(_POS) for c in _chunk_children(prim)):
-        group.layoutChildren()
-    else:
+    if any(c.GetAttribute(_POS) for c in _chunk_children(prim)) and _flows_down(group):
         _place_boundary(group)
+    else:
+        group.layoutChildren()
     return group
+
+
+def _flows_down(group: hou.Node) -> bool:
+    """Whether the positions the file gave the chunks read top to bottom, as LOPs do: every
+    chunk below the chunks wired into it.
+
+    A network laid out in another graph often is not -- an Output chunk set beside the
+    chain's top wires from the chain's bottom back up to it -- and Houdini lays those out
+    itself.
+    """
+    boundary = {group.node(space.IN_NODE), group.node(space.OUT_NODE)}
+    for child in group.children():
+        if child in boundary or child.type().name() == "output":
+            continue
+        for source in child.inputs():
+            if source is not None and source not in boundary and \
+                    source.position()[1] <= child.position()[1]:
+                return False
+    return True
 
 
 def _place_boundary(group: hou.Node) -> None:
