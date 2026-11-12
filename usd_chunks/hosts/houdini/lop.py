@@ -31,9 +31,10 @@ import hou
 import loptoolutils
 from pxr import Sdf, Usd
 
-from usd_chunks import chunk_core as core, chunk_registry
+from usd_chunks import chunk_cook, chunk_core as core, chunk_registry, skip_cook
 from usd_chunks.chunk_naming import CHUNKS_ROOT
-from usd_chunks.hosts.houdini import layers, parms, space
+from usd_chunks.gizmo import runtime as chunk_gizmo
+from usd_chunks.hosts.houdini import gizmos, layers, parms, space
 from usd_chunks.hosts.houdini.scene import HoudiniScene, ensure_scene
 
 logger = logging.getLogger(__name__)
@@ -236,6 +237,10 @@ def cook(lop: hou.LopNode) -> None:
         before = parms.names(chunk)
         with _on_stage(scene, node) as stage:
             chunk._cook()
+            # Houdini recooks a node when what is upstream changes. A chunk left waiting for
+            # a prim would instead be cooked again inside a later node's cook, on that node's
+            # stage, where its own prims are already there (an xformOp it adds, twice).
+            skip_cook.forget_waiting(chunk)
             with _no_stage(scene):
                 # Params the cook built (a Light's attributes) take their parms' values, or
                 # the values import saved for them.
@@ -302,6 +307,51 @@ def press_button(kwargs) -> None:
         parms.push(node, chunk)
     with _on_stage(scene, node):
         param.click()
+    parms.pull(node, chunk)
+
+
+def gizmo_targets(node: hou.Node) -> list:
+    """The chunk node's gizmos that Houdini draws a handle for (gizmos.Target each).
+
+    Read on the node's input stage, as a cook reads it: an anchor param resolves its prim
+    paths there, and a gizmos(node) hook may look at what is upstream.
+    """
+    chunk = chunk_for(node)
+    scene = ensure_scene()
+    with _no_stage(scene):
+        parms.push(node, chunk)
+    with _on_stage(scene, node) as stage:
+        return gizmos.targets(chunk, stage)
+
+
+def gizmo_values(node: hou.Node, target) -> list[float] | None:
+    """What target's driver params hold now, read off the node's parms."""
+    chunk = chunk_for(node)
+    with _no_stage(ensure_scene()):
+        parms.push(node, chunk)
+    return gizmos.driver_values(chunk, target)
+
+
+def drive_gizmo(node: hou.Node, name: str, value) -> None:
+    """A dragged handle's value into the chunk, as usdview and Blender write it, then onto
+    the parms -- which recooks the node.
+
+    Through gizmo.runtime.apply_bindings, so a module's gizmo_changed hook (a face snapping
+    to its step, a placement dropping onto the roof) runs here too. On the node's input
+    stage, like a Button's click: such a hook reads what is upstream.
+    """
+    chunk = chunk_for(node)
+    scene = ensure_scene()
+    with _no_stage(scene):
+        parms.push(node, chunk)
+    # Nothing cooks here: a chunk cooked on this private stage leaves skip-cook watches that
+    # later re-run it on another node's stage. Houdini cooks the node when its parms change.
+    chunk_cook.begin_deferring()
+    try:
+        with _on_stage(scene, node):
+            chunk_gizmo.apply_bindings(chunk, name, value)
+    finally:
+        chunk_cook.end_deferring(cook=False)
     parms.pull(node, chunk)
 
 

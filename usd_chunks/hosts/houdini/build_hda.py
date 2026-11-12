@@ -80,6 +80,8 @@ def _chunk_type(network: hou.Node, library: str) -> None:
     group.append(hou.StringParmTemplate(parms.VARIANT_PARM, "Chunk Variant", 1, is_hidden=True))
     definition.addSection("OnDeleted", ON_DELETED)
     definition.setExtraFileOption("OnDeleted/IsPython", True)
+    # Enter in the viewport opens the state drawing the chunk's gizmos (viewer_state).
+    definition.addSection("DefaultState", lop.HDA_TYPE)
     _finish(definition, group, "A usd_chunks chunk. Made from the TAB menu's usdchunks entries.")
     definition.save(library, asset)
 

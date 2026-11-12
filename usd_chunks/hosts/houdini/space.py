@@ -90,6 +90,21 @@ def transform(source: tuple[str, float], target: tuple[str, float]) -> Gf.Matrix
     return matrix
 
 
+def to_host(node: hou.Node) -> Gf.Matrix4d:
+    """The matrix taking what node's stage holds into Houdini's world: what each chunkgroup
+    it sits in turns its result by on the way out (space_out), innermost first."""
+    matrix = Gf.Matrix4d(1.0)
+    group = group_of(node)
+    while group is not None:
+        if group.parm(UP_PARM) is not None:
+            inner = group.evalParm(UP_PARM).upper(), float(group.evalParm(MPU_PARM))
+            inputs = group.inputs()
+            host = stage_space(inputs[0].stage() if inputs and inputs[0] is not None else None)
+            matrix = matrix * transform(inner, host)
+        group = group_of(group)
+    return matrix
+
+
 def _xformable_roots(prim: Usd.Prim):
     """The topmost Xformable prims under prim: a Scope at the root is looked inside."""
     for child in prim.GetChildren():

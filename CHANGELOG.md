@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
+  box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
+  drag one face at a time, and a translate gizmo is a move handle. Drags go through the
+  chunk's own hooks (snapping, landing on the roof) and undo as one step.
 - Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
   Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
   Blender's USD appear in the sidebar's **Renderer** menu, next to Storm. The live view
@@ -396,6 +400,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
+  nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
+  the prim it reads existed was cooked again inside a later node's cook, on that node's
+  stage; Houdini now recooks it itself.
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.

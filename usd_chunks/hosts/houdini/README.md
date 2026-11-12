@@ -82,6 +82,21 @@ until something starts a new one.
 - **Export USD** lists and writes the named layers and the files in the stack. Houdini's own
   layers are left out, and so is its HoudiniLayerInfo prim, as a USD ROP drops it.
 
+## Viewport handles
+
+Select a chunk node and press Enter in the Scene Viewer, or pick the Handles tool. The
+node's gizmos show as Houdini's own handles:
+
+- a `box` gizmo is a **boundingbox** handle, like the Box SOP's. Drag a face and only that
+  face moves. The chunk's `gizmo_changed` hook still runs, so a Blockout Box face lands on
+  its Snap step;
+- a `translate` gizmo is a **translate** handle. One per row works too:
+  a Roof Module's placements each get one, and each drops back onto the roof.
+
+A drag writes through `gizmo.runtime.apply_bindings`, the path usdview and Blender use,
+then onto the parms. Each drag is one undo step. Inside a chunkgroup the handles are
+placed in Houdini's space, after the group's `space_out`.
+
 ## How it works
 
 | File | Role |
@@ -96,6 +111,8 @@ until something starts a new one.
 | `export_worker.py` | Writes an exported chunkgroup with the scripting API, in its own process. |
 | `layers.py` | Merging a chunk's layer into the active layer; named layers, Layer and Edit Target. |
 | `space.py` | A chunkgroup's network space: its parms, `space_in`/`space_out`, the conversion. |
+| `viewer_state.py` | The chunk node's viewer state: pools of `boundingbox` and `translate` handles, shown per node for its gizmos. `viewer_states/usdchunks_chunk.py` registers it at startup; the HDA's DefaultState names it. |
+| `gizmos.py` | Which handle each gizmo is, and the maths between a gizmo's values and a handle's parms (no `hou`, tested on its own). |
 | `python3.11libs/pythonrc.py` | Startup: dependency dir on `sys.path`, TAB menu once the UI is up. |
 | `build_hda.py` | Regenerates the HDA (`hython build_hda.py`). Only needed when its contents change. |
 
@@ -108,7 +125,8 @@ param, a group a menu hid -- is shown on the parms after the cook.
 
 - Interactive chunks (`interactive=True`, authoring straight into a file layer) and chunks
   that build Qt widgets (`chunk.Custom`) have no Houdini form.
-- Gizmos and the viewport camera hooks.
+- Gizmos other than `box` and `translate` (see Viewport handles), and the viewport camera
+  hooks.
 - Edit Target pointing at an older layer than the newest; Mute Layer (it mutes on the
   node's own stage only, so nothing after it sees the mute).
 - Baking a Solaris node into an Inline USD chunk on export (export refuses it for now).
