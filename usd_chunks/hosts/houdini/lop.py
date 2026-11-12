@@ -50,6 +50,8 @@ COOK_CODE = "from usd_chunks.hosts.houdini import lop\nlop.cook(hou.pwd())\n"
 
 #: node session id -> its chunk, for the session.
 _chunks: dict[int, object] = {}
+#: node session id -> the node's name when its chunk was made, and named after it.
+_made_as: dict[int, str] = {}
 #: node session id -> a copy of the chunk's layer as its last cook merged it.
 _outputs: dict[int, Sdf.Layer] = {}
 #: node session id -> saved values import could not set yet, by param path: params the
@@ -89,7 +91,12 @@ def chunk_for(node: hou.Node):
     """
     key = node.sessionId()
     if (chunk := _chunks.get(key)) is not None:
-        return chunk
+        if _made_as.get(key) == node.name():
+            return chunk
+        # Renamed: made again under the new name. Renaming a chunk already in the scene
+        # renames its prim (see graph.engine.apply_name), and nothing is lost by remaking
+        # it -- every cook pushes the parms into it again.
+        _forget(key)
     scene = ensure_scene()
     module_name = node.evalParm(parms.TYPE_PARM)
     entry = _entry(module_name, node.evalParm(parms.VARIANT_PARM))
@@ -100,11 +107,21 @@ def chunk_for(node: hou.Node):
     if not created:
         raise hou.NodeError(f"Chunk module '{module_name}' did not create a chunk; see the console.")
     chunk = created[0]
+    # Named after the node, before it is added (add_chunk makes a taken name unique): what a
+    # log line, a timing or an error message calls it is then what the network shows.
+    chunk.name = _chunk_name(node)
     with _no_stage(scene):
         scene.add_chunk(chunk)
     object.__setattr__(chunk, "_xform_op_suffix", _xform_op_id(node))
     _chunks[key] = chunk
+    _made_as[key] = node.name()
     return chunk
+
+
+def _chunk_name(node: hou.Node) -> str:
+    """The node's name as a chunk name: one a prim could have (Houdini allows "." and "-")."""
+    name = re.sub(r"\W", "_", node.name())
+    return name if name and not name[0].isdigit() else f"_{name}"
 
 
 def _xform_op_id(node: hou.Node) -> str:
@@ -326,6 +343,12 @@ def on_deleted(kwargs) -> None:
     """The node type's OnDeleted event: forget the node's chunk."""
     key = kwargs["node"].sessionId()
     _outputs.pop(key, None)
+    _forget(key)
+
+
+def _forget(key: int) -> None:
+    """Take the chunk node `key` made out of the scene."""
+    _made_as.pop(key, None)
     chunk = _chunks.pop(key, None)
     if chunk is None:
         return
