@@ -40,6 +40,9 @@ from usd_chunks.frontends.blender import nodegraph as bg
 
 logger = logging.getLogger(__name__)
 
+#: The renderer the camera light (Lighting On) is for; see _draw.
+STORM = "HdStormRendererPlugin"
+
 #: Handler + engine live here rather than on an operator: Blender constructs operators per
 #: click, and the UsdImagingGL engine must outlive a frame (rebuilding it per draw throws
 #: away Hydra's whole cache and makes navigation crawl).
@@ -491,7 +494,12 @@ def _draw():
         proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
 
         params = _state["renderParams"]
-        params.enableLighting = _state["lighting"]
+        # The camera light is Storm's: without it Storm draws a stage with no lights black. A
+        # path tracer lights with the stage's own lights, and takes the camera light as a light
+        # change on every draw -- Aurora's denoiser dropped its history each frame, so the view
+        # never got past a few samples' worth of noise.
+        lighting = _state["lighting"] and engine.GetCurrentRendererId() == STORM
+        params.enableLighting = lighting
         # The timeline drives the stage: animation, value clips and Skel Pose play here.
         params.frame = current_time()
         params.drawMode = getattr(UsdImagingGL.DrawMode,
@@ -499,7 +507,7 @@ def _draw():
 
         engine.SetRenderViewport(Gf.Vec4d(0, 0, region.width, region.height))
         engine.SetCameraState(view, proj)
-        if _state["lighting"]:
+        if lighting:
             _headlight(engine, rv3d, stage)
         try:
             engine.Render(stage.GetPseudoRoot(), params)
