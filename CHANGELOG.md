@@ -16,6 +16,10 @@ This file starts with the first release; development before that is in the commi
   it and drag it to move that face. Esc puts it back.
 - Blender: **File > Import > USD** of a network file opens its chunk network in the
   USDChunks Editor, in a node tree of its own.
+- **One-file Blender add-on.** Each release (a `v*` tag) carries
+  `usd_chunks_blender-<version>.zip`: install it with Install from Disk and it works, with
+  usd_chunks and its chunks inside. No pip, no `--target`, no `USD_CHUNK_DIRS`. Built by
+  `tools/build_blender_addon.py`; the steps from a clone still work.
 - **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
   sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
   `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
