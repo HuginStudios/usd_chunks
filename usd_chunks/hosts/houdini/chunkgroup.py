@@ -69,6 +69,8 @@ _TYPE = "info:chunkType"
 _POS = "ui:nodegraph:node:pos"
 #: usd_chunks node-graph pixels per Houdini network unit.
 _SCALE = 130.0
+#: The gap between a group's chunks and the Houdini-only nodes placed above and below them.
+_ROW = 1.5
 
 
 def to_houdini(pos) -> hou.Vector2:
@@ -327,7 +329,38 @@ def import_group(prim: Usd.Prim, parent: hou.Node) -> hou.Node:
         out.setDisplayFlag(True)
     if not any(c.GetAttribute(_POS) for c in _chunk_children(prim)):
         group.layoutChildren()
+    else:
+        _place_boundary(group)
     return group
+
+
+def _place_boundary(group: hou.Node) -> None:
+    """Put a group's Houdini-only nodes by the chunks they wire to.
+
+    The chunks keep the positions the file gives them; space_in, space_out and the output
+    have none there, and are made wherever Houdini puts a new node. So space_in goes a row
+    above the chunks, over the one it feeds, and space_out and the output below them, under
+    the chunk that ends the chain.
+    """
+    space_in, space_out = group.node(space.IN_NODE), group.node(space.OUT_NODE)
+    outputs = [c for c in group.children() if c.type().name() == "output"]
+    boundary = {space_in, space_out, *outputs}
+    content = [c for c in group.children() if c not in boundary]
+    if not content:
+        return
+    top = max(c.position()[1] for c in content)
+    bottom = min(c.position()[1] for c in content)
+    if space_in is not None:
+        fed = [c for c in content if space_in in c.inputs()]
+        x = (fed or [max(content, key=lambda c: c.position()[1])])[0].position()[0]
+        space_in.setPosition(hou.Vector2(x, top + _ROW))
+    tail = space_out.inputs()[0] if space_out is not None and space_out.inputs() else None
+    x = (tail if tail in content else min(content, key=lambda c: c.position()[1])).position()[0]
+    below = bottom
+    for node in (space_out, *outputs):
+        if node is not None:
+            below -= _ROW
+            node.setPosition(hou.Vector2(x, below))
 
 
 def import_file(path: str, parent: hou.Node | None = None) -> list[hou.Node]:
@@ -349,7 +382,7 @@ def import_file(path: str, parent: hou.Node | None = None) -> list[hou.Node]:
 
 
 def import_from_tool(kwargs) -> list[hou.Node]:
-    """The TAB menu's Import entry: pick a file, import it where the user is working."""
+    """The TAB menu's Chunk Import entry: pick a file, import it where the user is working."""
     path = hou.ui.selectFile(title="Import usd_chunks network", pattern="*.usda *.usd *.usdc",
                              file_type=hou.fileType.Usd, chooser_mode=hou.fileChooserMode.Read)
     if not path:
