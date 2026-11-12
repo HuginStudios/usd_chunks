@@ -30,8 +30,18 @@ reading any chunk source:
 - Both take `--json`. From Python, `dir(scene.create)` and `help(scene.create.mesh)` give
   the same names and descriptions.
 
-If no chunk does a step, say so and offer the `usd-chunks-write-chunk` skill. Don't fake
-the step with a Python chunk unless the user agrees.
+No chunk named after the job doesn't mean no chunk can do it. Before you say a step can't
+be done, try the general ones: `property_editor` sets attributes on prims that exist, and
+`inline_usd` writes any USD you can type as `.usda`, time samples too (see *Animate a value*
+below). Check a candidate with `usdchunks show`; never guess a param. If none of them does
+it either, say so and offer the `usd-chunks-write-chunk` skill. Don't do the step with
+Python (`script_runner`) unless the user agrees.
+
+Before you model an object, look for one: a `.usd`/`.usda`/`.usdc` file beside the network,
+in its `assets/` folder, or next to the files it already references. Bring it in with
+`reference`. If nothing fits, build it with chunks: real size and the main parts first, a
+material on it (`preview_surface`), then the details that show at the shot distance. Tell
+the user what you modelled and why no file was used.
 
 ## 2. Write the script
 
@@ -89,8 +99,10 @@ with Scene.new() as scene:
   set to shot.usda, and runs as written: copy it. **Groups:** chunks made inside `with group:` (a
   `scene.create.chunkgroup(name=...)`) go into it. Set a group's `doc` param to say what it
   does; agents and people read it.
-- **Frame the parts** with `scene.add_backdrop([...], title=...)` and `scene.add_note(...)`
-  so the saved graph reads well.
+- **Leave the graph ready for the artist.** Put new nodes next to the ones they wire to,
+  and don't move the rest. Frame a new branch with `scene.add_backdrop([...], title=...)`;
+  add a note (`scene.add_note(...)`) only where a control needs explaining. Tell the user
+  which node to change next.
 
 ### Common jobs
 
@@ -115,7 +127,10 @@ with Scene.new() as scene:
 | A ready-made group's params | `usdchunks info <file>.usda` prints its description and every param with its default |
 | A shot in department layers | Copy `examples/scripts/shot_departments.py`: a set sublayered in, layout / lighting / camera side by side, exported as `shot.usda` plus one file per department |
 | Write one file per layer | `export_usd(last, output_dir=".", session_file_name="shot", bake_all=True)`: a relative Output Directory is from the network's folder; the session layer (the shot, in a department network) is written as `shot.usda`; Bake all writes plain USD, no network. It lists every real layer itself (rows of `export_layers`), the set file too: set that row's `export_enabled` to False to skip it |
-| Animate a value | There is no keyframe chunk yet. Write a small one (the `usd-chunks-write-chunk` skill) whose `execute` sets time samples, `attr.Set(value, Usd.TimeCode(frame))`, on a prim-path param |
+| Animate a value (keyframes) | `inline_usd(last, code=...)` with an `over` on the prim and `.timeSamples`: `double radius.timeSamples = {1: 1, 48: 2}`. Directly authored samples need no bake |
+| Move a camera over time (push-in, truck) | Read the camera's `xformOpOrder` first; the Camera chunk's op has a generated name. Then `inline_usd(cam, code=...)` with an `over` at the camera's path that adds its own op, `double3 xformOp:translate:dolly = (0, 0, 0)` and `double3 xformOp:translate:dolly.timeSamples = {1: (0, 0, 0), 48: (0, 0, -2)}`, and sets `xformOpOrder` to the old list with `"xformOp:translate:dolly"` appended. Forward is local -Z, so that moves it 2 units forward and keeps its pose and lens. Check the position at the first, middle and last frame |
+| Make one branch win over another | `merge(assets, camera)`: the last input wins where both set the same value. Only where they overlap: it is not a global override |
+| Aim a camera or light at something another branch makes | Wire that branch *above* it: `cam = camera(assets, primpath_location="/World/cam", aim_at="/World/hero")`, then `merge(lights, cam)`. A chunk only reads what is wired above it; being in the same Merge isn't enough |
 
 `usdchunks show <name>` has every param; the table is only where to start.
 
