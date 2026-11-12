@@ -927,6 +927,9 @@ def driven(view):
     maker.name = "Maker"
     view.scene.add_chunk(maker)
     maker.get_param("prim_type").value = "Cube"
+    # Its own path: the view fixture's Move transform targets the default /prim, and two
+    # transform chunks on one prim put Move's handle first.
+    maker.get_param("primpath_location").value = "/Driven"
     maker.execute()
     target = maker.get_param("primpath_location").value
     xf = _make(registry.get_chunk_module("transform"))
