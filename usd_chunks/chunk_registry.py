@@ -1918,7 +1918,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         # locations (checkout, installed package) only one exists, and the other is skipped
         # quietly instead of reported as "directory not found".
         defaults = set(USD_CHUNK_DIRS.default)
-        dirs = [d for d in USD_CHUNK_DIRS() if d not in defaults or Path(d).exists()]
+        # Absolute, as of now: modules are found here and loaded on first use, and a module
+        # found under a relative folder (CI's USD_CHUNK_DIRS=chunks) kept a relative file
+        # path, which a chdir in between -- a test's, a script's -- left pointing nowhere.
+        dirs = [os.path.abspath(d) for d in USD_CHUNK_DIRS() if d not in defaults or Path(d).exists()]
         global _warned_no_chunk_dirs
         if not dirs and not _warned_no_chunk_dirs:
             _warned_no_chunk_dirs = True
@@ -1931,6 +1934,7 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         # when it doesn't exist yet (nothing installed) to avoid a spurious
         # "directory not found" warning on a clean machine.
         global_dir = GLOBAL_USDCHUNKS()
+        global_dir = os.path.abspath(global_dir) if global_dir else global_dir
         self._global_dir = Path(global_dir) if global_dir else None
         if global_dir and global_dir not in dirs and Path(global_dir).exists():
             dirs.append(global_dir)
@@ -1947,8 +1951,10 @@ class ChunkRegistry(metaclass=RegistrySingleton):
         """Add a single directory to the register.
 
         Args:
-            chunk_dir (str | Path): The directory to add
+            chunk_dir (str | Path): The directory to add; a relative one is taken from the
+                working directory now and kept absolute (see register_chunk_environ_directories).
         """
+        chunk_dir = os.path.abspath(chunk_dir)
         if (p := Path(chunk_dir)) and not p.exists():
             logger.warning("%s directory not found.", chunk_dir)
             return
