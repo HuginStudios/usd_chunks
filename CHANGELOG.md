@@ -11,6 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: **File > Import > USD** of a network file opens its chunk network in the
+  USDChunks Editor, in a node tree of its own.
 - **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
   sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
   `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
@@ -368,6 +370,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: a network whose chunks are not on `USD_CHUNK_DIRS` opened as an empty graph
+  with only its Output node; the missing chunks were dropped without a word. Each one now
+  shows as a red node that names its chunk type, with its wires kept. Open Chunk Network
+  warns, and the USDChunks sidebar lists the missing types until they are found.
+- Blender: an opened network is framed in the node editor. Its saved positions could be far
+  from where the editor starts, so the graph looked empty until Home was pressed.
 - Export USD's relative Output Directory or Output File is from the network's folder, like
   every other file path in a param. It was from the working directory, so `output_dir="."`
   wrote a shot wherever a script or `usdchunks run` was started.
