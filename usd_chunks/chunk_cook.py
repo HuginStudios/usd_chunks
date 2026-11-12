@@ -40,14 +40,24 @@ from __future__ import annotations
 
 import collections
 import logging
+import os
 import weakref
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 
 from pxr import Ar, Sdf, Tf, Usd
 
-from usd_chunks import chunk_notice, chunk_scheduler, cook_cache, cook_timings, layer_arcs, skip_cook
+from usd_chunks import (
+    chunk_notice,
+    chunk_scheduler,
+    cook_cache,
+    cook_timings,
+    layer_arcs,
+    layer_reconcile,
+    skip_cook,
+)
 from usd_chunks.chunk_flags import ChunkFlags
+from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.cook_errors import CookBlocked, CookCancelled
 
 logger = logging.getLogger(__name__)
@@ -837,6 +847,204 @@ def _lifted_from_below(chunk, layer, layer_of):
                         spec.SetInfo(key, value)
 
 
+_CHUNKS_ROOT = Sdf.Path(CHUNKS_ROOT)
+
+#: The scratch layer each chunk now diff-cooking writes into, by id: its get_edit_context.
+_scratch: dict[int, Sdf.Layer] = {}
+
+
+#: The chunk layer each scratch layer stands in for, by the scratch layer's identifier.
+_stands_for: dict[str, Sdf.Layer] = {}
+
+
+def cooking_into(chunk) -> Sdf.Layer | None:
+    """The scratch layer chunk's running diff cook writes into, or None: its edit context then."""
+    return _scratch.get(id(chunk)) if _scratch else None
+
+
+def real_layer(layer: Sdf.Layer | None) -> Sdf.Layer | None:
+    """The chunk layer a diff cook's scratch layer stands in for; any other layer as it is."""
+    if layer is None or not _stands_for:
+        return layer
+    return _stands_for.get(layer.identifier, layer)
+
+
+@contextmanager
+def _cooking_into(chunk, scratch: Sdf.Layer | None, ctx: Sdf.Layer):
+    if scratch is None:
+        yield
+        return
+    previous = _scratch.get(id(chunk))
+    _scratch[id(chunk)] = scratch
+    _stands_for[scratch.identifier] = ctx
+    try:
+        yield
+    finally:
+        _stands_for.pop(scratch.identifier, None)
+        if previous is None:
+            _scratch.pop(id(chunk), None)
+        else:
+            _scratch[id(chunk)] = previous
+
+
+def _scratch_for(chunk, stage, ctx):
+    """A fresh scratch layer for chunk's diff cook, or None to clear and rewrite ctx instead.
+
+    Only a chunk's own anonymous layer, in the stage's local layer stack: a file layer is
+    the user's and never cleared, and one an asset brings in by an arc is edited through it.
+    USD_CHUNKS_DIFF_COOK=0 turns it off, for comparing.
+    """
+    if os.environ.get("USD_CHUNKS_DIFF_COOK", "1") == "0":
+        return None
+    if not ctx.anonymous or not stage.HasLocalLayer(ctx) or cooking_into(chunk) is not None:
+        return None
+    # Only once a plain cook has shown it leaves the layer stack alone (_run's probe).
+    if getattr(chunk, "_diff_ok", None) is not True:
+        return None
+    # The same one every cook, emptied: a module may key what it keeps between cooks on its
+    # edit context's identifier (UV Unwrap's last cook), and nothing composes it between them.
+    scratch = getattr(chunk, "_diff_scratch", None)
+    if scratch is None:
+        scratch = chunk._diff_scratch = Sdf.Layer.CreateAnonymous("diff_cook")
+    else:
+        scratch.Clear()
+    return scratch
+
+
+def _keep_driven(chunk, ctx: Sdf.Layer, scratch: Sdf.Layer) -> None:
+    """Carry the attributes chunk's params drive from ctx into scratch, before the reconcile.
+
+    They are the params' state, re-authored on the scene's stage after the cook
+    (reauthor_driven_attrs), never by the cook: left out of scratch, the reconcile would
+    remove them only for that to add them back.
+    """
+    for _, param in chunk.iter_hierarchy():
+        paths = getattr(param, "_driven_attr_paths", None)
+        if not paths or param.get_chunk() is not chunk:
+            continue
+        for path in paths:
+            prop = Sdf.Path(path)
+            if (ctx.GetPropertyAtPath(prop) is not None and scratch.GetPropertyAtPath(prop) is None
+                    and scratch.GetPrimAtPath(prop.GetPrimPath()) is not None):
+                Sdf.CopySpec(ctx, prop, scratch, prop)
+
+
+def _cook_into(chunk, stage, ctx, scratch, execute, layer_of, cached, skipping) -> None:
+    """Run the module, or read its cook back from the cache, into scratch or else ctx."""
+    target = scratch if scratch is not None else ctx
+    with _cooking_into(chunk, scratch, ctx):
+        if cached is None or not cached.restore(chunk, target):
+            if cached is not None:
+                cached.before_cook(chunk)
+            if skipping:
+                skip_cook.run(chunk, stage, target, execute, layer_of, _tie_break,
+                              swap=ctx if scratch is not None else None)
+            else:
+                execute(chunk)
+        elif skipping:
+            skip_cook.restored(chunk, target)
+
+
+def _writes_chunk_prims(layer: Sdf.Layer) -> bool:
+    """Whether layer holds anything under /chunks, where the chunk prims are."""
+    return layer.GetPrimAtPath(_CHUNKS_ROOT) is not None
+
+
+#: Set while a reconcile writes into a chunk's layer: its writes are not _Writes' outside ones.
+_reconciling = False
+
+
+class _Writes:
+    """Whether anything but its reconcile wrote to a chunk's layer since its last finish.
+
+    A param bound to a prim attribute writes into the layer the moment it changes, before
+    any cook, and reauthor_driven_attrs after one. While nothing did, what the reconcile
+    changed is what changed since the chunks below last looked, and skip_cook.finish need
+    not compare the whole layer again to find it. Heard through Sdf's notice for this one
+    layer. A cook inside an Sdf.ChangeBlock would hear it late, but a cook there reads a
+    stage that has not recomposed, and does not work anyway.
+    """
+
+    def __init__(self, layer: Sdf.Layer):
+        self.layer_id = layer.identifier
+        #: Unknown until a first finish has seen the layer.
+        self.outside = True
+        self._listener = Tf.Notice.Register(Sdf.Notice.LayersDidChangeSentPerLayer, self._heard, layer)
+
+    def _heard(self, notice, sender) -> None:
+        if not _reconciling:
+            self.outside = True
+
+
+def _writes_to(chunk, ctx: Sdf.Layer) -> _Writes:
+    writes = getattr(chunk, "_diff_writes", None)
+    if writes is None or writes.layer_id != ctx.identifier:
+        writes = chunk._diff_writes = _Writes(ctx)
+    return writes
+
+
+def _diff_cooked(chunk, stage, ctx, execute, layer_of, cached, kept) -> set[Sdf.Path] | None:
+    """Cook chunk into a scratch layer and reconcile it into ctx: the prims it changed, or
+    None if it did not diff cook.
+
+    None, with ctx untouched, when it cannot (_scratch_for) or must not: a cook that changed
+    the layer stack or what is muted -- an Edit Target placing layers, a Layer chunk, a gate
+    -- or raised. Most such chunks show it on their first, plain, cook and are never diff
+    cooked (_run); one that only does it later is caught here, and cooked by clearing and
+    rewriting its layer from then on: its stack edits land on layers the cook stage
+    composes too, while it is open. What it changed is handed down as everything changed,
+    as a cook that changed the scene is.
+    """
+    global _reconciling
+    scratch = _scratch_for(chunk, stage, ctx)
+    if scratch is None:
+        return None
+    if kept:
+        scratch.subLayerPaths = kept
+    state = skip_cook.scene_state(stage)
+    reason = None
+    try:
+        _cook_into(chunk, stage, ctx, scratch, execute, layer_of, cached, True)
+    except (CookBlocked, CookCancelled):
+        raise
+    except Exception as e:  # noqa: BLE001 -- cooked again the old way, which raises it if it is the module's
+        reason = f"it raised {type(e).__name__}"
+    after = skip_cook.scene_state(stage)
+    if reason is None and after != state:
+        reason = "it changes the layer stack"
+    # Layers it puts in the stack as its own layer's sublayers reach the stack only with the
+    # reconcile, past the check above: a Layer chunk, an arc layer.
+    if reason is None and (kept or list(scratch.subLayerPaths)):
+        reason = "it puts layers in the stack"
+    # Overrides on chunk prims (Override Chunk Prim) are read back by the framework as the
+    # target chunk's params, from the scene's stage, as the layer changes.
+    if reason is None and _writes_chunk_prims(scratch):
+        reason = "it writes onto chunk prims"
+    if reason is not None:
+        chunk._diff_ok = False
+        skip_cook.changed_scene(chunk, state, after)
+        logger.debug("%s is cooked by clearing its layer from now on: %s", chunk.name, reason)
+        return None
+    _keep_driven(chunk, ctx, scratch)
+    _writes_to(chunk, ctx)
+    _reconciling = True
+    try:
+        return layer_reconcile.reconcile(scratch, ctx)
+    except Exception:  # noqa: BLE001 -- a field Sdf will not set where it is: the cook stands
+        # The layer may be half changed: replaced whole with the cook's result, as clearing and
+        # rewriting it would have, and everything handed down. The same field would be refused
+        # every cook, so the chunk is cooked the old way from now on.
+        logger.warning("%s: its cook could not be applied in place; replacing its layer, and "
+                       "cooking it by clearing its layer from now on", chunk.name, exc_info=True)
+        chunk._diff_ok = False
+        _reconciling = False
+        with Sdf.ChangeBlock():
+            ctx.TransferContent(scratch)
+        return {Sdf.Path.absoluteRootPath}
+    finally:
+        _reconciling = False
+
+
 def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
     """cook()'s cook, once it has decided the chunk may run."""
     with executing(chunk), skip_cook.unmasked(), cook_timings.timed(chunk):
@@ -854,32 +1062,38 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                     # layer this chunk alone owns and rebuilds on load.
                     # A chunk in a context with a file layer is handed
                     # that file layer, shared and the user's own.
-                    if ctx.anonymous:
-                        # Its sublayers kept, in one change: they are layers the chunk put
-                        # in the stack (a Layer chunk's), and between the Clear and the module
-                        # putting them back, everything listening saw them gone -- an Edit
-                        # Target on one reset itself. The module still sets them every cook.
-                        # Only what this chunk itself last cooked there: a chunk handed a
-                        # layer by its hash (a new scene, a reload) starts from empty.
-                        kept = list(ctx.subLayerPaths) if getattr(chunk, "_cooked_into", None) == ctx.identifier else []
-                        with Sdf.ChangeBlock():
-                            ctx.Clear()
-                            if kept:
-                                ctx.subLayerPaths = kept
-                        chunk._cooked_into = ctx.identifier
+                    # Its sublayers kept, in one change: they are layers the chunk put in
+                    # the stack (a Layer chunk's), and between the Clear and the module
+                    # putting them back, everything listening saw them gone -- an Edit
+                    # Target on one reset itself. The module still sets them every cook.
+                    # Only what this chunk itself last cooked there: a chunk handed a
+                    # layer by its hash (a new scene, a reload) starts from empty.
+                    kept = (list(ctx.subLayerPaths)
+                            if ctx.anonymous and getattr(chunk, "_cooked_into", None) == ctx.identifier else [])
                     # A module that declared cache_cook may have this exact
                     # cook on disk already -- read it back instead. Anonymous
-                    # only, for the same reason as the Clear above.
+                    # only, for the same reason as the Clear.
                     cached = cook_cache.lookup(chunk) if ctx.anonymous else None
-                    if cached is None or not cached.restore(chunk, ctx):
-                        if cached is not None:
-                            cached.before_cook(chunk)
-                        if skipping:
-                            skip_cook.run(chunk, stage, ctx, execute, layer_of, _tie_break)
-                        else:
-                            execute(chunk)
-                    elif skipping:
-                        skip_cook.restored(chunk, ctx)
+                    reconciled = _diff_cooked(chunk, stage, ctx, execute, layer_of, cached, kept)
+                    if reconciled is None:
+                        # A chunk's first cook is a plain one, and decides whether it may be
+                        # diff cooked: not if it changed the layer stack or what is muted (an
+                        # Edit Target, a gate) or put layers under its own (a Layer chunk).
+                        # Tried and given up instead, a diff cook left such a chunk's stack
+                        # edits half made.
+                        probing = ctx.anonymous and getattr(chunk, "_diff_ok", None) is None
+                        state = skip_cook.scene_state(stage) if probing else None
+                        if ctx.anonymous:
+                            with Sdf.ChangeBlock():
+                                ctx.Clear()
+                                if kept:
+                                    ctx.subLayerPaths = kept
+                        _cook_into(chunk, stage, ctx, None, execute, layer_of, cached, skipping)
+                        if probing:
+                            chunk._diff_ok = (skip_cook.scene_state(stage) == state and not ctx.subLayerPaths
+                                              and not _writes_chunk_prims(ctx))
+                    if ctx.anonymous:
+                        chunk._cooked_into = ctx.identifier
                     if not ctx.anonymous:
                         skip_cook.unaccounted(chunk)
                     # What a param drives is its own state, not the cook's
@@ -887,7 +1101,14 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                     if ctx.anonymous:
                         chunk.reauthor_driven_attrs()
                     if skipping:
-                        skip_cook.finish(chunk, ctx, before)
+                        # What the reconcile changed, when nothing else wrote to the layer since
+                        # the chunks below last saw it (_Writes): no second look at every spec.
+                        writes = getattr(chunk, "_diff_writes", None)
+                        known = (reconciled if reconciled is not None and writes is not None
+                                 and writes.layer_id == ctx.identifier and not writes.outside else None)
+                        skip_cook.finish(chunk, ctx, before, known)
+                        if writes is not None:
+                            writes.outside = False
                     if cached is not None:
                         cached.after_cook(chunk, ctx)
                 clear_cook_stale(chunk)

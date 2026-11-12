@@ -733,7 +733,7 @@ def execute(node):
     )
 
     fingerprint = _fingerprint(cad_path, settings)
-    cached = _CACHE.get(layer.identifier)
+    cached = _CACHE.get(node.get_layer_identifier())
     if cached is not None and cached[0] == fingerprint:
         scene = cached[1]
     else:
@@ -746,7 +746,7 @@ def execute(node):
         if len(_CACHE) > 32:
             # A deleted chunk leaves its tessellation behind, and a CAD scene is not small.
             _CACHE.clear()
-        _CACHE[layer.identifier] = (fingerprint, scene)
+        _CACHE[node.get_layer_identifier()] = (fingerprint, scene)
 
     if not scene.roots:
         _report(node, scene.note or "nothing to import")

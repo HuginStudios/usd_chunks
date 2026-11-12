@@ -259,7 +259,7 @@ class _Bake(NamedTuple):
     resolution: int
 
 
-# Keyed by the chunk's own layer identifier.
+# Keyed by the chunk's layer identifier (get_layer_identifier, also in a diff cook).
 _LAST_COOK: dict = {}
 
 
@@ -359,7 +359,7 @@ def execute(node: chunk.Chunk) -> None:
 
     resolution = settings.resolution or texture_bake.auto_resolution(len(target.tris))
     stamp = _stamp(sources, target, settings._replace(resolution=resolution))
-    previous = _LAST_COOK.get(layer.identifier)
+    previous = _LAST_COOK.get(node.get_layer_identifier())
     if previous is not None and previous.stamp == stamp and all(os.path.isfile(f) for f in previous.files.values()):
         files, constants = previous.files, previous.constants
     else:
@@ -377,7 +377,7 @@ def execute(node: chunk.Chunk) -> None:
 
     if len(_LAST_COOK) > 64:
         _LAST_COOK.clear()
-    _LAST_COOK[layer.identifier] = _Bake(stamp, files, constants, resolution)
+    _LAST_COOK[node.get_layer_identifier()] = _Bake(stamp, files, constants, resolution)
     _set_outputs(node, material_path, files)
     note = f" · skipped {len(problems)} mesh(es)" if problems else ""
     flat = f" · constant: {', '.join(constants)}" if constants else ""
