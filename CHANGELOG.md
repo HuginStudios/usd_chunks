@@ -370,6 +370,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the
+  ground. The live view now stands it up, as Blender's USD importer does, and scales it by
+  `metersPerUnit`. Picking, the pivot, G/R/S, the brush and the camera mirror go through
+  the same turn. X, Y and Z after G, R or S name Blender's axes, so R Z turns a prim about
+  the up axis on any stage.
 - Blender: a chunk param named like one of a node's own properties (`color`, `name`,
   `location`, `width`, ...) was overwritten by the node. Exterior Walls' `color` took the
   node's header grey, so its walls cooked grey in Blender only.

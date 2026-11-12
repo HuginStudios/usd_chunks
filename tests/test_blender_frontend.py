@@ -1320,6 +1320,8 @@ def cam_state():
 def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     """The Camera chunk's "Set as Viewport Camera" had nothing to land on in Blender."""
     stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # Blender's own space: no turn
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)  # an in-memory stage is centimetres
     prim = _camera_prim(stage, focal=50.0)
     addon.BlenderScene(prim.GetStage()).set_viewport_camera(prim)
     obj = bpy.context.scene.camera
@@ -1328,6 +1330,41 @@ def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     assert obj.data.sensor_width == pytest.approx(36.0)
     assert obj.data.clip_start == pytest.approx(0.5)
     assert tuple(obj.matrix_world.translation) == pytest.approx((1, 2, 3))
+
+
+def test_a_y_up_camera_stands_up_in_blender(cam_state):
+    """A Y-up stage is turned +90 about X into Z-up Blender, so its camera is too."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    addon.camera.set_viewport_camera(_camera_prim(stage))
+    assert tuple(bpy.context.scene.camera.matrix_world.translation) == pytest.approx((1, -3, 2))
+
+
+def test_a_y_up_stage_is_turned_to_stand_up_in_blender():
+    """The house of a Y-up network lay on its side: the Hydra view drew stage space as
+    Blender's, with no up-axis conversion."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    assert tuple(vp.to_blender(stage, (0, 1, 0))) == pytest.approx((0, 0, 1), abs=1e-6)
+    assert tuple(vp.to_blender(stage, (0, 0, 1))) == pytest.approx((0, -1, 0), abs=1e-6)
+    assert tuple(vp.to_stage(stage, (0, 0, 1))) == pytest.approx((0, 1, 0), abs=1e-6)
+    assert tuple(vp.direction_to_stage(stage, (0, 0, -2))) == pytest.approx((0, -1, 0), abs=1e-6)
+
+
+def test_a_z_up_stage_in_metres_is_left_as_it_is():
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    assert vp.stage_to_blender(stage) == Matrix.Identity(4)
+
+
+def test_a_centimetre_stage_is_scaled_to_blenders_units():
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    assert tuple(vp.to_blender(stage, (100, 0, 0))) == pytest.approx((1, 0, 0))
 
 
 def test_release_hands_back_the_camera_the_mirror_replaced(cam_state):

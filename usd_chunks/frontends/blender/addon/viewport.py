@@ -29,7 +29,7 @@ import bpy
 import gpu
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
-from mathutils import Vector
+from mathutils import Matrix, Vector
 from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL, UsdLux
 
 from usd_chunks.frontends.blender import nodegraph as bg
@@ -67,6 +67,51 @@ def active_stage():
     return None if view is None else view.stage
 
 
+def stage_to_blender(stage) -> Matrix:
+    """The stage's world space into Blender's: `M @ p` for a point, column vectors.
+
+    Blender is Z-up in metres times its Unit Scale. A Y-up stage (usdview's default, and
+    what most networks are saved in) is turned +90 degrees about X, as Blender's own USD
+    importer does, so its up stands up; metersPerUnit is scaled to Blender's units. Without
+    this a Y-up network drew lying on its side, the house below the ground plane.
+
+    Everything this add-on reads off the stage stays in stage space -- bounds, anchors,
+    the values handed to chunks -- and only drawing and mouse rays cross over, through this
+    matrix and its inverse.
+    """
+    if stage is None:
+        return Matrix.Identity(4)
+    up = UsdGeom.GetStageUpAxis(stage)
+    scene = getattr(bpy.context, "scene", None)
+    blender_mpu = getattr(getattr(scene, "unit_settings", None), "scale_length", 1.0) or 1.0
+    scale = UsdGeom.GetStageMetersPerUnit(stage) / blender_mpu
+    turn = (Matrix.Rotation(math.radians(90.0), 4, "X") if up == UsdGeom.Tokens.y
+            else Matrix.Identity(4))
+    return turn @ Matrix.Scale(scale, 4)
+
+
+def to_blender(stage, point) -> Vector:
+    """A stage-world point in Blender's world."""
+    return stage_to_blender(stage) @ Vector(tuple(point)[:3])
+
+
+def to_stage(stage, point) -> Vector:
+    """A Blender-world point in the stage's world."""
+    return stage_to_blender(stage).inverted_safe() @ Vector(tuple(point)[:3])
+
+
+def direction_to_stage(stage, direction) -> Vector:
+    """A Blender-world direction in the stage's world, unit length."""
+    out = stage_to_blender(stage).inverted_safe().to_3x3() @ Vector(tuple(direction)[:3])
+    return out.normalized() if out.length > 0.0 else out
+
+
+def stage_view_matrix(stage, rv3d) -> Gf.Matrix4d:
+    """Blender's view matrix as Hydra needs it: stage world to camera, in Gf (row vectors)."""
+    m = rv3d.view_matrix @ stage_to_blender(stage)
+    return Gf.Matrix4d(*[v for row in m.transposed() for v in row])
+
+
 def current_time() -> Usd.TimeCode:
     """Blender's timeline frame, subframe included, as the time the stage is drawn at.
 
@@ -80,14 +125,14 @@ def current_time() -> Usd.TimeCode:
     return Usd.TimeCode(scene.frame_current + scene.frame_subframe)
 
 
-def _headlight(engine, rv3d) -> None:
+def _headlight(engine, rv3d, stage=None) -> None:
     """A camera-relative light, the same "Camera Light" usdview defaults to -- with
     enableLighting on and no light authored anywhere on the stage, Storm has nothing to
     shade with at all and draws flat black. Recomputed every draw so it tracks navigation,
-    same as the camera state below it.
+    same as the camera state below it. At the eye in the stage's space, where Hydra lights.
     """
 
-    eye = rv3d.view_matrix.inverted().translation
+    eye = to_stage(stage, rv3d.view_matrix.inverted().translation)
     light = Glf.SimpleLight()
     light.position = Gf.Vec4f(eye.x, eye.y, eye.z, 1.0)
     light.ambient = Gf.Vec4f(0.2, 0.2, 0.2, 1.0)
@@ -138,16 +183,20 @@ def hit_path(result) -> str | None:
     return None
 
 
-def ray_from_region(region, rv3d, mouse_x, mouse_y):
-    """The world-space ray under the cursor, as (origin, direction).
+def ray_from_region(region, rv3d, mouse_x, mouse_y, stage=None):
+    """The ray under the cursor in the stage's world space, as (origin, direction).
 
     Blender's own view maths, no GL: this is what the bounds pick below rides on, and the
-    reason that pick keeps working on a driver where Hydra's does not.
+    reason that pick keeps working on a driver where Hydra's does not. Brought into the
+    stage's space (see stage_to_blender), since everything it is tested against is there.
+    `stage` defaults to the open network's.
     """
+    if stage is None:
+        stage = active_stage()
     coord = (mouse_x, mouse_y)
     origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
     direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-    return tuple(origin), tuple(direction)
+    return tuple(to_stage(stage, origin)), tuple(direction_to_stage(stage, direction))
 
 
 def _ancestors(stage, path: str):
@@ -291,7 +340,7 @@ def _light_markers(region, rv3d, stage) -> list:
     """(path, region pixels) of every light in front of the view."""
     markers = []
     for path, position in light_positions(stage, current_time()):
-        xy = view3d_utils.location_3d_to_region_2d(region, rv3d, Vector(position))
+        xy = view3d_utils.location_3d_to_region_2d(region, rv3d, to_blender(stage, position))
         if xy is not None:
             markers.append((path, (xy[0], xy[1])))
     return markers
@@ -359,7 +408,7 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     dx = 4.0 / region.width
     dy = 4.0 / region.height
 
-    view = Gf.Matrix4d(*[v for row in rv3d.view_matrix.transposed() for v in row])
+    view = stage_view_matrix(stage, rv3d)
     proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
     narrowed_proj = proj * pick_matrix(ndc_x, ndc_y, dx, dy)
 
@@ -384,7 +433,7 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
 
     if path is not None:
         return path
-    origin, direction = ray_from_region(region, rv3d, mouse_x, mouse_y)
+    origin, direction = ray_from_region(region, rv3d, mouse_x, mouse_y, stage)
     return pick_by_bounds(stage, origin, direction, current_time())
 
 
@@ -410,9 +459,10 @@ def _draw():
                     pass
 
         engine = _state["engine"]
-        # Blender's viewport camera drives Hydra, so navigation just works. Transposed
+        # Blender's viewport camera drives Hydra, so navigation just works -- through
+        # stage_to_blender, so a Y-up stage stands up in Blender's Z-up world. Transposed
         # because mathutils is row-major and Gf is column-major.
-        view = Gf.Matrix4d(*[v for row in rv3d.view_matrix.transposed() for v in row])
+        view = stage_view_matrix(stage, rv3d)
         proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
 
         params = _state["renderParams"]
@@ -425,7 +475,7 @@ def _draw():
         engine.SetRenderViewport(Gf.Vec4d(0, 0, region.width, region.height))
         engine.SetCameraState(view, proj)
         if _state["lighting"]:
-            _headlight(engine, rv3d)
+            _headlight(engine, rv3d, stage)
         try:
             engine.Render(stage.GetPseudoRoot(), params)
         except Exception:
