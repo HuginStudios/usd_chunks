@@ -3,12 +3,26 @@
 usd_chunks adds a **USDChunks Editor** node editor to Blender. You build a chunk network
 there, and the 3D viewport shows the result.
 
-You need Blender 4.2 or newer and a clone of usd_chunks. Tested with Blender 5.2 on
-Windows.
+You need Blender 4.2 or newer. Tested with Blender 5.1 and 5.2 on Windows.
 
 ## Install
 
-Open cmd in the folder you cloned usd_chunks into:
+1. Download `usd_chunks_blender-<version>.zip` from the
+   [Releases page](https://github.com/HuginStudios/usd_chunks/releases). Don't unzip it.
+2. In Blender, go to **Edit > Preferences > Add-ons**, open the **⌄** menu at the top right,
+   choose **Install from Disk...** and pick the zip.
+
+That is all: usd_chunks and its chunks are inside the zip, and Blender has its own USD.
+To use your own chunks as well, set `USD_CHUNK_DIRS` to their folders before starting
+Blender.
+
+**Try it:** switch any area to **USDChunks Editor**, click **New**, and press Shift+A to add
+a chunk.
+
+## Install from a clone
+
+To install a version that isn't released yet. Open cmd in the folder you cloned usd_chunks
+into:
 
 ```
 cd C:\src\usd_chunks
@@ -60,7 +74,8 @@ changed: chunks still read and write in the network's own space.
 
 ## Updating
 
-After a `git pull`, run steps 1 to 3 again and restart Blender.
+Install the newer zip the same way and restart Blender; it replaces the old one. From a
+clone: after a `git pull`, run steps 1 to 3 again and restart Blender.
 
 ## Working from a checkout
 
