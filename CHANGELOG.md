@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `scene.connect(upstream, downstream, slot=None)` wires chunks that already exist. Into a
+  Merge the new branch is the strongest, as a wire dropped on the Merge in the graph is,
+  unless you give a slot. `scene.get_inputs(chunk)` lists what is wired in, strongest first.
 - Blender: drag a node with no wires onto a wire and it joins the wire through a Merge, as
   in the Qt graph: A and the node into a new Merge feeding B, the dropped node winning. A
   wire into a Merge takes the node into that Merge instead.

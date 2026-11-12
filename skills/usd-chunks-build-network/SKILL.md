@@ -62,6 +62,9 @@ with Scene.new() as scene:
 - **Wires:** pass a chunk as an input to set run order. Pass a *param* as a value
   (`box.get_param("prim_path")`) to make one param follow another, the same as
   `connect_value`. Both are saved.
+- **Wire existing chunks** with `scene.connect(upstream, downstream)`. Into a Merge the
+  branch wired last wins (slot 0); `scene.get_inputs(merge)` lists the branches, strongest
+  first.
 - **Values** go in as keyword args by param name; names inside groups are found too.
   Change them later with `scene.set(c, ty=5.0)`. A list param takes a list, one item per
   row: `imports=["a.usda", "b.usda"]`, or dicts where a row holds several params

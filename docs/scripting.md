@@ -173,11 +173,14 @@ it. You can pass more than one.
 ``` py
 lift = scene.create.transform(box)      # box -> Transform
 both = scene.create.merge(a, b)         # a and b -> Merge; b wins
-c.add_dependency(b)                     # b -> c, for chunks that already exist
+scene.connect(b, c)                     # b -> c, for chunks that already exist
 ```
 
 Into a Merge, the last input wins, the same as a chunk chained after the others. Where `a`
-and `b` both author the same prim, `b`'s value is the one you get.
+and `b` both author the same prim, `b`'s value is the one you get. `scene.connect(x, both)`
+wires one more branch in the same way: `x` takes slot 0, the strongest, as a wire dropped on
+the Merge in the graph does. To put it lower, give a slot: `scene.connect(x, both, slot=2)`.
+`scene.get_inputs(both)` lists the branches, strongest first.
 
 **A param wire** makes one param follow another's value. Pass the param as the value:
 
