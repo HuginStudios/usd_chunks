@@ -301,6 +301,17 @@ SCRIPT = textwrap.dedent(r"""
     except chunkgroup.ExportError as exc:
         out["export_refused"] = str(exc)
 
+    # A chunk is called what its node is, and after a rename what the node is called now.
+    named = lop.create(hou.node("/stage"), "mesh", name="ground.v2")
+    named.stage()
+    out["chunk_name"] = lop.chunk_for(named).name
+    named.setName("hero_ground")
+    named.parm("mesh_type").set("cube")
+    stage = named.stage()
+    out["renamed_chunk_name"] = lop.chunk_for(named).name
+    out["renamed_errors"] = list(named.errors())
+    out["renamed_cooks"] = stage.GetPrimAtPath(named.evalParm("prim_path")).IsValid()
+
     print("USD_CHUNKS_RESULT" + json.dumps(out))
 """)
 
@@ -724,3 +735,14 @@ def test_a_stage_that_sets_no_units_is_in_houdinis_metres(result):
     # A Solaris stage authors no upAxis or metersPerUnit: it is Houdini's Y-up metres, not
     # USD's centimetre fallback.
     assert result["solaris_space"] == ["Y", 1.0]
+
+
+def test_a_chunk_is_named_after_its_node(result):
+    # So a log line or a timing ("Cooked ground_v2 in ...") names the node it is about.
+    assert result["chunk_name"] == "ground_v2"
+
+
+def test_a_renamed_node_renames_its_chunk_and_still_cooks(result):
+    assert result["renamed_chunk_name"] == "hero_ground"
+    assert result["renamed_errors"] == []
+    assert result["renamed_cooks"]

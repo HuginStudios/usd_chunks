@@ -239,6 +239,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Houdini: a chunk node's chunk is named after the node, and renamed with it. Log lines,
+  `USD_CHUNKS_TIMINGS` and error messages say "Grass" rather than "ScatterPoints1".
 - Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
   forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
   tested against the points already kept instead of against each other.
