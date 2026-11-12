@@ -230,6 +230,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
+  forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
+  tested against the points already kept instead of against each other.
 - Blender: opening a network is about 4.7x faster (a 14-chunk house: 6.8 s to 1.45 s).
   Node classes are built per chunk type when a node of it is first made, instead of
   loading the whole library on open, so a chunk's missing packages are asked for when it
@@ -384,6 +387,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
+  per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
+  tz=3)`.
 - Blender: quitting ran every chunk module the session never used, and one that could not
   import (PySide6, usdview) stopped Blender disabling the add-ons after it, with a
   traceback. Unused chunks are left alone on quit.
