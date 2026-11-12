@@ -278,8 +278,8 @@ a host that only ever holds `GizmoDesc` needs no lookup of its own.
 
 ### Do not write the prim directly
 
-It will be erased. A chunk like `transform.py` clears its own layer and re-authors
-`xformOp:transform` on **every cook**, so a direct write survives until the next execute
+It will be erased. A chunk like `transform.py` rewrites its whole layer, its
+`xformOp:transform` included, on **every cook**, so a direct write survives until the next execute
 and then vanishes. Nor should you write the `inputs:` attributes in `driver` yourself —
 those are param storage, and going around the param system skips the propagation that
 makes downstream chunks update.

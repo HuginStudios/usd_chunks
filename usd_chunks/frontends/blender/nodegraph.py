@@ -45,6 +45,7 @@ import time
 import uuid
 
 import bpy
+from pxr import Usd
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
@@ -398,18 +399,16 @@ class UsdChunksSocket(bpy.types.NodeSocket):
         return _PORT_COLOURS.get(self.port_type, _DEFAULT_COLOUR)
 
 
-class UsdChunksNodeBase(bpy.types.Node):
-    """Shared behaviour for every generated chunk node.
+class _ChunkNodeMixin:
+    """Shared behaviour for every chunk node: the generated ones and the fallback.
 
-    Subclasses are built at registration time by `register_chunk_types`, one per chunk
-    module, carrying that chunk's params as RNA properties.
+    A plain mixin, not a registered `bpy.types.Node`. The generated classes once subclassed
+    the registered fallback, and registering a subclass of a registered class makes Blender
+    lose the parent's Python class ("unable to get Python class for RNA struct
+    'UsdChunksNode'"). Its poll then failed, `nodes.new` raised, and every node whose
+    module was missing vanished from the graph without a word. The fallback and the
+    generated classes are siblings instead.
     """
-
-    # Registered and usable in its own right, not merely a base: a chunk whose module
-    # failed to load has no generated class, and _rebuild_tree falls back to this so the
-    # node still appears with its ports and wires rather than vanishing from the graph.
-    bl_idname = "UsdChunksNode"
-    bl_label = "Chunk"
 
     chunk_path: bpy.props.StringProperty(name="Chunk", default="")
 
@@ -442,6 +441,13 @@ class UsdChunksNodeBase(bpy.types.Node):
         self.chunk_path = ""
 
     def draw_buttons(self, context, layout):
+        missing = getattr(self, "missing_module", "")
+        if missing:
+            # The header is red too (see apply_node_state); this says why and what to do.
+            col = layout.column(align=True)
+            col.alert = True
+            col.label(text=f"Missing chunk type '{missing}'", icon="ERROR")
+            col.label(text="Not on USD_CHUNK_DIRS? Params kept in the file.")
         chunk = self.get_chunk()
         if chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
             # The header is red (see apply_node_state); this says why.
@@ -459,6 +465,43 @@ class UsdChunksNodeBase(bpy.types.Node):
                          emboss=False).node_path = self.name
         # Params with an input socket are drawn by that socket instead, beside their port.
         chunk_blender.draw_params(self, layout, chunk, skip=socket_drawn_params(self))
+
+
+class UsdChunksNodeBase(_ChunkNodeMixin, bpy.types.Node):
+    """The fallback node: a chunk prim whose module has no generated class.
+
+    Registered and usable in its own right: a chunk whose module is missing or failed to
+    load has no generated class, and _rebuild_tree falls back to this so the node still
+    appears with its ports and wires, flagged red, rather than vanishing from the graph.
+    """
+
+    bl_idname = "UsdChunksNode"
+    bl_label = "Chunk"
+    bl_width_default = 240
+
+    chunk_path: bpy.props.StringProperty(name="Chunk", default="")
+    #: The chunk type the prim asks for when no module registers it; empty otherwise.
+    missing_module: bpy.props.StringProperty(name="Missing Chunk Type", default="")
+
+
+def missing_chunk_types(stage) -> dict:
+    """{chunk type: [prim paths]} for every chunk prim on `stage` that no module registers.
+
+    Read from the whole stage, not the graph on screen: the chunks that went missing are
+    usually inside a group the user has not dived into yet.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    missing: dict = {}
+    root = stage.GetPrimAtPath(chunk_graph.CHUNKS_ROOT) if stage is not None else None
+    if not root:
+        return missing
+    for prim in Usd.PrimRange(root, Usd.TraverseInstanceProxies(Usd.PrimAllPrimsPredicate)):
+        if prim.GetTypeName() != chunk_graph.CHUNK_TYPENAME:
+            continue
+        kind = chunk_graph.node_kind(prim)
+        if kind and not registry.get_chunk_module(kind):
+            missing.setdefault(kind, []).append(str(prim.GetPath()))
+    return missing
 
 
 class USDCHUNKS_OT_param_button(bpy.types.Operator):
@@ -838,7 +881,7 @@ def register_chunk_types(scene=None) -> list:
         if skipped:
             logger.debug("%s: no Blender control for %s", name, skipped)
 
-        cls = type(node_class_id(name), (UsdChunksNodeBase,), {
+        cls = type(node_class_id(name), (_ChunkNodeMixin, bpy.types.Node), {
             "bl_idname": node_class_id(name),
             "bl_label": name.rsplit(".", 1)[-1],
             "chunk_module": name,
@@ -847,7 +890,7 @@ def register_chunk_types(scene=None) -> list:
             # truncated -- "Prim Path" drew as "Prim ...", which is worse than useless on
             # a node whose two string params then look identical.
             "bl_width_default": NODE_WIDTH,
-            "__annotations__": dict(props, **UsdChunksNodeBase.__annotations__),
+            "__annotations__": dict(props, **_ChunkNodeMixin.__annotations__),
         })
         try:
             _register_once(cls)
@@ -1061,6 +1104,8 @@ class BlenderGraphView:
         #: they stay put and are routed around.
         self.locked: set = set()
         self.status = ""
+        #: {chunk type: [prim paths]} no module registers; set by the add-on on open.
+        self.missing_types: dict = {}
         #: A link that met a collapsed node's "+", waiting on a param to be picked:
         #: (the choices, what the pick joins). See join and choose; the popup only shows it.
         self.pending_pick: tuple[list, object] | None = None
@@ -1236,8 +1281,13 @@ class BlenderGraphView:
             try:
                 node = self.tree.nodes.new(cls.bl_idname)
             except RuntimeError:
-                logger.debug("no registered node class for %s", module)
+                # A warning, not debug: the node is gone from the graph, wires and all,
+                # and this is the only place that knows.
+                logger.warning("no node could be made for %s (chunk type %r)", path, module,
+                               exc_info=True)
                 continue
+            if cls is UsdChunksNodeBase and chunk is None:
+                node.missing_module = module
             node.name = path
             node.label = chunk_graph.node_label(prim)
             node.chunk_path = path
@@ -1317,7 +1367,9 @@ class BlenderGraphView:
             colour = _LOCKED_HEADER_COLOR
         else:
             colour = _NODE_HEADER_COLOR
-        if chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
+        if getattr(node, "missing_module", ""):
+            colour = _FAILED_HEADER_COLOR
+        elif chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
             colour = _FAILED_HEADER_COLOR
         elif chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
             colour = _STALE_HEADER_COLOR

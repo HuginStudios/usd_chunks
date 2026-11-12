@@ -95,9 +95,13 @@ Rules, all from `docs/writing-a-chunk.md`:
 - **`main()`** takes no arguments, returns a `chunk.Chunk`, and only builds params, groups
   and callbacks. It never touches the stage. It runs once per node, so cache anything slow
   at module level.
-- **`execute(node)`** runs inside the chunk's edit context, and its layer has already been
-  cleared. Write the whole result every time, with no `Clear()`. Same params give the same
-  result. Use `node.get_stage()` and author normally.
+- **`execute(node)`** runs inside the chunk's edit context, and starts from an empty layer
+  every cook. Write the whole result every time, with no `Clear()`; the framework changes
+  only what differs in the chunk's layer. Same params give the same result, in the same
+  order (no dict or set order). Use `node.get_stage()` and `node.get_edit_context()` and
+  author normally -- never the scene's stage (`node.get_scene_stage()`), which doesn't hold
+  the layer the cook writes into. Key anything kept between cooks on
+  `node.get_layer_identifier()`.
 - **Read inputs through params.** A prim the chunk reads comes from a `LineEdit` with
   `PRIM_SELECTION` (or `primpath_location`). A hard-coded path or `stage.Traverse()` still
   works, but the chunk then cooks every time, even when nothing it reads changed.

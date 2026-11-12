@@ -1159,6 +1159,14 @@ def test_the_box_operators_register_with_their_mouse_keys():
     assert {gz.USDCHUNKS_OT_box_hover, gz.USDCHUNKS_OT_box_drag} <= set(gz._CLASSES)
     assert {(op.bl_idname, key) for op, key, _value in gz._BOX_KEYS} == {
         ("usd_chunks.box_hover", "MOUSEMOVE"), ("usd_chunks.box_drag", "LEFTMOUSE")}
+def test_a_param_named_like_a_node_builtin_is_not_a_node_field():
+    """Exterior Walls' `color` param took over Node.color, the header colour: painting the
+    header grey wrote grey into the chunk, and the walls cooked grey in Blender only."""
+    c = chunk.Chunk("Walls")
+    c.add_param(chunk.ColorPicker("color", "Stucco", default_value=(0.86, 0.54, 0.24)))
+    props, _buttons, _skipped = chunk_blender.annotations_for(c)
+    assert "color" in chunk_blender.node_builtins()
+    assert "color" not in props
 
 
 def test_the_pivot_dot_follows_the_driven_anchor(driven):
@@ -1514,6 +1522,50 @@ def test_a_new_network_saves_in_blenders_space(tmp_path, addon_on):
     saved = Usd.Stage.Open(str(out))
     assert UsdGeom.GetStageUpAxis(saved) == UsdGeom.Tokens.z
     assert UsdGeom.GetStageMetersPerUnit(saved) == pytest.approx(0.5)
+
+
+def test_a_chunk_with_no_module_still_shows_and_says_why(tmp_path, addon_on):
+    """A chunk type no module registers (its folder not on USD_CHUNK_DIRS) once vanished
+    from the graph: registering the generated node classes as subclasses of the fallback
+    broke the fallback, nodes.new raised, and the node was dropped at debug level."""
+    path, context = make_network(tmp_path / "missing.usda")
+    layer = Sdf.Layer.FindOrOpen(path)
+    stray = Sdf.CreatePrimInLayer(layer, f"{context}/Stray")
+    stray.specifier = Sdf.SpecifierDef
+    stray.typeName = chunk_graph.CHUNK_TYPENAME
+    Sdf.AttributeSpec(stray, "info:chunkType", Sdf.ValueTypeNames.Token).default = "no_such_chunk"
+    layer.Save()
+    tree = bpy.data.node_groups.new("missing", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    view = addon.get_view()
+    node = view.tree.nodes.get(f"{context}/Stray")
+    assert node is not None
+    assert node.missing_module == "no_such_chunk"
+    assert tuple(node.color) == pytest.approx(bg._FAILED_HEADER_COLOR)
+    assert view.missing_types == {"no_such_chunk": [f"{context}/Stray"]}
+    assert "no_such_chunk" in addon.missing_types_message(view)
+    # The chunks that do have modules are unaffected.
+    assert all(not getattr(n, "missing_module", "") for n in view.tree.nodes if n != node)
+
+
+def test_usd_import_opens_the_network_in_the_node_editor(tmp_path, addon_on):
+    """File > Import > USD made objects from the prims and ignored /chunks: no graph."""
+    path, _context = make_network(tmp_path / "imported.usda")
+    bpy.ops.wm.usd_import(filepath=path)
+    assert addon._pending_imports == [Sdf.Layer.FindOrOpen(path).realPath]
+    addon._open_pending_imports()  # the timer; timers do not run under a test
+    tree = bpy.data.node_groups.get("imported")
+    assert tree is not None and tree.bl_idname == bg.TREE_ID
+    assert addon.get_view().tree == tree
+    assert len(tree.nodes) > 0
+
+
+def test_usd_import_of_a_plain_file_opens_no_network(tmp_path, addon_on):
+    stage = Usd.Stage.CreateNew(str(tmp_path / "plain.usda"))
+    UsdGeom.Cube.Define(stage, "/Cube")
+    stage.Save()
+    bpy.ops.wm.usd_import(filepath=str(tmp_path / "plain.usda"))
+    assert addon._pending_imports == []
 
 
 def test_an_opened_network_keeps_the_space_it_was_authored_in(tmp_path, addon_on):

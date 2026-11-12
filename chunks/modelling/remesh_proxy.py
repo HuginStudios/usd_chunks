@@ -388,7 +388,8 @@ class _CookRecord(NamedTuple):
     note: str = ""
 
 
-# Keyed by the chunk's own layer identifier.
+# Keyed by the chunk's layer identifier (get_layer_identifier: the same whichever layer a
+# cook writes into, its own or a diff cook's scratch layer).
 _LAST_COOK: dict = {}
 
 # The last full read, for the next cook of the same chunk on the same assets as they still
@@ -472,7 +473,7 @@ def _keeps_small(node) -> bool:
 def _last_arrays(node) -> dict:
     """The arrays the chunk's last cook signed, to recognise them by address."""
     layer = node.get_edit_context()
-    record = _LAST_COOK.get(layer.identifier) if layer else None
+    record = _LAST_COOK.get(node.get_layer_identifier()) if layer else None
     return record.arrays if record is not None else {}
 
 
@@ -584,14 +585,14 @@ def execute(node: chunk.Chunk) -> None:
     out_path = _output_path(node, str(paths[0]))
     where = (tuple(map(str, paths)), out_path)
     upstream = _upstream(node)
-    previous = _LAST_COOK.get(layer.identifier)
+    previous = _LAST_COOK.get(node.get_layer_identifier())
     signed: dict = {}
     stamp = input_stamp(upstream, paths, settings, keep_small, previous.arrays if previous else {}, signed)
     if previous is not None and previous.stamp == stamp:
         del upstream
         proxy, note = previous.proxy, previous.note
     else:
-        sources = _read(layer.identifier, upstream, paths, signatures=stamp[-1])
+        sources = _read(node.get_layer_identifier(), upstream, paths, signatures=stamp[-1])
         source_triangles = sum(len(s.tris) * len(s.placements) for s in sources)
         keep_under = settings.budget if keep_small else 0
         if sources and source_triangles <= keep_under and not Sdf.Path(out_path).HasPrefix(Sdf.Path(str(paths[0]))):
@@ -613,7 +614,7 @@ def execute(node: chunk.Chunk) -> None:
     # Kept before it is written: a first cook runs on a stage of the chunk's inputs alone
     # (skip_cook), where the proxy's prim can't be defined, and is run again on the whole
     # stage. Kept first, the second run finds this proxy instead of remeshing again.
-    _remember(layer.identifier, _CookRecord(stamp, signed, proxy, where, note))
+    _remember(node.get_layer_identifier(), _CookRecord(stamp, signed, proxy, where, note))
     if proxy is not None:
         _write(node, stage, layer, paths, out_path, proxy)
     node.get_param("out_mesh").value = out_path if proxy is not None else ""
@@ -689,7 +690,7 @@ def _keep_source(node, stage, layer, paths, out_path, triangles, keep_under) -> 
         prim.GetReferences().AddInternalReference(source_path)
         prim.SetCustomDataByKey(surface_samples.PASSTHROUGH_KEY, True)
         _set_up(node, stage, paths, out_path, copy_of=source_path)
-    _LAST_COOK.pop(layer.identifier, None)
+    _LAST_COOK.pop(node.get_layer_identifier(), None)
     node.get_param("out_mesh").value = out_path
     if readout := node.get_param("readout"):
         readout.value = f"kept as is: {_compact(triangles)} ≤ {_compact(keep_under)} tris"
