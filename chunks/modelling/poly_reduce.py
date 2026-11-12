@@ -867,7 +867,8 @@ class _CookRecord(NamedTuple):
     plans: list
 
 
-# Keyed by the chunk's own layer identifier. See `_fingerprint` for why this exists.
+# Keyed by the chunk's layer identifier (get_layer_identifier, also in a diff cook).
+# See `_fingerprint` for why this exists.
 _LAST_COOK: dict = {}
 
 
@@ -1071,7 +1072,7 @@ def execute(node: chunk.Chunk) -> None:
         return
 
     upstream, targets = _targets(node, settings, paths)
-    previous = _LAST_COOK.get(layer.identifier)
+    previous = _LAST_COOK.get(node.get_layer_identifier())
     signed: dict = {}
     fingerprint = _fingerprint(targets, settings, previous.arrays if previous else {}, signed)
     if previous is not None and previous.fingerprint == fingerprint:
@@ -1094,7 +1095,7 @@ def execute(node: chunk.Chunk) -> None:
     # is written: a first cook runs on a stage of the chunk's inputs alone (skip_cook), where
     # a proxy copy's prim can't be defined, and is run again on the whole stage. Kept first,
     # the second run finds these plans instead of reducing again.
-    _remember(layer.identifier, _CookRecord(fingerprint, signed, plans))
+    _remember(node.get_layer_identifier(), _CookRecord(fingerprint, signed, plans))
     _write(stage, layer, plans, proxy_paths)
     _report(node, plans)
 

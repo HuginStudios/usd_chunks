@@ -127,7 +127,7 @@ Built for anyone whose pipeline runs on USD:
       )
   ```
 
-  `main()` builds the params, `execute()` cooks into the node's own layer (cleared before
+  `main()` builds the params, `execute()` cooks into the node's own layer (starting empty
   each cook), and `config()` says what the chunk *is*: where it sits in the Tab menu, the
   help a person or an AI agent reads, and when needed its pip requirements, the hosts and
   versions it runs in, extra ports and cook caching. Drop the file in a folder on
