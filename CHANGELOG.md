@@ -11,6 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: **File > Import > USD** of a network file opens its chunk network in the
+  USDChunks Editor, in a node tree of its own.
 - **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
   sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
   `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
@@ -235,6 +237,24 @@ This file starts with the first release; development before that is in the commi
   cooks where the handle is held still for a tenth of a second and where it is let go.
   Hosts still call `apply_bindings` every tick. In Blender, the pivot dot now follows the
   mouse instead of the last cook.
+- **Breaking:** a recook changes only what changed in the chunk's layer (diff cook). The cook
+  writes into a scratch layer, on a stage of only the layers upstream of the chunk, and its
+  result is reconciled into the chunk's layer: an unchanged prim sends no notice and a
+  changed value is set in place, so the viewport updates it instead of rebuilding it (an
+  instance's prototype too). Dragging the house example's box face: the frame after each
+  tick 0.30 → 0.19 s; posing a SimReady fridge's door: 0 resyncs where it was ~30, the frame
+  ~100 → 37 ms. The composed result is the same as before. A chunk that changes the layer
+  stack or what is muted (Edit Target, Layer, a gate), sublayers its own layer, or writes
+  onto chunk prims (Override Chunk Prim) is still cleared and rewritten.
+  `USD_CHUNKS_DIFF_COOK=0` turns it off. What to change in a chunk module of your own:
+  inside `execute()`, read and write through `node.get_stage()` and
+  `node.get_edit_context()`, not the scene's stage (`node.get_scene_stage()`,
+  `scene.get_stage()`), which no longer holds the layer the cook writes into; keep
+  `get_scene_stage()` for the scene's bookkeeping (wiring chunk prims, layer menus). A cache
+  kept between cooks is keyed on `node.get_layer_identifier()`, not the edit layer's
+  identifier, which changes.
+- Pose Articulation writes its op on every link a joint can move, the identity while the
+  joint is at rest, so its layer holds the links whatever the pose.
 - **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
   `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
   stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To
@@ -355,6 +375,15 @@ This file starts with the first release; development before that is in the commi
   `metersPerUnit`. Picking, the pivot, G/R/S, the brush and the camera mirror go through
   the same turn. X, Y and Z after G, R or S name Blender's axes, so R Z turns a prim about
   the up axis on any stage.
+- Blender: a chunk param named like one of a node's own properties (`color`, `name`,
+  `location`, `width`, ...) was overwritten by the node. Exterior Walls' `color` took the
+  node's header grey, so its walls cooked grey in Blender only.
+- Blender: a network whose chunks are not on `USD_CHUNK_DIRS` opened as an empty graph
+  with only its Output node; the missing chunks were dropped without a word. Each one now
+  shows as a red node that names its chunk type, with its wires kept. Open Chunk Network
+  warns, and the USDChunks sidebar lists the missing types until they are found.
+- Blender: an opened network is framed in the node editor. Its saved positions could be far
+  from where the editor starts, so the graph looked empty until Home was pressed.
 - Export USD's relative Output Directory or Output File is from the network's folder, like
   every other file path in a param. It was from the working directory, so `output_dir="."`
   wrote a shot wherever a script or `usdchunks run` was started.

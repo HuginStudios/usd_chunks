@@ -265,7 +265,8 @@ def _fingerprint(prims, settings: _Settings) -> tuple:
     return tuple(parts)
 
 
-# Keyed by the chunk's own layer identifier: (fingerprint, plans).
+# Keyed by the chunk's layer identifier (get_layer_identifier: the same whichever layer a
+# cook writes into, its own or a diff cook's scratch layer): (fingerprint, plans).
 _LAST_COOK: dict = {}
 
 
@@ -325,7 +326,7 @@ def execute(node: chunk.Chunk) -> None:
     settings = _settings(node)
     upstream, prims = _targets(node, settings, paths)
     stamp = _fingerprint(prims, settings)
-    previous = _LAST_COOK.get(layer.identifier)
+    previous = _LAST_COOK.get(node.get_layer_identifier())
     plans = previous[1] if previous is not None and previous[0] == stamp else _plan_all(prims, settings)
     del upstream
 
@@ -335,7 +336,7 @@ def execute(node: chunk.Chunk) -> None:
 
     if len(_LAST_COOK) > 256:
         _LAST_COOK.clear()
-    _LAST_COOK[layer.identifier] = (stamp, plans)
+    _LAST_COOK[node.get_layer_identifier()] = (stamp, plans)
     _report(node, plans)
 
 

@@ -182,7 +182,7 @@ defaults below.
 | `hosts` | `[]` | The applications the chunk runs in, each a name with an optional minimum version: `["houdini>=21.5", "blender>=5.1"]`. Empty or not set: every host. Elsewhere the chunk is skipped. Import a host-only module (`bpy`, `hou`) under `try`/`except ImportError`, so other hosts can still read `config()`. |
 | `requirements` | `[]` | pip packages the module needs, e.g. `["numpy>=2,<3"]`. If one is missing and the module fails to import, it's skipped instead of crashing. usdview and `usdchunks run` ask whether to install the missing ones into `USD_CHUNK_DEPENDENCY_DIR` (see [`USD_CHUNK_AUTO_INSTALL`](install.md#environment-variables)). |
 | `required_modules` | `[]` | Other chunk *modules* that must be loaded for this one to work. |
-| `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being cleared and rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
+| `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
 | `cache_cook` | `False` | Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See [Caching a slow cook](#caching-a-slow-cook). |
 | `cache_always` | `False` | `cache_cook` that can't be turned off: no **Cache Result** checkbox, `USD_CHUNKS_COOK_CACHE=0` doesn't apply, and quick cooks are stored too. For a result that is expensive or impossible to remake anywhere else, such as Blender Import's. |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
@@ -221,10 +221,21 @@ again (see below). `node` is the chunk itself, the same object `main()` returned
 the stage.
 
 It runs with a `Usd.EditContext` already set to the chunk's own layer (unless the chunk is
-`interactive`, which writes somewhere else). The framework clears that layer right before
-each `execute()`, so write the whole result every time. It must give the same result every
-time it runs with the same inputs. It can run many times while the graph cooks, so keep it
-fast.
+`interactive`, which writes somewhere else). Every `execute()` starts from an empty layer,
+so write the whole result every time. It must give the same result every time it runs with
+the same inputs, in the same order: a prim written in dict or set order moves about. It
+can run many times while the graph cooks, so keep it fast.
+
+The framework then changes the chunk's layer only where the result differs (a diff cook):
+a prim that comes out the same sends no change, and a changed value is set in place, so the
+viewport updates it rather than building it again. For that, the cook runs on a stage of
+the layers upstream of the chunk, writing into a scratch layer. Read and write through
+`node.get_stage()` and `node.get_edit_context()`, never the scene's stage
+(`node.get_scene_stage()`), which doesn't hold that layer; keep the scene's stage for the
+scene's own bookkeeping, such as wiring chunk prims. Key anything kept between cooks on
+`node.get_layer_identifier()`, not the edit layer's identifier. A chunk that changes the
+layer stack or what is muted, or sublayers its own layer, is cleared and rewritten instead.
+`USD_CHUNKS_DIFF_COOK=0` turns diff cooks off.
 
 You write `execute(node)`; you don't call it directly. To run a chunk again, call
 `chunk.execute()`: it re-executes the chunk and everything that depends on it, the same as
@@ -354,7 +365,7 @@ through. `sim_bake.cancel(node)` stops it.
 Some engines hold Python's GIL while they compute (Taichi does), which stops the UI even from
 a thread. Call the solve through `sim_bake.in_subprocess(ctx, solve, **job)` to run it in a
 separate Python process. `promote`, `keep` and `restore` handle the bake's layer: put it in
-front of the layers it animates, and put it back after the next cook clears it.
+front of the layers it animates, and put it back after the next cook rewrites it.
 
 For smaller work of your own -- a download, a wait before re-running -- get back to the main
 thread with `node.get_scene().call_later(fn, delay=0.0)`. It works in every host (usdview,

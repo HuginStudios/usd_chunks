@@ -39,7 +39,8 @@ the **⌄** menu at the top right, choose **Install from Disk...** and pick
 Shift+A to add a chunk.
 
 To open a saved network, press N in the editor, go to the **USDChunks** tab and click
-**Open Chunk Network**.
+**Open Chunk Network**. **File > Import > USD** of a network file opens its network too, in
+a node tree of its own.
 
 To move things in the viewport, Ctrl+click a prim to pick it, then press G, R or S to move,
 rotate or scale it, like a Blender object. X, Y or Z locks an axis, named as in Blender:
@@ -75,6 +76,11 @@ For people working on usd_chunks itself. This links Blender to your clone, so a
 
 **"No module named 'usd_chunks'" when the add-on turns on.** Step 1 didn't run, or used
 another Blender version's folder. Run step 1, then turn the add-on off and on again.
+
+**A node is red and says "Missing chunk type".** The network uses a chunk that no folder
+on `USD_CHUNK_DIRS` has, such as one from your own chunk library. Its node keeps its wires
+and the values saved in the file. Add the folder to `USD_CHUNK_DIRS` and restart Blender.
+The USDChunks tab in the sidebar lists every missing type.
 
 **A chunk is missing from Shift+A.** It needs a pip package that isn't installed. Use the
 chunk and Blender asks to install it. That needs **Allow Online Access** on, in **Edit >

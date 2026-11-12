@@ -1557,6 +1557,10 @@ class ChunkCommon(AttributesBase):
 
         if c := self.get_chunk():
             layer = chunk_registry.ChunkLayerManager().get_or_create_layer(c)
+            # A diff cook running: its scratch layer, which stands in for the chunk's own.
+            # Asked for all the same: asking is what places the layer under its Edit Target.
+            if (scratch := chunk_cook.cooking_into(c)) is not None:
+                return scratch
             if layer and layer.IsMuted():
                 return None
             return layer
@@ -2371,6 +2375,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if not self._param_attr_path:
             return
         stage = chunk_registry.ChunkRegistry().scene.get_stage()
+        # Inside a diff cook the chunk's layer is a scratch layer, which only the cook stage
+        # has in its layer stack: author there, as the module does.
+        if chunk_cook.cooking_into(self.get_chunk()) is not None and (cooking := skip_cook.active_stage()):
+            stage = cooking
         if not stage:
             return
         storage_attr = stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))
