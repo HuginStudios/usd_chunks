@@ -17,6 +17,7 @@ optional extra rather than a dependency.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import threading
 
@@ -271,27 +272,90 @@ def test_no_active_view_reads_as_zero(view):
 # registration
 # ---------------------------------------------------------------------------
 
-def test_a_node_class_is_generated_per_chunk_type():
-    """Registration loads the whole library, because Blender needs a class registered
-    before a node of that type can exist -- there is no lazy path."""
-    assert len(bg._generated) > 10
+def test_a_node_class_is_generated_per_chunk_type(view):
+    """A class per chunk type, built when a node of it is first made: the view's own
+    Reference and Transform have one, and an unused type gets one when asked."""
+    assert {"reference", "transform"} <= set(bg._generated)
+    cls = bg.ensure_chunk_type("prim")
+    assert cls is not None and cls.bl_idname == bg.node_class_id("prim")
+    assert bg.ensure_chunk_type("prim") is cls
+
+
+def test_opening_a_network_builds_only_the_types_it_uses(view, monkeypatch):
+    """Opening the house network loaded all 115 modules to build every class (~5.6 s of
+    6.8); now a rebuild asks only for the types on the graph."""
+    asked = []
+    real = bg.ensure_chunk_type
+    monkeypatch.setattr(bg, "ensure_chunk_type", lambda name: asked.append(name) or real(name))
+    view.reload()
+    assert set(asked) == {chunk_graph.node_kind(p) for p in view.prims.values()}
+
+
+def test_the_add_menu_needs_no_node_class(view):
+    """Shift+A lists the library from the registry's configs, before any class exists."""
+    assert bg.build_add_menu() > 50
+
+
+def test_a_type_that_cannot_build_is_not_retried_on_every_rebuild(view, monkeypatch):
+    calls = []
+    module = chunk_registry.ChunkRegistry().get_chunk_module("custom_widget")
+    monkeypatch.setattr(bg, "_build_chunk_type", lambda m: calls.append(m) or None)
+    bg._failed.discard("custom_widget")
+    assert bg.ensure_chunk_type("custom_widget") is None
+    assert bg.ensure_chunk_type("custom_widget") is None
+    assert len(calls) == 1 and calls[0] is module
+    bg._failed.discard("custom_widget")
+
+
+def test_drawing_asks_the_stage_once_until_it_changes(view):
+    """Drawing asked the stage whether each param was held or overridden ~180 times a frame
+    on a dozen nodes. The answer is kept until the network's stage changes."""
+    param = _node(view, "Move").get_chunk().get_param("tz")
+    asked = []
+    chunk_blender.clear_draw_cache()
+    for _frame in range(3):
+        chunk_blender._cached("held", param, lambda p: asked.append(p) or None)
+    assert len(asked) == 1
+    view.stage.DefinePrim("/Poke")  # any change to the stage
+    chunk_blender._cached("held", param, lambda p: asked.append(p) or None)
+    assert len(asked) == 2
+
+
+def test_quitting_does_not_run_chunks_never_used(tmp_path):
+    """A discovered chunk module sits in sys.modules as a lazy module. Blender's quit reads
+    `__dict__` off every module there, which ran each chunk the session never used --
+    display_modes, wanting usdview, printed a traceback on every quit."""
+    source = tmp_path / "never_used_chunk.py"
+    source.write_text("raise RuntimeError('a chunk nobody used ran on quit')\n")
+    spec = importlib.util.spec_from_file_location("never_used_chunk", source)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # A mapping of its own: the session's real lazy chunk modules must stay for later tests.
+    modules = {"never_used_chunk": module, "sys": sys}
+    assert addon.forget_unloaded_modules(modules=modules) == 1
+    assert modules == {"sys": sys}
+
+
+def test_the_quit_hook_is_registered(addon_on):
+    assert addon.forget_unloaded_modules in bpy.app.handlers.exit_pre
 
 
 def test_qt_only_chunks_are_skipped_not_fatal():
     """A chunk that imports PySide6 at module level cannot load in Blender (the
     custom_widget example still does). The registry skips a module whose import fails,
     so the add-on degrades rather than refusing to start."""
-    assert "custom_widget" not in bg._generated
+    assert bg.ensure_chunk_type("custom_widget") is None
 
 
 def test_uv_checker_loads_without_qt():
     """uv_checker imported Qt for one error popup; Qt is optional there now."""
-    assert "uv_checker" in bg._generated
+    assert bg.ensure_chunk_type("uv_checker") is not None
 
 
 def test_a_chunk_that_only_waited_with_qt_now_loads():
     """rbd_solver imported Qt for one debounce timer; it waits through call_later now."""
-    assert "rbd_solver" in bg._generated
+    assert bg.ensure_chunk_type("rbd_solver") is not None
 
 
 def test_call_later_from_a_worker_runs_on_the_main_thread():
@@ -309,7 +373,7 @@ def test_call_later_from_a_worker_runs_on_the_main_thread():
 def test_the_material_library_loads_without_qt():
     """AMDMaterialXLibrary's thumbnail grid is Qt, but the chunk is not: without the import
     guard its nodes were missing from a loaded network, and every wire through them too."""
-    assert "AMDMaterialXLibrary" in bg._generated
+    assert bg.ensure_chunk_type("AMDMaterialXLibrary") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -2154,7 +2218,7 @@ def test_a_chunk_with_private_params_still_gets_a_node(view):
     """Blender refuses an RNA property whose name starts with "_", and one refused property
     failed the whole class: Layer (with its _new_layer_id bookkeeping) had no node at all,
     so it never showed in the Add menu or in a graph."""
-    assert "layer" in bg._generated
+    assert bg.ensure_chunk_type("layer") is not None
     layer = _make(chunk_registry.ChunkRegistry().get_chunk_module("layer"))
     layer.name = "Lookdev"
     view.scene.add_chunk(layer)
@@ -2169,7 +2233,7 @@ def test_every_chunk_that_builds_gets_a_node_class(view):
     missing = []
     for module in chunk_registry.ChunkRegistry().get_chunk_modules():
         name = getattr(module, "module_name", None)
-        if not name or name in bg._generated:
+        if not name or bg.ensure_chunk_type(name) is not None:
             continue
         try:
             built = module.create() if module.loaded else module.load()
