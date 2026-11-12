@@ -42,6 +42,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
+from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.blender.addon import brush
@@ -1298,7 +1299,39 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
             layout.label(text=view.status)
 
 
+def _register_delegates(_prefs=None, _context=None) -> list[str]:
+    """Make the delegates in USD_CHUNKS_HYDRA_DELEGATES and the preference available.
+
+    Also the preference's update callback, so a folder typed in takes effect at once: the
+    Renderer menu asks USD for its delegates every time it opens.
+    """
+    folders = delegates.split_folders(os.environ.get(delegates.ENV_VAR, ""))
+    addon_entry = bpy.context.preferences.addons.get(__package__)
+    if addon_entry is not None:
+        folders += delegates.split_folders(addon_entry.preferences.hydra_delegate_folders)
+    return delegates.register_folders(folders)
+
+
+class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    hydra_delegate_folders: bpy.props.StringProperty(
+        name="Hydra Delegate Folders",
+        description=(
+            "Render delegates for the live view, built against Blender's USD: each folder "
+            "holds plugInfo.json or a resources folder with one. Separate several with ';'"),
+        default="",
+        update=_register_delegates,
+    )
+
+    def draw(self, _context):
+        self.layout.prop(self, "hydra_delegate_folders")
+        self.layout.label(text="Pick one in the 3D viewport: N panel > USDChunks > Renderer",
+                          icon="INFO")
+
+
 _CLASSES = (
+    USDCHUNKS_AP_preferences,
     USDCHUNKS_OT_open_network,
     USDCHUNKS_OT_new_network,
     USDCHUNKS_OT_save_network,
@@ -1485,6 +1518,11 @@ def register() -> None:
         bpy.app.handlers.undo_post.append(_on_undo)
     if _on_undo not in bpy.app.handlers.redo_post:
         bpy.app.handlers.redo_post.append(_on_undo)
+    # Before the viewport: its Renderer menu lists whatever delegates USD knows by then.
+    try:
+        _register_delegates()
+    except Exception:  # a bad folder must not take the add-on down with it
+        logger.exception("could not register Hydra delegates")
     viewport.register()
     gizmos.register()
     brush.register()

@@ -1,4 +1,7 @@
-"""A live Hydra Storm view of the chunk stage, in Blender's own 3D viewport.
+"""A live Hydra view of the chunk stage, in Blender's own 3D viewport.
+
+Storm by default; any other delegate built against Blender's USD from the Renderer menu
+(see USDCHUNKS_OT_set_renderer and delegates.py).
 
 It lives in the add-on rather than in an external launcher: the add-on always has a real
 usd_chunks import available to it, and chunk_blender_addon.BlenderScene.get_selected_prims()
@@ -32,16 +35,21 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL, UsdLux
 
+from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 
 logger = logging.getLogger(__name__)
+
+#: The renderer the camera light (Lighting On) is for; see _draw.
+STORM = "HdStormRendererPlugin"
 
 #: Handler + engine live here rather than on an operator: Blender constructs operators per
 #: click, and the UsdImagingGL engine must outlive a frame (rebuilding it per draw throws
 #: away Hydra's whole cache and makes navigation crawl).
 _state = {"handle": None, "lights_handle": None, "engine": None, "stage_id": None, "error": "",
           "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True,
-          "renderParams": None, "gl_pick_failed": False}
+          "renderParams": None, "gl_pick_failed": False, "render_settings": None,
+          "renderer_settings": None}
 
 #: The draw mode names the panel offers, and what each maps to on UsdImagingGL.RenderParams.
 #: Resolved lazily (inside _draw, not at import time) because UsdImagingGL.DrawMode needs
@@ -455,6 +463,8 @@ def _draw():
             _state["engine"] = UsdImagingGL.Engine()
             _state["renderParams"] = UsdImagingGL.RenderParams()
             _state["stage_id"] = id(stage)
+            _state["render_settings"] = None
+            _state["renderer_settings"] = None
             if _state["renderer"]:
                 try:
                     _state["engine"].SetRendererPlugin(_state["renderer"])
@@ -462,6 +472,24 @@ def _draw():
                     pass
 
         engine = _state["engine"]
+        # The stage's RenderSettings, as usdview uses them: a delegate's own settings on it
+        # (Aurora's samples, denoising, ...) apply to the live view too. Checked every draw,
+        # so a network that adds, renames or edits its RenderSettings is followed. The
+        # settings are also set on the engine directly: in stock OpenUSD, which Blender ships,
+        # nothing marks the prim active for HdRenderSettings::Sync (no
+        # HdsiRenderSettingsFilteringSceneIndex is ever made), and a request made before the
+        # first render is dropped, so the delegate never sees them. A patched USD (the
+        # usdbundle's) does both, and then this just sets the same values twice.
+        settings_path = delegates.render_settings_path(stage)
+        if settings_path != _state["render_settings"]:
+            engine.SetActiveRenderSettingsPrimPath(settings_path)
+            _state["render_settings"] = settings_path
+        settings = (delegates.renderer_settings(stage.GetPrimAtPath(settings_path), current_time())
+                    if not settings_path.isEmpty else {})
+        if settings != _state["renderer_settings"]:
+            for key, value in settings.items():
+                engine.SetRendererSetting(key, value)
+            _state["renderer_settings"] = settings
         # Blender's viewport camera drives Hydra, so navigation just works -- through
         # stage_to_blender, so a Y-up stage stands up in Blender's Z-up world. Transposed
         # because mathutils is row-major and Gf is column-major.
@@ -469,7 +497,12 @@ def _draw():
         proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
 
         params = _state["renderParams"]
-        params.enableLighting = _state["lighting"]
+        # The camera light is Storm's: without it Storm draws a stage with no lights black. A
+        # path tracer lights with the stage's own lights, and takes the camera light as a light
+        # change on every draw -- Aurora's denoiser dropped its history each frame, so the view
+        # never got past a few samples' worth of noise.
+        lighting = _state["lighting"] and engine.GetCurrentRendererId() == STORM
+        params.enableLighting = lighting
         # The timeline drives the stage: animation, value clips and Skel Pose play here.
         params.frame = current_time()
         params.drawMode = getattr(UsdImagingGL.DrawMode,
@@ -477,13 +510,15 @@ def _draw():
 
         engine.SetRenderViewport(Gf.Vec4d(0, 0, region.width, region.height))
         engine.SetCameraState(view, proj)
-        if _state["lighting"]:
+        if lighting:
             _headlight(engine, rv3d, stage)
         try:
             engine.Render(stage.GetPseudoRoot(), params)
         except Exception:
             # HgiGL flushing pending GL errors after the draw -- see the module docstring.
             pass
+        if not engine.IsConverged() and not bpy.app.timers.is_registered(_redraw_until_converged):
+            bpy.app.timers.register(_redraw_until_converged, first_interval=_CONVERGE_INTERVAL)
         _state["error"] = ""
     except Exception as exc:  # a real failure: report once, keep the viewport alive
         if _state["error"] != str(exc):
@@ -517,6 +552,25 @@ def _redraw() -> None:
         for area in window.screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()
+
+
+#: Seconds between redraws while a progressive delegate is still adding samples.
+_CONVERGE_INTERVAL = 0.03
+
+
+def _redraw_until_converged():
+    """Keep drawing until the delegate says the image is done.
+
+    A path tracer (Aurora, ...) adds samples on each draw, and Blender only draws a 3D view
+    when something changes, so without this the view stops at its first few samples. usdview
+    does the same: it schedules another paint while the renderer is not converged. Storm
+    converges on the first draw, so it never starts this.
+    """
+    engine = _state["engine"]
+    if _state["handle"] is None or engine is None or engine.IsConverged():
+        return None
+    _redraw()
+    return _CONVERGE_INTERVAL
 
 
 def _on_frame_change(*_args) -> None:
@@ -648,11 +702,11 @@ def _renderer_display_name(plugin_id) -> str:
 class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
     """Switch the Hydra render delegate drawing the stage.
 
-    Blender's own runtime currently exposes only HdStorm (measured:
-    UsdImagingGL.Engine.GetRendererPlugins() == ['HdStormRendererPlugin']) -- there is no
-    route to add hdVray/hdCycles/etc into it, since they are ABI-locked to whatever exact
-    USD build produced them and Blender's is a differently-namespaced, monolithic one. This
-    menu is future-proofed for whenever that changes rather than hardcoded to one entry.
+    Blender ships only HdStorm. Any other delegate has to be built against Blender's own USD
+    (its monolithic, privately namespaced usd_ms): one built for another USD build cannot
+    load beside it. Built that way it is found like Storm -- from PXR_PLUGINPATH_NAME, or
+    from the folders the add-on registers at start (delegates.py) -- and listed here.
+    Measured: hdAurora built against Blender 5.1's USD 25.08 draws the live view.
     """
 
     bl_idname = "usd_chunks.set_renderer"
@@ -666,6 +720,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
         if engine is not None:
             try:
                 engine.SetRendererPlugin(self.plugin)
+                _state["renderer_settings"] = None  # a new delegate: give it the settings again
             except Exception:
                 self.report({"WARNING"}, f"could not switch to {self.plugin}")
                 return {"CANCELLED"}

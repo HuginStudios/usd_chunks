@@ -11,6 +11,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
+  Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
+  Blender's USD appear in the sidebar's **Renderer** menu, next to Storm. The live view
+  renders with the stage's RenderSettings prim (a path tracer's samples, denoising, ...),
+  and a progressive renderer keeps refining until it is done.
 - `scene.connect(upstream, downstream, slot=None)` wires chunks that already exist. Into a
   Merge the new branch is the strongest, as a wire dropped on the Merge in the graph is,
   unless you give a slot. `scene.get_inputs(chunk)` lists what is wired in, strongest first.
