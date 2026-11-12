@@ -16,15 +16,55 @@ import logging
 import os
 from pathlib import Path
 
-from pxr import Plug
+from pxr import Plug, Sdf, UsdRender
 
 logger = logging.getLogger(__name__)
+
+#: Where a stage's RenderSettings live by convention, when its layer metadata names none.
+RENDER_SCOPE = Sdf.Path("/Render")
 
 #: os.pathsep-separated delegate folders, read when the add-on registers.
 ENV_VAR = "USD_CHUNKS_HYDRA_DELEGATES"
 
 _dll_handles: list = []  # os.add_dll_directory handles: dropping one removes the directory
 _registered: set[str] = set()
+
+
+def render_settings_path(stage) -> Sdf.Path:
+    """The RenderSettings prim the live view renders with, as usdview would pick it.
+
+    The one the stage's `renderSettingsPrimPath` metadata names, else the first RenderSettings
+    under /Render. An empty path when there is none. Its settings reach the delegate through
+    Hydra: Aurora takes every `aurora:` attribute on it (samples, denoising, ...).
+    """
+    settings = UsdRender.Settings.GetStageRenderSettings(stage)
+    if settings:
+        return settings.GetPath()
+    scope = stage.GetPrimAtPath(RENDER_SCOPE)
+    if scope:
+        for child in scope.GetChildren():
+            if child.IsA(UsdRender.Settings):
+                return child.GetPath()
+    return Sdf.Path()
+
+
+def renderer_settings(prim, time=None) -> dict:
+    """A RenderSettings prim's delegate settings: its authored custom attributes, by name.
+
+    These are the namespaced settings (``aurora:max_samples``, ``ri:...``) a delegate reads
+    as render settings. The live view hands them to its engine itself, because stock OpenUSD
+    (what Blender ships) never marks a RenderSettings prim active for the delegate, so its
+    values never arrive; schema attributes (resolution, camera, ...) are left to Hydra.
+    """
+    if not prim:
+        return {}
+    settings = {}
+    for attr in prim.GetAuthoredAttributes():
+        if attr.IsCustom() and ":" in attr.GetName():
+            value = attr.Get(time) if time is not None else attr.Get()
+            if value is not None:
+                settings[attr.GetName()] = value
+    return settings
 
 
 def split_folders(text: str) -> list[str]:

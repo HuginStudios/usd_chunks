@@ -35,6 +35,7 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL, UsdLux
 
+from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,8 @@ logger = logging.getLogger(__name__)
 #: away Hydra's whole cache and makes navigation crawl).
 _state = {"handle": None, "lights_handle": None, "engine": None, "stage_id": None, "error": "",
           "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True,
-          "renderParams": None, "gl_pick_failed": False}
+          "renderParams": None, "gl_pick_failed": False, "render_settings": None,
+          "renderer_settings": None}
 
 #: The draw mode names the panel offers, and what each maps to on UsdImagingGL.RenderParams.
 #: Resolved lazily (inside _draw, not at import time) because UsdImagingGL.DrawMode needs
@@ -455,6 +457,8 @@ def _draw():
             _state["engine"] = UsdImagingGL.Engine()
             _state["renderParams"] = UsdImagingGL.RenderParams()
             _state["stage_id"] = id(stage)
+            _state["render_settings"] = None
+            _state["renderer_settings"] = None
             if _state["renderer"]:
                 try:
                     _state["engine"].SetRendererPlugin(_state["renderer"])
@@ -462,6 +466,24 @@ def _draw():
                     pass
 
         engine = _state["engine"]
+        # The stage's RenderSettings, as usdview uses them: a delegate's own settings on it
+        # (Aurora's samples, denoising, ...) apply to the live view too. Checked every draw,
+        # so a network that adds, renames or edits its RenderSettings is followed. The
+        # settings are also set on the engine directly: in stock OpenUSD, which Blender ships,
+        # nothing marks the prim active for HdRenderSettings::Sync (no
+        # HdsiRenderSettingsFilteringSceneIndex is ever made), and a request made before the
+        # first render is dropped, so the delegate never sees them. A patched USD (the
+        # usdbundle's) does both, and then this just sets the same values twice.
+        settings_path = delegates.render_settings_path(stage)
+        if settings_path != _state["render_settings"]:
+            engine.SetActiveRenderSettingsPrimPath(settings_path)
+            _state["render_settings"] = settings_path
+        settings = (delegates.renderer_settings(stage.GetPrimAtPath(settings_path), current_time())
+                    if not settings_path.isEmpty else {})
+        if settings != _state["renderer_settings"]:
+            for key, value in settings.items():
+                engine.SetRendererSetting(key, value)
+            _state["renderer_settings"] = settings
         # Blender's viewport camera drives Hydra, so navigation just works -- through
         # stage_to_blender, so a Y-up stage stands up in Blender's Z-up world. Transposed
         # because mathutils is row-major and Gf is column-major.
@@ -484,6 +506,8 @@ def _draw():
         except Exception:
             # HgiGL flushing pending GL errors after the draw -- see the module docstring.
             pass
+        if not engine.IsConverged() and not bpy.app.timers.is_registered(_redraw_until_converged):
+            bpy.app.timers.register(_redraw_until_converged, first_interval=_CONVERGE_INTERVAL)
         _state["error"] = ""
     except Exception as exc:  # a real failure: report once, keep the viewport alive
         if _state["error"] != str(exc):
@@ -517,6 +541,25 @@ def _redraw() -> None:
         for area in window.screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()
+
+
+#: Seconds between redraws while a progressive delegate is still adding samples.
+_CONVERGE_INTERVAL = 0.03
+
+
+def _redraw_until_converged():
+    """Keep drawing until the delegate says the image is done.
+
+    A path tracer (Aurora, ...) adds samples on each draw, and Blender only draws a 3D view
+    when something changes, so without this the view stops at its first few samples. usdview
+    does the same: it schedules another paint while the renderer is not converged. Storm
+    converges on the first draw, so it never starts this.
+    """
+    engine = _state["engine"]
+    if _state["handle"] is None or engine is None or engine.IsConverged():
+        return None
+    _redraw()
+    return _CONVERGE_INTERVAL
 
 
 def _on_frame_change(*_args) -> None:
@@ -666,6 +709,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
         if engine is not None:
             try:
                 engine.SetRendererPlugin(self.plugin)
+                _state["renderer_settings"] = None  # a new delegate: give it the settings again
             except Exception:
                 self.report({"WARNING"}, f"could not switch to {self.plugin}")
                 return {"CANCELLED"}

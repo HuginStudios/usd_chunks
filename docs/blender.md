@@ -90,6 +90,11 @@ USD won't load inside Blender.
 A launcher can set `USD_CHUNKS_HYDRA_DELEGATES` to the same list instead. The add-on reads
 it when it starts.
 
+The live view uses the stage's RenderSettings prim: the one the stage's
+`renderSettingsPrimPath` names, or else the first one under `/Render`. The renderer's own
+settings on it, such as Aurora's `aurora:max_samples` or `aurora:is_denoising_enabled`,
+apply to the live view. A path tracer keeps refining the image until it is done.
+
 ## If something is wrong
 
 **"No module named 'usd_chunks'" when the add-on turns on.** Step 1 didn't run, or used
