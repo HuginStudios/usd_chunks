@@ -299,6 +299,8 @@ _BREADCRUMB_MARGIN = 6
 #: The most selected prims traced at once (ChunkGraphScene.trace_selection): past this a
 #: marquee over a forest names the same chunks anyway.
 _TRACE_MOST_PRIMS = 50
+#: Narrower than this beside the Output badge, the trace line goes above it, the full width.
+_TRACE_LINE_MIN_BESIDE = 300
 #: Where the Auto-connect checkbox remembers its state between sessions.
 _AUTO_CONNECT_KEY = "graph/autoConnect"
 #: Space between the Auto-connect checkbox and the Output badge beside it.
@@ -4514,7 +4516,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             breadcrumb.raise_()
         bar = getattr(self, "_trace_bar", None)
         if bar is not None and not bar.isHidden():
-            bar.move(_BREADCRUMB_MARGIN, self.viewport().height() - bar.height() - _BREADCRUMB_MARGIN)
+            y = self.viewport().height() - bar.height() - _BREADCRUMB_MARGIN
+            if _BREADCRUMB_MARGIN + bar.width() > self._bottom_controls_left() - _BREADCRUMB_MARGIN:
+                y = self._slot_badge()[0].top() - bar.height() - _BREADCRUMB_MARGIN  # above them
+            bar.move(_BREADCRUMB_MARGIN, y)
             bar.raise_()
         box = getattr(self, "_auto_connect_box", None)
         if box is not None:
@@ -4534,6 +4539,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         super().showEvent(event)
         self._proxy_key_router.install()
         self.refresh_breadcrumb()
+        graph_scene = self.scene()
+        if isinstance(graph_scene, ChunkGraphScene):  # the selection may have changed while hidden
+            self.show_trace(graph_scene.traces)
 
     def refresh_breadcrumb(self) -> None:
         """Point the path row at this graph's own context.
@@ -7136,12 +7144,21 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         prims = {path: node.prim for path, node in graph_scene._nodes.items()}
         return chunk_graph.search_nodes(prims, query, names, types)
 
-    def show_trace(self, traces: list[chunk_trace.PrimTrace]) -> None:
-        """Name, at the foot of the graph, who made and changed the selected prims."""
-        text = prim_trace.trace_text(traces, lambda c: str(chunk_stage.get_chunk_prim_path(c)))
+    def _bottom_controls_left(self) -> int:
+        """Where the Output badge and the Auto-connect box beside it start, from the left."""
+        left = self._slot_badge()[0].left()
         box = getattr(self, "_auto_connect_box", None)
-        right = box.x() if box is not None and box.isVisible() else self.viewport().width()
-        self._trace_bar.show_text(text, right - 3 * _BREADCRUMB_MARGIN)
+        if box is not None and not box.isHidden():
+            left -= _AUTO_CONNECT_GAP + box.width()
+        return left
+
+    def show_trace(self, traces: list[chunk_trace.PrimTrace]) -> None:
+        """Name, at the foot of the graph, who made and changed the selected prims: beside the
+        Output badge when there is room, the whole width above it in a narrow graph."""
+        text = prim_trace.trace_text(traces, lambda c: str(chunk_stage.get_chunk_prim_path(c)))
+        beside = self._bottom_controls_left() - 3 * _BREADCRUMB_MARGIN
+        width = beside if beside >= _TRACE_LINE_MIN_BESIDE else self.viewport().width() - 2 * _BREADCRUMB_MARGIN
+        self._trace_bar.show_text(text, width)
         self._trace_bar.setToolTip("\n".join(str(t.path) for t in traces[:20]))
         self._anchor_breadcrumb()
 

@@ -15,7 +15,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from usd_chunks import chunk_trace
 
 #: Ring and tag colour per role.
-ROLE_COLOURS = {"made": "#f2b134", "changed": "#5fc4d9", "via": "#b39ddb"}
+ROLE_COLOURS = {"made": "#bf9a55", "changed": "#6b9eab", "via": "#9389ad"}
 #: How far the ring sits outside the node.
 _RING_GAP = 5.0
 #: The most chunk names the line spells out per role before "+N more".
@@ -62,7 +62,7 @@ class TraceMark(QtWidgets.QGraphicsItem):
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         # As wide on screen at any zoom: zoomed out over a big graph is when it's needed most.
-        ring = QtGui.QPen(colour, 3.0)
+        ring = QtGui.QPen(colour, 2.0)
         ring.setCosmetic(True)
         painter.setPen(ring)
         painter.drawRoundedRect(self._rect.adjusted(-_RING_GAP, -_RING_GAP, _RING_GAP, _RING_GAP), 8, 8)

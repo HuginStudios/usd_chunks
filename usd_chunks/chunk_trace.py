@@ -38,6 +38,15 @@ class PrimTrace:
     via: tuple[Sdf.Path, tuple[core.ChunkBase, ...]] | None = None
 
     @property
+    def stack(self) -> tuple[core.ChunkBase, ...]:
+        """The chunks strongest first, as Usd.Prim.GetPrimStack orders specs: the last changer,
+        down to the maker, then the chunks that brought it in."""
+        found = list(reversed(self.changed_by)) + ([self.made_by] if self.made_by is not None else [])
+        if self.via is not None:
+            found += [c for c in self.via[1] if not any(c is f for f in found)]
+        return tuple(found)
+
+    @property
     def chunks(self) -> tuple[core.ChunkBase, ...]:
         """Every chunk the prim owes something to: maker first, then changers, then via."""
         found = ([self.made_by] if self.made_by is not None else []) + list(self.changed_by)

@@ -150,11 +150,11 @@ too. Scripts can make and change them: see [Scripting](scripting.md#backdrops-an
 
 Select a prim in the viewport and the graph shows which chunks it came from:
 
-- The chunk that **made** it gets an orange ring tagged *made*.
-- Each chunk that **changed** it (moved it, bound a material, set a property) gets a blue
+- The chunk that **made** it gets a gold ring tagged *made*.
+- Each chunk that **changed** it (moved it, bound a material, set a property) gets a teal
   ring with a number: 1 changes it first, and the highest number wins a value they both set.
 - A prim inside an asset that a chunk referenced in (a mesh inside a Reference chunk's
-  asset) has no chunk of its own. The chunk that **brought it in** gets a purple ring.
+  asset) has no chunk of its own. The chunk that **brought it in** gets a lavender ring.
 
 A chunk inside a ChunkGroup you're not looking into rings the group's node. The line at the
 bottom of the graph says the same in words, for example

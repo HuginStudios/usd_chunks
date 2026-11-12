@@ -2,6 +2,7 @@
 names the prims it made or changed: read from each chunk's own layer, nothing indexed."""
 from __future__ import annotations
 
+import pytest
 from pxr import Sdf
 
 from usd_chunks import Scene, chunk_trace
@@ -67,3 +68,17 @@ def test_a_prim_no_chunk_touched_has_an_empty_trace(tmp_path) -> None:
         stage = scene.get_stage()
         stage.DefinePrim("/Elsewhere")
         assert chunk_trace.trace_prim(stage.GetPrimAtPath("/Elsewhere")).chunks == ()
+
+
+def test_scripts_ask_the_scene_which_chunks_made_a_prim(tmp_path) -> None:
+    with Scene() as scene:
+        box = scene.create.cube(prim_path="/World/box", width=2.0)
+        lift = scene.create.transform(box, primpath_location="/World/box", ty=3.0)
+        trace = scene.trace_prim("/World/box")
+        assert trace.made_by.name == box.name and _names(trace.changed_by) == [lift.name]
+        assert scene.get_chunk_prims(lift) == [Sdf.Path("/World/box")]
+        assert _names(scene.get_chunk_stack("/World/box")) == [lift.name, box.name]
+        scene.set_selected_chunks(scene.get_chunk_stack("/World/box"))
+        assert set(_names(scene.get_selected_chunks())) == {lift.name, box.name}
+        with pytest.raises(ValueError, match="/World/nothing"):
+            scene.trace_prim("/World/nothing")
