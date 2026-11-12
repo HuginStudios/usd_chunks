@@ -224,6 +224,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
+  forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
+  tested against the points already kept instead of against each other.
 - **Breaking:** URDF Import gives a welded link with no collision geometry (a camera mount,
   a tool tip) no rigid body and no fixed joint: it is nested under its parent, which is the
   weld. As a body it was simulated apart from its parent and fell away. A script that read
@@ -373,6 +376,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
+  per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
+  tz=3)`.
 - Blender: B (brush) did nothing on a brush chunk just selected in the node editor. The
   viewport tools read the editor's selection as it is now.
 - Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the

@@ -41,6 +41,45 @@ def _radii(scales, vary=True):
     return 3.0 / 0.65 * 0.5 * scales if vary else np.full(len(scales), 1.5)
 
 
+def _kept_one_at_a_time(pts, rad, side, reach):
+    """The fill as it was first written: every candidate in draw order, kept unless an
+    earlier one it clashes with was kept. Slow, and the rule the fast fill must match."""
+    pairs = cKDTree(pts, boxsize=side).query_pairs(reach, output_type="ndarray")
+    kept = np.ones(len(pts), dtype=bool)
+    if not len(pairs):
+        return kept
+    i, j = pairs.min(axis=1), pairs.max(axis=1)
+    hit = sp._clashes(pts, rad, side, i, j)
+    earlier: dict = {}
+    for a, b in zip(i[hit].tolist(), j[hit].tolist()):
+        earlier.setdefault(b, []).append(a)
+    for k in sorted(earlier):
+        kept[k] = not kept[earlier[k]].any()
+    return kept
+
+
+@pytest.mark.parametrize("lo, hi", [(1.0, 1.0), (0.8, 1.6), (0.4, 2.0)])
+def test_the_batched_fill_keeps_what_one_at_a_time_did(lo, hi):
+    """_darts_fill tests candidates against what was kept, in batches, instead of finding
+    every clashing pair among all of them (12x on a birch forest's tile, 27x on wide
+    scales). Same rule, so the same points -- across batch edges too."""
+    gen = np.random.default_rng(4)
+    side = 60.0
+    n = 3 * sp._DARTS_BATCH + 123  # several batches, the last one partial
+    pts = gen.random((n, 2)) * side
+    rad = lo + (hi - lo) * gen.random(n)
+    reach = 2.0 * hi * (1.0 + 1e-9)
+    fast = sp._darts_fill(pts, rad, side, reach, cKDTree)
+    assert np.array_equal(fast, _kept_one_at_a_time(pts, rad, side, reach))
+    assert 0 < fast.sum() < n
+
+
+def test_kept_in_draw_order_follows_a_chain():
+    """0 clashes 1 clashes 2: 0 kept, so 1 is not, so 2 is."""
+    keep = sp._kept_in_draw_order(3, np.array([0, 1]), np.array([1, 2]))
+    assert keep.tolist() == [True, False, True]
+
+
 def test_every_instance_keeps_both_radii_from_the_others():
     pos, _, sc = _tiles(_plane())
     r = _radii(sc)
