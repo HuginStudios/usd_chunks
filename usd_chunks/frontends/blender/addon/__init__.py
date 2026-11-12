@@ -30,6 +30,7 @@ import heapq
 import itertools
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -243,13 +244,11 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     # Reference8, View1 -> View11) laid out in a row off to the right of the real
     # network, which read as "the file's positions are wrong".
     chunk_stage.ChunkStageSync().initialize(stage, _scene)
-    # Node classes are generated from the registry, and the registry only discovers chunks
-    # once a scene exists -- so this cannot happen in register(), where there is no scene
-    # yet and every class would be generated from an empty library. Idempotent, so opening
-    # a second network costs a dict lookup per already-registered type.
-    made = bg.register_chunk_types()
-    if made:
-        logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
+    # The Add menu comes from the registry, and the registry only discovers chunks once a
+    # scene exists -- so this cannot happen in register(), where there is no scene yet.
+    # Node classes are not built here: the tree builds the ones it needs as it is made
+    # (bg.ensure_chunk_type), so opening a network loads only the chunks it uses.
+    bg.build_add_menu()
 
     if tree is None:
         tree = _active_tree()
@@ -1460,8 +1459,32 @@ def _unregister_keymap() -> None:
     _keymaps.clear()
 
 
+@persistent
+def forget_unloaded_modules(*_args, modules: dict | None = None) -> int:
+    """Drop modules that were found but never run from sys.modules. Returns how many.
+
+    The registry puts each chunk module it discovers in sys.modules as a lazy module, run
+    on its first attribute access. Blender's quit (addon_utils.disable_all) reads
+    `__dict__` off every module there, which ran every chunk the session never used: a
+    slower quit, and a chunk that needs another host (display_modes wants usdview) printed
+    a traceback on the way out. `type()`, not an attribute, so asking does not run one.
+    """
+    modules = sys.modules if modules is None else modules
+    lazy = [name for name, mod in list(modules.items())
+            if type(mod).__name__ == "_LazyModule"]
+    for name in lazy:
+        modules.pop(name, None)
+    return len(lazy)
+
+
 def register() -> None:
     configure_logging()
+    # exit_pre runs before Blender's quit disables the add-ons (bpy.utils._on_exit ->
+    # addon_utils.disable_all), which is what this has to get ahead of. Not atexit: that
+    # runs after, when the interpreter is finalized.
+    exit_pre = getattr(bpy.app.handlers, "exit_pre", None)
+    if exit_pre is not None and forget_unloaded_modules not in exit_pre:
+        exit_pre.append(forget_unloaded_modules)
     bg.register()
     for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
@@ -1507,6 +1530,9 @@ def register() -> None:
 
 
 def unregister() -> None:
+    exit_pre = getattr(bpy.app.handlers, "exit_pre", None)
+    if exit_pre is not None and forget_unloaded_modules in exit_pre:
+        exit_pre.remove(forget_unloaded_modules)
     undo.untrack()
     camera.unregister()
     brush.unregister()

@@ -38,6 +38,9 @@ the **⌄** menu at the top right, choose **Install from Disk...** and pick
 **Step 4. Try it:** switch any area to **USDChunks Editor**, click **New**, and press
 Shift+A to add a chunk.
 
+To join a branch into a chain, drag a node with no wires onto a wire: it goes in through a
+Merge, the dropped node winning, as in the other graph editors.
+
 To open a saved network, press N in the editor, go to the **USDChunks** tab and click
 **Open Chunk Network**. **File > Import > USD** of a network file opens its network too, in
 a node tree of its own.

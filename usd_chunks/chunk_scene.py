@@ -1248,8 +1248,14 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
 
         A param the chunk's other settings hide (a tube's `radius` on a Mesh set to sphere)
         is still set, with a warning, since the chunk will not use it.
+
+        Several params cook once, together, not once each: `set(birches, max_count=90,
+        scale_max=1.6)` cooked a scatter twice, the first time with only half of the edit.
         """
-        self._assign(target, params)
+        # A batch only when it saves something; one param solves as it always did.
+        batch = chunk_cook.batched_solve() if len(params) > 1 else contextlib.nullcontext()
+        with batch:
+            self._assign(target, params)
         _warn_hidden(target, params)
 
     def _assign(self, target: ChunkBase, params: Mapping[str, Any]) -> None:
@@ -1443,6 +1449,74 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         engine.write_active_slot(stage, context_path, 0)
         chunk_stage.recook_for_view(stage, self, context, None)
         return next((c for c in self.get_chunks() if chunk_stage.get_chunk_prim_path(c) == output_path), None)
+
+    def connect(self, upstream: ChunkBase, downstream: ChunkBase, slot: int | None = None) -> None:
+        """Wire upstream into downstream's input port, for chunks that already exist.
+
+        The same as dropping a wire on the port in the graph. Into a Merge the new branch
+        takes slot 0, the strongest, so the last one wired wins, as with
+        `scene.create.merge(a, b)`. `chunk.add_dependency` puts it in the weakest slot instead.
+
+        Args:
+            upstream: The chunk that runs first.
+            downstream: The chunk that gets the wire.
+            slot: Merge only. The slot the branch takes: 0 is the strongest,
+                `len(scene.get_inputs(merge))` the weakest. The branches from that slot on
+                move down one.
+
+        Raises:
+            ValueError: slot is given for a chunk that is not a Merge or is out of range, or
+                the Merge can't take the branch (it already feeds the Merge, or a loop).
+        """
+        if not chunk_stage.is_merge_chunk(downstream):
+            if slot is not None:
+                raise ValueError(f"{downstream.name} is not a Merge: only a Merge takes a slot")
+            downstream.add_dependency(upstream)
+            self._recook_after_wiring(downstream)
+            return
+        count = len(self.get_inputs(downstream))
+        at = 0 if slot is None else slot
+        if not 0 <= at <= count:
+            raise ValueError(f"slot must be from 0 (strongest) to {count} (weakest), not {slot}")
+        stage = self.get_stage()
+        merge = str(chunk_stage.get_chunk_prim_path(downstream))
+        branch = str(chunk_stage.get_chunk_prim_path(upstream))
+        change, error = engine.join_merge(stage, self, merge, [branch], at)
+        if change is None:
+            raise ValueError(f"cannot wire {upstream.name} into {downstream.name}: {error}")
+        # As the graph does after a join: each chunk writes where its new upstream says.
+        chunk_stage.reconcile_edit_targets(stage, self)
+        self._recook_after_wiring(downstream)
+
+    def _recook_after_wiring(self, target: ChunkBase) -> None:
+        """Cook `target`'s graph to its View or Output after a wire, as the graph does.
+
+        That pass also ranks the layers by the new wiring, so a Merge's slot 0 wins. A graph
+        with neither keeps what a script makes cooking (a recook there would switch it all off).
+        """
+        _, context, _, view = self._active_view_of(target)
+        if view is None and not engine.context_has_output(self, context):
+            self._recook_active_view(target)
+            return
+        chunk_stage.recook_for_view(self.get_stage(), self, context, view)
+
+    def get_inputs(self, chunk: ChunkBase) -> list[ChunkBase]:
+        """The chunks wired into a chunk's input port, in slot order.
+
+        For a Merge that is strongest first: where two branches author the same value, the
+        one earlier in the list wins.
+
+        Args:
+            chunk: The chunk to read.
+
+        Returns:
+            The upstream chunks, slot 0 first.
+        """
+        stage = self.get_stage()
+        prim = stage.GetPrimAtPath(chunk_stage.get_chunk_prim_path(chunk))
+        sources = [str(path.GetPrimPath()) for path in chunk_stage.exec_input_connections(prim)]
+        chunks = {str(chunk_stage.get_chunk_prim_path(c)): c for c in self.get_chunks()}
+        return [chunks[path] for path in sources if path in chunks]
 
     # -- backdrops and sticky notes (usd_chunks/graph/backdrops.py) -------------------
 

@@ -225,7 +225,10 @@ def component_of(stage, path: str) -> str:
     there is. A prim inside neither stays what was clicked.
     """
     for prim in _ancestors(stage, path):
-        if Usd.ModelAPI(prim).IsKind(Kind.Tokens.component):
+        # The kind itself, not IsKind(): that also checks the model hierarchy, so a
+        # component under a parent with no group/assembly kind -- most real files -- did
+        # not count, and a click on a wheel picked the wheel rather than the car.
+        if Kind.Registry.IsA(Usd.ModelAPI(prim).GetKind(), Kind.Tokens.component):
             return str(prim.GetPath())
     for prim in _ancestors(stage, path):
         if prim.HasAuthoredReferences() or prim.HasAuthoredPayloads():
