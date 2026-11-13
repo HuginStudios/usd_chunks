@@ -28,7 +28,7 @@ from typing import Any
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 from usd_chunks import chunk_catalog, chunk_cook, chunk_naming, chunk_notice, chunk_registry, chunk_scheduler
-from usd_chunks import chunk_stage, chunk_utils
+from usd_chunks import chunk_stage, chunk_trace, chunk_utils
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKGROUP_MODULE  # noqa: F401  re-exported
 from usd_chunks.graph import backdrops, engine, layout
@@ -1517,6 +1517,55 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         sources = [str(path.GetPrimPath()) for path in chunk_stage.exec_input_connections(prim)]
         chunks = {str(chunk_stage.get_chunk_prim_path(c)): c for c in self.get_chunks()}
         return [chunks[path] for path in sources if path in chunks]
+
+    def trace_prim(self, path) -> chunk_trace.PrimTrace:
+        """Which chunks made and changed the prim at path, as the node graph shows it.
+
+        Args:
+            path: A prim path in the scene.
+
+        Returns:
+            A PrimTrace: `made_by` (the chunk that made it), `changed_by` (chunks that changed
+            it, in the order their changes apply), `via` (for a prim inside an asset a chunk
+            brought in: the asset's prim and that chunk), and `chunks` (all of them).
+
+        Raises:
+            ValueError: No prim at path.
+        """
+        prim = self.get_stage().GetPrimAtPath(Sdf.Path(str(path)))
+        if not prim:
+            raise ValueError(f"No prim at {path}.")
+        return chunk_trace.trace_prim(prim, chunk_trace.chunks_by_layer(self))
+
+    def get_chunk_stack(self, path) -> list[ChunkBase]:
+        """The chunks that made and changed the prim at path, strongest first: what
+        Usd.Prim.GetPrimStack() is for specs, for chunks.
+
+        A prim inside an asset a chunk brought in ends with that chunk. Select them in the
+        graph with set_selected_chunks(scene.get_chunk_stack(path)).
+
+        Args:
+            path: A prim path in the scene.
+
+        Returns:
+            The chunks, strongest first; empty when no chunk touched the prim.
+
+        Raises:
+            ValueError: No prim at path.
+        """
+        return list(self.trace_prim(path).stack)
+
+    def get_chunk_prims(self, chunk: ChunkBase, limit: int | None = None) -> list[Sdf.Path]:
+        """The prims a chunk made (the outermost one, such as /World/house) or changed.
+
+        Args:
+            chunk: The chunk.
+            limit: The most to return; all by default.
+
+        Returns:
+            The prim paths.
+        """
+        return chunk_trace.chunk_prims(chunk, self.get_stage(), limit if limit is not None else 1 << 62)[0]
 
     # -- backdrops and sticky notes (usd_chunks/graph/backdrops.py) -------------------
 

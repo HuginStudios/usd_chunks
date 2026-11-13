@@ -11,6 +11,14 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- **Which chunk made this prim?** Select a prim in the viewport and the node graph rings
+  the chunk that made it (*made*), each chunk that changed it (numbered in the order the
+  changes apply) and, for a prim inside a referenced asset, the chunk that brought it in.
+  A line at the foot of the graph names them, with links that jump to each node. A node's
+  right-click menu has **Select Its Prims** for the other direction. Scripts ask the same with
+  `scene.get_chunk_stack(path)` (the chunks, strongest first, like `GetPrimStack()`),
+  `scene.trace_prim(path)` and `scene.get_chunk_prims(chunk)`. Both read each chunk's own layer,
+  and the graph asks only when the selection changes.
 - Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
   Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
   Blender's USD appear in the sidebar's **Renderer** menu, next to Storm. The live view
