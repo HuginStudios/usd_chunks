@@ -247,6 +247,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- RBD Solver simulates every prim its Target Prim selects (a viewport selection, a list or
+  a glob), not just the first. The selected rigid bodies share one solve, so they land on
+  and knock into each other; each keeps its own authored mass, friction and collider
+  shape. A PointInstancer or an articulated asset among them is still solved on its own.
 - Houdini: a chunk node's chunk is named after the node, and renamed with it. Log lines,
   `USD_CHUNKS_TIMINGS` and error messages say "Grass" rather than "ScatterPoints1".
 - Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch

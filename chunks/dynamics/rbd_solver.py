@@ -838,27 +838,25 @@ def _sim_prim_gen_mj(
     lin_damping: float = 0.0,
     ang_damping: float = 0.05,
     hull_max_verts: int = 0,
-    hfield_res: int = 96,
-    collider_mode: str = "Auto",
-    collider_thickness: float = 0.0,
-    floor_drop: float = 0.0,
-    wind: tuple | list = (0.0, 0.0, 0.0),
-    turbulence: float = 0.0,
-    turb_scale: float = 100.0,
-    turb_speed: float = 1.0,
-    turb_seed: int = 0,
-    settle_only: bool = False,
-    tri_budget: int = 20000,
-    progress=None,
+    **kwargs,
 ) -> Generator[int, None, list[Gf.Matrix4d] | None]:
-    """MuJoCo rigid body simulation -- yields frame index, returns all_mats.
+    """MuJoCo rigid body simulation of one prim -- yields frame index, returns all_mats.
 
-    Uses MjSpec to build the scene programmatically from USD mesh data (no file I/O).
-    Concave static colliders use heightfields (see _build_heightfield); this
-    build of MuJoCo has no generic mesh-SDF collider.
-    MuJoCo quaternions are [w,x,y,z] matching USD -- no reordering needed.
+    The one-body case of _sim_prims_gen_mj; see there.
     """
-    # --- body frame, geometry extent ---
+    body = dict(prim=prim, translate=translate, rot=rot, mass=mass, friction=friction,
+                restitution=restitution, shape_type=shape_type)
+    results = yield from _sim_prims_gen_mj(
+        [body], collision_prims, frame_count, gravity, friction, substeps, init_vel, ang_vel,
+        start_frame, dt, up_idx, collision_margin, solver_iters, lin_damping, ang_damping,
+        hull_max_verts, **kwargs,
+    )
+    return results[0] if results else None
+
+
+def _body_frame(prim: Usd.Prim, translate: Gf.Vec3d, rot: Gf.Rotation, shape_type: str,
+                hull_max_verts: int) -> dict:
+    """Where one dynamic body sits and what its collider is made of (main thread: reads USD)."""
     # The MuJoCo body frame goes on the GEOMETRY, not on the prim's transform origin. A prim
     # from a production asset routinely has its points authored far from that origin
     # (hundreds of units away, in shared model space), and a free joint that far
@@ -886,15 +884,11 @@ def _sim_prim_gen_mj(
         body_centre = world_xf.Transform((lmin + lmax) * 0.5)
 
     # Rest pose of the body frame: the prim's own rotation, centred on its geometry. Baked
-    # results are composed against this (see the loop below), so the prim keeps its authored
-    # transform structure however far its points sit from its origin.
+    # results are composed against this (see the loop in _sim_prims_gen_mj), so the prim
+    # keeps its authored transform structure however far its points sit from its origin.
     rest_mat = Gf.Matrix4d(1.0)
     rest_mat.SetRotate(world_rot_quat)
     rest_mat.SetTranslateOnly(body_centre)
-    rest_inv = rest_mat.GetInverse()
-    # The prim's world transform without scale -- the writer re-applies the prim's own scale,
-    # so carrying it here as well would square it.
-    prim_world_rest = world_xf.RemoveScaleShear()
 
     # Body frame the geoms are expressed in (includes the user's rotation offset).
     body_mat = Gf.Matrix4d(1.0)
@@ -924,7 +918,67 @@ def _sim_prim_gen_mj(
                 hull_verts = hull_verts[::step][:hull_max_verts]
             mesh_pts = _np.array(hull_verts, dtype=_np.float32)
         else:
-            logger.warning("Convex Hull: no mesh data, falling back to Box")
+            logger.warning("Convex Hull: no mesh data on %s, falling back to Box", prim.GetPath())
+
+    gq = rot.GetQuat()
+    gi = gq.GetImaginary()
+    return dict(
+        half_extents=half_extents,
+        centre=body_centre,
+        rest_inv=rest_mat.GetInverse(),
+        # The prim's world transform without scale -- the writer re-applies the prim's own
+        # scale, so carrying it here as well would square it.
+        world_rest=world_xf.RemoveScaleShear(),
+        mesh_pts=mesh_pts,
+        # MuJoCo quaternion convention matches USD: [w, x, y, z]
+        quat=[gq.GetReal(), float(gi[0]), float(gi[1]), float(gi[2])],
+    )
+
+
+def _sim_prims_gen_mj(
+    bodies: list[dict],
+    collision_prims: list[Usd.Prim] | None,
+    frame_count: int,
+    gravity: float,
+    friction: float,
+    substeps: int,
+    init_vel: list[float],
+    ang_vel: list[float],
+    start_frame: int,
+    dt: float,
+    up_idx: int,
+    collision_margin: float,
+    solver_iters: int,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
+    hull_max_verts: int = 0,
+    hfield_res: int = 96,
+    collider_mode: str = "Auto",
+    collider_thickness: float = 0.0,
+    floor_drop: float = 0.0,
+    wind: tuple | list = (0.0, 0.0, 0.0),
+    turbulence: float = 0.0,
+    turb_scale: float = 100.0,
+    turb_speed: float = 1.0,
+    turb_seed: int = 0,
+    settle_only: bool = False,
+    tri_budget: int = 20000,
+    progress=None,
+) -> Generator[int, None, list[list[Gf.Matrix4d]] | None]:
+    """MuJoCo rigid body simulation of several prims in one world -- yields frame index,
+    returns each body's world matrices per frame, in the order of `bodies`.
+
+    Each entry of `bodies` is a dict: prim, translate, rot (its world placement), and its
+    own mass, friction, restitution and shape_type. They share one world, so they collide
+    with each other as well as with the colliders. `friction` is the colliders'.
+
+    Uses MjSpec to build the scene programmatically from USD mesh data (no file I/O).
+    Concave static colliders use heightfields (see _build_heightfield); this
+    build of MuJoCo has no generic mesh-SDF collider.
+    MuJoCo quaternions are [w,x,y,z] matching USD -- no reordering needed.
+    """
+    frames = [_body_frame(b["prim"], b["translate"], b["rot"], b["shape_type"], hull_max_verts)
+              for b in bodies]
 
     # --- build MjSpec scene ---
     sub_dt = dt / substeps  # per-step timestep
@@ -936,9 +990,9 @@ def _sim_prim_gen_mj(
 
     # --- static / kinematic collision bodies ---
     # The spec comes back with the colliders already in it, reused from the last run where
-    # nothing about them changed; the dynamic body is added below, so colliders still come
+    # nothing about them changed; the dynamic bodies are added below, so colliders still come
     # first and the body-id lookups downstream still hold.
-    dyn_radius = max(half_extents) + max(collision_margin, 0.0)
+    dyn_radius = max(max(f["half_extents"]) for f in frames) + max(collision_margin, 0.0)
     colliders = _read_colliders(collision_prims)
     poses = _collider_poses(colliders, start_frame, frame_count)
     # Everything below is MuJoCo and Gf only -- the collider build included, which on a big
@@ -965,87 +1019,104 @@ def _sim_prim_gen_mj(
     spec.option.noslip_iterations = 3
     # implicitfast integrates contacts/damping more stably than the default Euler.
     spec.option.integrator = _mj.mjtIntegrator.mjINT_IMPLICITFAST
+    if len(bodies) > 1:
+        # Several bodies resting on a collider overflow MuJoCo's default 16 MB arena ("Insufficient
+        # arena memory for the number of constraints generated"): a hull on a heightfield makes
+        # up to ~50 contacts, so eight chess pieces on their board are ~1,400 constraint rows.
+        # With few DOFs MuJoCo picks a DENSE Jacobian, and noslip then works on a matrix that
+        # grows with the square of the rows -- 19 MB for those eight pieces. A sparse Jacobian
+        # is the same solve in ~4 MB. The arena is also sized the way the instancer path sizes
+        # it, for the contacts that grow with the body count.
+        spec.option.jacobian = _mj.mjtJacobian.mjJAC_SPARSE
+        spec.memory = max(64 * 1024 * 1024, len(bodies) * 2 * 1024 * 1024)
 
-    # --- initial orientation (offset already applied above) ---
-    gq = rot.GetQuat()
-    gi = gq.GetImaginary()
-    # MuJoCo quaternion convention matches USD: [w, x, y, z]
-    init_quat_mj = [gq.GetReal(), float(gi[0]), float(gi[1]), float(gi[2])]
+    lat = [j for j in range(3) if up_idx != j]
 
-    # --- initial position: the body frame sits on the geometry centre, so the user's
-    # translate offset moves the body from there ---
-    init_pos = [float(body_centre[0]), float(body_centre[1]), float(body_centre[2])]
+    # --- dynamic bodies --- (the first keeps the names a single body always had)
+    def _name(base: str, i: int) -> str:
+        return base if i == 0 else f"{base}_{i}"
 
-    lat = [j for j in range(3) if j != up_idx]
+    for i, (b, f) in enumerate(zip(bodies, frames)):
+        half_extents = f["half_extents"]
+        centre = f["centre"]
+        dyn_body = spec.worldbody.add_body()
+        dyn_body.name = _name("dynamic", i)
+        # The body frame sits on the geometry centre.
+        dyn_body.pos = [float(centre[0]), float(centre[1]), float(centre[2])]
+        dyn_body.quat = f["quat"]
 
-    # --- dynamic body ---
-    dyn_body = spec.worldbody.add_body()
-    dyn_body.name = "dynamic"
-    dyn_body.pos = list(init_pos)
-    dyn_body.quat = init_quat_mj
+        free_jnt = dyn_body.add_joint()
+        free_jnt.type = _mj.mjtJoint.mjJNT_FREE
+        free_jnt.name = _name("free_joint", i)
 
-    free_jnt = dyn_body.add_joint()
-    free_jnt.type = _mj.mjtJoint.mjJNT_FREE
-    free_jnt.name = "free_joint"
+        dyn_geom = dyn_body.add_geom()
+        dyn_geom.friction = [b["friction"], 0.005, 0.0001]
+        dyn_geom.mass = b["mass"]
+        # Map restitution (0-1) to solref: lower dampratio = bouncier.
+        # solref[0] = timeconst (kept >= 2*timestep for stability), solref[1] = dampratio
+        dyn_geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, b["restitution"])) * 0.9]
+        # solimp: [dmin, dmax, width, midpoint, power]
+        dyn_geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+        # condim=3 (normal + sliding friction); condim=6's torsional/rolling
+        # constraints destabilise the singular contact at a bowl's concave bottom.
+        dyn_geom.condim = 3
 
-    dyn_geom = dyn_body.add_geom()
-    dyn_geom.friction = [friction, 0.005, 0.0001]
-    dyn_geom.mass = mass
-    # Map restitution (0-1) to solref: lower dampratio = bouncier.
-    # solref[0] = timeconst (kept >= 2*timestep for stability), solref[1] = dampratio
-    dyn_geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
-    # solimp: [dmin, dmax, width, midpoint, power]
-    dyn_geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
-    # condim=3 (normal + sliding friction); condim=6's torsional/rolling
-    # constraints destabilise the singular contact at a bowl's concave bottom.
-    dyn_geom.condim = 3
+        shape_type = b["shape_type"]
+        mesh_pts = f["mesh_pts"]
+        if shape_type == "Sphere":
+            sphere_r = max(half_extents[lat[0]], half_extents[lat[1]])
+            radius = max(sphere_r + collision_margin, 0.001)
+            dyn_geom.type = _mj.mjtGeom.mjGEOM_SPHERE
+            dyn_geom.size = [radius, 0.0, 0.0]
 
-    if shape_type == "Sphere":
-        sphere_r = max(half_extents[lat[0]], half_extents[lat[1]])
-        radius = max(sphere_r + collision_margin, 0.001)
-        dyn_geom.type = _mj.mjtGeom.mjGEOM_SPHERE
-        dyn_geom.size = [radius, 0.0, 0.0]
+        elif shape_type == "Convex Hull" and mesh_pts is not None:
+            hull_ma = spec.add_mesh()
+            hull_ma.name = _name("hull_dyn", i)
+            hull_ma.uservert = mesh_pts.flatten()
+            # MuJoCo builds a convex hull internally from the vertex cloud --
+            # maxhullvert caps the output vertex count for the collision hull.
+            hull_ma.maxhullvert = max(hull_max_verts, 64) if hull_max_verts > 0 else 1024
+            if collision_margin != 0.0:
+                max_ext = max(half_extents) if max(half_extents) > 1e-6 else 1.0
+                ms = (max_ext + collision_margin) / max_ext
+                hull_ma.scale = [ms, ms, ms]
+            dyn_geom.type = _mj.mjtGeom.mjGEOM_MESH
+            dyn_geom.meshname = hull_ma.name
 
-    elif shape_type == "Convex Hull" and mesh_pts is not None:
-        hull_ma = spec.add_mesh()
-        hull_ma.name = "hull_dyn"
-        hull_ma.uservert = mesh_pts.flatten()
-        # MuJoCo builds a convex hull internally from the vertex cloud --
-        # maxhullvert caps the output vertex count for the collision hull.
-        hull_ma.maxhullvert = max(hull_max_verts, 64) if hull_max_verts > 0 else 1024
-        if collision_margin != 0.0:
-            max_ext = max(half_extents) if max(half_extents) > 1e-6 else 1.0
-            ms = (max_ext + collision_margin) / max_ext
-            hull_ma.scale = [ms, ms, ms]
-        dyn_geom.type = _mj.mjtGeom.mjGEOM_MESH
-        dyn_geom.meshname = "hull_dyn"
-
-    else:
-        adj = [max(h + collision_margin, 0.001) for h in half_extents]
-        dyn_geom.type = _mj.mjtGeom.mjGEOM_BOX
-        dyn_geom.size = adj
+        else:
+            adj = [max(h + collision_margin, 0.001) for h in half_extents]
+            dyn_geom.type = _mj.mjtGeom.mjGEOM_BOX
+            dyn_geom.size = adj
 
     # --- compile ---
     try:
         model = spec.compile()
+        if len(bodies) > 1:
+            # Two targets that already overlap at frame 0 (pieces modelled touching, a prop
+            # sunk into its neighbour) would be shoved apart by a separating impulse and
+            # launched. Leave only those pairs out; targets that meet later still collide.
+            names = {_name("dynamic", i) for i in range(len(bodies))}
+            if _exclude_initial_overlaps(spec, model, only=names):
+                model = spec.compile()
     except Exception as _ce:
         logger.warning("Scene compile failed: %s", _ce)
         return
 
     data = _mj.MjData(model)
 
-    # Apply linear/angular damping on the freejoint DOFs directly on the compiled model.
-    # DOFs 0-2 are translational, 3-5 are rotational.
-    jnt_id = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, "free_joint")
-    if jnt_id >= 0:
-        dof0 = model.jnt_dofadr[jnt_id]
-        model.dof_damping[dof0 : dof0 + 3] = lin_damping
-        model.dof_damping[dof0 + 3 : dof0 + 6] = ang_damping
-        # Set initial velocity
-        data.qvel[dof0 : dof0 + 3] = init_vel[:3]
-        data.qvel[dof0 + 3 : dof0 + 6] = ang_vel[:3]
-
-    bid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, "dynamic")
+    bids = []
+    for i in range(len(bodies)):
+        # Apply linear/angular damping on the freejoint DOFs directly on the compiled model.
+        # DOFs 0-2 are translational, 3-5 are rotational.
+        jnt_id = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, _name("free_joint", i))
+        if jnt_id >= 0:
+            dof0 = model.jnt_dofadr[jnt_id]
+            model.dof_damping[dof0 : dof0 + 3] = lin_damping
+            model.dof_damping[dof0 + 3 : dof0 + 6] = ang_damping
+            # Set initial velocity
+            data.qvel[dof0 : dof0 + 3] = init_vel[:3]
+            data.qvel[dof0 + 3 : dof0 + 6] = ang_vel[:3]
+        bids.append(_mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, _name("dynamic", i)))
 
     # Resolve mocap body ids for kinematic collision updates
     mocap_ids = []
@@ -1054,61 +1125,59 @@ def _sim_prim_gen_mj(
         mid = int(model.body_mocapid[mbid])
         mocap_ids.append((mid, cprim))
 
-    logger.debug("Compiled - %d bodies, %d geoms, shape=%s", model.nbody, model.ngeom, shape_type)
+    logger.debug("Compiled - %d bodies, %d geoms, %d dynamic", model.nbody, model.ngeom, len(bodies))
 
     # Initialize forward kinematics so xpos/xquat are valid on frame 0
     _mj.mj_forward(model, data)
 
-    # --- Debug: write collision geoms to USD session layer for visualization ---
+    def _world_mats():
+        mats = []
+        for bid, f in zip(bids, frames):
+            pos = data.xpos[bid]
+            qmj = data.xquat[bid]  # [w, x, y, z] -- same convention as USD, no reordering needed
+            body_now = Gf.Matrix4d()
+            body_now.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
+            body_now.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+            # The body frame sits on the geometry, not on the prim's origin, so the prim's
+            # world transform is its rest pose carried by the body's rigid motion since frame 0:
+            #   W(t) = W(0) . B(0)^-1 . B(t)
+            # This is exact wherever the prim's origin happens to be relative to its points,
+            # and collapses to plain B(t) when they coincide.
+            mats.append(f["world_rest"] * f["rest_inv"] * body_now)
+        return mats
+
     # --- simulation loop ---
     phases = _force_phases(turb_seed)
     sim_t = 0.0
-    all_mats = []
+    results: list[list[Gf.Matrix4d]] = [[] for _ in bodies]
     tracks = _mocap_tracks(mocap_ids, poses)
     for frame in range(frame_count):
         _set_mocap(data, tracks, frame)
 
-        # Sample state before stepping (frame N shows where the body was at the start of step N)
-        pos = data.xpos[bid]
-        qmj = data.xquat[bid]  # [w, x, y, z] -- same convention as USD, no reordering needed
-
-        body_now = Gf.Matrix4d()
-        body_now.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
-        body_now.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
-        # The body frame sits on the geometry, not on the prim's origin, so the prim's world
-        # transform is its rest pose carried by the body's rigid motion since frame 0:
-        #   W(t) = W(0) . B(0)^-1 . B(t)
-        # This is exact wherever the prim's origin happens to be relative to its points, and
-        # collapses to plain B(t) when they coincide.
-        world_mat = prim_world_rest * rest_inv * body_now
-        all_mats.append(world_mat)
+        # Sample state before stepping (frame N shows where the bodies were at the start of step N)
+        for mats, mat in zip(results, _world_mats()):
+            mats.append(mat)
 
         for _ in range(substeps):
-            _apply_wind(model, data, (bid,), wind, turbulence, turb_scale, turb_speed, phases, sim_t)
+            _apply_wind(model, data, bids, wind, turbulence, turb_scale, turb_speed, phases, sim_t)
             _mj.mj_step(model, data)
             sim_t += sub_dt
 
-        # Update debug collision geoms for this frame
         yield frame
 
     if settle_only:
-        # Same contract as the articulated path: run on until the body has actually stopped,
-        # then append that pose as the final entry, which is the one _write_prim_results
-        # takes for a settle.
+        # Same contract as the articulated path: run on until the bodies have actually
+        # stopped, then append that pose as the final entry, which is the one
+        # _write_prim_results takes for a settle.
         sim_t = _step_until_at_rest(
             model, data, substeps, sub_dt, sim_t,
-            lambda t: _apply_wind(model, data, (bid,), wind, turbulence,
+            lambda t: _apply_wind(model, data, bids, wind, turbulence,
                                   turb_scale, turb_speed, phases, t),
         )
-        pos = data.xpos[bid]
-        qmj = data.xquat[bid]
-        body_now = Gf.Matrix4d()
-        body_now.SetRotate(Gf.Quatd(float(qmj[0]), float(qmj[1]), float(qmj[2]), float(qmj[3])))
-        body_now.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
-        all_mats.append(prim_world_rest * rest_inv * body_now)
+        for mats, mat in zip(results, _world_mats()):
+            mats.append(mat)
 
-    return all_mats
-
+    return results
 
 def _bake_scale(prim: Usd.Prim, xform_cache) -> tuple:
     """The scale the bake has to re-apply: the prim's WORLD scale, not its local one.
@@ -1262,10 +1331,39 @@ def _prim_steps(
     collision_prims: list[Usd.Prim] | None = None,
     friction: float = 0.5,
     restitution: float = 0.1,
-    lin_damping: float = 0.0,
-    ang_damping: float = 0.05,
     scale_xyz: tuple[float, float, float] | None = None,
     shape_type: str = "Convex Hull",
+    **kwargs,
+) -> list[Gf.Matrix4d] | None:
+    """Run MuJoCo simulation of one prim: the one-target case of _prims_steps.
+
+    `node` is the chunk itself, needed only so the bake lands in this chunk's own named
+    xformOp rather than the shared one -- see _write_prim_results.
+    """
+    target = dict(prim=prim, parent_world_inv=parent_world_inv, scale_xyz=scale_xyz, mass=mass,
+                  friction=friction, restitution=restitution, shape_type=shape_type)
+    results = yield from _prims_steps(
+        stage, [target], layer, frame_count, fps, gravity, substeps, init_vel, ang_vel,
+        start_frame, collision_prims=collision_prims, friction=friction, **kwargs,
+    )
+    return results[0] if results else None
+
+
+def _prims_steps(
+    stage: Usd.Stage,
+    targets: list[dict],
+    layer: Sdf.Layer,
+    frame_count: int,
+    fps: float,
+    gravity: float,
+    substeps: int,
+    init_vel: list[float],
+    ang_vel: list[float],
+    start_frame: int,
+    collision_prims: list[Usd.Prim] | None = None,
+    friction: float = 0.5,
+    lin_damping: float = 0.0,
+    ang_damping: float = 0.05,
     collision_margin: float = 0.0,
     solver_iters: int = 30,
     hfield_res: int = 96,
@@ -1281,48 +1379,49 @@ def _prim_steps(
     node=None,
     settle_only: bool = False,
     progress=None,
-) -> list[Gf.Matrix4d] | None:
-    """Run MuJoCo simulation.
+) -> list[list[Gf.Matrix4d]] | None:
+    """Run one MuJoCo simulation of several prims together and bake each.
 
-    `node` is the chunk itself, needed only so the bake lands in this chunk's own named
-    xformOp rather than the shared one -- see _write_prim_results.
+    Each target is a dict: prim, parent_world_inv, scale_xyz, and its own mass, friction,
+    restitution and shape_type. They share one world, so they collide with each other.
+    `friction` is the colliders'. Returns each target's world matrices per frame.
     """
     if not _HAS_MUJOCO:
         logger.warning("mujoco not installed. Run: pip install mujoco")
-        return
+        return None
 
+    # Paths, not prims, for the write: a prim handle can expire while the solve runs.
+    paths = [t["prim"].GetPath() for t in targets]
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
-    world_xf = xform_cache.GetLocalToWorldTransform(prim)
-    translate = world_xf.ExtractTranslation()
-    # Strip scale/shear first: ExtractRotation() on a scaled matrix returns
-    # garbage (e.g. a 100x-scaled -90deg matrix decodes as a 360deg identity),
-    # which would bake the wrong orientation onto the prim and desync the
-    # collision shape from the visual mesh.
-    rot = world_xf.RemoveScaleShear().ExtractRotation()
+    bodies = []
+    for t in targets:
+        world_xf = xform_cache.GetLocalToWorldTransform(t["prim"])
+        # Strip scale/shear first: ExtractRotation() on a scaled matrix returns
+        # garbage (e.g. a 100x-scaled -90deg matrix decodes as a 360deg identity),
+        # which would bake the wrong orientation onto the prim and desync the
+        # collision shape from the visual mesh.
+        bodies.append(dict(
+            t,
+            translate=world_xf.ExtractTranslation(),
+            rot=world_xf.RemoveScaleShear().ExtractRotation(),
+        ))
 
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
-    dt = 1.0 / fps
 
-    # Run the working MuJoCo simulation generator
-    gen = _sim_prim_gen_mj(
-        prim,
+    results = yield from _sim_prims_gen_mj(
+        bodies,
         collision_prims,
         frame_count,
         gravity,
         friction,
-        restitution,
-        mass,
         substeps,
         init_vel,
         ang_vel,
         start_frame,
-        dt,
+        1.0 / fps,
         up_idx,
-        shape_type,
         collision_margin,
         solver_iters,
-        translate,
-        rot,
         lin_damping,
         ang_damping,
         hfield_res=hfield_res,
@@ -1342,21 +1441,21 @@ def _prim_steps(
         tri_budget=tri_budget,
         progress=progress,
     )
-
-    all_mats = yield from gen
     yield sim_bake.MAIN
 
-    if not all_mats:
+    if not results:
         logger.warning("Simulation produced no results")
-        return
+        return None
 
-    # Write results using the proven writer
-    _write_prim_results(stage, prim, layer, parent_world_inv, all_mats, start_frame, scale_xyz,
-                        node, settle_only)
+    # Write results using the proven writer. The prims are looked up again: the stage may
+    # have changed while the solve ran on a worker.
+    for t, path, all_mats in zip(targets, paths, results):
+        prim = stage.GetPrimAtPath(path)
+        _write_prim_results(stage, prim, layer, t["parent_world_inv"], all_mats, start_frame,
+                            t["scale_xyz"], node, settle_only)
     if not settle_only:
-        logger.debug("Baked %d frames on %s", frame_count, prim.GetPath())
-    return all_mats
-
+        logger.debug("Baked %d frames on %d prims", frame_count, len(targets))
+    return results
 
 def simulate_mujoco_articulated(*args, **kwargs) -> dict | None:
     """Simulate an articulated asset and bake a transform per link, straight through.
@@ -2785,7 +2884,7 @@ def build_articulated_spec(
     return model, data, ordered
 
 
-def _exclude_initial_overlaps(spec, model) -> int:
+def _exclude_initial_overlaps(spec, model, only=None) -> int:
     """Exclude body pairs that are already interpenetrating at frame 0.
 
     MuJoCo filters contacts between a body and its own parent, which covers adjacent links.
@@ -2802,6 +2901,8 @@ def _exclude_initial_overlaps(spec, model) -> int:
 
     So: compile, look at the contacts that exist before anything has moved, and exclude only
     those. Pairs that meet later still collide.
+
+    `only`, a set of body names, limits it to pairs of those bodies.
     """
     data = _mj.MjData(model)
     _mj.mj_forward(model, data)
@@ -2817,7 +2918,7 @@ def _exclude_initial_overlaps(spec, model) -> int:
             continue  # same body, or against the world: both are meaningful
         n1 = model.body(b1).name
         n2 = model.body(b2).name
-        if n1 and n2:
+        if n1 and n2 and (only is None or (n1 in only and n2 in only)):
             pairs.add(tuple(sorted((n1, n2))))
 
     for first, second in sorted(pairs):
@@ -2985,9 +3086,20 @@ def _run(owner, notice, sender) -> None:
     # stayed empty). Collision prims are read-only -- never written back through -- so they're
     # still safely scoped through get_upstream_stage: a downstream chunk's edit to a collision
     # prim can't leak into the simulation, without risking the same silent-write-loss bug.
-    prim = stage.GetPrimAtPath(prim_paths[0])
-    if not prim.IsValid() or prim.GetPath() == Sdf.Path("/"):
+    #
+    # Every prim the param selects is simulated. Plain rigid bodies all go into ONE solve, so
+    # they collide with each other as well as with the colliders. A PointInstancer (whose
+    # instances already share a solve) and an articulated asset keep a solve of their own.
+    targets = []
+    for path in prim_paths:
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid() and prim.GetPath() != Sdf.Path("/") and prim.GetPath() not in targets:
+            targets.append(prim.GetPath())
+    if not targets:
         return
+    # Held by the bake below, not just by this function: a Usd.Prim does not keep its stage
+    # alive, and in a UI the bake runs on after _run returns. The collision prims then
+    # expired, and the bake failed with "Invalid range starting with expired prim".
     scratch_stage = chunk_stage.get_upstream_stage(stage, owner.get_scene(), _chunk)
     collision_prims = _parse_collision_prims(collision_path_value, scratch_stage)
     collider_mode = _chunk.get_param("collider_mode", is_s).value
@@ -3005,153 +3117,204 @@ def _run(owner, notice, sender) -> None:
         ctx.status(f"building the collider: {done:,} of {total:,} triangles"
                    + (f"\n{collider_warning}" if collider_warning else ""))
 
-    # A sim-ready asset states its own mass, contact properties and collider approximation.
-    # Prefer those; the params stay as the fallback for geometry that says nothing.
-    authored = _authored_physics(
-        stage,
-        prim,
-        dict(
-            gravity=gravity,
-            mass=mass,
-            friction=friction,
-            restitution=restitution,
-            shape_type=shape_type,
-        ),
-    )
-    gravity = authored["gravity"]
-    mass = authored["mass"]
-    friction = authored["friction"]
-    restitution = authored["restitution"]
-    shape_type = authored["shape_type"]
-    if authored["kinematic"]:
-        logger.debug("target prim is a kinematic rigid body -- driven, not solved")
+    collision_margin = _chunk.get_param("collision_margin", is_f).value
+    hfield_res = _chunk.get_param("hfield_res", is_i).value
+    collider_thickness = _chunk.get_param("collider_thickness", is_f).value
+    defaults = dict(gravity=gravity, mass=mass, friction=friction, restitution=restitution,
+                    shape_type=shape_type)
 
-    # An asset that carries UsdPhysics joints is a mechanism, not a single rigid body:
-    # simulate it as a kinematic tree so a door or drawer keeps its own motion. Assets
-    # with no joints fall through to the paths below unchanged.
-    articulations = read_articulations(prim)
-    if articulations:
-        steps = _articulated_steps(
+    # Sorted into jobs now, before anything is baked: every target's starting state is read
+    # off the stage as it is, not as an earlier job left it.
+    rigid: list[dict] = []
+    jobs: list[tuple] = []
+    for path in targets:
+        prim = stage.GetPrimAtPath(path)
+        # A sim-ready asset states its own mass, contact properties and collider approximation.
+        # Prefer those; the params stay as the fallback for geometry that says nothing.
+        authored = _authored_physics(stage, prim, defaults)
+        if authored["kinematic"]:
+            logger.debug("target prim %s is a kinematic rigid body -- driven, not solved", path)
+        # An asset that carries UsdPhysics joints is a mechanism, not a single rigid body:
+        # simulate it as a kinematic tree so a door or drawer keeps its own motion. Assets
+        # with no joints fall through to the paths below unchanged.
+        if read_articulations(prim):
+            jobs.append(("articulated", path, authored))
+        elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
+            jobs.append(("instancer", path, authored))
+        else:
+            xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+            parent = prim.GetParent()
+            parent_world_inv = Gf.Matrix4d(1.0)
+            if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+                parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
+            rigid.append(dict(
+                path=path,
+                parent_world_inv=parent_world_inv,
+                scale_xyz=_bake_scale(prim, xform_cache),
+                mass=authored["mass"],
+                friction=authored["friction"],
+                restitution=authored["restitution"],
+                shape_type=authored["shape_type"],
+                gravity=authored["gravity"],
+            ))
+    if rigid:
+        jobs.insert(0, ("rigid", None, None))
+
+    def rigid_steps():
+        """The plain rigid bodies, in one world together."""
+        bodies = []
+        for body in rigid:
+            # Looked up by path: a handle taken while sorting can expire before the bake.
+            prim = stage.GetPrimAtPath(body["path"])
+            if prim and prim.IsValid():
+                bodies.append(dict(body, prim=prim))
+        if not bodies:
+            return iter(())
+        return _prims_steps(
             stage,
-            articulations,
+            bodies,
             layer,
             frame_count,
             fps,
-            gravity,
-            mass,
+            # The stage's gravity, which _authored_physics reads off the scene, not the body.
+            bodies[0]["gravity"],
             substeps,
             init_vel,
             ang_vel,
             start_frame,
             collision_prims=collision_prims,
-            friction=friction,
-            restitution=restitution,
-            solver_iters=30,
-            hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=collider_mode,
-            collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
-            floor_drop=floor_drop,
+            # The colliders' friction: the first body's, which is what a single target used.
+            friction=bodies[0]["friction"],
             lin_damping=lin_damping,
             ang_damping=ang_damping,
-            collision_margin=_chunk.get_param("collision_margin", is_f).value,
-            settle_only=settle_only,
+            collision_margin=collision_margin,
+            solver_iters=30,
+            hfield_res=hfield_res,
+            collider_mode=collider_mode,
+            collider_thickness=collider_thickness,
+            tri_budget=tri_budget,
+            floor_drop=floor_drop,
             node=_chunk,
+            settle_only=settle_only,
             **forces,
             progress=progress,
         )
-    elif UsdGeom.PointInstancer(prim).GetPositionsAttr().HasValue():
-        steps = _instancer_steps(
+
+    def own_steps(kind, prim, authored):
+        """An instancer's or an articulated asset's steps: a solve of its own."""
+        if kind == "articulated":
+            return _articulated_steps(
+                stage,
+                read_articulations(prim),
+                layer,
+                frame_count,
+                fps,
+                authored["gravity"],
+                authored["mass"],
+                substeps,
+                init_vel,
+                ang_vel,
+                start_frame,
+                collision_prims=collision_prims,
+                friction=authored["friction"],
+                restitution=authored["restitution"],
+                solver_iters=30,
+                hfield_res=hfield_res,
+                collider_mode=collider_mode,
+                collider_thickness=collider_thickness,
+                floor_drop=floor_drop,
+                lin_damping=lin_damping,
+                ang_damping=ang_damping,
+                collision_margin=collision_margin,
+                settle_only=settle_only,
+                node=_chunk,
+                **forces,
+                progress=progress,
+            )
+        return _instancer_steps(
             stage,
             prim,
             layer,
             collision_prims,
             frame_count,
             fps,
-            gravity,
-            mass,
+            authored["gravity"],
+            authored["mass"],
             substeps,
             init_vel,
             ang_vel,
             start_frame,
-            friction=friction,
-            restitution=restitution,
+            friction=authored["friction"],
+            restitution=authored["restitution"],
             lin_damping=lin_damping,
             ang_damping=ang_damping,
-            shape_type=shape_type,
-            collision_margin=_chunk.get_param("collision_margin", is_f).value,
+            shape_type=authored["shape_type"],
+            collision_margin=collision_margin,
             solver_iters=30,
-            hfield_res=_chunk.get_param("hfield_res", is_i).value,
+            hfield_res=hfield_res,
             collider_mode=collider_mode,
-            collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
+            collider_thickness=collider_thickness,
             tri_budget=tri_budget,
             floor_drop=floor_drop,
             settle_only=settle_only,
             **forces,
             progress=progress,
         )
-    else:
-        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
-        parent = prim.GetParent()
-        parent_world_inv = Gf.Matrix4d(1.0)
-        if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
-            parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
-
-        scale_xyz = _bake_scale(prim, xform_cache)
-
-        steps = _prim_steps(
-            stage,
-            prim,
-            layer,
-            frame_count,
-            fps,
-            gravity,
-            mass,
-            substeps,
-            init_vel,
-            ang_vel,
-            start_frame,
-            parent_world_inv,
-            collision_prims=collision_prims,
-            friction=friction,
-            restitution=restitution,
-            lin_damping=lin_damping,
-            ang_damping=ang_damping,
-            scale_xyz=scale_xyz,
-            shape_type=shape_type,
-            collision_margin=_chunk.get_param("collision_margin", is_f).value,
-            solver_iters=30,
-            hfield_res=_chunk.get_param("hfield_res", is_i).value,
-            collider_mode=collider_mode,
-            collider_thickness=_chunk.get_param("collider_thickness", is_f).value,
-            tri_budget=tri_budget,
-            floor_drop=floor_drop,
-            node=_chunk,
-            settle_only=settle_only,
-            **forces,
-            progress=progress,
-        )
-
-    def bake(ctx):
-        """The steps, with their frames as progress. The layer is cleared again just before
-        the result is written: a cook while the solve ran may have put the kept bake back."""
-        box["ctx"] = ctx
-        if collider_warning:
-            ctx.status(collider_warning)
-        while True:
-            try:
-                step = next(steps)
-            except StopIteration as e:
-                return e.value
-            if isinstance(step, int):
-                ctx.progress(step, frame_count)
-            yield step
-            if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
-                lreg.clear_layer(layer.identifier)
 
     # Read now, not in finish: finish moves the bake's layer to the top of the stack, which
-    # recomposes the stage and expires `prim`. Asking it for its name then raised -- every
+    # recomposes the stage and expires the prims. Asking one for its name then raised -- every
     # time a script reopened a saved RBD scene, since the bake now runs during the load.
-    prim_name = prim.GetName()
+    names = [path.name for path in targets]
+    total_frames = frame_count * len(jobs)
+
+    def bake(ctx):
+        """Each job's steps in turn, with their frames as progress.
+
+        The layer is cleared again just before a result is written: a cook while the solve ran
+        may have put the kept bake back. The jobs already baked are put back after it.
+        """
+        box["ctx"] = ctx
+        # Keeps the collision prims' stage alive for as long as the bake reads them.
+        box["scratch_stage"] = scratch_stage
+        if collider_warning:
+            ctx.status(collider_warning)
+        done_layer = None
+        for index, (kind, path, authored) in enumerate(jobs):
+            if kind == "rigid":
+                if len(jobs) > 1 or len(rigid) > 1:
+                    ctx.status(f"simulating {len(rigid)} rigid bodies together")
+                steps = rigid_steps()
+            else:
+                # Looked up again here, on the main thread: the jobs before it wrote to the stage.
+                prim = stage.GetPrimAtPath(path)
+                if not prim or not prim.IsValid():
+                    continue
+                if len(jobs) > 1:
+                    ctx.status(f"simulating {path.name} ({index + 1} of {len(jobs)})")
+                steps = own_steps(kind, prim, authored)
+            offset = index * frame_count
+            while True:
+                try:
+                    step = next(steps)
+                except StopIteration:
+                    break
+                if isinstance(step, int):
+                    ctx.progress(offset + step, total_frames)
+                yield step
+                if step is sim_bake.MAIN and (lreg := chunk.get_layer_manager()):
+                    lreg.clear_layer(layer.identifier)
+                    if done_layer is not None:
+                        layer.TransferContent(done_layer)
+            # Back on the main thread here: every step generator writes its result after a MAIN.
+            if index < len(jobs) - 1:
+                done_layer = Sdf.Layer.CreateAnonymous("rbd_solver_done")
+                done_layer.TransferContent(layer)
+
+    if len(names) == 1:
+        target_text = names[0]
+    else:
+        shown = ", ".join(names[:3]) + (f", +{len(names) - 3} more" if len(names) > 3 else "")
+        target_text = f"{len(names)} prims ({shown})"
 
     def finish(_result):
         if _chunk.get_edit_context() is None:
@@ -3166,8 +3329,8 @@ def _run(owner, notice, sender) -> None:
                 scene.refresh_timeline(start_frame, start_frame + frame_count - 1)
         except Exception:
             pass
-        _report(_chunk, f"settled {prim_name}" if settle_only else
-                f"baked {frame_count} frames on {prim_name}"
+        _report(_chunk, f"settled {target_text}" if settle_only else
+                f"baked {frame_count} frames on {target_text}"
                 + (f"\n{collider_warning}" if collider_warning else ""))
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
@@ -3509,7 +3672,8 @@ def main() -> chunk.Chunk:
             "prim_path",
             "Target Prim",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-            tooltip="The prim to simulate — a single mesh, or a PointInstancer to simulate every instance.",
+            tooltip="The prims to simulate — meshes, or PointInstancers to simulate every instance. "
+            "Selected rigid bodies are solved together, so they collide with each other.",
         )
     )
 
@@ -3933,8 +4097,9 @@ def config() -> chunk.DefaultConfig:
             """
         Simulates rigid bodies falling and colliding (MuJoCo) and bakes them as animation.
 
-        Bakes a MuJoCo rigid-body simulation onto the target prim — or every instance
-        of a PointInstancer — as keyframed animation over the frame range. Add colliders
+        Bakes a MuJoCo rigid-body simulation onto each target prim — or every instance
+        of a PointInstancer — as keyframed animation over the frame range. Several
+        selected prims are solved together and collide with each other. Add colliders
         for objects to rest on or in (a heightfield is built for concave shapes like
         bowls). Requires the 'mujoco' package.
         """
