@@ -52,7 +52,7 @@ reinstall. The same setup works for every Houdini version that runs Python 3.11.
   Blockout Box's faces snap to its Snap step. Its translate gizmos become move handles.
   Drags undo like any Houdini handle. Other gizmo types (rotate, scale, transform,
   scalar, brush) have no handle in Houdini yet, so use the parms for those.
-- **Networks travel between apps.** Tab > usdchunks > **Import Network...** loads a network
+- **Networks travel between apps.** Tab > usdchunks > **Chunk Import...** loads a network
   saved in usdview or Blender. A **Chunkgroup** node's **Export Network...** button writes
   one back.
 

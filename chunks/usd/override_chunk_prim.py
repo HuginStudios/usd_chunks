@@ -100,9 +100,11 @@ def _build(node) -> None:
     # Only the first build reads this chunk's saved changes: after a re-point they were for
     # the old target.
     first = not hasattr(node, "_ocp_built_for")
-    node._ocp_built_for = path
     if not stage or not path:
+        # Nothing to read the target from yet -- Houdini has a stage only while a node
+        # cooks, and the target is set between cooks -- so the cook builds it.
         return
+    node._ocp_built_for = path
     prim = stage.GetPrimAtPath(Sdf.Path(path))
     type_attr = prim.GetAttribute(_CHUNK_TYPE) if prim.IsValid() else None
     module_name = type_attr.Get() if type_attr else None

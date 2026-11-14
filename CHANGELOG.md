@@ -243,6 +243,7 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Houdini: Tab > usdchunks > **Import Network...** is now **Chunk Import...**.
 - Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
   forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
   tested against the points already kept instead of against each other.
@@ -400,6 +401,18 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Override Chunk Prim showed none of its target's params in Houdini: the target is set
+  between cooks, when there is no stage to read them from, and the cook then took them as
+  built. The cook builds them now.
+- Houdini: an imported chunkgroup's own nodes (`space_in`, `space_out` and its output)
+  sit by its chunks, a row above and below them, instead of far away where Houdini puts a
+  new node. A network drawn so it doesn't read top to bottom (an Output chunk beside the
+  chain's head, its wire running back up) is laid out by Houdini as one chain instead.
+- Houdini: a pip install of usd_chunks now includes the viewport handles'
+  `viewer_states` folder.
+- Houdini: a box handle shrank to a point at the origin when the chunkgroup had an input,
+  such as a Sublayer. Reading the input's stage swapped out the node's stage before the
+  handle was placed on it.
 - Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
   nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
   the prim it reads existed was cooked again inside a later node's cook, on that node's

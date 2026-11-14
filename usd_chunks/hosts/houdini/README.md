@@ -31,7 +31,7 @@ A **chunkgroup node** (TAB > usdchunks > Core > Chunkgroup) keeps a usd_chunks n
 contained: chunk nodes inside it, the group's public params as parms on it. Dive in to edit
 it like any subnet. It is also the unit that travels between hosts.
 
-**Import** -- TAB > usdchunks > **Import Network...** reads a saved network (e.g.
+**Import** -- TAB > usdchunks > **Chunk Import...** reads a saved network (e.g.
 `swedishhouse.usda`) into the current LOP network:
 
 - a chunkgroup becomes a chunkgroup node, and its public params parms on it;
