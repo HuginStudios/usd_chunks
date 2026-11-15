@@ -4,6 +4,7 @@ CreateScript	CreateScript
 InternalFileOptions	InternalFileOptions
 OnDeleted	OnDeleted
 ExtraFileOptions	ExtraFileOptions
+DefaultState	DefaultState
 Comment	Comment
 TypePropertiesOptions	TypePropertiesOptions
 Contents	Contents
