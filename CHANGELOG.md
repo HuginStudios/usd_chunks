@@ -410,6 +410,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A network saved before a chunk changed its viewport handles (a `gizmos(node)` hook whose
+  handle moved to another anchor, or became a flat box) opened with the old handles: the
+  records it was saved with were only brought up to date when an anchor param changed or a
+  list was resized. Now each such chunk's handle records are brought in line with what it
+  declares after its first cook.
+
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.
