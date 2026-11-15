@@ -31,9 +31,10 @@ from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.graph import layout as chunk_graph_layout
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_trace
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt import node_theme, window_state
+from usd_chunks.frontends.qt import node_theme, prim_trace, window_state
 from usd_chunks.frontends.qt.backdrop_item import BackdropItem, BackdropTextPopup
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, GraphItemEntry, LabeledWidget, NODE_GRAPH_ITEMS, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
@@ -295,6 +296,11 @@ def _get_proxy_sink() -> QtWidgets.QWidget:
 
 #: Inset of the floating context path from the graph viewport's top-left corner.
 _BREADCRUMB_MARGIN = 6
+#: The most selected prims traced at once (ChunkGraphScene.trace_selection): past this a
+#: marquee over a forest names the same chunks anyway.
+_TRACE_MOST_PRIMS = 50
+#: Narrower than this beside the Output badge, the trace line goes above it, the full width.
+_TRACE_LINE_MIN_BESIDE = 300
 #: Where the Auto-connect checkbox remembers its state between sessions.
 _AUTO_CONNECT_KEY = "graph/autoConnect"
 #: Space between the Auto-connect checkbox and the Output badge beside it.
@@ -1918,6 +1924,19 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             self._height,
         )
 
+    def set_trace(self, role: str | None, tag: str = "") -> None:
+        """Ring the node as one that made ("made"), changed ("changed") or brought in ("via")
+        the prims selected in the viewport, with tag on it; None takes the ring off."""
+        mark = getattr(self, "_trace_mark", None)
+        if role is None:
+            if mark is not None:
+                mark.hide()
+            return
+        if mark is None:
+            mark = self._trace_mark = prim_trace.TraceMark(self)
+        mark.set(role, tag, QtCore.QRectF(0, 0, self._width, self._height))
+        mark.show()
+
     def _menu_button_rect(self) -> QtCore.QRectF:
         """Where the header's three-dot menu button is, in node coordinates."""
         return QtCore.QRectF(self._width - 26, 6, 20, min(_NODE_HEADER_H, self._height) - 12)
@@ -2800,6 +2819,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage: Usd.Stage | None = None
         self._scene_sender: chunk_scene.SceneSender | None = None
         self._nodes: dict[str, ChunkNodeItem] = {}  # prim path → node
+        #: Who made and changed the prims selected in the viewport (chunk_trace), and the
+        #: nodes ringed for it -- see trace_selection.
+        self.traces: list[chunk_trace.PrimTrace] = []
+        self._traced: set[str] = set()
+        self._trace_timer: QtCore.QTimer | None = None
         self._backdrops: dict[str, BackdropItem] = {}  # prim path → backdrop or sticky note
         # Source prim path -> names of its outputs that some node in the scene is wired to.
         # Built on demand by fed_outputs and dropped whenever a wire or the node set can
@@ -2870,6 +2894,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage_listeners[:] = [
             NoticeConnection(self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True),
             NoticeConnection(self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True),
+            NoticeConnection(self._schedule_trace, ChunkNoticeAlias.PRIM_SELECTION_CHANGED, globally=True),
         ]
 
         self._rebuild_nodes()
@@ -2878,6 +2903,51 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         for view in self.views():
             if hasattr(view, "refresh_breadcrumb"):
                 view.refresh_breadcrumb()
+
+    def _schedule_trace(self, *_notice) -> None:
+        """Trace the viewport selection once things settle: a marquee selects in a burst."""
+        if self._trace_timer is None:
+            self._trace_timer = QtCore.QTimer(self)
+            self._trace_timer.setSingleShot(True)
+            self._trace_timer.setInterval(60)
+            self._trace_timer.timeout.connect(self.trace_selection)
+        self._trace_timer.start()
+
+    def trace_selection(self) -> None:
+        """Ring the nodes that made or changed the prims selected in the viewport, and have
+        the views name them.
+
+        Reads only the selected prims' spec stacks (chunk_trace), and only now: a selection
+        change costs a few lookups, and nothing at all happens while cooking or drawing.
+        """
+        sender = self._scene_sender
+        prims = [p for p in (sender.get_selected_prims() or []) if p and p.IsValid()] if sender else []
+        prims = prims[:_TRACE_MOST_PRIMS]
+        by_layer = chunk_trace.chunks_by_layer() if prims else {}
+        self.traces = [chunk_trace.trace_prim(p, by_layer) for p in prims]
+        marked: dict[str, tuple[str, str]] = {}
+        for chunk, role, tag in prim_trace.roles(self.traces):
+            path = self._node_path_for(chunk)
+            if path is not None and path not in marked:
+                marked[path] = (role, tag)
+        for path in self._traced - set(marked):
+            if (node := self._nodes.get(path)) is not None:
+                node.set_trace(None)
+        for path, (role, tag) in marked.items():
+            self._nodes[path].set_trace(role, tag)
+        self._traced = set(marked)
+        for view in self.views():
+            if hasattr(view, "show_trace"):
+                view.show_trace(self.traces)
+
+    def _node_path_for(self, chunk) -> str | None:
+        """The node standing for chunk in this graph: its own, or the group it sits inside."""
+        path = Sdf.Path(str(chunk_stage.get_chunk_prim_path(chunk)))
+        while not path.isEmpty and path != Sdf.Path.absoluteRootPath:
+            if str(path) in self._nodes:
+                return str(path)
+            path = path.GetParentPath()
+        return None
 
     def _schedule_rebuild(self):
         """Queue one deferred, coalesced rebuild.
@@ -3081,6 +3151,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         # Exec edges are built immediately (exec ports always exist).
         self._build_edges()
         self._rebuild_backdrops(chunks_root_path, edit_id)
+        self._schedule_trace()  # rings on nodes this rebuild made anew
 
         # Proxy widgets (ChunkWidget) are created in small batches so newly-added nodes fill
         # in progressively -- existing nodes already have theirs and are left untouched.
@@ -4330,6 +4401,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
         self._breadcrumb.raise_()
 
+        # Bottom-left: who made and changed the prims selected in the viewport.
+        self._trace_bar = prim_trace.TraceBar(self.viewport())
+        self._trace_bar.picked.connect(self._on_trace_pick)
+
         # Left of the Output badge in the bottom-right corner. Ticked, each chunk made from
         # the menu wires itself onto the end of the chain (see _chain_tail).
         self._auto_connect_box = QtWidgets.QCheckBox("Auto-connect", self.viewport())
@@ -4439,6 +4514,13 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if breadcrumb is not None:
             breadcrumb.move(_BREADCRUMB_MARGIN, _BREADCRUMB_MARGIN)
             breadcrumb.raise_()
+        bar = getattr(self, "_trace_bar", None)
+        if bar is not None and not bar.isHidden():
+            y = self.viewport().height() - bar.height() - _BREADCRUMB_MARGIN
+            if _BREADCRUMB_MARGIN + bar.width() > self._bottom_controls_left() - _BREADCRUMB_MARGIN:
+                y = self._slot_badge()[0].top() - bar.height() - _BREADCRUMB_MARGIN  # above them
+            bar.move(_BREADCRUMB_MARGIN, y)
+            bar.raise_()
         box = getattr(self, "_auto_connect_box", None)
         if box is not None:
             badge = self._slot_badge()[0]
@@ -4457,6 +4539,9 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         super().showEvent(event)
         self._proxy_key_router.install()
         self.refresh_breadcrumb()
+        graph_scene = self.scene()
+        if isinstance(graph_scene, ChunkGraphScene):  # the selection may have changed while hidden
+            self.show_trace(graph_scene.traces)
 
     def refresh_breadcrumb(self) -> None:
         """Point the path row at this graph's own context.
@@ -7058,6 +7143,40 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return []
         prims = {path: node.prim for path, node in graph_scene._nodes.items()}
         return chunk_graph.search_nodes(prims, query, names, types)
+
+    def _bottom_controls_left(self) -> int:
+        """Where the Output badge and the Auto-connect box beside it start, from the left."""
+        left = self._slot_badge()[0].left()
+        box = getattr(self, "_auto_connect_box", None)
+        if box is not None and not box.isHidden():
+            left -= _AUTO_CONNECT_GAP + box.width()
+        return left
+
+    def show_trace(self, traces: list[chunk_trace.PrimTrace]) -> None:
+        """Name, at the foot of the graph, who made and changed the selected prims: beside the
+        Output badge when there is room, the whole width above it in a narrow graph."""
+        text = prim_trace.trace_text(traces, lambda c: str(chunk_stage.get_chunk_prim_path(c)))
+        beside = self._bottom_controls_left() - 3 * _BREADCRUMB_MARGIN
+        width = beside if beside >= _TRACE_LINE_MIN_BESIDE else self.viewport().width() - 2 * _BREADCRUMB_MARGIN
+        self._trace_bar.show_text(text, width)
+        self._trace_bar.setToolTip("\n".join(str(t.path) for t in traces[:20]))
+        self._anchor_breadcrumb()
+
+    def _on_trace_pick(self, link: str) -> None:
+        """A name in the trace line: frame that node (or its group); "frame": all of them."""
+        graph_scene = self.scene()
+        if not isinstance(graph_scene, ChunkGraphScene):
+            return
+        if link == "frame":
+            if graph_scene._traced:
+                self.frontend().frame(sorted(graph_scene._traced))
+            return
+        wanted = link.removeprefix("chunk:")
+        chunk = next((c for c, _r, _t in prim_trace.roles(graph_scene.traces)
+                      if str(chunk_stage.get_chunk_prim_path(c)) == wanted), None)
+        path = graph_scene._node_path_for(chunk) if chunk is not None else None
+        if path is not None:
+            self._focus_node(path)
 
     def _focus_node(self, path: str) -> None:
         """Select that node alone and frame it."""

@@ -13,6 +13,7 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_trace
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.qt import node_theme
 
@@ -2804,6 +2805,8 @@ class ViewSlotState(QtCore.QObject):
         # Inspect, Rename and Set View stay singular on purpose: one dialog, one name (six
         # chunks cannot share it), and a view targets one chunk. Everything else scales.
         inspect_action = menu.addAction("Inspect Layer")
+        select_prims_action = menu.addAction(_label("Select Its Prims"))
+        select_prims_action.setToolTip("Select in the viewport the prims this chunk made or changed")
         rename_action = menu.addAction("Rename…")
         stage_for_rename = grp.get_stage()
         prim_for_rename = stage_for_rename.GetPrimAtPath(prim_path) if stage_for_rename else None
@@ -2877,6 +2880,8 @@ class ViewSlotState(QtCore.QObject):
             layer = grp.get_edit_context()
             if layer:
                 source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
+        elif res == select_prims_action:
+            select_chunk_prims(targets)
         elif res == rename_action:
             old = grp.name
             new, ok = QtWidgets.QInputDialog.getText(
@@ -4496,3 +4501,23 @@ def context_ancestry(ctx) -> list:
         node = parent_ref() if parent_ref else None
     chain.reverse()
     return chain
+
+
+def select_chunk_prims(chunks) -> bool:
+    """Select in the host the prims these chunks made or changed, read from their own layers.
+
+    Args:
+        chunks: The chunks.
+
+    Returns:
+        False when they made nothing there or the host has no selection to drive.
+    """
+    scene = chunks[0].get_scene() if chunks else None
+    stage = scene.get_stage() if scene else None
+    if stage is None:
+        return False
+    paths: dict = {}
+    for target in chunks:
+        found, _more = chunk_trace.chunk_prims(target, stage)
+        paths.update(dict.fromkeys(found))
+    return bool(paths) and scene.select_prims(list(paths))

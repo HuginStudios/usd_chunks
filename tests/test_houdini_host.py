@@ -331,6 +331,16 @@ SCRIPT = textwrap.dedent(r"""
     width = ocp.stage().GetPrimAtPath("/chunks/Net/Ground").GetAttribute("inputs:grid:width1")
     out["ocp_width"] = width.Get() if width else None
     out["ocp_errors"] = list(ocp.errors())
+    # A chunk is called what its node is, and after a rename what the node is called now.
+    named = lop.create(hou.node("/stage"), "mesh", name="ground.v2")
+    named.stage()
+    out["chunk_name"] = lop.chunk_for(named).name
+    named.setName("hero_ground")
+    named.parm("mesh_type").set("cube")
+    stage = named.stage()
+    out["renamed_chunk_name"] = lop.chunk_for(named).name
+    out["renamed_errors"] = list(named.errors())
+    out["renamed_cooks"] = stage.GetPrimAtPath(named.evalParm("prim_path")).IsValid()
 
     print("USD_CHUNKS_RESULT" + json.dumps(out))
 """)
@@ -789,3 +799,14 @@ def test_a_stage_that_sets_no_units_is_in_houdinis_metres(result):
 def test_enter_on_a_chunk_node_opens_the_state_drawing_its_gizmos(result):
     # The HDA's DefaultState names the viewer state viewer_states/usdchunks_chunk.py registers.
     assert result["default_state"] == "usdchunks::chunk"
+
+
+def test_a_chunk_is_named_after_its_node(result):
+    # So a log line or a timing ("Cooked ground_v2 in ...") names the node it is about.
+    assert result["chunk_name"] == "ground_v2"
+
+
+def test_a_renamed_node_renames_its_chunk_and_still_cooks(result):
+    assert result["renamed_chunk_name"] == "hero_ground"
+    assert result["renamed_errors"] == []
+    assert result["renamed_cooks"]

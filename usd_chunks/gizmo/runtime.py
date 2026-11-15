@@ -37,6 +37,7 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_trace
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
@@ -771,57 +772,20 @@ def chunks_for_prim(prim: Usd.Prim) -> list:
     Returns:
         The chunks that touched it.
     """
-    manager = ChunkLayerManager()
-    if not getattr(manager, "initialized", False) or not manager.chunk_layers:
-        return []
-
-    # chunk_layers is keyed by ChunkHash, not by the chunk object, so it cannot be inverted
-    # on its own -- go via the scene's live chunks to get back to something with params to
-    # write. Several chunks can legitimately share one layer (a CONTEXT group hands its
-    # layer to its children), hence a list per identifier rather than a single entry.
-    scene = getattr(ChunkRegistry(), "scene", None)
-    if scene is None:
-        return []
-
-    by_identifier: dict = {}
-    for candidate in scene.get_chunks():
-        layer = manager.chunk_layers.get(candidate.get_hash())
-        if layer is not None:
-            by_identifier.setdefault(layer.identifier, []).append(candidate)
+    # Several chunks can share one layer (a CONTEXT group hands its layer to its children).
+    by_identifier = chunk_trace.chunks_by_layer()
     if not by_identifier:
         return []
 
     found = []
     for spec in prim.GetPrimStack():
         layer = getattr(spec, "layer", None)
-        if layer is None or not _is_meaningful_spec(spec):
+        if layer is None or not chunk_trace.is_meaningful_spec(spec):
             continue
         for chunk in by_identifier.get(layer.identifier, ()):
             if not any(chunk is seen for seen in found):
                 found.append(chunk)
     return found
-
-
-def _is_meaningful_spec(spec) -> bool:
-    """Whether this spec is the chunk actually touching the prim, or just scaffolding.
-
-    Authoring an override on a prim implicitly creates empty `over` specs for every
-    ancestor, because the descendant needs a path to hang off. Those are not a claim on the
-    ancestor, but they are in its prim stack all the same -- so a Transform chunk driving
-    `/apple/grp/mesh` looked like it also drove `/apple` and `/apple/grp`.
-
-    Only one direction is allowed: a descendant is not scaffolding for an ancestor.
-    Dragging a mesh and then its parent must make a second chunk, just as dragging the
-    parent and then the mesh does.
-
-    Anything the chunk genuinely authored -- a property, metadata such as an `active` flag
-    from a prune, or a specifier that defines rather than overrides -- counts.
-    """
-    if spec.properties:
-        return True
-    if set(spec.ListInfoKeys()) - {"specifier"}:
-        return True
-    return spec.specifier != Sdf.SpecifierOver
 
 
 def _chunk_prim(stage: Usd.Stage, chunk: core.ChunkBase) -> Usd.Prim | None:

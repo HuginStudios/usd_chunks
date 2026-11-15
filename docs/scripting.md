@@ -182,6 +182,19 @@ wires one more branch in the same way: `x` takes slot 0, the strongest, as a wir
 the Merge in the graph does. To put it lower, give a slot: `scene.connect(x, both, slot=2)`.
 `scene.get_inputs(both)` lists the branches, strongest first.
 
+**Which chunks made a prim** is what the node graph shows when you select one. Scripts ask
+with `get_chunk_stack`, the chunk version of `prim.GetPrimStack()`:
+
+``` py
+stack = scene.get_chunk_stack("/World/box")   # [lift, box]: strongest first
+scene.set_selected_chunks(stack)              # select them in the node graph
+scene.get_chunk_prims(lift)                   # the other way: [Sdf.Path("/World/box")]
+```
+
+`scene.trace_prim(path)` says who did what: `.made_by` (the chunk that made it),
+`.changed_by` (the chunks that changed it, in the order their changes apply) and `.via` (for
+a prim inside an asset a chunk brought in: the asset's prim and that chunk).
+
 **A param wire** makes one param follow another's value. Pass the param as the value:
 
 ``` py

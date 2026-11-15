@@ -15,6 +15,14 @@ This file starts with the first release; development before that is in the commi
   box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
   drag one face at a time, and a translate gizmo is a move handle. Drags go through the
   chunk's own hooks (snapping, landing on the roof) and undo as one step.
+- **Which chunk made this prim?** Select a prim in the viewport and the node graph rings
+  the chunk that made it (*made*), each chunk that changed it (numbered in the order the
+  changes apply) and, for a prim inside a referenced asset, the chunk that brought it in.
+  A line at the foot of the graph names them, with links that jump to each node. A node's
+  right-click menu has **Select Its Prims** for the other direction. Scripts ask the same with
+  `scene.get_chunk_stack(path)` (the chunks, strongest first, like `GetPrimStack()`),
+  `scene.trace_prim(path)` and `scene.get_chunk_prims(chunk)`. Both read each chunk's own layer,
+  and the graph asks only when the selection changes.
 - Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
   Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
   Blender's USD appear in the sidebar's **Renderer** menu, next to Storm. The live view
@@ -244,6 +252,12 @@ This file starts with the first release; development before that is in the commi
 ### Changed
 
 - Houdini: Tab > usdchunks > **Import Network...** is now **Chunk Import...**.
+- RBD Solver simulates every prim its Target Prim selects (a viewport selection, a list or
+  a glob), not just the first. The selected rigid bodies share one solve, so they land on
+  and knock into each other; each keeps its own authored mass, friction and collider
+  shape. A PointInstancer or an articulated asset among them is still solved on its own.
+- Houdini: a chunk node's chunk is named after the node, and renamed with it. Log lines,
+  `USD_CHUNKS_TIMINGS` and error messages say "Grass" rather than "ScatterPoints1".
 - Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
   forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
   tested against the points already kept instead of against each other.
