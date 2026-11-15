@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
+  box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
+  drag one face at a time, and a translate gizmo is a move handle. Drags go through the
+  chunk's own hooks (snapping, landing on the roof) and undo as one step.
 - **Which chunk made this prim?** Select a prim in the viewport and the node graph rings
   the chunk that made it (*made*), each chunk that changed it (numbered in the order the
   changes apply) and, for a prim inside a referenced asset, the chunk that brought it in.
@@ -247,6 +251,7 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Houdini: Tab > usdchunks > **Import Network...** is now **Chunk Import...**.
 - RBD Solver simulates every prim its Target Prim selects (a viewport selection, a list or
   a glob), not just the first. The selected rigid bodies share one solve, so they land on
   and knock into each other; each keeps its own authored mass, friction and collider
@@ -416,6 +421,22 @@ This file starts with the first release; development before that is in the commi
   list was resized. Now each such chunk's handle records are brought in line with what it
   declares after its first cook.
 
+- Override Chunk Prim showed none of its target's params in Houdini: the target is set
+  between cooks, when there is no stage to read them from, and the cook then took them as
+  built. The cook builds them now.
+- Houdini: an imported chunkgroup's own nodes (`space_in`, `space_out` and its output)
+  sit by its chunks, a row above and below them, instead of far away where Houdini puts a
+  new node. A network drawn so it doesn't read top to bottom (an Output chunk beside the
+  chain's head, its wire running back up) is laid out by Houdini as one chain instead.
+- Houdini: a pip install of usd_chunks now includes the viewport handles'
+  `viewer_states` folder.
+- Houdini: a box handle shrank to a point at the origin when the chunkgroup had an input,
+  such as a Sublayer. Reading the input's stage swapped out the node's stage before the
+  handle was placed on it.
+- Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
+  nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
+  the prim it reads existed was cooked again inside a later node's cook, on that node's
+  stage; Houdini now recooks it itself.
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.
