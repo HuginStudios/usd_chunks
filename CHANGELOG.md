@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `chunk.TextEdit(..., wrap=True)` makes a prose field: in the Qt params panel its lines wrap
+  at the field's edge, in the UI's own font, so a paragraph is not one long line scrolled
+  sideways. Without it a `TextEdit` stays a code field (fixed-width font, no wrapping).
 - **Which chunk made this prim?** Select a prim in the viewport and the node graph rings
   the chunk that made it (*made*), each chunk that changed it (numbered in the order the
   changes apply) and, for a prim inside a referenced asset, the chunk that brought it in.

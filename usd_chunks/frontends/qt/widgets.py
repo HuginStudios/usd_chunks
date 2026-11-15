@@ -966,7 +966,10 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum)
         self.text.textChanged.connect(self.value_changed)
         self.text.setTabStopDistance(QtGui.QFontMetricsF(self.text.font()).horizontalAdvance(" ") * 4)
-        self.text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        # Prose (wrap) wraps at the field's edge; code keeps its lines whole and scrolls.
+        self.text.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth if param.wrap
+            else QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
 
         hlm = None
         self.hl = None
@@ -977,8 +980,10 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         if hlm:
             self.hl = SyntaxHighlighter(self.text.document(), hlm)
 
-        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
-        self.text.setFont(font)
+        # Code reads in a fixed-width font; prose keeps the UI's own.
+        if not param.wrap:
+            font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+            self.text.setFont(font)
 
         if param.rows is not None:
             line_h = QtGui.QFontMetrics(self.text.font()).lineSpacing()
