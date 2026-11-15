@@ -229,6 +229,17 @@ SCRIPT = textwrap.dedent(r"""
     out["import_ground"] = bool(ground) and bool(ground.GetAttribute("xformOpOrder").Get())
     out["import_house"] = bool(stage.GetPrimAtPath("/House"))
     out["import_positions"] = {n: list(group.node(n).position()) for n in ("House", "Ground", "Move")}
+    out["boundary_positions"] = {n: list(group.node(n).position()) for n in ("space_in", "space_out", "output0")}
+    # The same network with its last chunk drawn left of its first, as an Output chunk often
+    # sits by a chain's head in another graph: read top to bottom, Move would sit above House.
+    with open(os.environ["USD_CHUNKS_TEST_NETWORK"]) as f:
+        backwards = f.read().replace("ui:nodegraph:node:pos = (520, 0)", "ui:nodegraph:node:pos = (-260, 0)")
+    backwards_path = os.path.join(os.path.dirname(os.environ["USD_CHUNKS_TEST_HIP"]), "backwards.usda")
+    with open(backwards_path, "w") as f:
+        f.write(backwards)
+    back = chunkgroup.import_file(backwards_path, hou.node("/stage"))[0]
+    out["backwards_positions"] = {n: list(back.node(n).position())
+                                  for n in ("space_in", "House", "Ground", "Move", "space_out", "output0")}
     out["import_type"] = group.type().name()
     out["import_editable"] = group.isEditable()
 
@@ -301,6 +312,25 @@ SCRIPT = textwrap.dedent(r"""
     except chunkgroup.ExportError as exc:
         out["export_refused"] = str(exc)
 
+    sections = lop.node_type().definition().sections()
+    out["default_state"] = sections["DefaultState"].contents() if "DefaultState" in sections else ""
+
+    # Override Chunk Prim on a network a Sublayer brings in. Its target is set between
+    # cooks, when Houdini has no stage to read the target's params from; the cook builds
+    # them, and a changed parm is written over the target chunk prim.
+    sub = hou.node("/stage").createNode("sublayer", "net_sublayer")
+    sub.parm("filepath1").set(os.environ["USD_CHUNKS_TEST_NETWORK"])
+    ocp = lop.create(hou.node("/stage"), "override_chunk_prim", name="net_edit")
+    ocp.setInput(0, sub)
+    ocp.parm("chunk_path").set("/chunks/Net/Ground")
+    ocp.cook(force=True)
+    scene.flush_pending()
+    out["ocp_parms"] = [p.name() for p in ocp.parms()]
+    if ocp.parm("width1") is not None:
+        ocp.parm("width1").set(2.0)
+    width = ocp.stage().GetPrimAtPath("/chunks/Net/Ground").GetAttribute("inputs:grid:width1")
+    out["ocp_width"] = width.Get() if width else None
+    out["ocp_errors"] = list(ocp.errors())
     # A chunk is called what its node is, and after a rename what the node is called now.
     named = lop.create(hou.node("/stage"), "mesh", name="ground.v2")
     named.stage()
@@ -711,6 +741,35 @@ def test_a_left_to_right_graph_reads_top_to_bottom_in_houdini(result):
     assert ys[0] > ys[1] > ys[2]
 
 
+def test_an_override_chunk_prim_shows_and_overrides_its_targets_params(result):
+    # The target's params became parms, and changing one wrote it over the target chunk prim.
+    assert "width1" in result["ocp_parms"]
+    assert result["ocp_errors"] == []
+    assert result["ocp_width"] == pytest.approx(2.0)
+
+
+def test_an_imported_groups_houdini_nodes_sit_by_its_chunks(result):
+    # space_in, space_out and the output have no position in the file. They go a row above
+    # the chain and below it, in line with it, not wherever Houdini makes a new node.
+    chain = result["import_positions"]
+    nodes = result["boundary_positions"]
+    assert nodes["space_in"][1] > chain["House"][1]
+    assert chain["Move"][1] > nodes["space_out"][1] > nodes["output0"][1]
+    assert [nodes[n][0] for n in nodes] == pytest.approx([chain["House"][0]] * 3)
+    assert nodes["space_in"][1] - chain["House"][1] < 3
+    assert chain["Move"][1] - nodes["output0"][1] < 6
+
+
+def test_an_imported_group_drawn_out_of_order_is_laid_out_as_a_chain(result):
+    # Move ends the chain but is drawn left of House, so read top to bottom it would sit
+    # above it, its wire running back up. Houdini lays such a group out itself: a chain from
+    # space_in down to the output.
+    nodes = result["backwards_positions"]
+    order = ["space_in", "House", "Ground", "Move", "space_out", "output0"]
+    ys = [nodes[n][1] for n in order]
+    assert ys == sorted(ys, reverse=True), nodes
+
+
 def test_positions_survive_the_round_trip(result):
     assert result["export_positions"]["House"] == pytest.approx([0, 0], abs=1e-3)
     assert result["export_positions"]["Ground"] == pytest.approx([260, 0], abs=1e-3)
@@ -735,6 +794,11 @@ def test_a_stage_that_sets_no_units_is_in_houdinis_metres(result):
     # A Solaris stage authors no upAxis or metersPerUnit: it is Houdini's Y-up metres, not
     # USD's centimetre fallback.
     assert result["solaris_space"] == ["Y", 1.0]
+
+
+def test_enter_on_a_chunk_node_opens_the_state_drawing_its_gizmos(result):
+    # The HDA's DefaultState names the viewer state viewer_states/usdchunks_chunk.py registers.
+    assert result["default_state"] == "usdchunks::chunk"
 
 
 def test_a_chunk_is_named_after_its_node(result):
