@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
+  walked the chain once per Transform above it; now it walks it once. One cook at the end of
+  a 100-Transform chain: 0.29 s → 0.03 s.
 - Scatter Points with Max Slope over 90 now covers faces that point down, such as the
   underside of a sphere. New scatters sample with Tiles, which only drops points from
   above, so they stayed on the top half. Over 90, Darts is used instead.
