@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Undo after a gizmo drag left the prim moved: the auto-made Transform chunk left the
+  graph, but stayed in `scene.get_chunks()` with its layer still in the stack. The same
+  happened to any chunk whose creation was undone, or whose delete was redone. Now the
+  chunk goes too.
 - The rings on the nodes that made or changed the selected prim come back when the prim does.
   Switching the view away hid the prim and took the rings off; switching back left them off
   until the selection changed.
