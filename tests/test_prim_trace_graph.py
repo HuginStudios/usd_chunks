@@ -9,6 +9,7 @@ from PySide6 import QtWidgets
 
 from usd_chunks import Scene, chunk_notice
 from usd_chunks.chunk_stage import get_chunk_prim_path
+from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.frontends.qt import widgets
 from usd_chunks.frontends.qt.nodegraph import ChunkGraphScene, ChunkGraphView
 
@@ -51,6 +52,40 @@ def test_selecting_a_prim_rings_its_maker_and_changers_and_names_them(qapp) -> N
             graph.trace_selection()
             assert _mark(graph, box) is None and _mark(graph, moved) is None
             assert view._trace_bar.isHidden()
+        finally:
+            view.deleteLater()
+            graph.deleteLater()
+
+
+def test_the_ring_follows_the_node_when_it_collapses_expands_or_resizes(qapp) -> None:
+    with Scene() as scene:
+        box = scene.create.cube(prim_path="/World/box", width=2.0)
+        graph = ChunkGraphScene()
+        view = ChunkGraphView()
+        view.setScene(graph)
+        try:
+            graph.build(scene.get_stage(), scene, box.get_context())
+            _spin(300)  # the first cook rebuilds the nodes; then the body is built
+            node = graph._nodes[str(get_chunk_prim_path(box))]
+            # What trace_selection does for a node that made the selected prim.
+            node.set_trace("made", "made")
+
+            def ring():
+                rect = node._trace_mark._rect
+                return rect.width(), rect.height()
+
+            assert ring() == (node._width, node._height)
+            open_height = node._height
+            box.set_state(ChunkFlags.State.COLLAPSED)
+            _spin(300)
+            assert node._height < open_height
+            assert ring() == (node._width, node._height)
+            box.unset_state(ChunkFlags.State.COLLAPSED)
+            _spin(300)
+            assert node._height == open_height
+            assert ring() == (node._width, node._height)
+            node.set_width(node._width + 80)
+            assert ring() == (node._width, node._height)
         finally:
             view.deleteLater()
             graph.deleteLater()

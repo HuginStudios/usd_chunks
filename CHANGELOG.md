@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- The ring and "made" / number tag on a node that made or changed the selected prim follow
+  the node when it collapses, expands or is resized. The ring kept the size the node had when
+  the prim was selected.
 - Scatter Points: an Instancer Path under a moved, turned or scaled prim placed the instances
   off the surface, that prim's transform applied twice (flowers on an urn at x = -10 landed at
   x = -20). The instances are now written in the parent's space.
