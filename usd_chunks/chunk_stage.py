@@ -25,6 +25,7 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
+from usd_chunks import sdf_authoring
 from usd_chunks import skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -655,6 +656,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # id(chunk) -> where its prim composes from (chunk_utils.composition_sources), for
         # _adopt_resynced_inputs to tell a recomposed chunk from one merely resynced.
         self._sources: dict[int, tuple] = {}
+        # id(chunk) of chunks whose path is tracked but whose prim is still being made, so
+        # _prune_vanished does not take them for gone.
+        self._defining: set[int] = set()
         # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
         self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
@@ -1390,43 +1394,36 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         return self._in_scene_order(ids)
 
     def _prune_vanished(self, stage: Usd.Stage, resynced: set[str]) -> None:
-        """Tear down the chunk objects whose prims composition no longer has.
+        """Tear down the chunk objects whose prims are no longer on the stage.
 
-        A chunk that arrived by composition can leave the same way: the sequence file drops
-        it and the layer reloads, or the host's arc is cleared. Nothing authored it here,
-        so nothing here deletes it -- its prim just stops being on the stage. Left alone,
-        the object would linger, muted, until its next cook authored a fresh prim of its own
-        at whatever path it then resolved to.
+        A prim can leave without the chunk being deleted: undo or redo takes its specs
+        out, the sequence file drops it and the layer reloads, or the host's arc is
+        cleared. Left alone, the object would stay in the scene with its layer still in
+        the stack, so what it made stayed in the scene too. Undo then looked like it took
+        only the node off the graph.
 
-        Only a chunk inside a hosted subtree -- under a prim carrying a reference or
-        payload arc -- is a candidate: a locally authored chunk never loses its prim
-        except through _on_chunk_deleted, and its path can be registered an instant
-        before its prim is defined, which is not "vanished". Only under a resynced path,
-        and only a prim that is genuinely gone: one pruned because an ancestor was
-        deactivated (a disabled host) is still there in every way that matters and comes
-        back with the ancestor, objects intact. Deepest first, so a nested group goes
-        before its parent; under _reloading, so nothing is unauthored.
+        Not a chunk being added: its path is tracked a moment before its prim is made,
+        and making the prim's parent resyncs. Only under a resynced path, and only a prim
+        that is really gone: one hidden because an ancestor was deactivated (a disabled
+        group or host) comes back with the ancestor, objects intact. Deepest first, so a
+        nested group goes before its parent; under _reloading, so nothing is unauthored.
         """
         if not resynced or not self._scene:
             return
         gone = []
         for chunk in self._chunks_under(resynced):
             path = self._chunk_prim_paths.get(id(chunk))
-            if stage.GetPrimAtPath(Sdf.Path(path)).IsValid():
+            if id(chunk) in self._defining or stage.GetPrimAtPath(Sdf.Path(path)).IsValid():
                 continue
-            hosted = False
+            vanished = True
             ancestor = Sdf.Path(path).GetParentPath()
             while not ancestor.isEmpty and ancestor != Sdf.Path.absoluteRootPath:
                 prim = stage.GetPrimAtPath(ancestor)
-                if prim.IsValid():
-                    if not prim.IsActive():
-                        hosted = False
-                        break
-                    if _hosts_by_arc(prim):
-                        hosted = True
-                        break
+                if prim.IsValid() and not prim.IsActive():
+                    vanished = False
+                    break
                 ancestor = ancestor.GetParentPath()
-            if hosted:
+            if vanished:
                 gone.append((path, chunk))
         if not gone:
             return
@@ -2401,12 +2398,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # Chunk-prim bookkeeping -- the chunk's currently active Edit Target (session
             # by default, see chunk_utils.get_bookkeeping_layer).
             with self._chunk_prim_edit_context(chunk):
-                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 if is_expr:
+                    attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                elif raw is not None:
-                    attr.Set(raw)
+                else:
+                    # The attribute and its value in one change. Made, then set, the stage
+                    # sent the attribute out empty first, and anything that cooked on
+                    # that (a chunk listening to the stage) could replace the prim before
+                    # the set: "Accessed invalid attribute ... on expired 'Chunk' prim".
+                    writer = sdf_authoring.Writer(self._stage)
+                    with Sdf.ChangeBlock():
+                        sdf_authoring.attribute(writer.over(prim.GetPath()), attr_name, sdf_type, raw)
+                    attr = self._stage.GetAttributeAtPath(prim.GetPath().AppendProperty(attr_name))
+                    if not attr:
+                        return
         # The attr holds the param's value either way now; nothing to read back.
         param._connect_param_attr(attr, read_back=False)
 
@@ -2619,7 +2625,11 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # the user wires them (or drops onto a wire); only the first node connects, via the
         # view auto-wiring in _ensure_default_view.
         prev = self._find_dag_tail(tail_context, exclude=chunk) if _params_tab_create else None
-        prim = self._define_prim(chunk, prev)
+        self._defining.add(id(chunk))
+        try:
+            prim = self._define_prim(chunk, prev)
+        finally:
+            self._defining.discard(id(chunk))
         self._wire_inputs(prim, chunk)
         self._sync_list_arrays(chunk)
         # Set prim_path on group contexts so sub-chunks nest correctly under them.

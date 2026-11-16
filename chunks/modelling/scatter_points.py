@@ -3214,6 +3214,8 @@ def execute(node):
         # surface mesh is set puts the graph there on the way to a working setup, which is
         # exactly how it was hit. An empty instancer is coherent -- zero instances of the
         # prototypes it declares -- where a half-declared one is not.
+        out_positions, out_orients, out_scales = _into_parent_space(
+            stage, inst_path, out_positions, out_orients, out_scales)
         instancer.GetPositionsAttr().Set(out_positions)
         instancer.GetProtoIndicesAttr().Set(out_indices)
         instancer.GetScalesAttr().Set(out_scales)
@@ -3230,6 +3232,43 @@ def execute(node):
 
     triangles = sum(q * _triangle_count(stage.GetPrimAtPath(p.path)) for p, q in zip(protos, quota) if q)
     _report(node, protos, quota, count, scatter_mode, pack_levels, missing, triangles, surface_missing)
+
+
+def _into_parent_space(stage, inst_path, positions, orients, scales):
+    """World-space instances as the instancer's parent places them.
+
+    Instances are scattered in world space, and an instancer under a moved, turned or scaled
+    prim draws them in that prim's space, which applied the move twice. Positions take the
+    parent's whole transform back out, orientations its turn, scales its size (one figure:
+    a parent scaled unevenly cannot be undone exactly for turned instances).
+
+    Args:
+        stage: The stage the instancer is authored on.
+        inst_path: The instancer's path.
+        positions: World positions (Vt.Vec3fArray).
+        orients: World orientations (Vt.QuathArray).
+        scales: World scales (Vt.Vec3fArray).
+
+    Returns:
+        The three arrays in the parent's space; the same arrays when it sits unmoved.
+    """
+    parent = stage.GetPrimAtPath(inst_path).GetParent()
+    world = np.array(UsdGeom.XformCache().GetLocalToWorldTransform(parent) if parent else Gf.Matrix4d(1))
+    if np.allclose(world, np.eye(4), atol=1e-9) or not len(positions):
+        return positions, orients, scales
+    inverse = np.linalg.inv(world)
+    local = np.asarray(positions, np.float64) @ inverse[:3, :3] + inverse[3, :3]
+    size = float(np.cbrt(abs(np.linalg.det(world[:3, :3])))) or 1.0
+    turn = Gf.Matrix3d(*(world[:3, :3] / size).reshape(-1)).ExtractRotation().GetQuat().GetInverse()
+    a_w, a_v = turn.GetReal(), np.array(turn.GetImaginary())
+    q = np.asarray(orients, np.float64)
+    b_v, b_w = q[:, :3], q[:, 3]
+    # Hamilton product turn * q: the parent's turn undone, then the instance's own.
+    w = a_w * b_w - b_v @ a_v
+    v = a_w * b_v + b_w[:, None] * a_v + np.cross(a_v, b_v)
+    quats = np.concatenate([v, w[:, None]], 1).astype(np.float16)
+    return (Vt.Vec3fArray.FromNumpy(local.astype(np.float32)), Vt.QuathArray.FromNumpy(quats),
+            Vt.Vec3fArray.FromNumpy((np.asarray(scales, np.float64) / size).astype(np.float32)))
 
 
 def _random_lateral(rng, lat_a, lat_b, axis_vec):
