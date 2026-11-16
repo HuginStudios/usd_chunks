@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points with Max Slope over 90 now covers faces that point down, such as the
+  underside of a sphere. New scatters sample with Tiles, which only drops points from
+  above, so they stayed on the top half. Over 90, Darts is used instead.
 - A Camera made with a prim selected put that prim in Aim At, so it kept turning toward it
   after Aim At Point was unchecked. Aim At no longer fills from the selection.
 - You can type into a node's fields again while it has the "made" or "changed" ring.

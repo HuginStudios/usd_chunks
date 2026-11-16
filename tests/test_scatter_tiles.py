@@ -199,6 +199,27 @@ def test_a_new_scatter_samples_with_tiles_and_darts_is_a_choice():
     assert ((tiles[:, :2] >= 0) & (tiles[:, :2] <= 60)).all() and np.allclose(tiles[:, 2], 0.0, atol=1e-4)
 
 
+@pytest.mark.parametrize("up", [UsdGeom.Tokens.y, UsdGeom.Tokens.z])
+def test_max_slope_over_90_covers_the_underside_with_tiles(up):
+    """Tiles drops points from above, so a new scatter (Tiles) with Max Slope 180 put every
+    instance on a sphere's top half. Past 90 it samples with Darts, which reaches every face."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, up)
+    up_idx = 1 if up == UsdGeom.Tokens.y else 2
+    with Scene(stage) as scene:
+        sphere = scene.create.sphere(prim_path="/sphere")
+        box = scene.create.cube(sphere, prim_path="/proto")
+        s = scene.create.scatter_points(box, surface_prim="/sphere", inst_path="/scatter", max_count=400,
+                                        auto_spacing=False, spacing=0.1, max_slope=180.0,
+                                        **{"prototypes.0.proto_path": "/proto"})
+        scene.set_output(s)
+        assert s.get_param("sampling").value == "Tiles"
+        pos = np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath("/scatter")).GetPositionsAttr().Get())
+    assert len(pos) == 400
+    below = np.mean(pos[:, up_idx] < 0.0)
+    assert 0.4 < below < 0.6
+
+
 def test_a_saved_scatter_without_sampling_loads_as_darts(tmp_path):
     """Saved before Tiles existed (no sampling attribute): it keeps the layout it was made with."""
     stage = Usd.Stage.CreateInMemory()
