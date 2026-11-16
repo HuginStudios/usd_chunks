@@ -858,7 +858,32 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         prims = None
         if resyncs or info_changes:
             prims = _iter_scoped_prims(stage, resyncs, info_changes)
+        loaded_before = len(self._loaded_prim_paths)
         load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
+        if prims is not None and len(self._loaded_prim_paths) > loaded_before:
+            self._rewire_to_new_chunks(resyncs | info_changes)
+
+    def _rewire_to_new_chunks(self, changed: set[Sdf.Path]) -> None:
+        """Reconcile the chunks whose wires changed in the same edit that brought chunks back.
+
+        An undo of a delete puts back the deleted chunk's prim and the wire below it in one
+        go. The notice reconciles the chunk below first, while the chunk its wire points at
+        is not loaded yet, so it gets no edge. This runs once the scan has loaded it.
+
+        Args:
+            changed: The paths USD reported changed since the last scan.
+        """
+        wired = {str(p.GetPrimPath()) for p in changed
+                 if p.IsPropertyPath() and p.name.startswith(_INPUTS_PREFIX)}
+        chunks = self._chunks_at(wired)
+        if not chunks:
+            return
+        self._reconciling_exec = True
+        try:
+            for chunk in chunks:
+                reconcile_dag_dependencies(chunk)
+        finally:
+            self._reconciling_exec = False
 
     @contextlib.contextmanager
     def discarding_stage(self):
@@ -1012,6 +1037,14 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         ]
         if not successors:
             return
+        # The heal rewired them with notices off, so their DAG edges still point at the
+        # deleted chunk. Without this, B in A -> X -> B was blocked from reading what A makes.
+        self._reconciling_exec = True
+        try:
+            for successor in successors:
+                reconcile_dag_dependencies(successor)
+        finally:
+            self._reconciling_exec = False
         # The delete itself is done. A cook downstream failing here (say on an expression
         # that referenced the chunk just deleted) must not escape and abort the rest of the
         # CHUNK_DELETED dispatch, which would leave the chunk half torn down.
@@ -8063,10 +8096,15 @@ def _load_chunks(
                                 sources,
                                 lambda path: path in chunk_by_path or bool(_chunks_at([path])),
                             ):
-                                dep = chunk_by_path.get(source)
+                                # Or a chunk already in the scene: an undo brings back a
+                                # deleted chunk whose source never went away.
+                                dep = chunk_by_path.get(source) or next(iter(_chunks_at([source])), None)
                                 if dep is not None and id(dep) not in existing_deps:
                                     chunk.add_dependency(dep)
-                                    chunks_with_dependencies.add(id(chunk))
+                                    # Only an upstream loaded here cooks it by cascade; one
+                                    # already in the scene does not cook again, so it is a root.
+                                    if source in chunk_by_path:
+                                        chunks_with_dependencies.add(id(chunk))
                     finally:
                         sync._reconciling_exec = False
 
