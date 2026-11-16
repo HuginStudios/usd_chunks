@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Undo after a gizmo drag left the prim moved: the auto-made Transform chunk left the
+  graph, but stayed in `scene.get_chunks()` with its layer still in the stack. The same
+  happened to any chunk whose creation was undone, or whose delete was redone. Now the
+  chunk goes too.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
