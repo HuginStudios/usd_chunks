@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Duplicate Prim: a copy's relationships and connections into its own subtree now point at the
+  copy, not the source. Copies of a prim with a scatter under it kept their instancer aimed at
+  the source's prototypes, so pruning the source emptied them; a copied material also lost the
+  wiring between its shaders.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
