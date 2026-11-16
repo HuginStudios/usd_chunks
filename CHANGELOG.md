@@ -415,6 +415,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A Camera made with a prim selected put that prim in Aim At, so it kept turning toward it
+  after Aim At Point was unchecked. Aim At no longer fills from the selection.
 - You can type into a node's fields again while it has the "made" or "changed" ring.
   The ring took every click on the node, so the fields never got the keys.
 - Undoing a chunk's delete left it blocked ("isn't wired above") though its wire was drawn,
