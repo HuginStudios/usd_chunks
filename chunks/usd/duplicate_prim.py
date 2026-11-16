@@ -123,9 +123,20 @@ def _instance_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: st
     spec.instanceable = True
 
 
-def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str):
+def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str, roots=None):
+    """Copy source and its subtree to dest_path.
+
+    A relationship target or attribute connection inside the copied subtree is moved onto the
+    copy, as a copy of a folder keeps its own links: an instancer copied with its prototypes,
+    or a material with its shaders, works without the source. One pointing elsewhere is kept.
+    `roots` is (source root, copy root), set by the outermost call.
+    """
     if not source.IsValid():
         return
+    roots = roots or (source.GetPath(), Sdf.Path(dest_path))
+
+    def follow(path: Sdf.Path) -> Sdf.Path:
+        return path.ReplacePrefix(roots[0], roots[1]) if path.HasPrefix(roots[0]) else path
 
     # Define the destination prim with the same type
     type_name = source.GetTypeName()
@@ -158,6 +169,10 @@ def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str):
             if val is not None:
                 writer.layer.SetTimeSample(dest_attr.path, t, val)
 
+        connections = attr.GetConnections()
+        if connections:
+            dest_attr.connectionPathList.explicitItems = [writer.target_path(follow(c)) for c in connections]
+
         # Copy attribute metadata
         for meta_key in ("interpolation", "custom", "variability"):
             meta_val = attr.GetMetadata(meta_key)
@@ -174,13 +189,13 @@ def _copy_spec(writer: sdf_authoring.Writer, source: Usd.Prim, dest_path: str):
         dest_rel = dest_prim.relationships[rel_name] if rel_name in dest_prim.relationships \
             else Sdf.RelationshipSpec(dest_prim, rel_name, True)
         if targets:
-            dest_rel.targetPathList.explicitItems = [writer.target_path(t) for t in targets]
+            dest_rel.targetPathList.explicitItems = [writer.target_path(follow(t)) for t in targets]
 
     # Recursively copy children
     for child in source.GetChildren():
         child_name = child.GetName()
         child_dest_path = f"{dest_path}/{child_name}"
-        _copy_spec(writer, child, child_dest_path)
+        _copy_spec(writer, child, child_dest_path, roots)
 
 
 def execute(node):
