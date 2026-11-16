@@ -1279,6 +1279,19 @@ def dispatch(chunk, node, changes, seed) -> None:
     mark_cook_stale(chunk)
 
 
+def mark_own_change(chunk) -> None:
+    """Inside a solve, make chunk cook in its flush as if its own params had changed.
+
+    For a change no notice carried: params a CHUNK_LOADED callback lofted and the load
+    restored. Reached only from above in the same solve, skip_cook would skip it and keep
+    the cook it had before those params existed; a change of its own is never skipped.
+
+    Args:
+        chunk: The chunk.
+    """
+    dispatch(chunk, chunk.get_dag_node(), [(chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED, chunk)], None)
+
+
 def cook_all(chunks) -> None:
     """Cook every one of chunks, upstream first, whether or not anything reached it.
 

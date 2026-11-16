@@ -415,6 +415,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A reopened MaterialX network cooks each shader at most twice. The Surface at the
+  bottom of a shader tree cooked once per node above it: 50 times in a 100-node network.
 - Scatter Points with Max Slope over 90 now covers faces that point down, such as the
   underside of a sphere. New scatters sample with Tiles, which only drops points from
   above, so they stayed on the top half. Over 90, Darts is used instead.
