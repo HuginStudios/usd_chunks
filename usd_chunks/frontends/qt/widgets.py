@@ -959,8 +959,17 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
 
 class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
+    # Past this many characters, or a line this long, the field shows a short read-only
+    # preview instead of the text. Qt lays out whole lines: a 10 MB inline terrain, 48 lines
+    # of megabytes each, took seconds per scroll or repaint and froze the panel.
+    HUGE_TEXT = 256_000
+    HUGE_LINE = 20_000
+    _PREVIEW_LINES = 40
+    _PREVIEW_WIDTH = 200
+
     def __init__(self, param: chunk.TextEdit):
         super().__init__(param)
+        self._huge = None  # the whole value while only a preview is shown
 
         self.text = QtWidgets.QPlainTextEdit(parent=self)
         self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum)
@@ -996,12 +1005,32 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         return super().focusOutEvent(event)
 
     def get_value(self):
+        if self._huge is not None:
+            return self._huge
         return self.text.document().toPlainText()
 
     def set_value(self, value):
-        if value != self.get_value():
-            with QtCore.QSignalBlocker(self.text):
-                self.text.setPlainText(str(value))
+        value = str(value)
+        if value == self.get_value():
+            return
+        huge = len(value) > self.HUGE_TEXT or max(map(len, value.split("\n", 2000)), default=0) > self.HUGE_LINE
+        with QtCore.QSignalBlocker(self.text):
+            if huge:
+                self._huge = value
+                self.text.setPlainText(self._preview(value))
+            else:
+                self._huge = None
+                self.text.setPlainText(value)
+            self.text.setReadOnly(huge)
+
+    def _preview(self, value):
+        """The first lines, clipped, under a note saying what this is and why."""
+        lines = [line if len(line) <= self._PREVIEW_WIDTH else line[:self._PREVIEW_WIDTH] + " ..."
+                 for line in value.split("\n", self._PREVIEW_LINES)[:self._PREVIEW_LINES]]
+        size = f"{len(value) / 1e6:.1f} MB" if len(value) >= 1e6 else f"{len(value) / 1e3:.0f} KB"
+        note = (f"# {size} of text: too big to edit here, so shown shortened and read-only. "
+                f"Text this size is better kept in a file and brought in with a Reference chunk.")
+        return "\n".join([note, *lines, "..."])
 
     def set_hidden(self, val: bool):
         self.setHidden(val)

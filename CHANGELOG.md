@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A text field holding megabytes (an Inline USD chunk with a whole terrain pasted in) froze
+  the params panel for seconds at every scroll or repaint. Past 256 KB, or a line longer than
+  20 000 characters, it now shows a short read-only preview and keeps the text as it was.
+  Keep text that big in a file and bring it in with a Reference chunk.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
