@@ -172,3 +172,23 @@ def test_order_and_sublayers():
 def test_from_and_to_empty():
     _check(BASE, "#usda 1.0\n")
     _check("#usda 1.0\n", BASE)
+
+
+def test_a_reconciled_float_keeps_its_type():
+    """A float value goes in as a float, not the double a Python float makes of it.
+
+    SetInfo stored it as a double. Python read the same number back, but a typed read --
+    C++, Hydra's UsdImaging -- skips a value of the wrong type and resolves past it, so a
+    recooked float (a lens's k1) never reached the renderer.
+    """
+    def layer(value):
+        src = Sdf.Layer.CreateAnonymous()
+        prim = Sdf.CreatePrimInLayer(src, "/p")
+        Sdf.AttributeSpec(prim, "x", Sdf.ValueTypeNames.Float).default = value
+        return src
+
+    dst = layer(0.0)
+    layer_reconcile.reconcile(layer(1 / 3), dst)
+
+    # A float prints with float precision; a double held in a float attribute with its own.
+    assert "float x = 0.33333334" in dst.ExportToString()
