@@ -3042,9 +3042,10 @@ def execute(node):
                 avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5)
                 if avoid._dist <= 0.0:
                     avoid = None
-            if len(surf_tris) and sampling == "Tiles" and spacing > 0:
+            if len(surf_tris) and sampling == "Tiles" and spacing > 0 and max_slope <= 90.0:
                 # Sampling: Tiles -- the same rules from a laid blue-noise tile (opt-in: a
-                # different layout).
+                # different layout). Tiles drops points from above, so it can't reach a face
+                # that points down: past 90, Max Slope asks for those, and Darts takes over.
                 positions, normals, drawn = _scatter_tiles(
                     surf_tris, max_count, rng, spacing, random.Random(seed + 13),
                     scale_min, scale_max, scale_bias, mask=mask, avoid=avoid, vary=size_spacing,
@@ -3560,7 +3561,8 @@ def main():
             "each held to every one before it. Tiles lays one blue-noise tile across the "
             "ground and drops it onto the surface -- the same spacing, many times faster on "
             "big terrains, read from above (a terrain, not a cave). A different layout: "
-            "switching moves every instance.",
+            "switching moves every instance. With Max Slope over 90, Darts is used, as "
+            "Tiles can't reach faces that point down.",
         )
     )
     dist_grp.add_param(
@@ -3776,7 +3778,8 @@ def main():
             "Max Slope",
             default_value=90.0,
             tooltip="Only scatter on faces within this many degrees of facing up.\n"
-            "90 = all upward faces, lower = flatter ground only, 180 = every face.",
+            "90 = all upward faces, lower = flatter ground only, 180 = every face.\n"
+            "Over 90, Sampling: Tiles is replaced by Darts.",
         )
     )
     chunk_api.add_param(_collapsed(region_grp))
