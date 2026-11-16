@@ -406,6 +406,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- The rings on the nodes that made or changed the selected prim come back when the prim does.
+  Switching the view away hid the prim and took the rings off; switching back left them off
+  until the selection changed.
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.
