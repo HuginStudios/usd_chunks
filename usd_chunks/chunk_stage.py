@@ -25,6 +25,7 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
+from usd_chunks import sdf_authoring
 from usd_chunks import skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection, RegistrySingleton
@@ -2364,12 +2365,21 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             # Chunk-prim bookkeeping -- the chunk's currently active Edit Target (session
             # by default, see chunk_utils.get_bookkeeping_layer).
             with self._chunk_prim_edit_context(chunk):
-                attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                 if is_expr:
+                    attr = prim.CreateAttribute(attr_name, sdf_type, custom=False)
                     attr.SetConnections(self._expr_connections(prim, raw))
                     chunk_utils.store_expression_text(attr, raw)
-                elif raw is not None:
-                    attr.Set(raw)
+                else:
+                    # The attribute and its value in one change. Made, then set, the stage
+                    # sent the attribute out empty first, and anything that cooked on
+                    # that (a chunk listening to the stage) could replace the prim before
+                    # the set: "Accessed invalid attribute ... on expired 'Chunk' prim".
+                    writer = sdf_authoring.Writer(self._stage)
+                    with Sdf.ChangeBlock():
+                        sdf_authoring.attribute(writer.over(prim.GetPath()), attr_name, sdf_type, raw)
+                    attr = self._stage.GetAttributeAtPath(prim.GetPath().AppendProperty(attr_name))
+                    if not attr:
+                        return
         # The attr holds the param's value either way now; nothing to read back.
         param._connect_param_attr(attr, read_back=False)
 

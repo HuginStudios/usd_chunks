@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- The first edit of a param writes its attribute and value in one stage change. It made
+  the attribute, then set it, so anything listening to the stage first saw an attribute
+  holding nothing, and in usdview the set once raised "Accessed invalid attribute ... on
+  expired 'Chunk' prim".
 - Undo after a gizmo drag left the prim moved: the auto-made Transform chunk left the
   graph, but stayed in `scene.get_chunks()` with its layer still in the stack. The same
   happened to any chunk whose creation was undone, or whose delete was redone. Now the
