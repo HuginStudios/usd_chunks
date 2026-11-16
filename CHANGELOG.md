@@ -418,6 +418,9 @@ This file starts with the first release; development before that is in the commi
 - A script building inside `chunk.change_block()` no longer gets "no prim at ..." warnings for
   prims that exist by the end of the block (a material binding copies a Duplicate Prim makes).
   The warning now comes from the block's closing cook, only for a path still missing then.
+- The ring and "made" / number tag on a node that made or changed the selected prim follow
+  the node when it collapses, expands or is resized. The ring kept the size the node had when
+  the prim was selected.
 - Scatter Points: an Instancer Path under a moved, turned or scaled prim placed the instances
   off the surface, that prim's transform applied twice (flowers on an urn at x = -10 landed at
   x = -20). The instances are now written in the parent's space.

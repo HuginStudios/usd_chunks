@@ -46,6 +46,14 @@ class TraceMark(QtWidgets.QGraphicsItem):
         self._role, self._label, self._rect = role, label, QtCore.QRectF(rect)
         self.update()
 
+    def set_rect(self, rect: QtCore.QRectF) -> None:
+        """Ring a node of rect, keeping the role and label."""
+        if rect == self._rect:
+            return
+        self.prepareGeometryChange()
+        self._rect = QtCore.QRectF(rect)
+        self.update()
+
     def _tag_rect(self) -> QtCore.QRectF:
         metrics = QtGui.QFontMetricsF(self._font)
         width = metrics.horizontalAdvance(self._label) + 10
