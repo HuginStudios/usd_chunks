@@ -135,3 +135,19 @@ def test_aim_point_is_in_world_space_under_a_moved_parent(scene):
                               aim_at_point=True, aim_point=(0.0, 0.0, 0.0))
     scene.set_output(cam)
     assert _miss_point(scene.get_stage(), "/World/rig/camera1", (0, 0, 0)) < 1e-3
+
+
+def test_a_selection_never_fills_aim_at(scene, monkeypatch):
+    """A Camera made with a prim selected took it as Aim At, so unchecking Aim At Point
+    still turned the camera, now toward that prim."""
+    box = scene.create.cube(prim_path="/World/box")
+    selected = scene.get_stage().GetPrimAtPath("/World/box")
+    monkeypatch.setattr(type(scene), "get_selected_prims", lambda self: [selected])
+    cam = scene.create.camera(box, primpath_location="/World/camera1", tx=0.0, ty=3.0, tz=15.0,
+                              aim_at_point=True, aim_point=(5.0, 1.0, 0.0))
+    scene.set_output(cam)
+    assert cam.get_param("aim_at").value == ""
+    scene.set(cam, aim_at_point=False)
+    facing = [cam.get_param(n).value for n in ("rx", "ry", "rz")]
+    scene.set(cam, tx=-8.0)  # moving it no longer turns it
+    assert [cam.get_param(n).value for n in ("rx", "ry", "rz")] == pytest.approx(facing)

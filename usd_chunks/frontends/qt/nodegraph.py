@@ -1456,6 +1456,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height() + _NODE_BODY_BOTTOM
         self._height = self._full_height
         self.prepareGeometryChange()
+        self._fit_trace_mark()
 
 
         self._port_rebuild_timer = QtCore.QTimer(chunk_widget)
@@ -1555,6 +1556,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Both branches above have just written self._height; this is the one place every
         # height update passes through, so it is where settling is tracked.
         self._note_height_sample()
+        self._fit_trace_mark()
 
     def is_height_settled(self) -> bool:
         """True once the graph has finished laying out and this height can be trusted.
@@ -1936,6 +1938,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             mark = self._trace_mark = prim_trace.TraceMark(self)
         mark.set(role, tag, QtCore.QRectF(0, 0, self._width, self._height))
         mark.show()
+
+    def _fit_trace_mark(self) -> None:
+        """Fit the trace ring to the node again, after it collapsed, expanded or resized."""
+        mark = getattr(self, "_trace_mark", None)
+        if mark is not None and mark.isVisibleTo(self):
+            mark.set_rect(QtCore.QRectF(0, 0, self._width, self._height))
 
     def _menu_button_rect(self) -> QtCore.QRectF:
         """Where the header's three-dot menu button is, in node coordinates."""
@@ -2506,6 +2514,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if isinstance(scene, ChunkGraphScene):
             scene.update_edges_for(self)
         self._kick_port_rebuild()
+        self._fit_trace_mark()
         self.update()
 
     def reset_width(self) -> None:
@@ -2556,6 +2565,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if expanding and self._port_rebuild_timer is not None:
                 # Recompute port positions from widget geometry now that proxy is visible.
                 self._port_rebuild_timer.start()
+        self._fit_trace_mark()
         self._apply_z()
         self.update()
 
@@ -2824,6 +2834,10 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self.traces: list[chunk_trace.PrimTrace] = []
         self._traced: set[str] = set()
         self._trace_timer: QtCore.QTimer | None = None
+        #: The paths of the last selection made, kept while its prims are gone (a muted
+        #: layer), so their rings come back with them.
+        self._trace_paths: set[Sdf.Path] = set()
+        self._selection_changed = False
         self._backdrops: dict[str, BackdropItem] = {}  # prim path → backdrop or sticky note
         # Source prim path -> names of its outputs that some node in the scene is wired to.
         # Built on demand by fed_outputs and dropped whenever a wire or the node set can
@@ -2894,7 +2908,8 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         self._stage_listeners[:] = [
             NoticeConnection(self._on_objects_changed, ChunkNoticeAlias.OBJECT_CHANGED, globally=True),
             NoticeConnection(self._on_chunk_deleted, ChunkNoticeAlias.CHUNK_DELETED, globally=True),
-            NoticeConnection(self._schedule_trace, ChunkNoticeAlias.PRIM_SELECTION_CHANGED, globally=True),
+            NoticeConnection(self._on_prim_selection_changed, ChunkNoticeAlias.PRIM_SELECTION_CHANGED,
+                             globally=True),
         ]
 
         self._rebuild_nodes()
@@ -2913,6 +2928,24 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
             self._trace_timer.timeout.connect(self.trace_selection)
         self._trace_timer.start()
 
+    def _on_prim_selection_changed(self, *_notice) -> None:
+        """The viewport selection changed: trace it, and keep its paths even if it is empty."""
+        self._selection_changed = True
+        self._schedule_trace()
+
+    def _retrace_if_selection_resynced(self, notice) -> None:
+        """Trace again when a selected prim may have gone or come back.
+
+        A view switch mutes and unmutes chunk layers, so a selected prim can vanish (its
+        ring comes off) and return. The host still holds its path, so trace it again then.
+        """
+        if not self._trace_paths:
+            return
+        for path in notice.GetResyncedPaths():
+            if path.IsPrimPath() and any(p.HasPrefix(path) or path.HasPrefix(p) for p in self._trace_paths):
+                self._schedule_trace()
+                return
+
     def trace_selection(self) -> None:
         """Ring the nodes that made or changed the prims selected in the viewport, and have
         the views name them.
@@ -2923,6 +2956,11 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
         sender = self._scene_sender
         prims = [p for p in (sender.get_selected_prims() or []) if p and p.IsValid()] if sender else []
         prims = prims[:_TRACE_MOST_PRIMS]
+        # A prim that vanished drops out of prims above, so the paths kept are those of
+        # the last selection made, not of what is left of it.
+        if prims or self._selection_changed:
+            self._trace_paths = {p.GetPath() for p in prims}
+        self._selection_changed = False
         by_layer = chunk_trace.chunks_by_layer() if prims else {}
         self.traces = [chunk_trace.trace_prim(p, by_layer) for p in prims]
         marked: dict[str, tuple[str, str]] = {}
@@ -3725,6 +3763,7 @@ class ChunkGraphScene(QtWidgets.QGraphicsScene):
                    for p in notice.GetChangedInfoOnlyPaths())
         ):
             self._fed_outputs_index = None
+        self._retrace_if_selection_resynced(notice)
         # A prim-level resync under our chunks root means a chunk was added/removed/enabled/
         # disabled. Rebuild the whole graph from scratch -- only active chunks survive --
         # instead of editing nodes in place around expired or inactive prims. Property-level

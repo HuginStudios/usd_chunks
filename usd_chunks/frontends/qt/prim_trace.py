@@ -46,6 +46,14 @@ class TraceMark(QtWidgets.QGraphicsItem):
         self._role, self._label, self._rect = role, label, QtCore.QRectF(rect)
         self.update()
 
+    def set_rect(self, rect: QtCore.QRectF) -> None:
+        """Ring a node of rect, keeping the role and label."""
+        if rect == self._rect:
+            return
+        self.prepareGeometryChange()
+        self._rect = QtCore.QRectF(rect)
+        self.update()
+
     def _tag_rect(self) -> QtCore.QRectF:
         metrics = QtGui.QFontMetricsF(self._font)
         width = metrics.horizontalAdvance(self._label) + 10
@@ -56,6 +64,10 @@ class TraceMark(QtWidgets.QGraphicsItem):
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802 - Qt's name
         ring = self._rect.adjusted(-_RING_GAP - 2, -_RING_GAP - 2, _RING_GAP + 2, _RING_GAP + 2)
         return ring.united(self._tag_rect().adjusted(-1, -1, 1, 1))
+
+    def shape(self) -> QtGui.QPainterPath:
+        """Nothing: the ring is never under the mouse, so a click finds the node's fields."""
+        return QtGui.QPainterPath()
 
     def paint(self, painter: QtGui.QPainter, option, widget=None) -> None:
         colour = QtGui.QColor(ROLE_COLOURS.get(self._role, ROLE_COLOURS["made"]))

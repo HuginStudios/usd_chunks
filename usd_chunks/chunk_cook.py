@@ -79,6 +79,9 @@ _MAX_FLUSH_ROUNDS = 1000
 # asked; None outside a batch.
 _batched: collections.deque | None = None
 
+# True while the outermost batched_solve's body runs, until the solve it ends with.
+_building = False
+
 # Follow-up work held until an enclosing batch has drained, by key; None outside a batch.
 _batch_deferred: dict | None = None
 
@@ -207,6 +210,16 @@ def defer_to_batch_end(key, fn) -> bool:
 def is_batching() -> bool:
     """Whether a batched_solve (change_block) is open, so what it sets settles at its end."""
     return _batched is not None
+
+
+def is_building() -> bool:
+    """Whether a batched_solve's body is still running, before the solve it ends with.
+
+    What cooks now cooks as it is made, before its wiring and its inputs' values are all
+    in place; the solve at the block's end cooks it again with them. A chunk can hold back
+    anything it would only report about that first, unfinished state.
+    """
+    return _building
 
 
 def is_held() -> bool:
@@ -562,15 +575,17 @@ def batched_solve():
     Nested blocks join the outermost one. What after_batch() kept runs once it has ended
     and cooked, outside it.
     """
-    global _batched, _batch_deferred, _after_batch
+    global _batched, _batch_deferred, _after_batch, _building
     if _batched is not None:
         yield
         return
     _batched = collections.deque()
     _batch_deferred = {}
     _after_batch = {}
+    _building = True
     try:
         yield
+        _building = False
         while _batched or _batch_deferred or any(_cooks_now(c) for c in _pending):
             while _batched:
                 prop = _batched.popleft()
@@ -588,6 +603,7 @@ def batched_solve():
             # result straight after. Cooks that set params queue another round above.
             flush(force=True)
     finally:
+        _building = False
         after, _after_batch = _after_batch, None
         _batched = None
         _batch_deferred = None
