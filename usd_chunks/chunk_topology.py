@@ -118,6 +118,23 @@ _NO_UPSTREAM = object()
 _edit_layer_memo_stage: weakref.ref | None = None
 _edit_layer_memo_frozen = False
 
+# The answers for a cook stage, kept for one cook only (chunk_notice._cook_serial): a cook
+# stage hides different layers than the scene's, so its answers can differ and never go in
+# the scene's memo. Not kept at all, a MaterialX Shader walked the whole graph above it once
+# per input it authored -- 40% of opening a 100-node shader network.
+_cook_memo: dict[str, Sdf.Layer | object] = {}
+_cook_memo_key: tuple = ()
+
+
+def _cook_memo_for(stage: Usd.Stage) -> dict:
+    """The memo for stage's answers during the cook running now; empty when it is a new cook."""
+    global _cook_memo_key
+    key = (id(stage), chunk_notice._cook_serial)
+    if key != _cook_memo_key or chunk_notice._executing_chunk is None:
+        _cook_memo.clear()
+        _cook_memo_key = key
+    return _cook_memo
+
 
 def invalidate_edit_layer_memo() -> None:
     """Drop the memoised nearest_upstream_edit_layer answers.
@@ -134,6 +151,7 @@ def invalidate_edit_layer_memo() -> None:
     if _edit_layer_memo_frozen or chunk_notice._internal_layer_write_active:
         return
     _edit_layer_memo.clear()
+    _cook_memo.clear()
 
 
 _edit_layer_memo_muted: frozenset[str] = frozenset()
@@ -298,10 +316,10 @@ def upstream_edit_target_layer(stage: Usd.Stage, prim: Usd.Prim) -> Sdf.Layer | 
     if current is not stage:
         if current is not None and current.GetRootLayer() == stage.GetRootLayer():
             # Another stage of the same layers while that one lives -- a cook stage
-            # (skip_cook) asked during a cook. Answered without the memo, and without
+            # (skip_cook) asked during a cook. Answered without the scene's memo, and without
             # dropping it: a drag step cooking one chunk threw the scene's answers away
             # twice, once for the cook stage and once on the way back.
-            memo = {}
+            memo = _cook_memo_for(stage)
         else:
             _edit_layer_memo.clear()
             _edit_layer_memo_stage = weakref.ref(stage)

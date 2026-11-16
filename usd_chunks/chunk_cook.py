@@ -1183,6 +1183,7 @@ def executing(prop):
     prop._executing = True
     chunk_notice._usd_write_active = True
     chunk_notice._executing_chunk = getattr(prop, "get_chunk", lambda: None)()
+    chunk_notice._cook_serial += 1
     # The stage's resolver context, bound for the module: a file it opens itself
     # (Sdf.Layer.FindOrOpen on a param's path) is found as the stage finds it -- a relative
     # path from the network's folder -- not from the working directory (asset_paths).
@@ -1198,6 +1199,7 @@ def executing(prop):
         # that outer write for whatever it still had left to do.
         chunk_notice._usd_write_active = prev_usd_write_active
         chunk_notice._executing_chunk = prev_executing_chunk
+        chunk_notice._cook_serial += 1
         prop._executing = False
     # Not on a raise: a module that fails ends the solve it was part of, as it always has.
     #
