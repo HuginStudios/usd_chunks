@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Undoing a chunk's delete left it blocked ("isn't wired above") though its wire was drawn,
+  and the chunk below it too. Deleting a chunk in the middle of a chain did the same to
+  the chunk below it. Both keep their wires now.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
