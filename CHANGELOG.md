@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- The rings on the nodes that made or changed the selected prim come back when the prim does.
+  Switching the view away hid the prim and took the rings off; switching back left them off
+  until the selection changed.
 - A script building inside `chunk.change_block()` no longer gets "no prim at ..." warnings for
   prims that exist by the end of the block (a material binding copies a Duplicate Prim makes).
   The warning now comes from the block's closing cook, only for a path still missing then.

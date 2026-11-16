@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from usd_chunks import Scene, chunk_notice
 from usd_chunks.chunk_stage import get_chunk_prim_path
@@ -21,8 +21,10 @@ def _spin(ms: int) -> None:
 
 
 def _mark(graph, chunk):
-    mark = getattr(graph._nodes[str(get_chunk_prim_path(chunk))], "_trace_mark", None)
-    return (mark._role, mark._label) if mark is not None and mark.isVisible() else None
+    node = graph._nodes[str(get_chunk_prim_path(chunk))]
+    mark = getattr(node, "_trace_mark", None)
+    # Shown on its node; the node itself may be hidden while the graph is off screen.
+    return (mark._role, mark._label) if mark is not None and mark.isVisibleTo(node) else None
 
 
 def test_selecting_a_prim_rings_its_maker_and_changers_and_names_them(qapp) -> None:
@@ -89,6 +91,42 @@ def test_the_ring_follows_the_node_when_it_collapses_expands_or_resizes(qapp) ->
         finally:
             view.deleteLater()
             graph.deleteLater()
+
+
+def test_the_rings_come_back_with_a_selected_prim_the_view_hid(qapp) -> None:
+    # A graph an earlier test left for deleteLater still hears every notice: delete it now.
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    with Scene() as scene:
+        box = scene.create.cube(prim_path="/World/box", width=2.0)
+        moved = scene.create.transform(box, primpath_location="/World/box", ty=3.0)
+        scene.set_view(moved)
+        stage = scene.get_stage()
+        graph = ChunkGraphScene()
+        view = ChunkGraphView()
+        view.setScene(graph)
+        try:
+            graph.build(stage, scene, box.get_context())
+            _spin(300)
+            # A host holds the selection as paths and leaves out the ones with no prim.
+            scene.get_selected_prims = lambda: [p for p in [stage.GetPrimAtPath("/World/box")] if p]
+            scene.primSelectionChangedCallback()
+            _spin(200)
+            assert _mark(graph, box) == ("made", "made")
+
+            other = scene.create.cube(prim_path="/World/other", width=1.0)
+            scene.set_view(other)  # mutes the box's layers: the prim is gone
+            _spin(300)
+            assert not stage.GetPrimAtPath("/World/box")
+            assert _mark(graph, box) is None and _mark(graph, moved) is None
+
+            scene.set_view(moved)
+            _spin(300)
+            assert _mark(graph, box) == ("made", "made")
+            assert _mark(graph, moved) == ("changed", "1")
+        finally:
+            view.deleteLater()
+            graph.deleteLater()
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
 def test_select_its_prims_selects_what_the_chunk_made(qapp, monkeypatch) -> None:
