@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Duplicate Prim: a copy's relationships and connections into its own subtree now point at the
+  copy, not the source. Copies of a prim with a scatter under it kept their instancer aimed at
+  the source's prototypes, so pruning the source emptied them; a copied material also lost the
+  wiring between its shaders.
 - A text field holding megabytes (an Inline USD chunk with a whole terrain pasted in) froze
   the params panel for seconds at every scroll or repaint. Past 256 KB, or a line longer than
   20 000 characters, it now shows a short read-only preview and keeps the text as it was.
