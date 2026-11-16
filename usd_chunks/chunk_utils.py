@@ -1527,7 +1527,8 @@ def warn_if_missing(node, path: str | Sdf.Path, what: str, param=None) -> bool:
     For the chunks that author nothing on a missing target rather than fail: without this a
     mistyped path in one of them gives no sign at all. Once per path per chunk, since every
     cook meets it again. Not while `param`, the param the path came from, is still at its
-    default -- a chunk just dropped in has not been pointed at anything yet.
+    default -- a chunk just dropped in has not been pointed at anything yet -- nor while a
+    change_block's body runs, before the cook its end makes with everything wired.
 
     Returns:
         Whether path is missing for good.
@@ -1537,6 +1538,10 @@ def warn_if_missing(node, path: str | Sdf.Path, what: str, param=None) -> bool:
     stage = node.get_stage()
     if stage is None or not missing_for_good(stage, path):
         return False
+    if chunk_cook.is_building():
+        # A script's change_block: this cook ran as the chunk was made, before what feeds
+        # it had settled. The block's own solve cooks it again and warns then if it must.
+        return True
     warned = node.__dict__.setdefault(_WARNED_MISSING, set())
     if str(path) not in warned:
         warned.add(str(path))

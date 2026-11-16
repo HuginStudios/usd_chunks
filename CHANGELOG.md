@@ -419,6 +419,26 @@ This file starts with the first release; development before that is in the commi
   graph, but stayed in `scene.get_chunks()` with its layer still in the stack. The same
   happened to any chunk whose creation was undone, or whose delete was redone. Now the
   chunk goes too.
+- The rings on the nodes that made or changed the selected prim come back when the prim does.
+  Switching the view away hid the prim and took the rings off; switching back left them off
+  until the selection changed.
+- A script building inside `chunk.change_block()` no longer gets "no prim at ..." warnings for
+  prims that exist by the end of the block (a material binding copies a Duplicate Prim makes).
+  The warning now comes from the block's closing cook, only for a path still missing then.
+- The ring and "made" / number tag on a node that made or changed the selected prim follow
+  the node when it collapses, expands or is resized. The ring kept the size the node had when
+  the prim was selected.
+- Scatter Points: an Instancer Path under a moved, turned or scaled prim placed the instances
+  off the surface, that prim's transform applied twice (flowers on an urn at x = -10 landed at
+  x = -20). The instances are now written in the parent's space.
+- Duplicate Prim: a copy's relationships and connections into its own subtree now point at the
+  copy, not the source. Copies of a prim with a scatter under it kept their instancer aimed at
+  the source's prototypes, so pruning the source emptied them; a copied material also lost the
+  wiring between its shaders.
+- A text field holding megabytes (an Inline USD chunk with a whole terrain pasted in) froze
+  the params panel for seconds at every scroll or repaint. Past 256 KB, or a line longer than
+  20 000 characters, it now shows a short read-only preview and keeps the text as it was.
+  Keep text that big in a file and bring it in with a Reference chunk.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
