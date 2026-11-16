@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
+  box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
+  drag one face at a time, and a translate gizmo is a move handle. Drags go through the
+  chunk's own hooks (snapping, landing on the roof) and undo as one step.
 - **Which chunk made this prim?** Select a prim in the viewport and the node graph rings
   the chunk that made it (*made*), each chunk that changed it (numbered in the order the
   changes apply) and, for a prim inside a referenced asset, the chunk that brought it in.
@@ -247,6 +251,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Houdini: Tab > usdchunks > **Import Network...** is now **Chunk Import...**.
+- RBD Solver simulates every prim its Target Prim selects (a viewport selection, a list or
+  a glob), not just the first. The selected rigid bodies share one solve, so they land on
+  and knock into each other; each keeps its own authored mass, friction and collider
+  shape. A PointInstancer or an articulated asset among them is still solved on its own.
 - Houdini: a chunk node's chunk is named after the node, and renamed with it. Log lines,
   `USD_CHUNKS_TIMINGS` and error messages say "Grass" rather than "ScatterPoints1".
 - Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
@@ -409,6 +418,33 @@ This file starts with the first release; development before that is in the commi
 - The ring and "made" / number tag on a node that made or changed the selected prim follow
   the node when it collapses, expands or is resized. The ring kept the size the node had when
   the prim was selected.
+- Scatter Points: an Instancer Path under a moved, turned or scaled prim placed the instances
+  off the surface, that prim's transform applied twice (flowers on an urn at x = -10 landed at
+  x = -20). The instances are now written in the parent's space.
+- Duplicate Prim: a copy's relationships and connections into its own subtree now point at the
+  copy, not the source. Copies of a prim with a scatter under it kept their instancer aimed at
+  the source's prototypes, so pruning the source emptied them; a copied material also lost the
+  wiring between its shaders.
+- A text field holding megabytes (an Inline USD chunk with a whole terrain pasted in) froze
+  the params panel for seconds at every scroll or repaint. Past 256 KB, or a line longer than
+  20 000 characters, it now shows a short read-only preview and keeps the text as it was.
+  Keep text that big in a file and bring it in with a Reference chunk.
+- Override Chunk Prim showed none of its target's params in Houdini: the target is set
+  between cooks, when there is no stage to read them from, and the cook then took them as
+  built. The cook builds them now.
+- Houdini: an imported chunkgroup's own nodes (`space_in`, `space_out` and its output)
+  sit by its chunks, a row above and below them, instead of far away where Houdini puts a
+  new node. A network drawn so it doesn't read top to bottom (an Output chunk beside the
+  chain's head, its wire running back up) is laid out by Houdini as one chain instead.
+- Houdini: a pip install of usd_chunks now includes the viewport handles'
+  `viewer_states` folder.
+- Houdini: a box handle shrank to a point at the origin when the chunkgroup had an input,
+  such as a Sublayer. Reading the input's stage swapped out the node's stage before the
+  handle was placed on it.
+- Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
+  nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
+  the prim it reads existed was cooked again inside a later node's cook, on that node's
+  stage; Houdini now recooks it itself.
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.

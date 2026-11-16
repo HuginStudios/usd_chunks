@@ -112,3 +112,115 @@ def test_rbd_run_does_not_reexecute_upstream_chunk() -> None:
         "the simulation must bake real time samples onto the actual stage, not a discarded "
         "scratch stage"
     )
+
+
+def test_rbd_run_simulates_every_selected_prim() -> None:
+    """Target Prim takes several prims (a selection, a space/comma list or a glob) and each
+    one gets the simulation a single target would. Only the first used to be simulated, so
+    every other selected prim stayed where it was.
+
+    The prims bake one after another into the same layer, so the second's bake must not
+    clear the first's away.
+    """
+    if not rbd_mod_file._HAS_MUJOCO:
+        pytest.skip("mujoco not installed in this environment")
+
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_rbd_general_colliders import _box_mesh
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    _box_mesh(stage, "/drop/a", centre=(0.0, 0.0, 50.0), size=(2.0, 2.0, 2.0))
+    _box_mesh(stage, "/drop/b", centre=(10.0, 0.0, 80.0), size=(2.0, 2.0, 2.0))
+    _box_mesh(stage, "/drop/c", centre=(-10.0, 0.0, 30.0), size=(2.0, 2.0, 2.0))
+
+    rbd = _mk(reg.get_chunk_module("rbd_solver"), scene)
+    rbd.get_param("prim_path").value = "/drop/a /drop/b, /drop/c"
+    rbd.get_param("frame_count").value = 6  # keep the test fast
+
+    run_btn = rbd.get_param("run_sim")
+    reg.get_chunk_module("rbd_solver").module._run(run_btn, None, run_btn)
+
+    def baked_op(path):
+        prim = stage.GetPrimAtPath(path)
+        ops = [a for a in prim.GetAttributes() if a.GetName().startswith("xformOp:") and a.GetNumTimeSamples()]
+        return ops[0] if ops else None
+
+    for path in ("/drop/a", "/drop/b", "/drop/c"):
+        op = baked_op(path)
+        assert op is not None, f"{path} was selected but got no baked animation"
+        assert op.GetNumTimeSamples() == 6, f"{path} must get every frame, like a single target"
+
+    readout = rbd.get_param("readout").value
+    assert "3 prims" in readout, readout
+
+
+def test_rbd_selected_prims_collide_with_each_other() -> None:
+    """The selected rigid bodies share one solve, so they land on each other.
+
+    Solved one at a time, the box dropped onto the other fell straight through it to the
+    ground, since neither knew the other was there.
+    """
+    if not rbd_mod_file._HAS_MUJOCO:
+        pytest.skip("mujoco not installed in this environment")
+
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_rbd_general_colliders import _box_mesh
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+
+    class _StageScene(_DummyScene):
+        def get_stage(self):
+            return stage
+
+    scene = _StageScene()
+    reg = chunk_registry.ChunkRegistry()
+    reg.initialize(scene, "pytest")
+    lm = chunk_registry.ChunkLayerManager()
+    lm.initialize(stage)
+    _chunk_usd_init(stage, scene)
+
+    _box_mesh(stage, "/ground", centre=(0.0, 0.0, -1.0), size=(200.0, 200.0, 2.0))
+    _box_mesh(stage, "/stack/bottom", centre=(0.0, 0.0, 1.0), size=(4.0, 4.0, 2.0))
+    _box_mesh(stage, "/stack/top", centre=(0.0, 0.0, 12.0), size=(4.0, 4.0, 2.0))
+
+    rbd = _mk(reg.get_chunk_module("rbd_solver"), scene)
+    rbd.get_param("prim_path").value = "/stack/bottom,/stack/top"
+    rbd.get_param("collision_path").value = "/ground"
+    rbd.get_param("shape_type").value = "Box"
+    frames = 36
+    rbd.get_param("frame_count").value = frames
+
+    run_btn = rbd.get_param("run_sim")
+    reg.get_chunk_module("rbd_solver").module._run(run_btn, None, run_btn)
+
+    def centre_z(path, start):
+        prim = stage.GetPrimAtPath(path)
+        moved = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(frames)  # the last frame
+        return start + moved.ExtractTranslation()[2]
+
+    bottom, top = centre_z("/stack/bottom", 1.0), centre_z("/stack/top", 12.0)
+    assert top - bottom > 1.5, (
+        f"the top box must come to rest ON the bottom one (centres {bottom:.2f}, {top:.2f}), "
+        "not fall through it -- the selected prims have to share one solve"
+    )
+    assert "2 prims" in rbd.get_param("readout").value
