@@ -52,6 +52,14 @@ def test_huge_text_draws_quickly(qapp):
     assert time.perf_counter() - start < 0.5
 
 
+def test_many_short_lines_stay_editable(qapp):
+    # 3000 short lines, 70 KB: under both limits, though lines 2000 on add up past HUGE_LINE.
+    text = "\n".join(f"    float x{i} = {i}.5" for i in range(3000))
+    widget = _widget(text)
+    assert not widget.text.isReadOnly()
+    assert widget.text.document().toPlainText() == text
+
+
 def test_ordinary_text_stays_editable(qapp):
     widget = _widget(_HUGE)
     widget.set_value("#usda 1.0\ndef Sphere \"s\" {}\n")

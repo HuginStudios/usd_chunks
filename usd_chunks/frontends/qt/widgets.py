@@ -1013,7 +1013,8 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         value = str(value)
         if value == self.get_value():
             return
-        huge = len(value) > self.HUGE_TEXT or max(map(len, value.split("\n", 2000)), default=0) > self.HUGE_LINE
+        # Every line is measured: the size check comes first, so this splits at most HUGE_TEXT.
+        huge = len(value) > self.HUGE_TEXT or max(map(len, value.split("\n")), default=0) > self.HUGE_LINE
         with QtCore.QSignalBlocker(self.text):
             if huge:
                 self._huge = value
