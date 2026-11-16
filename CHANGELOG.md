@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A script building inside `chunk.change_block()` no longer gets "no prim at ..." warnings for
+  prims that exist by the end of the block (a material binding copies a Duplicate Prim makes).
+  The warning now comes from the block's closing cook, only for a path still missing then.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
