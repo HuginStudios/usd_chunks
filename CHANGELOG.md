@@ -415,6 +415,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- The first edit of a param writes its attribute and value in one stage change. It made
+  the attribute, then set it, so anything listening to the stage first saw an attribute
+  holding nothing, and in usdview the set once raised "Accessed invalid attribute ... on
+  expired 'Chunk' prim".
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
