@@ -8101,7 +8101,10 @@ def _load_chunks(
                                 dep = chunk_by_path.get(source) or next(iter(_chunks_at([source])), None)
                                 if dep is not None and id(dep) not in existing_deps:
                                     chunk.add_dependency(dep)
-                                    chunks_with_dependencies.add(id(chunk))
+                                    # Only an upstream loaded here cooks it by cascade; one
+                                    # already in the scene does not cook again, so it is a root.
+                                    if source in chunk_by_path:
+                                        chunks_with_dependencies.add(id(chunk))
                     finally:
                         sync._reconciling_exec = False
 
