@@ -415,6 +415,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points: an Instancer Path under a moved, turned or scaled prim placed the instances
+  off the surface, that prim's transform applied twice (flowers on an urn at x = -10 landed at
+  x = -20). The instances are now written in the parent's space.
 - Duplicate Prim: a copy's relationships and connections into its own subtree now point at the
   copy, not the source. Copies of a prim with a scatter under it kept their instancer aimed at
   the source's prototypes, so pruning the source emptied them; a copied material also lost the
