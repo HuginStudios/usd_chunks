@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `chunk.TextEdit(..., wrap=True)` makes a prose field: in the Qt params panel its lines wrap
+  at the field's edge, in the UI's own font, so a paragraph is not one long line scrolled
+  sideways. Without it a `TextEdit` stays a code field (fixed-width font, no wrapping).
 - Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
   box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
   drag one face at a time, and a translate gizmo is a move handle. Drags go through the
