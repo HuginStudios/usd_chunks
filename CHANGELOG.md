@@ -415,6 +415,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),
+  and copies are numbered `constant_color3_1`, `_2` instead of starting at `constant_color3_`.
 - Scatter Points with Max Slope over 90 now covers faces that point down, such as the
   underside of a sphere. New scatters sample with Tiles, which only drops points from
   above, so they stayed on the top half. Over 90, Darts is used instead.
