@@ -6070,13 +6070,25 @@ def _sources_of(stage: Usd.Stage, prim_to_chunk: dict, path: str) -> list[str]:
 
 
 def _roots_first(stage: Usd.Stage, prim_to_chunk: dict, path: str, seen: set, order: list[str]) -> None:
-    """Append what feeds path, then path itself, to order, roots first, skipping what seen holds."""
+    """Append what feeds path, then path itself, to order, roots first, skipping what seen holds.
+
+    A loop with its own stack, not recursion: a chain of about a thousand chunks went past
+    Python's recursion limit and the network could not be built.
+    """
     if path in seen:
         return
     seen.add(path)
-    for src in _sources_of(stage, prim_to_chunk, path):
-        _roots_first(stage, prim_to_chunk, src, seen, order)
-    order.append(path)
+    stack = [(path, iter(_sources_of(stage, prim_to_chunk, path)))]
+    while stack:
+        node, sources = stack[-1]
+        for src in sources:
+            if src not in seen:
+                seen.add(src)
+                stack.append((src, iter(_sources_of(stage, prim_to_chunk, src))))
+                break
+        else:
+            stack.pop()
+            order.append(node)
 
 
 # (chunk_scheduler.shape_version(), id(chunk) -> place) for branch_place.

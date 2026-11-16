@@ -415,6 +415,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A network with a chain of about a thousand chunks can be built and opened. Ordering
+  its chunks recursed once per chunk and stopped with a RecursionError.
 - Scatter Points with Max Slope over 90 now covers faces that point down, such as the
   underside of a sphere. New scatters sample with Tiles, which only drops points from
   above, so they stayed on the top half. Over 90, Darts is used instead.
