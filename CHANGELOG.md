@@ -406,6 +406,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- The ring and "made" / number tag on a node that made or changed the selected prim follow
+  the node when it collapses, expands or is resized. The ring kept the size the node had when
+  the prim was selected.
 - `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
   per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
   tz=3)`.

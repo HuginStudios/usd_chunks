@@ -1456,6 +1456,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         self._full_height = _NODE_HEADER_H + chunk_widget.sizeHint().height() + _NODE_BODY_BOTTOM
         self._height = self._full_height
         self.prepareGeometryChange()
+        self._fit_trace_mark()
 
 
         self._port_rebuild_timer = QtCore.QTimer(chunk_widget)
@@ -1555,6 +1556,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         # Both branches above have just written self._height; this is the one place every
         # height update passes through, so it is where settling is tracked.
         self._note_height_sample()
+        self._fit_trace_mark()
 
     def is_height_settled(self) -> bool:
         """True once the graph has finished laying out and this height can be trusted.
@@ -1936,6 +1938,12 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             mark = self._trace_mark = prim_trace.TraceMark(self)
         mark.set(role, tag, QtCore.QRectF(0, 0, self._width, self._height))
         mark.show()
+
+    def _fit_trace_mark(self) -> None:
+        """Fit the trace ring to the node again, after it collapsed, expanded or resized."""
+        mark = getattr(self, "_trace_mark", None)
+        if mark is not None and mark.isVisibleTo(self):
+            mark.set_rect(QtCore.QRectF(0, 0, self._width, self._height))
 
     def _menu_button_rect(self) -> QtCore.QRectF:
         """Where the header's three-dot menu button is, in node coordinates."""
@@ -2506,6 +2514,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
         if isinstance(scene, ChunkGraphScene):
             scene.update_edges_for(self)
         self._kick_port_rebuild()
+        self._fit_trace_mark()
         self.update()
 
     def reset_width(self) -> None:
@@ -2556,6 +2565,7 @@ class ChunkNodeItem(QtWidgets.QGraphicsItem):
             if expanding and self._port_rebuild_timer is not None:
                 # Recompute port positions from widget geometry now that proxy is visible.
                 self._port_rebuild_timer.start()
+        self._fit_trace_mark()
         self._apply_z()
         self.update()
 
