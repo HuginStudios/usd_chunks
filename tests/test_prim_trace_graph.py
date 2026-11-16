@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import time
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
+from PySide6.QtTest import QTest
 
 from usd_chunks import Scene, chunk_notice
 from usd_chunks.chunk_stage import get_chunk_prim_path
@@ -51,6 +52,39 @@ def test_selecting_a_prim_rings_its_maker_and_changers_and_names_them(qapp) -> N
             graph.trace_selection()
             assert _mark(graph, box) is None and _mark(graph, moved) is None
             assert view._trace_bar.isHidden()
+        finally:
+            view.deleteLater()
+            graph.deleteLater()
+
+
+def test_a_click_on_a_ringed_node_reaches_its_param_fields(qapp) -> None:
+    """The ring sits over the node: a click on a field must still reach the field."""
+    with Scene() as scene:
+        box = scene.create.cube(prim_path="/World/box", width=2.0)
+        stage = scene.get_stage()
+        graph = ChunkGraphScene()
+        view = ChunkGraphView()
+        view.setScene(graph)
+        view.resize(800, 600)
+        try:
+            graph.build(stage, scene, box.get_context())
+            node = graph._nodes[str(get_chunk_prim_path(box))]
+            assert node._proxy is not None
+            # Off screen the fields never get laid out: give them the height they have on screen.
+            node._proxy.resize(node._proxy.size().width(), 200)
+            selected = [stage.GetPrimAtPath("/World/box")]
+            scene.get_selected_prims = lambda: selected
+            graph.trace_selection()
+            assert _mark(graph, box) == ("made", "made")
+            # A point on the fields and under the ring.
+            ring = node._trace_mark.mapRectToScene(node._trace_mark.boundingRect())
+            centre = ring.intersected(node._proxy.sceneBoundingRect()).center()
+            assert node._proxy.sceneBoundingRect().height() > 20 and node._proxy in graph.items(centre)
+            view.centerOn(centre)
+
+            QTest.mouseClick(view.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=view.mapFromScene(centre))
+            # The key router sends typed keys to the clicked node's fields.
+            assert view._proxy_key_router._active is node._chunk_widget
         finally:
             view.deleteLater()
             graph.deleteLater()

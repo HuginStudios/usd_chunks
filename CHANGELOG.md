@@ -415,6 +415,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- You can type into a node's fields again while it has the "made" or "changed" ring.
+  The ring took every click on the node, so the fields never got the keys.
 - Override Chunk Prim showed none of its target's params in Houdini: the target is set
   between cooks, when there is no stage to read them from, and the cook then took them as
   built. The cook builds them now.
