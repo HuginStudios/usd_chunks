@@ -39,7 +39,7 @@ import threading
 import weakref
 from collections.abc import Callable, Iterable
 
-from pxr import Sdf, Tf, Usd
+from pxr import Sdf, Usd
 
 from usd_chunks import chunk_naming, cook_cache, skip_cook
 
@@ -70,42 +70,9 @@ def enabled() -> bool:
 # ------------------------------------------------------------------------------------------
 
 
-#: Per layer identifier: (the layer, weakly; a one-item list counting the change rounds that
-#: edited it; the callback doing the counting and its Tf listener). Counted through the list, not a method of
-#: an object holding the listener, so nothing here is a reference cycle left for the garbage
-#: collector; an entry whose layer has gone is dropped as the next one is added.
-_counts: dict[str, tuple[weakref.ref, list[int], object]] = {}
-
-
-def _counter(tally: list[int]) -> Callable:
-    """A Tf callback adding one to tally[0] per notice: it takes exactly (notice, sender)."""
-    def heard(_notice, _sender) -> None:
-        tally[0] += 1
-    return heard
-
-
-def _count(layer: Sdf.Layer) -> int:
-    """How many change rounds have edited layer. Sdf says nothing of a write that changes nothing."""
-    held = _counts.get(layer.identifier)
-    # The entry must be this layer's, not only one under its name: an anonymous layer's
-    # identifier holds its address, so a new one can take a dead one's, while the dead one's
-    # Python object lives on (an expired handle) with a listener on a layer that is gone.
-    known = held[0]() if held is not None else None
-    if known is None or getattr(known, "expired", False) or known != layer:
-        for ident in [i for i, entry in _counts.items() if entry[0]() is None]:
-            del _counts[ident]
-        tally = [0]
-        heard = _counter(tally)
-        # The callback is kept here as well: Tf holds it only weakly.
-        held = (weakref.ref(layer), tally,
-                (heard, Tf.Notice.Register(Sdf.Notice.LayersDidChangeSentPerLayer, heard, layer)))
-        _counts[layer.identifier] = held
-    return held[1][0]
-
-
 def shared_layer_edits(stage: Usd.Stage) -> tuple[int, int]:
     """How often the root and session layers have been edited, to compare around a cook."""
-    return _count(stage.GetRootLayer()), _count(stage.GetSessionLayer())
+    return skip_cook.layer_edits(stage.GetRootLayer()), skip_cook.layer_edits(stage.GetSessionLayer())
 
 
 def note_cook(chunk, stage: Usd.Stage, before: tuple[int, int]) -> None:
@@ -445,7 +412,7 @@ _fingerprint: tuple | None = None
 def _fingerprint_for(stage: Usd.Stage) -> str:
     global _fingerprint
     root = stage.GetRootLayer()
-    state = (root.identifier, _count(root), tuple(root.subLayerPaths), tuple(sorted(stage.GetMutedLayers())))
+    state = (root.identifier, skip_cook.layer_edits(root), tuple(root.subLayerPaths), tuple(sorted(stage.GetMutedLayers())))
     if _fingerprint is not None and _fingerprint[0]() is stage and _fingerprint[1] == state:
         return _fingerprint[2]
     digest = scene_fingerprint(stage)

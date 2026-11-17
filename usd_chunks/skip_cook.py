@@ -202,6 +202,43 @@ class _EditCount:
         self.count += 1
 
 
+#: Per layer identifier: (the layer, weakly; a one-item list counting the change rounds that
+#: edited it; the callback doing the counting and its Tf listener). Counted through the list,
+#: not a method of an object holding the listener, so nothing here is a reference cycle left
+#: for the garbage collector; an entry whose layer has gone is dropped as the next one is added.
+_edit_counts: dict[str, tuple[weakref.ref, list[int], object]] = {}
+
+
+def _counter(tally: list[int]) -> Callable:
+    """A Tf callback adding one to tally[0] per notice: it takes exactly (notice, sender)."""
+    def heard(_notice, _sender) -> None:
+        tally[0] += 1
+    return heard
+
+
+def layer_edits(layer: Sdf.Layer) -> int:
+    """How many change rounds have edited layer. Sdf says nothing of a write that changes nothing.
+
+    Counting starts the first time a layer is asked about: compare two answers, not one
+    with zero.
+    """
+    held = _edit_counts.get(layer.identifier)
+    # The entry must be this layer's, not only one under its name: an anonymous layer's
+    # identifier holds its address, so a new one can take a dead one's, while the dead one's
+    # Python object lives on (an expired handle) with a listener on a layer that is gone.
+    known = held[0]() if held is not None else None
+    if known is None or getattr(known, "expired", False) or known != layer:
+        for ident in [i for i, entry in _edit_counts.items() if entry[0]() is None]:
+            del _edit_counts[ident]
+        tally = [0]
+        heard = _counter(tally)
+        # The callback is kept here as well: Tf holds it only weakly.
+        held = (weakref.ref(layer), tally,
+                (heard, Tf.Notice.Register(Sdf.Notice.LayersDidChangeSentPerLayer, heard, layer)))
+        _edit_counts[layer.identifier] = held
+    return held[1][0]
+
+
 class _SessionSync:
     """Whether the shared diff stage's copy of the session layer still holds what it does.
 
@@ -1167,12 +1204,53 @@ def read_hidden(watch: _Watch, inputs: Iterable[Sdf.Path], hidden: dict[str, tup
         # Not what it writes under /chunks: an opinion on a chunk prim is a param (an
         # Override Chunk Prim's edit), and it reaches its chunk as a param value, not by the
         # cook reading the stage.
-        written = (p for p in output_paths(own) if not p.HasPrefix(_CHUNKS_ROOT))
-        if listed or any(path in above or _covered(path, subtrees) for path in written):
+        written, around = _written_by(own)
+        # A written prim the cook read: one of the read prims' ancestors, or at or below a
+        # read subtree, which is a subtree among the written prims and their ancestors.
+        if listed or not written.isdisjoint(above) or not around.isdisjoint(subtrees):
             readers.append(other)
         elif own.subLayerPaths and _brings_in(own, {*watch.points, *subtrees}):
             readers.append(other)
     return readers
+
+
+#: Per layer identifier: (the layer, weakly; its layer_edits then; _written_by's answer).
+_written: dict[str, tuple] = {}
+#: How many entries _written held after its dead ones were last dropped.
+_written_kept = [0]
+
+
+def _written_by(layer: Sdf.Layer) -> tuple[frozenset[Sdf.Path], frozenset[Sdf.Path]]:
+    """The prims layer writes outside /chunks (output_paths), and those with all their ancestors.
+
+    Kept until the layer is edited. Every cook asked it of every layer it hides, though
+    those had not changed since: a walk of every other chunk's layer, per cook, was most of
+    what building a 300-chunk village spent in skip_cook.
+
+    Not what a layer writes under /chunks: an opinion on a chunk prim is a param (an
+    Override Chunk Prim's edit), and it reaches its chunk as a param value, not by the cook
+    reading the stage.
+    """
+    edits = layer_edits(layer)
+    held = _written.get(layer.identifier)
+    if held is not None and held[1] == edits:
+        known = held[0]()
+        if known is not None and not getattr(known, "expired", False) and known == layer:
+            return held[2]
+    written = frozenset(p for p in output_paths(layer) if not p.HasPrefix(_CHUNKS_ROOT))
+    around: set[Sdf.Path] = set()
+    for path in written:
+        # Up to the first already there: its ancestors came with it.
+        while path not in around and path != Sdf.Path.absoluteRootPath and not path.isEmpty:
+            around.add(path)
+            path = path.GetParentPath()
+    answer = (written, frozenset(around))
+    if len(_written) > 2 * _written_kept[0] + 64:
+        for ident in [i for i, entry in _written.items() if entry[0]() is None]:
+            del _written[ident]
+        _written_kept[0] = len(_written)
+    _written[layer.identifier] = (weakref.ref(layer), edits, answer)
+    return answer
 
 
 def _sublayer_stack(layer: Sdf.Layer) -> list[Sdf.Layer]:

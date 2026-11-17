@@ -10,7 +10,7 @@ import pytest
 from chunk_stubs import register_stub_module
 from pxr import Sdf, UsdGeom
 
-from usd_chunks import Scene, chunk, chunk_cook, cook_cache, open_cache
+from usd_chunks import Scene, chunk, chunk_cook, cook_cache, open_cache, skip_cook
 
 
 @pytest.fixture(autouse=True)
@@ -275,13 +275,13 @@ def test_a_counter_left_under_a_reused_name_is_not_trusted():
     """
     old = Sdf.Layer.CreateAnonymous("old")
     new = Sdf.Layer.CreateAnonymous("new")
-    open_cache._count(old)
-    open_cache._counts[new.identifier] = open_cache._counts.pop(old.identifier)
+    skip_cook.layer_edits(old)
+    skip_cook._edit_counts[new.identifier] = skip_cook._edit_counts.pop(old.identifier)
 
-    before = open_cache._count(new)
+    before = skip_cook.layer_edits(new)
     Sdf.CreatePrimInLayer(new, "/Edited")
 
-    assert open_cache._count(new) == before + 1
+    assert skip_cook.layer_edits(new) == before + 1
 
 
 def test_building_a_network_looks_nothing_up(monkeypatch):
