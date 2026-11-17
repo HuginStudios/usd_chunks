@@ -187,7 +187,7 @@ _kept_diff: tuple | None = None
 
 
 def _with_slot(session: Sdf.Layer, slot: Sdf.Layer) -> list[tuple[str, Sdf.LayerOffset]]:
-    offsets = session.subLayerOffsets
+    offsets = session.subLayerOffsets.copy()
     return [(slot.identifier, Sdf.LayerOffset()),
             *((path, offsets[i]) for i, path in enumerate(session.subLayerPaths))]
 
@@ -449,8 +449,9 @@ def _stood_in(layer: Sdf.Layer, removed: set[str], dropped: set[str], held: list
     paths = list(layer.subLayerPaths)
     if not paths:
         return None
-    # By index: the whole list of a 900-sublayer layer's offsets took 50 ms to read.
-    offsets = layer.subLayerOffsets
+    # Read once with copy(): the proxy builds the whole list again for each index or item
+    # read, so reading a 900-sublayer layer's offsets one by one took 50 ms, every cook.
+    offsets = layer.subLayerOffsets.copy()
     subs: list[tuple[str, Sdf.LayerOffset]] = []
     left_out: set[str] = set()
     for i, path in enumerate(paths):

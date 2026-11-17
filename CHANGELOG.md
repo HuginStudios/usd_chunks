@@ -427,6 +427,10 @@ This file starts with the first release; development before that is in the commi
 - Big MaterialX networks open faster. Each shader asked which layer to write to once per
   input, and during a cook every ask walked the whole graph above it; now a cook asks once.
   Opening a 100-node shader network: 40% less time.
+- Each cook in a big network spends less time setting up the stage it cooks on. Reading
+  the time offsets of the chunk layers took about 20 µs per layer at 300 chunks and 60 µs
+  at 1000, once per cook; now it reads them all at once. A root edit of a 300-Transform
+  chain: 14.4 s → 13.4 s.
 - Big MaterialX networks build and open faster. To find the Material it belongs under, each
   shader read the inputs of every chunk in the network, once per node between it and the
   Material, on every cook. Now it looks the wire up in an index kept in step with the stage.
