@@ -1482,6 +1482,22 @@ def _composes_children(spec: Sdf.PrimSpec) -> bool:
     )
 
 
+def _loaded_prim_spec(layer: Sdf.Layer, path: Sdf.Path) -> Sdf.PrimSpec | None:
+    """layer's prim spec at path, or None -- also when the layer died since it was listed.
+
+    Sdf.Layer.GetLoadedLayers hands out weak handles. A layer nothing else holds, such as the
+    session layer of a stage that has just become garbage, can be freed by a garbage
+    collection while the walk below runs Python, and its handle then refuses every call
+    (Boost.Python.ArgumentError, a TypeError). A layer that is gone holds no prim.
+    """
+    try:
+        return layer.GetPrimAtPath(path)
+    except TypeError:
+        if getattr(layer, "expired", False):
+            return None
+        raise
+
+
 def missing_for_good(stage: Usd.Stage, path: str | Sdf.Path) -> bool:
     """Whether no prim is at path, and nothing merely switched off right now would add one.
 
@@ -1503,13 +1519,13 @@ def missing_for_good(stage: Usd.Stage, path: str | Sdf.Path) -> bool:
     if stage.GetPrimAtPath(path):
         return False
     loaded = Sdf.Layer.GetLoadedLayers()
-    if any(layer.GetPrimAtPath(path) for layer in loaded):
+    if any(_loaded_prim_spec(layer, path) for layer in loaded):
         return False
     muted = set(stage.GetMutedLayers())
     ancestors = list(path.GetParentPath().GetAncestorsRange())
     for layer in loaded:
         for ancestor in ancestors:
-            spec = layer.GetPrimAtPath(ancestor)
+            spec = _loaded_prim_spec(layer, ancestor)
             if not spec:
                 continue
             if spec.variantSets or (layer.identifier in muted and _composes_children(spec)):
