@@ -37,6 +37,7 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_topology
 from usd_chunks import chunk_trace
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
@@ -2369,8 +2370,14 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     depths: dict = {}
     # Shared by every walk below: in a chain of Transforms on one prim each owner sits one
     # hop below the last, and a fresh walk per owner made one cook cost the chain's length
-    # squared (0.26 s per Transform cook at 100 deep).
-    memo: dict = {}
+    # squared (0.26 s per Transform cook at 100 deep). Kept between cooks too, until an exec
+    # wire changes: read from the scene's stage, where the chunk prims are, so that a cook
+    # stage's answers never go into it.
+    depth_stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
+    if depth_stage:
+        memo = chunk_topology.exec_depth_memo(depth_stage)
+    else:
+        depth_stage, memo = stage, {}
     # Only an op already on the prim can join the order, so with no other chunk op there,
     # there is no one to look for -- the usual case, and asking every chunk in a big scene
     # made each Transform cook cost the size of the scene. A cook sees only what is above it,
@@ -2397,10 +2404,10 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
         owner_prim = _chunk_prim(stage, owner)
         if owner_prim is None:
             continue
-        depths[op_name] = _exec_depth(stage, owner_prim.GetPath(), memo)
+        depths[op_name] = _exec_depth(depth_stage, owner_prim.GetPath(), memo)
     # Depth only orders this op against others; alone, it sorts the same at any depth, and
     # measuring it walks the whole exec chain above this chunk.
-    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node), memo) if depths else 0
+    depths[my_op] = _exec_depth(depth_stage, _own_prim_path(stage, node), memo) if depths else 0
 
     # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
     # re-added below, so an op does not appear twice when a chunk's position changes.

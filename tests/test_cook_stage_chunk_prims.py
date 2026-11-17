@@ -45,3 +45,24 @@ def test_a_cook_stage_leaves_out_the_chunks_it_is_not_wired_to(masks) -> None:
         assert not populated(b), (sorted(map(str, mask)), b._exec_prim_path)
         prim = scene.get_stage().GetPrimAtPath("/World/a")
         assert UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0).ExtractTranslation()[0] == pytest.approx(3.0)
+
+
+def test_chunk_prims_asks_for_ancestors_once_per_parent(monkeypatch) -> None:
+    """Siblings share a parent; asking per chunk walked every ancestor of every chunk each cook."""
+    with Scene() as scene:
+        last = scene.create.cube(prim_path="/World/box")
+        for i in range(20):
+            last = scene.create.transform(last, name=f"T{i}", primpath_location="/World/box", ty=0.01)
+        scene.set_output(last)
+
+        calls = []
+        real = skip_cook._ancestors
+        monkeypatch.setattr(skip_cook, "_ancestors", lambda path: calls.append(path) or real(path))
+        prims = skip_cook._chunk_prims(last)
+
+        assert len(prims) > 20, "the whole chain is wired to its last chunk"
+        assert len(calls) <= 3, f"{len(calls)} ancestor walks for {len(prims)} chunk prims"
+        # The same set as leaving out the ancestors of each chunk one by one, as it did: in a
+        # chain every chunk is wired to the last.
+        paths = {Sdf.Path(c._exec_prim_path) for c in scene.get_chunks() if getattr(c, "_exec_prim_path", None)}
+        assert prims == paths - {a for path in paths for a in real(path.GetParentPath())}
