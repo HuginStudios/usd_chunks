@@ -50,7 +50,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from pxr import Ar, Sdf, Usd
+from pxr import Ar, Sdf, Tf, Usd
 
 from usd_chunks import chunk_scheduler, layer_arcs, layer_reconcile
 from usd_chunks.chunk_flags import ChunkFlags
@@ -182,8 +182,54 @@ def release_cook_stage() -> None:
 
 
 #: The cook stage the diff cooks of one solve share (sharing): (the scene's stage, weakly;
-#: the cook stage; its copy of the session layer; the slot layer on top of that copy).
+#: the cook stage; its copy of the session layer; the slot layer on top of that copy; the
+#: _SessionSync that says when the copy needs bringing up to date).
 _kept_diff: tuple | None = None
+
+
+class _EditCount:
+    """How many change rounds have edited one layer since this started counting.
+
+    Sdf sends nothing for a write that leaves a value as it was, so a count that has not
+    moved means the layer holds what it did.
+    """
+
+    def __init__(self, layer: Sdf.Layer):
+        self.count = 0
+        self._key = Tf.Notice.Register(Sdf.Notice.LayersDidChangeSentPerLayer, self._heard, layer)
+
+    def _heard(self, _notice, _sender) -> None:
+        self.count += 1
+
+
+class _SessionSync:
+    """Whether the shared diff stage's copy of the session layer still holds what it does.
+
+    Bringing the copy up to date walks every spec in the session layer, which holds the
+    bookkeeping of every chunk prim, and it ran before every diff cook: a cook cost the size
+    of the network. Between two cooks the session layer rarely changes, so the walk runs
+    only when it, or the copy, has been edited since the last one. The snapshot a cook
+    compares its writes against is kept while the copy is unchanged, for the same reason.
+    """
+
+    def __init__(self, session: Sdf.Layer, copy: Sdf.Layer):
+        self.session_edits = _EditCount(session)
+        self.copy_edits = _EditCount(copy)
+        self._mark: tuple[int, int] | None = None
+        self._snapshot: tuple[int, Sdf.Layer] | None = None
+
+    def bring_up_to_date(self, session: Sdf.Layer, copy: Sdf.Layer, slot: Sdf.Layer) -> None:
+        """Reconcile session into copy, unless neither changed since the last time."""
+        if self._mark == (self.session_edits.count, self.copy_edits.count):
+            return
+        layer_reconcile.reconcile(session, copy, _with_slot(session, slot))
+        self._mark = (self.session_edits.count, self.copy_edits.count)
+
+    def snapshot(self, copy: Sdf.Layer) -> Sdf.Layer:
+        """A snapshot of copy as it is now, the last one again if copy has not changed."""
+        if self._snapshot is None or self._snapshot[0] != self.copy_edits.count:
+            self._snapshot = (self.copy_edits.count, snapshot(copy))
+        return self._snapshot[1]
 
 
 def _with_slot(session: Sdf.Layer, slot: Sdf.Layer) -> list[tuple[str, Sdf.LayerOffset]]:
@@ -213,21 +259,22 @@ def _shared_diff_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
         copy = Sdf.Layer.CreateAnonymous("cook_session")
         slot = Sdf.Layer.CreateAnonymous("cook_slot")
         slot.subLayerPaths = [layer.identifier]
-        layer_reconcile.reconcile(session, copy, _with_slot(session, slot))
-        stand_in = _StandIn(session, copy, snapshot(copy), [slot], set())
+        sync = _SessionSync(session, copy)
+        sync.bring_up_to_date(session, copy, slot)
+        stand_in = _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits)
         try:
             stage = _open_cook_stage(main, mask, muted, _opening, stand_in)
         finally:
             _opening.clear()
-        _kept_diff = (weakref.ref(main), stage, copy, slot)
+        _kept_diff = (weakref.ref(main), stage, copy, slot, sync)
         return stage, stand_in
-    _, stage, copy, slot = entry
+    _, stage, copy, slot, sync = entry
     # Its layers changed while nothing is populated, then populated at mask (_remask).
     if list(slot.subLayerPaths) != [layer.identifier]:
         slot.subLayerPaths = [layer.identifier]
-    layer_reconcile.reconcile(session, copy, _with_slot(session, slot))
+    sync.bring_up_to_date(session, copy, slot)
     _remask(stage, main, mask, muted)
-    return stage, _StandIn(session, copy, snapshot(copy), [slot], set())
+    return stage, _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits)
 
 
 def _kept_for(main: Usd.Stage) -> Usd.Stage | None:
@@ -357,7 +404,7 @@ class _StandIn:
     """
 
     def __init__(self, session: Sdf.Layer, layer: Sdf.Layer, before: Sdf.Layer | None,
-                 held: list[Sdf.Layer], dropped: set[str]):
+                 held: list[Sdf.Layer], dropped: set[str], edits: _EditCount | None = None):
         self.session = session
         self.layer = layer
         #: The stand-in as the cook found it, when the session layer had content to copy.
@@ -367,13 +414,24 @@ class _StandIn:
         self.held = held
         #: The hidden layers it leaves out, so not muted.
         self.dropped = dropped
+        self._edits = edits
+        self._edits_at_start: int | None = None
+
+    def watch_edits(self) -> None:
+        """Start counting edits to the stand-in: called as the cook starts."""
+        if self._edits is None:
+            self._edits = _EditCount(self.layer)
+        self._edits_at_start = self._edits.count
 
     def copy_back(self) -> None:
         """Copy what the cook authored into the stand-in to the scene's session layer.
 
         Each prim it changed is copied whole, its children with it, and each it removed is
-        removed; its own metadata, but for the sublayers, is set where it changed.
+        removed; its own metadata, but for the sublayers, is set where it changed. Nothing
+        to do when the cook did not edit it, which is found without comparing every spec.
         """
+        if self._edits_at_start is not None and self._edits.count == self._edits_at_start:
+            return
         after = self.layer
         if self.before is None and not _has_content(after):
             return
@@ -662,6 +720,8 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
                 _kept = (weakref.ref(main), stage)
     kept_diff = _kept_diff is not None and _kept_diff[1] is stage
     watch = _Watch(stage, mask, hidden)
+    if stand_in is not None:
+        stand_in.watch_edits()
     _active.append(stage)
     _watches.append(watch)
     try:
