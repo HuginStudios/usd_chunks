@@ -1,0 +1,83 @@
+name: Release
+
+# Runs when a version tag is pushed, such as v1.0.0-rc or v1.0.0:
+#   git tag v1.0.0-rc && git push origin v1.0.0-rc
+# The tag has to match the version in pyproject.toml and have a section in
+# CHANGELOG.md; .github/scripts/release.py checks both before anything is published.
+on:
+  push:
+    tags: ["v*"]
+
+# Two tags pushed at once must not both write the gh-pages branch.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install packaging
+      - run: python .github/scripts/release.py check "$GITHUB_REF_NAME"
+      - run: python .github/scripts/release.py notes "$GITHUB_REF_NAME"
+
+  docs:
+    # Builds the docs with mike, which keeps one folder per version on the gh-pages
+    # branch and a version picker in the site's header. "latest" always points at the
+    # newest tag, and the site's root opens it. GitHub Pages serves the gh-pages
+    # branch (Settings > Pages > Deploy from a branch > gh-pages, set once).
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The git-revision-date plugin reads each page's history, and mike commits
+          # to the gh-pages branch, so both need more than a shallow clone.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # standalone brings usd-core: the reference pages import usd_chunks.
+      - run: pip install -e ".[docs,standalone]" mike
+      - name: Publish this version's docs
+        # Not --strict: the reference pages still have warnings to clear first.
+        env:
+          USD_CHUNK_DIRS: chunks
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          VERSION="${GITHUB_REF_NAME#v}"
+          mike deploy --push --update-aliases "$VERSION" latest
+          mike set-default --push latest
+
+  github-release:
+    # A GitHub Release with this version's CHANGELOG.md section as its notes and the
+    # wheel attached. A tag with a dash (v1.0.0-rc) is marked as a pre-release.
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install packaging build
+      - run: python -m build
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/release.py notes "$GITHUB_REF_NAME" > notes.md
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag $PRERELEASE

@@ -143,6 +143,8 @@ Built for anyone whose pipeline runs on USD:
 
 ## 🚀 Getting started
 
+The docs for each release are at <https://huginstudios.github.io/usd_chunks/>.
+
 1. **[Install it](docs/install.md):**
    ```
    git clone https://github.com/HuginStudios/usd_chunks.git C:\src\usd_chunks

@@ -49,6 +49,6 @@ body:
     attributes:
       label: Environment
       description: OS, Python version, OpenUSD version, usd_chunks version or commit.
-      placeholder: Windows 11, Python 3.11, OpenUSD 26.05, usd_chunks 0.1.0
+      placeholder: Windows 11, Python 3.11, OpenUSD 26.05, usd_chunks 1.0.0-rc
     validations:
       required: true

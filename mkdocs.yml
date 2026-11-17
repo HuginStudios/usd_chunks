@@ -1,4 +1,5 @@
 site_name: USD Chunks
+site_url: https://huginstudios.github.io/usd_chunks/
 theme: 
   name: material
   logo: assets/icon.png
@@ -29,6 +30,12 @@ theme:
         name: Switch to light mode    
       primary: teal
       accent: lime
+# The version picker in the header. The release workflow publishes each tag's docs
+# with mike; a local `mkdocs serve` shows no picker.
+extra:
+  version:
+    provider: mike
+
 plugins:
   - search
   - git-revision-date-localized:
