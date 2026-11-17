@@ -9,6 +9,13 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Changed
+
+- Cooks in a network with big layers are faster. Each cook checked whether it read
+  anything another branch writes by walking every other chunk's layer; what a layer writes
+  is now kept until that layer changes. Building a 300-chunk village from a script: 24.8 s
+  → 16.1 s; opening it with every chunk cooking: 9.9 s → 7.3 s.
+
 ## [1.0.0-rc] - 2026-11-11
 
 The first release candidate.

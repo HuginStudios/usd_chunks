@@ -340,6 +340,26 @@ def test_a_chunk_naming_a_prim_another_branch_makes_is_blocked(caplog):
         assert not reader.has_state(ChunkFlags.State.FAILED)
 
 
+def test_a_sibling_that_starts_writing_what_a_cook_reads_is_seen():
+    """What another branch writes is kept between cooks, until its layer changes: a sibling
+    that moved its prim onto what a chunk reads, since that chunk last cooked, is a missing
+    wire on its next cook."""
+    cooks: list = []
+    with Scene() as scene:
+        gen = _add(scene, _generator(cooks, "Gen"))
+        sibling = _add(scene, _generator(cooks, "Sibling"))
+        reader = _add(scene, _reader(cooks, "Reader"))
+        _chain(scene, gen, reader)
+        gen.get_param("size").value = 2.0
+        gen.get_param("size").value = 3.0
+        assert not skip_cook.record(reader).warned_siblings
+
+        sibling.get_param("path").value = "/Gen"
+        gen.get_param("size").value = 4.0
+
+        assert skip_cook.record(reader).warned_siblings, "Sibling now writes /Gen, which Reader reads"
+
+
 def test_a_first_cook_does_not_see_a_sibling_that_cooked_before_it():
     """A first cook runs on the whole stage, where a sibling shows only if it cooked first."""
     cooks: list = []
