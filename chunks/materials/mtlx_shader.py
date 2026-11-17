@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import re
 from pxr import Sdf, Tf, Usd, UsdShade
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, shader_defs
@@ -279,8 +281,13 @@ def _rename(owner, sdef) -> None:
     get_valid_child_name strips a trailing number before re-suffixing, which is wrong for
     these names specifically: add_color3 would be handed back as add_color4, and that is a
     real and different MaterialX signature rather than a copy. Names ending in a digit get
-    a separator first, so the collision reads as add_color3_1.
+    a separator and a number first, so the collision reads as add_color3_1, not add_color3_.
+
+    A name someone chose (a script's name="Bark", a rename in the graph) is kept: only the
+    module's default name or a name this gave is replaced.
     """
+    if not _is_auto_name(owner.name):
+        return
     desired = _node_name(sdef)
     if owner.name == desired:
         return
@@ -291,8 +298,17 @@ def _rename(owner, sdef) -> None:
         owner.name = desired
         return
 
-    base = f"{desired}_" if desired[-1:].isdigit() else desired
+    base = f"{desired}_1" if desired[-1:].isdigit() else desired
     owner.name = owner.get_valid_child_name(base, reserved)
+
+
+def _is_auto_name(name: str) -> bool:
+    """Whether name is the module's default (MaterialXShader2) or one _rename gave (add_color3_1)."""
+    if re.fullmatch(r"MaterialXShader\d*", name):
+        return True
+    stem = re.sub(r"_\d+$", "", name)
+    candidates = {name, stem, stem.rstrip("_"), re.sub(r"\d+$", "", name)}
+    return any(shader_defs.get_shader_def(f"ND_{candidate}", SOURCE_TYPE) is not None for candidate in candidates)
 
 
 def _ensure_prim_path(node, sdef) -> str:

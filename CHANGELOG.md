@@ -418,6 +418,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),
+  and copies are numbered `constant_color3_1`, `_2` instead of starting at `constant_color3_`.
 - A reopened MaterialX network cooks each shader at most twice. The Surface at the
   bottom of a shader tree cooked once per node above it: 50 times in a 100-node network.
 - Big MaterialX networks open faster. Each shader asked which layer to write to once per
