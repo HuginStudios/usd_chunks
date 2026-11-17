@@ -213,11 +213,18 @@ def lookup(chunk) -> CookEntry | None:
 class CookEntry:
     """One cook's slot in the cache: read it back, or record the cook that fills it."""
 
-    def __init__(self, key: str):
+    def __init__(self, key: str, store: bool = True):
         self.key = key
+        #: False for an entry only read back (open_cache): its cook stores nothing.
+        self._store = store
         self._before: list | None = None
         self._started = 0.0
         self._restored = False
+
+    @property
+    def restored(self) -> bool:
+        """Whether restore() read this entry back."""
+        return self._restored
 
     @property
     def _layer_path(self) -> Path:
@@ -279,7 +286,8 @@ class CookEntry:
         """Store what the cook just made, if it is something the key accounts for."""
         # A drag's earlier cook no longer describes the layer, whether or not this one is kept.
         _cancel_pending(chunk)
-        if self._restored or self._before is None or getattr(chunk, _INCOMPLETE, False):
+        if (not self._store or self._restored or self._before is None
+                or getattr(chunk, _INCOMPLETE, False)):
             return
         elapsed = time.perf_counter() - self._started
         if elapsed < _MIN_COOK_S and not _always(chunk.get_config()):
@@ -310,19 +318,48 @@ class CookEntry:
         param changed while it ran must not relabel the result. The chunk's outputs (its
         readout) are stored as they are now, and come back with the layer.
         """
-        mask = int(_STATES[0] | _STATES[1])
-        written = [
-            (i, p.name, True, p.value, int(p.state) & mask)
-            for i, p in enumerate(_items(chunk))
-            if hasattr(p, "value") and _is_output(p)
-        ]
         try:
-            _store(self.key, layer, written)
+            _store(self.key, layer, output_values(chunk))
         except Exception:  # noqa: BLE001 - a cache that cannot be written is only slower
             logger.warning("cook cache: could not store %s", chunk.name, exc_info=True)
 
 
-def _store(key: str, layer: Sdf.Layer, written: list) -> None:
+def output_values(chunk) -> list:
+    """The chunk's outputs (its readouts) as they are now, as an entry stores what a cook set."""
+    mask = int(_STATES[0] | _STATES[1])
+    return [
+        (i, p.name, True, p.value, int(p.state) & mask)
+        for i, p in enumerate(_items(chunk))
+        if hasattr(p, "value") and _is_output(p)
+    ]
+
+
+def has_entry(key: str) -> bool:
+    """Whether the cache holds a whole entry under key."""
+    folder = cache_dir()
+    return (folder / f"{key}.usdc").is_file() and (folder / f"{key}.params").is_file()
+
+
+def store_entry(key: str, layer: Sdf.Layer, written: list, prune: bool = True) -> None:
+    """Store layer and the param values written under key.
+
+    Args:
+        key: The entry's key.
+        layer: The cooked layer.
+        written: (index, name, has_value, value, state bits) per param the cook set.
+        prune: Prune the folder after; False to store many and prune() once.
+    """
+    _store(key, layer, written, prune)
+
+
+def prune() -> None:
+    """Drop entries unread for 30 days, then the least recently read until under the cap."""
+    folder = cache_dir()
+    if folder.is_dir():
+        _prune(folder)
+
+
+def _store(key: str, layer: Sdf.Layer, written: list, prune: bool = True) -> None:
     folder = cache_dir()
     folder.mkdir(parents=True, exist_ok=True)
     layer_path = folder / f"{key}.usdc"
@@ -339,7 +376,8 @@ def _store(key: str, layer: Sdf.Layer, written: list) -> None:
     os.replace(tmp_layer, layer_path)
     # After, so the cap counts what was just written -- and a single entry larger than the
     # cap is dropped again rather than left to push the folder over it.
-    _prune(folder)
+    if prune:
+        _prune(folder)
 
 
 def max_bytes() -> int:
@@ -419,7 +457,26 @@ def _stable_repr(value: Any) -> str:
     return repr(value)
 
 
-def _key(chunk, module) -> str | None:
+def input_key(chunk, module) -> str | None:
+    """A digest of what this chunk's cook reads but the chunks above it: see _key.
+
+    For open_cache, which keys a network saved in one session and opened in another, so
+    each param counts as the file will hold it: its value as its attribute stores it (a
+    float param is a 32-bit float there, 0.01 coming back as 0.0099999998), the expression
+    of a wired one, and a param naming a file as the file it names (its path, size and
+    mtime), since saving can rewrite it relative to the network's folder.
+
+    Args:
+        chunk: The chunk.
+        module: Its ChunkModule, or None for a chunk with none (a chunkgroup).
+
+    Returns:
+        The digest, or None if the module's cache_key hook could not say.
+    """
+    return _key(chunk, module, files_as_named=False)
+
+
+def _key(chunk, module, files_as_named: bool = True) -> str | None:
     h = hashlib.sha256()
 
     def add(*parts):
@@ -427,10 +484,14 @@ def _key(chunk, module) -> str | None:
             h.update(repr(part).encode())
             h.update(b"\0")
 
-    add(_FORMAT, sys.version_info[:2], Usd.GetVersion(), module.source_hash)
-    add(_code_fingerprint(str(Path(module.module_file).parent)))
-    add(_packages(module))
-    add(str(chunk.get_config().module))
+    if module is None:  # a chunkgroup: no code of its own, only its params
+        add(_FORMAT, sys.version_info[:2], Usd.GetVersion(), None)
+    else:
+        add(_FORMAT, sys.version_info[:2], Usd.GetVersion(), module.source_hash)
+        add(_code_fingerprint(str(Path(module.module_file).parent)))
+        add(_packages(module))
+    config = chunk.get_config()
+    add(str(config.module) if config is not None else "")
 
     stage = chunk.get_stage()
     root = stage.GetRootLayer() if stage else None
@@ -441,10 +502,17 @@ def _key(chunk, module) -> str | None:
     for param in _value_params(chunk):
         if param.name == TOGGLE or _is_output(param):
             continue
-        value = param.value
+        value = param.value if files_as_named else _stored_value(param)
+        stat = _file_stat(value, root) if isinstance(value, str) and value else None
+        if stat is not None and not files_as_named:
+            # The files a USD file brings in, and theirs, as well: they compose into it.
+            stat = file_tree_stat(stat[0])
+        if stat is not None and not files_as_named:
+            add(param.name, stat)
+            continue
         add(param.name, _stable_repr(value))
         if isinstance(value, str) and value:
-            add(_file_stat(value, root))
+            add(stat)
 
     hook = chunk._module_hook("cache_key")
     if hook is not None:
@@ -453,6 +521,53 @@ def _key(chunk, module) -> str | None:
             return None
         add(extra)
     return h.hexdigest()
+
+
+def file_tree_stat(path: str) -> tuple:
+    """(path, size, mtime) of a file and, for a USD layer, of every file it composes in.
+
+    Sublayers, references and payloads, followed through each file they name, each file once
+    (a layer that names itself, or two that name each other, end the walk). A file that is
+    not there counts as None, so it appearing is a change too.
+
+    Args:
+        path: The file, absolute.
+
+    Returns:
+        The stats, sorted by path.
+    """
+    found: dict[str, tuple | None] = {}
+    pending = [os.path.normcase(os.path.abspath(path))]
+    while pending:
+        current = pending.pop()
+        if current in found:
+            continue
+        try:
+            st = os.stat(current)
+            found[current] = (st.st_size, st.st_mtime_ns)
+        except (OSError, ValueError):
+            found[current] = None
+            continue
+        if not current.lower().endswith((".usd", ".usda", ".usdc", ".usdz")):
+            continue
+        layer = Sdf.Layer.FindOrOpen(current)
+        if layer is None:
+            continue
+        for dep in layer.GetCompositionAssetDependencies():
+            if dep and not Sdf.Layer.IsAnonymousLayerIdentifier(dep):
+                pending.append(os.path.normcase(os.path.abspath(layer.ComputeAbsolutePath(dep))))
+    return tuple(sorted(found.items()))
+
+
+def _stored_value(param) -> Any:
+    """A param's value as the saved file will hold it: see input_key."""
+    raw = getattr(param, "raw_value", None)
+    if isinstance(raw, str):  # a string as written, or a wired param's expression
+        return raw
+    prop = param.get_usd_prop() if hasattr(param, "get_usd_prop") else None
+    if prop is not None and isinstance(prop, Usd.Attribute) and prop.HasAuthoredValue():
+        return prop.Get()
+    return param.value
 
 
 def _file_stat(value: str, root: Sdf.Layer | None):

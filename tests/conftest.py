@@ -22,6 +22,13 @@ except ImportError:  # the ui extra is optional; only Qt tests ask for qapp
 # picked a platform (e.g. a developer explicitly wanting on-screen widgets to debug).
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Opening a saved network reads each chunk's result back from the cook cache folder
+# (open_cache) rather than cooking it. Shared by every test and every run, that would let a
+# test that saves and reopens read back what another wrote, and the many tests about how a
+# reopened network cooks would test the read-back instead. Off for the suite; its own tests
+# turn it on, with a folder of their own.
+os.environ["USD_CHUNKS_OPEN_CACHE"] = "0"
+
 # The suite loads real chunk modules by name (get_chunk_module), and the registry only
 # looks in USD_CHUNK_DIRS. With it unset the suite reports 250 failures and 50 errors
 # (measured, not estimated), most of them a NoneType 'loaded' -- which reads like broken

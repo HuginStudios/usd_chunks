@@ -868,6 +868,37 @@ def upstream_chunks(chunk) -> list:
     return list(found.values())
 
 
+def direct_upstream_chunks(chunk) -> list:
+    """The chunks one step above chunk: the first chunk on each path upstream_chunks walks.
+
+    upstream_chunks is these, the chunks one step above them, and so on. For keying a chunk
+    by its own inputs and the keys of the chunks feeding it (open_cache): a look at one
+    chunk's wires each, where a walk of everything above every chunk cost the square of the
+    network's size.
+    """
+    seed = chunk.get_dag_node()
+    found: dict[int, object] = {}
+    seen = {seed}
+    pending = [seed]
+    for group in _groups_of(chunk):
+        pending.extend(node for _key, node in group.get_dag_node().get_inputs())
+    while pending:
+        node = pending.pop()
+        owner = _chunk_of(node)
+        if owner is not None and owner is not chunk:
+            found.setdefault(id(owner), owner)
+            continue
+        nodes = list(node._connections.inputs.values())
+        if (owned := node._owned) is not None:
+            # Not into a chunk it holds (a chunkgroup's own): what a group holds is not its input.
+            nodes.extend(n for n in owned if not _is_chunk(n.propagator))
+        for nxt in nodes:
+            if nxt not in seen:
+                seen.add(nxt)
+                pending.append(nxt)
+    return list(found.values())
+
+
 def _groups_of(chunk) -> Iterator:
     """The context chunks (chunkgroups, then the tab) that hold chunk, innermost first."""
     # Containers sit between a chunk and its group, and the scene's own at the top.
@@ -1763,6 +1794,45 @@ def restored(chunk, layer: Sdf.Layer) -> None:
     rec.outputs = frozenset(output_paths(layer))
     rec.mask = None
     rec.everything = False
+
+
+def memo(chunk) -> dict | None:
+    """What chunk's last cook read and wrote, as prim paths: to keep with its result.
+
+    For open_cache, which keeps a chunk's layer when the network is saved and reads it back
+    on open under a key for everything the cook read. With the same key the cook reads the
+    same, so its mask holds as well -- and without it a result read back is cooked, never
+    skipped, at the first edit after opening (restored()).
+
+    Returns:
+        A dict for adopt(), or None when nothing is known of what it read.
+    """
+    rec = record(chunk)
+    if rec.outputs is None:
+        return None
+    return {
+        "mask": None if rec.mask is None else sorted(map(str, rec.mask)),
+        "reads": sorted(map(str, rec.reads)),
+        "unmaskable": rec.unmaskable,
+    }
+
+
+def adopt(chunk, kept: dict, layer: Sdf.Layer, main: Usd.Stage) -> None:
+    """Take back what a kept cook read (memo()), for a result read back under the same key.
+
+    Args:
+        chunk: The chunk whose result was read back.
+        kept: What memo() returned when the result was kept.
+        layer: The chunk's layer, holding the result.
+        main: The scene's stage.
+    """
+    rec = record(chunk)
+    rec.mask = None if kept["mask"] is None else frozenset(Sdf.Path(p) for p in kept["mask"])
+    rec.reads = frozenset(Sdf.Path(p) for p in kept["reads"])
+    rec.unmaskable = bool(kept["unmaskable"])
+    rec.outputs = frozenset(output_paths(layer))
+    rec.scene = scene_state(main)
+    rec.layer = layer.identifier
 
 
 def unaccounted(chunk) -> None:
