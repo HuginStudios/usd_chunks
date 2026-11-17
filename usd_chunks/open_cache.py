@@ -276,9 +276,10 @@ def open_key(chunk, stage: Usd.Stage, fingerprint: str, memo: dict | None = None
 def record(chunk, stage: Usd.Stage, recorded: Callable, first: bool) -> None:
     """Note the key of the result a chunk just cooked, for the first cooks of the chunks below it.
 
-    Only on its first cook, which is when the chunks below it look theirs up: an open, or a
-    chunk just made. Any later cook only forgets the key, so one it no longer matches is never
-    used; working it out again on every cook made each edit read the whole root layer.
+    Only on its first cook while a network loads, which is when the chunks below it look
+    theirs up (chunk_cook calls it with first False otherwise). Any later cook only forgets
+    the key, so one it no longer matches is never used; working it out again on every cook
+    made each edit read the whole root layer.
 
     Args:
         chunk: The chunk that cooked.

@@ -1099,7 +1099,11 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                     # A chunk's first cook since the network opened may read back the result
                     # kept when it was saved (open_cache).
                     first_cook = ctx.anonymous and getattr(chunk, "_cooked_into", None) is None
-                    if cached is None and first_cook:
+                    # Only while a network loads: a chunk made new has nothing kept, and
+                    # keying every one as a script built a network cost the size of the
+                    # network each time (the scene fingerprint read the root layer again).
+                    loading = chunk_notice._loading_stage is not None
+                    if cached is None and first_cook and loading:
                         cached = open_cache.lookup(chunk, stage, settled)
                     shared_edits = open_cache.shared_layer_edits(stage) if ctx.anonymous else None
                     reconciled = _diff_cooked(chunk, stage, ctx, execute, layer_of, cached, kept)
@@ -1126,7 +1130,7 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                             open_cache.restored(chunk, cached, ctx, stage)
                         else:
                             open_cache.note_cook(chunk, stage, shared_edits)
-                            open_cache.record(chunk, stage, settled, first_cook)
+                            open_cache.record(chunk, stage, settled, first_cook and loading)
                     if not ctx.anonymous:
                         skip_cook.unaccounted(chunk)
                     # What a param drives is its own state, not the cook's
