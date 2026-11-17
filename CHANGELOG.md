@@ -454,6 +454,11 @@ This file starts with the first release; development before that is in the commi
   shader read the inputs of every chunk in the network, once per node between it and the
   Material, on every cook. Now it looks the wire up in an index kept in step with the stage.
   A 300-node shader network: opening 34 s → 15 s, building 33 s → 25 s.
+- The first edit after opening a long network is no slower than the next one. Working out
+  which chunks are above each chunk walked every param above it, once per chunk; now each
+  chunk's answer is made from the answers of the chunks one step above it. A 300-Transform
+  chain in usdview: ready 16.7 s → 11.5 s, first edit at the top 16.7 s → 7.6 s. Building it
+  from a script: 31.7 s → 15.3 s.
 - Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
   walked the chain once per Transform above it; now it walks it once. One cook at the end of
   a 100-Transform chain: 0.29 s → 0.03 s.
