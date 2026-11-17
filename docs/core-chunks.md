@@ -1,11 +1,12 @@
-# Output, View and ChunkGroup
+# Output, View, ChunkGroup and Cache
 
 These chunks don't change the stage themselves. They control *when* things cook and
 *how* a graph is organised. All are in
 [`chunks/core/`](https://github.com/HuginStudios/usd_chunks/tree/main/chunks/core):
 [`output.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/output.py),
-[`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/view.py) and
-[`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/chunkgroup.py).
+[`view.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/view.py),
+[`chunkgroup.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/chunkgroup.py) and
+[`cache.py`](https://github.com/HuginStudios/usd_chunks/blob/main/chunks/core/cache.py).
 
 ## 🔎 At a glance
 
@@ -16,6 +17,8 @@ These chunks don't change the stage themselves. They control *when* things cook 
   or **Set View 3** to look at it.
 - **ChunkGroup** is a subnet. Double-click its header to go inside and build like in any
   other graph. Click the path at the top-left of the graph to come back out.
+- **Cache** keeps everything above it in one `.usdc` file and reads that instead, so the
+  chunks above don't cook. Press **Recache** to write it again.
 
 The rest of this page goes into more detail on each.
 
@@ -118,3 +121,37 @@ node. The top-level tab and ChunkGroup both have it. Output and View don't: they
 normal chunks at the end of a chain, not containers. In the Qt frontend, a CONTEXT chunk is shown as a tab.
 See [Writing a graph frontend](graph-frontends.md) if you're building this for another
 host.
+
+## Cache
+
+A Cache keeps everything above it in one `.usdc` file. Wire it below the chunks you want
+to stop cooking, for example below a simulation:
+
+```
+Mesh ── Fracture ── RBD Solver ── Cache ── Render
+```
+
+Press **Recache**. The chunks above it cook, their result is written to the file in
+**File**, and from then on the Cache reads the file and switches the chunks above it off.
+They don't cook while you work below the Cache, and they don't cook when the network is
+opened again. The rest of the network also has one layer to compose instead of one per
+chunk above.
+
+When **File** is empty, Recache writes `./cache/<name>.usdc` next to the network file, so
+the network and its caches move together. A network that hasn't been saved yet writes to
+the cook cache folder instead.
+
+If you change something above a Cache, it keeps showing its file and gets the stale badge,
+and its **Status** says so. Press **Recache** to update the file. Delete the file and the
+Cache lets everything above it through again, as if it weren't there.
+
+Things to know:
+
+- A chunk above that writes outside its own layer, like a MaterialX Shader (its input wires
+  go in the session layer), loses that part in the file. Recache warns when one does.
+- The chunks above are switched off with a layer mute, so a chunk above that also feeds
+  something that isn't below the Cache is switched off for that too. A Switch works the
+  same way.
+- The stale badge compares the chunks above with the file. An edit to the network file's
+  own prims isn't counted, and updating usd_chunks or a chunk module can show a cache as
+  stale when it isn't.

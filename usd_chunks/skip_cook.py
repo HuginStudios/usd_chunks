@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 
 from pxr import Ar, Sdf, Usd
 
-from usd_chunks import chunk_scheduler, layer_arcs, layer_reconcile
+from usd_chunks import chunk_notice, chunk_scheduler, layer_arcs, layer_reconcile
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.cook_errors import CookBlocked, CookCancelled
@@ -1290,6 +1290,10 @@ def should_skip(chunk, reasons: list, states: list | None = None) -> bool:
     """
     rec = record(chunk)
     if not reasons:
+        return False
+    # Not while a network loads: nothing above has changed then, though the load starts a cook
+    # from every chunk above that nothing feeds, and each start reaches this one.
+    if getattr(chunk.get_config(), "never_skip", False) and chunk_notice._loading_stage is None:
         return False
     mask = rec.mask
     if mask is None:

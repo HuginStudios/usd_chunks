@@ -124,7 +124,8 @@ def note_cook(chunk, stage: Usd.Stage, before: tuple[int, int]) -> None:
     setattr(chunk, _OWN_LAYER_ONLY, before_now is not False and shared_layer_edits(stage) == before)
 
 
-def _own_layer_only(chunk) -> bool:
+def wrote_own_layer_only(chunk) -> bool:
+    """Whether chunk's last cook wrote nothing outside its own layer (note_cook)."""
     return bool(getattr(chunk, _OWN_LAYER_ONLY, False))
 
 
@@ -210,12 +211,12 @@ def _bookkeeping(chunk, stage: Usd.Stage) -> list:
     return found
 
 
-def _own_key(chunk, stage: Usd.Stage) -> str | None:
+def _own_key(chunk, stage: Usd.Stage, hook: bool = True) -> str | None:
     # A module that cooks on every open reads what no key can see, so its result can change
     # on open: none here, and so none for any chunk below it either.
     if not _may_keep(chunk):
         return None
-    own = cook_cache.input_key(chunk, chunk.get_chunk_module())
+    own = cook_cache.input_key(chunk, chunk.get_chunk_module(), hook=hook)
     if own is None:
         return None
     h = hashlib.sha256()
@@ -231,7 +232,7 @@ _KEY_PREFIX = "open_"
 
 
 def open_key(chunk, stage: Usd.Stage, fingerprint: str, memo: dict | None = None,
-             recorded: Callable | None = None) -> str | None:
+             recorded: Callable | None = None, hook: bool = True) -> str | None:
     """The key a chunk's result is kept under for the next open, or None if it cannot have one.
 
     Its own key, and the key of each chunk one step above it (skip_cook.direct_upstream_chunks),
@@ -245,6 +246,7 @@ def open_key(chunk, stage: Usd.Stage, fingerprint: str, memo: dict | None = None
         recorded: Given a chunk, whether the key its last cook recorded still holds. A key
             recorded then is used instead of being made again: in an open, every chunk above
             one about to cook has cooked already.
+        hook: Include each module's cache_key hook (cook_cache.input_key).
 
     Returns:
         A digest, or None when it or a chunk above it has no key, or the chunks loop.
@@ -258,12 +260,12 @@ def open_key(chunk, stage: Usd.Stage, fingerprint: str, memo: dict | None = None
             memo[id(chunk)] = held[1]
             return held[1]
     memo[id(chunk)] = None  # a loop back here has no key
-    own = _own_key(chunk, stage)
+    own = _own_key(chunk, stage, hook)
     if own is None:
         return None
     parts = []
     for dep in skip_cook.direct_upstream_chunks(chunk):
-        key = open_key(dep, stage, fingerprint, memo, recorded)
+        key = open_key(dep, stage, fingerprint, memo, recorded, hook)
         if key is None:
             return None
         parts.append((getattr(dep, "_exec_prim_path", None) or "", key))
@@ -271,6 +273,36 @@ def open_key(chunk, stage: Usd.Stage, fingerprint: str, memo: dict | None = None
     h.update(repr((_FORMAT, fingerprint, own, sorted(parts))).encode())
     memo[id(chunk)] = key = _KEY_PREFIX + h.hexdigest()
     return key
+
+
+def inputs_key(chunk) -> str | None:
+    """A key for what flows into chunk: the keys of the chunks one step above it.
+
+    For a Cache chunk telling whether what it wrote is still what is above it. Without the
+    scene fingerprint: compared across saves and opens, and the network's root layer reads
+    differently live and saved, so every cache would look out of date after a save. And
+    without the modules' cache_key hooks, which read the stage: once the Cache has switched
+    the chunks above off, what a Scatter's hook reads is not what it scattered on.
+
+    Args:
+        chunk: The chunk.
+
+    Returns:
+        A digest, or None when a chunk above it has no key (or with nothing above it).
+    """
+    stage = chunk.get_scene_stage()
+    if stage is None:
+        return None
+    memo: dict = {}
+    parts = []
+    for dep in skip_cook.direct_upstream_chunks(chunk):
+        key = open_key(dep, stage, "", memo, hook=False)
+        if key is None:
+            return None
+        parts.append((getattr(dep, "_exec_prim_path", None) or "", key))
+    if not parts:
+        return None
+    return hashlib.sha256(repr((_FORMAT, sorted(parts))).encode()).hexdigest()
 
 
 def record(chunk, stage: Usd.Stage, recorded: Callable, first: bool) -> None:
@@ -339,7 +371,7 @@ def store(chunks: Iterable, stage: Usd.Stage, saved: Sdf.Layer, layer_of: Callab
     for chunk in chunks:
         if chunk._module_hook("execute") is None or not _may_keep(chunk):
             continue
-        if getattr(chunk, "_diff_ok", None) is not True or not _own_layer_only(chunk) or not ready(chunk):
+        if getattr(chunk, "_diff_ok", None) is not True or not wrote_own_layer_only(chunk) or not ready(chunk):
             continue
         layer = layer_of(chunk)
         if layer is None or not layer.anonymous:

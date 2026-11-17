@@ -186,6 +186,7 @@ defaults below.
 | `cache_cook` | `False` | Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See [Caching a slow cook](#caching-a-slow-cook). |
 | `cache_always` | `False` | `cache_cook` that can't be turned off: no **Cache Result** checkbox, `USD_CHUNKS_COOK_CACHE=0` doesn't apply, and quick cooks are stored too. For a result that is expensive or impossible to remake anywhere else, such as Blender Import's. |
 | `cook_on_open` | `False` | Cook this chunk every time a network opens, instead of reading back the result kept when it was saved. For a result that depends on something no key can see: the clock, an unseeded random, a web request. See [Opening without cooking](#opening-without-cooking). |
+| `never_skip` | `False` | Cook whenever anything above changes, even when nothing the cook reads on the stage did. For a chunk that watches the chunks above it rather than their prims, like [Cache](core-chunks.md#cache). |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
 | `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) and [Output](core-chunks.md#output) chunks use this. |
 | `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs. |
@@ -426,6 +427,17 @@ PRIM_SELECTION params and `primpath_location`) and the prims its last cook wrote
 Anything the framework can't account for makes the chunks below cook, as they always have:
 a rewire, a chunk disabled above, a change to which layers are muted or to the stage's
 expression variables, an Edit Target repointed.
+
+A chunk that watches the chunks above it rather than their prims, like
+[Cache](core-chunks.md#cache) comparing their params with its file, sets `never_skip=True`
+in `config()` and cooks whenever anything above it changes.
+
+A gate (a chunk that switches the branches above it off, like Switch) does that when it
+cooks, after those branches cooked. One that can choose without them, like a Cache with
+its file on disk, defines `gate_before_cook(node)`: it returns the input slots to keep on
+(an empty set for none), or `None` to choose when it cooks. The framework calls it before
+cooking, on open and when a View or the Output cooks, so the branches it keeps off don't
+cook first.
 
 ## `commit()`
 

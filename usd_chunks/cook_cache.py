@@ -457,7 +457,7 @@ def _stable_repr(value: Any) -> str:
     return repr(value)
 
 
-def input_key(chunk, module) -> str | None:
+def input_key(chunk, module, hook: bool = True) -> str | None:
     """A digest of what this chunk's cook reads but the chunks above it: see _key.
 
     For open_cache, which keys a network saved in one session and opened in another, so
@@ -469,14 +469,17 @@ def input_key(chunk, module) -> str | None:
     Args:
         chunk: The chunk.
         module: Its ChunkModule, or None for a chunk with none (a chunkgroup).
+        hook: Include what the module's cache_key hook returns. It reads the stage (the
+            geometry a Scatter scatters on), so only a key made where that is as the chunk's
+            own cook sees it can use it.
 
     Returns:
         The digest, or None if the module's cache_key hook could not say.
     """
-    return _key(chunk, module, files_as_named=False)
+    return _key(chunk, module, files_as_named=False, hook=hook)
 
 
-def _key(chunk, module, files_as_named: bool = True) -> str | None:
+def _key(chunk, module, files_as_named: bool = True, hook: bool = True) -> str | None:
     h = hashlib.sha256()
 
     def add(*parts):
@@ -514,9 +517,9 @@ def _key(chunk, module, files_as_named: bool = True) -> str | None:
         if isinstance(value, str) and value:
             add(stat)
 
-    hook = chunk._module_hook("cache_key")
-    if hook is not None:
-        extra = hook(chunk)
+    key_hook = chunk._module_hook("cache_key") if hook else None
+    if key_hook is not None:
+        extra = key_hook(chunk)
         if extra is None:
             return None
         add(extra)
