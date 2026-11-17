@@ -107,12 +107,17 @@ def shared_layer_edits(stage: Usd.Stage) -> tuple[int, int]:
 def note_cook(chunk, stage: Usd.Stage, before: tuple[int, int]) -> None:
     """Record whether the cook that just ran left the root and session layers alone.
 
+    Once a chunk has been seen writing there, it stays marked for the session: a later cook
+    writing the same opinion again changes nothing, Sdf says nothing, and the result it needs
+    on reopening is still out there and not in its layer.
+
     Args:
         chunk: The chunk that cooked.
         stage: The scene's stage.
         before: shared_layer_edits(stage) from before the cook.
     """
-    setattr(chunk, _OWN_LAYER_ONLY, shared_layer_edits(stage) == before)
+    before_now = getattr(chunk, _OWN_LAYER_ONLY, None)
+    setattr(chunk, _OWN_LAYER_ONLY, before_now is not False and shared_layer_edits(stage) == before)
 
 
 def _own_layer_only(chunk) -> bool:
@@ -167,13 +172,14 @@ def scene_fingerprint(stage: Usd.Stage, root: Sdf.Layer | None = None) -> str:
         content.pseudoRoot.ClearInfo(key)
     add(content.ExportToString())
     # What the root brings in from files, as they are on disk now.
+    # And every file those bring in, and theirs: a layer nested under a sublayer is read too.
     for path in sorted(content.GetCompositionAssetDependencies()):
-        add(path, None if root.anonymous else _stat(root.ComputeAbsolutePath(path)))
+        add(path, None if root.anonymous else cook_cache.file_tree_stat(root.ComputeAbsolutePath(path)))
     for path in root.subLayerPaths:
         layer = Sdf.Layer.FindRelativeToLayer(root, path)
         real = layer.realPath if layer is not None else (
             "" if root.anonymous else root.ComputeAbsolutePath(path))
-        add(_stat(real) if real else path)
+        add(cook_cache.file_tree_stat(real) if real else path)
     # Anonymous layers are the chunks' own, muted by gates; their names change every session.
     add(sorted(layer for layer in stage.GetMutedLayers() if not Sdf.Layer.IsAnonymousLayerIdentifier(layer)))
     return h.hexdigest()
@@ -201,6 +207,10 @@ def _bookkeeping(chunk, stage: Usd.Stage) -> list:
 
 
 def _own_key(chunk, stage: Usd.Stage) -> str | None:
+    # A module that cooks on every open reads what no key can see, so its result can change
+    # on open: none here, and so none for any chunk below it either.
+    if not _may_keep(chunk):
+        return None
     own = cook_cache.input_key(chunk, chunk.get_chunk_module())
     if own is None:
         return None

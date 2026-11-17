@@ -505,6 +505,9 @@ def _key(chunk, module, files_as_named: bool = True) -> str | None:
         value = param.value if files_as_named else _stored_value(param)
         stat = _file_stat(value, root) if isinstance(value, str) and value else None
         if stat is not None and not files_as_named:
+            # The files a USD file brings in, and theirs, as well: they compose into it.
+            stat = file_tree_stat(stat[0])
+        if stat is not None and not files_as_named:
             add(param.name, stat)
             continue
         add(param.name, _stable_repr(value))
@@ -518,6 +521,42 @@ def _key(chunk, module, files_as_named: bool = True) -> str | None:
             return None
         add(extra)
     return h.hexdigest()
+
+
+def file_tree_stat(path: str) -> tuple:
+    """(path, size, mtime) of a file and, for a USD layer, of every file it composes in.
+
+    Sublayers, references and payloads, followed through each file they name, each file once
+    (a layer that names itself, or two that name each other, end the walk). A file that is
+    not there counts as None, so it appearing is a change too.
+
+    Args:
+        path: The file, absolute.
+
+    Returns:
+        The stats, sorted by path.
+    """
+    found: dict[str, tuple | None] = {}
+    pending = [os.path.normcase(os.path.abspath(path))]
+    while pending:
+        current = pending.pop()
+        if current in found:
+            continue
+        try:
+            st = os.stat(current)
+            found[current] = (st.st_size, st.st_mtime_ns)
+        except (OSError, ValueError):
+            found[current] = None
+            continue
+        if not current.lower().endswith((".usd", ".usda", ".usdc", ".usdz")):
+            continue
+        layer = Sdf.Layer.FindOrOpen(current)
+        if layer is None:
+            continue
+        for dep in layer.GetCompositionAssetDependencies():
+            if dep and not Sdf.Layer.IsAnonymousLayerIdentifier(dep):
+                pending.append(os.path.normcase(os.path.abspath(layer.ComputeAbsolutePath(dep))))
+    return tuple(sorted(found.items()))
 
 
 def _stored_value(param) -> Any:
