@@ -42,8 +42,11 @@ from usd_chunks.chunk_topology import (  # noqa: F401  re-exported
     edit_layer_memo_affected,
     freeze_edit_layer_memo,
     get_chunk_prim_path,
+    input_consumer_paths,
     invalidate_edit_layer_memo,
+    invalidate_input_consumers,
     nearest_upstream_edit_layer,
+    update_input_consumers,
     upstream_edit_target_layer,
 )
 
@@ -860,6 +863,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prims = _iter_scoped_prims(stage, resyncs, info_changes)
         loaded_before = len(self._loaded_prim_paths)
         load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
+        if len(self._loaded_prim_paths) > loaded_before:
+            # Chunk prims can arrive by reference anywhere, under no root the index watches.
+            invalidate_input_consumers()
         if prims is not None and len(self._loaded_prim_paths) > loaded_before:
             self._rewire_to_new_chunks(resyncs | info_changes)
 
@@ -1208,6 +1214,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # to cost every chunk a fresh walk of the exec chain above it.
         if edit_layer_memo_affected(notice, has_chunk_under=self._has_chunk_under):
             invalidate_edit_layer_memo()
+        update_input_consumers(notice, self._has_chunk_under)
         # Before the guards too: a chunk prim made during a suppressed write is still made.
         self._forget_output_children(notice)
         # Same reasoning, and the only place the resynced paths are visible at all: the scan
@@ -7162,6 +7169,33 @@ def exec_dependencies(chunk: core.ChunkBase) -> list:
     if prim is None:
         return []
     return _chunks_at(str(conn.GetPrimPath()) for conn in exec_input_connections(prim))
+
+
+def input_consumers(chunk: core.ChunkBase) -> list:
+    """The chunks with a typed input wired to this one's prim, in scene order.
+
+    The reverse of a param wire: USD keeps a connection only on the consumer's side, so
+    this is read from an index of the scene's stage, kept until a wire changes. Exec inputs
+    are not counted -- they say what cooks after what, not what feeds what.
+
+    Args:
+        chunk (core.ChunkBase): The chunk being read from
+
+    Returns:
+        list: The consuming chunks, without chunk itself
+    """
+    stage = chunk.get_scene_stage()
+    if not stage:
+        return []
+    own = {getattr(chunk, "_exec_prim_path", None), getattr(chunk, "prim_path", None),
+           get_chunk_prim_path(chunk)}
+    paths = set()
+    for path in own:
+        if path:
+            paths |= input_consumer_paths(stage, str(path))
+    sync = ChunkStageSync()
+    found = sync._chunks_at(paths) if sync.initialized else _chunks_at(sorted(paths))
+    return [c for c in found if c is not chunk]
 
 
 def _wired_dependencies(chunk: core.ChunkBase) -> list:

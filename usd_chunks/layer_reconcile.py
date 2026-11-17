@@ -54,10 +54,11 @@ def reconcile(src: Sdf.Layer, dst: Sdf.Layer,
 
 def _layer_info(src: Sdf.Layer, dst: Sdf.Layer, sublayers=None) -> bool:
     if sublayers is None:
-        paths, offsets = list(src.subLayerPaths), list(src.subLayerOffsets)
+        # copy(), not list(): the proxy builds the whole list again for each item read.
+        paths, offsets = list(src.subLayerPaths), src.subLayerOffsets.copy()
     else:
         paths, offsets = [path for path, _ in sublayers], [offset for _, offset in sublayers]
-    moved = paths != list(dst.subLayerPaths) or offsets != list(dst.subLayerOffsets)
+    moved = paths != list(dst.subLayerPaths) or offsets != dst.subLayerOffsets.copy()
     if moved:
         dst.subLayerPaths = paths
         for i, offset in enumerate(offsets):
