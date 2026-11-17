@@ -92,6 +92,14 @@ def _info(s, d, skip: frozenset = frozenset()) -> bool:
             _time_samples(s, d, value)
         elif key in _LIST_EDITED:
             _list_op(getattr(d, _LIST_EDITED[key]), value)
+        elif key == "default" and isinstance(d, Sdf.AttributeSpec):
+            # Through the spec's own setter, which casts to the attribute's type: GetInfo
+            # hands a float attribute's value back as a Python float, and SetInfo stores that
+            # as a double. Python reads the number back the same, but a typed read (C++, and
+            # Hydra's UsdImaging) skips a value of the wrong type and resolves the next one
+            # down -- a schema's fallback, or nothing -- so a recooked float never reached the
+            # renderer: a lens's k1 stayed what the first cook wrote.
+            d.default = value
         else:
             d.SetInfo(key, value)
     return changed

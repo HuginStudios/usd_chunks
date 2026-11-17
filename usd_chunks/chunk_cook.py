@@ -1183,6 +1183,7 @@ def executing(prop):
     prop._executing = True
     chunk_notice._usd_write_active = True
     chunk_notice._executing_chunk = getattr(prop, "get_chunk", lambda: None)()
+    chunk_notice._cook_serial += 1
     # The stage's resolver context, bound for the module: a file it opens itself
     # (Sdf.Layer.FindOrOpen on a param's path) is found as the stage finds it -- a relative
     # path from the network's folder -- not from the working directory (asset_paths).
@@ -1198,6 +1199,7 @@ def executing(prop):
         # that outer write for whatever it still had left to do.
         chunk_notice._usd_write_active = prev_usd_write_active
         chunk_notice._executing_chunk = prev_executing_chunk
+        chunk_notice._cook_serial += 1
         prop._executing = False
     # Not on a raise: a module that fails ends the solve it was part of, as it always has.
     #
@@ -1277,6 +1279,19 @@ def dispatch(chunk, node, changes, seed) -> None:
     # A chunk with no execute() (a chunkgroup) stays stale, which tells recook_for_view
     # its inside needs cooking.
     mark_cook_stale(chunk)
+
+
+def mark_own_change(chunk) -> None:
+    """Inside a solve, make chunk cook in its flush as if its own params had changed.
+
+    For a change no notice carried: params a CHUNK_LOADED callback lofted and the load
+    restored. Reached only from above in the same solve, skip_cook would skip it and keep
+    the cook it had before those params existed; a change of its own is never skipped.
+
+    Args:
+        chunk: The chunk.
+    """
+    dispatch(chunk, chunk.get_dag_node(), [(chunk_notice.ChunkNoticeAlias.CHUNK_CHANGED, chunk)], None)
 
 
 def cook_all(chunks) -> None:
