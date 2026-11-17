@@ -87,7 +87,11 @@ def _counter(tally: list[int]) -> Callable:
 def _count(layer: Sdf.Layer) -> int:
     """How many change rounds have edited layer. Sdf says nothing of a write that changes nothing."""
     held = _counts.get(layer.identifier)
-    if held is None or held[0]() is None:
+    # The entry must be this layer's, not only one under its name: an anonymous layer's
+    # identifier holds its address, so a new one can take a dead one's, while the dead one's
+    # Python object lives on (an expired handle) with a listener on a layer that is gone.
+    known = held[0]() if held is not None else None
+    if known is None or getattr(known, "expired", False) or known != layer:
         for ident in [i for i, entry in _counts.items() if entry[0]() is None]:
             del _counts[ident]
         tally = [0]

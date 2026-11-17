@@ -265,3 +265,20 @@ def test_a_layer_nested_under_a_sublayer_counts(tmp_path, restored):
     with Scene.open(str(path)) as scene:
         assert _result(scene) == 22
         assert restored == []
+
+
+def test_a_counter_left_under_a_reused_name_is_not_trusted():
+    """An anonymous layer's name holds its address, so a new layer can take a dead one's name.
+
+    The counter kept under that name listens to the old layer: edits to the new one must not
+    go uncounted because of it.
+    """
+    old = Sdf.Layer.CreateAnonymous("old")
+    new = Sdf.Layer.CreateAnonymous("new")
+    open_cache._count(old)
+    open_cache._counts[new.identifier] = open_cache._counts.pop(old.identifier)
+
+    before = open_cache._count(new)
+    Sdf.CreatePrimInLayer(new, "/Edited")
+
+    assert open_cache._count(new) == before + 1
