@@ -63,6 +63,11 @@ _internal_layer_write_active: bool = False
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
 
+# Bumped as each module cook starts and ends (chunk_cook.executing). While it holds one value
+# nothing rewires the graph, so a lookup a cook repeats (chunk_topology's Edit Target walk,
+# asked once per shader input) can be kept until it changes.
+_cook_serial = 0
+
 
 def _chunk_of(prop):
     """The chunk prop belongs to, or None -- up its owners, since an AttributeSender has no
