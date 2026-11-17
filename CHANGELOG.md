@@ -15,6 +15,10 @@ This file starts with the first release; development before that is in the commi
   anything another branch writes by walking every other chunk's layer; what a layer writes
   is now kept until that layer changes. Building a 300-chunk village from a script: 24.8 s
   → 16.1 s; opening it with every chunk cooking: 9.9 s → 7.3 s.
+- Chunks that write into the session layer (MaterialX Shader) cook faster in big networks.
+  After each such cook, the next one compared the whole session layer with its own copy and
+  found nothing to change. A 300-node MaterialX network: build 16.2 s → 13.9 s, open with
+  every chunk cooking 11.9 s → 9.3 s.
 
 ## [1.0.0-rc] - 2026-11-11
 

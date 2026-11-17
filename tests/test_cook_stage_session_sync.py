@@ -141,3 +141,103 @@ def test_what_each_cook_authors_into_the_session_layer_reaches_the_scene(shared)
             assert session.GetAttributeAtPath("/Note.size").default == size * 2
 
         assert shared, "the reader cooked on the shared diff stage"
+
+
+def _noter(name: str):
+    """Writes its size into the session layer at /Notes/<child> for each child in its list,
+    in that order (the whole /Notes rewritten); and /<name>.size into its own layer."""
+
+    def main():
+        c = chunk.Chunk(name)
+        c.add_param(chunk.Slider("size", default_value=1.0))
+        c.add_param(chunk.LineEdit("children", default_value=name))
+        return c
+
+    def execute(node):
+        stage = node.get_stage()
+        size = node.get_param("size").value
+        prim = stage.DefinePrim(f"/{name}", "Xform")
+        prim.CreateAttribute("size", Sdf.ValueTypeNames.Double).Set(size)
+        session = stage.GetSessionLayer()
+        children = [c for c in node.get_param("children").value.split(",") if c]
+        notes = session.GetPrimAtPath("/Notes")
+        if notes is not None and list(notes.nameChildren.keys()) != children:
+            for child in list(notes.nameChildren.keys()):
+                if child in children:
+                    del notes.nameChildren[child]
+        for child in children:
+            spec = Sdf.CreatePrimInLayer(session, f"/Notes/{child}")
+            attr = session.GetAttributeAtPath(f"/Notes/{child}.size") or \
+                Sdf.AttributeSpec(spec, "size", Sdf.ValueTypeNames.Double)
+            attr.default = size
+
+    return register_stub_module(main=main, execute=execute)
+
+
+@pytest.fixture
+def in_step(monkeypatch):
+    """After each cook on the shared diff stage: whether its copy and the session layer were in
+    step. Fails the test where the sync says they are and they are not."""
+    seen: list[bool] = []
+    real = skip_cook._StandIn.copy_back
+
+    def checked(self):
+        real(self)
+        sync = self._sync
+        if sync is None:
+            return
+        seen.append(sync.in_step())
+        if seen[-1]:
+            probe = Sdf.Layer.CreateAnonymous("probe")
+            probe.TransferContent(self.layer)
+            slot = Sdf.Layer.FindOrOpen(self.layer.subLayerPaths[0])
+            assert layer_reconcile.reconcile(self.session, probe, skip_cook._with_slot(self.session, slot)) == set(),                 "the sync said in step, but the copy differs from the session layer"
+
+    monkeypatch.setattr(skip_cook._StandIn, "copy_back", checked)
+    return seen
+
+
+def test_cooks_writing_into_the_session_layer_leave_nothing_to_walk_after_them(monkeypatch, in_step):
+    """Each cook's session edits are copied back, after which the copy and the session layer
+    hold the same: walking both again before the next cook found nothing to do. A MaterialX
+    Shader writes there on every cook."""
+    with Scene() as scene:
+        chunks = [_add(scene, _noter(f"N{i}")) for i in range(4)]
+        for above, below in zip(chunks, chunks[1:]):
+            below.add_dependency(above)
+        chunks[0].get_param("size").value = 0.5  # the first cook after wiring records the masks
+        session = scene.get_stage().GetSessionLayer()
+        syncs = []
+        real = layer_reconcile.reconcile
+        monkeypatch.setattr(layer_reconcile, "reconcile",
+                            lambda src, dst, sublayers=None: (src == session and syncs.append(1)) or
+                            real(src, dst, sublayers))
+
+        for c in chunks:
+            c.get_param("size").value = 2.0
+        chunks[0].get_param("size").value = 3.0
+
+        assert [session.GetAttributeAtPath(f"/Notes/N{i}.size").default for i in range(4)] == [3.0, 2.0, 2.0, 2.0]
+        assert in_step and all(in_step), "every cook left the copy in step with the session layer"
+        assert len(syncs) <= 1, f"the session layer was walked {len(syncs)} times"
+
+
+def test_a_prim_copied_back_out_of_order_is_walked_again(shared, in_step):
+    """CopySpec puts a new prim last among its siblings; where the cook put it in the middle,
+    the copy and the session layer differ, and the next cook must bring the copy up to date."""
+    with Scene() as scene:
+        gen = _add(scene, _generator())
+        noter = _add(scene, _noter("N"))
+        noter.add_dependency(gen)
+        noter.get_param("children").value = "a,c"
+        gen.get_param("size").value = 0.5
+
+        in_step.clear()
+        noter.get_param("children").value = "a,b,c"
+
+        assert in_step == [False], "b went last in the session layer, between a and c in the copy"
+        gen.get_param("size").value = 2.0
+        session = scene.get_stage().GetSessionLayer()
+        assert {c: session.GetAttributeAtPath(f"/Notes/{c}.size").default for c in "abc"} == \
+            dict.fromkeys("abc", 1.0)
+        assert shared

@@ -262,6 +262,19 @@ class _SessionSync:
         layer_reconcile.reconcile(session, copy, _with_slot(session, slot))
         self._mark = (self.session_edits.count, self.copy_edits.count)
 
+    def in_step(self) -> bool:
+        """Whether session and copy held the same when last compared, and neither changed since."""
+        return self._mark == (self.session_edits.count, self.copy_edits.count)
+
+    def mark_in_step(self) -> None:
+        """Say session and copy hold the same again: a cook's edits to copy were copied back.
+
+        Both counts move when a cook writes into the copy and its edits are copied back to
+        the session layer, so the next cook walked every spec of both to find nothing to do:
+        a MaterialX Shader writes there on every cook.
+        """
+        self._mark = (self.session_edits.count, self.copy_edits.count)
+
     def snapshot(self, copy: Sdf.Layer) -> Sdf.Layer:
         """A snapshot of copy as it is now, the last one again if copy has not changed."""
         if self._snapshot is None or self._snapshot[0] != self.copy_edits.count:
@@ -298,7 +311,7 @@ def _shared_diff_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
         slot.subLayerPaths = [layer.identifier]
         sync = _SessionSync(session, copy)
         sync.bring_up_to_date(session, copy, slot)
-        stand_in = _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits)
+        stand_in = _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits, sync)
         try:
             stage = _open_cook_stage(main, mask, muted, _opening, stand_in)
         finally:
@@ -311,7 +324,7 @@ def _shared_diff_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
         slot.subLayerPaths = [layer.identifier]
     sync.bring_up_to_date(session, copy, slot)
     _remask(stage, main, mask, muted)
-    return stage, _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits)
+    return stage, _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits, sync)
 
 
 def _kept_for(main: Usd.Stage) -> Usd.Stage | None:
@@ -441,7 +454,8 @@ class _StandIn:
     """
 
     def __init__(self, session: Sdf.Layer, layer: Sdf.Layer, before: Sdf.Layer | None,
-                 held: list[Sdf.Layer], dropped: set[str], edits: _EditCount | None = None):
+                 held: list[Sdf.Layer], dropped: set[str], edits: _EditCount | None = None,
+                 sync: _SessionSync | None = None):
         self.session = session
         self.layer = layer
         #: The stand-in as the cook found it, when the session layer had content to copy.
@@ -453,12 +467,19 @@ class _StandIn:
         self.dropped = dropped
         self._edits = edits
         self._edits_at_start: int | None = None
+        #: The shared diff stage's (_shared_diff_stage), to say the copy and the session layer
+        #: are in step again once the cook's edits are copied back.
+        self._sync = sync
+        #: The session layer's edit count as the cook started, when the copy was in step.
+        self._session_at_start: int | None = None
 
     def watch_edits(self) -> None:
         """Start counting edits to the stand-in: called as the cook starts."""
         if self._edits is None:
             self._edits = _EditCount(self.layer)
         self._edits_at_start = self._edits.count
+        sync = self._sync
+        self._session_at_start = sync.session_edits.count if sync is not None and sync.in_step() else None
 
     def copy_back(self) -> None:
         """Copy what the cook authored into the stand-in to the scene's session layer.
@@ -485,6 +506,10 @@ class _StandIn:
                        else path.GetPrimOrPrimVariantSelectionPath()
                        for path in _spec_paths(before) | _spec_paths(after)
                        if not _same_spec(before, after, path)}
+            # The copy was in step and no one else edited the session layer meanwhile: once
+            # this is copied back the two hold the same, unless a prim landed elsewhere among
+            # its siblings than in the copy (CopySpec puts a new one last).
+            in_step = self._session_at_start is not None and                 self._sync.session_edits.count == self._session_at_start
             copied: list[Sdf.Path] = []
             for path in sorted(changed):
                 if any(path.HasPrefix(done) for done in copied):
@@ -497,6 +522,23 @@ class _StandIn:
                     parent = session.GetPrimAtPath(path.GetParentPath())
                     if parent is not None:
                         parent.RemoveNameChild(spec)
+            in_step = in_step and all(_same_children(session, after, path.GetParentPath()) for path in changed
+                                      if path != Sdf.Path.absoluteRootPath)
+        if in_step:
+            self._sync.mark_in_step()
+
+
+def _same_children(a: Sdf.Layer, b: Sdf.Layer, path: Sdf.Path) -> bool:
+    """Whether the prim at path has the same children, in the same order, in a and b."""
+    sa = a.pseudoRoot if path == Sdf.Path.absoluteRootPath else a.GetObjectAtPath(path)
+    sb = b.pseudoRoot if path == Sdf.Path.absoluteRootPath else b.GetObjectAtPath(path)
+    if sa is None or sb is None:
+        return sa is None and sb is None
+    # A variant's prims hang off its prim spec; anything else unforeseen counts as different.
+    sa, sb = getattr(sa, "primSpec", sa), getattr(sb, "primSpec", sb)
+    if not hasattr(sa, "nameChildren") or not hasattr(sb, "nameChildren"):
+        return False
+    return list(sa.nameChildren.keys()) == list(sb.nameChildren.keys())
 
 
 def _stand_in(main: Usd.Stage, hidden: Iterable[str]) -> _StandIn | None:
