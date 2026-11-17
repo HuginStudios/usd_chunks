@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- `chunk.TextEdit(..., wrap=True)` makes a prose field: in the Qt params panel its lines wrap
+  at the field's edge, in the UI's own font, so a paragraph is not one long line scrolled
+  sideways. Without it a `TextEdit` stays a code field (fixed-width font, no wrapping).
 - Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
   box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
   drag one face at a time, and a translate gizmo is a move handle. Drags go through the
@@ -417,6 +420,14 @@ This file starts with the first release; development before that is in the commi
 
 - MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),
   and copies are numbered `constant_color3_1`, `_2` instead of starting at `constant_color3_`.
+- A reopened MaterialX network cooks each shader at most twice. The Surface at the
+  bottom of a shader tree cooked once per node above it: 50 times in a 100-node network.
+- Big MaterialX networks open faster. Each shader asked which layer to write to once per
+  input, and during a cook every ask walked the whole graph above it; now a cook asks once.
+  Opening a 100-node shader network: 40% less time.
+- Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
+  walked the chain once per Transform above it; now it walks it once. One cook at the end of
+  a 100-Transform chain: 0.29 s → 0.03 s.
 - Scatter Points with Max Slope over 90 now covers faces that point down, such as the
   underside of a sphere. New scatters sample with Tiles, which only drops points from
   above, so they stayed on the top half. Over 90, Darts is used instead.

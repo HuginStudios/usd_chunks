@@ -8277,15 +8277,20 @@ def _load_chunks(
                 # shader at its definition's defaults, and a network of them opened with
                 # every input and wire gone. Its saved values are back now, so cook it
                 # again -- or, outside every active view, leave it stale for the view to.
-                # Stale first, then in cook order: a cook cascades downstream and clears
-                # what it reaches, so a chain of shaders cooks once from its first.
+                # In one solve: each execute() only marks what it reaches, and the cooks
+                # run once at the end, upstream first. Run one by one, every leaf of a
+                # shader tree cooked the Surface below it again: 50 times in a 100-node one.
+                # Each is marked as its own change too, which it is (its params came back):
+                # reached from the chunk above in the same solve it would be skipped.
                 for _, added in lofted:
                     chunk_cook.mark_cook_stale(added)
-                for prim, added in sorted(lofted, key=lambda item: cook_keys[id(item[1])]):
-                    if unseen(added) or not chunk_cook.is_cook_stale(added):
-                        continue
-                    if id(added) in top_level_chunk_ids or can_execute_sub_chunks:
-                        added.execute()
+                with chunk_cook.solving():
+                    for prim, added in sorted(lofted, key=lambda item: cook_keys[id(item[1])]):
+                        if unseen(added) or not chunk_cook.is_cook_stale(added):
+                            continue
+                        if id(added) in top_level_chunk_ids or can_execute_sub_chunks:
+                            added.execute()
+                            chunk_cook.mark_own_change(added)
 
                 # Second and last expression pass. Chunks that loft their params in the
                 # CHUNK_LOADED callback above -- mtlx_shader from its nodedef, wedge from
