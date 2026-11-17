@@ -185,6 +185,7 @@ defaults below.
 | `interactive` | `False` | The chunk writes to a file layer that is kept, instead of its own layer being rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked. |
 | `cache_cook` | `False` | Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See [Caching a slow cook](#caching-a-slow-cook). |
 | `cache_always` | `False` | `cache_cook` that can't be turned off: no **Cache Result** checkbox, `USD_CHUNKS_COOK_CACHE=0` doesn't apply, and quick cooks are stored too. For a result that is expensive or impossible to remake anywhere else, such as Blender Import's. |
+| `cook_on_open` | `False` | Cook this chunk every time a network opens, instead of reading back the result kept when it was saved. For a result that depends on something no key can see: the clock, an unseeded random, a web request. See [Opening without cooking](#opening-without-cooking). |
 | `hidden` | `False` | Left out of the create menu. For a type that is only saved and loaded, never created by hand, like `runtime`, the type a chunk built in Python is saved as (see [Building a chunk at runtime](runtime-chunks.md)). It still has to be a registered module, because that's how loading a file knows what to rebuild. |
 | `terminal` | `False` | The chunk has no `outputs:chunk`, so it ends an exec chain. The [View](core-chunks.md#view) and [Output](core-chunks.md#output) chunks use this. |
 | `exec_inputs` | `1` | How many numbered exec input ports the chunk has. `1` is the normal case: one `inputs:chunk` port, which can still take several wires. With more than `1`, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs. |
@@ -337,6 +338,28 @@ caching off for that one node. Only cooks that take longer than about 50 ms are 
 since reading a result back takes time too. A cook that changes its own input params, or
 adds params, is never stored. For where the cache lives and how to switch it off, see
 [`USD_CHUNKS_COOK_CACHE`](install.md#environment-variables).
+
+### Opening without cooking
+
+A saved network holds the chunks and their wires, not their results. So when you save, each
+chunk's layer is also kept in the cook cache, and when the network is opened again, each
+chunk reads its layer back instead of cooking, as long as nothing it depends on has changed.
+This is for every chunk; `cache_cook` is not needed.
+
+A chunk's result is read back only if all of these are the same as when it was saved:
+
+- everything `cache_cook` compares (its params, the files they name, its module's code, the
+  stage's units);
+- its exec wires and what the framework keeps on its chunk prim;
+- the same for every chunk upstream of it;
+- the network file's own prims and time range, and the size and date of the files it
+  sublayers or references.
+
+Otherwise it cooks, as it always did. A chunk whose last cook also wrote outside its own
+layer (into the session layer, like a MaterialX Shader's input wires) or changed the layer
+stack always cooks. So does a module that sets `cook_on_open=True`.
+
+To switch it off, set [`USD_CHUNKS_OPEN_CACHE=0`](install.md#environment-variables).
 
 ### Long bakes: `sim_bake`
 

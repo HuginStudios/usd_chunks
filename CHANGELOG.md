@@ -11,6 +11,15 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- **Opening a saved network reads results back instead of cooking.** Saving keeps each
+  chunk's result in the cook cache folder; opening reads it back while nothing the chunk
+  depends on has changed (its params and the files they name, its code, the chunks above it,
+  and the network file's own content and sublayers). Anything else cooks as before. In
+  usdview a 300-chunk village is ready in 10 s instead of 14 s, a 300-Transform chain in 8 s
+  instead of 18 s. A chunk does work once it really cooks (a first import, a first scatter),
+  so the first edit that reaches it can take longer than it did. A chunk that writes
+  outside its own layer (MaterialX Shader) still cooks on open. A module that must always
+  cook sets `cook_on_open=True`; `USD_CHUNKS_OPEN_CACHE=0` turns it off.
 - `chunk.TextEdit(..., wrap=True)` makes a prose field: in the Qt params panel its lines wrap
   at the field's edge, in the UI's own font, so a paragraph is not one long line scrolled
   sideways. Without it a `TextEdit` stays a code field (fixed-width font, no wrapping).

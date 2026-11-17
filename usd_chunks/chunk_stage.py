@@ -25,6 +25,7 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
+from usd_chunks import open_cache
 from usd_chunks import sdf_authoring
 from usd_chunks import skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
@@ -8645,6 +8646,13 @@ def export_chunks(
     stamp_stage_metadata(dst, stage)
     dst.Export(str(path))
     _reload_cached_layer(path)
+    # Each chunk's result, kept for the next open of this file (open_cache).
+    saved = Sdf.Layer.FindOrOpen(str(path))
+    if saved is not None:
+        open_cache.store(
+            scene.get_chunks(), stage, saved, ChunkLayerManager().get_layer,
+            chunk_cook.settled,
+        )
 
 
 def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:

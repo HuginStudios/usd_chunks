@@ -54,6 +54,7 @@ from usd_chunks import (
     cook_timings,
     layer_arcs,
     layer_reconcile,
+    open_cache,
     skip_cook,
 )
 from usd_chunks.chunk_flags import ChunkFlags
@@ -613,6 +614,11 @@ def batched_solve():
         fn()
 
 
+def settled(chunk) -> bool:
+    """Whether a chunk's layer holds its last cook's result and nothing is waiting to change it."""
+    return not is_cook_stale(chunk) and chunk not in _pending
+
+
 def is_cook_stale(chunk) -> bool:
     """Whether a chunk's layer may not hold the result of its current inputs.
 
@@ -1090,6 +1096,12 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                     # cook on disk already -- read it back instead. Anonymous
                     # only, for the same reason as the Clear.
                     cached = cook_cache.lookup(chunk) if ctx.anonymous else None
+                    # A chunk's first cook since the network opened may read back the result
+                    # kept when it was saved (open_cache).
+                    first_cook = ctx.anonymous and getattr(chunk, "_cooked_into", None) is None
+                    if cached is None and first_cook:
+                        cached = open_cache.lookup(chunk, stage, settled)
+                    shared_edits = open_cache.shared_layer_edits(stage) if ctx.anonymous else None
                     reconciled = _diff_cooked(chunk, stage, ctx, execute, layer_of, cached, kept)
                     if reconciled is None:
                         # A chunk's first cook is a plain one, and decides whether it may be
@@ -1110,6 +1122,11 @@ def _run(chunk, stage, ctx, execute, layer_of, stamp) -> None:
                                               and not _writes_chunk_prims(ctx))
                     if ctx.anonymous:
                         chunk._cooked_into = ctx.identifier
+                        if cached is not None and cached.restored and open_cache.is_open_entry(cached):
+                            open_cache.restored(chunk, cached, ctx, stage)
+                        else:
+                            open_cache.note_cook(chunk, stage, shared_edits)
+                            open_cache.record(chunk, stage, settled, first_cook)
                     if not ctx.anonymous:
                         skip_cook.unaccounted(chunk)
                     # What a param drives is its own state, not the cook's
