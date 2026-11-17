@@ -1,0 +1,1997 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://huginstudios.github.io/usd_chunks/1.0.0-rc/node-graph-basics/">
+      
+      
+        <link rel="prev" href="../install/">
+      
+      
+        <link rel="next" href="../plugins/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Using the node graph - USD Chunks</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#using-the-node-graph" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="USD Chunks" class="md-header__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            USD Chunks
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Using the node graph
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="lime"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  USD Chunks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../blender/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Blender
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../breakage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Breakage: fracture, emit, simulate
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks, params and groups
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-requirements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks that need pip packages
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../core-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Output, View and ChunkGroup
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../example/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Example
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../expressions/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Expressions
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../fast-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Making a chunk fast
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../gizmo-host-contract/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunk gizmos: the host contract
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../graph-frontends/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a graph frontend
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../houdini/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Houdini
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../install/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Install
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using the node graph
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../plugins/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Plugins
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../runtime-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Building a chunk at runtime
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../scripting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Scripting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../surface_flow/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Liquid on surfaces: condensation, runs, drips
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../undo/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Undo and redo
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../writing-a-chunk/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a chunk module
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="USD Chunks" class="md-nav__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    USD Chunks
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    USD Chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../blender/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blender
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../breakage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Breakage: fracture, emit, simulate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks, params and groups
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-requirements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks that need pip packages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output, View and ChunkGroup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fast-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Making a chunk fast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gizmo-host-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunk gizmos: the host contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a graph frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../houdini/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Houdini
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using the node graph
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using the node graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#your-first-chunk-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🚀 Your first chunk node
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opening-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening the graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-params-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Params page
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating a node
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wiring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wiring
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nothing-cooks-without-an-output-or-a-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nothing cooks without an Output or a View
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keyboard-shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keyboard shortcuts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backdrops-and-sticky-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backdrops and sticky notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#which-chunk-made-this-prim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which chunk made this prim?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#disabled-and-locked-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disabled and locked nodes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#going-inside-a-chunkgroup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Going inside a ChunkGroup
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building a chunk at runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scripting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../surface_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Liquid on surfaces: condensation, runs, drips
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../undo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Undo and redo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../writing-a-chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a chunk module
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_21" >
+        
+          
+          <label class="md-nav__link" for="__nav_21" id="__nav_21_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_21_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_21">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SUMMARY
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_core
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_flags/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_flags
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_notice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_notice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_resources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_resources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_stage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_stage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="using-the-node-graph">Using the node graph<a class="headerlink" href="#using-the-node-graph" title="Permanent link">⚓︎</a></h1>
+<h2 id="your-first-chunk-node">🚀 Your first chunk node<a class="headerlink" href="#your-first-chunk-node" title="Permanent link">⚓︎</a></h2>
+<ol>
+<li>Open usdview. The graph is the <strong>Graph</strong> tab in the <strong>Chunks</strong> panel.</li>
+<li><strong>Right-click the empty canvas</strong> and pick a chunk, for example <em>Mesh</em>. If the graph has
+   no View yet, one is added and connected for you.</li>
+<li>Change the node's params in its panel and watch the viewport update.</li>
+<li>To see the output of another chunk you add later, right-click it and choose <strong>Set
+   View</strong>. A View is only added for you when the graph has none.</li>
+</ol>
+<p>That's all you need for a working chunk. The rest of this page covers connecting several
+nodes, keyboard shortcuts, disabled and locked nodes, and working inside a ChunkGroup. For
+how the graph is stored (prims, ports, USD connections), see <a href="../#the-graph-is-usd">The graph is
+USD</a>. For more on Output, View and ChunkGroup, see <a href="../core-chunks/">Output, View and
+ChunkGroup</a>.</p>
+<h2 id="opening-the-graph">Opening the graph<a class="headerlink" href="#opening-the-graph" title="Permanent link">⚓︎</a></h2>
+<p>The <strong>Graph</strong> tab shows the graph you're currently in: the top level, or the inside of a
+<a href="../core-chunks/#chunkgroup">ChunkGroup</a> if you're in one. Each graph remembers which of its
+views was active when you saved, and opens on that one.</p>
+<h2 id="the-params-page">The Params page<a class="headerlink" href="#the-params-page" title="Permanent link">⚓︎</a></h2>
+<p>The <strong>Params</strong> tab next to it has two boxes.</p>
+<ul>
+<li><strong>The group's box</strong>, at the top, is the graph's interface: the params and the chunks
+  lofted to it (see <a href="../core-chunks/#chunkgroup">ChunkGroup</a>). To put a chunk there,
+  right-click it and choose <strong>Loft up chunk</strong>. A chunk made from the Params tab's own create
+  menu is lofted for you, so it shows where you made it. Click the box's title to fold it.</li>
+<li><strong>The search box</strong>, below it, finds any other chunk in the graph. Type in it and it shows
+  the chunks that match and aren't lofted. The line under the search bar says how many it
+  found, and how many lofted chunks above match too. Searching never changes the group's box.</li>
+</ul>
+<h2 id="creating-a-node">Creating a node<a class="headerlink" href="#creating-a-node" title="Permanent link">⚓︎</a></h2>
+<p>Right-click the empty canvas to open the create menu. Chunks are sorted by the <code>category</code>
+set in each module's <code>config()</code> (see <a href="../writing-a-chunk/#config">Writing a chunk</a>). Pick
+one and it's added at the cursor.</p>
+<p>If you drag a wire out of <strong>any port, input or output,</strong> and let go on empty canvas, the
+same menu opens. The chunk you pick is created and connected to the port you dragged from.
+The menu isn't filtered, so you can pick a chunk with no matching port. In that case the
+node is created without a wire, and no error is shown.</p>
+<p>To build a chain quickly, tick <strong>Auto-connect</strong> in the bottom-right corner, next to the
+Output badge. Each chunk you then make from the create menu is wired after the selected
+node. With no node selected, or several, it goes after the one the active Output or View
+shows. The Output or View moves onto the new chunk, and the new chunk is selected, so the
+next one goes after it. The box is remembered between sessions.</p>
+<p>A node's header shows its icon, name and type (to set an icon, see <a href="../writing-a-chunk/#icons-in-the-node-graph">Icons in the node
+graph</a>). The <strong>⋮</strong> button at its right opens
+the same menu as right-clicking the node.</p>
+<p>To make a node wider or narrower, drag its right edge. Double-click the edge to go back to
+the default width. The width is saved in the file, on the chunk prim's
+<code>ui:nodegraph:node:size</code>.</p>
+<h2 id="wiring">Wiring<a class="headerlink" href="#wiring" title="Permanent link">⚓︎</a></h2>
+<p>Drag from one port to another port of the same type to connect them. A port lights up when
+the mouse comes near it, to show you can start a wire there. A port's colour always shows
+its type of value.</p>
+<p>While you drag, the ports you can drop on get a white ring. Near one, the end of the wire
+jumps onto it, turns solid, and the port lights up: that's where the wire lands if you let
+go. Away from any port, the end follows the mouse again, dashed.</p>
+<p>A few things work differently:</p>
+<ul>
+<li><strong>Drop a node onto an exec wire to insert it.</strong> The exec wire is the chain wire between
+  <code>outputs:chunk</code> and <code>inputs:chunk</code>. It's split and goes through the node.</li>
+<li><strong>Shake a node quickly back and forth to disconnect all its wires.</strong> The exec chain is
+  joined back up behind it: whatever fed the node now feeds what the node used to feed, so
+  taking a step out of the middle doesn't break the rest. Value wires are just removed.</li>
+<li>Connecting a value port writes a real <code>@Node.param@</code> expression, so it's an actual data
+  connection, not just a line on screen (see <a href="../#the-graph-is-usd">The graph is
+  USD</a> and <a href="../expressions/">Expressions</a>).</li>
+</ul>
+<h2 id="nothing-cooks-without-an-output-or-a-view">Nothing cooks without an Output or a View<a class="headerlink" href="#nothing-cooks-without-an-output-or-a-view" title="Permanent link">⚓︎</a></h2>
+<p>Only chunks connected to the active <a href="../core-chunks/#view">View</a> cook, or with no active
+View, the ones connected to the graph's <a href="../core-chunks/#output">Output</a>. A new chain does
+nothing until it's connected to one.
+<strong>Right-click the chunk whose output you want to see and choose Set View 2 or Set View 3.</strong>
+That connects that View to the chunk's output (creating it if needed) and makes it active.
+The slot already looking at the chunk is shown ticked. Until then, the nodes are
+set up but don't run. This is on purpose, not a bug.</p>
+<p>A graph can have up to two views, numbered 2 and 3. Press <code>2</code> or <code>3</code> to switch to one,
+and <code>1</code> to go back to the Output. To end the graph at another chunk, right-click it and
+choose <strong>Set Output</strong>. A key only switches to something the current graph has, so you
+can't blank the graph by accident.</p>
+<h2 id="keyboard-shortcuts">Keyboard shortcuts<a class="headerlink" href="#keyboard-shortcuts" title="Permanent link">⚓︎</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>F</code></td>
+<td>Frame the selection (or everything, if nothing is selected).</td>
+</tr>
+<tr>
+<td><code>Ctrl+F</code></td>
+<td>Find a node by name or chunk type (untick Name or Type to search only the other). <code>Enter</code> frames the best match; <code>Ctrl+Enter</code> frames the next one each press.</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Cook to the Output.</td>
+</tr>
+<tr>
+<td><code>2</code> / <code>3</code></td>
+<td>Switch to that view, if it exists.</td>
+</tr>
+<tr>
+<td><code>L</code></td>
+<td>Auto-layout the selection, or the whole graph if nothing is selected. With a backdrop selected, only the nodes inside it.</td>
+</tr>
+<tr>
+<td><code>B</code></td>
+<td>Put a backdrop around the selection (or at the cursor, if nothing is selected).</td>
+</tr>
+<tr>
+<td><code>N</code></td>
+<td>Add a sticky note at the cursor.</td>
+</tr>
+<tr>
+<td><code>C</code></td>
+<td>Collapse the selection, or the whole graph if nothing is selected.</td>
+</tr>
+<tr>
+<td><code>D</code></td>
+<td>Disable or enable the selection.</td>
+</tr>
+<tr>
+<td><code>Delete</code></td>
+<td>Delete the selection, backdrops and notes included. A deleted backdrop leaves its nodes where they are.</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>Cancel a wire drag, or clear focus.</td>
+</tr>
+<tr>
+<td><code>Tab</code></td>
+<td>Open the create menu at the cursor.</td>
+</tr>
+<tr>
+<td><code>Ctrl+C</code> / <code>Ctrl+X</code> / <code>Ctrl+V</code></td>
+<td>Copy / cut / paste the selection. A selected backdrop comes with everything in it.</td>
+</tr>
+<tr>
+<td><code>Ctrl+D</code></td>
+<td>Duplicate the selection. A duplicated backdrop goes just below the original.</td>
+</tr>
+<tr>
+<td><code>Ctrl+G</code></td>
+<td>Put the selection into a new <a href="../core-chunks/#chunkgroup">ChunkGroup</a>. A selected backdrop goes in with everything in it.</td>
+</tr>
+</tbody>
+</table>
+<p>Some keys do one thing on their own and another with <code>Ctrl</code> (<code>D</code>/<code>Ctrl+D</code>, <code>C</code>/<code>Ctrl+C</code>).
+The plain key is the graph action, and the <code>Ctrl</code> version is the usual clipboard action.</p>
+<h2 id="backdrops-and-sticky-notes">Backdrops and sticky notes<a class="headerlink" href="#backdrops-and-sticky-notes" title="Permanent link">⚓︎</a></h2>
+<p>A <strong>backdrop</strong> is a coloured box that frames part of the network. Select some nodes and
+press <code>B</code> to put one around them. Drag its title bar or its edge and every node inside
+moves with it. A node counts as inside when the middle of its title bar is in the box.
+Drag the bottom-right corner to resize it. Clicking or dragging in the middle of a
+backdrop still does what it does on the empty canvas: box-select, or right-click to add a
+chunk.</p>
+<p>A <strong>sticky note</strong> says what a part of the network is for. Press <code>N</code> to add one at the
+cursor, then type. Drag it anywhere on its body.</p>
+<p>Both are also in the chunk menu (<code>Tab</code> or right-click on the canvas), at the bottom, and
+you can search for them there.</p>
+<p>Double-click either one to edit its text. Right-click its title bar (or anywhere on a
+note) to change its colour, fit a backdrop around its nodes, lay out the nodes inside it,
+cut, copy, duplicate, put it in a ChunkGroup, or delete it. Select a backdrop and press <code>L</code>
+to lay out only the nodes inside it. Wires to nodes outside the box are ignored. A plain
+<code>L</code> keeps every backdrop whole: its nodes are laid out inside it, and the box moves as one
+block, with its notes.</p>
+<p>Cut, copy, duplicate and <code>Ctrl+G</code> on a selected backdrop take everything in it: its nodes,
+and the backdrops and notes inside it. <code>Delete</code> removes only the backdrop and leaves its
+nodes where they are.</p>
+<p>Both are saved in the scene as USD <code>Backdrop</code> prims next to the chunks. Undo covers them
+too. Scripts can make and change them: see <a href="../scripting/#backdrops-and-notes">Scripting</a>.</p>
+<h2 id="which-chunk-made-this-prim">Which chunk made this prim?<a class="headerlink" href="#which-chunk-made-this-prim" title="Permanent link">⚓︎</a></h2>
+<p>Select a prim in the viewport and the graph shows which chunks it came from:</p>
+<ul>
+<li>The chunk that <strong>made</strong> it gets a gold ring tagged <em>made</em>.</li>
+<li>Each chunk that <strong>changed</strong> it (moved it, bound a material, set a property) gets a teal
+  ring with a number: 1 changes it first, and the highest number wins a value they both set.</li>
+<li>A prim inside an asset that a chunk referenced in (a mesh inside a Reference chunk's
+  asset) has no chunk of its own. The chunk that <strong>brought it in</strong> gets a lavender ring.</li>
+</ul>
+<p>A chunk inside a ChunkGroup you're not looking into rings the group's node. The line at the
+bottom of the graph says the same in words, for example
+<code>/World/house/walls ← made by House · changed by Transform3, Paint</code>. Click a name to jump to
+that node, or <strong>frame them</strong> to fit them all in view. Select several prims and the
+graph rings every chunk that made or changed any of them.</p>
+<p>The other way round, right-click a node and pick <strong>Select Its Prims</strong>. The viewport selects
+what that chunk made (the outermost prim it made, such as <code>/World/house</code>, not every board)
+and each prim it changed.</p>
+<p>None of this slows a big scene down. It's worked out from the selected prims' own layers,
+only when the selection changes, and nothing happens while you cook or orbit.</p>
+<h2 id="disabled-and-locked-nodes">Disabled and locked nodes<a class="headerlink" href="#disabled-and-locked-nodes" title="Permanent link">⚓︎</a></h2>
+<p>A <strong>disabled</strong> chunk (<code>D</code>) stays on the canvas, greyed out, so you can turn it back on. It
+doesn't cook or produce output.</p>
+<p>A <strong>locked</strong> node comes from a layer you don't own, such as a
+<a href="../core-chunks/#chunkgroup">ChunkGroup</a> loaded as a reference, sublayer or payload. It has
+an amber header and can't be moved, not even by auto-layout, which works around it. You
+can still edit its params. Your edits are written as an <code>over</code> in your own edit target, so
+a shot can change a shared sequence's params without changing the sequence file.</p>
+<h2 id="going-inside-a-chunkgroup">Going inside a ChunkGroup<a class="headerlink" href="#going-inside-a-chunkgroup" title="Permanent link">⚓︎</a></h2>
+<p>Double-click a ChunkGroup node to go inside and work on its contents as a separate graph,
+with its own views. New chunks you create while inside a group are added to that group.
+See <a href="../core-chunks/#chunkgroup">ChunkGroup</a> for how params are shared with the outside
+(lofting).</p>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 12, 2026 21:53:02 UTC">November 12, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 29, 2026 16:05:32 UTC">September 29, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "navigation.sections", "navigation.expand", "navigation.path", "toc.integrate", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2015 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://huginstudios.github.io/usd_chunks/1.0.0-rc/fast-chunks/">
+      
+      
+        <link rel="prev" href="../expressions/">
+      
+      
+        <link rel="next" href="../gizmo-host-contract/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Making a chunk fast - USD Chunks</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#making-a-chunk-fast" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="USD Chunks" class="md-header__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            USD Chunks
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Making a chunk fast
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="lime"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  USD Chunks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../blender/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Blender
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../breakage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Breakage: fracture, emit, simulate
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks, params and groups
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-requirements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks that need pip packages
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../core-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Output, View and ChunkGroup
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../example/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Example
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../expressions/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Expressions
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Making a chunk fast
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../gizmo-host-contract/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunk gizmos: the host contract
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../graph-frontends/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a graph frontend
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../houdini/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Houdini
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../install/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Install
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../node-graph-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using the node graph
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../plugins/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Plugins
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../runtime-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Building a chunk at runtime
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../scripting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Scripting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../surface_flow/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Liquid on surfaces: condensation, runs, drips
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../undo/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Undo and redo
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../writing-a-chunk/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a chunk module
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="USD Chunks" class="md-nav__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    USD Chunks
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    USD Chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../blender/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blender
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../breakage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Breakage: fracture, emit, simulate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks, params and groups
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-requirements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks that need pip packages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output, View and ChunkGroup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Making a chunk fast
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Making a chunk fast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#find-where-the-time-goes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Find where the time goes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#write-specs-not-usd-api-calls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write specs, not Usd API calls
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Write specs, not Usd API calls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#time-samples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time samples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#do-the-maths-in-numpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Do the maths in numpy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Do the maths in numpy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#seeded-randomness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeded randomness
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nearest-neighbours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nearest neighbours
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-doesnt-help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What doesn't help
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gizmo-host-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunk gizmos: the host contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a graph frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../houdini/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Houdini
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-graph-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using the node graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building a chunk at runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scripting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../surface_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Liquid on surfaces: condensation, runs, drips
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../undo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Undo and redo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../writing-a-chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a chunk module
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_21" >
+        
+          
+          <label class="md-nav__link" for="__nav_21" id="__nav_21_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_21_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_21">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SUMMARY
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_core
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_flags/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_flags
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_notice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_notice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_resources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_resources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_stage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_stage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="making-a-chunk-fast">Making a chunk fast<a class="headerlink" href="#making-a-chunk-fast" title="Permanent link">⚓︎</a></h1>
+<blockquote>
+<p>In short: a slow cook is almost always one of two things. Either it authors through the Usd
+API one call at a time, or it loops over data in Python. Write specs with
+<a href="#write-specs-not-usd-api-calls"><code>sdf_authoring</code></a> inside one <code>Sdf.ChangeBlock</code>, and do the
+maths with <a href="#do-the-maths-in-numpy">numpy</a>. Threads don't help; see <a href="#what-doesnt-help">What doesn't
+help</a>.</p>
+</blockquote>
+<p>This page is for writing or speeding up a chunk's <code>execute()</code>. The numbers come from
+benchmarks on the usdbundle build (USD 26.05, Python 3.11) in October 2026.</p>
+<h2 id="find-where-the-time-goes">Find where the time goes<a class="headerlink" href="#find-where-the-time-goes" title="Permanent link">⚓︎</a></h2>
+<p>Measure before you change anything. Wrap the cook in <code>cProfile</code> or time its parts with
+<code>time.perf_counter()</code>. Cooks usually spend their time in one of these:</p>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Time scales with prims or attributes written; profile full of <code>DefinePrim</code>, <code>CreateAttribute</code>, <code>Set</code></td>
+<td>One change notice per authoring call</td>
+<td><a href="#write-specs-not-usd-api-calls">Write specs</a></td>
+</tr>
+<tr>
+<td>Many <code>attr.Set(value, time)</code> calls, one per frame</td>
+<td>One notice per sample</td>
+<td><a href="#time-samples"><code>sim_bake.write_samples</code></a></td>
+</tr>
+<tr>
+<td>Time scales with points or faces; profile full of <code>Gf.Vec3f</code>, <code>Matrix4d.Transform</code>, list comprehensions</td>
+<td>Python loops over data</td>
+<td><a href="#do-the-maths-in-numpy">numpy</a></td>
+</tr>
+<tr>
+<td>Nested loops comparing every element with every other</td>
+<td>O(n²) search</td>
+<td><a href="#nearest-neighbours">A k-d tree</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="write-specs-not-usd-api-calls">Write specs, not Usd API calls<a class="headerlink" href="#write-specs-not-usd-api-calls" title="Permanent link">⚓︎</a></h2>
+<p>Every Usd API call that authors something sends a change notice: <code>stage.DefinePrim</code>,
+<code>prim.CreateAttribute</code>, <code>attr.Set</code>, <code>UsdGeom.Mesh.Define</code>, <code>AddTransformOp</code>. For each notice
+the stage recomposes, and everything listening runs: the framework, usdview's prim tree and
+the viewport. A handful of calls is fine. Thousands are the whole cook.</p>
+<p>On 8,000 prims with three attributes each, cooked through the framework:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Usd API</th>
+<th>Sdf, one <code>ChangeBlock</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cook</td>
+<td>3.9 s</td>
+<td>0.2 s</td>
+</tr>
+<tr>
+<td>Next frame, Storm</td>
+<td>0.22 s</td>
+<td>0.05 s</td>
+</tr>
+<tr>
+<td>Next frame, V-Ray</td>
+<td>1.6 s</td>
+<td>0.07 s</td>
+</tr>
+</tbody>
+</table>
+<p>Converting CAD Import made it 9.6× faster on 3,000 placements.</p>
+<p><code>usd_chunks.sdf_authoring</code> writes specs directly into the layer the stage's edit target
+points at, at the path the edit target maps to. They land where the Usd API would have put
+them, including inside a variant:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pxr</span><span class="w"> </span><span class="kn">import</span> <span class="n">Gf</span><span class="p">,</span> <span class="n">Sdf</span><span class="p">,</span> <span class="n">UsdGeom</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">sdf_authoring</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">execute</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">stage</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">get_stage</span><span class="p">()</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">writer</span> <span class="o">=</span> <span class="n">sdf_authoring</span><span class="o">.</span><span class="n">Writer</span><span class="p">(</span><span class="n">stage</span><span class="p">)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="k">with</span> <span class="n">Sdf</span><span class="o">.</span><span class="n">ChangeBlock</span><span class="p">():</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">positions</span><span class="p">):</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="n">spec</span> <span class="o">=</span> <span class="n">writer</span><span class="o">.</span><span class="n">define</span><span class="p">(</span><span class="sa">f</span><span class="s2">"/World/Rocks/R</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="s2">"Cube"</span><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="n">sdf_authoring</span><span class="o">.</span><span class="n">attribute</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="s2">"size"</span><span class="p">,</span> <span class="n">Sdf</span><span class="o">.</span><span class="n">ValueTypeNames</span><span class="o">.</span><span class="n">Double</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">)</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="n">sdf_authoring</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">Gf</span><span class="o">.</span><span class="n">Matrix4d</span><span class="p">()</span><span class="o">.</span><span class="n">SetTranslate</span><span class="p">(</span><span class="n">Gf</span><span class="o">.</span><span class="n">Vec3d</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">)))</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            <span class="n">sdf_authoring</span><span class="o">.</span><span class="n">primvar</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="s2">"displayColor"</span><span class="p">,</span> <span class="n">Sdf</span><span class="o">.</span><span class="n">ValueTypeNames</span><span class="o">.</span><span class="n">Color3fArray</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>                                  <span class="p">[</span><span class="n">Gf</span><span class="o">.</span><span class="n">Vec3f</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">)],</span> <span class="n">UsdGeom</span><span class="o">.</span><span class="n">Tokens</span><span class="o">.</span><span class="n">constant</span><span class="p">)</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Usd API</th>
+<th><code>sdf_authoring</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stage.DefinePrim(path, type)</code>, <code>UsdGeom.X.Define</code></td>
+<td><code>writer.define(path, type)</code></td>
+</tr>
+<tr>
+<td>A property on a prim this layer doesn't define yet</td>
+<td><code>writer.over(path)</code></td>
+</tr>
+<tr>
+<td><code>prim.GetReferences().AddInternalReference(path)</code></td>
+<td><code>writer.reference(spec, path)</code></td>
+</tr>
+<tr>
+<td><code>CreateXAttr(value)</code> on a schema</td>
+<td><code>attribute(spec, name, type, value)</code></td>
+</tr>
+<tr>
+<td><code>prim.CreateAttribute(name, type)</code></td>
+<td><code>attribute(spec, name, type, custom=True)</code></td>
+</tr>
+<tr>
+<td><code>PrimvarsAPI.CreatePrimvar(name, type, interp).Set(v)</code></td>
+<td><code>primvar(spec, name, type, v, interp)</code></td>
+</tr>
+<tr>
+<td><code>AddTransformOp().Set(m)</code> on a fresh prim</td>
+<td><code>transform(spec, m)</code></td>
+</tr>
+<tr>
+<td><code>prim.SetInstanceable(True)</code></td>
+<td><code>spec.instanceable = True</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="rules">Rules<a class="headerlink" href="#rules" title="Permanent link">⚓︎</a></h3>
+<ul>
+<li><strong>Don't read back what you wrote inside the block.</strong> Composition catches up when the block
+  closes. Inside it, a prim you defined isn't on the stage yet. Reading anything else is fine,
+  including upstream prims and the source of a copy. If the loop needs composed state (a
+  world transform, the prim it just made), gather it in a pass before the block.</li>
+<li><strong>Make the <code>Writer</code> inside the <code>author_in_variant_contexts</code> loop.</strong> It reads the edit target
+  once, when it's created.</li>
+<li><strong>Get variability right.</strong> Attributes a schema declares <code>uniform</code> need <code>uniform=True</code>:
+  <code>subdivisionScheme</code>, <code>xformOpOrder</code>, <code>orientation</code>, and a GeomSubset's <code>elementType</code> and
+  <code>familyName</code>. The Usd API gets this from the schema. Specs don't.</li>
+<li><strong>Match <code>custom</code>.</strong> Schema attributes and primvars aren't custom (the default).
+  <code>Prim.CreateAttribute</code> makes custom ones, so pass <code>custom=True</code> when replacing it.</li>
+<li><strong>Compare outputs when you convert.</strong> Run the old and new code on the same input and compare
+  <code>layer.ExportToString()</code>. CAD Import, Duplicate Prim and Semantic Labels were converted this
+  way with byte-identical results. <code>tests/test_sdf_authoring.py</code> shows the pattern.</li>
+</ul>
+<p>Leave the Usd API alone where it's a fixed handful of calls per cook (a root prim, a scope, one
+material). It's clearer, and there's nothing to gain.</p>
+<h3 id="time-samples">Time samples<a class="headerlink" href="#time-samples" title="Permanent link">⚓︎</a></h3>
+<p>To write many frames, use <code>sim_bake.write_samples(attr, ((time, value), ...), default=...)</code>.
+It writes every sample into the edit target's layer in one change block. One <code>attr.Set(v, t)</code>
+per frame cost a breakage preview 3 s for 7,000 notices.</p>
+<h2 id="do-the-maths-in-numpy">Do the maths in numpy<a class="headerlink" href="#do-the-maths-in-numpy" title="Permanent link">⚓︎</a></h2>
+<p>numpy runs a whole array in C, while a Python loop pays interpreter overhead per element. On
+point and face data the difference is usually 10–100×.</p>
+<p><strong>Move data between USD and numpy with <code>FromNumpy</code>, not lists:</strong></p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">GetPointsAttr</span><span class="p">()</span><span class="o">.</span><span class="n">Get</span><span class="p">())</span>              <span class="c1"># Vt -&gt; (N, 3) array</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">attr</span><span class="o">.</span><span class="n">Set</span><span class="p">(</span><span class="n">Vt</span><span class="o">.</span><span class="n">Vec3fArray</span><span class="o">.</span><span class="n">FromNumpy</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)))</span>  <span class="c1"># array -&gt; Vt, no Python loop</span>
+</span></code></pre></div>
+<p><code>Vt.Vec3fArray([Gf.Vec3f(*p) for p in points])</code> builds one Python object per point. Avoid it.</p>
+<p><strong>Transform points with one matrix product.</strong> <code>Gf.Matrix4d</code> uses row vectors: <code>p' = p · M</code>,
+with the translation in the last row. So:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">m</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">xform_cache</span><span class="o">.</span><span class="n">GetLocalToWorldTransform</span><span class="p">(</span><span class="n">prim</span><span class="p">))</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">world</span> <span class="o">=</span> <span class="n">points</span> <span class="o">@</span> <span class="n">m</span><span class="p">[:</span><span class="mi">3</span><span class="p">,</span> <span class="p">:</span><span class="mi">3</span><span class="p">]</span> <span class="o">+</span> <span class="n">m</span><span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="p">:</span><span class="mi">3</span><span class="p">]</span>   <span class="c1"># same as m.Transform(p) for every point</span>
+</span></code></pre></div>
+<p><code>usd_chunks.mesh_math.world_points(prim, points)</code> does exactly this. Its sibling
+<code>fan_triangulate(counts, indices)</code> returns <code>(triangles, corners, face_of_triangle)</code> for any
+polygon mesh. Use both instead of writing the loop again.</p>
+<p><strong>Watch these details:</strong></p>
+<ul>
+<li><strong>dtypes.</strong> USD point arrays are <code>float32</code>. Do the maths in <code>float64</code> if precision matters,
+  and convert once when writing (<code>astype(np.float32)</code>), not per element.</li>
+<li><strong>Quaternions.</strong> <code>Vt.QuathArray.FromNumpy</code> / <code>QuatfArray.FromNumpy</code> take <code>[x, y, z, w]</code>,
+  imaginary first. MuJoCo and most maths code use <code>[w, x, y, z]</code>. Roll the last axis
+  (<code>np.roll(q, -1, axis=-1)</code>) before writing.</li>
+<li><strong>Contiguous arrays.</strong> <code>FromNumpy</code> needs a C-contiguous array, so call
+  <code>np.ascontiguousarray</code> after slicing or transposing.</li>
+</ul>
+<h3 id="seeded-randomness">Seeded randomness<a class="headerlink" href="#seeded-randomness" title="Permanent link">⚓︎</a></h3>
+<p>Users rely on a seed giving the same result every time, so a speed-up must never change what a
+seed produces.</p>
+<ul>
+<li><strong>Don't batch or reorder random draws in existing code.</strong> If a loop calls <code>rng.random()</code> per
+  attempt, vectorizing the maths around it is fine. Pre-drawing the numbers into an array
+  changes the result unless the draws stay in exactly the same order, including draws that
+  only happen on some attempts.</li>
+<li><strong>New code: use <code>np.random.default_rng(seed)</code> and draw whole arrays</strong> (<code>rng.random((n, 3))</code>).
+  It's fast and reproducible from the start. Never use the global <code>np.random</code> or <code>random</code>
+  module: anything else drawing from it changes your result.</li>
+</ul>
+<h3 id="nearest-neighbours">Nearest neighbours<a class="headerlink" href="#nearest-neighbours" title="Permanent link">⚓︎</a></h3>
+<p>Checking every point against every other is O(n²), which takes seconds at a few thousand
+points. Use <code>scipy.spatial.cKDTree</code>, and keep scipy optional the way Scatter Points does:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">try</span><span class="p">:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">scipy.spatial</span><span class="w"> </span><span class="kn">import</span> <span class="n">cKDTree</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">cKDTree</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># fall back to the slower path</span>
+</span></code></pre></div>
+<p>For a few hundred points, numpy broadcasting is enough:
+<code>d2 = ((a[:, None] - b[None]) ** 2).sum(-1)</code>.</p>
+<p>Some loops are sequential by nature, like dart throwing where each sample depends on the last
+or a simulation step. Vectorize across the independent elements <em>inside</em> each step instead,
+for example every particle in one step.</p>
+<h2 id="what-doesnt-help">What doesn't help<a class="headerlink" href="#what-doesnt-help" title="Permanent link">⚓︎</a></h2>
+<p>These were measured and rejected, so you don't have to try them again:</p>
+<ul>
+<li><strong>Threads.</strong> Two independent cooks in two threads ran at 0.83× (Usd API) and 0.96× (Sdf),
+  slower than one after the other. USD's Python bindings hold the GIL. numpy is already
+  multithreaded inside, so two numpy threads ran at 0.33×. Only waiting (subprocesses, I/O,
+  renders) overlaps in threads. For wide independent work like wedges and sweeps, use
+  processes.</li>
+<li><strong>Authoring into a detached layer and swapping it in.</strong> 1.1–1.2×. The cost is the per-call
+  notice, not which stage hears it.</li>
+<li><strong>Usd API calls inside a <code>Sdf.ChangeBlock</code>.</strong> Not safe: a prim defined inside the block
+  isn't composed yet, so the next Usd call on it fails or misbehaves. Use specs.</li>
+</ul>
+<h2 id="checklist">Checklist<a class="headerlink" href="#checklist" title="Permanent link">⚓︎</a></h2>
+<ol>
+<li>Profile first: authoring or maths?</li>
+<li>Authoring that grows with the data → <code>sdf_authoring</code> in one <code>ChangeBlock</code>, time samples
+   through <code>write_samples</code>.</li>
+<li>Python loops over points, faces or instances → numpy, plus <code>FromNumpy</code>, plus <code>mesh_math</code>.</li>
+<li>Pairwise searches → <code>cKDTree</code> (optional import) or broadcasting.</li>
+<li>Seeded output unchanged? Compare before and after with the same seed.</li>
+<li>Output unchanged? Compare <code>layer.ExportToString()</code> before and after.</li>
+</ol>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 2, 2026 16:08:37 UTC">October 2, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 2, 2026 16:08:37 UTC">October 2, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "navigation.sections", "navigation.expand", "navigation.path", "toc.integrate", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>
