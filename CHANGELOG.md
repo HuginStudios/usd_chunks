@@ -427,6 +427,24 @@ This file starts with the first release; development before that is in the commi
 - Big MaterialX networks open faster. Each shader asked which layer to write to once per
   input, and during a cook every ask walked the whole graph above it; now a cook asks once.
   Opening a 100-node shader network: 40% less time.
+- Editing a long chain of Transforms on one prim is faster. Each Transform worked out how
+  far down the chain every other one sits, on every cook; now those depths are kept until a
+  wire in the chain changes. A root edit of a 300-Transform chain: 14.2 s → 9.7 s.
+- A cook in a long chain sets up its stage faster. Working out which chunk prims it may
+  read walked every ancestor of every chunk wired to it; now it asks once per parent. A
+  root edit of a 300-Transform chain: 14.2 s → 12.6 s.
+- Recooking a big network walks the session layer once per edit, not once per cook. The
+  cooks of one edit share a copy of it, and that copy was compared with the session layer
+  before each cook and after it, spec by spec, though between two cooks it almost never
+  changes. Building a 300-node MaterialX network: 29.9 s → 25.2 s.
+- Each cook in a big network spends less time setting up the stage it cooks on. Reading
+  the time offsets of the chunk layers took about 20 µs per layer at 300 chunks and 60 µs
+  at 1000, once per cook; now it reads them all at once. A root edit of a 300-Transform
+  chain: 14.4 s → 13.4 s.
+- Big MaterialX networks build and open faster. To find the Material it belongs under, each
+  shader read the inputs of every chunk in the network, once per node between it and the
+  Material, on every cook. Now it looks the wire up in an index kept in step with the stage.
+  A 300-node shader network: opening 34 s → 15 s, building 33 s → 25 s.
 - Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
   walked the chain once per Transform above it; now it walks it once. One cook at the end of
   a 100-Transform chain: 0.29 s → 0.03 s.
