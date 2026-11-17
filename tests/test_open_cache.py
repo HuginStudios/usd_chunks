@@ -282,3 +282,15 @@ def test_a_counter_left_under_a_reused_name_is_not_trusted():
     Sdf.CreatePrimInLayer(new, "/Edited")
 
     assert open_cache._count(new) == before + 1
+
+
+def test_building_a_network_looks_nothing_up(monkeypatch):
+    """Only a load reads results back: keying each new chunk of a script cost the network's size."""
+    asked = []
+    real = open_cache.lookup
+    monkeypatch.setattr(open_cache, "lookup", lambda *a, **k: asked.append(1) or real(*a, **k))
+    with Scene.new() as scene:
+        _chain(scene, depth=5)
+        scene.set(scene.get_chunk("T0"), ty=2.0)
+
+    assert asked == []
