@@ -427,6 +427,9 @@ This file starts with the first release; development before that is in the commi
 - Big MaterialX networks open faster. Each shader asked which layer to write to once per
   input, and during a cook every ask walked the whole graph above it; now a cook asks once.
   Opening a 100-node shader network: 40% less time.
+- A cook in a long chain sets up its stage faster. Working out which chunk prims it may
+  read walked every ancestor of every chunk wired to it; now it asks once per parent. A
+  root edit of a 300-Transform chain: 14.2 s → 12.6 s.
 - Recooking a big network walks the session layer once per edit, not once per cook. The
   cooks of one edit share a copy of it, and that copy was compared with the session layer
   before each cook and after it, spec by spec, though between two cooks it almost never

@@ -952,8 +952,11 @@ def _chunk_prims(chunk) -> set[Sdf.Path]:
             return {_CHUNKS_ROOT}
         paths.add(Sdf.Path(path))
     # A group's prim that holds others of them is populated as their parent: masked, it
-    # would bring every chunk in the group along.
-    parents = {parent for path in paths for parent in _ancestors(path.GetParentPath())}
+    # would bring every chunk in the group along. Asked once per distinct parent: siblings
+    # share one, and asking per chunk walked every ancestor of every chunk on each cook.
+    parents = set()
+    for parent in {path.GetParentPath() for path in paths}:
+        parents.update(_ancestors(parent))
     return paths - parents
 
 
