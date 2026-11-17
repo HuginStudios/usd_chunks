@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- A param a chunk disabled before its panel was opened (a slider greyed out because a
+  switch is off) now shows greyed out. Sliders, checkboxes and menus showed live until the
+  state next changed.
+
 ## [1.0.0-rc] - 2026-11-11
 
 The first release candidate.
